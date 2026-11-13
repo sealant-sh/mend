@@ -76,11 +76,11 @@ runs with a shared home, and the session says why.
 - **Kubernetes** runs per person on the runc runtime: Sealant lets a per-person workspace's Pod
   raise privileges, so `sudo` works there. It refuses a per-person workspace under gVisor (`runsc`).
 
-Core records what each image can do when it builds it, and Mend records what each executor's prepare
-found, per image digest and runtime. When neither knows yet, the launch runs with a shared home and
-its prepare checks the image, so the next launch on that image can run per person. A workspace
-started before 0.36 is replaced (below) only once a per-person workspace has run on that image, or
-on a worktree that already runs per person.
+sealant records what each image can do when it builds it, and Mend records what each executor's
+prepare found, per image digest and runtime. When neither knows yet, the launch runs with a shared
+home and its prepare checks the image, so the next launch on that image can run per person. A
+workspace started before 0.36 is replaced (below) only once a per-person workspace has run on that
+image, or on a worktree that already runs per person.
 
 A shared workspace's check cannot see what only a per-person workspace meets, so Mend weighs a
 remembered "no" by its reasons:
@@ -91,7 +91,7 @@ remembered "no" by its reasons:
 - **A person who could not be made, or an image that could not be checked:** kept for a day, then
   checked again.
 - **No-new-privileges, an owner map refused, a runtime that cannot run per person (Cloudflare), or
-  Core's own "no":** kept until the image's digest changes. After fixing the host (removing
+  sealant's own "no":** kept until the image's digest changes. After fixing the host (removing
   `"no-new-privileges": true` from `daemon.json`, say), clear Mend's answer for the image in
   Postgres, and the next launch checks again:
 
@@ -100,7 +100,7 @@ remembered "no" by its reasons:
   DELETE FROM image_layout_capabilities WHERE image_key = '<image_key>' AND runtime = '<runtime>';
   ```
 
-Core reports the runtime it places each image on; on Cloudflare sandboxes every new worktree runs
+sealant reports the runtime it places each image on; on Cloudflare sandboxes every new worktree runs
 with a shared home before any launch is tried. Upgrading Mend takes out of each remembered "no" the
 reasons recorded only because Kubernetes refused per-person workspaces, and the owner-map refusals
 an older Sealant gave for an image it had not checked. A "no" left with no reason is dropped, so the
@@ -128,10 +128,10 @@ launches the next one. So a member who starts a worktree's next workspace after 
 holds its Remote-SSH, and the person who launched the earlier one no longer does.
 
 Remote-SSH runs as root instead, and the session line says why, when Mend cannot bind the launcher's
-account to their person in Sealant (`Remote-SSH: root, Core can't bind your person`) or the Sealant
-it runs on starts SSH sessions only as root (`Remote-SSH: root, this Sealant runs it as root`). A
-workspace that falls back to one shared home has its SSH user set back to root; until Sealant has
-taken that, the line says
+account to their person in Sealant (`Remote-SSH: root, sealant can't bind your person`) or the
+Sealant it runs on starts SSH sessions only as root
+(`Remote-SSH: root, this Sealant runs it as root`). A workspace that falls back to one shared home
+has its SSH user set back to root; until Sealant has taken that, the line says
 `Remote-SSH unavailable · the workspace's SSH user is not yet back to root · retrying`.
 
 Each person has the same login name (`m` and 8 characters), uid (40000–49999) and home

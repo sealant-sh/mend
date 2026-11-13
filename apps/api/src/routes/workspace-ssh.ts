@@ -25,7 +25,7 @@ const keyView = (key: PlatformSshKey) =>
   });
 
 /**
- * Whether the platform ends the connections opened with a removed key (Core reports it as
+ * Whether the platform ends the connections opened with a removed key (sealant reports it as
  * `sshKeyRemovalEndsConnections`). Unknown, as on a platform that cannot be asked, is "no": the
  * answer then tells the caller how to end them.
  */

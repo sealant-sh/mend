@@ -42,7 +42,7 @@ export class ConnectedAccount extends Schema.Class<ConnectedAccount>("ConnectedA
   login: Schema.optional(LoginClass),
 }) {}
 
-/** The login class a connect's secret must be; Core refuses a secret of the other class. */
+/** The login class a connect's secret must be; sealant refuses a secret of the other class. */
 export const ConnectLogin = Schema.Literals(["subscription", "api-key"]);
 export type ConnectLogin = typeof ConnectLogin.Type;
 

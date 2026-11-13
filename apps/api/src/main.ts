@@ -1144,7 +1144,7 @@ const MainLive = Layer.unwrap(
       // remotes Mend may reach, for the routes and the engine) and the dotfiles cloner (whose
       // git access a dotfiles clone uses, for the save probe and the launch) ride one.
       // Per-person harness homes (docs/adr/0016) ride it too: `MEND_HARNESS_LAYOUT` (person unless
-      // set to shared) and the platform's person-layout surface, passed through to Core's SDK (processes as
+      // set to shared) and the platform's person-layout surface, passed through to sealant's SDK (processes as
       // a user, the image's capability before create, one person's logins per home).
       Layer.provide(
         Layer.mergeAll(
@@ -1189,7 +1189,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(
         SealantClientByWorkspaceCreator.pipe(
           Layer.provideMerge(WorkspaceCallerLive),
-          // What each runtime supports, read from Core and kept a minute (SLNT-795).
+          // What each runtime supports, read from sealant and kept a minute (SLNT-795).
           Layer.provideMerge(WorkspaceRuntimesReportLive),
           Layer.provideMerge(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
         ),

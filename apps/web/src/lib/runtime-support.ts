@@ -98,7 +98,7 @@ interface Choice<T extends string> {
   readonly label: string;
 }
 
-/** A choice the runtime cannot run is disabled, with Core's sentence as its tip. */
+/** A choice the runtime cannot run is disabled, with sealant's sentence as its tip. */
 interface RestrictedChoice<T extends string> extends Choice<T> {
   readonly disabled?: boolean;
   readonly tip?: string;
@@ -142,7 +142,7 @@ export const draftRefusalSummary = (facts: RuntimeFacts, image: WorkspaceImage):
 };
 
 /**
- * What is wrong with an environment the runtime cannot run and what to do: Core's sentence, where
+ * What is wrong with an environment the runtime cannot run and what to do: sealant's sentence, where
  * new sessions run, and the change that fixes it. `inherits` is a project on its organization's.
  */
 const environmentProblem = (
@@ -179,7 +179,7 @@ const environmentProblem = (
 
 /**
  * The lines under the Base and OS controls. A draft the runtime cannot run says what is wrong and
- * what to do under the control that holds it. Otherwise Base gives Core's reason a custom image is
+ * what to do under the control that holds it. Otherwise Base gives sealant's reason a custom image is
  * unavailable and OS names the families the runtime runs and the ones it does not; where new
  * sessions run is said once. A runtime Mend could not check says so under Base.
  */
@@ -217,7 +217,7 @@ export const pickerNotes = (
   return { base, os };
 };
 /**
- * The organization's environment where it is read rather than edited: Core's sentence and what it
+ * The organization's environment where it is read rather than edited: sealant's sentence and what it
  * means for the projects that follow it. Null when the runtime runs it, or nothing is known.
  */
 export const followedEnvironmentNote = (
@@ -231,7 +231,7 @@ export const followedEnvironmentNote = (
     : `${sentence} New sessions in ${facts.organization} run on ${runtimeName(facts.support.runtime)}, so no project that follows this environment can start one.`;
 };
 
-/** Hot sessions on a runtime that bills idle workspaces: Core's sentence and what it means here. */
+/** Hot sessions on a runtime that bills idle workspaces: sealant's sentence and what it means here. */
 export const idleCostNote = (facts: RuntimeFacts): string | null => {
   const support = supportOf(facts);
   return support === null || !support.idleCost.charged

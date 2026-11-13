@@ -18,7 +18,7 @@ import { SealantPlatformError } from "./errors.ts";
 
 /**
  * The user a process starts as (docs/adr/0016, decision 1): what Mend allocated for a person. The
- * SDK's `user` option on sessions and exec (Core 0.39) takes the passwd name; sealantd then sets
+ * SDK's `user` option on sessions and exec (sealant 0.39) takes the passwd name; sealantd then sets
  * uid, gid and supplementary groups, `HOME`, `USER`, `LOGNAME` and `SHELL` from the passwd entry,
  * and umask `0002`. Mend adds the private `TMPDIR=/tmp/u-<uid>` and
  * `XDG_RUNTIME_DIR=/run/user/<uid>` in the process's environment.
@@ -48,13 +48,13 @@ export type PersonSessionOptions = Omit<SessionOptions, "user"> & ProcessUserOpt
 export type PersonExecOptions = Omit<WorkspaceExecOptions, "user"> & ProcessUserOption;
 
 /**
- * Core's report on an image, read before create (decision 1; Core Delivery 8, from the image
- * build's probe of Delivery 9). Every field null while Core reports nothing.
+ * sealant's report on an image, read before create (decision 1; sealant Delivery 8, from the image
+ * build's probe of Delivery 9). Every field null while sealant reports nothing.
  */
 export interface ImageLayoutReport {
-  /** The image digest Core will run for this request. */
+  /** The image digest sealant will run for this request. */
   readonly digest: string | null;
-  /** The runtime adapter Core will place it on (`docker`, `microvm`, …). */
+  /** The runtime adapter sealant will place it on (`docker`, `microvm`, …). */
   readonly runtime: string | null;
   /** Whether the image and runtime can run the person layout. */
   readonly person: boolean | null;
@@ -70,8 +70,8 @@ export const UNKNOWN_IMAGE_REPORT: ImageLayoutReport = {
 };
 
 /**
- * A provider whose login Core writes into a home (decision 5): `pi` and `opencode` are the
- * ChatGPT logins Core makes from one of the person's Codex accounts, as entries of each tool's
+ * A provider whose login sealant writes into a home (decision 5): `pi` and `opencode` are the
+ * ChatGPT logins sealant makes from one of the person's Codex accounts, as entries of each tool's
  * own `auth.json` (sealant#336).
  */
 export type LoginProvider = WorkspaceCredentialSkip["provider"];
@@ -98,26 +98,26 @@ export type HomeLogins = Partial<Record<LoginProvider, true | string | null>>;
 /**
  * A provider a partial POST left out, and why (sealant#337): its account is missing, needs
  * reconnecting, or is not one the provider takes (a Codex account that is not a ChatGPT login,
- * named for pi or opencode), or its login file in the home cannot be written. Core removed that
+ * named for pi or opencode), or its login file in the home cannot be written. sealant removed that
  * provider's login from the home, as `null` would.
  */
 export type LoginSkip = WorkspaceCredentialSkip;
 
 /**
- * What a login Core placed in a home spends (docs/adr/0018, decision 1), from its placement
+ * What a login sealant placed in a home spends (docs/adr/0018, decision 1), from its placement
  * receipt: a subscription, or a key by its last four characters. A Claude key also carries the
  * absolute path of its file, which Claude Code reads through `apiKeyHelper`.
  */
 export type PlacedLogin = WorkspaceCredentialPlacementReceipt["login"];
 
 /**
- * The login each provider's process reads in one home. A provider is absent when Core placed
+ * The login each provider's process reads in one home. A provider is absent when sealant placed
  * nothing for it, when its control plane gives no receipts, or when Mend cannot tell which of
  * several placements is the person's chosen one. A process then gets no key.
  */
 export type PlacedLogins = Partial<Readonly<Record<LoginProvider, PlacedLogin>>>;
 
-/** One home of a running executor and the providers whose logins Core keeps there (`GET`). */
+/** One home of a running executor and the providers whose logins sealant keeps there (`GET`). */
 export interface HeldHome {
   readonly home: string;
   /** The Sealant user whose logins the home holds. */
@@ -128,7 +128,7 @@ export interface HeldHome {
 
 /**
  * sealantd's capture owner map (docs/adr/0016, decision 8): who each restored
- * `people/<account id>` belongs to, and whose the worktree and its git directory are. Core's
+ * `people/<account id>` belongs to, and whose the worktree and its git directory are. sealant's
  * `WorkspaceCaptureOwnerMap` (sealant#333), carried as a capture source's `ownerMap`; uids are
  * 40001–49999. sealantd reads it only at boot, so an executor keeps the map it booted with, and
  * its replan restores under it: a person standby boots with its owner's alone and serves only a
@@ -152,9 +152,9 @@ export interface DotfilesArchive {
  */
 export interface DotfilesBootstrap {
   /**
-   * Ends when the script does (Core's `bootstrap.wait()`): its exit code, a datum, so a failing
+   * Ends when the script does (sealant's `bootstrap.wait()`): its exit code, a datum, so a failing
    * `install.sh` ends too. Fails (`dotfiles_failed`) when its end was not observed or it ran past
-   * Core's 30 minutes.
+   * sealant's 30 minutes.
    */
   readonly ended: Effect.Effect<{ readonly exitCode: number | null }, SealantPlatformError>;
 }
@@ -168,7 +168,7 @@ export interface DotfilesApplied {
 /**
  * The platform surface the person layout needs (docs/adr/0016, decisions 1, 5 and 11), behind one
  * contract so the engine is written against the ADR's stated interface. The live layer
- * (`PersonLayoutPlatformLive`, `person-layout-live.ts`) passes each piece through to Core's SDK
+ * (`PersonLayoutPlatformLive`, `person-layout-live.ts`) passes each piece through to sealant's SDK
  * (0.39): processes as a user, the image's per-person capability before create, the credentials
  * API (one person per home), and a person's dotfiles applied as them (`workspace.dotfiles.apply`,
  * sealant#334).
@@ -178,24 +178,24 @@ export class PersonLayoutPlatform extends Context.Service<
   {
     /**
      * Why the control plane cannot run the person layout, in the words a refusal names, or null
-     * when it can: read from what Core itself reports (`sealant.features()`: its as-user routes,
-     * the dotfiles verb, partial puts, pi's and opencode's logins, the capture owner map; Core
+     * when it can: read from what sealant itself reports (`sealant.features()`: its as-user routes,
+     * the dotfiles verb, partial puts, pi's and opencode's logins, the capture owner map; sealant
      * 0.39.0-next.706), never learned by a launch failing later. Read only when a launch could be
      * person; kept a while.
      */
     readonly controlPlaneObstacle: Effect.Effect<string | null>;
     /**
-     * Whether Core runs a workspace's SSH sessions (VS Code Remote-SSH, `ssh`) as its owner's
+     * Whether sealant runs a workspace's SSH sessions (VS Code Remote-SSH, `ssh`) as its owner's
      * Linux user (`sshAsOwner`, `features.workspaceSshUser`, sealant#348): read with
-     * `controlPlaneObstacle`'s answer and kept as long. False when Core does not say so or cannot
+     * `controlPlaneObstacle`'s answer and kept as long. False when sealant does not say so or cannot
      * be asked; a person launch then sends no user and its SSH sessions run as root, as before.
      */
     readonly sshUser: Effect.Effect<boolean>;
     /**
-     * Whether a person launch's create asks Core to run Remote-SSH as the launcher
-     * (`sshAsOwner`): `yes` once their person is bound in Core (`users.bindPerson`, once per
-     * account, kept); `not-taken` where Core runs no SSH session as a user (nothing changes, root
-     * as before); `unbound` where it does but the binding could not be made (an older Core
+     * Whether a person launch's create asks sealant to run Remote-SSH as the launcher
+     * (`sshAsOwner`): `yes` once their person is bound in sealant (`users.bindPerson`, once per
+     * account, kept); `not-taken` where sealant runs no SSH session as a user (nothing changes, root
+     * as before); `unbound` where it does but the binding could not be made (an older sealant
      * without the route, a 409, no answer within 5 s). Then the create asks nothing and Remote-SSH
      * stays root, and the session line says so. Never fails.
      */
@@ -205,11 +205,11 @@ export class PersonLayoutPlatform extends Context.Service<
       readonly home: string;
     }) => Effect.Effect<"yes" | "not-taken" | "unbound">;
     /**
-     * Core's gateway runs the workspace's SSH sessions as root from the next session channel on
+     * sealant's gateway runs the workspace's SSH sessions as root from the next session channel on
      * (`workspace.sshAsRoot`), for a person launch whose prepare fell back to one shared home
      * (decision 1), so the launcher's Remote-SSH works there as it did before. One attempt, bounded
-     * (`SSH_USER_CALL_TIMEOUT`); never fails. True once Core holds it (or Core takes no user, so
-     * there is nothing to change); false when Core refused or did not answer in time, which the
+     * (`SSH_USER_CALL_TIMEOUT`); never fails. True once sealant holds it (or sealant takes no user, so
+     * there is nothing to change); false when sealant refused or did not answer in time, which the
      * caller retries. Until then the gateway refuses the launcher's SSH sessions, never runs them
      * as root.
      */
@@ -235,9 +235,9 @@ export class PersonLayoutPlatform extends Context.Service<
      */
     readonly withOwnerMap: (options: CreateOptions, map: CaptureOwnerMap) => CreateOptions;
     /**
-     * Core's report on the image a create would ask for, read before the create: as `ownerUserId`
-     * (the launcher, whose built images Core answers from), for the image-shaping part of the
-     * create (`image` and `harness`). Unknown when Core says nothing or cannot be asked.
+     * sealant's report on the image a create would ask for, read before the create: as `ownerUserId`
+     * (the launcher, whose built images sealant answers from), for the image-shaping part of the
+     * create (`image` and `harness`). Unknown when sealant says nothing or cannot be asked.
      */
     readonly imageReport: (input: {
       readonly ownerUserId: string;
@@ -249,11 +249,11 @@ export class PersonLayoutPlatform extends Context.Service<
      * github?, pi?, opencode?, partial? }` (decision 5): the Mend account `onBehalfOf`'s logins
      * written into `home`, owned by that home's user, and kept refreshed. With `owner`, a home that
      * does not exist yet is made for them (so the POST runs beside the `useradd` that makes the
-     * user). Core refuses another person for a held home (409 `home-held`). A refused account
+     * user). sealant refuses another person for a held home (409 `home-held`). A refused account
      * fails a whole POST with `code` `connected-account-missing`, `-invalid` or `-unsupported` and
      * its `provider`, and nothing is written; a `partial` POST writes the rest and answers what it
      * left out in `skipped` (sealant#337). `placed` is what the home holds afterwards, per
-     * provider, from Core's receipts (docs/adr/0018).
+     * provider, from sealant's receipts (docs/adr/0018).
      */
     readonly postCredentials: (
       workspace: Workspace,
@@ -275,8 +275,8 @@ export class PersonLayoutPlatform extends Context.Service<
     ) => Effect.Effect<void, SealantPlatformError>;
     readonly loginOf: (accountId: string, provider: LoginProvider) => Effect.Effect<PersonLogin>;
     /**
-     * Whether the person's default login for a provider is an API key, as Core's login class says
-     * (docs/adr/0018): Core never places a key in a shared home. False where Core does not say or
+     * Whether the person's default login for a provider is an API key, as sealant's login class says
+     * (docs/adr/0018): sealant never places a key in a shared home. False where sealant does not say or
      * cannot be asked.
      */
     readonly loginIsKey: (accountId: string, provider: LoginProvider) => Effect.Effect<boolean>;
@@ -287,11 +287,11 @@ export class PersonLayoutPlatform extends Context.Service<
       workspace: Workspace,
     ) => Effect.Effect<ReadonlyArray<HeldHome>, SealantPlatformError>;
     /**
-     * sealantd's dotfiles applier through Core's verb (`workspace.dotfiles.apply`, decision 11):
-     * a person's dotfiles applied as `user` into `home`, their passwd home. Never as root: Core
+     * sealantd's dotfiles applier through sealant's verb (`workspace.dotfiles.apply`, decision 11):
+     * a person's dotfiles applied as `user` into `home`, their passwd home. Never as root: sealant
      * refuses root (`user-root`), so decision 1's fallback to `/root` has no dotfiles. Answers
      * once every file is applied; `install.sh` (each tree whose `bootstrap` is on) then runs as
-     * that user, beside the caller. A refusal fails with Core's code (`dotfiles-user-unsupported`,
+     * that user, beside the caller. A refusal fails with sealant's code (`dotfiles-user-unsupported`,
      * `user-unknown`, `user-root`, `home-mismatch`, `home-unusable`, `home-held`,
      * `workspace-not-running`, or `dotfiles_failed` with the daemon's words).
      */
@@ -335,31 +335,31 @@ export const PersonLayoutPlatformNone: Layer.Layer<PersonLayoutPlatform> = Layer
     imageReport: () => Effect.succeed(UNKNOWN_IMAGE_REPORT),
     postCredentials: () =>
       Effect.fail(
-        personLayoutUnsupported("write a person's logins into a home", "Core Delivery 7"),
+        personLayoutUnsupported("write a person's logins into a home", "sealant Delivery 7"),
       ),
     deleteCredentials: () =>
-      Effect.fail(personLayoutUnsupported("release a home's logins", "Core Delivery 7")),
+      Effect.fail(personLayoutUnsupported("release a home's logins", "sealant Delivery 7")),
     loginOf: () => Effect.succeed({ _tag: "unreachable" }),
     loginIsKey: () => Effect.succeed(false),
     sealantUserOf: () =>
-      Effect.fail(personLayoutUnsupported("name a person's Sealant user", "Core Delivery 7")),
+      Effect.fail(personLayoutUnsupported("name a person's Sealant user", "sealant Delivery 7")),
     listCredentials: () =>
-      Effect.fail(personLayoutUnsupported("list a workspace's homes", "Core Delivery 7")),
+      Effect.fail(personLayoutUnsupported("list a workspace's homes", "sealant Delivery 7")),
     applyDotfiles: () =>
       Effect.fail(
         personLayoutUnsupported(
           "apply dotfiles as a person",
-          "sealantd Delivery 5, Core Delivery 8",
+          "sealantd Delivery 5, sealant Delivery 8",
         ),
       ),
   },
 );
 
 /**
- * Mend's line for a process Core or the SDK refused to start as a person (`user-unsupported`,
- * sealant#343; docs/adr/0016 decision 13), by the reason Core's words give: nothing was started,
- * and never as anyone else. Core gives the reason only in its message, so the lines read it there
- * (PLATFORM-FEEDBACK.md, 2026-10-08); an unknown one keeps Core's words. Any other failure as it is.
+ * Mend's line for a process sealant or the SDK refused to start as a person (`user-unsupported`,
+ * sealant#343; docs/adr/0016 decision 13), by the reason sealant's words give: nothing was started,
+ * and never as anyone else. sealant gives the reason only in its message, so the lines read it there
+ * (PLATFORM-FEEDBACK.md, 2026-10-08); an unknown one keeps sealant's words. Any other failure as it is.
  */
 export const personProcessRefusal = (error: SealantPlatformError): SealantPlatformError => {
   if (error.code !== "user-unsupported") return error;

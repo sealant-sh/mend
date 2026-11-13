@@ -221,9 +221,10 @@ names the build, the sessions it ran and what it saw. For a feature, a local sta
 accounts, a unit test, green CI or reading the code is not a verdict. Test, CI and docs PRs don't
 need one.
 
-Spend tokens on that check, not on review panels. Ask for a second, independent review only when two
-designs a reviewer could defend are genuinely in dispute. Otherwise the box check is the feature's
-one review, graded by Fix Now or File.
+Spend tokens on that check, not on review panels. Ask for a second, independent review (the home
+repo's `interrogate` skill) only when two designs a reviewer could defend are genuinely in dispute.
+Otherwise the box check is the feature's one review, graded by Fix Now or File (that skill's
+`references/lead-judgment.md`).
 
 ## Effect Best Practices
 

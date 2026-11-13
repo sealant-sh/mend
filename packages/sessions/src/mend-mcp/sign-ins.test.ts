@@ -38,7 +38,7 @@ const entry = (expiresAt: number, token = `token-${expiresAt}`) => ({
   discoveryState: { authorizationServerUrl: "https://www.figma.com" },
 });
 
-// Core stores and syncs back the `claudeAiOauth` section alone, newest-wins on its expiresAt.
+// sealant stores and syncs back the `claudeAiOauth` section alone, newest-wins on its expiresAt.
 const coreLoginOf = (raw: string) => {
   const { claudeAiOauth } = JSON.parse(raw);
   return JSON.stringify({ claudeAiOauth });
@@ -164,7 +164,7 @@ describe("the put-back before Claude starts", () => {
     expect(CLAUDE_SIGN_INS_PROGRAM).not.toContain("'");
   });
 
-  it("leaves Core's login section exactly as Core wrote it", async () => {
+  it("leaves sealant's login section exactly as sealant wrote it", async () => {
     await fs.mkdir(config);
     const login = {
       accessToken: "login-synthetic",
@@ -373,7 +373,7 @@ describe("the helper's watch over the credentials file", () => {
     expect(io.posts).toHaveLength(2);
   });
 
-  it("never posts Core's login: a refreshed login alone posts nothing", async () => {
+  it("never posts sealant's login: a refreshed login alone posts nothing", async () => {
     const io = harness();
     io.credentials({ claudeAiOauth: LOGIN, mcpOAuth: { [KEY]: entry(1) } });
     await io.watch.check();

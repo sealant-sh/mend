@@ -420,7 +420,7 @@ export type RegisterRequest = typeof RegisterRequest.Type;
 /**
  * `flush` on `upload.urls` and `capture.register` (sealantd `registrar.rs`, cross-repo decision
  * 35, review 2026-09-28 (10) #6): from the moment an executor begins a final flush — whoever asked
- * for it: Mend's drain, Core's deadline, the daemon's own shutdown, a recovery boot — until its
+ * for it: Mend's drain, sealant's deadline, the daemon's own shutdown, a recovery boot — until its
  * process exits, every request it sends says `"flush":"final"`. It is ending, and what it ships is
  * work it already admitted: the request is exempt from the byte and call quotas, whether or not a
  * Mend drain is under way (`CaptureScope.unmetered` covers only the drains Mend itself runs), and

@@ -746,7 +746,7 @@ it.effect(
   { timeout: 60_000 },
 );
 
-/** Core's credential writer (`credential-files.ts`), as it runs in a fresh executor. */
+/** sealant's credential writer (`credential-files.ts`), as it runs in a fresh executor. */
 const injectCoreCredential = (home: string) =>
   spawnSync(
     "sh",
@@ -764,11 +764,11 @@ const injectCoreCredential = (home: string) =>
 
 /**
  * Review 2026-09-28 (19) #1: after a correct cold restore, the relocation merged the fresh
- * executor's `$HOME/.claude` (Core writes the connected-account credential under `umask 077`) into
+ * executor's `$HOME/.claude` (sealant writes the connected-account credential under `umask 077`) into
  * the restored harness root with `cp -an source/. root/`, which copied that directory's 0700 and
  * time over the restored `.claude` saved at 0750. The reviewer's probe: the actual engine launches,
  * `.claude` is set to 0750 with an exact time, the harness home is registered in a sealed capture,
- * and the cold resume runs Core's credential write into a fresh home, then the engine's own
+ * and the cold resume runs sealant's credential write into a fresh home, then the engine's own
  * relocation and skills commands against a `cp -a` copy of what was saved.
  */
 it.effect(
@@ -862,7 +862,7 @@ it.effect(
             expect(last?.status).toBe(0);
             expect(last?.before).toEqual({ mode: 0o750, mtime: "1700000000125000000" });
             expect(last?.after).toEqual(last?.before);
-            // The fresh credential arrived beside it, as Core wrote it.
+            // The fresh credential arrived beside it, as sealant wrote it.
             const credential = path.join(executorHome, ".claude/.credentials.json");
             expect(fs.readFileSync(credential, "utf8")).toBe("fresh injected credential\n");
             expect(fs.statSync(credential).mode & 0o777).toBe(0o600);

@@ -1,10 +1,10 @@
 # Preview builds
 
-A preview build puts unmerged branches of Mend, Sealant Core and sealantd on one self-hosted box,
-through the same `mend server setup` and `mend server upgrade` an operator uses for a release. The
-workflow is `.github/workflows/preview.yml`; the box side is `scripts/preview-deploy.sh`.
+A preview build puts unmerged branches of Mend, sealant and sealantd on one self-hosted box, through
+the same `mend server setup` and `mend server upgrade` an operator uses for a release. The workflow
+is `.github/workflows/preview.yml`; the box side is `scripts/preview-deploy.sh`.
 
-What is already on main does not need a preview: Core and sealantd publish a prerelease on every
+What is already on main does not need a preview: sealant and sealantd publish a prerelease on every
 merge, and a Mend `next` build is one tag away. Read [The next channel](next-channel.md). A preview
 is for the branches that have not merged yet, and it reaches only the box: nothing goes to npm.
 
@@ -14,9 +14,9 @@ Dispatch the workflow on the Mend branch you want. The two other refs are option
 and the build keeps what this Mend commit already pins.
 
 Without `sealant_ref`, the plan runs the release pin checker before any image builds. It checks the
-bundle's Core version label, package catalog, setup assets and all three Core image digests against
-GHCR. A mismatch or registry failure refuses the preview. With an explicit Core ref, the build
-replaces all three images and labels the bundle `preview-<sha12>` for that resolved commit.
+bundle's sealant version label, package catalog, setup assets and all three sealant image digests
+against GHCR. A mismatch or registry failure refuses the preview. With an explicit sealant ref, the
+build replaces all three images and labels the bundle `preview-<sha12>` for that resolved commit.
 
 ```sh
 gh workflow run preview.yml --repo sealant-sh/mend --ref <mend-branch> \
@@ -26,15 +26,15 @@ gh workflow run preview.yml --repo sealant-sh/mend --ref <mend-branch> \
 `-f platforms=linux/arm64` or `-f platforms=linux/amd64,linux/arm64` builds other platforms; the
 default is `linux/amd64`. Each platform builds on its own native runner.
 
-| Input          | Builds                                                                                          | Reaches the box as                                                                                                            |
-| -------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| `sealantd_ref` | `ghcr.io/sealant-sh/mend-preview-sealantd:<sha12>` from sealantd's `docker/Dockerfile`          | `MEND_PREVIEW_SEALANTD_IMAGE` in the Mend image, by digest. The bundled worker bakes it into every workspace image it builds. |
-| `sealant_ref`  | `ghcr.io/sealant-sh/mend-preview-sealant-{api,worker,ssh-gateway}:<sha12>` from Core's `apps/*` | The `SEALANT_*_IMAGE` build arguments of Mend's root `Dockerfile`, by digest, in place of the pinned release digests.         |
-| the Mend ref   | `ghcr.io/sealant-sh/mend:<version>` from the root `Dockerfile`                                  | The image `mend server setup` and `mend server upgrade` pin.                                                                  |
+| Input          | Builds                                                                                             | Reaches the box as                                                                                                            |
+| -------------- | -------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `sealantd_ref` | `ghcr.io/sealant-sh/mend-preview-sealantd:<sha12>` from sealantd's `docker/Dockerfile`             | `MEND_PREVIEW_SEALANTD_IMAGE` in the Mend image, by digest. The bundled worker bakes it into every workspace image it builds. |
+| `sealant_ref`  | `ghcr.io/sealant-sh/mend-preview-sealant-{api,worker,ssh-gateway}:<sha12>` from sealant's `apps/*` | The `SEALANT_*_IMAGE` build arguments of Mend's root `Dockerfile`, by digest, in place of the pinned release digests.         |
+| the Mend ref   | `ghcr.io/sealant-sh/mend:<version>` from the root `Dockerfile`                                     | The image `mend server setup` and `mend server upgrade` pin.                                                                  |
 
-A sealantd branch needs no Core rebuild. `scripts/bundle-supervisor.mjs` gives the Sealant worker
+A sealantd branch needs no sealant rebuild. `scripts/bundle-supervisor.mjs` gives the Sealant worker
 `SEALANT_SEALANTD_IMAGE=<the preview image>` and adds it to `SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES`,
-because Core trusts the recovery boot only of released `ghcr.io/sealant-sh/sealantd:X.Y.Z` images
+because sealant trusts the recovery boot only of released `ghcr.io/sealant-sh/sealantd:X.Y.Z` images
 and of the images listed there. The reference is a digest, so each sealantd build gets its own
 workspace images instead of reusing the last preview's.
 
@@ -65,8 +65,8 @@ gh api /orgs/sealant-sh/packages/container/mend-preview-sealantd --jq .visibilit
 
 (This needs a token with `read:packages`: `gh auth refresh -s read:packages`.)
 
-The three `mend-preview-sealant-*` Core images are read only by the workflow's own Mend build, which
-is signed in, so they can stay private. `ghcr.io/sealant-sh/mend` is already public.
+The three `mend-preview-sealant-*` sealant images are read only by the workflow's own Mend build,
+which is signed in, so they can stay private. `ghcr.io/sealant-sh/mend` is already public.
 
 ## Deploy
 
@@ -116,12 +116,12 @@ A preview of a branch is built by the workflow and deployed by hand, with the co
   [The next channel](next-channel.md)); after that this deploy script works as usual.
 - A preview applies its Mend and Sealant migrations to the box's databases, and they are not
   reversed. Use a box you can rebuild.
-- Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and Core imports the
-  `@sealant/runtime-*` packages from npm. A Core branch that changes the SDK or the API contract
+- Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and sealant imports the
+  `@sealant/runtime-*` packages from npm. A sealant branch that changes the SDK or the API contract
   Mend uses, or a sealantd branch that changes those runtime packages, does not reach the preview:
   merge it, and pin the prerelease main publishes.
 - The deploy script covers a box installed with `mend server setup`. The workflows deploy only to
   the amd64 box; an arm64 box is deployed by hand, from the images a `linux/arm64` run pushed.
-- A release build passes none of these arguments: the root `Dockerfile` defaults are the pinned Core
-  digests (`scripts/bundle-packaging.test.mjs` asserts them), and an empty
+- A release build passes none of these arguments: the root `Dockerfile` defaults are the pinned
+  sealant digests (`scripts/bundle-packaging.test.mjs` asserts them), and an empty
   `MEND_PREVIEW_SEALANTD_IMAGE` changes nothing.

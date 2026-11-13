@@ -1,9 +1,9 @@
 /**
- * The person layout's platform surface (docs/adr/0016), passed through to Core's SDK (0.39): the
+ * The person layout's platform surface (docs/adr/0016), passed through to sealant's SDK (0.39): the
  * image's per-person capability before create (`workspaces.inspectImage`), processes as a user
  * (`withProcessUser`, in the client), one person's logins per home of a running executor
  * (`workspace.credentials`), and a person's dotfiles applied as them (`workspace.dotfiles`). Mend
- * names people by their Mend account; Core by their Sealant user, which the identity mapping
+ * names people by their Mend account; sealant by their Sealant user, which the identity mapping
  * answers from Mend's own table.
  */
 import { workspaceImagePackages, type WorkspaceImage } from "@mend/domain";
@@ -38,11 +38,11 @@ const call = <A>(run: () => Promise<A>) => Effect.tryPromise({ try: run, catch: 
 
 /**
  * How long a write or release of a home's logins may take: Mend holds that person's lock across
- * it, so a call Core never answers must not hold their next start for the transport's own minutes.
+ * it, so a call sealant never answers must not hold their next start for the transport's own minutes.
  */
 const CREDENTIALS_CALL_TIMEOUT = Duration.seconds(30);
 
-/** `call`, bounded by `CREDENTIALS_CALL_TIMEOUT`, failing with words when Core does not answer. */
+/** `call`, bounded by `CREDENTIALS_CALL_TIMEOUT`, failing with words when sealant does not answer. */
 /** How long one `sshAsRoot` may take before it counts as not done (and is tried again). */
 export const SSH_USER_CALL_TIMEOUT = Duration.seconds(5);
 
@@ -62,7 +62,7 @@ const boundedCall = <A>(what: string, home: string, run: () => Promise<A>) =>
     }),
   );
 
-/** The words a refusal line names for each of Core's stable codes; an unknown code as it is. */
+/** The words a refusal line names for each of sealant's stable codes; an unknown code as it is. */
 const MISSING_WORDS: Readonly<Record<string, string>> = {
   sudo: "no sudo",
   "setuid-sudo": "no sudo",
@@ -77,7 +77,7 @@ const MISSING_WORDS: Readonly<Record<string, string>> = {
   "reserved-ids": "a uid or gid in 40000–49999 is taken in this image",
 };
 
-/** Core's per-person capability, as the layout decision reads it (decision 1). */
+/** sealant's per-person capability, as the layout decision reads it (decision 1). */
 export const imageLayoutReportOf = (inspection: WorkspaceImageInspection): ImageLayoutReport => {
   const layout: WorkspaceImagePersonLayout = inspection.personLayout;
   return {
@@ -91,10 +91,10 @@ export const imageLayoutReportOf = (inspection: WorkspaceImageInspection): Image
 /**
  * The source an image question names. `workspaces.imageKey` and `workspaces.inspectImage` build
  * the whole create request, which refuses options without exactly one source, though neither
- * reads it: the key leaves the sources out, and Core's plan reads only whether the source is a
+ * reads it: the key leaves the sources out, and sealant's plan reads only whether the source is a
  * mount (its `safe.directory` step). The layout is decided only for a capture-mode launch, whose
  * create is capture-sourced, so the question names a capture source too. Its endpoint reaches
- * Core in the inspected spec and is never dialled; its token never leaves this process
+ * sealant in the inspected spec and is never dialled; its token never leaves this process
  * (`inspectImage` sends the spec alone, never `captureToken`).
  */
 export const IMAGE_QUESTION_SOURCE = {
@@ -126,7 +126,7 @@ const ACCOUNT_PROVIDER_OF: Readonly<Record<LoginProvider, string>> = {
 };
 
 /**
- * The login each provider's process reads in a home, from Core's receipts. A provider holds one
+ * The login each provider's process reads in a home, from sealant's receipts. A provider holds one
  * placement, except Claude, whose keys sit beside its subscription's file: there the receipt of
  * the person's chosen account (`chosen`, the one a put of `true` writes) decides, and without it
  * the provider is left out.
@@ -151,7 +151,7 @@ export const placedLoginsOf = (
 const receiptsAmbiguous = (receipts: ReadonlyArray<WorkspaceCredentialPlacementReceipt>) =>
   new Set(receipts.map((receipt) => receipt.provider)).size < receipts.length;
 
-/** A home as `GET` lists it, with the providers whose logins Core keeps there. */
+/** A home as `GET` lists it, with the providers whose logins sealant keeps there. */
 export const heldHomeOf = (
   home: WorkspaceCredentialHome,
   /** The control plane reports `credentialPlacements`: its receipts say what each login spends. */
@@ -168,7 +168,7 @@ export const heldHomeOf = (
 });
 
 /**
- * How long an answer about an image is kept before Core is asked again: a capability changes only
+ * How long an answer about an image is kept before sealant is asked again: a capability changes only
  * with a new build (a new digest), so a yes or a no lasts a day; an unknown (nothing built yet)
  * ten minutes, so a build that lands is seen soon.
  */
@@ -190,7 +190,7 @@ const PERSON_LAYOUT_FEATURES = [
   "kubernetesPersonLayout",
 ] as const satisfies ReadonlyArray<keyof SealantFeatures>;
 
-/** The first Core that reports every feature in `PERSON_LAYOUT_FEATURES`. */
+/** The first sealant that reports every feature in `PERSON_LAYOUT_FEATURES`. */
 const PERSON_LAYOUT_CORE_VERSION = "0.40.0";
 
 /**
@@ -203,15 +203,15 @@ export const controlPlaneObstacleOf = (features: SealantFeatures): string | null
     : `the Sealant control plane does not report what per-person users need, which Sealant ${PERSON_LAYOUT_CORE_VERSION} or later does`;
 
 /**
- * Core runs a workspace's SSH sessions as its owner's user (`features.workspaceSshUser`,
+ * sealant runs a workspace's SSH sessions as its owner's user (`features.workspaceSshUser`,
  * sealant#348); a control plane from before it reports false.
  */
 export const runsSshAsUser = (features: SealantFeatures): boolean => features.workspaceSshUser;
 
-/** Core binds a user's person (`features.personBinding`, sealant#348). */
+/** sealant binds a user's person (`features.personBinding`, sealant#348). */
 export const bindsPersons = (features: SealantFeatures): boolean => features.personBinding;
 
-/** How long a refused person binding is kept before Core is asked again. */
+/** How long a refused person binding is kept before sealant is asked again. */
 const BINDING_REFUSED_MS = 5 * 60_000;
 
 /** The workspace's own answer (`workspace.processUser()`), as a prepare's missing words. */
@@ -233,7 +233,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
     Effect.gen(function* () {
       const clients = yield* SealantClients;
       /**
-       * Core's answer per image key, kept (Core: "call `inspectImage` only for a key you have not
+       * sealant's answer per image key, kept (sealant: "call `inspectImage` only for a key you have not
        * seen"): at most one call per image while the answer lasts, and Mend's own record of what
        * a prepare found wins over it from the first launch on (decision 1).
        */
@@ -249,7 +249,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
       }) {
         const options = imageCreateOptionsOf(input.image, input.harness);
         // Options the SDK refuses are a fault of Mend's: said in the log, and the capability is
-        // unknown (as a question Core cannot answer is), never a launch that fails before create.
+        // unknown (as a question sealant cannot answer is), never a launch that fails before create.
         const imageKey = yield* clients.imageKey(options).pipe(
           Effect.tapError((error) =>
             Effect.logError("person layout: the image's key was not computed").pipe(
@@ -288,16 +288,16 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
         return report;
       });
 
-      /** Each account's person binding as Core answered it: kept once made, a refusal a while. */
+      /** Each account's person binding as sealant answered it: kept once made, a refusal a while. */
       const bindings = new Map<string, { readonly bound: boolean; readonly until: number }>();
 
       let controlPlane: {
         readonly obstacle: string | null;
-        /** Core runs SSH sessions as the owner's user; null when it could not be asked. */
+        /** sealant runs SSH sessions as the owner's user; null when it could not be asked. */
         readonly sshUser: boolean | null;
-        /** Core binds a user's person (`users.bindPerson`); null when it could not be asked. */
+        /** sealant binds a user's person (`users.bindPerson`); null when it could not be asked. */
         readonly personBinding: boolean | null;
-        /** Core's homes answer placement receipts (`credentialPlacements`). */
+        /** sealant's homes answer placement receipts (`credentialPlacements`). */
         readonly placements: boolean;
         readonly until: number;
       } | null = null;
@@ -369,22 +369,22 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               return "yes" as const;
             }
             if (bound === "refused") {
-              // Core holds another binding for them, or their uid is another user's: an operator
+              // sealant holds another binding for them, or their uid is another user's: an operator
               // must look (docs/adr/0016). Asked again in a while, never overwritten.
               yield* Effect.logWarning(
-                "person layout: Core refused the person binding: Remote-SSH stays root",
+                "person layout: sealant refused the person binding: Remote-SSH stays root",
               ).pipe(Effect.annotateLogs({ accountId: person.accountId }));
               bindings.set(person.accountId, { bound: false, until: now + BINDING_REFUSED_MS });
             }
             return "unbound" as const;
           }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsOwnerFor")),
-        // `workspace.sshAsRoot` (sealant#348), only where Core said it takes a user.
+        // `workspace.sshAsRoot` (sealant#348), only where sealant said it takes a user.
         sshAsRoot: (workspace) =>
           Effect.gen(function* () {
-            // Nothing to set: a Core that says it takes no SSH user never ran this workspace's
+            // Nothing to set: a sealant that says it takes no SSH user never ran this workspace's
             // sessions as anyone but root.
             if ((yield* controlPlaneAnswer).sshUser === false) return true;
-            // Core takes one, or could not be asked: tried, and only Core's yes is done. An
+            // sealant takes one, or could not be asked: tried, and only sealant's yes is done. An
             // unreadable answer never clears the obligation.
             return yield* call(() => workspace.sshAsRoot()).pipe(
               Effect.timeoutOrElse({
@@ -410,7 +410,7 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
               ),
             );
           }).pipe(Effect.withSpan("PersonLayoutPlatform.sshAsRoot")),
-        // Filled in by `ready()` on the handle the create made; asked of Core otherwise (a handle
+        // Filled in by `ready()` on the handle the create made; asked of sealant otherwise (a handle
         // from `get()`). Unreadable is unknown, which is not a yes.
         workspaceProcessUser: (workspace) =>
           workspace.launch?.processUser !== undefined
@@ -418,9 +418,9 @@ export const PersonLayoutPlatformLive: Layer.Layer<PersonLayoutPlatform, never, 
             : call(() => workspace.processUser()).pipe(
                 Effect.orElseSucceed((): WorkspaceProcessUserCapability => "unknown"),
               ),
-        // Core 0.39.0-next.703 (sealant#334, sealantd 0.20.0-next.152): `workspace.dotfiles.apply`.
+        // sealant 0.39.0-next.703 (sealant#334, sealantd 0.20.0-next.152): `workspace.dotfiles.apply`.
         dotfilesUser: true,
-        // Core 0.39.0-next.696 (sealant#333): the map rides the capture source, and Core passes
+        // sealant 0.39.0-next.696 (sealant#333): the map rides the capture source, and sealant passes
         // it to sealantd as `SEALANT_CAPTURE_OWNER_MAP` at boot.
         withOwnerMap: (options, map) =>
           options.source?.kind === "capture"

@@ -507,7 +507,7 @@ describe("a join by another person into a live executor (alpha 2026-10-06, 9e486
                 label: null,
                 ownerUserId: MARIA,
               });
-              // The holder's lease stays live; Core answers 404 for its workspace, whoever asks.
+              // The holder's lease stays live; sealant answers 404 for its workspace, whoever asks.
               lookupsRejected = true;
               const launch = yield* Effect.forkChild(
                 engine.launch(joined.id, ["claude"]).pipe(Effect.result),

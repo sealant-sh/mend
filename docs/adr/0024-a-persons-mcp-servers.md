@@ -20,16 +20,16 @@ the next person or lost with the executor.
 
 Four facts shape the design:
 
-- Core keeps every argv for good, and another user can read `/proc/<pid>/cmdline`. No value may ride
-  argv.
+- sealant keeps every argv for good, and another user can read `/proc/<pid>/cmdline`. No value may
+  ride argv.
 - Under shared control a person executor runs each turn as its sender, in a conversation home `H`
   that changes hands at every change of sender. An executor that shares one home runs everything as
   root, on its holder's logins (ADR 0016, 7a).
 - Each harness takes servers differently. Claude merges every `--mcp-config` it is given, Codex
   reads `-c`/`--config` overrides, pi reads servers only through an MCP extension in its profile,
   and opencode reads an environment overlay.
-- Claude keeps MCP OAuth sign-ins in `.claude/.credentials.json`, which Core rewrites whole when it
-  places or refreshes a login.
+- Claude keeps MCP OAuth sign-ins in `.claude/.credentials.json`, which sealant rewrites whole when
+  it places or refreshes a login.
 
 ## Decision
 
@@ -77,7 +77,7 @@ engine reads, unseals and writes (`personalMcpFor`).
   root, outside every capture root. Every file is written 0600 through the pickup writer, as the
   process's user, never through a link. Nothing goes into the process's environment: Codex's scripts
   and helpers hold the values, so two servers that want the same variable name never meet.
-- **One attached word per Codex server.** Core takes at most 64 words a command; a prompt's
+- **One attached word per Codex server.** sealant takes at most 64 words a command; a prompt's
   follow-up already uses most of them, so each server is `--config=…`, not `-c` and a value.
 - **Argv a process row records.** A process row records the command before Mend adds any MCP flag,
   Mend's own included. A stopped terminal's follow-up wraps the agent's command in a prompt decoder
@@ -149,7 +149,7 @@ For an OAuth server such as Figma, the person signs in once through the harness'
   or holds an older `expiresAt`, never `claudeAiOauth` or any other key, through a new 0600 file
   renamed over a regular file (a symlink is refused), creating the file and directory when absent.
   It runs inside the seed's wrapper, so it comes after the seed's login write, and at exec, after
-  Core's placement in R, in H and in root's home. A merge that fails says one line and Claude
+  sealant's placement in R, in H and in root's home. A merge that fails says one line and Claude
   starts. The process row records the command from before it, like every MCP flag.
 - **Only in a person's own home.** A home that shares one set of logins runs everyone's processes as
   root on the holder's credentials file, so a sign-in found there may be a joiner's, and one put
@@ -164,13 +164,13 @@ For an OAuth server such as Figma, the person signs in once through the harness'
   so until the person signs in again, each Claude launch's put-back removes that server's entries
   (matched on name and the full, unsealed URL) from the credentials file; otherwise the next
   session's helper would harvest them again.
-- **Beside Core's login.** Core stores a person's Claude login as the `claudeAiOauth` section alone
-  (`narrowClaudeCredentialsJson`, Core `packages/credentials/src/payloads.ts`), writes it as the
-  whole file at placement, and syncs it back newest-wins on `claudeAiOauth.expiresAt` only
+- **Beside sealant's login.** sealant stores a person's Claude login as the `claudeAiOauth` section
+  alone (`narrowClaudeCredentialsJson`, sealant `packages/credentials/src/payloads.ts`), writes it
+  as the whole file at placement, and syncs it back newest-wins on `claudeAiOauth.expiresAt` only
   (`claude-credentials-sync-back.ts`). A file with no `claudeAiOauth` fails its checks and is never
-  stored. So `mcpOAuth` never reaches Core. Mend's put-back runs after placement and merges, and
+  stored. So `mcpOAuth` never reaches sealant. Mend's put-back runs after placement and merges, and
   every Mend decision about an entry uses that entry's own `expiresAt`, never the login's. Mend's
-  tests hold this: the put-back leaves the login section as Core wrote it, and the helper never
+  tests hold this: the put-back leaves the login section as sealant wrote it, and the helper never
   posts the login.
 - **Codex** keeps its MCP OAuth sign-ins in its own store, not in Claude's file. Mend keeps no Codex
   sign-ins in 0.37.
@@ -232,9 +232,9 @@ claims the files are unreadable to another person in the same executor.
 - **Two live Claude sessions of one person** each refresh their own copy of a sign-in. With a
   provider that rotates refresh tokens, whichever refreshes first invalidates the other's. Mend's
   stored copy stays the newest.
-- **Core rewrites Claude's whole credentials file** when it pushes a refreshed login, about every 7
-  hours, which removes restored sign-ins from a running session until it starts again. The stored
-  copy is untouched. Core should merge only the login (PLATFORM-FEEDBACK, 2026-11-09).
+- **sealant rewrites Claude's whole credentials file** when it pushes a refreshed login, about every
+  7 hours, which removes restored sign-ins from a running session until it starts again. The stored
+  copy is untouched. sealant should merge only the login (PLATFORM-FEEDBACK, 2026-11-09).
 - **A Forget during a running session in the same home.** A session that started before the Forget
   can still refresh and rewrite its copy into the home's file, and a session that started after it
   reads that file and keeps the sign-in again. It needs two live sessions in one home around a
@@ -259,7 +259,7 @@ claims the files are unreadable to another person in the same executor.
 - 2026-11-09: two `--mcp-config=` occurrences load on Claude 2.1.292, so Mend's own inline config
   stays as it is and the fallback (one file holding Mend's server too) is not built.
 - 2026-11-09: Codex servers ride `--config=` (one word each) instead of `-c` and a value, to stay
-  inside Core's 64 words.
+  inside sealant's 64 words.
 - 2026-11-09: sign-ins that last built (decision 5). The put-back also removes a forgotten server's
   entries from the home, because the reset time alone cannot stop a new session from harvesting the
   old entry it finds there.

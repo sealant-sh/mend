@@ -54,8 +54,8 @@ worktrees on one shared home; a worktree that has run per person stays per perso
 Preconditions:
 
 - The stack runs with `MEND_HARNESS_LAYOUT` unset, on Docker without `"no-new-privileges": true`,
-  with a Sealant Core that reports per-person routes (`0.39.0-next.706` or later) and a Sealant
-  managed workspace image (not nix). Kubernetes and Cloudflare runtimes always run one shared home.
+  with a sealant that reports per-person routes (`0.39.0-next.706` or later) and a Sealant managed
+  workspace image (not nix). Kubernetes and Cloudflare runtimes always run one shared home.
 - Two accounts in one organization, as built in [organization.md](./organization.md): `<owner>`
   (browser `page`, default CLI) and `<member>` (browser `memberPage`, CLI with
   `XDG_CONFIG_HOME=/tmp/verify-member`). Both have `mend connect claude`.
@@ -166,9 +166,9 @@ Preconditions:
   `this image cannot run per-person users (no sudo), so this workspace takes one person`.
 - A per-person worktree on an image that cannot run per person is refused, not downgraded:
   `This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.`
-- When neither Core nor Mend knows yet what an image can do, its first launch runs with one shared
-  home while its prepare checks the image; the next launch on that image can run per person. If
-  `verify-pp` shows no join line and `id -u` prints `0`, start a fresh worktree and check again
+- When neither sealant nor Mend knows yet what an image can do, its first launch runs with one
+  shared home while its prepare checks the image; the next launch on that image can run per person.
+  If `verify-pp` shows no join line and `id -u` prints `0`, start a fresh worktree and check again
   before reporting.
 - `mend shell` is the owner's alone on a session; open each person's shell on their own session.
 - Everyone in a per-person workspace has passwordless `sudo`. Do not report the uid check as

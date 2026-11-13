@@ -23,7 +23,7 @@ const CODEX_ENDPOINT = "http://10.0.0.5:4000/v1";
 const keyPathOf = (accountId: string) =>
   `/home/${linuxLoginNameOf(accountId)}/.sealant/keys/plc_${accountId}`;
 
-/** The person platform, with Core placing `holder`'s Claude and Codex keys, each with an endpoint. */
+/** The person platform, with sealant placing `holder`'s Claude and Codex keys, each with an endpoint. */
 const placingEndpointKeysFor = (holder: string) =>
   Layer.effect(
     PersonLayoutPlatform,

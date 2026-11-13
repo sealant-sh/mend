@@ -1,8 +1,8 @@
 # A `next` channel: prereleases from main, and a stable release as their promotion
 
 Status: proposed 2026-10-04, revised after five reviews (the fifth on 2026-10-05). Covers
-`sealant-sh/mend`, `sealant-sh/sealant` (Core) and `sealant-sh/sealantd`. Amends ROADMAP "How
-releases work". Read against Mend `6d2b48e01`, Core `3599f9d` (SDK 0.38.1) and sealantd `05ce137`
+`sealant-sh/mend`, `sealant-sh/sealant` and `sealant-sh/sealantd`. Amends ROADMAP "How releases
+work". Read against Mend `6d2b48e01`, sealant `3599f9d` (SDK 0.38.1) and sealantd `05ce137`
 (0.19.0).
 
 ## Decisions for the owner
@@ -15,16 +15,16 @@ Each has a recommendation. The pull requests implement the recommendation; the o
    the pending changesets would release (patches only: `X.Y.(Z+1)`; any minor: `X.(Y+1).0`; or the
    package's own version once the Version Packages pull request has merged and the tag has not) and
    the base of the highest next build already published or tagged above the last stable tag, so it
-   never falls. Recommended. Today that makes Mend `0.36.0-next.584`, Core `0.39.0-next.679`,
+   never falls. Recommended. Today that makes Mend `0.36.0-next.584`, sealant `0.39.0-next.679`,
    sealantd `0.20.0-next.139`.
-2. **Core and sealantd publish on every merge to main; Mend publishes on demand,** when an admin
+2. **sealant and sealantd publish on every merge to main; Mend publishes on demand,** when an admin
    pushes a `vX.Y.Z-next.N` tag on a main commit. Recommended. Mend's release pipeline takes 30 to
    45 minutes on eight runners and waits for your approval, and a Mend `next` build is something we
    hand to people, so each one should be chosen. The alternatives: a dispatch button (the
    release-tag ruleset would need to exclude `v*-next.*` so the workflow's token can create the
    tag), or every merge.
-3. **Prereleases of Core and sealantd are separate packages and images.** The next builds publish as
-   `@sealant/sdk-next`, `@sealant/api-contracts-next`, `@sealant/runtime-protocol-next` and
+3. **Prereleases of sealant and sealantd are separate packages and images.** The next builds publish
+   as `@sealant/sdk-next`, `@sealant/api-contracts-next`, `@sealant/runtime-protocol-next` and
    `@sealant/runtime-client-next`, and push `sealant-api-next`, `sealant-worker-next`,
    `sealant-ssh-gateway-next` and `sealantd-next`. The `next` trusted publisher is registered
    **only** on the four `-next` packages, never on a stable one. So even a fully compromised next
@@ -56,7 +56,7 @@ Each has a recommendation. The pull requests implement the recommendation; the o
      `sealant-sh/mend` the same Actions read access on them that it has on the stable packages, if
      it has any (not checked from here: reading package settings needs `read:packages`);
    - (e) in sealant-sh/mend, before the first Mend next tag: give the `release` environment a
-     **deployment tag policy of `v*.*.*`**, as Core's and sealantd's `release` environments have.
+     **deployment tag policy of `v*.*.*`**, as sealant's and sealantd's `release` environments have.
      Today it has required reviewers and no branch or tag policy (read from the environments API on
      2026-10-05), so a branch workflow naming `release` reaches the approval prompt; with the policy
      only an admin's `v*.*.*` tag can deploy to it.
@@ -68,7 +68,7 @@ Each has a recommendation. The pull requests implement the recommendation; the o
    `npm install --global @sealant/mend@next`, and `mend server setup` runs the CLI's own version, so
    the name is the product's; and the boundary the `-next` packages buy is already there: each Mend
    next build is tagged by an admin and approved by you before its npm job runs, so the stable
-   package's credential is never in an unattended job. The npm job is split like Core's: a
+   package's credential is never in an unattended job. The npm job is split like sealant's: a
    credential-free job builds; the `npm` job checks nothing out. _(Updated 2026-10-16, a factual
    change, not a new decision: the build is image.yml's `cli` job, which packs and normalizes
    `@sealant/mend` once; packaged acceptance installs that tarball on both architectures; and the
@@ -78,8 +78,8 @@ Each has a recommendation. The pull requests implement the recommendation; the o
 6. **A stable Mend release must be a promotion,** enforced. The release refuses a `vX.Y.Z` tag
    unless the newest next build of `X.Y.Z` it contains reached npm and, since that build, only the
    Version Packages pull request, release notes and docs changed. It also refuses while any next tag
-   of `X.Y.Z` sits on a commit the release leaves out. Recommended. Core and sealantd refuse a
-   release that leaves out one of their own next builds and, for Core, a prerelease sealantd pin;
+   of `X.Y.Z` sits on a commit the release leaves out. Recommended. sealant and sealantd refuse a
+   release that leaves out one of their own next builds and, for sealant, a prerelease sealantd pin;
    their stable releases are proven by the final Mend `next` that pins them.
 7. **Preview builds stay** as the tool for trying unmerged branches of the three repositories on the
    box, separate from `next`. Their version becomes `B-next.N.preview.R` (B and N of the branch's
@@ -97,10 +97,10 @@ Each has a recommendation. The pull requests implement the recommendation; the o
    alternatives: editing `server.json` breaks the `server.env` check and leaves a failed upgrade
    rolling back to an image that does not exist; and no naming of the next channel sorts above
    `preview` while still saying `next`.
-9. **Core's lockfile becomes binding.** Core's AGENTS.md said never to touch `pnpm-lock.yaml` and to
-   add dependencies with `--lockfile=false`. It now says what Mend's says: the lockfile is generated
-   and committed with the change that caused it, and CI fails without it. Recommended; the drift fix
-   depends on it.
+9. **sealant's lockfile becomes binding.** sealant's AGENTS.md said never to touch `pnpm-lock.yaml`
+   and to add dependencies with `--lockfile=false`. It now says what Mend's says: the lockfile is
+   generated and committed with the change that caused it, and CI fails without it. Recommended; the
+   drift fix depends on it.
 10. **Published internal dependencies become exact.** `@sealant/sdk` depends on
     `@sealant/api-contracts` and `@sealant/runtime-client` on `@sealant/runtime-protocol` with
     `workspace:^`, which publishes `^0.39.0-next.12`: any later `0.39.0-next.*` satisfies it. Both
@@ -108,13 +108,13 @@ Each has a recommendation. The pull requests implement the recommendation; the o
     package through an exact alias
     (`"@sealant/api-contracts": "npm:@sealant/api-contracts-next@<same version>"`). The pairs are
     versioned together already. Recommended.
-11. **Core's `minimumReleaseAgeExclude` names the runtime packages and their `-next` packages**
+11. **sealant's `minimumReleaseAgeExclude` names the runtime packages and their `-next` packages**
     instead of listing their versions. pnpm 11 holds back anything published in the last day, the
-    lockfile included, so a sealantd prerelease Core pins would otherwise wait a day or need a new
-    line per version. With frozen installs and exact pins, the exclusion lets nothing in the
+    lockfile included, so a sealantd prerelease sealant pins would otherwise wait a day or need a
+    new line per version. With frozen installs and exact pins, the exclusion lets nothing in the
     lockfile does not name; a fresh `pnpm add` or a regenerated lockfile would take a just-published
     version at once. Recommended.
-12. **Core's prerelease images are `sealant-api-next`, `sealant-worker-next` and
+12. **sealant's prerelease images are `sealant-api-next`, `sealant-worker-next` and
     `sealant-ssh-gateway-next`**, built natively per architecture. `sealant-web` stays release-only:
     Mend does not use it. Recommended.
 
@@ -122,7 +122,7 @@ Each has a recommendation. The pull requests implement the recommendation; the o
 
 ### How each repository releases today
 
-|                    | sealantd                                                                                | Core                                                                               | Mend                                                                                                       |
+|                    | sealantd                                                                                | sealant                                                                            | Mend                                                                                                       |
 | ------------------ | --------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
 | Versioning         | changesets, `fixed` pair `runtime-protocol` + `runtime-client`                          | changesets, `fixed` pair `api-contracts` + `sdk`; private packages never versioned | changesets on `@sealant/mend`; `version-packages` also syncs the Helm chart                                |
 | Version PR         | `version.yml` on push to main                                                           | `version.yml` on push to main                                                      | `version.yml` on push to main; dispatches `release-acceptance.yml` on it                                   |
@@ -135,19 +135,19 @@ Each has a recommendation. The pull requests implement the recommendation; the o
 
 How the pins chain together:
 
-- **Core pins sealantd** as an image tag, `ghcr.io/sealant-sh/sealantd:0.19.0`, in
+- **sealant pins sealantd** as an image tag, `ghcr.io/sealant-sh/sealantd:0.19.0`, in
   `packages/workspaces/src/buildkit/buildkit-builder.ts` (overridable with `SEALANT_SEALANTD_IMAGE`)
   and `apps/cf-bridge/Dockerfile`, and its npm packages `@sealant/runtime-*` through
-  `packages/workspaces/package.json` and the lockfile. Core trusts sealantd's recovery boot only for
-  `ghcr.io/sealant-sh/sealantd:X.Y.Z` from 0.19.0 on, or an image named in
+  `packages/workspaces/package.json` and the lockfile. sealant trusts sealantd's recovery boot only
+  for `ghcr.io/sealant-sh/sealantd:X.Y.Z` from 0.19.0 on, or an image named in
   `SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES` (`packages/workspaces/src/runtime/daemon-recovery.ts`).
-- **Mend pins Core** in three places that must agree: the catalog (`@sealant/sdk`,
+- **Mend pins sealant** in three places that must agree: the catalog (`@sealant/sdk`,
   `@sealant/api-contracts` 0.38.1), the root `Dockerfile` (`sealant-api`, `sealant-worker`,
   `sealant-ssh-gateway` by digest, plus the `dev.sealant.mend.sealant-version` label), and the
   version named in `scripts/bundle-supervisor.mjs`, the setup assets and their test fixtures.
   `scripts/bundle-packaging.test.mjs` asserts the digests.
-- **Mend never pins sealantd.** The bundled worker bakes the sealantd its Core version pins. Only a
-  preview build passes `MEND_PREVIEW_SEALANTD_IMAGE`; a release leaves it empty.
+- **Mend never pins sealantd.** The bundled worker bakes the sealantd its sealant version pins. Only
+  a preview build passes `MEND_PREVIEW_SEALANTD_IMAGE`; a release leaves it empty.
 - **`mend server setup` runs the CLI's own version** unless `--version` says otherwise. It downloads
   `compose.v2.yaml` and `postgres-init.sh` from the GitHub release `v<version>` and runs
   `ghcr.io/sealant-sh/mend:<version>`, refusing an image whose version label differs.
@@ -156,8 +156,8 @@ How the pins chain together:
 
 ### The pain
 
-Mend compiles against `@sealant/sdk` from npm. A Mend change that needs a new Core API waits for a
-Core release, which waits for a sealantd release, and the roadmap allows one of each per Mend
+Mend compiles against `@sealant/sdk` from npm. A Mend change that needs a new sealant API waits for
+a sealant release, which waits for a sealantd release, and the roadmap allows one of each per Mend
 release. Three Mend changes wait like this now: faster status polling (sealant#314, merged), the
 `available` field on a run's changes (sealant#313), and the steering login switch (sealant#315,
 sealant#316, `workspace.setCredentials`). People cannot try Mend before a release either: preview
@@ -165,13 +165,13 @@ builds reach only the box.
 
 ### The drift that has to go first
 
-Core's CI, its release and version workflows and all four image builds installed with
+sealant's CI, its release and version workflows and all four image builds installed with
 `pnpm install --lockfile=false`, so every run re-resolved every range against npm at that minute. On
 2026-09-13 an Effect `rc` drifted into the `sealant-api` image that way. Once prereleases of our own
 packages publish from main, the same path would let a newer prerelease into any image whose range
 admits it: `workspace:^` publishes the SDK's dependency on the API contract as `^0.39.0-next.9`,
-which `0.39.0-next.10` satisfies. Core main's lockfile is current: `pnpm install --frozen-lockfile`
-succeeds on `3599f9d`, and the four images build with it.
+which `0.39.0-next.10` satisfies. sealant main's lockfile is current:
+`pnpm install --frozen-lockfile` succeeds on `3599f9d`, and the four images build with it.
 
 ## Decision
 
@@ -189,7 +189,7 @@ B-next.N             N = git rev-list --count <commit>: the commit's whole histo
                            any minor: X.(Y+1).0; any major: (X+1).0.0), or the package's own version
                            when it is higher (the Version Packages pull request merged, not tagged)
                          - the base of the highest next build already handed out above vX.Y.Z
-                           (Mend: its vX.Y.Z-next.N tags; Core and sealantd: the package's published
+                           (Mend: its vX.Y.Z-next.N tags; sealant and sealantd: the package's published
                            next versions on npm)
 B-next.N.preview.R   a preview: B and N of the branch's merge base with main, R the run number
 ```
@@ -213,15 +213,15 @@ minor changeset lands, builds are `0.37.0-next.N`, and stay there even if the mi
 server on one of those cannot take `0.36.1` (a downgrade) and waits for `0.37.0`. The docs say so.
 And once a `0.37.0-next.*` build is handed out, no next build of `0.36.1` can follow it, so the
 promotion rule cannot release `0.36.1`: after a reverted minor changeset, the next release is
-`0.37.0`. sealantd's and Core's Version Packages commit then publishes `0.37.0-next.N`, and that is
-the build release step 1 pins.
+`0.37.0`. sealantd's and sealant's Version Packages commit then publishes `0.37.0-next.N`, and that
+is the build release step 1 pins.
 
 A next tag counts as handed out the moment it exists. A mistyped or refused Mend next tag raises B
 for later builds, and one off main blocks its version's release, so the runbook says to delete it
 (`git push origin --delete v<version>`) unless its release already published.
 
-The three copies of `next-version.mjs` (Mend and sealantd `scripts/`, Core `tooling/scripts/`) are
-identical and tested, and refuse a shallow clone, where N would come out too small.
+The three copies of `next-version.mjs` (Mend and sealantd `scripts/`, sealant `tooling/scripts/`)
+are identical and tested, and refuse a shallow clone, where N would come out too small.
 
 **Changesets snapshot or pre mode: neither, though it is a snapshot in spirit.** Nothing about a
 prerelease is committed; the workflow writes the version into `package.json` at publish time, as the
@@ -233,10 +233,10 @@ would.
   publishing continuously, main would sit in pre mode permanently. Each stable release would need an
   exit pull request before the Version Packages pull request and an enter pull request after it, and
   the CHANGELOGs would grow an entry per prerelease.
-- `changeset version --snapshot next` versions only packages with a pending changeset. A Core merge
-  that touches only the worker publishes images but no SDK, so it would get no version at all. Its
-  templates offer a timestamp or a commit, not a counter, so the versions would not sort in main's
-  order.
+- `changeset version --snapshot next` versions only packages with a pending changeset. A sealant
+  merge that touches only the worker publishes images but no SDK, so it would get no version at all.
+  Its templates offer a timestamp or a commit, not a counter, so the versions would not sort in
+  main's order.
 
 ### Which merges publish
 
@@ -250,7 +250,7 @@ would.
 - No binaries: sealantd publishes none today; the image carries `sealantd`, `sealantctl` and
   `socat`.
 
-**Core: every merge to main.** New `next.yml`, on push to main:
+**sealant: every merge to main.** New `next.yml`, on push to main:
 
 - `sealant-api-next`, `sealant-worker-next` and `sealant-ssh-gateway-next` `<version>`, native per
   architecture, tagged only after the unit and integration tests (against Postgres, as CI runs them
@@ -268,15 +268,15 @@ from there. npm is unaffected: the `next` publisher requires the `next` environm
 only from main.
 
 What holds a moved stable tag away is pinning by digest, where there is one. Mend's bundle image
-(the root `Dockerfile`) pins the three Core images by digest, and Core pins sealantd as
+(the root `Dockerfile`) pins the three sealant images by digest, and sealant pins sealantd as
 `tag@sha256:…` (`tooling/scripts/pin-sealantd.mjs` writes only that form; the release guard refuses
 anything else). A digest pin keeps out only a tag moved after the pin; it trusts whatever the tag
 pointed at when someone pinned it. Everything that pulls by tag is not covered: `deploy/aws`
-(`sealant-api:0.33.0`, `sealant-worker:0.33.0`), a self-hoster on Core's `sealant-api:latest`, and
-every Mend server, which pulls `ghcr.io/sealant-sh/mend:<version>` by tag on setup and upgrade (see
-Known gaps). To reduce the chance of a push at all, every action in a job holding `packages: write`
-or `id-token: write` is pinned to a commit, the BuildKit and binfmt images those jobs run privileged
-are pinned by digest, and no such job restores a cache other jobs write.
+(`sealant-api:0.33.0`, `sealant-worker:0.33.0`), a self-hoster on sealant's `sealant-api:latest`,
+and every Mend server, which pulls `ghcr.io/sealant-sh/mend:<version>` by tag on setup and upgrade
+(see Known gaps). To reduce the chance of a push at all, every action in a job holding
+`packages: write` or `id-token: write` is pinned to a commit, the BuildKit and binfmt images those
+jobs run privileged are pinned by digest, and no such job restores a cache other jobs write.
 
 **Mend: on demand.** An admin pushes `vX.Y.Z-next.N` on a main commit; `release-cli.yml` does the
 rest, as it already does for any prerelease tag: images, packaged acceptance on both architectures,
@@ -286,15 +286,15 @@ a GitHub prerelease with the setup assets, then npm `next` after your approval. 
 
 ### Who holds the npm credential
 
-The boundary is decision 3: Core's and sealantd's `next` publisher can publish only the four `-next`
-packages. Inside it, the publish job is kept small and unsteerable:
+The boundary is decision 3: sealant's and sealantd's `next` publisher can publish only the four
+`-next` packages. Inside it, the publish job is kept small and unsteerable:
 
-- `plan` (Core, sealantd) decides first: done if this commit already published; failed if npm's
+- `plan` (sealant, sealantd) decides first: done if this commit already published; failed if npm's
   `next` is not older. Every registry read retries and fails closed: an error or a 404 never reads
   as "nothing published".
 - `pack` (no `id-token`) installs (restoring no pnpm store cache, which jobs running unowned code
   write), writes the version and the commit (`gitHead`) into each `package.json`, builds, renames
-  the packages to their `-next` names (Core, sealantd), runs `pnpm pack`, and checks each tarball
+  the packages to their `-next` names (sealant, sealantd), runs `pnpm pack`, and checks each tarball
   (`check-tarball.mjs`): every file its `exports`, `main` and `types` name is in it, nothing sits
   outside `package/`, and there is one `package.json` however its path is spelled.
 - `publish` (`id-token: write`, its environment, a GitHub-hosted runner) checks out nothing,
@@ -309,7 +309,7 @@ packages. Inside it, the publish job is kept small and unsteerable:
      directories, engines, the four dependency maps, gitHead, and `publishConfig.access`), dropping
      any `tag`, other `publishConfig` keys and all scripts, and refuses a root `binding.gyp`, which
      npm would turn into an install script;
-  5. checks the name (a `-next` name in Core and sealantd), the `-next.N` version (or, for a Mend
+  5. checks the name (a `-next` name in sealant and sealantd), the `-next.N` version (or, for a Mend
      stable release, `X.Y.Z`) and the commit on that rewritten manifest;
   6. reads `next` from the uncached `/-/package/<name>/dist-tags` right before publishing and
      refuses a version that is not newer, so re-running an old failed job cannot move it back;
@@ -339,13 +339,13 @@ nothing. For `@sealant/mend` it matters, but the next channel cannot reach it: t
 - **Images, in every case, code-owner review or not:** a job holding `packages: write` can push any
   image the repository can write, stable ones included, and any of the repository's writers can run
   one from a branch without a merge. Digest pins keep a tag moved after the pin out of Mend's bundle
-  image and Core's sealantd; whatever pulls by tag is exposed (`deploy/aws`, a self-hoster on
+  image and sealant's sealantd; whatever pulls by tag is exposed (`deploy/aws`, a self-hoster on
   `latest`, every Mend server). Closing this needs a separate credential for stable images in the
   `release` environment and the repositories' Actions write access removed on the stable packages,
   and for Mend servers the image digests in the CLI package (neither done).
-- **Without 4(c) (code-owner review):** anyone who can merge to Core or sealantd main can edit
+- **Without 4(c) (code-owner review):** anyone who can merge to sealant or sealantd main can edit
   `next.yml` and publish anything under the `-next` packages. Prereleases are consumed only pinned
-  (Mend's exact catalog alias with lockfile integrity; Core's exact alias), so a bad one reaches
+  (Mend's exact catalog alias with lockfile integrity; sealant's exact alias), so a bad one reaches
   nothing until someone pins it.
 - **With 4(c):** those merges, and merges that change what configures installs, builds and packing,
   need a code owner's review. A compromised `pack` (through an unowned path) still cannot steer the
@@ -359,13 +359,13 @@ nothing. For `@sealant/mend` it matters, but the next channel cannot reach it: t
 
 ### Dist-tags
 
-- Core's and sealantd's prereleases publish under the `-next` package names, with `--tag next` from
-  a rewritten manifest that has no `tag` field, refused unless the version is `-next.N`, and only
-  when newer than the current `next`, read uncached right before publishing: the tag only moves
+- sealant's and sealantd's prereleases publish under the `-next` package names, with `--tag next`
+  from a rewritten manifest that has no `tag` field, refused unless the version is `-next.N`, and
+  only when newer than the current `next`, read uncached right before publishing: the tag only moves
   forward. In Mend the pins job refuses a next tag below an existing higher one, and the npm step
   checks `next` again after the approval, so two approvals in the wrong order cannot move `next`
   back.
-- `latest` moves only from a `v*.*.*` tag, exactly as today. Core's and sealantd's releases now
+- `latest` moves only from a `v*.*.*` tag, exactly as today. sealant's and sealantd's releases now
   refuse a prerelease tag, which `v*.*.*` matched and which would have published to `latest`.
 - No floating image tags: nothing tags `next` or `edge`. Every reference names an exact version or a
   digest. Mend's `image.yml` can no longer overwrite a version: an existing
@@ -376,18 +376,18 @@ nothing. For `@sealant/mend` it matters, but the next channel cannot reach it: t
 
 ### Pins
 
-- **Mend main pins exact Core prereleases.** `node scripts/sealant-pins.mjs pin 0.39.0-next.12`
+- **Mend main pins exact sealant prereleases.** `node scripts/sealant-pins.mjs pin 0.39.0-next.12`
   reads the three image digests from GHCR (`sealant-*-next`), rewrites every file that names the
-  Core version or a digest, turns the catalog into exact aliases
+  sealant version or a digest, turns the catalog into exact aliases
   (`"@sealant/sdk": npm:@sealant/sdk-next@0.39.0-next.12`), and runs `pnpm install`. The published
   `@sealant/mend` CLI bundles what it imports from `@sealant/*`, so `npm i -g @sealant/mend@next`
   never resolves the SDK. The Mend change that needs the new API stacks on that pull request, and
-  waits only for Core main's `next.yml`.
-- **Core main pins sealantd by digest, release or prerelease:**
+  waits only for sealant main's `next.yml`.
+- **sealant main pins sealantd by digest, release or prerelease:**
   `node tooling/scripts/pin-sealantd.mjs <version>` writes
   `ghcr.io/sealant-sh/sealantd(-next):<version>@sha256:<digest>` into `buildkit-builder.ts` and
   `apps/cf-bridge/Dockerfile`, and the two runtime packages exactly (aliases of the `-next` packages
-  for a prerelease) into `packages/workspaces/package.json`. Core's recovery check treats
+  for a prerelease) into `packages/workspaces/package.json`. sealant's recovery check treats
   `ghcr.io/sealant-sh/sealantd-next:0.20.0-next.N` like a release: a prerelease of a version after
   0.19.0 has the recovery boot. A prerelease of 0.19.0 itself does not count.
 
@@ -399,26 +399,26 @@ per Mend release, in one order. Each step says what enforces it; the rest is a c
 
 1. **sealantd** merges its Version Packages pull request. sealantd main is frozen from here until
    its tag. `next.yml` publishes that commit's `X.Y.Z-next.N`.
-2. **Core** pins exactly that sealantd build and merges (optionally proven on the box through a Mend
-   next build).
-3. **sealantd** tags `vX.Y.Z` on its Version Packages commit, the one Core pinned. _Enforced:_ the
-   release refuses a prerelease tag and any next build of `X.Y.Z` from a commit the tag leaves out,
-   which is what a merge during the freeze produces. sealantd unfreezes.
-4. **Core** pins sealantd `vX.Y.Z`, merges, then merges its Version Packages pull request. Core main
-   is frozen until its tag.
-5. **Mend** pins that Core build, cuts a next build and runs it on the box (recommended).
-6. **Core** tags its Version Packages commit. _Enforced:_ a prerelease tag, a sealantd pin that is
-   not a release, a prerelease runtime package, and a next build of the version the tag leaves out
-   are refused. Core unfreezes.
-7. **Mend** pins Core's release, cuts a next build of the release's version and runs it on the box:
-   the proof that counts, the whole stable stack as it will ship.
+2. **sealant** pins exactly that sealantd build and merges (optionally proven on the box through a
+   Mend next build).
+3. **sealantd** tags `vX.Y.Z` on its Version Packages commit, the one sealant pinned. _Enforced:_
+   the release refuses a prerelease tag and any next build of `X.Y.Z` from a commit the tag leaves
+   out, which is what a merge during the freeze produces. sealantd unfreezes.
+4. **sealant** pins sealantd `vX.Y.Z`, merges, then merges its Version Packages pull request.
+   sealant main is frozen until its tag.
+5. **Mend** pins that sealant build, cuts a next build and runs it on the box (recommended).
+6. **sealant** tags its Version Packages commit. _Enforced:_ a prerelease tag, a sealantd pin that
+   is not a release, a prerelease runtime package, and a next build of the version the tag leaves
+   out are refused. sealant unfreezes.
+7. **Mend** pins sealant's release, cuts a next build of the release's version and runs it on the
+   box: the proof that counts, the whole stable stack as it will ship.
 8. **Mend** merges its Version Packages pull request and an admin tags it. _Enforced:_ the promotion
    rules under Guards; in effect Mend main is frozen from step 7 to the tag.
 
-Core's and sealantd's stable images are rebuilt from their tags rather than retagged from a `next`.
-Their sources differ from the proven commit only by version files and their installs are bound to
-the lockfile, but not everything is pinned (see Known gaps), and step 7 runs those exact stable
-images on the box before Mend releases.
+sealant's and sealantd's stable images are rebuilt from their tags rather than retagged from a
+`next`. Their sources differ from the proven commit only by version files and their installs are
+bound to the lockfile, but not everything is pinned (see Known gaps), and step 7 runs those exact
+stable images on the box before Mend releases.
 
 ### The box, once
 
@@ -444,7 +444,7 @@ images on the box before Mend releases.
 **Mend, `release-cli.yml`, job `pins`,** before any image builds (`scripts/check-release-pins.mjs`):
 
 - Every release: the commit is on `origin/main`; the catalog and the Dockerfile label name one exact
-  Core version; each Core image is pinned by digest, and each digest is what GHCR serves,
+  sealant version; each sealant image is pinned by digest, and each digest is what GHCR serves,
   anonymously, for that version's tag; the setup assets (`compose.v2.yaml`, `setup-contract.v2.json`
   and their fixtures) and `bundle-supervisor.mjs` name that version; `MEND_PREVIEW_SEALANTD_IMAGE`
   is empty.
@@ -462,13 +462,13 @@ images on the box before Mend releases.
     `appVersion` lines (`appVersion` must be the release), `docs/`, `apps/docs/`, `apps/marketing/`
     and top-level Markdown changed, never a `package.json` among them (`apps/docs` and
     `apps/marketing` are workspace members: a lifecycle script there runs in the image build).
-- The sealantd pin is covered transitively: Mend refuses a prerelease Core, and Core refuses a
+- The sealantd pin is covered transitively: Mend refuses a prerelease sealant, and sealant refuses a
   prerelease sealantd.
 
-**Core, `release.yml`, job `pins`,** before any image builds or publishes: a stable tag; every
+**sealant, `release.yml`, job `pins`,** before any image builds or publishes: a stable tag; every
 sealantd image reference is `sealantd:X.Y.Z[@sha256:…]` (a prerelease tag, a bare digest or `latest`
 is refused); no prerelease in the `@sealant/runtime-*` ranges or the versions the lockfile resolves;
-and no npm prerelease of `X.Y.Z` built from a commit the tag leaves out. Core's recovery check
+and no npm prerelease of `X.Y.Z` built from a commit the tag leaves out. sealant's recovery check
 accepts only sealantd's own `-next.N` prereleases.
 
 **sealantd, `release.yml`, job `stable-tag`:** a stable tag, and no npm prerelease of `X.Y.Z` built
@@ -476,8 +476,8 @@ from a commit the tag leaves out.
 
 ### The lockfile fix, first
 
-Core's first pull request, before any publish job exists: every `pnpm install` in CI, the release,
-the version workflow and the four Dockerfiles is `--frozen-lockfile`; the npm job drops
+sealant's first pull request, before any publish job exists: every `pnpm install` in CI, the
+release, the version workflow and the four Dockerfiles is `--frozen-lockfile`; the npm job drops
 `PNPM_CONFIG_LOCKFILE=false`; the ssh-gateway runtime installs `ssh2@1.17.0` (the version the
 lockfile resolves) instead of `^1.17.0`; and CI fails if a lockfile-free install comes back. Mend's
 version workflow, its only remaining lockfile-free install, gets the same change, and Mend's CI gets
@@ -492,7 +492,8 @@ mend server setup
 
 - The CLI is `0.36.0-next.N`. Setup installs the server at the same version: the setup assets from
   the GitHub prerelease `v0.36.0-next.N`, the image `ghcr.io/sealant-sh/mend:0.36.0-next.N`, which
-  carries whichever Core that commit pinned (possibly a Core prerelease), and Core's sealantd.
+  carries whichever sealant that commit pinned (possibly a sealant prerelease), and sealant's
+  sealantd.
 - A later preview:
   `npm install --global @sealant/mend@next && mend server upgrade --version "$(npm view @sealant/mend@next version)"`.
 - The stable release:
@@ -507,25 +508,27 @@ mend server setup
 - **npm:** move the dist-tag back, then deprecate the bad version:
   `npm dist-tag add @sealant/mend@0.36.0-next.60 next` and
   `npm deprecate @sealant/mend@0.36.0-next.61 "Withdrawn: <reason>. Use 0.36.0-next.62."`.
-  Deprecating alone does not move `next`. Same for the `-next` Core and sealantd packages. Never
+  Deprecating alone does not move `next`. Same for the `-next` sealant and sealantd packages. Never
   unpublish: lockfiles name the version, and npm forbids reusing it. Both commands need an owner's
   npm login with 2FA.
 - **Images:** leave them. Nothing floats, so nothing pulls a bad image that was not named exactly.
 - **Mend's GitHub prerelease:** edit its notes to say it is withdrawn and which version replaces it.
   Do not delete it: servers pinned to that version read its assets on a fresh setup.
 - **Servers already on it** move forward only: publish a fixed `next` and upgrade.
-- **A bad Core prerelease pinned by Mend:** revert Mend's pin pull request. The pin is one commit.
+- **A bad sealant prerelease pinned by Mend:** revert Mend's pin pull request. The pin is one
+  commit.
 
 ### Provenance and security
 
 - Every npm publish uses OIDC trusted publishing from a GitHub-hosted runner with `--provenance`. No
   npm token exists in any repository. Recommended once this works: **Require two-factor
   authentication and disallow tokens** on all five packages, and consider pnpm's
-  `trustPolicy: no-downgrade` in Core so a runtime package published without provenance is refused.
-- Who can publish a prerelease: in Core and sealantd, only to the `-next` packages, by whoever can
-  merge to main, with exactly the name, version, dist-tag and commit the workflow computes, unless
-  they edit the workflow itself, which decision 4(c) puts behind your review; in Mend, only an
-  admin, who alone can create `v*` tags (ruleset `protect-release-tags`), and only after your
+  `trustPolicy: no-downgrade` in sealant so a runtime package published without provenance is
+  refused.
+- Who can publish a prerelease: in sealant and sealantd, only to the `-next` packages, by whoever
+  can merge to main, with exactly the name, version, dist-tag and commit the workflow computes,
+  unless they edit the workflow itself, which decision 4(c) puts behind your review; in Mend, only
+  an admin, who alone can create `v*` tags (ruleset `protect-release-tags`), and only after your
   approval in `release`.
 - Neither `next.yml` runs for a fork: `push` to main and `workflow_run` on a push to main only.
 - Images push with the workflow's `GITHUB_TOKEN` (`packages: write`) into the `-next` image
@@ -536,14 +539,14 @@ mend server setup
 
 Left as they are here, and why a rebuilt stable release is not byte-for-byte the proven next:
 
-- `ssh2@1.17.0` in Core's ssh-gateway runtime is exact, but its own dependencies (`asn1 ^0.2.6`,
+- `ssh2@1.17.0` in sealant's ssh-gateway runtime is exact, but its own dependencies (`asn1 ^0.2.6`,
   `bcrypt-pbkdf ^1.0.2`) resolve at build time.
 - Base images float: `node:24-bookworm-slim`, `node:26-bookworm-slim`, `rust:slim`, `alpine:3.22`.
 - Mend's Dockerfile installs `corepack` unpinned.
 - The published `@sealant/mend` has caret dependencies (`@opentui/*`) that resolve on the user's
   machine.
-- Core's `ssh-gateway` and `telemetry` still range `@sealant/runtime-*` as `^0.6.0` and `^0.4.0`; a
-  non-frozen resolve would take a fresh one at once (decision 10).
+- sealant's `ssh-gateway` and `telemetry` still range `@sealant/runtime-*` as `^0.6.0` and `^0.4.0`;
+  a non-frozen resolve would take a fresh one at once (decision 10).
 - Workspace images install agent CLIs at `@latest`, by design.
 - `--from-preview` cannot see a Mend migration changed under the same id and name: Mend stores no
   hash of its migrations.
@@ -554,8 +557,8 @@ Left as they are here, and why a rebuilt stable release is not byte-for-byte the
   only `-next` names, and code-owner review does not stop a push: any of the repository's writers
   can run a branch workflow that asks for the token.
 - Digest pins protect only against a tag moved after the pin: whoever pins trusts what the tag
-  pointed at then. Mend's bundle image and Core's sealantd are pinned this way; `deploy/aws` pulls
-  `sealant-api:0.33.0` and `sealant-worker:0.33.0` by tag, as does a self-hoster on `latest`.
+  pointed at then. Mend's bundle image and sealant's sealantd are pinned this way; `deploy/aws`
+  pulls `sealant-api:0.33.0` and `sealant-worker:0.33.0` by tag, as does a self-hoster on `latest`.
 - **Every Mend server pulls `ghcr.io/sealant-sh/mend:<version>` by tag** on setup and upgrade, so a
   pushed-over Mend image reaches servers that install or upgrade after the push. Recommended
   follow-up, not built here: put the image digests in the CLI package, so the approval-gated npm
@@ -573,16 +576,16 @@ Left as they are here, and why a rebuilt stable release is not byte-for-byte the
   Mend's next builds already wait for an admin's tag and your approval; a second package would add a
   name for users to learn and no boundary Mend lacks.
 - **One `release.yml` per repository with both triggers.** It would reuse the existing trusted
-  publisher, but Core's and sealantd's `release` environments deploy only `v*.*.*` tags and require
-  a review, and the tag path's QEMU builds, smoke test and GitHub release do not belong on every
-  merge.
+  publisher, but sealant's and sealantd's `release` environments deploy only `v*.*.*` tags and
+  require a review, and the tag path's QEMU builds, smoke test and GitHub release do not belong on
+  every merge.
 - **Mend on every merge.** Thirty to forty-five minutes on eight runners and an approval per merge,
   for builds nobody chose to hand out.
 - **Always the next minor (`X.(Y+1).0-next.N`).** Simpler, but a patch release would sort below the
   next builds that proved it, so neither the box nor anyone on `@next` could upgrade to it.
-- **Retagging Core's proven `next` images as the stable release.** Promotes the exact bytes, but the
-  stable tag's commit is the Version Packages merge, not the proven commit, and Mend's final `next`
-  (step 3) proves the rebuilt stable images anyway.
+- **Retagging sealant's proven `next` images as the stable release.** Promotes the exact bytes, but
+  the stable tag's commit is the Version Packages merge, not the proven commit, and Mend's final
+  `next` (step 3) proves the rebuilt stable images anyway.
 - **Folding preview builds into `next`.** A preview combines unmerged branches of three
   repositories; publishing that to npm would hand people code no one merged.
 - **Hand-editing the box's `server.json` to leave the old previews.** Fails the `server.env` check,
@@ -592,15 +595,15 @@ Left as they are here, and why a rebuilt stable release is not byte-for-byte the
 
 ## Consequences
 
-- A Mend pull request that needs a new Core API waits for Core main's `next.yml` (tests, images,
-  e2e, npm), not for a Core release.
+- A Mend pull request that needs a new sealant API waits for sealant main's `next.yml` (tests,
+  images, e2e, npm), not for a sealant release.
 - People can install a preview with one npm command and upgrade to the stable release without
   reinstalling.
-- Core and sealantd spend runner time on every merge: for Core three images times two architectures,
-  the test suite and the workspace e2e; for sealantd one image times two.
-- A dependency change in Core without its lockfile fails CI.
-- sealantd's and Core's main each freeze from their Version Packages merge to their tag; a merge in
-  between publishes a next build the release then refuses to leave out.
+- sealant and sealantd spend runner time on every merge: for sealant three images times two
+  architectures, the test suite and the workspace e2e; for sealantd one image times two.
+- A dependency change in sealant without its lockfile fails CI.
+- sealantd's and sealant's main each freeze from their Version Packages merge to their tag; a merge
+  in between publishes a next build the release then refuses to leave out.
 - The first stable release under these rules, 0.36.0, needs a next build of 0.36.0 first; the guard
   refuses it otherwise.
 - The box's deploy command (outside this repository) must accept `0.36.0-next.N` and
@@ -611,30 +614,30 @@ Left as they are here, and why a rebuilt stable release is not byte-for-byte the
 
 | Repository | Pull request                                                                                                      |
 | ---------- | ----------------------------------------------------------------------------------------------------------------- |
-| Core       | 1. Every install reads the committed lockfile                                                                     |
+| sealant    | 1. Every install reads the committed lockfile                                                                     |
 | sealantd   | 2. `next.yml` with a credential-free pack job; exact `runtime-protocol`; release guards; `--locked`; CODEOWNERS   |
-| Core       | 3. `next.yml` with a credential-free pack job; release guards; recovery check; exact deps; CODEOWNERS             |
+| sealant    | 3. `next.yml` with a credential-free pack job; release guards; recovery check; exact deps; CODEOWNERS             |
 | Mend       | 4. This ADR                                                                                                       |
 | Mend       | 5. The `next` channel: release guard, promotion check, pin script, `image.yml`, `--from-preview`, preview numbers |
 | Mend       | 6. Docs: try a preview (merges after the first Mend next build publishes)                                         |
 | Mend       | 7. ROADMAP "How releases work"                                                                                    |
 
-Then, once you have done decision 4: the first Core and sealantd prereleases publish on their next
-merge. Core pins a sealantd prerelease when it needs one; Mend pins Core `0.39.0-next.N` to unblock
-sealant#313, #315 and #316.
+Then, once you have done decision 4: the first sealant and sealantd prereleases publish on their
+next merge. sealant pins a sealantd prerelease when it needs one; Mend pins sealant `0.39.0-next.N`
+to unblock sealant#313, #315 and #316.
 
 ## Decision log
 
 - 2026-10-04: one version scheme, from what the pending changesets would release; N since the last
   stable tag.
 - 2026-10-04: nothing about a prerelease is committed; no changesets pre mode, no snapshot command.
-- 2026-10-04: Core and sealantd publish per merge from a `next` environment; Mend per `next` tag
+- 2026-10-04: sealant and sealantd publish per merge from a `next` environment; Mend per `next` tag
   through its existing release workflow.
 - 2026-10-04: the npm credential sits in a job that runs no repository code; code-owner review on
   main is an owner action, without which the hole narrows but stays open.
 - 2026-10-04: a stable Mend release is refused unless it promotes a published next build of its own
   version and leaves none out.
-- 2026-10-04: lockfile-bound installs in Core before any publish job exists.
+- 2026-10-04: lockfile-bound installs in sealant before any publish job exists.
 - 2026-10-04: preview builds stay, renumbered into main's order; the box leaves the old numbering
   with `mend server upgrade --from-preview`.
 - 2026-10-05 (sixth review): the BuildKit and binfmt images in every image-push job are pinned by
@@ -644,8 +647,8 @@ sealant#313, #315 and #316.
 - 2026-10-05 (fifth review): no job holding a write token restores a cache other jobs write, and
   every action there is pinned to a commit; images are said to have no credential boundary, held
   down by digest pins (sealantd now `tag@sha256:…`); the stable guards check aliases in the lockfile
-  (Mend) and in the published manifests (Core, sealantd).
-- 2026-10-04 (fourth review): prereleases of Core and sealantd are separate `-next` packages and
+  (Mend) and in the published manifests (sealant, sealantd).
+- 2026-10-04 (fourth review): prereleases of sealant and sealantd are separate `-next` packages and
   images, and the `next` publisher exists only on those; the publish job installs nothing, takes
   only the expected tarballs and runs npm from an empty directory; the `latest` move-back is gone.
 - 2026-10-04 (third review): the publish job publishes a tarball it rebuilt from npm's own reading

@@ -51,13 +51,13 @@ What still leans on the network, as observed on `main` at `2c05944ce`:
   cross-user filtering (`events.ts`). What remains is a lifecycle test through the real route, and a
   bound on how many streams one account may hold.
 
-The platform halves, observed at Core `97c741c` and sealantd `aeb9b60`:
+The platform halves, observed at sealant `97c741c` and sealantd `aeb9b60`:
 
-- Core serves every `/v1` route without a credential when `SEALANT_SERVICE_KEYS` is unset (CORE-01),
-  reads "no owner named" as "unscoped" and updates runs and renames workspaces by id alone
-  (CORE-03), has no budgets (CORE-04), sends an installation token to whatever URL a spec names and
-  a session token to whatever endpoint it names (CORE-05), and interpolates registry names into URLs
-  with no deadline or size bound (CORE-08).
+- sealant serves every `/v1` route without a credential when `SEALANT_SERVICE_KEYS` is unset
+  (CORE-01), reads "no owner named" as "unscoped" and updates runs and renames workspaces by id
+  alone (CORE-03), has no budgets (CORE-04), sends an installation token to whatever URL a spec
+  names and a session token to whatever endpoint it names (CORE-05), and interpolates registry names
+  into URLs with no deadline or size bound (CORE-08).
 - sealantd's `HttpRegistrar` and `PresignedHttp` dial any URL, `http://` included, follow ten
   redirects, verify against the bundled public roots only, and honour `HTTP_PROXY`. The recorded AWS
   deployment runs the executor channel over private-VPC HTTP.
@@ -95,10 +95,10 @@ contract:
   its `Origin` is allowed or it is a top-level document `GET` or `HEAD`, in the API and in web's
   tRPC handler, which the API reaches without Fetch Metadata (ADR 0017 delivery step 8b).
 
-**Everything behind Mend stays private.** Core, its registry, Postgres, the bucket's admin surface,
-raw service ports and the Kubernetes API get no new exposure. Core stays a trusted control plane
-called with a service key. It is never an authorization server for Mend's users, and a service key
-never reaches a browser, a phone or a workspace.
+**Everything behind Mend stays private.** sealant, its registry, Postgres, the bucket's admin
+surface, raw service ports and the Kubernetes API get no new exposure. sealant stays a trusted
+control plane called with a service key. It is never an authorization server for Mend's users, and a
+service key never reaches a browser, a phone or a workspace.
 
 **The executor channel does not assume a private network either.** A workspace reaches Mend's
 session channel over HTTPS with a verified certificate, or the daemon refuses to boot. Plain HTTP is
@@ -179,8 +179,8 @@ Required to start `public`, and `declared` when it applies:
 
 Not observable by this build. Reported, never inferred, and they do not block start:
 
-11. **core-private**: Core, its registry and the database are not reachable from the Internet. What
-    would verify it: a connection attempt to each from outside the deployment's network.
+11. **core-private**: sealant, its registry and the database are not reachable from the Internet.
+    What would verify it: a connection attempt to each from outside the deployment's network.
 12. **edge-tls**: the certificate chains to a public root, renews, and the edge redirects port 80.
     What would verify it: `mend doctor` run against the origin from another network.
 13. **reassessment**: an independent security reassessment of this exact release. The operator
@@ -252,8 +252,9 @@ happens before the effect it guards.
   on the per-stream work a slow consumer can queue (the bus is a sliding buffer; the refresh work a
   stream does per event is bounded too).
 
-Defaults are sized for a small team and are all configuration. Core enforces its own budgets
-(CORE-04) behind Mend's; Mend maps a Core 429 to the same refusal shape and does not retry into it.
+Defaults are sized for a small team and are all configuration. sealant enforces its own budgets
+(CORE-04) behind Mend's; Mend maps a sealant 429 to the same refusal shape and does not retry into
+it.
 
 ### T3 asset URLs, amendment 2026-10-24
 
@@ -515,13 +516,13 @@ from outside the process, so the test does not claim it.
 - **sealantd**: one transport policy for the channel and for presigned object URLs. HTTPS with
   verified certificates or refuse; plain HTTP to loopback or under the launcher's explicit
   exception; a CA bundle for each path; no redirects; no ambient proxy.
-- **Core**: fail closed without service keys (CORE-01); an owner named and checked on every
+- **sealant**: fail closed without service keys (CORE-01); an owner named and checked on every
   operation, with the SSH gateway as its own narrower authority (CORE-03); per-credential and
   per-owner budgets (CORE-04); an installation token only to the repository it was issued for and a
   session token only to an approved channel (CORE-05); registry names held to the OCI grammar with
-  bounded answers (CORE-08). Core stays private throughout.
+  bounded answers (CORE-08). sealant stays private throughout.
 
-Each bakes the one below, so the release order is sealantd, then Core, then Mend. No PR in one
+Each bakes the one below, so the release order is sealantd, then sealant, then Mend. No PR in one
 repository depends on an unmerged PR in another. The top of this stack is that pin bump: Sealant
 0.34.0 (which bakes sealantd 0.17.0), and `source.transport` on every capture launch, built from
 `MEND_EXECUTOR_NETWORK` (the same value the exposure gate reports), `MEND_SESSION_ENDPOINT_CA_FILE`
@@ -530,7 +531,7 @@ operator stated: no statement, no transport, and the daemon then requires verifi
 packaged bundle states `private` itself, because the Compose network is a fact of the bundle; the
 chart refuses to render a plain-http channel without the statement, so the failure is a sentence at
 `helm upgrade` and not a workspace that never boots. The owner was already sent on every call: Mend
-builds one Sealant client per user (#105), so Core's `SEALANT_REQUIRE_OWNER_SCOPE` can be on.
+builds one Sealant client per user (#105), so sealant's `SEALANT_REQUIRE_OWNER_SCOPE` can be on.
 
 ## Consequences
 
@@ -606,8 +607,8 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
 10. **The chart renders an Ingress; it does not install a controller or an issuer.** Those are
     cluster decisions. The packaged install does run an edge (Caddy) when asked, because a single
     Docker host has no cluster to delegate to.
-11. **Core budgets sit behind Mend's, not instead of them.** Mend refuses earlier and with better
-    words; Core's are the backstop for a caller that is not Mend.
+11. **sealant budgets sit behind Mend's, not instead of them.** Mend refuses earlier and with better
+    words; sealant's are the backstop for a caller that is not Mend.
 
 12. **WebSocket frames are bounded in Mend's handlers, not in the `ws` server.** Effect's Node HTTP
     server builds its WebSocket server without options and does not expose it, so `maxPayload`

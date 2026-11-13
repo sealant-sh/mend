@@ -14,9 +14,9 @@
 ## Why it exists
 
 The owner develops Mend inside Mend on the box, across three sibling repositories (Mend, Sealant
-Core, sealantd), all adopted as projects of one store. A session had `/workspace/repo` only. Linked
-projects (ADR 0001) put a sibling at `/workspace/repos/<name>` through a host mount, which a capture
-executor cannot have: it mounts nothing. In capture mode the engine logged
+sealant, sealantd), all adopted as projects of one store. A session had `/workspace/repo` only.
+Linked projects (ADR 0001) put a sibling at `/workspace/repos/<name>` through a host mount, which a
+capture executor cannot have: it mounts nothing. In capture mode the engine logged
 `host mounts not applied · references, folders and linked projects stay on this machine`, and the
 agent's note still named `/workspace/repos/<name>`, where it found nothing. A sibling cloned by hand
 outside `/workspace/repo` is lost at the next Stop, resume or pickup: sealantd captures one root.

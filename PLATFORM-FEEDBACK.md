@@ -22,11 +22,11 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-11-09 · SDK 0.40.0-next.821 · Write only Claude's login into its credentials file
 
-- **Needed:** when Core places a person's Claude login in a home, or pushes a refreshed one, it
+- **Needed:** when sealant places a person's Claude login in a home, or pushes a refreshed one, it
   changes only `claudeAiOauth` in `.claude/.credentials.json` and keeps every other key. Claude
   keeps a person's MCP sign-ins in the same file, under `mcpOAuth` (docs/adr/0024, decision 5). Mend
   puts a person's kept sign-ins there just before Claude starts.
-- **Today:** Core writes the whole file, so a refreshed login pushed about every 7 hours removes
+- **Today:** sealant writes the whole file, so a refreshed login pushed about every 7 hours removes
   `mcpOAuth` from a running session. The person's MCP servers then ask them to sign in again in that
   session. Mend's stored copy is untouched, and the next session gets it back.
 - **Suggested:** write Claude's login as a merge of `claudeAiOauth` alone: read the file, replace
@@ -37,7 +37,7 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 Mend's recording tools treated `TimelineEntry.occurredAt` as a calendar timestamp. The public SDK
 types it as `string` without documenting its clock, and passes the wire string through unchanged. At
-pinned SDK commit `8c81d4b0db9a983fdfe212463eb89e78fa7a1410`, Core's API contract calls it a
+pinned SDK commit `8c81d4b0db9a983fdfe212463eb89e78fa7a1410`, sealant's API contract calls it a
 "decimal-string monotonic timestamp"; its timeline projection copies `event.monotonicTimestamp`, and
 the route serializes that bigint as a decimal string. It supplies no wall-clock timestamp on the
 timeline entry. The orchestrator's read-only capture confirms counters such as `27010301602537`,
@@ -46,9 +46,9 @@ with a minimum of `263878162` across 2,903,804 rows.
 This was a Mend conversion bug, exposed by stricter Date validation, rather than a new SDK wire
 regression. Mend now keeps the counter verbatim as `monotonicTimestamp` and returns null for unknown
 wall-clock time, with typed decoding failures instead of constructor defects. Request that the
-public SDK document the clock and its unit, preferably naming it `monotonicTimestamp`; if Core has a
-recorded wall-clock correlation, expose that separately and explicitly as optional. Consumers must
-not guess an epoch or turn a monotonic counter into a date. No platform internals are imported.
+public SDK document the clock and its unit, preferably naming it `monotonicTimestamp`; if sealant
+has a recorded wall-clock correlation, expose that separately and explicitly as optional. Consumers
+must not guess an epoch or turn a monotonic counter into a date. No platform internals are imported.
 
 2026-11-05 · SDK next.787 · Request a public selective native-state capture binding to save and
 restore chosen conversation directories at their real runtime paths while excluding all other home
@@ -56,13 +56,13 @@ and config data
 ([SLNT-543](https://linear.app/sealant/issue/SLNT-543/follow-claude-native-plan-permission-rules-in-t3-code),
 parked candidate B).
 
-## 2026-11-06 · Core 0.40.0-next.794 / SDK next.792 · Independent root conversation/login binding
+## 2026-11-06 · sealant 0.40.0-next.794 / SDK next.792 · Independent root conversation/login binding
 
 A shared root workspace cannot post credentials to a neutral, root-owned second conversation home
-through the public SDK. Core returned this exact error:
+through the public SDK. sealant returned this exact error:
 
 ```text
-/run/mend-conv/ff51d664-c8e7-4c4a-b0c8-5623cdb0fb00 is not a home Core writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.
+/run/mend-conv/ff51d664-c8e7-4c4a-b0c8-5623cdb0fb00 is not a home sealant writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.
 ```
 
 The response is retained at `/tmp/mend-rollback-client.hwTgBV/claude-recover-response4.json`. The
@@ -78,7 +78,7 @@ without credential copying or retaining unrelated sessions. Captured LIVE is `BL
 probe does not establish a captured-store or box pass. The parked SLNT-543 request above is
 unchanged.
 
-## 2026-11-06 · Core 0.40.0-next.794 / SDK next.792 · Exact workspace-file bytes outside recorded stdout
+## 2026-11-06 · sealant 0.40.0-next.794 / SDK next.792 · Exact workspace-file bytes outside recorded stdout
 
 Someone chooses Undo after a completed conversation. Before changing files or history, Mend saves
 the worktree, index, Git objects and selected native state. Reading an opaque Git recovery pack
@@ -98,7 +98,7 @@ stdout probe returned its full length, ruling out output truncation.
 The bounded reproducer is `/tmp/mend-rollback-delivery.YWAf4J/exec-output-probe.mjs`, run with
 `node --import ./apps/api/node_modules/tsx/dist/loader.mjs`. The decisive failure and comparisons
 are retained in that directory as `opaque-recovery-red.log`, `exec-artifacts-probe.log`,
-`exec-artifacts-probe2.log` and `codex-origin-zero.json`. Core was `0.40.0-next.794`; SDK was
+`exec-artifacts-probe2.log` and `codex-origin-zero.json`. sealant was `0.40.0-next.794`; SDK was
 `0.40.0-next.792`. No actual logins, VPN changes or alternate networking were used.
 
 Filed by the orchestrator's Fix Now or File decision. A token-shaped false positive is rare and Mend
@@ -109,7 +109,7 @@ Local regressions verify that refusal and a retry against the unchanged save. Th
 block rollback. An in-place application alone would not supply the independently retained recovery
 required if the workspace later disappears, so no alternate path was added.
 
-## 2026-11-05 · Core 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
+## 2026-11-05 · sealant 0.40.0-next.786 / SDK next.787 · Interactive-session replay boundary exceeds its output
 
 Someone restarts Mend while an agent process survives, then sends a follow-up. Mend must finish
 replaying that process before dispatching the next turn. During isolated, fake-login verification of
@@ -122,11 +122,11 @@ reading from `74` returned no chunks and the same cursor. The process was still 
 documents this high water as the highest recorded output sequence. Mend's replay gate therefore
 waited for a position the process's output did not supply.
 
-This was observed with the held Core image `0.40.0-next.786`, revision
+This was observed with the held sealant image `0.40.0-next.786`, revision
 `1c95b9b2df6c068034efdcdeb05d253e5e842100`, and SDK `0.40.0-next.787`. It is not a reproduction on
-the current box or a Core next.787 image. Read-only source comparison found status using the run's
-maximum record sequence, while output filters by the process and output kinds. Other events in the
-run can therefore raise the reported boundary past the process's last output.
+the current box or a sealant next.787 image. Read-only source comparison found status using the
+run's maximum record sequence, while output filters by the process and output kinds. Other events in
+the run can therefore raise the reported boundary past the process's last output.
 
 The platform should return the highest sequence obtainable from that interactive session's output,
 or expose a separate replay barrier that the output reader can observe. Mend must not guess a lower
@@ -178,11 +178,11 @@ do not establish the credential's exact admission rate or prove queuing. The pla
 | Workspace exec submissions            |             1,457 |       8.09 |
 
 Mend fixes two producers in #1378 and #1380. Resource facts repeatedly observed one project for its
-worktrees. A real isolated API/Postgres/Core stack with 27 worktrees now makes one observation per
-detail read instead of 27, with median response 62.8 → 22.3 ms. The identity store read the wrong
-transformed SQL property, so every principal resolution could reprovision the same user. Twenty
-authenticated identity reads on a real stack made 60 → 20 SDK HTTP requests, including 40 → 0 user
-provisions. These are controlled before/after measurements. Neither fix was deployed to the box
+worktrees. A real isolated API/Postgres/sealant stack with 27 worktrees now makes one observation
+per detail read instead of 27, with median response 62.8 → 22.3 ms. The identity store read the
+wrong transformed SQL property, so every principal resolution could reprovision the same user.
+Twenty authenticated identity reads on a real stack made 60 → 20 SDK HTTP requests, including 40 → 0
+user provisions. These are controlled before/after measurements. Neither fix was deployed to the box
 during this investigation, so there is no measured live after rate yet.
 
 Two remaining multipliers belong to the public SDK:
@@ -213,7 +213,7 @@ s and submitted 16 execs and 10 exec-as-user calls in its surrounding window. Th
 concurrent traffic and are not all attributable to that launch. Existing live logs expose route
 durations, not the engine's individual Effect span durations.
 
-A real isolated Mend API, Postgres 17, Core API/worker next.783 and Minio capture store launched
+A real isolated Mend API, Postgres 17, sealant API/worker next.783 and Minio capture store launched
 fresh shell worktrees in 2.25–2.65 s using a cached custom image and empty synthetic person home.
 One person-layout launch's engine trace was 2,239 ms:
 
@@ -250,20 +250,20 @@ platform feedback, not evidence that the entire live launch delay is inside the 
   xfdesktop. Seen on the box, preview.37, 2026-10-31.
 - **Mend's workaround:** the screen's XFCE session finds a `bwrap` first on PATH that fails as bwrap
   does without namespaces, so glycin falls back and every program keeps the capability.
-- **Suggested:** none for Core, which needs the capability. Noting it for anything else that runs
+- **Suggested:** none for sealant, which needs the capability. Noting it for anything else that runs
   bwrap-based sandboxes inside person processes.
 
 ## 2026-10-31 · 0.40.0-next.768 · XFCE and capture packages for a screen
 
 ADR 0020's styled XFCE screen asks for `tigervnc`, `xauth`, `xdpyinfo`, `xfce`, `dbus`, `ffmpeg`,
-`chromium` and `fonts-dejavu`. Core's catalog change is committed locally on `feat/catalog-xfce`; it
-must be deployed before Mend can resolve the new ids. No SDK contract change is needed.
+`chromium` and `fonts-dejavu`. sealant's catalog change is committed locally on `feat/catalog-xfce`;
+it must be deployed before Mend can resolve the new ids. No SDK contract change is needed.
 
 Installed in x86_64 containers, with aarch64 checked only in repository indexes. Arch starts the
-full screen. Fedora 41 starts XFCE but its `ffmpeg-free` lacks libx264, so Core refuses `ffmpeg`.
+full screen. Fedora 41 starts XFCE but its `ffmpeg-free` lacks libx264, so sealant refuses `ffmpeg`.
 Ubuntu 24.04 runs XFCE and the required ffmpeg, but still refuses the Chromium snap stub. Nixpkgs
 installs the components and a working `ffmpeg-full`, but `dbus-run-session` exits because
-`/etc/dbus-1/session.conf` is absent from the workspace image, so Core refuses `dbus` on nix. The
+`/etc/dbus-1/session.conf` is absent from the workspace image, so sealant refuses `dbus` on nix. The
 original screen package request below is kept as the history of sealant#419.
 
 ## 2026-10-30 · 0.40.0-next.768 · A session's env cannot put a directory in front of PATH
@@ -291,10 +291,10 @@ ADR 0020 gives a project's image a **Screen** switch that adds TigerVNC, `xauth`
 Openbox, Chromium and DejaVu fonts. Mend asks a family image for six portable ids: `tigervnc`,
 `xauth`, `xdpyinfo`, `openbox`, `chromium` and `fonts-dejavu`.
 
-- **Today:** Core's package catalog has none of the six, and Mend's save refuses an id outside the
-  catalog, so the switch saves on no family. A custom base cannot carry them either: its `packages`
-  is one verbatim list for whichever manager the build finds, and each manager names these packages
-  differently. The SDK reports no image's architecture.
+- **Today:** sealant's package catalog has none of the six, and Mend's save refuses an id outside
+  the catalog, so the switch saves on no family. A custom base cannot carry them either: its
+  `packages` is one verbatim list for whichever manager the build finds, and each manager names
+  these packages differently. The SDK reports no image's architecture.
 - **Observed on x86_64, 2026-10-30:** Fedora 41, Arch and Ubuntu 24.04 install all six under their
   own names, except that Ubuntu's `chromium` is a 50 kB snap stub that installs and exits 1. Fedora
   names the binary `chromium-browser`. Nix evaluates all six from nixpkgs.
@@ -307,8 +307,8 @@ Openbox, Chromium and DejaVu fonts. Mend asks a family image for six portable id
 
 ## 2026-10-29 · 0.40.0-next.763 · A service resource
 
-- **2026-10-31:** being built in Core as ADR 0019's amendment describes: `scope.instances` (up, get,
-  list, stop, exec, archive) on Docker. Snapshots, backup volumes, the recovery instance, the
+- **2026-10-31:** being built in sealant as ADR 0019's amendment describes: `scope.instances` (up,
+  get, list, stop, exec, archive) on Docker. Snapshots, backup volumes, the recovery instance, the
   generation and the single-writer fence are not part of it.
 
 Resources (ADR 0019, proposed) are long-running services that Sealant runs once per project, or once
@@ -341,13 +341,13 @@ top.
 
 ## 2026-10-29 · 0.40.0-next.763 · A project network
 
-- **2026-10-31:** being built in Core as one internal network per linked workspace executor
+- **2026-10-31:** being built in sealant as one internal network per linked workspace executor
   (`scope.workspaces.link`). Refusing connections an instance opens, instance-to-instance rules, the
   sidecar's attachment and a narrowed `mend_default` are not part of it, and this entry keeps asking
   for them.
 
 - **Today:** a forward's host is the closed set `127.0.0.1`, `localhost` or `docker`, and forwards
-  go only into a workspace. Core keeps the set closed on purpose (Core #151, #153).
+  go only into a workspace. sealant keeps the set closed on purpose (sealant #151, #153).
 - **Mend today:** a session in one worktree has no supported, authorized route to a server in
   another. On the Docker bundle the shared `mend_default` network connects them anyway, with no
   isolation between projects.
@@ -373,8 +373,8 @@ top.
 
 ## 2026-10-29 · 0.40.0-next.763 · A principal that is a project, not a person
 
-- **2026-10-31:** Core #420 to #423 shipped the scope, its members and its budget. A scope's archive
-  comes with the instances above.
+- **2026-10-31:** sealant #420 to #423 shipped the scope, its members and its budget. A scope's
+  archive comes with the instances above.
 
 - **Today:** a Sealant principal is a user (`SealantPrincipalValue` is `user` or `none` in
   `packages/sealant`), and `CreateOptions` has no owner field.
@@ -392,7 +392,7 @@ top.
   The ask stands for other per-process secrets.
 
 - **Today:** the SDK documents `SessionOptions.env` as "Extra environment for the session process
-  (not for secrets — use `credentials`)" (Core `packages/sdk/src/types.ts`, `SessionOptions`). No
+  (not for secrets — use `credentials`)" (sealant `packages/sdk/src/types.ts`, `SessionOptions`). No
   option gives one process a secret value that the platform promises not to record.
 - **Mend today:** project secrets reach a workspace once, through `secretEnv` at create.
 - **Needed:** secret env for one `sessions.open` or `exec` that the platform never records and masks
@@ -429,11 +429,11 @@ nothing named after them.
 
 ## 2026-10-29 · 0.40.0-next.763 · Images keyed by the base's digest, and the custom-base contract
 
-These are the computer-use prototype's Core findings of 2026-10-07, observed on SDK 0.39.0-next.696
-and not reproduced since. They were recorded only on branch `feat/desktop-pilot` and never reached
-this file (`docs/experiments/computer-use.md:243-251`, `:262-263`). Each "Today" line reads the
-types and README of the SDK named above, which neither confirm nor rule out the finding. Reproduce
-at least the mutable-tag case before filing.
+These are the computer-use prototype's sealant findings of 2026-10-07, observed on SDK
+0.39.0-next.696 and not reproduced since. They were recorded only on branch `feat/desktop-pilot` and
+never reached this file (`docs/experiments/computer-use.md:243-251`, `:262-263`). Each "Today" line
+reads the types and README of the SDK named above, which neither confirm nor rule out the finding.
+Reproduce at least the mutable-tag case before filing.
 
 - **A rebuilt mutable tag is not picked up.** After the custom base `mend-desktop:pilot-v2` was
   rebuilt under the same tag, an already compiled workspace image kept the old base, and changing
@@ -557,10 +557,10 @@ Live preview (ADR 0017, proposed) would put an HTTP gateway in Mend's API proces
 
 ## 2026-10-24 · 0.39.0 · Dial errors a caller can tell apart
 
-- **Today:** Core answers a forward with 409 (the workspace is not ready), 502 (nothing listens on
-  the port), 404 or 403 before the upgrade. The SDK reports each as the same WebSocket `error` ("is
-  anything listening on 127.0.0.1:port").
-- **Mend today:** a failed dial is one error, whatever Core answered. ADR 0017's proposed stopped
+- **Today:** sealant answers a forward with 409 (the workspace is not ready), 502 (nothing listens
+  on the port), 404 or 403 before the upgrade. The SDK reports each as the same WebSocket `error`
+  ("is anything listening on 127.0.0.1:port").
+- **Mend today:** a failed dial is one error, whatever sealant answered. ADR 0017's proposed stopped
   preview page could only say `workspace connection failed`.
 - **Needed:** a typed error per answer, so that Mend reports what was observed.
 
@@ -753,13 +753,13 @@ are missing.
 write them that way) created the session, then failed its launch with
 `Expected a string with no leading or trailing whitespace`.
 
-- **Today:** Core's `createSessionRequestSchema` types `argv` as
+- **Today:** sealant's `createSessionRequestSchema` types `argv` as
   `Schema.Array(NonEmptyString).check(Schema.isNonEmpty(), Schema.isMaxLength(64))`, where
   `NonEmptyString` is `Schema.String.check(Schema.isNonEmpty(), Schema.isTrimmed())`. The rule fits
   the program (`argv[0]`), the ids and the `cwd`. It does not fit the arguments: an argument is
   opaque bytes to the program that reads it, and `"\necho hi"`, `"hi "` and `""` (as in
-  `git commit -m ""`) are all legitimate. Core never stores the arguments anyway, only their count
-  and lengths.
+  `git commit -m ""`) are all legitimate. sealant never stores the arguments anyway, only their
+  count and lengths.
 - **What Mend does:** `mend run` checks the command against the same rule before it creates
   anything, refuses it naming the word by its position (never its text, which can carry a secret),
   and asks for it trimmed. It does not wrap the command to get past the rule. The engine does that
@@ -772,9 +772,9 @@ write them that way) created the session, then failed its launch with
 
 ## 2026-10-10 · 0.39.0-next.707 · A workspace's Docker service: no buildx, and no shared files with the daemon
 
-Verify Mend in Mend (`docs/operations/verify-stack.md`) builds sealantd, Core and Mend from source
-in a session's Docker service and installs them with `mend server setup`. Two facts of the Docker
-adapter's workspace Docker shaped it.
+Verify Mend in Mend (`docs/operations/verify-stack.md`) builds sealantd, sealant and Mend from
+source in a session's Docker service and installs them with `mend server setup`. Two facts of the
+Docker adapter's workspace Docker shaped it.
 
 - **No buildx in the workspace.** A family or custom image with `services.docker` gets the Docker
   CLI and the Compose plugin (`buildkit-builder.ts`, both the plan and the image steps), not
@@ -807,9 +807,9 @@ and pulls every image anonymously from Docker Hub, and pstack's verifier session
 - **What Mend does:** none of it through the SDK. This is operator configuration of the worker,
   which runs inside the Mend container. `compose.mirrors.yaml` sets the worker's environment, and
   the Helm chart's notes name the Sealant chart value.
-- **Added in Core (sealant#346):** `SEALANT_DOCKER_REGISTRY_MIRRORS` (origins, refused with
+- **Added in sealant (sealant#346):** `SEALANT_DOCKER_REGISTRY_MIRRORS` (origins, refused with
   credentials) becomes `--registry-mirror` (plus `--insecure-registry` for http) on the Docker and
-  Kubernetes runtimes. `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` names the container that Core
+  Kubernetes runtimes. `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` names the container that sealant
   connects to each workspace's Docker network under the mirror's host name, and disconnects before
   removing it. The Sealant chart gains `workspaces.docker.registryMirrors`. Until a Sealant release
   that carries it is bundled, the bundled worker ignores both variables and sessions pull from
@@ -828,13 +828,13 @@ or \`source\`` for options without a source.
 
 - **What exists today:** `imageKey(options)` and `inspectImage(options)` take the full
   `CreateOptions` and build the whole request. The key leaves the sources out
-  (`IMAGE_SHAPING_KEYS`), and Core's plan reads only whether the source is a `mount` (its
+  (`IMAGE_SHAPING_KEYS`), and sealant's plan reads only whether the source is a `mount` (its
   `safe.directory` step), yet a source is required, a capture one with a non-empty token and a URL
   endpoint. `imageKey` also throws synchronously, where every other SDK call rejects a promise.
 - **What Mend does:** it names a capture source (`IMAGE_QUESTION_SOURCE`, endpoint
   `https://image-question.mend.invalid`, token `never-sent`), because a person create is
-  capture-sourced. The endpoint reaches Core in the inspected spec and is never dialled. The token
-  is never sent, since `inspectImage` sends the spec alone. A test runs the real SDK with the
+  capture-sourced. The endpoint reaches sealant in the inspected spec and is never dialled. The
+  token is never sent, since `inspectImage` sends the spec alone. A test runs the real SDK with the
   options Mend passes and checks the key equals the key of the create the answer is about.
 - **Suggested:** an image-only options type for both (`harness`, `os`/`baseImage`, `shell`,
   `packages`, `services`, plus `sourceKind?: "mount" | "other"` if the plan keeps reading it). The
@@ -863,7 +863,7 @@ it reads with one root exec, built on what the SDK has today, and none of it blo
 
 ## 2026-10-08 · 0.39.0-next.706 · Processes as a person, launch phases and image-build bounds: shipped
 
-- **Shipped (0.39.0-next.706, sealant#343) and used:** exec and sessions as a person on Core's
+- **Shipped (0.39.0-next.706, sealant#343) and used:** exec and sessions as a person on sealant's
   as-user routes, `sealant.features()` (`processUserRoutes`, `dotfilesApply`,
   `credentialsPartialPut`, `credentialsPiOpencode`, `captureOwnerMap`) and each workspace's
   `processUser()`. Mend runs a person launch only when the control plane reports every one of those
@@ -871,18 +871,19 @@ it reads with one root exec, built on what the SDK has today, and none of it blo
   (`workspaceProcessUserObstacleOf`, at prepare); otherwise a fresh worktree runs as one person with
   the reason and a person worktree is refused with it. `user-unsupported` becomes Mend's lines
   (`personProcessRefusal`).
-- **Missing:** a stable reason for `user-unsupported`. Core words the reason (sealantd unsupported,
-  not in range, unknown user, unanswered) only in its message, so Mend reads it there; a body field
-  such as `reason: "sealantd-unsupported" | "not-in-range" | "unknown-user" | "check-unavailable"`
-  would remove that coupling, as `provider` did for refused accounts.
+- **Missing:** a stable reason for `user-unsupported`. sealant words the reason (sealantd
+  unsupported, not in range, unknown user, unanswered) only in its message, so Mend reads it there;
+  a body field such as
+  `reason: "sealantd-unsupported" | "not-in-range" | "unknown-user" | "check-unavailable"` would
+  remove that coupling, as `provider` did for refused accounts.
 - **Shipped (0.39.0-next.706, sealant#342) and used:** launch phases (`workspace.phase()`: queued,
   image build with step N/M, boot), an image build that does not spend `ready()`'s bound, and
   `workspace_image_build_stalled` / `workspace_image_build_timeout`. The session line says "queued ·
   waiting for a worker", "building the workspace image · step 3/12", then "booting"; the two build
   failures say the build stalled or ran past its limit, with the SDK's words naming the step. Mend
-  keeps `readyTimeoutMs` and `imageBuildTimeoutMs` at Core's defaults.
+  keeps `readyTimeoutMs` and `imageBuildTimeoutMs` at sealant's defaults.
 
-## 2026-10-08 · 0.39.0-next.703 · The person layout needs Core to say it runs processes as a user
+## 2026-10-08 · 0.39.0-next.703 · The person layout needs sealant to say it runs processes as a user
 
 - **Shipped in 0.39.0-next.706 (above).** `features.processUser` on the control plane's index is
   `false` in 0.39.0-next.703 (`apps/api/src/routes/system/system.module.ts`), and exec and sessions
@@ -890,15 +891,15 @@ it reads with one root exec, built on what the SDK has today, and none of it blo
   0.20.0-next.152 can. Mend now reads that report before deciding a launch's layout
   (`PersonLayoutPlatform.controlPlaneObstacle`, `SealantClients.controlPlaneFeatures`): a fresh
   worktree runs `shared` with the reason and a `person` worktree is refused with it, before create.
-  Turning the feature on in Core is what makes the flag usable.
+  Turning the feature on in sealant is what makes the flag usable.
 - **Suggested:** report the rest of what this layout uses the same way (`features.dotfilesApply`,
-  `features.credentialsPartial`, `features.chatgptLogins`), so a client can refuse an older Core by
-  capability for each, not only by the one flag that implies them today. The API's own `version` is
-  `0.0.0` in the bundle, so a version floor cannot be read.
-- **Missing:** a way to stop a `dotfiles.apply` run. Mend's start waits for it 120 s and Core's run
-  goes on for up to 10 minutes; Mend now keeps the run and sees it through when it lands (relinks,
-  marks the person done, corrects the session), but cannot cancel one it no longer needs.
-- **Measure before the flag goes on:** a person's first start now waits on a queued Core run (a
+  `features.credentialsPartial`, `features.chatgptLogins`), so a client can refuse an older sealant
+  by capability for each, not only by the one flag that implies them today. The API's own `version`
+  is `0.0.0` in the bundle, so a version floor cannot be read.
+- **Missing:** a way to stop a `dotfiles.apply` run. Mend's start waits for it 120 s and sealant's
+  run goes on for up to 10 minutes; Mend now keeps the run and sees it through when it lands
+  (relinks, marks the person done, corrects the session), but cannot cancel one it no longer needs.
+- **Measure before the flag goes on:** a person's first start now waits on a queued sealant run (a
   POST, then polls of the run) where boot-time dotfiles cost nothing of this kind. Gate P1/P2 on the
   box must time it.
 
@@ -914,7 +915,7 @@ exec or a stand-in, and none blocks the build.
   process group is empty and the new process has not started. Ubuntu 24.04's coreutils (9.4) and
   util-linux (2.39) have neither tool, so those images take the fallback. Suggested surface:
   `workspace.fs.exchange(a, b)`, as root, refusing a link on either path; Mend would fold it into
-  the Core calls and drop the exec.
+  the sealant calls and drop the exec.
 - **Missing:** "this session's process group and cgroup are empty". `InteractiveSession.status()`
   reports the leader's exit; Codex's plugin and git children can outlive the app-server. Mend's
   staging exec waits for no process to carry the conversation's marker variable
@@ -963,22 +964,22 @@ exec or a stand-in, and none blocks the build.
   (`owner-map-mismatch`). Mend sends the map on every `person` create and `expectedOwnerMap: null`
   on every standby claim (standbys serve only shared launches), and maps `owner-map-unsupported` and
   the Kubernetes and Cloudflare refusals to its own refusal lines. A standby that could serve a
-  person launch would need Core to take the map at claim, not only at boot.
+  person launch would need sealant to take the map at claim, not only at boot.
 - **Shipped (0.39.0-next.703, sealant#334):** the dotfiles verb, used as the 0.39.0-next.696 entry
   above says.
 - **Shipped (0.39.0-next.703, sealant#335) and used:** a refused account's stable code,
   `SealantApiError.reason` (`connected-account-missing`, `connected-account-invalid`,
   `connected-account-unsupported`) with its `provider`. `SealantPlatformError` carries both, and
-  `refusedAccountOf` (`harness-layout-steps.ts`) reads them; Mend no longer matches Core's words.
+  `refusedAccountOf` (`harness-layout-steps.ts`) reads them; Mend no longer matches sealant's words.
 - **Shipped (0.39.0-next.703, sealant#336) and used:** pi's and opencode's ChatGPT logins as
-  providers of the credentials API (`put({ pi, opencode })`). In a person executor Core writes and
-  releases them; Mend's own copy (`CHATGPT_LOGIN_PROGRAM`) and its release-time scrub are gone there
-  (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`). A shared executor still writes its copy at `$HOME`,
-  since a create cannot name `pi` or `opencode`.
+  providers of the credentials API (`put({ pi, opencode })`). In a person executor sealant writes
+  and releases them; Mend's own copy (`CHATGPT_LOGIN_PROGRAM`) and its release-time scrub are gone
+  there (`PI_PERSON_SEED`, `OPENCODE_PERSON_SEED`). A shared executor still writes its copy at
+  `$HOME`, since a create cannot name `pi` or `opencode`.
 - **Shipped (0.39.0-next.703, sealant#337) and used:** the partial put (`partial: true`, `skipped`,
   `login-file-unusable` included). Every person's login write is one call: what they have connected
   is written, the rest is recorded as absent and not asked for again, and a required provider left
-  out refuses the start with Core's reason. The second `github: null` put is gone.
+  out refuses the start with sealant's reason. The second `github: null` put is gone.
 
 ## 2026-10-06 · 0.38.1 · Exec arguments are stored forever and in plaintext: unrecorded stdin, redaction, retention and a purge
 
@@ -989,32 +990,32 @@ exec or a stand-in, and none blocks the build.
 - **Today:** `workspace.exec(argv, { cwd })` takes argv only: no `stdin`, `env` or `secretEnv`
   (`packages/sdk/src/types.ts`), and the worker hardcodes `stdin: false`. sealantd publishes
   `ProcessStarted { executable, args, cwd }` unredacted. Its redactor (`secretEnv` values and
-  prefixes such as `gho_`) runs on stdout, stderr and PTY input only. Core stores the args three
+  prefixes such as `gho_`) runs on stdout, stderr and PTY input only. sealant stores the args three
   ways: verbatim in `telemetry_events.payload`, again in `telemetry_timeline.ref_json`, and as plain
   text in `telemetry_timeline.summary` (`exec <executable> <args…>`). It serves them back through
   `run.record.stream()` and the timeline API. The pg-boss job row holds the `commands` for 1 h, or 7
   days if the job dead-letters. Nothing sweeps `telemetry_*` or `runs`; rows go only when their user
   is deleted. Until mend#555 Mend sent the secret files and the pi profile as base64 argv, so every
-  delivery since ADR 0010 shipped is stored in Core, readable by anyone with database or backup
+  delivery since ADR 0010 shipped is stored in sealant, readable by anyone with database or backup
   access, the operator included.
 - **What Mend does now:** a single-use, 30-second pickup ticket in argv. The exec redeems it over
   the session channel and writes the bytes straight to the 0600 file (ADR 0010 decision 5, amended
-  2026-10-06). No extra exec, and nothing needed from Core.
+  2026-10-06). No extra exec, and nothing needed from sealant.
 - **Status, 2026-10-10:** done in sealant#329 (merged 2026-10-06), checked at the pinned
-  0.39.0-next.707 (Core `96be22f7`). Telemetry ingest drops a `processStarted` payload's arguments
-  (`withholdProcessArgs`: the executable, `argCount` and `argLengths` stay), and a rebuild from an
-  older row withholds them too. An exec run's row and a session's row (`argv` holds `argv[0]` only)
-  keep no arguments. Both run-exec queues delete the job row when a worker takes it
+  0.39.0-next.707 (sealant `96be22f7`). Telemetry ingest drops a `processStarted` payload's
+  arguments (`withholdProcessArgs`: the executable, `argCount` and `argLengths` stay), and a rebuild
+  from an older row withholds them too. An exec run's row and a session's row (`argv` holds
+  `argv[0]` only) keep no arguments. Both run-exec queues delete the job row when a worker takes it
   (`deleteOnPickup`), and `sweepRunExecJobRows` removes leftovers. No log line in the exec route,
   the queue or the worker, nor in sealantd, prints the arguments. What remains: the job row holds
   the argv in Postgres from enqueue until pickup (at once on an idle worker; minutes when every
   run-exec slot is busy; an `active` leftover is swept after ten minutes), so a backup or WAL taken
   in that window has it. Mend's pickup ticket keeps that window harmless: single-use, bound to the
   person and executor, spent or discarded when the exec ends.
-- **Suggested, Core:**
+- **Suggested, sealant:**
   - **Exec stdin that is never recorded,** or a per-exec `secretEnv` whose values are never
     recorded, seed the redactor, and are redacted in `ProcessStarted.args` too.
-  - **Redaction of `ProcessStarted.args`** in sealantd and in Core's normalizer, with the same
+  - **Redaction of `ProcessStarted.args`** in sealantd and in sealant's normalizer, with the same
     redactor as stdout: `secretEnv` values plus known token prefixes.
   - **Retention for `telemetry_events`, `telemetry_timeline` and finished job rows,** with a
     documented window and an endpoint to delete a run's record.
@@ -1041,7 +1042,7 @@ exec or a stand-in, and none blocks the build.
   `workspaces.create` injects at `$HOME`, and GitHub as `GITHUB_TOKEN` and `GH_TOKEN`. sealantd
   applies dotfiles to `/root` as root, records no owners and restores as root. The SSH gateway runs
   its session as root. Images install toolchains under `/root` and carry no `sudo`.
-- **Suggested, Core:**
+- **Suggested, sealant:**
   - `user` on sessions and exec (uid, gid, supplementary groups, `HOME` and the rest from passwd,
     umask `0002`).
   - Reshape #315 into per-home injection:
@@ -1079,7 +1080,7 @@ exec or a stand-in, and none blocks the build.
   `DELETE /v1/workspaces/:id/ssh-user` (`features.workspaceSshUser`). An operator rebind route is a
   follow-up. The gateway runs every shell, command and its own disconnect-time capture as that user
   on a sealantd that reports `exec.user`, asks who for every new channel, and refuses an answer that
-  does not say. sealantd#155 adds `openSftp { user }`, which Core passes (sealant#352), and the
+  does not say. sealantd#155 adds `openSftp { user }`, which sealant passes (sealant#352), and the
   Fedora and Ubuntu images carry an sftp-server with every sshd unit masked. Mend asks for the
   owner's user at create and root on a fallback, behind the feature flag, through the SDK's
   `sshAsOwner` and `workspace.sshAsRoot`.
@@ -1123,11 +1124,11 @@ exec or a stand-in, and none blocks the build.
   whose login the workspace holds, Mend names that person and their account, and the platform writes
   that login into the running workspace. When the turn ends, the owner's goes back.
 - **Today:** credentials are fixed at `workspaces.create`; there is no update, attach or rebind
-  call, and `restartWorkspace` rebuilds them from the recorded spec. Core already writes logins into
-  running workspaces (`writeCredentialFiles` over the control connection, used by the refresh push),
-  but only the same account's refreshed copy, to instances launched with it. A Claude setup token is
-  injected as `CLAUDE_CODE_OAUTH_TOKEN`, which takes precedence over the file and cannot change in a
-  running process.
+  call, and `restartWorkspace` rebuilds them from the recorded spec. sealant already writes logins
+  into running workspaces (`writeCredentialFiles` over the control connection, used by the refresh
+  push), but only the same account's refreshed copy, to instances launched with it. A Claude setup
+  token is injected as `CLAUDE_CODE_OAUTH_TOKEN`, which takes precedence over the file and cannot
+  change in a running process.
 - **Suggested:** `POST /v1/workspaces/:id/credentials { onBehalfOf, claude?, codex? }` (SDK:
   `workspace.setCredentials(...)`), answering the accounts now injected. It writes a copy without a
   refresh token, records the instance's current injections so refresh pushes follow the switch, and
@@ -1139,9 +1140,9 @@ exec or a stand-in, and none blocks the build.
 - **Needed:** secret files (docs/adr/0010-secret-files.md): a person's `~/.aws/credentials`, a
   kubeconfig, an `.npmrc` token file, written into the workspace's `$HOME` 0600 before the harness
   starts, never persisted by the platform.
-- **Today:** Core writes exactly such files for connected accounts (`credentialFiles` on the runtime
-  adapter's launch input: `docker exec -i … sh -c` with the base64 content on stdin, `umask 077`,
-  `chmod`, before readiness), but the worker resolves them from the account store; no
+- **Today:** sealant writes exactly such files for connected accounts (`credentialFiles` on the
+  runtime adapter's launch input: `docker exec -i … sh -c` with the base64 content on stdin,
+  `umask 077`, `chmod`, before readiness), but the worker resolves them from the account store; no
   `CreateOptions` field carries a caller's file. `dotfiles.archives` carries a tree, applied as
   plain files by the dotfiles manager. `exec` takes argv only. Mend writes the files after boot over
   `exec`, the bytes as base64 on argv as skills, the pi profile and memory already ride
@@ -1158,14 +1159,14 @@ exec or a stand-in, and none blocks the build.
   ~8 min for the MicroVM image build. Mend wants the session line to say so
   (`starting · building the workspace image …`) and `booting` once the executor launches.
 - **Today:** the SDK reports the workspace `queued`/`running` for both the build job and the runtime
-  launch (Core's `resolveWorkspaceStatus` folds `latestJob.status === "running"` into `running`),
+  launch (sealant's `resolveWorkspaceStatus` folds `latestJob.status === "running"` into `running`),
   and `workspace.runtime()` is `null` until a runtime exists. Mend creates with `wait: false`,
   watches `runtime()` while `ready()` waits, and says "building" once the platform has reported no
   executor for 20 s after the create was accepted. That is an inference, not an observation. A
   cached image with a slow queue would read the same.
 - **Suggested:** expose the build job on the workspace
   (`details().build: { status: "queued" | "running" | "succeeded" | "failed", cached: boolean, startedAt }`)
-  or as a `status.building` event on `events()`, so Mend can say what Core observed.
+  or as a `status.building` event on `events()`, so Mend can say what sealant observed.
 
 ## 2026-09-28 · 0.37.2 · e2e8: a capture step past its bound (`overdue`)
 
@@ -1178,19 +1179,19 @@ exec or a stand-in, and none blocks the build.
 - **Today:** Mend reads `overdue` (camelCase `startedUnixMs`, `runningMs`, `boundMs`; the protobuf
   names too) wherever a status or flush answer carries it, records it on the session
   (migration 0093) and says `capture step overdue · <step> · running 17 min · bound 2 min`; such an
-  answer never reads saved, caught up or idle. But nothing forwards it yet: Core's
+  answer never reads saved, caught up or idle. But nothing forwards it yet: sealant's
   `workspaceCaptureStatusSchema` has no `overdue`, `packages/workspaces/src/sealantd/runtime.ts`
   projects the report field by field without it, and SDK 0.37.2's `capture.flush()` rebuilds the
   answer and drops it (checked against the pinned facade in `capture-sdk-facade.test.ts`), and has
   no `capture.status()`. Until they do, Mend reads none and the session looks as it did in e2e8.
 - **Suggested:** add `overdue: { step, startedUnixMs, runningMs, boundMs }` (optional) to the
   capture status contract, project it in `runtime.ts` next to `repairing`, and release the SDK with
-  it on `capture.status()` and `capture.flush()`. Core's own drain could name it in its `kept`
+  it on `capture.status()` and `capture.flush()`. sealant's own drain could name it in its `kept`
   reason as well.
 
 ## 2026-09-28 · 0.37.2 · Review 6: evidence ordered by the executor; stored objects write-once
 
-What Mend now builds to (cross-repo decisions 17–19). sealantd's `fix/capture-review6` and Core's
+What Mend now builds to (cross-repo decisions 17–19). sealantd's `fix/capture-review6` and sealant's
 `fix/capture-review6` carry the other halves.
 
 - **The executor's order, not a clock (decision 17).**
@@ -1218,7 +1219,7 @@ What Mend now builds to (cross-repo decisions 17–19). sealantd's `fix/capture-
 
 ## 2026-09-28 · 0.37.2 · Review 3: one launch per executor, a create fenced by its key, keys never reused, health never assumed
 
-What Mend now builds to (cross-repo decisions 5, 6 and 9). Core's `fix/capture-review3` and
+What Mend now builds to (cross-repo decisions 5, 6 and 9). sealant's `fix/capture-review3` and
 sealantd's `fix/capture-review3` carry the other halves; nothing here works around a gap.
 
 - **One launch identity per physical executor (decision 5).**
@@ -1233,9 +1234,9 @@ sealantd's `fix/capture-review3` carry the other halves; nothing here works arou
     physical executor takes a fresh epoch; a claimed standby is the session's executor before its
     replan and drains like any.
   - **Suggested:** release the SDK with `create({ idempotencyKey, launchId })`, `runtime.launchId`
-    and `stop({ completion: { …, launchId } })` (Core `fix/capture-review3`); Mend sends all three
-    already and reads `runtime.launchId` to record only that launch's runtime. SDK 0.37.2 drops
-    them: no completion is attested there, and Core keeps what it cannot confirm.
+    and `stop({ completion: { …, launchId } })` (sealant `fix/capture-review3`); Mend sends all
+    three already and reads `runtime.launchId` to record only that launch's runtime. SDK 0.37.2
+    drops them: no completion is attested there, and sealant keeps what it cannot confirm.
 - **A create whose answer was lost, fenced.**
   - **Needed:** `findByIdempotencyKey → none` is a point in time; the original request can still
     commit after it (review 3 #21).
@@ -1265,8 +1266,8 @@ sealantd's `fix/capture-review3` carry the other halves; nothing here works arou
   and every `refs` entry of such a section is a user ref. `incomplete_reason: "changed"` is not
   saved; a drain asks the final flush again.
 - **A kept executor, read without a stop.**
-  - **Needed:** whether Core keeps an ended capture executor for recovery (e2e run 5: Mend read
-    `failed` as dead, revoked the token and released the lease, and Core's recovery boot got
+  - **Needed:** whether sealant keeps an ended capture executor for recovery (e2e run 5: Mend read
+    `failed` as dead, revoked the token and released the lease, and sealant's recovery boot got
     `plan.get: 401`).
   - **Today:** capture mode reads every terminal status but `stopped` as kept, and learns what it is
     only from `stop()`'s answer (`drain.retained`, or `stopped`); the SDK exposes `captureDrain` on
@@ -1321,25 +1322,25 @@ Two wire points on the session channel (sealantd `crates/sealant-capture/src/reg
   - **Needed:** the planned drain ahead of a MicroVM's cap counts back from the platform's own
     deadline (2026-09-27, "The runtime deadline").
   - **Today:** `SealantClient.runtimeDeadline` calls `workspace.runtimeDeadline()` when the SDK has
-    it (Core's next SDK) and answers null otherwise; the capture reaper reads it once per executor
-    (again on the status cadence while it answers null) and passes it to `planExecutorCap`, where it
-    wins over `MEND_EXECUTOR_MAX_SECONDS` and the fallback age. On 0.37.2 nothing changes: the
-    configuration or the 7 h 30 fallback still plans the drain.
+    it (sealant's next SDK) and answers null otherwise; the capture reaper reads it once per
+    executor (again on the status cadence while it answers null) and passes it to `planExecutorCap`,
+    where it wins over `MEND_EXECUTOR_MAX_SECONDS` and the fallback age. On 0.37.2 nothing changes:
+    the configuration or the 7 h 30 fallback still plans the drain.
   - **Suggested:** ship `runtimeDeadline()` in the SDK Mend pins; nothing else changes here.
 - **A stop that carries the completion.**
-  - **Needed:** Core keeps a capture-sourced executor's disk unless it observed `complete: true`
+  - **Needed:** sealant keeps a capture-sourced executor's disk unless it observed `complete: true`
     itself; when the final flush's answer was lost on the way (a relay that closed), the store's
     sealed record of it (`final_seal`, registered by sealantd with the sealing capture) is the same
     fact, durable.
   - **Today:** every stop Mend sends through a drain carries
     `completion: { captureN, epoch, executorId }` when the store holds that seal for the executor
-    and its epoch (`WorkspaceStopOptions.completion`). Core names an executor by its runtime
+    and its epoch (`WorkspaceStopOptions.completion`). sealant names an executor by its runtime
     identity (`resourceId`: the container, the Pod, the MicroVM), so Mend records it on the session
     at launch (migration 0081, `executor_resource_id`) from the create's `workspace.launch.runtime`,
     else `workspace.runtime()`, and maps the seal (which names the session the lease names) to it.
-    Core's `fix/capture-retention-policy` (fe06102, unreleased) has both; SDK 0.37.2 has neither, so
-    there Mend sends no completion at all and Core keeps what it cannot confirm. A seal alone still
-    ends a drain whose answer was lost. A stop whose answer says `drain.retained` reads
+    sealant's `fix/capture-retention-policy` (fe06102, unreleased) has both; SDK 0.37.2 has neither,
+    so there Mend sends no completion at all and sealant keeps what it cannot confirm. A seal alone
+    still ends a drain whose answer was lost. A stop whose answer says `drain.retained` reads
     `not saved · executor kept for recovery · <reason>` and stays a kept drain.
   - **Suggested:** release the SDK with `runtime()`, `launch` and `stop({ completion })`; nothing
     else changes here.
@@ -1353,7 +1354,7 @@ Two wire points on the session channel (sealantd `crates/sealant-capture/src/reg
     `executor_create_key`) before the create is asked and cleared by its answer. A refusal (4xx)
     clears it and frees the worktree; a lost answer, in the launch or after a restart (the reaper),
     asks `workspaces.findByIdempotencyKey(key)`: an executor found goes on the row and drains, none
-    found clears the key and releases the launch's claim. Core's `fix/capture-retention-policy`
+    found clears the key and releases the launch's claim. sealant's `fix/capture-retention-policy`
     (fe06102) has the key and the lookup; SDK 0.37.2 drops the key and cannot look, so there the
     ownership stays unresolved until the lease is released by hand.
   - **Suggested:** release the SDK with `create({ idempotencyKey })` and `findByIdempotencyKey`.
@@ -1377,7 +1378,7 @@ Two wire points on the session channel (sealantd `crates/sealant-capture/src/reg
     a cheap read. `SealantClient.captureStatus` calls `workspace.capture.status()` when the SDK has
     it and answers null otherwise: on 0.37.2 Mend learns of a failing snap only from a flush (a
     checkpoint, a handoff, a stop).
-  - **Suggested:** `workspace.capture.status()` (Core `fix/drain-before-stop` adds it), carrying
+  - **Suggested:** `workspace.capture.status()` (sealant `fix/drain-before-stop` adds it), carrying
     sealantd's `last_snap_error`, `snap_failing_since` (unix ms, `snapFailingSinceUnixMs`),
     `snaps_failed`, `unreadable` / `carried` / `unreadable_paths`, `bulk_building` and
     `register_refused` / `repairing`, with `complete` false while a class's last snap failed. Mend
@@ -1431,15 +1432,15 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
 - **The runtime deadline.**
   - **Needed:** the time the platform will end this executor (the MicroVM cap, a TTL, a reaper's
     expiry), so Mend can start a planned drain early enough: `deadline − (drain estimate + margin)`.
-  - **Today:** nothing in the SDK reports it; Core's MicroVM adapter computes it in `inspect`. Mend
-    falls back to `MEND_EXECUTOR_MAX_SECONDS` (unset = unknown) counted from the executor's own
+  - **Today:** nothing in the SDK reports it; sealant's MicroVM adapter computes it in `inspect`.
+    Mend falls back to `MEND_EXECUTOR_MAX_SECONDS` (unset = unknown) counted from the executor's own
     start, and to the old 7 h 30 replacement age when neither is known (`planExecutorCap`,
     `platformDeadline: null` in `SessionEngine.captureReaper`).
   - **Suggested:** `workspace.runtimeDeadline(): string | null` (ISO time), or the same on the
     workspace record. Mend reads it into `platformDeadline`, where it wins over the configuration.
-    Core's pending SDK (sealant#285) adds `runtimeDeadline()`; the swap-in is that one argument in
-    `SessionEngine.captureReaper`. Until then the lead before a stated cap also grows with what is
-    pending at the executor's observed throughput.
+    sealant's pending SDK (sealant#285) adds `runtimeDeadline()`; the swap-in is that one argument
+    in `SessionEngine.captureReaper`. Until then the lead before a stated cap also grows with what
+    is pending at the executor's observed throughput.
 - **A final flush with a deadline.**
   - **Needed:** a flush that snapshots bulk as well as small captures, ships everything, and returns
     only at `pending == 0`, a fence or a refusal, bounded by a deadline Mend names (or none).
@@ -1477,21 +1478,21 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
     status (or a 404) and releases the worktree lease only after that; if the platform does not
     report the termination within two minutes, the lease is left to lapse with the heartbeats.
   - **Suggested:** `stop()` resolves `{ state: "stopped" }` or `{ state: "draining", capture }` and
-    throws only when neither can be observed. Core's reapers (expiry, stranded, superseded,
+    throws only when neither can be observed. sealant's reapers (expiry, stranded, superseded,
     orphaned) drain a capture-sourced workspace before they terminate it too.
 
 ## 2026-09-27 · 0.37.2 · A stop that discards, and a workspace with no agent
 
 - **A stop that discards.**
   - **Needed:** the owner's "discard unsaved and stop" (audited on Mend's side) ends a workspace
-    whose captures cannot be saved. With Core draining every capture workspace before it stops it,
-    and keeping one whose queue does not move, a plain `workspace.stop()` never ends it.
+    whose captures cannot be saved. With sealant draining every capture workspace before it stops
+    it, and keeping one whose queue does not move, a plain `workspace.stop()` never ends it.
   - **Today:** `stop()` takes no options. Mend sends `stop({ discardUnsaved: true })` for the
-    discard (`SealantClient.stopWorkspace`); SDK 0.37.2 ignores it, Core drains and keeps the
+    discard (`SealantClient.stopWorkspace`); SDK 0.37.2 ignores it, sealant drains and keeps the
     workspace, and Mend answers
     `discard asked · the platform has not ended the workspace · nothing discarded yet`.
   - **Suggested:** `workspace.stop({ discardUnsaved: true })`: an explicit force stop that skips the
-    drain, audited on Core's side, answering `{ state: "stopped" }` once the runtime is gone.
+    drain, audited on sealant's side, answering `{ state: "stopped" }` once the runtime is gone.
 - **A workspace with no agent.**
   - **Needed:** a shell session is an open workbench with no harness of its own.
   - **Today:** `workspaces.create` requires a harness, so Mend names `codex()` for a shell and
@@ -1627,7 +1628,7 @@ now the same number by construction, which is what `MEND_CAPTURE_REQUIRE_SIZES=t
 **Shipped in sealantd 0.16.0** (sealant-sh/sealantd#83), on the session channel rather than the
 create request: `plan.get` may answer `sources`, each a gzipped tar at an object key with the
 archive's sha256, and the daemon lays them down beside the worktree at boot and at every
-`capture.replan`. Nothing in Core changed — a capture source already hands the daemon an endpoint
+`capture.replan`. Nothing in sealant changed — a capture source already hands the daemon an endpoint
 and a token, and everything else comes from the channel. Mend publishes each selected folder (`tar`)
 and reference (`git archive HEAD`) under the session's epoch prefix
 (`packages/sessions/src/capture-sources.ts`), so capture retention sweeps the archives with the
@@ -1646,8 +1647,8 @@ fenced epoch.
 
 **Shipped in Sealant 0.33.0 and enabled on the private AWS deployment with Mend 0.28.0.** Mend sends
 `workspaces.create({ services: { docker: true } })` through the public SDK for fresh workspaces.
-Core 0.32.0 rejected that requirement for MicroVMs, and its ordinary fixed guest image contained no
-Docker daemon. Installing a client package or enabling the host-Docker runtime is not a fix.
+sealant 0.32.0 rejected that requirement for MicroVMs, and its ordinary fixed guest image contained
+no Docker daemon. Installing a client package or enabling the host-Docker runtime is not a fix.
 
 - **Platform change:** an explicit, separately named Docker-capable image, selected only for Docker
   requests. The API and worker require the same pinned Docker image ARN/version. Ordinary workspaces
@@ -1682,8 +1683,8 @@ Docker daemon. Installing a client package or enabling the host-Docker runtime i
 
 ## 2026-09-15 · 0.32.0 · MicroVM image build requires an unpublished sealantctl binary
 
-**Observed in the AWS deployment attempt; upstream packaging fix prepared, not released.** Core main
-`abe4d6c`, also the `v0.32.0` release, stages `sealantd`, `sealantctl` and `socat` from
+**Observed in the AWS deployment attempt; upstream packaging fix prepared, not released.** sealant
+main `abe4d6c`, also the `v0.32.0` release, stages `sealantd`, `sealantctl` and `socat` from
 `ghcr.io/sealant-sh/sealantd:0.15.2` for its public MicroVM image recipe. The ARM64 image contains
 only `sealantd` and `socat`. Running the recipe fails before submitting an AWS build:
 `ships no /usr/local/bin/sealantctl`.
@@ -1827,8 +1828,8 @@ Decisions 2, 6, 8 and 9 (`docs/adr/0002-session-capture-store.md`, amended 2026-
 capture store the only session store, the shipped Docker bundle included. Mend's side is built; four
 platform-side gaps decide how much of it runs today.
 
-- **Core, Docker runtime: workspace containers on a configurable network.** **Shipped in 0.31.0**
-  (Core `feat(workspaces): attach Docker workspaces to a configured network`): the worker reads
+- **sealant, Docker runtime: workspace containers on a configurable network.** **Shipped in 0.31.0**
+  (sealant `feat(workspaces): attach Docker workspaces to a configured network`): the worker reads
   `SEALANT_DOCKER_WORKSPACE_NETWORK` and attaches every workspace container to it. The bundle pinned
   0.31.0 in #238 and pins 0.37.2 today, so a bundle session reaches `mend:3106` and `garage:3900`.
   The bundle (`deploy/docker/compose.v2.yaml`) runs Garage beside Postgres and tells executors to
@@ -1841,17 +1842,17 @@ platform-side gaps decide how much of it runs today.
   setting `SEALANT_DOCKER_WORKSPACE_NETWORK=<name>` that adds `--network <name>` to every
   `docker run` when the docker service is off (and `docker network connect` beside the per-workspace
   network when it is on). The bundle already sets the variable ahead of the runtime that reads it.
-- **Core, `capture` workspace source without a worktree yet (standby executors).** **Shipped in
-  0.31.0** (Core #233): `worktreeId` is optional on the capture source; a standby launches without
-  one and sealantd takes the worktree from the plan answer. Mend's standby alias remap is gone.
-  `workspaceCaptureSourceSchema.worktreeId` was `nonEmptyStringSchema`, and the SDK derived the
-  workspace name from it. A hot-pool standby is an executor launched before any worktree exists: it
-  materialises the project base and the shared dependency cache and is bound to a worktree at claim.
-  Mend launches it with the placeholder `standby-<hot workspace id>` and serves that id as an alias
-  of the claimed worktree on the channel (`plan.get` answers the base plan, the register's parent is
-  mapped to the chain head). **Suggested:** `worktreeId` optional on the capture source, with
-  sealantd taking the id from `plan.get`'s answer (its boot already accepts `plan.worktree_id` when
-  the env is unset); then the placeholder goes.
+- **sealant, `capture` workspace source without a worktree yet (standby executors).** **Shipped in
+  0.31.0** (sealant #233): `worktreeId` is optional on the capture source; a standby launches
+  without one and sealantd takes the worktree from the plan answer. Mend's standby alias remap is
+  gone. `workspaceCaptureSourceSchema.worktreeId` was `nonEmptyStringSchema`, and the SDK derived
+  the workspace name from it. A hot-pool standby is an executor launched before any worktree exists:
+  it materialises the project base and the shared dependency cache and is bound to a worktree at
+  claim. Mend launches it with the placeholder `standby-<hot workspace id>` and serves that id as an
+  alias of the claimed worktree on the channel (`plan.get` answers the base plan, the register's
+  parent is mapped to the chain head). **Suggested:** `worktreeId` optional on the capture source,
+  with sealantd taking the id from `plan.get`'s answer (its boot already accepts `plan.worktree_id`
+  when the env is unset); then the placeholder goes.
 - **sealantd, `crates/sealant-capture/src/materialize.rs`: materialise a delta, and re-plan after
   claim.** **Shipped in sealantd 0.15 / SDK 0.31.0** as `workspace.capture.replan()` (and
   `.flush()`): the hot pool claims through it — the claim takes the lease at a fresh epoch and the
@@ -1874,7 +1875,7 @@ platform-side gaps decide how much of it runs today.
 
 ## 2026-09-12 · 0.28.0 · Capture mode end to end on one machine: what the local proof found
 
-`scripts/capture-e2e.sh` passed on this machine (Mend in capture mode, Core PR sealant#231 from
+`scripts/capture-e2e.sh` passed on this machine (Mend in capture mode, sealant PR sealant#231 from
 source, sealantd PR #71 baked into the workspace image, Garage as the bucket, a Docker executor with
 no bind mount): adopt → session → capture 0 → launch (lease live 4.8 s) → an edit (first capture
 registered 3.1 s later) → checkpoint (5.2 s) → the diff served "observed at capture 1" →
@@ -1884,7 +1885,7 @@ uncommitted patches on a detached sealantd worktree for the proof — they are t
 
 - **sealantd, `crates/sealantd/src/boot/config.rs` `is_acceptable_secret_env_name`:** the secret env
   file rejects every `SEALANT_*` name, but the capture token is delivered in that very file as
-  `SEALANT_CAPTURE_TOKEN` (Core `CAPTURE_TOKEN_SECRET_ENV_NAME`, sealantd `TOKEN_KEY`). Every
+  `SEALANT_CAPTURE_TOKEN` (sealant `CAPTURE_TOKEN_SECRET_ENV_NAME`, sealantd `TOKEN_KEY`). Every
   capture boot fails with "entry \"SEALANT_CAPTURE_TOKEN\" is not an acceptable environment variable
   name". Exempt the daemon's own key (it is stripped from the harness env anyway).
 - **sealantd, `crates/sealant-capture/src/gitpack.rs` `reflog_tips`:** a freshly materialised
@@ -1900,16 +1901,16 @@ uncommitted patches on a detached sealantd worktree for the proof — they are t
   land in the git index (`git status` in the executor shows `A .sealantd/capture/index/*.json`), so
   they appear in Mend's change diff as added files. The daemon's own directory must stay out of the
   index tree it snapshots.
-- **Core, Docker runtime:** a killed container stays `ready` on the control plane (observed three
+- **sealant, Docker runtime:** a killed container stays `ready` on the control plane (observed three
   minutes after `docker kill`; the expiry reaper handles TTL, stop intents and superseded runtimes,
   not death). Mend now confirms a live status with a one-shot exec before treating an expired lease
   as a paused executor (`engine.ts` `workspaceAlive`). A runtime-observed status (or an `inspect`
   surface on the SDK) would make the probe unnecessary.
-- **Core, Docker runtime:** with the Docker service on, the executor joins a per-workspace network;
-  with it off, the default bridge. Neither resolves `host.docker.internal` (no `--add-host`), and a
-  Linux host firewall can drop bridge → host traffic — the endpoint and bucket URLs then need a
-  relay. An `--add-host host.docker.internal:host-gateway` on the executor is the small ask; the
-  firewall is the operator's.
+- **sealant, Docker runtime:** with the Docker service on, the executor joins a per-workspace
+  network; with it off, the default bridge. Neither resolves `host.docker.internal` (no
+  `--add-host`), and a Linux host firewall can drop bridge → host traffic — the endpoint and bucket
+  URLs then need a relay. An `--add-host host.docker.internal:host-gateway` on the executor is the
+  small ask; the firewall is the operator's.
 - **SDK 0.28.0 (in addition to the entry below):** **Shipped in 0.31.0** — the seam is gone
   (`client.ts` calls
   `workspaces.create({ source: { kind: "capture", endpoint, worktreeId?, token } })`). The facade
@@ -1931,7 +1932,7 @@ did not (Mend flushes before it derives a checkpoint instead).
   mounts: the daemon fetches the head plan from Mend's session channel, materialises onto its own
   disk, claims the lease and ships captures back.
 - **Today:** the published `@sealant/sdk` 0.28.0 types `CreateOptions.source` as `mount | standby`;
-  Core PR sealant#231 (branch `feat/capture-workspace-source`) adds the `capture` source and the
+  sealant PR sealant#231 (branch `feat/capture-workspace-source`) adds the `capture` source and the
   top-level `captureToken` (sealed into the boot env file as `SEALANT_CAPTURE_TOKEN`, beside
   `SEALANT_CAPTURE_ENDPOINT` / `SEALANT_CAPTURE_WORKTREE_ID`). Mend widens the create payload at ONE
   seam (`packages/sealant/src/client.ts`, `CaptureCreateOptions`) so it compiles against 0.28.0
@@ -1959,7 +1960,7 @@ acceptance remain separate work.
   Linux, Docker Desktop, or OrbStack. Workspaces must share selected store directories and Unix
   sockets through Linux-native volumes without a Mac process accessing those sockets. Mend keeps
   using the public SDK; users configure only Mend.
-- **Original observation in Core 0.27.0:** `DockerRuntimeAdapter.buildControlSocketMountArgs`,
+- **Original observation in sealant 0.27.0:** `DockerRuntimeAdapter.buildControlSocketMountArgs`,
   `workspaceMountArgs`, and `extraMountArgs` emit host bind paths. Launch material staging returns
   paths that the adapter also binds. Replacing only the Compose host bind with a named volume does
   not translate those container-visible paths into daemon-visible sources. Mend's SDK inputs include
@@ -2092,8 +2093,8 @@ handed-off row's summary after the fact.
 
 - **Needed:** Mend's one-line installer (`install.sh`) brings up Sealant as its control plane and
   replaces the Sealant web app with Mend (docs/SEALANT-IDENTITY.md). It wants to hand that part to
-  Core's installer and only layer Mend on top.
-- **Today:** `install.sh` in Core always pulls and starts `sealant-web`, waits on its port, and
+  sealant's installer and only layer Mend on top.
+- **Today:** `install.sh` in sealant always pulls and starts `sealant-web`, waits on its port, and
   writes only the four original secrets. So Mend's script re-implements the Sealant half: same
   install dir, compose asset/raw URLs, version precedence and `.env` helpers, but it pulls
   `api`/`worker`/`ssh-gateway` only, starts with `--scale web=0`, and additionally writes
@@ -2101,9 +2102,9 @@ handed-off row's summary after the fact.
   bytes base64) and `SEALANT_MOUNT_ALLOWED_STORE_ROOTS` (merged into any existing colon list). Two
   copies of that logic will drift — the legacy `~/.sealant` merge is already simplified on Mend's
   side.
-- **Suggested:** `SEALANT_NO_WEB=1` (or `SEALANT_SERVICES=…`) in Core's installer that skips the web
-  image, starts with `--scale web=0` and skips its health wait; generate `SEALANT_SERVICE_KEYS` and
-  `SEALANT_CREDENTIALS_KEY` the way the other secrets are generated; accept
+- **Suggested:** `SEALANT_NO_WEB=1` (or `SEALANT_SERVICES=…`) in sealant's installer that skips the
+  web image, starts with `--scale web=0` and skips its health wait; generate `SEALANT_SERVICE_KEYS`
+  and `SEALANT_CREDENTIALS_KEY` the way the other secrets are generated; accept
   `SEALANT_MOUNT_ALLOWED_STORE_ROOTS` as a merge-in setting. Mend's installer would then become
   `curl get.sealant.dev | SEALANT_NO_WEB=1 sh` plus the Mend-specific steps.
 
@@ -2194,10 +2195,10 @@ lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools st
   Containerfile copies the binary to `/usr/local/bin/sealantd` and then sets
   `ENTRYPOINT ["sealantd", "boot"]` — exec form with a bare name, resolved against the image's
   `ENV PATH`. `nixos/nix`'s PATH is only the nix profile dirs (no `/usr/local/bin`), and the builder
-  never emits its own `ENV PATH` (Core `packages/workspaces/src/buildkit/buildkit-builder.ts`, both
-  `renderContainerfile` and `renderCustomBaseContainerfile`). Verified against a live-built session
-  image. Fedora/arch/ubuntu bases include `/usr/local/bin`, which is why only nix trips it; a custom
-  base with a nonstandard PATH would hit the same wall.
+  never emits its own `ENV PATH` (sealant `packages/workspaces/src/buildkit/buildkit-builder.ts`,
+  both `renderContainerfile` and `renderCustomBaseContainerfile`). Verified against a live-built
+  session image. Fedora/arch/ubuntu bases include `/usr/local/bin`, which is why only nix trips it;
+  a custom base with a nonstandard PATH would hit the same wall.
 - **Suggested:** `ENTRYPOINT ["/usr/local/bin/sealantd", "boot"]` in both render paths, plus
   `ENV PATH=/usr/local/bin:$PATH` so in-container name lookups also resolve — sealantd's dotfiles
   manager auto-detection does its own `$PATH` search (`boot/dotfiles.rs which()`), and the docker
@@ -2206,7 +2207,8 @@ lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools st
 
 ## 2026-08-14 · 0.17.0 · Dotfiles were SDK-unreachable; archives added as the transport
 
-**Implemented at the source** — sealant-sh/core stack #167 (PRs #163–#166) + sealantd stack #52 (PRs
+**Implemented at the source** — sealant-sh/sealant stack #167 (PRs #163–#166) + sealantd stack #52
+(PRs
 
 # 50–#51), pending review/release as 0.18.0
 
@@ -2365,8 +2367,9 @@ Services design.
 - **Today:** the primitive is fully built in sealantd — `openForward`/`closeForward`
   (`sealant-protocol` command.rs, `sealant-network` forward.rs: direct-tcpip from inside the
   container, raw conduit bypassing the telemetry bus) — but its only consumer is the SSH gateway's
-  `direct-tcpip` handler. Zero surface in the Core HTTP API or `@sealant/sdk`; workspace containers
-  run on the default bridge with no published ports, so there is no other sanctioned path in.
+  `direct-tcpip` handler. Zero surface in the sealant HTTP API or `@sealant/sdk`; workspace
+  containers run on the default bridge with no published ports, so there is no other sanctioned path
+  in.
 - **Suggested:** a public SDK surface, e.g. `workspace.forward(port)` returning a duplex byte stream
   (WS-bridged like `session.attach`). Two follow-ons that complete the feature: sealantd observing
   listening sockets (it is PID 1) and emitting typed listen/unlisten record events so ports are
@@ -2385,16 +2388,16 @@ Services design.
 ## 2026-07-25 · 0.7.1 · Sealantd's secret scrub ate the platform's own credential injections (fixed in sealantd 0.6.1)
 
 - **Needed:** the injected `CLAUDE_CODE_OAUTH_TOKEN` visible inside harness/PTY processes.
-- **Today:** Core injects connected-account credentials as container env
+- **Today:** sealant injects connected-account credentials as container env
   (`planCredentialInjections`), but sealantd's boot passthrough dropped every secret-looking key
   before spawning harness children — so builds succeeded and the harness still launched
   credential-less. Codex only worked because its injection is a file (`~/.codex/auth.json`). Fixed
   at the source in sealantd#38 (v0.6.1): the documented contract keys survive the scrub, plus a
   generic `SEALANT_HARNESS_ENV_KEYS` declaration for future providers. Local worker pinned via
-  `SEALANT_SEALANTD_IMAGE` until Core bumps its default (`buildkit-builder.ts` pins 0.6.0).
-- **Suggested for Core:** bump the sealantd pin to 0.6.1, and set `SEALANT_HARNESS_ENV_KEYS` in the
-  runtime adapter whenever it plans env-kind credential injections, so the next provider needs no
-  daemon release.
+  `SEALANT_SEALANTD_IMAGE` until sealant bumps its default (`buildkit-builder.ts` pins 0.6.0).
+- **Suggested for sealant:** bump the sealantd pin to 0.6.1, and set `SEALANT_HARNESS_ENV_KEYS` in
+  the runtime adapter whenever it plans env-kind credential injections, so the next provider needs
+  no daemon release.
 
 ## 2026-07-25 · 0.7.1 · Env-injected claude credential doesn't authenticate the interactive TUI
 
@@ -2469,9 +2472,9 @@ and the SSE/polling output route is now legacy for terminals.
   interactive inside the PTY) until this lands.
 - **Suggested:** accept the credentials key in the mount blueprint path — or if it is genuinely
   unsupported there, reject at CREATE time with a clear message instead of a failed build job.
-- **Root cause (found in Core source):** the 0.7.0 SDK folds `credentials` into `spec.credentials`
-  (`sdk/dist/internal/blueprint.js`); the api resolves it into `runtime.credentialRefs`
-  (`apps/api/src/routes/workspaces/workspaces.module.ts` ~L1146:
+- **Root cause (found in sealant source):** the 0.7.0 SDK folds `credentials` into
+  `spec.credentials` (`sdk/dist/internal/blueprint.js`); the api resolves it into
+  `runtime.credentialRefs` (`apps/api/src/routes/workspaces/workspaces.module.ts` ~L1146:
   `body.credentials ?? resolvedSpec.credentials`) **but never removes `credentials` from
   `resolvedSpec`** before persisting the spec for the build job — so the worker's strict
   `parseWorkspaceBlueprint` (`packages/validators/src/workspaces/workspace-blueprint.ts`,
@@ -2589,7 +2592,7 @@ stages the resolved platform package and the runtime image carries it next to `d
   `require.resolve` and every inference call fails with `Native CLI binary for linux-x64 not found`.
   Verified: `npm install --no-save @anthropic-ai/claude-agent-sdk-linux-x64` inside the container
   makes inference work end-to-end (a container-local patch — lost on recreate).
-- **Suggested:** the runtime stage of `apps/api/Dockerfile` (Core repo) carries the platform
+- **Suggested:** the runtime stage of `apps/api/Dockerfile` (sealant repo) carries the platform
   package, version-locked to the bundled agent-sdk — e.g. copy the resolved package dir from the
   builder stage, or `npm install` it pinned in the runtime stage.
 
@@ -2619,7 +2622,7 @@ process-env parsers alias the sandbox-era names for a release.
 - **Suggested:** noting rather than asking — the internal-config comment already says this
   disappears once auth lands. Until then, surfacing the web user's id somewhere copyable in the
   Sealant UI (or aligning the default owner) would save the next self-hoster the archaeology.
-- **Resolved 2026-08-22 (Core `feat/service-principals`):** `SEALANT_SERVICE_KEYS` +
+- **Resolved 2026-08-22 (sealant `feat/service-principals`):** `SEALANT_SERVICE_KEYS` +
   `POST /v1/users` + `SealantConfig.ownerUserId`. Mend is a service principal and provisions one
   Sealant user per Mend account; `SEALANT_OWNER_USER_ID` is gone from Mend
   (`docs/SEALANT-IDENTITY.md`).
@@ -2686,9 +2689,9 @@ the dev-only direct layer remains for development.
 - **Today:** the only model-access path in the SDK is a harness inside a workspace
   (`workspace.harness.run/start`). Platform-side, the credential infrastructure is fully built
   (encrypted `connected_accounts`, server-side reference resolution, injection planner), but there
-  is no inference surface — and `docs/connected-accounts-design.md` (Core repo) deliberately forbids
-  raw model-API calls on stored credentials (ToS): internal features must go through the official
-  agent SDKs (e.g. Claude Agent SDK with `CLAUDE_CODE_OAUTH_TOKEN`).
+  is no inference surface — and `docs/connected-accounts-design.md` (sealant repo) deliberately
+  forbids raw model-API calls on stored credentials (ToS): internal features must go through the
+  official agent SDKs (e.g. Claude Agent SDK with `CLAUDE_CODE_OAUTH_TOKEN`).
 - **Suggested:** an inference endpoint on the control plane implemented **via the official agent
   SDKs** on server-resolved credentials — honoring the no-raw-calls rule — exposed as
   `sealant.inference.respond(...)` (+ streaming variant) with tool-calling support, taking the same
@@ -2786,19 +2789,19 @@ and source trail (M2) build on the typed kinds.
 ## 2026-11-01: portable client packages on custom workspace bases
 
 A resource-backed Service needs Postgres and Redis clients in its workspace. Family images resolve
-`postgresql-client` and `redis-cli` through Core's portable catalog. A custom base passes packages
-verbatim to its package manager, so `redis-cli` fails every Debian workspace build with
+`postgresql-client` and `redis-cli` through sealant's portable catalog. A custom base passes
+packages verbatim to its package manager, so `redis-cli` fails every Debian workspace build with
 `Unable to locate package redis-cli`. Mend now keeps automatic clients on family images; a custom
 image's owner supplies its native packages, such as `postgresql-client` and `redis-tools` on Debian.
 Please offer portable client packages on custom bases, or a capability that installs clients by
 command name without Mend guessing the base's distribution. Observed in isolated verify run
-`st-verify-res08-1031-2339-de43`, Core `9d686294966f`, sealantd `52228108c8bd`.
+`st-verify-res08-1031-2339-de43`, sealant `9d686294966f`, sealantd `52228108c8bd`.
 
 ## 2026-11-02: install GitHub CLI release with attachment support
 
 Mend embeds proof captures using `gh pr edit --attach`, introduced in GitHub CLI 2.102. Distro
-packages in session and short-lived images can predate that release. Core should install gh from its
-GitHub release in workspace images, rather than relying on the distro version. Mend probes
+packages in session and short-lived images can predate that release. sealant should install gh from
+its GitHub release in workspace images, rather than relying on the distro version. Mend probes
 `gh pr edit --help`, tries the owner's short-lived workspace if the live session lacks the flag, and
 reports `media unavailable · gh has no --attach` if neither supports it.
 
@@ -2812,27 +2815,27 @@ for at most sixty retries, using the same input bytes. It never retries an unkno
 Please expose the retry delay and the pre-write refusal guarantee on the public error contract so
 consumers can respect the budget window without inspecting SDK error causes.
 
-### Dispatch-time priority across Mend workflows (sealant#445 / Core PR #447)
+### Dispatch-time priority across Mend workflows (sealant#445 / sealant PR #447)
 
 Stop and follow-up delivery need interactive allowance for prerequisite lookups and retries too.
 Mend caches public SDK clients and handles, so priority must be evaluated at dispatch through
-`requestPriority: "normal" | "interactive" | (() => "normal" | "interactive")`. Core PR #447
+`requestPriority: "normal" | "interactive" | (() => "normal" | "interactive")`. sealant PR #447
 implements this public config extension; an explicit value or provider overrides operation defaults.
 Mend scopes person workflows and evaluates protocol input, protocol output and run-record polling
 against the hosted turn's current lifecycle. Starting and running turns use interactive allowance.
 Completion and Stop return retained readers to normal; a new turn promotes their next dispatch. Idle
 watchers, list/history reads and maintenance stay normal. A typed before-work refusal of an idle
-protocol read waits Core's retry delay, then reconnects from the next unread sequence, so it does
+protocol read waits sealant's retry delay, then reconnects from the next unread sequence, so it does
 not kill the agent before the next turn. This revises the earlier blanket rule that all long-lived
 streams use normal allowance. It requires the SDK release containing #447; no API-contract budget
-change or Core internal import is needed.
+change or sealant internal import is needed.
 
 ## 2026-11-05: caller-owned services need working DNS with private host resolvers
 
-An owner adding a service to the real Mend-run Executor on Core `0.40.0-next.791` (`b18cfe790b`)
+An owner adding a service to the real Mend-run Executor on sealant `0.40.0-next.791` (`b18cfe790b`)
 reaches the MCP server and discovers OAuth, then Executor fails building its imported service
 because `registry.npmjs.org` cannot resolve. The retained container uses Docker's `127.0.0.11`
-resolver, whose upstream is the host's LAN resolver (`192.168.1.1`). Core's caller OUTPUT guard
+resolver, whose upstream is the host's LAN resolver (`192.168.1.1`). sealant's caller OUTPUT guard
 rejects RFC1918 destinations. Executor's workerd reports `getaddrinfo(): DNS lookup failed` /
 `Temporary failure in name resolution` while installing `apps@0.0.1-beta.120`.
 
@@ -2853,12 +2856,12 @@ through `mend mcp`, and a held call approved in Mend completed. Evidence and rep
 `/tmp/exrun-dns-evidence.7mdz54y5/findings.md`. The earlier public-DNS trial remains historical
 evidence in `/tmp/exrun-evidence.I1cLj1/e/findings.md`.
 
-## 2026-11-08: selected writer models can outrun Core's inference runtime
+## 2026-11-08: selected writer models can outrun sealant's inference runtime
 
 T3's blank-message Commit sends a valid public `InferenceRespondOptions` request on the sender's
 subscription. On preview 134, both selected Codex models returned HTTP 500 from
 `POST /v1/inference/respond`; 69 other inference requests succeeded in that hour. That preview used
-`@sealant/sdk-next@0.40.0-next.794`; Mend now pins next.805. The next.794 Core API image bundles
+`@sealant/sdk-next@0.40.0-next.794`; Mend now pins next.805. The next.794 sealant API image bundles
 Codex `0.148.0`. The locally present next.805 API image, revision
 `838b41ce8b61d17a5a42c3292d2e4e9f102ff2e5`, also reports `codex-cli 0.148.0` from its packaged CLI.
 
@@ -2867,21 +2870,21 @@ instruction, a bounded JSON-encoded change preview as its prompt, and
 `responseFormat: { type: "json", schema: { type: "object", properties: { subject: { type: "string" }, body: { type: "string" } }, required: ["subject", "body"], additionalProperties: false } }`.
 No tools, effort, service-tier or other provider options are sent.
 
-A bounded native reproduction used the exact Codex binary from the pinned Core image, its inference
-flags and environment filtering, the existing local login and identical schema. No token was read or
-copied. It demonstrated:
+A bounded native reproduction used the exact Codex binary from the pinned sealant image, its
+inference flags and environment filtering, the existing local login and identical schema. No token
+was read or copied. It demonstrated:
 
 - `gpt-6-luna`: `The 'gpt-6-luna' model is not supported when using Codex with a ChatGPT account.`
 - `gpt-6-astra`:
   `The 'gpt-6-astra' model requires a newer version of Codex. Please upgrade to the latest app or CLI and try again.`
 - `gpt-5.6-luna`: exit 0 with valid subject/body JSON, using the same login and schema.
 
-Core's `codex-engine.ts` maps those CLI exits to an engine error, and
-`inference.module.ts:mapEngineError` maps that to HTTP 500. Core emitted no diagnostic error line
+sealant's `codex-engine.ts` maps those CLI exits to an engine error, and
+`inference.module.ts:mapEngineError` maps that to HTTP 500. sealant emitted no diagnostic error line
 for the box's failed requests. Reproduction evidence is in
-`/tmp/mend-t3-box3c-fixes.cWHrHj/inference-probe.log`; the exact Core source inspected is
+`/tmp/mend-t3-box3c-fixes.cWHrHj/inference-probe.log`; the exact sealant source inspected is
 `6a668f5bcbe31ba59fadd5f64ee926feebb563ef`, whose Codex inference engine last changed at `7e8d7898`.
-No real box access or full local Core HTTP reproduction is claimed.
+No real box access or full local sealant HTTP reproduction is claimed.
 
 Mend's session catalog offers both models, seeded in `packages/db/src/migrations.ts:2870-2872` and
 read by the gateway's `providersFromMend`. Workspace harnesses install `@openai/codex@latest`,
@@ -2891,41 +2894,42 @@ same existing login and output schema completed both selected models and `gpt-5.
 model acceptance, rather than a box session or app-server test. No ordinary-session failure was
 reproduced, and this PR does not change the session catalog or harness.
 
-Core should ship a current Codex for inference, or let inference use the same Codex that workspace
-harnesses use. Unsupported models should return a structured error with operator diagnostics. Mend
-tries the selected writer first. If Core returns 500, it tries once more with the ordinary
-session-naming model for that same provider, including its existing naming-model environment
-override. It keeps the same person and subscription, logs the fallback without the prompt or
-credentials, and never falls back on a refused login. If generation still fails, the person sees
-both models' public, Core-redacted error details, including the native unsupported-model or
-runtime-version reason, and that nothing was committed. Native JSON error wrappers are removed for
-display only. Retry decisions use the typed `InferenceInternalServerError` code or HTTP500 status.
-Round4-A on preview140 exposed a Mend adapter mistake: the public Effect SDK operation decodes
-Core's tagged HTTP500 response into `InferenceInternalServerError`, which Mend translates to
-`SealantPlatformError { code: "InferenceInternalServerError", status: null }`. The Promise facade
-supplies the numeric status, but Mend's inference path uses the Effect operation. A regression
-replays Core's exact public HTTP error body through the installed SDK, live person-dispatching
-client and inference provider. It first reproduced both box refusals with one request, then proved
-the same-person/same-provider fallback succeeds after recognizing the tag. It also verifies that a
-real HTTP409 `InferenceConflictError` is not retried and both native reasons survive if the fallback
-fails. Evidence is `/tmp/mend-t3-round4-fixes.eWmriS/commit-sdk-{red,green}.log`. This remains
-PARTIAL alongside the writer Effort/Fast SDK gap; custom commit messages are unaffected.
+sealant should ship a current Codex for inference, or let inference use the same Codex that
+workspace harnesses use. Unsupported models should return a structured error with operator
+diagnostics. Mend tries the selected writer first. If sealant returns 500, it tries once more with
+the ordinary session-naming model for that same provider, including its existing naming-model
+environment override. It keeps the same person and subscription, logs the fallback without the
+prompt or credentials, and never falls back on a refused login. If generation still fails, the
+person sees both models' public, sealant-redacted error details, including the native
+unsupported-model or runtime-version reason, and that nothing was committed. Native JSON error
+wrappers are removed for display only. Retry decisions use the typed `InferenceInternalServerError`
+code or HTTP500 status. Round4-A on preview140 exposed a Mend adapter mistake: the public Effect SDK
+operation decodes sealant's tagged HTTP500 response into `InferenceInternalServerError`, which Mend
+translates to `SealantPlatformError { code: "InferenceInternalServerError", status: null }`. The
+Promise facade supplies the numeric status, but Mend's inference path uses the Effect operation. A
+regression replays sealant's exact public HTTP error body through the installed SDK, live
+person-dispatching client and inference provider. It first reproduced both box refusals with one
+request, then proved the same-person/same-provider fallback succeeds after recognizing the tag. It
+also verifies that a real HTTP409 `InferenceConflictError` is not retried and both native reasons
+survive if the fallback fails. Evidence is
+`/tmp/mend-t3-round4-fixes.eWmriS/commit-sdk-{red,green}.log`. This remains PARTIAL alongside the
+writer Effort/Fast SDK gap; custom commit messages are unaffected.
 
 ## 2026-11-12: a session's `outputHighWater` is the run's telemetry, not its output
 
 The SDK documents `InteractiveSessionStatus.outputHighWater` as the "highest recorded output
-sequence". Core fills it with `TelemetryQuery.maxSequence(runId)`, which is the highest sequence of
-anything the run recorded (`apps/api/src/routes/sessions/sessions.module.ts:425-433` at `e1daa36d`).
-On a Boat install it rose every 12 to 17 seconds on a completely silent terminal. Mend's terminal
-idle stop on Boat (mend#1592) first read a rising high-water mark as new output, so quiet terminals
-never stopped.
+sequence". sealant fills it with `TelemetryQuery.maxSequence(runId)`, which is the highest sequence
+of anything the run recorded (`apps/api/src/routes/sessions/sessions.module.ts:425-433` at
+`e1daa36d`). On a Boat install it rose every 12 to 17 seconds on a completely silent terminal.
+Mend's terminal idle stop on Boat (mend#1592) first read a rising high-water mark as new output, so
+quiet terminals never stopped.
 
-Mend now reads the session's own output range (`sessionOutput`, from a cursor, one chunk). Core
+Mend now reads the session's own output range (`sessionOutput`, from a cursor, one chunk). sealant
 answers only the PTY output streams of that daemon session (`SESSION_OUTPUT_STREAM_KINDS`,
 `sessions.module.ts:84`), so a silent terminal answers no chunk. The high-water mark still places
 the cursor, which is safe because it is never behind the output. This costs one request per terminal
 per minute, plus one more when the terminal printed.
 
-Core should either document `outputHighWater` as the run's resume cursor, or report the session's
+sealant should either document `outputHighWater` as the run's resume cursor, or report the session's
 own last output sequence and the time of its last output chunk. Either would let a client tell
 "printed" from "recorded something" without polling the output range.

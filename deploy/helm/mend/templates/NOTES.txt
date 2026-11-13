@@ -83,7 +83,7 @@ Mirrors (ClusterIP only; the workspace NetworkPolicy of the SEALANT chart must l
 
 Executor private callback, never publish through an Ingress:
   {{ .Release.Name }}-executor-signin.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.executor.callbackPort }}
-Core API and worker need matching SEALANT_RESOURCE_CALLERS deployment configuration:
+sealant API and worker need matching SEALANT_RESOURCE_CALLERS deployment configuration:
   [{"kind":"kubernetes","name":"mend","namespace":{{ .Release.Namespace | quote }},"host":"{{ .Release.Name }}-executor-signin.{{ .Release.Namespace }}.svc.cluster.local","podLabels":{{ include "mend.component" (dict "root" . "name" "api") | fromYaml | toJson }},"callbackPorts":[{{ .Values.executor.callbackPort }}]}]
   SEALANT_RESOURCE_K8S_NAMESPACE={{ .Values.executor.servicesNamespace }}
-Mend-run Executor is refused on Kubernetes until Core's live acceptance (SLNT-544).
+Mend-run Executor is refused on Kubernetes until sealant's live acceptance (SLNT-544).

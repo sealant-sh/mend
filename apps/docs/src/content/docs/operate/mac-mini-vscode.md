@@ -249,8 +249,8 @@ next one opens that one. The extension says so before Remote-SSH would refuse yo
 the session's terminal when the server would let you in: always for your own session, and for
 someone else's only while its owner has shared control on, read-only. The Remote-SSH login is the
 launcher's own Linux user (`m` and 8 characters), on their home and logins, so an agent they start
-in its terminal runs as them. A server whose Sealant cannot bind the person (an older Core) logs in
-as root instead, and the session line says `Remote-SSH: root, Core can't bind your person`.
+in its terminal runs as them. A server whose Sealant cannot bind the person (an older sealant) logs
+in as root instead, and the session line says `Remote-SSH: root, sealant can't bind your person`.
 
 ## Troubleshooting
 
