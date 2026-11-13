@@ -1,13 +1,12 @@
 name: CI
 
-# No push trigger: every commit reaches main through the merge queue, whose merge_group run tests
-# exactly that commit and is the trusted cache writer. It runs what the group's pull requests
-# affect, or the full graph when they touch anything Turbo cannot attribute to a package; the
-# nightly run tests everything (docs/operations/merge-queue.md).
+# A pull request runs what its change affects. Every push to main runs the full graph on exactly
+# the commit that landed, and is the trusted cache writer. The nightly run tests everything again
+# with --force, reading no cache.
 on:
   pull_request:
-  merge_group:
-    types: [checks_requested]
+  push:
+    branches: [main]
   # Version Packages pull requests need an explicit dispatch because their bot-authored
   # pull_request runs stop for the repository's contributor approval policy before any job starts.
   # The release runs it on the head it will merge (docs/operations/next-channel.md, step 8).
@@ -33,10 +32,11 @@ permissions:
   contents: read
 
 env:
-  TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+  TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha }}
 
 # A pull request and a dispatched branch (such as the Version PR) keep only their newest run: an
-# older head's result is never what the required check reads.
+# older head's result is never what the required check reads. Pushes to main and nightly runs
+# each get their own group and are never cancelled: every commit that lands keeps its own result.
 concurrency:
   group:
     ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name ==
@@ -46,8 +46,8 @@ concurrency:
 
 jobs:
   # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
-  # repository, so neither waits for an x86 slot. On the box, merge group 38746126993's 10-second
-  # `checks` waited 13.4 minutes behind sealant and sealantd runs (docs/operations/merge-queue.md).
+  # repository, so neither waits for an x86 slot. On the box, run 38746126993's 10-second `checks`
+  # waited 13.4 minutes behind sealant and sealantd runs.
   changes:
     runs-on: ubuntu-24.04-arm
     env:
@@ -56,7 +56,6 @@ jobs:
       mobile: ${{ steps.scope.outputs.mobile }}
       packaging: ${{ steps.scope.outputs.packaging }}
       store: ${{ steps.scope.outputs.store }}
-      graph: ${{ steps.scope.outputs.graph }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -75,13 +74,10 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          QUEUE_BASE_SHA: ${{ github.event.merge_group.base_sha }}
-          QUEUE_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+        # Pushes to main, nightly and dispatched runs select every extra.
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then
             node scripts/ci-scope.mjs "$BASE_SHA" "$HEAD_SHA" >> "$GITHUB_OUTPUT"
-          elif [ "$EVENT_NAME" = merge_group ]; then
-            node scripts/ci-scope.mjs --merge-group "$QUEUE_BASE_SHA" "$QUEUE_HEAD_SHA" >> "$GITHUB_OUTPUT"
           else
             node scripts/ci-scope.mjs --all >> "$GITHUB_OUTPUT"
           fi
@@ -104,8 +100,6 @@ jobs:
       'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
-      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
-      CI_GRAPH: ${{ needs.changes.outputs.graph }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -203,8 +197,6 @@ jobs:
           --health-retries 10
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
-      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
-      CI_GRAPH: ${{ needs.changes.outputs.graph }}
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
       # Bound both levels on an 8-vCPU / 7-GiB runner, including its Postgres.
       # The shard runner permits two packages; Vitest 3 and 5 each get three workers.
@@ -265,8 +257,6 @@ jobs:
       'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
-      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
-      CI_GRAPH: ${{ needs.changes.outputs.graph }}
       VITEST_MAX_THREADS: "3"
       VITEST_MAX_FORKS: "3"
       VITEST_MAX_WORKERS: "3"
@@ -347,8 +337,6 @@ jobs:
       'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
-      # A merge group's graph from the changes job: affected or full (scripts/ci-scope.mjs).
-      CI_GRAPH: ${{ needs.changes.outputs.graph }}
       VITEST_MAX_THREADS: "3"
       VITEST_MAX_FORKS: "3"
       VITEST_MAX_WORKERS: "3"
