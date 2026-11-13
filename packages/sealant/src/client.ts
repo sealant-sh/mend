@@ -1,4 +1,4 @@
-import type { WorkspaceImageOs } from "@mend/domain";
+import { RuntimeSupport, type WorkspaceImageOs, WorkspaceRuntimes } from "@mend/domain";
 import { isChosenDefault, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
 import type { LoginClass } from "@mend/domain/workbench";
 import type {
@@ -25,7 +25,11 @@ import type {
   SealantFeatures,
 } from "@sealant/sdk";
 import { Sealant, SealantApiError, SealantError } from "@sealant/sdk";
-import type { Harness, SealantConfig } from "@sealant/sdk";
+import type {
+  Harness,
+  SealantConfig,
+  WorkspaceRuntimes as SdkWorkspaceRuntimes,
+} from "@sealant/sdk";
 import type { SshKey, WorkspaceSshInfo } from "@sealant/sdk";
 import {
   archiveConnectedAccountOp,
@@ -1423,6 +1427,12 @@ export class SealantClients extends Context.Service<
      */
     readonly controlPlaneFeatures: () => Effect.Effect<SealantFeatures, SealantPlatformError>;
     /**
+     * The runtimes Core launches workspaces on and what each supports (`workspaces.runtimes()`,
+     * Core 0.40.0-next.870), with the service key. Read it through `WorkspaceRuntimesReport`,
+     * which keeps the answer for a minute.
+     */
+    readonly workspaceRuntimes: () => Effect.Effect<WorkspaceRuntimes, SealantPlatformError>;
+    /**
      * Binds a Mend account's Sealant user to their person, once (`users.bindPerson`, sealant#348):
      * what Core checks `sshAsOwner` against. `bound` when Core holds exactly this binding,
      * `refused` when Core holds another (409: a different binding, or this person id or uid is
@@ -1840,6 +1850,10 @@ export const SealantClientsLive: Layer.Layer<
       return yield* wrap(() => admin.features());
     });
 
+    const workspaceRuntimes = Effect.fn("SealantClients.workspaceRuntimes")(function* () {
+      return toWorkspaceRuntimes(yield* wrap(() => admin.workspaces.runtimes()));
+    });
+
     const bindPerson = Effect.fn("SealantClients.bindPerson")(function* (
       userId: string,
       person: PersonBindingInput,
@@ -1864,6 +1878,7 @@ export const SealantClientsLive: Layer.Layer<
       imageKey,
       inspectImage,
       controlPlaneFeatures,
+      workspaceRuntimes,
       bindPerson,
       createBoatAccount: boatAccounts.create,
       listBoatAccounts: boatAccounts.list,
@@ -1957,6 +1972,13 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
     } satisfies SealantClientShape;
   }),
 );
+
+/** Core's report, as Mend's own type: the one place the SDK's shape is read. */
+export const toWorkspaceRuntimes = (report: SdkWorkspaceRuntimes): WorkspaceRuntimes =>
+  new WorkspaceRuntimes({
+    default: report.default,
+    runtimes: report.runtimes.map((support) => new RuntimeSupport(support)),
+  });
 
 /** Both live layers over the process environment, for the application composition root. */
 export const SealantLiveFromEnv: Layer.Layer<

@@ -44,6 +44,13 @@ export const sessionRuntimeFor = (
 };
 
 /**
+ * Whether a worktree's workspaces run on this server's own Docker, on this host's kernel: Docker,
+ * or no recorded runtime (Sealant picks, which on a local install is this host's Docker).
+ */
+export const workspaceOnThisServersDocker = (runtime: SessionRuntime | null): boolean =>
+  runtime === null || runtime === "docker";
+
+/**
  * The code default for new installs. The last five are what Mend's default shell profile
  * (`packages/sessions/src/shell-profile/zshrc`) looks for, which is why the default shell is zsh:
  * the prompt, the three zsh plugins and direnv, beside `bat` and `fzf`. `bun` is for pstack
@@ -132,13 +139,6 @@ export const defaultWorkspaceImage: FamilyWorkspaceImage = {
   services: { docker: true },
   screen: false,
 };
-
-/**
- * New Boat projects use Ubuntu, since Boat runs Ubuntu and Nix, with Docker inside the workspace on as
- * everywhere else. Existing projects keep their environment.
- */
-export const newProjectWorkspaceImage = (runtime: SessionRuntime | null): WorkspaceImage | null =>
-  runtime === "boat" ? { ...defaultWorkspaceImage, os: "ubuntu" } : null;
 
 /**
  * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's
