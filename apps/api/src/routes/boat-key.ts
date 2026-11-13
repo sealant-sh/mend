@@ -23,6 +23,7 @@ import {
 import {
   type AuditData,
   type BoatFailure,
+  type BoatKeyHolder,
   boatFailureLogLine,
   type BoatKeyOwner,
   type BoatKeyReport,
@@ -55,11 +56,11 @@ const logBoatRefusal = (error: BoatAccountRefusal | SealantPlatformError) =>
     : Effect.void;
 
 /** Boat's reason for refusing a key check, in the Boat failure table's words (SLNT-793). */
-const keyCheckWords = (failure: BoatFailure): string =>
-  boatProblemText(
-    { kind: failure.kind, failure },
-    { holder: "organization", place: "key-check" },
-  ).replace("\n", " ");
+const keyCheckWords = (failure: BoatFailure, holder: BoatKeyHolder = "organization"): string =>
+  boatProblemText({ kind: failure.kind, failure }, { holder, place: "key-check" }).replace(
+    "\n",
+    " ",
+  );
 
 const UNREACHABLE =
   "Mend could not reach this server's Sealant, so nothing changed. Try again in a minute.";
@@ -76,6 +77,10 @@ interface KeyWords {
   readonly starting: string;
   /** Where Boat sessions go once the key is gone. */
   readonly fallback: string;
+  /** Whose key it is in the Boat failure table. */
+  readonly holder: BoatKeyHolder;
+  /** Where the key is connected, replaced and checked. */
+  readonly page: string;
 }
 
 const ORGANIZATION_WORDS: KeyWords = {
@@ -85,6 +90,8 @@ const ORGANIZATION_WORDS: KeyWords = {
   racer: "Another owner",
   starting: "A Boat session in the organization is starting right now",
   fallback: "the server's key",
+  holder: "organization",
+  page: "Mend's Boat page (Settings, Organization, Boat)",
 };
 
 const PERSON_WORDS: KeyWords = {
@@ -94,6 +101,8 @@ const PERSON_WORDS: KeyWords = {
   racer: "Another of your requests",
   starting: "One of your Boat sessions is starting right now",
   fallback: "the organization's key, or the server's",
+  holder: "person",
+  page: "the Boat key card in Settings, Account",
 };
 
 const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
@@ -123,7 +132,7 @@ export const boatKeyFailure = (
         message:
           error.boat === null
             ? "Boat refused this key, so nothing changed. Check that you copied the whole key and that it has not expired or been revoked in Boat."
-            : keyCheckWords(error.boat),
+            : keyCheckWords(error.boat, words.holder),
       });
     case "key-unverified":
       return new BoatKeyRefused({
@@ -131,13 +140,13 @@ export const boatKeyFailure = (
         message:
           error.boat === null
             ? "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute."
-            : keyCheckWords(error.boat),
+            : keyCheckWords(error.boat, words.holder),
       });
     case "missing-permissions": {
       const missing = error.missingPermissions ?? [];
       return new BoatKeyRefused({
         reason: "missing-permissions",
-        message: `This Boat key lacks ${missing.length === 1 ? "a permission" : "permissions"} Mend needs${missing.length === 0 ? "" : `: ${missing.join(", ")}`}. Nothing changed. Create a key with the command on Mend's Boat page (Settings, Organization, Boat), which grants every permission Mend needs, and connect that one.`,
+        message: `This Boat key lacks ${missing.length === 1 ? "a permission" : "permissions"} Mend needs${missing.length === 0 ? "" : `: ${missing.join(", ")}`}. Nothing changed. Create a key with the command on ${words.page}, which grants every permission Mend needs, and connect that one.`,
       });
     }
     case "bad-request":
@@ -305,7 +314,7 @@ export const checkBoatKeyAccount = (
         unanswered:
           error.boat === null
             ? UNANSWERED
-            : `${keyCheckWords(error.boat)} The report shown is the last one Sealant observed.`,
+            : `${keyCheckWords(error.boat, words.holder)} The report shown is the last one Sealant observed.`,
       });
     }
     const failure = boatKeyFailure(error, words);

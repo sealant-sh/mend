@@ -701,6 +701,36 @@ describe("a person's own Boat key (SLNT-797)", () => {
     expect(core.map((call) => call.call)).toEqual(["check"]);
   });
 
+  it("words a refusal of the caller's own key with their own page and command", async () => {
+    boat.refuseNext(
+      refusal("key-refused", {
+        boat: {
+          kind: "key-expired",
+          retryable: false,
+          operation: "verify",
+          status: 403,
+          code: "api_key_expired",
+          message: "API key expired.",
+          requestId: "req_route2",
+          permission: null,
+          retryAfterSeconds: null,
+          retryAt: null,
+          billingUrl: null,
+        },
+      }),
+    );
+    const refused = await connectOwn("carol");
+    expect(refused.status).toBe(422);
+    expect(((await refused.json()) as { message: string }).message).toBe(
+      "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command in Settings, Account and connect that one there, or with mend boat connect --mine. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+    );
+    boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["host"] }));
+    const lacking = await connectOwn("carol");
+    expect(((await lacking.json()) as { message: string }).message).toContain(
+      "Create a key with the command on the Boat key card in Settings, Account, which grants",
+    );
+  });
+
   it("shows an owner that a member has their own key, and none of its details", async () => {
     await connectOwn("carol");
     const owner = await api.request("alice", "GET", "/api/organization/boat-key");

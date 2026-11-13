@@ -13871,7 +13871,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             error.boat === undefined
               ? Effect.void
               : Effect.logWarning(
-                  `session engine: ${boatFailureLogLine(error.boat)} · session ${sessionId} · ${boatAccountId === null ? "server's Boat key" : `organization's Boat key, Sealant account ${boatAccountId}`}`,
+                  `session engine: ${boatFailureLogLine(error.boat)} · session ${sessionId} · ${boatAccountId === null ? "server's Boat key" : `${boatKey?.decidedBy === "person" ? "its owner's own" : "organization's"} Boat key, Sealant account ${boatAccountId}`}`,
                 ),
           ),
           Effect.mapError((error) => {
@@ -13883,8 +13883,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 cause: error.cause,
                 ...(error.provider === undefined ? {} : { provider: error.provider }),
                 ...(error.boat === undefined ? {} : { boat: error.boat }),
+                // Whose key decided, as the session records it (`Session.boatKey`).
                 message: boatProblemText(problem, {
-                  holder: boatAccountId === null ? "server" : "organization",
+                  holder: boatKey?.decidedBy ?? "server",
                   place: "launch",
                 }),
               });

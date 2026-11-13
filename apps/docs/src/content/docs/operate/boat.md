@@ -297,6 +297,7 @@ What a session in an organization with its own key reads, for each reason Boat g
 start. The person who runs this Mend server can read Boat's own reason and request id in the server
 log, to fix it or to give Boat's support.
 <!-- boat-failure-words:end -->
+
 ## Your own Boat key
 
 Anyone in an organization can connect a Boat key of their own, in Settings, Account, or with

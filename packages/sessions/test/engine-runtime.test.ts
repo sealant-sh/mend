@@ -664,7 +664,11 @@ describe("the server's session runtime choice", () => {
     );
   });
 
-  for (const holder of ["organization", "server"] satisfies ReadonlyArray<BoatKeyHolder>) {
+  for (const holder of [
+    "organization",
+    "server",
+    "person",
+  ] satisfies ReadonlyArray<BoatKeyHolder>) {
     for (const kind of BOAT_FAILURE_KINDS) {
       it(`ends a Boat launch Boat refused for ${kind} on the ${holder}'s key with the table's words`, async () => {
         const logs: Array<string> = [];
@@ -695,8 +699,12 @@ describe("the server's session runtime choice", () => {
             {
               sessionRuntime: "boat",
               workspaceImage: ubuntu,
-              ...(holder === "organization"
-                ? { boatAccounts: new Map([["org-test", "core-boat-acme"]]) }
+              ...(holder === "server"
+                ? {}
+                : { boatAccounts: new Map([["org-test", "core-boat-acme"]]) }),
+              // The session's owner's own key decides over the organization's (SLNT-797).
+              ...(holder === "person"
+                ? { personBoatAccounts: new Map([["org-test/user-fixture", "core-boat-own"]]) }
                 : {}),
               sealantLayer: lifecycleLayer([], {
                 captureOps: {
