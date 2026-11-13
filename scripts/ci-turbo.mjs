@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 
 /**
- * Shared event policy for static checks and both processes in each test lane. A pull request runs
+ * Shared event policy for static checks and every process in the test lanes. A pull request runs
  * what it affects; a push to main runs the full graph and is the trusted cache writer; the nightly
  * schedule runs the full graph forced.
  */

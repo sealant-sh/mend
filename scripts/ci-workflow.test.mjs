@@ -41,6 +41,7 @@ const completed = (mobile = "true", packaging = "true", store = "true") => ({
   changes: { result: "success", outputs: { mobile, packaging, store } },
   static: { result: "success" },
   "test-engines": { result: "success" },
+  "test-engines-b": { result: "success" },
   "test-clients-a": { result: "success" },
   "test-clients-b": { result: "success" },
   packaging: { result: packaging === "false" ? "skipped" : "success" },
@@ -66,6 +67,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
     "changes",
     "static",
     "test-engines",
+    "test-engines-b",
     "test-clients-a",
     "test-clients-b",
     "packaging",
@@ -107,6 +109,7 @@ test("static checks, all test shards and packaging can start without another exe
   for (const name of [
     "static",
     "test-engines",
+    "test-engines-b",
     "test-clients-a",
     "test-clients-b",
     "packaging",
@@ -160,17 +163,24 @@ test("store-image-git runs the store's handoff tests under the runtime stage's o
 });
 
 test("required database and live-adapter evidence keeps its preparation and worker caps", () => {
-  const engines = jobs["test-engines"];
-  assert.equal(engines.services.postgres.image, "postgres:17");
-  assert.equal(engines.env.MEND_TEST_DATABASE_URL, "postgres://mend:mend@localhost:5432/mend");
-  const durability = engines.steps.findIndex((step) => step.run?.includes("fsync = off"));
-  assert.ok(
-    durability !== -1 &&
-      durability <
-        engines.steps.findIndex((step) => step.run === "node scripts/ci-shards.mjs engines"),
-    "the throwaway Postgres runs without a flush per commit before the database tests",
-  );
-  for (const name of ["test-engines", "test-clients-a", "test-clients-b"]) {
+  for (const lane of ["engines", "engines-b"]) {
+    const engines = jobs[`test-${lane}`];
+    assert.equal(engines.services.postgres.image, "postgres:17");
+    assert.equal(engines.env.MEND_TEST_DATABASE_URL, "postgres://mend:mend@localhost:5432/mend");
+    const durability = engines.steps.findIndex((step) => step.run?.includes("fsync = off"));
+    assert.ok(
+      durability !== -1 &&
+        durability <
+          engines.steps.findIndex((step) => step.run === `node scripts/ci-shards.mjs ${lane}`),
+      "the throwaway Postgres runs without a flush per commit before the database tests",
+    );
+    assert.ok(
+      commands(`test-${lane}`).some((command) =>
+        command.includes("mend-shell-profile-test:alpine-3.22"),
+      ),
+    );
+  }
+  for (const name of ["test-engines", "test-engines-b", "test-clients-a", "test-clients-b"]) {
     for (const variable of ["VITEST_MAX_THREADS", "VITEST_MAX_FORKS", "VITEST_MAX_WORKERS"]) {
       assert.equal(jobs[name].env[variable], "3", `${name}/${variable}`);
     }
@@ -178,20 +188,18 @@ test("required database and live-adapter evidence keeps its preparation and work
   }
   for (const command of [
     "node scripts/ci-shards.mjs engines",
+    "node scripts/ci-shards.mjs engines-b",
     "pnpm run test:aws-shell",
     "pnpm run test:s3-contract",
     "node --test scripts/ci-shards.test.mjs",
   ]) {
-    const owner = command.startsWith("node scripts/ci-shards") ? engines : jobs["test-clients-a"];
+    const owner = command.startsWith("node scripts/ci-shards")
+      ? jobs[`test-${command.split(" ").at(-1)}`]
+      : jobs["test-clients-a"];
     const step = owner.steps.find((candidate) => withoutReporterOptions(candidate.run) === command);
     assert.ok(step, command);
     assert.equal(step.if, undefined, `${command} must remain independent of packaging scope`);
   }
-  assert.ok(
-    commands("test-engines").some((command) =>
-      command.includes("mend-shell-profile-test:alpine-3.22"),
-    ),
-  );
   assert.ok(
     commands("test-clients-a").some((command) =>
       command.includes("playwright-core install --with-deps --only-shell chromium"),
@@ -372,7 +380,7 @@ test("native commands keep ordinary assertion output beside the CI file guard an
 const testReportDir = "${{ github.workspace }}/.ci-reports/test";
 const runsTests = (name) =>
   commands(name).some((command) =>
-    /^node --test |^node scripts\/ci-shards\.mjs (engines|clients-a|clients-b)$|^pnpm --filter \S+ test:integration$/.test(
+    /^node --test |^node scripts\/ci-shards\.mjs (engines|engines-b|clients-a|clients-b)$|^pnpm --filter \S+ test:integration$/.test(
       command,
     ),
   );
@@ -382,6 +390,7 @@ test("every job that runs tests uploads its per-file test timings, even when tes
     "changes",
     "static",
     "test-engines",
+    "test-engines-b",
     "test-clients-a",
     "test-clients-b",
     "packaging",
@@ -457,7 +466,13 @@ test("PRs have exact history; pushes to main, manual and nightly events retain t
   assert.equal(jobs.checks.name, undefined, "the required check context must remain checks");
   assert.equal(workflow.env.TURBO_SCM_BASE, "${{ github.event.pull_request.base.sha }}");
   assert.equal(jobs.changes.outputs.graph, undefined);
-  for (const name of ["static", "test-engines", "test-clients-a", "test-clients-b"]) {
+  for (const name of [
+    "static",
+    "test-engines",
+    "test-engines-b",
+    "test-clients-a",
+    "test-clients-b",
+  ]) {
     assert.equal(
       jobs[name].steps.find((step) => step.uses?.startsWith("actions/checkout@")).with[
         "fetch-depth"
@@ -590,6 +605,7 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
     "test-clients-a",
     "test-clients-b",
     "test-engines",
+    "test-engines-b",
   ]);
   assert.doesNotMatch(
     readFileSync(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8"),
@@ -600,6 +616,7 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
     "node scripts/ci-shards.mjs clients-a",
     "node scripts/ci-shards.mjs clients-b",
     "node scripts/ci-shards.mjs engines",
+    "node scripts/ci-shards.mjs engines-b",
     "node scripts/ci-turbo.mjs build typecheck lint",
   ]);
 });
@@ -1039,6 +1056,7 @@ test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatc
   const lanes = [
     "static",
     "test-engines",
+    "test-engines-b",
     "test-clients-a",
     "test-clients-b",
     "packaging",

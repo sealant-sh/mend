@@ -232,6 +232,75 @@ jobs:
           include-hidden-files: true
           if-no-files-found: ignore
           retention-days: 14
+  test-engines-b:
+    needs: changes
+    if: ${{ !cancelled() }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
+      }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: mend
+          POSTGRES_PASSWORD: mend
+          POSTGRES_DB: mend
+        ports:
+          - 5432:5432
+        options:
+          --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+    env:
+      CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
+      MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+      VITEST_MAX_THREADS: "3"
+      VITEST_MAX_FORKS: "3"
+      VITEST_MAX_WORKERS: "3"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.head_sha }}
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Configure Turbo cache and runtime identity
+        run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      - name: Build isolated zsh fixture for default shell-profile tests
+        run:
+          docker build -t mend-shell-profile-test:alpine-3.22
+          packages/sessions/test/fixtures/shell-profile
+      - name: Run the throwaway Postgres without durability
+        run:
+          docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
+          fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
+          full_page_writes = off" -c "SELECT pg_reload_conf()"
+      - name: Sessions tests, native shard 2/2
+        run: node scripts/ci-shards.mjs engines-b
+        env:
+          CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
+          CI_MEASUREMENT_RUNNER: ${{ inputs.runner }}
+      - name: Archive Turbo task hashes and cache outcomes
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: turbo-${{ github.job }}
+          path: .turbo/runs/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Archive per-file test timings
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: test-report-${{ github.job }}
+          path: .ci-reports/test/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
   test-clients-a:
     needs: changes
     if: ${{ !cancelled() }}
@@ -257,8 +326,6 @@ jobs:
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
       - name: Install Chromium for desktop browser tests
-        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
-        # install the browser alone rather than fail the lane before a test runs.
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
           || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
@@ -408,8 +475,6 @@ jobs:
 
           docker pull "$image"
       - name: Install Chromium for verification evidence tests
-        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
-        # install the browser alone rather than fail the lane before a test runs.
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
           || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
@@ -502,6 +567,7 @@ jobs:
       - changes
       - static
       - test-engines
+      - test-engines-b
       - test-clients-a
       - test-clients-b
       - packaging
@@ -518,8 +584,8 @@ jobs:
 
           const jobs = JSON.parse(process.env.CI_JOB_RESULTS);
 
-          for (const name of ["changes", "static", "test-engines", "test-clients-a",
-          "test-clients-b"]) {
+          for (const name of ["changes", "static", "test-engines", "test-engines-b",
+          "test-clients-a", "test-clients-b"]) {
             if (jobs[name]?.result !== "success") {
               throw new Error(`${name} must succeed, observed ${jobs[name]?.result ?? "missing"}`);
             }
