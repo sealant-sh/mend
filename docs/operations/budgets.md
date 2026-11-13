@@ -72,4 +72,4 @@ resumes asks again for the bytes it still needs.
   library buffers a frame up to its own 100 MiB default before Mend sees it. Mend then refuses to
   forward it and closes the socket. The frame budget and the connection budget together bound the
   total; they do not bound the single frame. What would close this: a `maxPayload` option upstream.
-- Core enforces its own budgets behind these (CORE-04). Mend's come first and say more.
+- sealant enforces its own budgets behind these (CORE-04). Mend's come first and say more.

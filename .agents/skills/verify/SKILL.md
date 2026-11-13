@@ -1,19 +1,19 @@
 ---
 name: verify
 description:
-  "Drive Mend the way a user does and keep evidence: a full stack (sealantd, Sealant Core, Mend)
-  built from source inside one Mend session, its web tunnelled to this machine, its CLI run in the
-  session. Use to prove a change to Mend's web or CLI works, to verify a PR that spans Mend, Core
+  "Drive Mend the way a user does and keep evidence: a full stack (sealantd, sealant, Mend) built
+  from source inside one Mend session, its web tunnelled to this machine, its CLI run in the
+  session. Use to prove a change to Mend's web or CLI works, to verify a PR that spans Mend, sealant
   and sealantd at once, or to run the box check before a feature merges."
 ---
 
 # Verify Mend
 
-A verification run builds the **stack** (sealantd, Core and Mend, each at a ref) in one outer Mend
-session's Docker, drives a feature through the inner web and CLI, and keeps the **evidence** on this
-machine. The stack is `scripts/verify-stack/stack.mjs`; `docs/operations/verify-stack.md` explains
-how it builds. The recipes, one per feature, are the **feature map**: `features/` beside this file,
-`features/README.md` its index (Drive says where to read it until it lands here).
+A verification run builds the **stack** (sealantd, sealant and Mend, each at a ref) in one outer
+Mend session's Docker, drives a feature through the inner web and CLI, and keeps the **evidence** on
+this machine. The stack is `scripts/verify-stack/stack.mjs`; `docs/operations/verify-stack.md`
+explains how it builds. The recipes, one per feature, are the **feature map**: `features/` beside
+this file, `features/README.md` its index (Drive says where to read it until it lands here).
 
 Every proof line is an **observation**: what was run, what was seen, where it is kept ("inner
 session bb2cdbf7 · completed · observed"). "Works", "passes", "safe" and "ready to merge" are
@@ -250,14 +250,14 @@ first. The helpers start `mend` through `PATH`, so they always meet the guard.
    ```
 
    For refs from open PRs, add sources after `serve`: `--sealant '#345' --sealantd '#152'`, or
-   `--mend '#610'`. Each source is a path, `#<pr>`, a branch, tag or commit; Core and sealantd also
-   take `pinned`. Without one, Mend builds from the session's checkout, and Core and sealantd build
-   from `main`, or from `/workspace/repos/<name>` after `mend repo add`. While Core's `main` uses a
-   newer Effect than Mend's (Core main on 4.0.5, Mend main on 4.0.0-beta.93 on 2026-10-18), Mend's
-   image build fails with `Could not resolve "effect/http"` from the packed `@sealant/sdk`: unless
-   the change under test needs Core's `main`, pass `--sealant pinned --sealantd pinned`. From inside
-   a Mend session of `mend`, the same stack is `mend service stack`: the `mend.toml` recipe,
-   port 3305.
+   `--mend '#610'`. Each source is a path, `#<pr>`, a branch, tag or commit; sealant and sealantd
+   also take `pinned`. Without one, Mend builds from the session's checkout, and sealant and
+   sealantd build from `main`, or from `/workspace/repos/<name>` after `mend repo add`. While
+   sealant's `main` uses a newer Effect than Mend's (sealant main on 4.0.5, Mend main on
+   4.0.0-beta.93 on 2026-10-18), Mend's image build fails with `Could not resolve "effect/http"`
+   from the packed `@sealant/sdk`: unless the change under test needs sealant's `main`, pass
+   `--sealant pinned --sealantd pinned`. From inside a Mend session of `mend`, the same stack is
+   `mend service stack`: the `mend.toml` recipe, port 3305.
 
    Since mend#651, `--wait` waits through the build: it exits 0 once the port answers (a cold stack
    took 123 s here), 2 if the stack's process ended first, 3 if the session's workspace did, and 124
@@ -370,8 +370,8 @@ when every `ok`/`NOT` line holds:
 
 - **What each service ran.** `report` names the image every stack container ran (inner Mend,
   Postgres, Garage, the mirrors, the inner sessions' workspaces) and every image the stack named
-  that no container shows (Core's and sealantd's builds, the fixture's base, the network guard): its
-  reference, image id, repo digests and, for a Docker Hub tag, the digest Docker Hub names now
+  that no container shows (sealant's and sealantd's builds, the fixture's base, the network guard):
+  its reference, image id, repo digests and, for a Docker Hub tag, the digest Docker Hub names now
   (`hub`). The doctor writes them to `images.json` and prints one
   `image · <service> · <reference> · <id> · …` line each, ending `Hub's current`, `Hub has <digest>`
   or `Docker Hub did not answer`; then each `held` line from `up`. A digest says where a pulled
@@ -847,9 +847,9 @@ What differs from a `mend` on your own machine:
   `stack.mjs mend` on the session's terminal exits 1 for any inner failure, whatever code the inner
   CLI returned. There, assert on 0 or not-0, and read the message from stdout.
 - **The platform's argv rules.** At most 64 words. Since sealant#347 (Mend #653) only the program
-  must be non-empty and trimmed; an outer server on an older Core refuses any word that is empty or
-  starts or ends with whitespace, before it creates anything. Every script this skill passes as one
-  word (`sh -c '…'`, the doctor's) starts and ends with a command, so either rule takes it; trim
+  must be non-empty and trimmed; an outer server on an older sealant refuses any word that is empty
+  or starts or ends with whitespace, before it creates anything. Every script this skill passes as
+  one word (`sh -c '…'`, the doctor's) starts and ends with a command, so either rule takes it; trim
   yours the same way.
 
 ## Evidence

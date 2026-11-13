@@ -218,7 +218,7 @@ const toInstance = Effect.fnUntraced(function* (
   } satisfies StoredResourceInstance;
 });
 
-/** Writes serialize with project removal; no database lock spans a registry or Core call. */
+/** Writes serialize with project removal; no database lock spans a registry or sealant call. */
 export const ResourcesRepoLive: Layer.Layer<ResourcesRepo, never, MendDB> = Layer.effect(
   ResourcesRepo,
   Effect.gen(function* () {

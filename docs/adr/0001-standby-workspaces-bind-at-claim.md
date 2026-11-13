@@ -1,7 +1,7 @@
 # Standby workspaces: mount the parent, bind the worktree at claim
 
-Status: accepted 2026-09-02. Cross-repo: sealantd (bind operation, boot), Sealant Core (standby
-source, bindable mounts, `workspace.bind`), Mend (hot pool, linked projects).
+Status: accepted 2026-09-02. Cross-repo: sealantd (bind operation, boot), sealant (standby source,
+bindable mounts, `workspace.bind`), Mend (hot pool, linked projects).
 
 ## Context
 
@@ -21,7 +21,7 @@ at a hidden path instead of one worktree at `/workspace/repo`. The working direc
 until Mend **binds** it: at claim, Mend creates or picks the worktree on the host and asks sealantd
 to point `/workspace/repo` at the matching subdirectory of the root. The bind is a symlink inside
 the container plus a git `safe.directory` entry for the real path; sealantd records it and
-re-applies it on restart, and Core records it on the workspace so a relaunch passes it at boot.
+re-applies it on restart, and sealant records it on the workspace so a relaunch passes it at boot.
 
 The same shape generalises to any extra mount: a mount declared **bindable** mounts its host path as
 a root at a hidden path, and its declared `mountPath` becomes a symlink bound later. Mend uses this

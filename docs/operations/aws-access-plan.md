@@ -16,15 +16,15 @@ standalone Tailscale Kubernetes Operator Ingress. Keep the Kubernetes API and ev
 outside this user-access path. This removes everyday port-forwarding without changing who is trusted
 to operate the instance. Teammates require a later authorization and revocation release.
 
-| Endpoint or audience                          | Decision today                                                                         |
-| --------------------------------------------- | -------------------------------------------------------------------------------------- |
-| Existing private operator access              | Preserve unchanged.                                                                    |
-| Mend over a new tailnet endpoint              | Proposed next method, owner only; blocked on gates G1-G5 below.                        |
-| Teammates on that endpoint                    | No-go until G6 passes. The reviewed team snapshot is not ready to ship.                |
-| Mend on the public Internet                   | No-go for 0.27.5 and reviewed main. G7 requires a separate decision after remediation. |
-| Core API on the public Internet               | Separate no-go for 0.32.0. Mend exposure approval would not authorize Core exposure.   |
-| Core API for ordinary tailnet users           | No-go. Keep Core behind the Mend backend's service identity.                           |
-| Registry, DB, Kubernetes API, executor daemon | No new ordinary-user exposure under either access method.                              |
+| Endpoint or audience                          | Decision today                                                                          |
+| --------------------------------------------- | --------------------------------------------------------------------------------------- |
+| Existing private operator access              | Preserve unchanged.                                                                     |
+| Mend over a new tailnet endpoint              | Proposed next method, owner only; blocked on gates G1-G5 below.                         |
+| Teammates on that endpoint                    | No-go until G6 passes. The reviewed team snapshot is not ready to ship.                 |
+| Mend on the public Internet                   | No-go for 0.27.5 and reviewed main. G7 requires a separate decision after remediation.  |
+| sealant API on the public Internet            | Separate no-go for 0.32.0. Mend exposure approval would not authorize sealant exposure. |
+| sealant API for ordinary tailnet users        | No-go. Keep sealant behind the Mend backend's service identity.                         |
+| Registry, DB, Kubernetes API, executor daemon | No new ordinary-user exposure under either access method.                               |
 
 Evidence labels in this document mean:
 
@@ -40,7 +40,7 @@ Observed source baseline is Mend `6a2c50ec4f8fa33c287ef7945bb36b2346ae5924`. AWS
 from `feat/aws-capture-deploy`, PR [#258](https://github.com/sealant-sh/mend/pull/258), recorded
 deployment commit `dfef71f3d`. Its existing local changes were not edited. Official Tailscale and
 Let's Encrypt references were fetched on 2026-09-16; links are collected at the end. Documentation
-verification is not a live Tailscale test. Companion reviews inspected deployed Mend 0.27.5, Core
+verification is not a live Tailscale test. Companion reviews inspected deployed Mend 0.27.5, sealant
 0.32.0 and an isolated unfinished team snapshot based before the capture-store changes. Their local
 test results are reported evidence, not tests repeated by this documentation pass. Sensitive finding
 details stay in the private handoff; this document records defensive requirements only.
@@ -50,19 +50,19 @@ details stay in the private handoff; this document records defensive requirement
 Every gate below is blocked or unverified today. A passing source test is not evidence that a fix
 has reached the cluster. Record the exact release, test result and operator approval for each gate.
 
-| Gate | Scope                              | Evidence needed before proceeding                                                                                                                                                                                                                                                                                 |
-| ---- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| G1   | Owner-only perimeter               | Approved tailnet, named owner/devices, billing, CT/name consent, maintenance window, exact chart/image pins; complete policy denies everyone else and excludes administrative services.                                                                                                                           |
-| G2   | Mend origin and enrollment         | Chart regression proves matching `APP_URL`/alternate origins on API and web without backend secrets in web. Deliberate bootstrap/closed registration and account inventory. Do not invent an unsupported signup-disable environment variable.                                                                     |
-| G3   | Runtime and credential containment | Mend/Core audit dispositions on the chosen release; enforced capture byte budgets, bounded work/requests/streams, credential-to-source binding, restricted Git/mount policy, no administrative reachability from executors. Any residual owner-only risk needs explicit operator acceptance, not silent deferral. |
-| G4   | Network and transport              | Pinned generated-proxy resources and selectors, additive-policy review, deployed CNI version/mode, startup-through-convergence allow/deny proof, trusted-forwarding-header tests, private-only Service/Ingress inventory, certificate issuance/renewal and secure cookies.                                        |
-| G5   | Owner acceptance and recovery      | Laptop and cellular phone, CLI login, sustained WSS/SSE, reconnect, own-device revocation and rollback pass. Preserve operator access, live sessions and capture flush. No paid tests without approval.                                                                                                           |
-| G6   | Teammate rollout                   | Current-main team authorization, operator roles, per-user credentials, live revocation, migration/deletion invariants and two-account capture-mode tests pass. See the sequence below.                                                                                                                            |
-| G7   | Public Mend                        | G1-G6 as applicable plus public abuse/spend controls, independent security reassessment, recovery/retention and approved public-edge/domain design. Private-network containment cannot stand in for application authorization.                                                                                    |
-| G8   | Public Core                        | Not part of this plan. A separate authenticated-delegation design must fail closed, derive mandatory owner scope, enforce budgets, bind credentials to destinations, and pass independent tests before any exposure proposal.                                                                                     |
+| Gate | Scope                              | Evidence needed before proceeding                                                                                                                                                                                                                                                                                    |
+| ---- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G1   | Owner-only perimeter               | Approved tailnet, named owner/devices, billing, CT/name consent, maintenance window, exact chart/image pins; complete policy denies everyone else and excludes administrative services.                                                                                                                              |
+| G2   | Mend origin and enrollment         | Chart regression proves matching `APP_URL`/alternate origins on API and web without backend secrets in web. Deliberate bootstrap/closed registration and account inventory. Do not invent an unsupported signup-disable environment variable.                                                                        |
+| G3   | Runtime and credential containment | Mend/sealant audit dispositions on the chosen release; enforced capture byte budgets, bounded work/requests/streams, credential-to-source binding, restricted Git/mount policy, no administrative reachability from executors. Any residual owner-only risk needs explicit operator acceptance, not silent deferral. |
+| G4   | Network and transport              | Pinned generated-proxy resources and selectors, additive-policy review, deployed CNI version/mode, startup-through-convergence allow/deny proof, trusted-forwarding-header tests, private-only Service/Ingress inventory, certificate issuance/renewal and secure cookies.                                           |
+| G5   | Owner acceptance and recovery      | Laptop and cellular phone, CLI login, sustained WSS/SSE, reconnect, own-device revocation and rollback pass. Preserve operator access, live sessions and capture flush. No paid tests without approval.                                                                                                              |
+| G6   | Teammate rollout                   | Current-main team authorization, operator roles, per-user credentials, live revocation, migration/deletion invariants and two-account capture-mode tests pass. See the sequence below.                                                                                                                               |
+| G7   | Public Mend                        | G1-G6 as applicable plus public abuse/spend controls, independent security reassessment, recovery/retention and approved public-edge/domain design. Private-network containment cannot stand in for application authorization.                                                                                       |
+| G8   | Public sealant                     | Not part of this plan. A separate authenticated-delegation design must fail closed, derive mandatory owner scope, enforce budgets, bind credentials to destinations, and pass independent tests before any exposure proposal.                                                                                        |
 
 Source-inferred from the companion reviews: separate logins in the released Mend build do not
-establish project isolation. Core expects a trusted service caller rather than ordinary end-user
+establish project isolation. sealant expects a trusted service caller rather than ordinary end-user
 access. Tailscale and TLS improve the network boundary; neither changes those application contracts.
 A green team repository test or a working home page cannot satisfy these gates.
 
@@ -72,7 +72,7 @@ Observed in the deployment record, not re-probed here:
 
 - EKS 1.35 in Frankfurt, one private ARM64 `m7g.large` node, two subnet AZs, one NAT gateway. The
   public EKS API is operator-IP allowlisted; private API access also exists.
-- Mend API/web 0.27.5 and Core API/worker 0.32.0. No public application ingress. The current
+- Mend API/web 0.27.5 and sealant API/worker 0.32.0. No public application ingress. The current
   operator reaches `mend-web:3105` through a loopback-only port-forward.
 - S3 authoritative captures, Postgres pointers, EBS RWO for Mend's central store/cache and Zot.
   PlanetScale is reached over PrivateLink with verified TLS, separate scoped application roles, and
@@ -163,7 +163,8 @@ These are proposed acceptance stories, not claims that the new endpoint is runni
 Joining is two independent approvals. A tailnet administrator invites the teammate as a member,
 approves their devices, and adds their identity to `group:mend-users`. Separately, Mend must give
 their own account only the reviewed project/team permissions. They connect their own inference
-accounts. Do not share the owner's password, pairing token, connected account, or Core service key.
+accounts. Do not share the owner's password, pairing token, connected account, or sealant service
+key.
 
 Blocked: the companion review says the unfinished team implementation is not ready to ship and is
 not assumed deployed. Open registration is not an invitation system. Do not admit teammates merely
@@ -237,7 +238,7 @@ Approved laptop/phone Tailscale client
 Untrusted MicroVM
   -> existing private session NLB:3106, scoped session protocol only
   -> presigned S3 operations and approved provider/Git traffic
-  -X-> administrative tailnet, Core API, DB, registry, Kubernetes API
+  -X-> administrative tailnet, sealant API, DB, registry, Kubernetes API
 ```
 
 The `-X->` line is a required boundary to verify, not a claim that every current VPC route has
@@ -255,8 +256,8 @@ Hard exclusions:
 - No subnet router, exit node, application connector, cluster egress proxy, API-server proxy, or
   route advertisement. Do not route the VPC, pod/service CIDRs, or the administrative tailnet to
   ordinary users. Never enroll coding executors into the administrative tailnet, even temporarily.
-- No user access to Core 4000, registry 5000, Postgres 5432, Kubernetes 443/6443, Mend API 3101 as a
-  separate endpoint, session channel 3106/31006, SSH gateways, or raw daemon control ports.
+- No user access to sealant 4000, registry 5000, Postgres 5432, Kubernetes 443/6443, Mend API 3101
+  as a separate endpoint, session channel 3106/31006, SSH gateways, or raw daemon control ports.
 - Leave `serviceHost.expose.enabled=false` and default private service bindings unchanged. Raw
   development-service forwards have no Mend request authentication. They are not part of this
   recommendation. Any future preview needs a separate origin and authorization review because
@@ -437,7 +438,7 @@ spec:
 
 Operator L7 uses Serve [T2]. There is no separate exposed API hostname and no second terminal
 listener. `/trpc`, `/api/auth`, API streams, and WSS traverse this origin; do not route `/api` to
-Core or expose Core under a hidden path. TLS is operator-managed for the MagicDNS name, not an
+sealant or expose sealant under a hidden path. TLS is operator-managed for the MagicDNS name, not an
 arbitrary `tls.secretName` custom-domain solution. Test real WSS upgrades and sustained traffic; a
 page loading successfully is insufficient transport evidence.
 
@@ -464,8 +465,8 @@ each pod; Kubernetes combines their allows. Prove CNI enforcement rather than me
 [T15], so test denied connections from initial pod execution through policy convergence and restart,
 not only after steady state. Choosing strict mode is a separate approved change and requires
 explicit DNS and dependency rules. Preserve DNS, health probes, operator Kubernetes API/Secret
-access, S3, DB, Core and external provider/Git dependencies according to each component's role.
-Proxy pods must not acquire broad access to DB, Core, registry, or the MicroVM session channel.
+access, S3, DB, sealant and external provider/Git dependencies according to each component's role.
+Proxy pods must not acquire broad access to DB, sealant, registry, or the MicroVM session channel.
 
 Blocked: exact generated proxy resources and labels, policy render, resource sizing, VPC-CNI mode,
 and startup enforcement for this route have not been tested. None of the proposed network changes
@@ -477,10 +478,10 @@ The operator, not normal users, performs this once during an approved window. Do
 inference or launch a MicroVM merely to prove ingress. Use synthetic fixtures first; any live
 terminal test must use an explicitly authorized session with agreed cost and cleanup.
 
-1. Record G1-G5 audit dispositions and the chosen release/commit for Mend and Core. Close required
-   blockers with focused regression tests and approved release deployment before this access-only
-   cutover. Keep access owner-only until G6 passes. Team migrations and runtime upgrades must not be
-   hidden inside the ingress change.
+1. Record G1-G5 audit dispositions and the chosen release/commit for Mend and sealant. Close
+   required blockers with focused regression tests and approved release deployment before this
+   access-only cutover. Keep access owner-only until G6 passes. Team migrations and runtime upgrades
+   must not be hidden inside the ingress change.
 2. Inventory current non-secret workload versions, Service types, ingress resources, security
    groups, VPC CNI/node-agent versions and enforcement mode, and Helm revision. Preserve existing
    configuration, DB, captures, claims, and operator access. Backups containing credentials stay
@@ -519,7 +520,7 @@ terminal test must use an explicitly authorized session with agreed cost and cle
 | Proxy startup and policy convergence             | Protected destinations stay denied from initial process execution through restart and steady state; another proxy in the namespace cannot inherit Mend access.                                   |
 | User A versus user B, G6 before teammates        | Project/session visibility, reads, mutations, streams, terminals and account references obey the reviewed sharing model. Session-owner delegation is explicit; no implicit credential borrowing. |
 | Member removal / lost device                     | New requests denied and existing WSS/SSE access ends; reauthentication/re-enrollment cannot bypass removal.                                                                                      |
-| Internal services from ordinary client           | Core, registry, DB, Kube API, session channel and raw daemons unavailable.                                                                                                                       |
+| Internal services from ordinary client           | sealant, registry, DB, Kube API, session channel and raw daemons unavailable.                                                                                                                    |
 | Synthetic executor boundary                      | No administrative tailnet material; connector cannot reach control APIs/DB/registry; only approved session and presigned-object paths work.                                                      |
 | Reverted configuration                           | Original operator access still works with compatible origins and no new exposure.                                                                                                                |
 
@@ -622,7 +623,7 @@ Rollback is an approved operational action, not something this documentation pha
 
 ## Docker on Talos versus AWS
 
-Observed in Core 0.32.0 source and the supplied deployment record, not newly tested on either
+Observed in sealant 0.32.0 source and the supplied deployment record, not newly tested on either
 cluster: AWS workspaces do not currently have Docker parity. This is a runtime implementation and
 image contract limitation, not an AWS-wide prohibition on Docker.
 
@@ -630,7 +631,7 @@ image contract limitation, not an AWS-wide prohibition on Docker.
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `DEFAULT_RUNTIME_ADAPTER=microvm`    | AWS launches Firecracker MicroVMs.                                                                                                                                                          |
 | `DOCKER_RUNTIME_ENABLED=false`       | Disables the platform's host-Docker workspace adapter. It does not independently control Docker inside a MicroVM.                                                                           |
-| Mend profile `services.docker=false` | Does not request a Docker service inside the workspace. Core represents the request as `tooling.services.docker.enabled`.                                                                   |
+| Mend profile `services.docker=false` | Does not request a Docker service inside the workspace. sealant represents the request as `tooling.services.docker.enabled`.                                                                |
 | `SEALANT_K8S_DOCKER_ENABLED=false`   | Disables the optional Kubernetes workspace Docker service; changing it cannot add a MicroVM service.                                                                                        |
 | Talos/Kubernetes Docker service      | A rootless DinD native sidecar, Pod-local Unix socket on shared `emptyDir`, `DOCKER_HOST=unix:///run/docker/docker.sock`, ephemeral graph storage and Pod lifecycle. No node Docker socket. |
 | AWS MicroVM Docker service           | Currently refused by the adapter when requested. The fixed guest image has no configured Docker daemon/service. A profile toggle is not a supported fix.                                    |
@@ -638,7 +639,7 @@ image contract limitation, not an AWS-wide prohibition on Docker.
 
 The Kubernetes sidecar is privileged inside a user-namespaced Pod with `hostUsers: false`; the
 workspace container is not privileged. This depends on correct kernel/runtime user-namespace and Pod
-Security configuration. It is not an unprivileged-container claim. Source at the reviewed Core
+Security configuration. It is not an unprivileged-container claim. Source at the reviewed sealant
 commit defaults Kubernetes DinD to `docker:28.5.2-dind-rootless`; the separate host-Docker adapter
 uses `27.5.1`. These defaults do not prove the image currently running on Talos.
 
@@ -660,10 +661,10 @@ inside the VM, build a plan-specific VM image, or explicitly reject unsupported 
 Adding a Docker daemon alone does not make the OCI build output the execution environment.
 
 Blocked: provider launch/spend approval and real nested-Docker tests. The reviewed pinned
-Core/daemon Git-source selector compatibility and early-exit reporting also need contract tests and
-release correction before claiming Git-source readiness. Capture-source success does not prove the
-Git-source path. None of this is required merely to view Mend through the proposed private ingress;
-do not combine a Docker rollout with the access cutover.
+sealant/daemon Git-source selector compatibility and early-exit reporting also need contract tests
+and release correction before claiming Git-source readiness. Capture-source success does not prove
+the Git-source path. None of this is required merely to view Mend through the proposed private
+ingress; do not combine a Docker rollout with the access cutover.
 
 ## One-node availability and cost
 
@@ -749,15 +750,15 @@ Required before even a public pilot:
 - Defined collaboration authority over owner-credentialed executors, recovery/backup tests, spending
   controls and an approved domain owner. Unfinished team code is not evidence of these.
 
-### Core public exposure is a separate no-go
+### sealant public exposure is a separate no-go
 
-Core 0.32.0 remains private regardless of a future Mend public-domain decision. Service-principal
+sealant 0.32.0 remains private regardless of a future Mend public-domain decision. Service-principal
 credentials belong only in authorized server workloads, never in a browser, phone, tailnet client or
 public proxy configuration. Keep service authentication configured and verify fail-closed production
 behavior, mandatory principal-derived owner scope, credential/destination binding,
 request/work/spend limits, retention and revocation. A static service credential plus TLS is not an
-end-user authorization design. Any direct Core exposure would require G8 and a separate proposal; no
-such exposure is needed for the laptop, phone or teammate stories here.
+end-user authorization design. Any direct sealant exposure would require G8 and a separate proposal;
+no such exposure is needed for the laptop, phone or teammate stories here.
 
 Funnel is not a private custom-domain workaround. It is explicitly public, does not carry Serve's
 tailnet identity headers, and is outside this recommendation [T6]. Do not grant `funnel` or add
@@ -777,11 +778,11 @@ Repository evidence:
   `apps/web/src/server/trpc-handler.ts`: same-origin HTTP, tRPC, proxy and upgrade handling.
 - `apps/cli/src/help.ts`, `apps/cli/src/main.ts`: MEND_URL, login, pairing and account connection.
 - `docs/SEALANT-IDENTITY.md`: per-user identity intent. Historical implementation details in this
-  document do not replace the current Core or team audit.
+  document do not replace the current sealant or team audit.
 - `docs/adr/0002-session-capture-store.md`: capture-store model. Historical credential-capture
   statements conflict with the supplied pinned-runtime record; do not treat them as proof that
   excluded provider credential files are restored from captures.
-- Core `abe4d6c7258a5d6b479b72162de368c45953d9ee`,
+- sealant `abe4d6c7258a5d6b479b72162de368c45953d9ee`,
   `packages/workspaces/src/runtime/kubernetes/{config,manifests}.ts`, `runtime/microvm/adapter.ts`,
   `runtime/docker-runtime-adapter.ts` and `packages/workspaces/microvm-image/`: source for the
   Docker distinctions above.
@@ -848,5 +849,5 @@ part of the publishable plan. No `*-fixes.md` handoff was available at final rev
 recommendations are not counted as implemented fixes.
 
 Blocked approvals are G1-G5 for owner-only rollout, G6 for teammates, G7 for public Mend and a
-separate G8 for public Core. Current-private is the recommendation now. Owner-only `.ts.net` is the
-smallest proposed next access method after those gates, not a claim of production safety.
+separate G8 for public sealant. Current-private is the recommendation now. Owner-only `.ts.net` is
+the smallest proposed next access method after those gates, not a claim of production safety.

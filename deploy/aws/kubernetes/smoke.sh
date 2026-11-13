@@ -185,7 +185,7 @@ else:
   }
   [[ $result == ok ]] && break
   if [[ $result == failed ]]; then
-    echo "workspace entered a terminal failure state; inspect it through authenticated Core tooling" >&2
+    echo "workspace entered a terminal failure state; inspect it through authenticated sealant tooling" >&2
     exit 1
   fi
   sleep 5

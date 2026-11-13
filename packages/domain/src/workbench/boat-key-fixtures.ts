@@ -8,7 +8,7 @@ import type {
 } from "./boat-key.ts";
 
 /**
- * Boat key reports shaped as Core 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
+ * Boat key reports shaped as sealant 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
  * API, web and CLI tests. Never a real account.
  */
 

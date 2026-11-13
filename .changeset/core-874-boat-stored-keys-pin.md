@@ -2,7 +2,7 @@
 "@sealant/mend": patch
 ---
 
-Update the bundled Sealant Core SDK and images to 0.40.0-next.874.
+Update the bundled sealant SDK and images to 0.40.0-next.874.
 
 - **An organization's own Boat key is enough for Boat.** Sealant no longer needs a Boat key in the
   server's environment to keep, check or launch in a key an owner connected. The server's own key

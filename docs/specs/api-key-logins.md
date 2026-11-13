@@ -14,7 +14,7 @@
   - sealant `origin/main` `fa163c6f`;
   - sealantd `origin/main` `0f77e78`.
 
-  Core and sealantd paths below were read at those commits. Harness behaviour comes from public
+  sealant and sealantd paths below were read at those commits. Harness behaviour comes from public
   docs, and from Codex source at `rust-v0.160.1`.
 
 ## Why it exists
@@ -46,9 +46,9 @@ model:
 
 **The login model has no API-key variant.**
 
-- Providers are `claude | codex | github` (`packages/api-contracts/src/accounts.ts:11`; Core
+- Providers are `claude | codex | github` (`packages/api-contracts/src/accounts.ts:11`; sealant
   `packages/credentials/src/payloads.ts:9`).
-- Core's Claude kinds are a setup token, checked by its `sk-ant-oat01-` prefix (Core
+- sealant's Claude kinds are a setup token, checked by its `sk-ant-oat01-` prefix (sealant
   `packages/credentials/src/payloads.ts:37-41`, `connected-accounts.module.ts:220-224`), and a
   `.credentials.json` narrowed to `claudeAiOauth` (`connected-accounts.module.ts:195-217`). A
   Console API key is refused at connect.
@@ -56,7 +56,7 @@ model:
   (`docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md:182-183`).
 - ADR 0008 rejected the setup token as the default because "it is an API-style credential"
   (`docs/adr/0008-one-refresher-for-provider-logins.md:153-155`).
-- Core's design doc intends an API key "as a first-class alternative" (Core
+- sealant's design doc intends an API key "as a first-class alternative" (sealant
   `docs/connected-accounts-design.md:72-73`). Nothing implements it.
 
 **Codex accepts a key file today, through an undocumented path.**
@@ -66,22 +66,23 @@ model:
    `apps/api/src/routes/api-live.ts:213`). Two inputs do this:
    - the web paste field (`apps/web/src/routes/settings.tsx:816-821`);
    - `mend connect codex --from-stdin` (`apps/cli/src/main.ts:3444-3446`).
-2. Core's parser requires `tokens.refresh_token` or `OPENAI_API_KEY` (Core
+2. sealant's parser requires `tokens.refresh_token` or `OPENAI_API_KEY` (sealant
    `packages/credentials/src/payloads.ts:303-332`).
-3. Core's copy treats a key file as its own copy (Core `packages/credentials/src/copies.ts:75-76`).
-4. Core writes it into the person's home as `.codex/auth.json`, mode 0600, over stdin (Core
+3. sealant's copy treats a key file as its own copy (sealant
+   `packages/credentials/src/copies.ts:75-76`).
+4. sealant writes it into the person's home as `.codex/auth.json`, mode 0600, over stdin (sealant
    `packages/workspaces/src/runtime/home-credentials.ts:1-10,28-44`;
    `apps/api/src/routes/workspaces/workspace-credentials.ts:255-311`).
 5. `codex app-server` reads `auth.json` in API-key mode. Its environment-variable key path is off in
    that mode (codex `app-server/src/lib.rs:544,580`).
-6. The Codex refresher returns "skipped" for it and never marks it invalid (Core
+6. The Codex refresher returns "skipped" for it and never marks it invalid (sealant
    `apps/worker/src/workers/refresh-codex-sessions.ts:200-204,342`).
 
 Where it stops:
 
 - `mend connect codex` refuses a key login on its default device-login path
   (`apps/cli/src/codex-grant.ts:98-103`).
-- pi and opencode refuse it: Core returns `connected-account-unsupported`
+- pi and opencode refuse it: sealant returns `connected-account-unsupported`
   (`workspace-credentials.ts:280-293`). Mend says "the Codex account is not a ChatGPT login"
   (`packages/sessions/src/harness-layout-steps.ts:287`).
 - No surface says the account is a key.
@@ -90,11 +91,11 @@ Where it stops:
 
 - The plain project-variable lane refuses names ending in `_KEY`:
   - Mend: `packages/domain/src/workbench/project-environment.ts:69-77,105-107`;
-  - Core: `packages/api-contracts/src/workspace-environment.ts:12-17`;
+  - sealant: `packages/api-contracts/src/workspace-environment.ts:12-17`;
   - sealantd: `crates/sealantd/src/boot/config.rs:145-165`.
 - The project secret lane does not reserve the provider key names:
   - Mend: `packages/domain/src/workbench/project-secret.ts:45-52`;
-  - Core: `workspace-environment.ts:91-101`.
+  - sealant: `workspace-environment.ts:91-101`.
 - sealantd strips them from a person's process (`crates/sealant-process/src/identity.rs:36-68`; ADR
   0016:144-150).
 - **Gap:** in the shared layout (ADR 0016 §7a), the launcher's secret environment reaches the
@@ -122,12 +123,12 @@ key account would land in that person's Claude sessions too. The `selectedOnly` 
   - `requestedBy` for review passes (`apps/api/src/review-pass-worker.ts:26-43`);
   - the session owner for naming (`apps/api/src/main.ts:477-485`);
   - the turn's author for intent (`apps/api/src/automatic-landing.ts:208-211`).
-- **Claude.** Core's Claude engine authenticates with a setup token or a config directory only, and
-  strips ambient `ANTHROPIC_API_KEY` (Core
+- **Claude.** sealant's Claude engine authenticates with a setup token or a config directory only,
+  and strips ambient `ANTHROPIC_API_KEY` (sealant
   `apps/api/src/routes/inference/claude-engine.ts:65-83,230-248`).
-- **Codex.** Core's Codex engine runs on the account's copy in a private `CODEX_HOME`, so a key file
-  would work there (Core `codex-engine.ts:87-96`). Mend uses the Codex arm only as the fallback for
-  naming and intent (`packages/inference/src/session-namer.ts:81-89`;
+- **Codex.** sealant's Codex engine runs on the account's copy in a private `CODEX_HOME`, so a key
+  file would work there (sealant `codex-engine.ts:87-96`). Mend uses the Codex arm only as the
+  fallback for naming and intent (`packages/inference/src/session-namer.ts:81-89`;
   `request-intent-reader.ts:105-110`). Review passes default to Claude
   (`packages/inference/src/provider.ts:50-54`).
 - **The dev-only layer.** `devDirectProviderLayer` reads `ANTHROPIC_API_KEY` and is documented as
@@ -148,7 +149,7 @@ key account would land in that person's Claude sessions too. The `selectedOnly` 
 ## What it would take
 
 **Shape.** Add a kind `api-key` under the existing `claude` and `codex` providers, not new
-providers. Core's `kind` column is free text, so this needs no migration (Core
+providers. sealant's `kind` column is free text, so this needs no migration (sealant
 `packages/db/src/schema/control-plane.ts:477-528`).
 
 **Placement per home:**
@@ -160,12 +161,12 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
 
 | Layer                          | Change                                                                                                                                                                                                                                                                                                                   | Size                                                           |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------- |
-| Core: storage and contracts    | `api-key` kind. Claude payload with the key; Codex also accepts a bare key and wraps it. Document the secret shapes. `SealantFeatures` flag.                                                                                                                                                                             | 6–8 files, ~150–250 lines                                      |
-| Core: refresh                  | Nothing to refresh. The refresher, sync-back and push skip the kind explicitly. A 401 marks the account `invalid`.                                                                                                                                                                                                       | 3–4 files, ~50–100 lines                                       |
-| Core: placement                | Claude key file plus helper in `home-credentials.ts`, written 0600. Never `docker run -e`: the `$HOME` launch passes env as argv today (`packages/workspaces/src/runtime/docker-runtime-adapter.ts:2403-2408`). pi and opencode key entries instead of a refusal.                                                        | 4–6 files, ~200–400 lines plus executor tests                  |
-| Core: inference                | Claude engine runs on a key and scrubs it from errors. Codex works already.                                                                                                                                                                                                                                              | 2–3 files, ~80–150 lines                                       |
-| Core: redaction                | Value patterns for provider keys in `credential-redaction.ts`, which matches by name today. Connected-account values fed to capture masking (`runtime-adapter.ts:104-108`).                                                                                                                                              | 2–3 files, ~60–120 lines                                       |
-| **Core total**                 |                                                                                                                                                                                                                                                                                                                          | **~15–20 files, 500–900 lines, plus 600–1,000 lines of tests** |
+| sealant: storage and contracts | `api-key` kind. Claude payload with the key; Codex also accepts a bare key and wraps it. Document the secret shapes. `SealantFeatures` flag.                                                                                                                                                                             | 6–8 files, ~150–250 lines                                      |
+| sealant: refresh               | Nothing to refresh. The refresher, sync-back and push skip the kind explicitly. A 401 marks the account `invalid`.                                                                                                                                                                                                       | 3–4 files, ~50–100 lines                                       |
+| sealant: placement             | Claude key file plus helper in `home-credentials.ts`, written 0600. Never `docker run -e`: the `$HOME` launch passes env as argv today (`packages/workspaces/src/runtime/docker-runtime-adapter.ts:2403-2408`). pi and opencode key entries instead of a refusal.                                                        | 4–6 files, ~200–400 lines plus executor tests                  |
+| sealant: inference             | Claude engine runs on a key and scrubs it from errors. Codex works already.                                                                                                                                                                                                                                              | 2–3 files, ~80–150 lines                                       |
+| sealant: redaction             | Value patterns for provider keys in `credential-redaction.ts`, which matches by name today. Connected-account values fed to capture masking (`runtime-adapter.ts:104-108`).                                                                                                                                              | 2–3 files, ~60–120 lines                                       |
+| **sealant total**              |                                                                                                                                                                                                                                                                                                                          | **~15–20 files, 500–900 lines, plus 600–1,000 lines of tests** |
 | sealantd                       | Nothing required. Advised: feed per-request env values to the redactor (`crates/sealantd/src/runtime.rs:93-114`); list the key file in `HARNESS_CREDENTIALS` with its table row (`crates/sealant-capture/src/index.rs:106-278`); 0600 on credential writes, since person processes use umask 0002 (`identity.rs:33-34`). | ~50–150 lines                                                  |
 | Mend: API and contracts        | Kind on `ConnectAccountInput`. Feature detection, with words when the platform lacks it. Provider key names reserved as project secret names.                                                                                                                                                                            | ~100–200 lines                                                 |
 | Mend: sessions                 | Login words per kind (pi and opencode included). Session and turn lines name the kind.                                                                                                                                                                                                                                   | ~100–200 lines                                                 |
@@ -222,10 +223,10 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
    - **Contain:** reserve the provider key names as project secret names. Report a key found in
      repository or dotfiles settings as observed.
 5. **Redaction matches names, not values, in several places:**
-   - Core's API logs;
+   - sealant's API logs;
    - Mend's `redactingConsole`;
    - sealantd's per-request env;
-   - Core's capture masking of account values.
+   - sealant's capture masking of account values.
 
    sealantd's `sk-` pattern covers both providers' keys in its redacted taps. Attach channels are
    raw by design (`crates/sealant-protocol/src/stream.rs:34`).
@@ -240,15 +241,15 @@ providers. Core's `kind` column is free text, so this needs no migration (Core
      with the worktree.
    - **Contain:** a key never goes into a captured file.
 8. **Argv.**
-   - **Risk:** Core's `$HOME` launch passes env as `docker run -e`.
+   - **Risk:** sealant's `$HOME` launch passes env as `docker run -e`.
    - **Contain:** keys take only the per-home stdin path.
 9. **The shared layout.**
    - **Risk:** one home holds one set of logins. A join or a shared-control turn there would spend
      the owner's key: cost with no plan cap, for someone who did not send the turn.
    - **Contain:** none in this feature. D4 decided that this feature does no shared-layout work and
      assumes the shared layout is gone. The feature therefore depends on the shared layout's
-     removal, planned as its own 0.37 work, landing first. Until then Core refuses a Claude key in
-     the launcher's `/root`, a temporary guard that the removal retires (ADR 0018 decision 4).
+     removal, planned as its own 0.37 work, landing first. Until then sealant refuses a Claude key
+     in the launcher's `/root`, a temporary guard that the removal retires (ADR 0018 decision 4).
 10. **mend#684 widens where a key lands.**
     - **Risk:** a Codex key also goes into the same person's Claude sessions.
     - **Contain:** it is the same person; `selectedOnly` opts out.
@@ -328,7 +329,7 @@ them, and ADR 0018 carries them.
 
 ## Harness behaviour this rests on
 
-Pinned versions (Core `packages/workspaces/src/harness/integrations.ts:30-34`):
+Pinned versions (sealant `packages/workspaces/src/harness/integrations.ts:30-34`):
 
 | Harness     | Version |
 | ----------- | ------- |

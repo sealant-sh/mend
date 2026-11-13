@@ -5,21 +5,21 @@ export { BOAT_FAILURE_KINDS, type BoatFailureKind };
 
 /**
  * Why Boat refused, or did not answer, a call Sealant made for a Boat key or a Boat workspace:
- * Core's `BoatFailure` (sealant#634) with Mend's dates and nulls. `kind` is Core's closed set, so
- * a Core pin that adds a kind fails to compile wherever Mend words them. `code`, `message` and
+ * sealant's `BoatFailure` (sealant#634) with Mend's dates and nulls. `kind` is sealant's closed set, so
+ * a sealant pin that adds a kind fails to compile wherever Mend words them. `code`, `message` and
  * `requestId` are Boat's own: they are for an operator and Boat's support, never a sentence.
  */
 export const BoatFailure = Schema.Struct({
   kind: Schema.Literals(BOAT_FAILURE_KINDS),
   /** Whether the same call may succeed later as it stands. */
   retryable: Schema.Boolean,
-  /** Core's call that Boat refused (`create`, `saveSnapshot`, `verify`), when known. */
+  /** sealant's call that Boat refused (`create`, `saveSnapshot`, `verify`), when known. */
   operation: Schema.NullOr(Schema.String),
   /** The HTTP status Boat answered with; null when it did not answer. */
   status: Schema.NullOr(Schema.Number),
   /** Boat's error code (`api_key_expired`). */
   code: Schema.NullOr(Schema.String),
-  /** Boat's own message, bounded, with anything shaped like a secret removed by Core. */
+  /** Boat's own message, bounded, with anything shaped like a secret removed by sealant. */
   message: Schema.NullOr(Schema.String),
   /** Boat's request id (`req_…`), to give Boat's support. */
   requestId: Schema.NullOr(Schema.String),

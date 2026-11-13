@@ -11,13 +11,14 @@ gave every process a `HOME` of its own inside root; this one gives every person 
 [ADR 0009](0009-agent-memory-per-person-per-project.md) (memory in capture mode, and under shared
 control), [ADR 0010](0010-secret-files.md) (where secret files go) and
 [ADR 0013](0013-whoever-sends-a-turn-pays.md) (the steering switch, which ships in 0.36). Read
-against Mend `c9b645b0b` with mend#526 (`ac3bdce06`) open, Sealant Core `bc9ec42` (SDK 0.38.1) with
+against Mend `c9b645b0b` with mend#526 (`ac3bdce06`) open, sealant `bc9ec42` (SDK 0.38.1) with
 sealant#315 and sealant#316 open, and sealantd `07ada50`.
 
 Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): an organization key
-is no person's login, so a member running on it does not run on anyone else's. Core places it in the
-member's home like their own login (this ADR's decision 5). Where this ADR says a project's secrets
-reach every person under any name, the provider login names sealantd withholds are the exception.
+is no person's login, so a member running on it does not run on anyone else's. sealant places it in
+the member's home like their own login (this ADR's decision 5). Where this ADR says a project's
+secrets reach every person under any name, the provider login names sealantd withholds are the
+exception.
 
 Amended 2026-11-09 by [ADR 0024](0024-a-persons-mcp-servers.md): a person's own MCP servers are
 tools, like the login (decisions 6 and 7a, decision log).
@@ -33,8 +34,8 @@ and restores everything as root. Mend's relocation links `~/.claude`, `~/.codex`
 opencode's directories into the harness home, so they are saved and restored for whoever comes next.
 
 Everything else that says who a process is belongs to the person whose launch made the executor:
-Core injects that person's logins at `$HOME` and their GitHub token as `GITHUB_TOKEN`/`GH_TOKEN` for
-the whole container; sealantd applies their dotfiles to `/root`; `applyGitAuthor` sets
+sealant injects that person's logins at `$HOME` and their GitHub token as `GITHUB_TOKEN`/`GH_TOKEN`
+for the whole container; sealantd applies their dotfiles to `/root`; `applyGitAuthor` sets
 `git config --system user.*` to them; the SSH transport shim and the `mend` helper authenticate with
 a session token issued for that launch, so the server signs `git push` as them; their secret files
 are written into `/root`.
@@ -95,7 +96,7 @@ process uses, by default and by every path Mend controls.
   `mend`, the runtime supports ACLs on `/workspace`, and nothing imposes no-new-privileges on the
   executor, since `sudo` cannot work under it. sealantd leaves no-new-privileges unset in a
   per-person executor (decision 8); an orchestrator can still impose it (Kubernetes
-  `allowPrivilegeEscalation: false`). Core's image probe records both as `setuid-sudo` and
+  `allowPrivilegeEscalation: false`). sealant's image probe records both as `setuid-sudo` and
   `sudo-no-new-privileges`, and Mend's probe matches it: `sudo` must carry its setuid bit, and in a
   `person` executor prepare reads the executor's no-new-privileges state (`NoNewPrivs` in
   `/proc/self/status`, or sealantd's `noNewPrivileges`) and treats it set as missing. Any other
@@ -104,59 +105,60 @@ process uses, by default and by every path Mend controls.
   give (sealantd#147). Mend needs that answer before create, because create already commits to a
   layout: `credentialsHome`, whether the launcher's dotfiles go to `/root` at boot, and the owner
   map (decisions 5, 8, 11). So:
-  - **Core reports it per image.** Core's image build runs `sealantd capabilities --json` and the
-    tool and passwd probe inside the built image and records the result on the image; it reports ACL
-    support per runtime. The SDK exposes both (Delivery 8, 9).
+  - **sealant reports it per image.** sealant's image build runs `sealantd capabilities --json` and
+    the tool and passwd probe inside the built image and records the result on the image; it reports
+    ACL support per runtime. The SDK exposes both (Delivery 8, 9).
   - **Mend learns it once per image.** Mend records what each executor's prepare actually found, per
-    image digest and runtime, and that record wins over Core's report when they disagree. Core
+    image digest and runtime, and that record wins over sealant's report when they disagree. sealant
     reports a digest only once the image is built, and only to the account that built it; where it
     reports none, the record is made under the image as Mend asks for it (its spec). A digest with
-    no record of its own, of which Core says nothing either, reads the spec's record: the first
+    no record of its own, of which sealant says nothing either, reads the spec's record: the first
     launch on a new image answers for the launches after its build.
   - **Unknown means `shared`** for a worktree that has no layout yet: the launch runs as today and
     its prepare records the answer, so the next launch on that image can be `person`.
-  - **A wrong prediction never leaves an agent without a login.** If Core said yes and prepare finds
-    otherwise on a worktree with no layout yet, Mend releases the create-time home (DELETE),
+  - **A wrong prediction never leaves an agent without a login.** If sealant said yes and prepare
+    finds otherwise on a worktree with no layout yet, Mend releases the create-time home (DELETE),
     re-POSTs the launcher's logins with `home: /root` (one partial POST: a provider disconnected
     since the create is left out, and only one the harness needs refuses the launch), records
     `shared` and corrects the record; the agent starts only after the login is written. Their
-    dotfiles are not applied: Core's `dotfiles.apply` runs only as a person and refuses root, and
+    dotfiles are not applied: sealant's `dotfiles.apply` runs only as a person and refuses root, and
     the create, made for a `person` launch, applied none at boot. The session records each source as
     not applied, with that reason; every later session of the worktree joins the same executor
     without them, and a workspace started next on that image (decided `shared` before create from
     the recorded answer) applies them at boot. This is paid once per image digest, inside the
     cold-launch budget. On a worktree already `person`, prepare refuses (decision 14).
   - **The control plane and the workspace must say they can.** Before anything else Mend reads
-    Core's own report of what it can do (`sealant.features()`, kept five minutes): its as-user
+    sealant's own report of what it can do (`sealant.features()`, kept five minutes): its as-user
     routes (`processUserRoutes`), the dotfiles verb, partial puts, pi's and opencode's logins and
-    the capture owner map, every one of them, since a Core from before any reports it `false`.
+    the capture owner map, every one of them, since a sealant from before any reports it `false`.
     Without them a fresh worktree runs `shared` with the reason and a `person` worktree is refused
     with it, before create. At prepare the workspace's own answer (`workspace.processUser()`) must
     be `supported`: `unsupported` (the image's sealantd) is recorded against the image like a
-    probe's finding; `unknown` is not a yes and is not held against it. Core 0.39.0-next.706 is the
-    first to report them all.
+    probe's finding; `unknown` is not a yes and is not held against it. sealant 0.39.0-next.706 is
+    the first to report them all.
 - **The layout is sticky per worktree** (decision 14): once a worktree has had a `person` launch,
   every later launch of it is `person` or refused with the reason. The flag decides only worktrees
   with no layout yet. Every server-side rule that differs between layouts (the container token's
   refusal included) keys on the executor's recorded layout.
-- **Processes start as the user,** through the SDK's `user` option on sessions and exec (new, Core
-  and sealantd): uid, gid, supplementary groups and `HOME`, `USER`, `LOGNAME` and `SHELL` from the
-  passwd entry, umask `0002`, a private `TMPDIR=/tmp/u-<uid>` and `XDG_RUNTIME_DIR=/run/user/<uid>`
-  (both 0700), so sockets and temporary files a tool leaves to the umask are not reachable through
-  the shared `/tmp`.
+- **Processes start as the user,** through the SDK's `user` option on sessions and exec (new,
+  sealant and sealantd): uid, gid, supplementary groups and `HOME`, `USER`, `LOGNAME` and `SHELL`
+  from the passwd entry, umask `0002`, a private `TMPDIR=/tmp/u-<uid>` and
+  `XDG_RUNTIME_DIR=/run/user/<uid>` (both 0700), so sockets and temporary files a tool leaves to the
+  umask are not reachable through the shared `/tmp`.
 - **The image's person environment is sealantd's to apply.** sealantd applies
-  `/etc/sealant/person-env` (Core's images write it; its first line is `# person-env 1`, and a file
-  without that marker applies nothing) to every process it runs as a person: executions, sessions
-  and the `dotfiles.apply` bootstrap, never root's. Precedence: the filtered daemon environment,
-  then the file (its `PATH_PREPEND` goes in front of the base `PATH`), then the passwd identity,
-  then the caller's `env`. Mend applies nothing from it (sealantd#147, sealant#330).
+  `/etc/sealant/person-env` (sealant's images write it; its first line is `# person-env 1`, and a
+  file without that marker applies nothing) to every process it runs as a person: executions,
+  sessions and the `dotfiles.apply` bootstrap, never root's. Precedence: the filtered daemon
+  environment, then the file (its `PATH_PREPEND` goes in front of the base `PATH`), then the passwd
+  identity, then the caller's `env`. Mend applies nothing from it (sealantd#147, sealant#330).
 - **What reaches a person from the executor's environment.** A person's process inherits the
   daemon's environment less the named harness and provider logins (`CLAUDE_CODE_OAUTH_TOKEN`,
   `GH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and their kin, even when a project sets one,
   since a harness would bill them instead of the person's own login), every `SEALANT_*` key and the
-  keys Core's injector declares (`SEALANT_HARNESS_ENV_KEYS`). The project's secrets (the launcher's
-  secret environment, Mend's `--secret` values) reach every person under any name. sealantd's
-  secret-name rule applies only to `person-env`, never to this inheritance (sealantd#147).
+  keys sealant's injector declares (`SEALANT_HARNESS_ENV_KEYS`). The project's secrets (the
+  launcher's secret environment, Mend's `--secret` values) reach every person under any name.
+  sealantd's secret-name rule applies only to `person-env`, never to this inheritance
+  (sealantd#147).
 - **`CAP_FOWNER` in a per-person executor.** Where sealantd runs as root without no-new-privileges
   and holds `CAP_FOWNER` in its bounding set, a person's process holds that one capability, ambient,
   so every program it runs keeps it: a person can change the mode and times of files they do not
@@ -242,7 +244,7 @@ starts. A person's live process, Services included, keeps their user's logins he
   own `chmod` does not make the next repair walk everything again. The first marker is made when the
   executor starts.
 - **Toolchains are shared, credentials are per user** (decision 3).
-- **`/root`** is root's: the image's own files. In the person layout Mend and Core write nothing
+- **`/root`** is root's: the image's own files. In the person layout Mend and sealant write nothing
   personal there.
 
 ### 3. Toolchains: shared locations in the images, credential stores per user
@@ -254,7 +256,7 @@ directories at boot, as root, when the person layout is requested; `sudo` runs w
 `Defaults umask=0002, umask_override`; people's umask is `0002`. Anything one person installs is
 then usable by everyone; a toolchain tree unpacked with explicit modes (mise, uv's Pythons, rustup,
 Playwright) can be extended or repaired by another person only after a `chmod`, which their
-`CAP_FOWNER` allows (decision 1), or with `sudo` (Known limits). Core's images change to:
+`CAP_FOWNER` allows (decision 1), or with `sudo` (Known limits). sealant's images change to:
 
 | Tool                                                                | Shared (image `ENV`)                                                                                                                                                                                                                                 | Per user (in `R`, natively)                               |
 | ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
@@ -271,8 +273,8 @@ Playwright) can be extended or repaired by another person only after a `chmod`, 
 
 `sudo` keeps the toolchain variables (`Defaults env_keep`), so `sudo npm i -g` lands where a
 person's own install would. A tool not in the table keeps its state under the user's home: per
-person, by default. What each base lacks today, which Core's image PRs add: Ubuntu 24.04 `sudo` and
-`acl`; Arch (Mend's default) `sudo`; Fedora 41 `acl` and `util-linux` (`setpriv`); the MicroVM
+person, by default. What each base lacks today, which sealant's image PRs add: Ubuntu 24.04 `sudo`
+and `acl`; Arch (Mend's default) `sudo`; Fedora 41 `acl` and `util-linux` (`setpriv`); the MicroVM
 images the same as their bases. A custom image that installs toolchains under `/root` keeps them
 root's; Mend makes `/root` traversable (0755) in the person layout so they still run, and each
 person's own installs land in their home (Known limits). A custom image without `sudo`, `useradd` or
@@ -298,7 +300,7 @@ setup commands. It is paid once per worktree, on its first `person` launch.
   never fall back to the container-wide token or a socket. A person's process Mend started without
   that environment (a setup command, the dependency install, a Remote-SSH login) finds the file in
   its passwd home, read from passwd, never `$HOME`.
-- **The token reaches the home through a pickup, never an exec's arguments** (Core keeps every
+- **The token reaches the home through a pickup, never an exec's arguments** (sealant keeps every
   exec's argv; ADR 0010 decision 5, mend#555). The exec that makes a person (prepare for the
   launcher and every member it makes, the first process for anyone else) carries one single-use
   pickup ticket per person, purpose `session-token`, bound to that person, the session and the
@@ -321,7 +323,7 @@ setup commands. It is paid once per worktree, on its first `person` launch.
 - **Flag off, nothing read.** Mend reads once at startup whether any launch or worktree has a layout
   recorded. With the flag off and none, every launch is `shared` and no layout is read from the
   store, by any launch, join, process start or channel request, until one is recorded.
-- **No shared login in a person's environment.** Until Core stops putting the launcher's
+- **No shared login in a person's environment.** Until sealant stops putting the launcher's
   `GITHUB_TOKEN`, `GH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` into the container (Deliveries 7–8),
   every process Mend starts as a person has them set empty; sealantd withholds the named logins from
   a person's process as well (decision 1).
@@ -334,9 +336,9 @@ setup commands. It is paid once per worktree, on its first `person` launch.
   the owner's logins, as the API already allows.
 - **Git over HTTPS to GitHub** uses Mend's credential helper, `/run/mend/bin/mend-git-credential`
   (system config for `https://github.com`), which reads `~/.config/gh/hosts.yml` in the user's
-  passwd home, the file Core writes. No `gh` needed in the image. `mend-git-credential token` is for
-  a command that needs the token (`GH_TOKEN=$(mend-git-credential token) gh …`), so it never reaches
-  a terminal.
+  passwd home, the file sealant writes. No `gh` needed in the image. `mend-git-credential token` is
+  for a command that needs the token (`GH_TOKEN=$(mend-git-credential token) gh …`), so it never
+  reaches a terminal.
 - **Git author and config.** `git config --system user.*` is no longer written. The person's author
   goes into Mend's own file, `~/.mend/git-author` (a `[user]` section, empty when they have none),
   rewritten at every identity pickup, so a changed setting applies at the next one. Their
@@ -351,9 +353,9 @@ setup commands. It is paid once per worktree, on its first `person` launch.
 - **SSH, `scp`, `sftp`, `ssh-keygen`, GnuPG and the JVM** read the passwd home, which is the
   person's. No wrapper.
 
-### 5. Logins: one Core primitive, a home for each person
+### 5. Logins: one sealant primitive, a home for each person
 
-**No person ever runs on anyone else's login.** One Core call puts a given person's logins into a
+**No person ever runs on anyone else's login.** One sealant call puts a given person's logins into a
 given home of a running workspace, owned by that home's user, and keeps them refreshed.
 
 ```
@@ -378,12 +380,12 @@ workspaces.create({ …, credentialsHome })
 
   #316 is needed as it is: a setup token in the environment is one value for the whole container.
 
-- **New in Core:** `credentialsHome` on create (no login in the environment); `DELETE`; `GET`;
+- **New in sealant:** `credentialsHome` on create (no login in the environment); `DELETE`; `GET`;
   credential sync-back reads each record's home.
-- **Who owns what Core writes before the user exists.** The launcher's logins are written at create,
-  before prepare's first exec makes their user, so the create names the owner by number:
-  `credentialsHome: { path, uid, gid }`. Core makes a missing home owned by `uid:gid`, 0700, seeded
-  from `/etc/skel`, and writes every file (0600) and every directory it makes as `uid:gid`; a
+- **Who owns what sealant writes before the user exists.** The launcher's logins are written at
+  create, before prepare's first exec makes their user, so the create names the owner by number:
+  `credentialsHome: { path, uid, gid }`. sealant makes a missing home owned by `uid:gid`, 0700,
+  seeded from `/etc/skel`, and writes every file (0600) and every directory it makes as `uid:gid`; a
   numeric owner needs no passwd entry. Every later write (a POST, a refresh push) takes the owner of
   the home directory as it stands, which is the user's from then on. Mend's side holds without that:
   when prepare or a person's first process makes a user whose home already exists, `useradd` keeps
@@ -406,13 +408,13 @@ workspaces.create({ …, credentialsHome })
   DELETE when a person's last process ends, retried, except the launcher's create-time home, which
   stays while the executor lives (their Remote-SSH session uses it with no Mend process);
   reconciliation against `GET` at startup; one re-POST after an authentication failure. Every POST
-  is partial (`partial: true`): what the person has connected is written, what Core leaves out
+  is partial (`partial: true`): what the person has connected is written, what sealant leaves out
   (`skipped`) is not asked for again, a provider the harness needs refuses the start, and a join is
-  exactly one Core call. In a `person` executor Core writes pi's and opencode's ChatGPT logins too
-  (`pi` and `opencode` on the POST, made from the person's Codex account), following opencode's link
-  back into the home, and a release removes them with the rest; the session line says when Core left
-  one out. In a `shared` executor Mend's ChatGPT-login program still writes the copies at `$HOME`,
-  since a create cannot name them.
+  exactly one sealant call. In a `person` executor sealant writes pi's and opencode's ChatGPT logins
+  too (`pi` and `opencode` on the POST, made from the person's Codex account), following opencode's
+  link back into the home, and a release removes them with the rest; the session line says when
+  sealant left one out. In a `shared` executor Mend's ChatGPT-login program still writes the copies
+  at `$HOME`, since a create cannot name them.
 
 **Amended 2026-10-10, for 0.36: a person's own other agent login.** A Claude session also takes its
 person's Codex login, and a Codex session its person's Claude login, so the agent can run the other
@@ -430,13 +432,13 @@ only adds the same person's own logins. The pieces:
   reads.
 - **The person layout.** One POST per person per executor, as before, `onBehalfOf` that person and
   `home` theirs; the other login rides the same call. The launcher's create names it too, and the
-  providers its ladder went without are recorded as not connected, so their first process asks Core
-  for nothing a create already learned.
+  providers its ladder went without are recorded as not connected, so their first process asks
+  sealant for nothing a create already learned.
 - **The create** (the `shared` layout, and the launcher's create-time home in a `person` one): a
   Claude or Codex session's ladder is the shell's shape around its own provider:
   `{own, other, github}`, `{own, github}`, `{own, other}`, `{own}`, then the tail it had. Its steps
   are mend#671's (`nextCreateAttempts`): a create refused for an account the launch does not need
-  (Core's stable code names its provider) is tried again without that provider, so a stale Codex
+  (sealant's stable code names its provider) is tried again without that provider, so a stale Codex
   login never stops a Claude launch, and a person launch refused for its own agent's login is
   refused before anything runs, in a join's words. A create names only its caller's accounts (`true`
   is the caller's default), so the ladder cannot reach anyone else's.
@@ -463,15 +465,15 @@ only adds the same person's own logins. The pieces:
   what the home holds, so it does not read the setting (review of mend#684, round 1). A standby
   claimed before the setting changed goes at launch, and the launch goes cold, as for a layout that
   no longer serves it.
-- **Unchanged protections.** Every login file is Core's, 0600 and owned by its home's user; none is
-  ever captured (the paths in `HARNESS_CREDENTIALS`, and person homes outside every capture root);
-  copies cannot refresh (ADR 0008). The re-POST after an authentication failure names every provider
-  the person's own home holds, the other agent's included, for the person the failed process runs as
-  (a steered turn's sender, not the session's owner; review of mend#684, round 1). It does not write
-  a conversation home: the next hand-over writes that one. Disconnecting a provider archives the
-  account, so nothing refreshes it again; a copy already in a running home works until its access
-  token expires or the home is released. The session line says nothing of a left-out optional agent
-  login, as for GitHub.
+- **Unchanged protections.** Every login file is sealant's, 0600 and owned by its home's user; none
+  is ever captured (the paths in `HARNESS_CREDENTIALS`, and person homes outside every capture
+  root); copies cannot refresh (ADR 0008). The re-POST after an authentication failure names every
+  provider the person's own home holds, the other agent's included, for the person the failed
+  process runs as (a steered turn's sender, not the session's owner; review of mend#684, round 1).
+  It does not write a conversation home: the next hand-over writes that one. Disconnecting a
+  provider archives the account, so nothing refreshes it again; a copy already in a running home
+  works until its access token expires or the home is released. The session line says nothing of a
+  left-out optional agent login, as for GitHub.
 
 ### 6. Steering: one shared conversation, each turn on its sender's login
 
@@ -507,20 +509,20 @@ delivery stays visible and is never resent automatically.
     append) is not linked: it stays in `H` and ends at the next change of sender. Neither is
     Claude's `file-history/`, which is never saved (decision 2): it stays in `H` and ends at the
     next change of sender too;
-  - the sender's login, written by Core (POST with `home: H`, `onBehalfOf: sender`), owned by the
+  - the sender's login, written by sealant (POST with `home: H`, `onBehalfOf: sender`), owned by the
     sender;
   - Mend's seeded settings for the neutral context below.
 
   Mend stages the next process's seed in a sibling (`H.next`, made owned by the sender, 0700, so the
-  login Core writes there comes out as the sender's) while the old process stops, so nothing is
+  login sealant writes there comes out as the sender's) while the old process stops, so nothing is
   written into a live process's directory. The old process has exited when its process group and
-  cgroup are empty: Codex's plugin and git children can outlive the app-server. Then two Core calls
-  and one start: DELETE releases `H`'s login (Core refuses a POST for another person on a held
-  home), `H` and `H.next` are exchanged in one `renameat2(RENAME_EXCHANGE)` and the old directory is
-  removed in the background, Core writes the sender's login (POST), a `chmod -R g+rwX C` as the
-  owner with only `CAP_FOWNER` restores group access, and the agent starts. The agent's environment
-  is built the same way as for any process of that person (`PATH`, shims, toolchain variables),
-  shared or not.
+  cgroup are empty: Codex's plugin and git children can outlive the app-server. Then two sealant
+  calls and one start: DELETE releases `H`'s login (sealant refuses a POST for another person on a
+  held home), `H` and `H.next` are exchanged in one `renameat2(RENAME_EXCHANGE)` and the old
+  directory is removed in the background, sealant writes the sender's login (POST), a
+  `chmod -R g+rwX C` as the owner with only `CAP_FOWNER` restores group access, and the agent
+  starts. The agent's environment is built the same way as for any process of that person (`PATH`,
+  shims, toolchain variables), shared or not.
 
   Absolute paths a harness records in the conversation (Claude's `persistedOutputPath`, sub-agent
   transcripts) point under `H`, the same path for every person, and resolve to `C` whenever a
@@ -795,43 +797,43 @@ read it. Known issues says so. sealantd scrubbing those tables from captures is 
   launch started this workspace (its executor); after it stops, whoever launches the next one. It is
   not the worktree's first session's owner: a member who launches a worktree's next executor after
   the last one stopped is its launcher, and Remote-SSH is theirs, not the earlier launcher's. The
-  create is made as the launcher's Sealant user, so Core's gateway, which admits only the
+  create is made as the launcher's Sealant user, so sealant's gateway, which admits only the
   workspace's owner, admits them and nobody else, and runs the session as their own Linux user: the
-  create asks for it (`sshAsOwner`, sealant#348) and Core takes the uid of the create's
+  create asks for it (`sshAsOwner`, sealant#348) and sealant takes the uid of the create's
   `credentialsHome`, the launcher's home; Mend names no user, and no caller can pick another
-  person's. Core checks it against the person the launcher's Sealant user is bound to: Mend binds
-  each account once (`users.bindPerson`: account id, uid, home; one Core call per account per Mend
-  process, kept), Core never changes a binding through its API and gives each person id and uid to
-  one user only, and a create whose owner map or `credentialsHome` disagrees is refused. If the
-  binding cannot be made (an older Core, a refusal, no answer within 5 s), the create asks nothing,
-  Remote-SSH stays root as before, and the session says
-  `Remote-SSH: root, Core can't bind your person`. Core checks it against the person the launcher's
-  Sealant user is bound to: Mend binds each account once (`users.bindPerson`: account id, uid, home;
-  one Core call per account per Mend process, kept), Core never changes a binding through its API
-  and gives each person id and uid to one user only, and a create whose owner map or
-  `credentialsHome` disagrees is refused. If the binding cannot be made (an older Core, a refusal,
-  no answer within 5 s), the create asks nothing, Remote-SSH stays root as before, and the session
-  says `Remote-SSH: root, Core can't bind your person`. Every shell and command, the Remote-SSH
-  bootstrap's `ssh -T host bash` and the gateway's own disconnect-time capture included, starts as
-  that user with `HOME` and the rest from passwd. The gateway asks Core who for every new channel,
-  so a change reaches a connection already open, and refuses an answer that does not say (an older
-  Core) rather than read it as root. The extension, its terminals and the Claude Code extension then
-  run on the launcher's logins, save into their `P`, and find their tools in their home. A joiner
-  cannot open Remote-SSH into an executor someone else launched. The user does not exist at create;
-  until prepare makes it, sealantd refuses the session, never runs it as root. Mend names the user
-  only where Core reports `workspaceSshUser`; an older control plane's gateway runs the session as
-  root, as before. Whenever a person executor's Remote-SSH runs as root (an older Core, an unbound
-  person), its session line says so, with the reason; a standby keeps what its create decided
-  (`hot_workspaces.remote_ssh`) and its claim says it too, never re-asking Core. A prepare that
-  falls back to one shared home sets the sessions back to root (`DELETE .../ssh-user`, the only
-  change Core takes after create), so the launcher's Remote-SSH works there as before. That reset
-  runs off the launch path, each attempt bounded to 5 s and retried with backoff for about two
-  minutes, then again at the executor's next process start; while Core has not taken it the session
-  line says `Remote-SSH unavailable · …`, and nothing else waits on it. The gateway runs a session
-  as a user only on a sealantd that reports `exec.user`, and the API names the user only to a
-  gateway that says it runs sessions as one. SFTP and `scp` run as the same user: sealantd's
-  `openSftp` takes a user (sealantd#155), and the Sealant 0.39 that Mend pins passes it
-  (sealant#352).
+  person's. sealant checks it against the person the launcher's Sealant user is bound to: Mend binds
+  each account once (`users.bindPerson`: account id, uid, home; one sealant call per account per
+  Mend process, kept), sealant never changes a binding through its API and gives each person id and
+  uid to one user only, and a create whose owner map or `credentialsHome` disagrees is refused. If
+  the binding cannot be made (an older sealant, a refusal, no answer within 5 s), the create asks
+  nothing, Remote-SSH stays root as before, and the session says
+  `Remote-SSH: root, sealant can't bind your person`. sealant checks it against the person the
+  launcher's Sealant user is bound to: Mend binds each account once (`users.bindPerson`: account id,
+  uid, home; one sealant call per account per Mend process, kept), sealant never changes a binding
+  through its API and gives each person id and uid to one user only, and a create whose owner map or
+  `credentialsHome` disagrees is refused. If the binding cannot be made (an older sealant, a
+  refusal, no answer within 5 s), the create asks nothing, Remote-SSH stays root as before, and the
+  session says `Remote-SSH: root, sealant can't bind your person`. Every shell and command, the
+  Remote-SSH bootstrap's `ssh -T host bash` and the gateway's own disconnect-time capture included,
+  starts as that user with `HOME` and the rest from passwd. The gateway asks sealant who for every
+  new channel, so a change reaches a connection already open, and refuses an answer that does not
+  say (an older sealant) rather than read it as root. The extension, its terminals and the Claude
+  Code extension then run on the launcher's logins, save into their `P`, and find their tools in
+  their home. A joiner cannot open Remote-SSH into an executor someone else launched. The user does
+  not exist at create; until prepare makes it, sealantd refuses the session, never runs it as root.
+  Mend names the user only where sealant reports `workspaceSshUser`; an older control plane's
+  gateway runs the session as root, as before. Whenever a person executor's Remote-SSH runs as root
+  (an older sealant, an unbound person), its session line says so, with the reason; a standby keeps
+  what its create decided (`hot_workspaces.remote_ssh`) and its claim says it too, never re-asking
+  sealant. A prepare that falls back to one shared home sets the sessions back to root
+  (`DELETE .../ssh-user`, the only change sealant takes after create), so the launcher's Remote-SSH
+  works there as before. That reset runs off the launch path, each attempt bounded to 5 s and
+  retried with backoff for about two minutes, then again at the executor's next process start; while
+  sealant has not taken it the session line says `Remote-SSH unavailable · …`, and nothing else
+  waits on it. The gateway runs a session as a user only on a sealantd that reports `exec.user`, and
+  the API names the user only to a gateway that says it runs sessions as one. SFTP and `scp` run as
+  the same user: sealantd's `openSftp` takes a user (sealantd#155), and the Sealant 0.39 that Mend
+  pins passes it (sealant#352).
 - **Anything else** (`docker exec`, a custom image's own entrypoint work) runs as root, which is no
   person: `/root` holds no login and no Mend token, and nothing written under `/root` is saved.
 
@@ -1011,26 +1013,26 @@ kind, and so is one that reinstalled. The `person` layout's share of resumes tha
 exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every resume while
 `shared` restored at least one (decision log, 2026-10-09).
 
-| Measure                                                                                                                                             | Limit                                                                                                         |
-| --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| New session to first output (each harness), resume, Stop's save                                                                                     | +5% or +1 s, whichever is larger                                                                              |
-| Second session of the same person                                                                                                                   | +5% or +1 s, whichever is larger                                                                              |
-| Join by a different person (against today's join, which runs as the launcher)                                                                       | +3 s                                                                                                          |
-| Steering hand-over (send to first output, nothing in the background; both Core calls and Codex re-index included; a conversation of realistic size) | under 5 s more than the same turn sent by the process's own person                                            |
-| Checkpoint save, restore time, first-turn latency                                                                                                   | +5% or +1 s, whichever is larger                                                                              |
-| Restore bytes; capture size per worktree with one person                                                                                            | +5%                                                                                                           |
-| Growth per extra person                                                                                                                             | that person's conversation state (decision 2, `codex-db` and its WAL included) and memory, plus at most 64 KB |
-| Delivery (memory, skills, secret files) per person                                                                                                  | +5% or +0.5 s, whichever is larger                                                                            |
-| Codex first start                                                                                                                                   | +5% or +1 s, whichever is larger                                                                              |
-| Shell and terminal open, `git push` and `fetch`, terminal typing latency                                                                            | unchanged within noise: the larger of the baseline's spread (worst minus median) and 50 ms                    |
-| Executor disk and memory with one person (memory: peak RSS of the executor's cgroup over the scenario)                                              | +5%                                                                                                           |
-| Session list and session view API latency                                                                                                           | +5% or +20 ms, whichever is larger                                                                            |
+| Measure                                                                                                                                                | Limit                                                                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| New session to first output (each harness), resume, Stop's save                                                                                        | +5% or +1 s, whichever is larger                                                                              |
+| Second session of the same person                                                                                                                      | +5% or +1 s, whichever is larger                                                                              |
+| Join by a different person (against today's join, which runs as the launcher)                                                                          | +3 s                                                                                                          |
+| Steering hand-over (send to first output, nothing in the background; both sealant calls and Codex re-index included; a conversation of realistic size) | under 5 s more than the same turn sent by the process's own person                                            |
+| Checkpoint save, restore time, first-turn latency                                                                                                      | +5% or +1 s, whichever is larger                                                                              |
+| Restore bytes; capture size per worktree with one person                                                                                               | +5%                                                                                                           |
+| Growth per extra person                                                                                                                                | that person's conversation state (decision 2, `codex-db` and its WAL included) and memory, plus at most 64 KB |
+| Delivery (memory, skills, secret files) per person                                                                                                     | +5% or +0.5 s, whichever is larger                                                                            |
+| Codex first start                                                                                                                                      | +5% or +1 s, whichever is larger                                                                              |
+| Shell and terminal open, `git push` and `fetch`, terminal typing latency                                                                               | unchanged within noise: the larger of the baseline's spread (worst minus median) and 50 ms                    |
+| Executor disk and memory with one person (memory: peak RSS of the executor's cgroup over the scenario)                                                 | +5%                                                                                                           |
+| Session list and session view API latency                                                                                                              | +5% or +20 ms, whichever is larger                                                                            |
 
 ### What the design does to stay inside them
 
-- **No new Core call on the cold path:** `credentialsHome` at create. A join's `useradd` comes
-  first; its Core call, dotfiles and deliveries then run in parallel, and only the agent start waits
-  for them.
+- **No new sealant call on the cold path:** `credentialsHome` at create. A join's `useradd` comes
+  first; its sealant call, dotfiles and deliveries then run in parallel, and only the agent start
+  waits for them.
 - **A joiner's `install.sh` runs beside the agent,** not before it: the agent starts when the
   dotfiles' files are applied, and the session line says "install.sh running" until it ends. The
   launcher's runs before their agent, as it did at boot.
@@ -1047,7 +1049,7 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
   interleaved, on the box's own filesystem (sealantd#145).
 - **The hand-over:** the settle is 1 s for Codex and none for Claude once it reports
   `session_state_changed: idle`; `H`'s seed is staged while the old process stops, so only the two
-  Core calls (DELETE, then POST), the directory exchange and the start wait for the exit; Codex's
+  sealant calls (DELETE, then POST), the directory exchange and the start wait for the exit; Codex's
   plugin sync is off in `H`; Claude and Codex start directly, with no shell profile. The Claude
   settings go inline on the command line, so `--settings` adds no exec and no file.
 - **The worktree repair is asynchronous:** one exec after another person's process starts, never
@@ -1077,16 +1079,16 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **History** (gate B): the benchmark on the box at `0.36.0-next.601`/`602`, before any per-person
   code lands, checked in as `docs/perf/0016-baseline.json` and named in the decision log. It records
   the drift of the whole release; it is not the gate.
-- **CI guards:** engine tests count the execs and Core calls of a cold launch, a join, a resume and
-  a hand-over and fail when the count grows past its budget (cold launch: no more than today; join:
-  at most two more synchronous execs than a same-person second session, plus the one asynchronous
-  worktree repair; hand-over: two Core calls, DELETE then POST, one stop, one start). The `chmod` of
-  `C` and the ACL step at boot are folded into existing execs, so they count nothing new. A layout
-  test fails when the bytes written into saved state per person, outside conversation state and
-  memory, exceed 64 KB; conversation state is decision 2's list, `codex-db` and its WAL included.
-  `codex-db/logs_*` and `codex-db/*-shm` are machine state (Delivery 3), never saved, so they count
-  nothing. No step is added to the launch path's synchronous part without a measured budget in its
-  PR.
+- **CI guards:** engine tests count the execs and sealant calls of a cold launch, a join, a resume
+  and a hand-over and fail when the count grows past its budget (cold launch: no more than today;
+  join: at most two more synchronous execs than a same-person second session, plus the one
+  asynchronous worktree repair; hand-over: two sealant calls, DELETE then POST, one stop, one
+  start). The `chmod` of `C` and the ACL step at boot are folded into existing execs, so they count
+  nothing new. A layout test fails when the bytes written into saved state per person, outside
+  conversation state and memory, exceed 64 KB; conversation state is decision 2's list, `codex-db`
+  and its WAL included. `codex-db/logs_*` and `codex-db/*-shm` are machine state (Delivery 3), never
+  saved, so they count nothing. No step is added to the launch path's synchronous part without a
+  measured budget in its PR.
 - **Every PR in the plan states its expected effect.** One that touches the launch, join, resume,
   Stop or capture path carries a `shared` and a `person` run of the affected scenarios, or the unit
   budget test that covers it.
@@ -1101,7 +1103,7 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - **VS Code Remote-SSH reaches only workspaces you launched,** as your user.
 - **No `GITHUB_TOKEN` in the environment.** A repository `.npmrc` with `${GITHUB_TOKEN}` fails until
   the person exports `GITHUB_TOKEN=$(mend-git-credential token)`; a person's own `gh auth login` is
-  overwritten by Core's next push.
+  overwritten by sealant's next push.
 - **A file another person's tool created with an explicit mode** is repaired in the worktree when
   someone else's process starts there; elsewhere it needs a `chmod` (`CAP_FOWNER`) or `sudo` until
   the next restore.
@@ -1161,7 +1163,7 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
   (decision 11a). In a terminal the start line names them; a protocol session writes the line only
   to its process's stderr record, which the conversation view does not show yet.
 - **Settings edited by hand** last until the executor ends; pi's and opencode's ChatGPT logins are
-  refreshed by Core in a `person` executor, and at process start in a `shared` one.
+  refreshed by sealant in a `person` executor, and at process start in a `shared` one.
 
 ## Consequences
 
@@ -1170,12 +1172,12 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 - Commits, pushes, pull requests, MCP calls, cloud CLIs and publishes from a process are its user's.
 - The owner's private memory and instructions stay out of a shared conversation from the moment it
   is shared.
-- Core's images carry toolchains in shared locations, and every workspace has `sudo`.
+- sealant's images carry toolchains in shared locations, and every workspace has `sudo`.
 
 ## Follow-ups
 
 - **Isolation:** no sudo for people, or an executor per person (ADR 0002's accepted relaxation).
-- **Remote-SSH as the connecting person,** once Core's gateway admits more than the owner.
+- **Remote-SSH as the connecting person,** once sealant's gateway admits more than the owner.
 - **Provider session ids pinned at launch** (Claude and pi `--session-id`).
 - **Claiming uncredited memory** from before 0.36.
 - **sealantd scrubbing opencode's login tables.**
@@ -1201,9 +1203,9 @@ that covers it.
   resume is removed in 12, in both layouts. Until 18 lands, a steer turn in a person executor is
   refused with the reason.
 - **The box turns the flag on** only when all of these hold: 3, 4 and 5 (sealantd) and 7, 8, 9 and
-  10 (Core, the images and the pins) are released and in the box's images, rebuilt (cold launches
+  10 (sealant, the images and the pins) are released and in the box's images, rebuilt (cold launches
   pay one image build per project once); the box's executors report the sealantd capabilities of
-  decision 1, and Core reports the capability for the box's images ahead of create; 12–17 have
+  decision 1, and sealant reports the capability for the box's images ahead of create; 12–17 have
   merged; and gate P1 has passed on the scratch instance. Turning it on changes only the layout of
   worktrees that have none yet.
 
@@ -1249,33 +1251,33 @@ launches.
    without booting, so an image build can record them. Tests: a process's ids and `HOME`;
    `install.sh` runs as the user; the offline report matches the booted one. M, ~500. Perf: process
    start unchanged within noise (unit timing of the spawn path).
-6. **Core · sealant#316 as it is.** S, open. Perf: none.
-7. **Core · sealant#315 reshaped into per-home injection.** `home` (a person's home, a conversation
-   home, or `/root` for decision 1's fallback); files owned by the home's owner; the record per
-   instance and home (`home-held`, release and retake only when idle); GitHub as `hosts.yml`; DELETE
-   removing the files; one row lock. M, ~+550 / −250. Perf: one control-channel write per call;
-   measured for the hand-over (DELETE then POST).
-8. **Core · SDK and workspace surface.** `user` on sessions and exec; `credentialsHome`; `GET`;
+6. **sealant · sealant#316 as it is.** S, open. Perf: none.
+7. **sealant · sealant#315 reshaped into per-home injection.** `home` (a person's home, a
+   conversation home, or `/root` for decision 1's fallback); files owned by the home's owner; the
+   record per instance and home (`home-held`, release and retake only when idle); GitHub as
+   `hosts.yml`; DELETE removing the files; one row lock. M, ~+550 / −250. Perf: one control-channel
+   write per call; measured for the hand-over (DELETE then POST).
+8. **sealant · SDK and workspace surface.** `user` on sessions and exec; `credentialsHome`; `GET`;
    sync-back per home; the dotfiles verb; the capture owner map in the spec; `sshUser` for the
    gateway; the person-layout capability of an image (from 9's probe) and ACL support per runtime,
    readable before create. M, ~650. Perf: no new call at create (the capability is read with the
    image Mend already resolves).
-9. **Core · images.** Group `mend` (gid 40000); `sudo` with `NOPASSWD` for the group, `env_keep` for
-   the toolchain variables and `umask=0002, umask_override`; added where a base lacks them: `sudo`
-   (Ubuntu, Arch), `acl` (Ubuntu, Fedora), `util-linux` (Fedora); toolchains under `/opt` and caches
-   under `/var/cache` (2775) with their `ENV`, `npm_config_prefix=/opt/npm-global`; `/etc/skel`
-   links to shared caches; `/etc/gitconfig` `safe.directory = *`; `docker` group; the same for the
-   MicroVM images; nix images unchanged and documented as one-person. Image tests run in a container
-   started from the built image: a second uid runs `pnpm install`, `mise install`, `cargo build`,
-   `npm i -g` and Playwright against the shared paths; a root `cargo install` and `npm i -g` still
-   work in the `shared` layout. The image build's probe, for Core's images and custom ones:
-   `sealantd capabilities --json`, `sudo`, `useradd`, `setfacl`, and no user or group in 40000–49999
-   other than `mend`, recorded on the image. M, ~550. Perf: image size, and the benchmark's `shared`
-   launches on the new images against the old (no regression for `shared` executors or other Sealant
-   users).
-10. **Core and sealantd · release chain.** `next` prereleases, Core's pin of sealantd, image builds,
-    Mend's pin. S. Perf: the benchmark's `shared` launches at the new pin match the baseline within
-    budget.
+9. **sealant · images.** Group `mend` (gid 40000); `sudo` with `NOPASSWD` for the group, `env_keep`
+   for the toolchain variables and `umask=0002, umask_override`; added where a base lacks them:
+   `sudo` (Ubuntu, Arch), `acl` (Ubuntu, Fedora), `util-linux` (Fedora); toolchains under `/opt` and
+   caches under `/var/cache` (2775) with their `ENV`, `npm_config_prefix=/opt/npm-global`;
+   `/etc/skel` links to shared caches; `/etc/gitconfig` `safe.directory = *`; `docker` group; the
+   same for the MicroVM images; nix images unchanged and documented as one-person. Image tests run
+   in a container started from the built image: a second uid runs `pnpm install`, `mise install`,
+   `cargo build`, `npm i -g` and Playwright against the shared paths; a root `cargo install` and
+   `npm i -g` still work in the `shared` layout. The image build's probe, for sealant's images and
+   custom ones: `sealantd capabilities --json`, `sudo`, `useradd`, `setfacl`, and no user or group
+   in 40000–49999 other than `mend`, recorded on the image. M, ~550. Perf: image size, and the
+   benchmark's `shared` launches on the new images against the old (no regression for `shared`
+   executors or other Sealant users).
+10. **sealant and sealantd · release chain.** `next` prereleases, sealant's pin of sealantd, image
+    builds, Mend's pin. S. Perf: the benchmark's `shared` launches at the new pin match the baseline
+    within budget.
 11. **Mend · mend#526, merged without its pi refusal.** The owner rejects any rule that stops two
     people working in one worktree, so `PI_PROFILE_IN_USE` was taken out before it merged
     (2026-10-06). In a `shared` executor a pi that joins a live pi, anyone's, runs on the profile
@@ -1286,7 +1288,7 @@ launches.
 12. **Mend · users and layout behind the flag.** Linux identity per account (migration: name, uid in
     40000–49999); `useradd` at prepare, serialised, for the launcher and every restored current
     member, at first process for joiners, after a passwd and group collision check; the layout
-    chosen before create (decision 1): the worktree's sticky layout, then Core's image capability
+    chosen before create (decision 1): the worktree's sticky layout, then sealant's image capability
     and Mend's record per image digest and runtime, then the flag; prepare's check as the backstop,
     refusing on a `person` worktree and re-posting the launcher's logins to `/root` on a fresh one
     (their dotfiles are not applied there: the verb refuses root, decision 1); `harness_layout` on
@@ -1310,12 +1312,13 @@ launches.
     sends `thread/start`, and the same holds in a `shared` launch; `harnessLayout: shared` on an
     existing `person` worktree is refused, and on a new worktree is recorded with its source.
     **Capability before create:** a fresh worktree on an image whose capability is unknown launches
-    `shared` with the logins at `$HOME` and records prepare's answer for the digest; Core saying yes
-    and prepare saying no on a fresh worktree re-posts the launcher's logins to `/root`, records
-    their dotfiles as not applied (no Core verb applies them as root), records `shared` and corrects
-    the record, and the agent starts with a login. M, ~1,250. Perf: `useradd` folded into existing
-    execs; the repair one asynchronous exec in the join budget; cold launch exec count unchanged,
-    the capability read with the image Mend already resolves; new session and join scenarios.
+    `shared` with the logins at `$HOME` and records prepare's answer for the digest; sealant saying
+    yes and prepare saying no on a fresh worktree re-posts the launcher's logins to `/root`, records
+    their dotfiles as not applied (no sealant verb applies them as root), records `shared` and
+    corrects the record, and the agent starts with a login. M, ~1,250. Perf: `useradd` folded into
+    existing execs; the repair one asynchronous exec in the join budget; cold launch exec count
+    unchanged, the capability read with the image Mend already resolves; new session and join
+    scenarios.
 13. **Mend · git and Mend identity.** The per-(launch, person) token, binding and revocation; the
     container token refused, keyed on the executor's recorded layout so pre-release executors keep
     working; no `mend.sock` in capture mode; transport signs as the token's person; helper routes
@@ -1326,9 +1329,9 @@ launches.
 14. **Mend · logins per person.** `credentialsHome` only for `person` launches; POST per person in
     parallel; DELETE, retried, with the launcher's create-time home kept while the executor lives;
     reconciliation at startup; refusal before start; re-post on authentication failure; pi's and
-    opencode's ChatGPT logins written by Core. Tests: a join never reads the holder's login; files
-    owned by the user; no regular `auth.json` under `P`; the join adds exactly one Core call. M,
-    ~400. Perf: join scenario.
+    opencode's ChatGPT logins written by sealant. Tests: a join never reads the holder's login;
+    files owned by the user; no regular `auth.json` under `P`; the join adds exactly one sealant
+    call. M, ~400. Perf: join scenario.
 15. **Mend · deliveries per person.** Dotfiles through the verb (with `bootstrap`; a joiner's
     `install.sh` beside the agent unless "Start my agents after install.sh" is on, and the line when
     it finishes late), shell profile, skills, pi profile, memory, Codex carry, secret files, as the
@@ -1356,7 +1359,7 @@ launches.
     removed in the background; the `chmod -R g+rwX C` as the owner with only `CAP_FOWNER`; one live
     process per conversation with fencing; the stop protocol; no-fork resume; a rejection of foreign
     reasoning failing the turn with its line; Shared control on a terminal session changing nothing;
-    the hand-over budget test (two Core calls, DELETE then POST, one stop, one start). Tests with
+    the hand-over budget test (two sealant calls, DELETE then POST, one stop, one start). Tests with
     fake harnesses: Alice's transcript created 0600, Bob's resume works, then Alice's (five turns,
     two uids); a steered Claude turn's large tool output and a steered Codex sub-agent's rollout
     land in `C` and stay; the task list survives a change of sender; after a steered Codex turn,
@@ -1367,7 +1370,7 @@ launches.
     directory in `C` and no cron tools; no Codex `git` child outlives a hand-over and the exchange
     never fails on a busy directory; the owner's transcript has no path under the steerer's home; a
     missing rollout fails the turn. M, ~1,000. Perf: hand-over under 5 s, Codex's one-conversation
-    re-index and both Core calls included.
+    re-index and both sealant calls included.
 18. **Mend · steering dispatch.** Quiescence for Claude (session state, background-task set, paused
     tasks, wakeups, monitors, session crons) and Codex (child threads, background terminals, goals,
     1 s settle); the Claude adapter handling the events it drops today; a Codex turn aborted by the
@@ -1433,7 +1436,7 @@ benchmark once more, before 0.36 is tagged.
   Codex threads and broke Claude's parent chain, so a rejection now fails the turn.
 - **A scrubbed copy of opencode's old shared database, and Remote-SSH as the connecting person
   through `SetEnv`** (draft 2). The first leaked other people's data and was unneeded; the second
-  cannot work with Core's gateway today.
+  cannot work with sealant's gateway today.
 - **One home per person, all of it saved,** with sealantd's tables stripping logins. The tables fail
   open, and the owner's rule is that logins are never saved.
 - **Falling back to the `shared` layout for a worktree already per person** (draft 5). Its saved
@@ -1474,9 +1477,9 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-06, after review 5: a worktree that has run per person stays per person, and a launch that
   cannot run it is refused with the reason, never run `shared`; Codex's `thread/start` fallback is
   removed; the migration's completion names the last `shared`-layout capture; the layout is decided
-  before create from Core's per-image capability and Mend's record per image; the benchmark and
+  before create from sealant's per-image capability and Mend's record per image; the benchmark and
   gates pick the layout per launch on fresh worktrees; Claude's switches go in a `--settings` file;
-  the worktree repair goes by ctime with a marker per repair; a hand-over makes two Core calls;
+  the worktree repair goes by ctime with a marker per repair; a hand-over makes two sealant calls;
   Codex's `*-shm` files are machine state. The design is final.
 - 2026-10-06 (owner): no refusal of two people in one worktree. mend#526 merged without its pi
   refusal; a pi joining a live pi in a `shared` executor runs on the profile there (Delivery 11).
@@ -1502,25 +1505,25 @@ benchmark once more, before 0.36 is tagged.
   prepare refuses a `person` executor whose restored worktree is not group `mend`'s (mend#552); a
   person's processes hold `CAP_FOWNER`, owner-approved, so pnpm relinks bins, and sealantd withholds
   it under no-new-privileges; the person layout needs a setuid `sudo` and no no-new-privileges, in
-  Core's image probe and Mend's alike; sealantd skips no-new-privileges only in a per-person
+  sealant's image probe and Mend's alike; sealantd skips no-new-privileges only in a per-person
   executor, a root daemon with an owner map naming at least one person (sealantd#148); sealantd
   applies `person-env` to every person's process and Mend applies nothing; the project's secrets
   reach every person while named provider logins, `SEALANT_*` and the injector's keys are withheld;
   the dependency cache is keyed by layout, and a worktree's first `person` launch runs
   `pnpm install --force --prefer-offline` once on a tree from the other layout; `openSftp` takes no
   user yet.
-- 2026-10-08, with Core 0.39.0-next.703 (sealant#334–#341, mend#569): every person's dotfiles, the
-  launcher's included, go through `dotfiles.apply`; a start waits for it bounded, and an apply that
-  outlives the wait is seen through when it lands (Mend's links, then the first-process marker, the
-  record and the line made true), never asked for twice; every start of a person waits for, or says,
-  their `install.sh` while it runs. The fallback to `/root` applies no dotfiles (the verb refuses
-  root) and writes the launcher's logins in one partial POST. Every login POST is partial; Core
-  writes pi's and opencode's ChatGPT logins in `person` executors. The layout needs the control
-  plane to report `features.processUser`, which 0.39.0-next.703 does not yet.
-- 2026-10-08, with Core 0.39.0-next.706 (sealant#342–#344): the person layout reads
+- 2026-10-08, with sealant 0.39.0-next.703 (sealant#334–#341, mend#569): every person's dotfiles,
+  the launcher's included, go through `dotfiles.apply`; a start waits for it bounded, and an apply
+  that outlives the wait is seen through when it lands (Mend's links, then the first-process marker,
+  the record and the line made true), never asked for twice; every start of a person waits for, or
+  says, their `install.sh` while it runs. The fallback to `/root` applies no dotfiles (the verb
+  refuses root) and writes the launcher's logins in one partial POST. Every login POST is partial;
+  sealant writes pi's and opencode's ChatGPT logins in `person` executors. The layout needs the
+  control plane to report `features.processUser`, which 0.39.0-next.703 does not yet.
+- 2026-10-08, with sealant 0.39.0-next.706 (sealant#342–#344): the person layout reads
   `features().processUserRoutes` and the rest of the layout's features (never `processUser`, which
   stays false for older SDKs) and each workspace's `processUser()`; a launch runs per person only
-  when both say yes. The session line says Core's launch phase while a workspace gets ready.
+  when both say yes. The session line says sealant's launch phase while a workspace gets ready.
 - 2026-10-08, Delivery 19 as built: the migration's record (`pre_release_migrations`) keeps every
   memory path and digest any run credited, so a re-run reads the old home again and credits only
   files whose digest no run credited, read back against the digest an earlier run credited; it never
@@ -1580,35 +1583,35 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-09, Delivery 21 as built, after the review of mend#582: `MEND_HARNESS_LAYOUT` is `person`
   unless set (empty counts as unset), and `shared` is the operator's opt-out; every check that asked
   whether the flag was on follows the default. A shared launch's probe runs only where nothing is
-  known, and its answer is recorded unconfirmed: it fills in an unknown, never replaces Core's or a
-  person prepare's answer, and no executor is retired on it (`image_layout_capabilities.confirmed`,
-  migration 0119); retirement waits for an answer a per-person executor gave. A Kubernetes workspace
-  runtime is a static obstacle (shared, nothing probed). A person prepare checks no-new-privileges
-  (`NoNewPrivs` in `/proc/self/status`) with the rest of decision 1's probe, so a hardened Docker
-  host falls back to shared on a fresh worktree. The prepare sends one data list
-  (`name:uid:account id:member:ticket` per person) and one loop over a `mend_person` function
-  defined once, about 95 bytes a person instead of 6.3 KB, so 200 members make a 41 KB script and a
-  73 KB exec beside the helper (Linux refuses one argument over 128 KiB; before, 13 people passed
-  it). Standbys are kept for an owner whose fresh worktrees are predicted shared and claimed by a
-  worktree with no layout predicted shared; for anyone else none is kept, and the Hot sessions
-  status says why (`ProjectHotSessionsStatus.cold`). A worktree's head read for `people/` is
-  remembered per head when it holds none, so a worktree that falls back to shared reads its manifest
-  once per capture, not on every launch. The `/root` relocation already ran only in `shared`
-  executors. A loopback server on the capture store runs per person by default, as the layout
-  follows capability, not exposure.
+  known, and its answer is recorded unconfirmed: it fills in an unknown, never replaces sealant's or
+  a person prepare's answer, and no executor is retired on it
+  (`image_layout_capabilities.confirmed`, migration 0119); retirement waits for an answer a
+  per-person executor gave. A Kubernetes workspace runtime is a static obstacle (shared, nothing
+  probed). A person prepare checks no-new-privileges (`NoNewPrivs` in `/proc/self/status`) with the
+  rest of decision 1's probe, so a hardened Docker host falls back to shared on a fresh worktree.
+  The prepare sends one data list (`name:uid:account id:member:ticket` per person) and one loop over
+  a `mend_person` function defined once, about 95 bytes a person instead of 6.3 KB, so 200 members
+  make a 41 KB script and a 73 KB exec beside the helper (Linux refuses one argument over 128 KiB;
+  before, 13 people passed it). Standbys are kept for an owner whose fresh worktrees are predicted
+  shared and claimed by a worktree with no layout predicted shared; for anyone else none is kept,
+  and the Hot sessions status says why (`ProjectHotSessionsStatus.cold`). A worktree's head read for
+  `people/` is remembered per head when it holds none, so a worktree that falls back to shared reads
+  its manifest once per capture, not on every launch. The `/root` relocation already ran only in
+  `shared` executors. A loopback server on the capture store runs per person by default, as the
+  layout follows capability, not exposure.
 - 2026-10-09, after the second review of mend#582: a recorded "no" is weighed by its reasons. One
   made only of what a shared probe sees (sudo, useradd, setfacl, setpriv, ACLs, sealantd's
   capabilities, a uid or name taken) is checked again by the next shared launch, whose answer
   replaces exactly that "no" (compare-and-set on its reasons); one that also names a person who
   could not be made, or an image that could not be checked, is checked again after a day; one naming
   no-new-privileges, an owner map refused, a runtime ruled out or the workspace's own refusal, or
-  met by Core's explicit "no", is kept until the digest changes, and Core's "no" beats a probe's
-  unconfirmed "yes". Core's runtimes `k8s`, `k3s` and `cloudflare` are ruled out before any launch.
-  A worktree already person retires its shared executor on its own record, confirmed or not, and
-  migration 0119 keeps a "yes" confirmed where a confirmed person launch ran on the image. A claimed
-  standby's shared decision stands at launch against what was learnt of the image since (`decide`'s
-  `standby`), so a claim never fails its session over a race; a head holding `people/` keeps
-  standbys away, and a claimed standby's prepare runs the probe a cold shared launch would.
+  met by sealant's explicit "no", is kept until the digest changes, and sealant's "no" beats a
+  probe's unconfirmed "yes". sealant's runtimes `k8s`, `k3s` and `cloudflare` are ruled out before
+  any launch. A worktree already person retires its shared executor on its own record, confirmed or
+  not, and migration 0119 keeps a "yes" confirmed where a confirmed person launch ran on the image.
+  A claimed standby's shared decision stands at launch against what was learnt of the image since
+  (`decide`'s `standby`), so a claim never fails its session over a race; a head holding `people/`
+  keeps standbys away, and a claimed standby's prepare runs the probe a cold shared launch would.
 - 2026-10-09, Delivery 22 as built: nothing in its list is dead. Each item is how a home shared by
   several people keeps one person's memory and files from another, and Delivery 21 kept that home
   reachable: the operator's `MEND_HARNESS_LAYOUT=shared`, and every fallback on a fresh worktree (a
@@ -1629,31 +1632,31 @@ benchmark once more, before 0.36 is tagged.
   boot, and its replan restores under it (`CaptureRuntime::replan` → `materialize_delta` →
   `materialize_targets()`, whose `owners` is the boot config's; the worktree root is given to its
   owner and group on every materialize, and a reused file is re-owned), so no platform change was
-  needed; the claim names the same map (`captureReplan`'s `expectedOwnerMap`), which Core compares.
-  The layout is on the hot row (`hot_workspaces.harness_layout`, migration 0120) and, for a person
-  standby, in the fingerprint with the image answer it booted on, so a claim takes only a standby of
-  the layout `standbyLayoutFor` predicts for the worktree; that map is complete only for a worktree
-  with no layout, no `people/` in its head, and the launcher as its change owner, so anything else
-  launches cold. At claim, `decide`'s `standby` names the standby's layout, which stands (a person
-  standby whose image is found unable since falls back to shared in it, as a cold person launch
-  does); its owner's dotfiles are resolved beside the replan, and its prepare is a cold person
-  launch's. A reconcile that cannot ask the control plane keeps the pool as it is. A replan that
-  fails goes cold under a layout decided for the cold executor's own launch. The Hot sessions status
-  no longer carries a cold reason.
+  needed; the claim names the same map (`captureReplan`'s `expectedOwnerMap`), which sealant
+  compares. The layout is on the hot row (`hot_workspaces.harness_layout`, migration 0120) and, for
+  a person standby, in the fingerprint with the image answer it booted on, so a claim takes only a
+  standby of the layout `standbyLayoutFor` predicts for the worktree; that map is complete only for
+  a worktree with no layout, no `people/` in its head, and the launcher as its change owner, so
+  anything else launches cold. At claim, `decide`'s `standby` names the standby's layout, which
+  stands (a person standby whose image is found unable since falls back to shared in it, as a cold
+  person launch does); its owner's dotfiles are resolved beside the replan, and its prepare is a
+  cold person launch's. A reconcile that cannot ask the control plane keeps the pool as it is. A
+  replan that fails goes cold under a layout decided for the cold executor's own launch. The Hot
+  sessions status no longer carries a cold reason.
 - 2026-10-10, after the review of mend#596: a claimed standby's layout is decided as soon as it is
   adopted, before its replan; one that does not serve the launch (another layout, or a person
   standby decided for any reason but the flag: the worktree turned person or its head gained
   `people/` since the claim) is drained and the launch goes on cold, instead of failing. While the
   control plane cannot be asked, a fresh launch is still predicted shared where the image is known
-  to run shared (a runtime ruled out, Core's "no", or Mend's record of one), so shared standbys keep
-  serving. A person standby's fingerprint leaves out the dotfiles inputs, which it resolves at
+  to run shared (a runtime ruled out, sealant's "no", or Mend's record of one), so shared standbys
+  keep serving. A person standby's fingerprint leaves out the dotfiles inputs, which it resolves at
   claim.
 - 2026-10-10, after the P1 gate on the box (benchmark 1ju0v2, 0.36.0-next.652): the first turn a
   second person sent into the owner's session failed. Their hand-over ran the exec that makes their
-  user and home beside Core's POST of their logins (both started within 3 ms), and Core's write
-  exited 1. A person's logins are now posted only once that exec has exited 0. A POST that fails
-  without refusing a login is asked once more, after the user and home are ensured again, and a
-  second failure refuses the start in words. The ensure reads and changes nothing in the home,
+  user and home beside sealant's POST of their logins (both started within 3 ms), and sealant's
+  write exited 1. A person's logins are now posted only once that exec has exited 0. A POST that
+  fails without refusing a login is asked once more, after the user and home are ensured again, and
+  a second failure refuses the start in words. The ensure reads and changes nothing in the home,
   because the person's deliveries may be running in it by then (dotfiles that fold `~/.claude` into
   a link, which the whole home script refuses), and holds the home itself to what that script makes
   of it: a link at the home is refused and never followed, by both scripts; the user must have their
@@ -1673,7 +1676,7 @@ benchmark once more, before 0.36 is tagged.
   own Claude login, when connected, so pstack runs inside Mend sessions (decision 5's amendment), in
   0.36.1. The rule that no person spends another person's login is unchanged. A person can turn it
   off ("Give my sessions only the selected agent's login"), and a standby never serves them a Claude
-  or Codex session. The create's ladder steps past the other agent's login when Core refuses it
+  or Codex session. The create's ladder steps past the other agent's login when sealant refuses it
   (mend#671's `nextCreateAttempts`), so a stale login of the other agent never stops a launch.
 - 2026-10-11 (owner), gate P1 on the release candidate, 0.36.0-next.754: **passed**. The run used
   one build (image `sha256:eb3fe68c6a4d`, commit `08847fc58`), `shared` against `person`, 10 rounds,
@@ -1697,20 +1700,21 @@ benchmark once more, before 0.36 is tagged.
 - 2026-10-17 (owner): the other agent's login (decision 5's amendment, mend#684) moves into 0.36, so
   pstack runs inside Mend sessions while the rest of 0.36 is built. Its table is migration 0131.
 - 2026-10-24: Kubernetes workspaces on the runc runtime and nix images run per person from this
-  release (SLNT-231, SLNT-232). Core lets a per-person Pod raise privileges and refuses a per-person
-  workspace under gVisor; its nix image carries a setuid `sudo` outside the store and runs a nix
-  daemon for people. Mend drops its static vetoes: the deployment's Kubernetes mode, the `k8s` and
-  `k3s` runtimes, and nix images. Cloudflare stays ruled out. Three guards replace them. The control
-  plane must report `kubernetesPersonLayout`, a release floor for every runtime: with a Core older
-  than the one that reports it, every new worktree runs shared and every worktree already person is
-  refused, and the words name that Core version. The image probe finds `sudo` only when it is
-  setuid. Mend reads Core's owner-map refusal by its code alone: `owner-map-unsupported` is the
-  image's answer, and `owner-map-unverified` (Core read no probe of the image) is recorded as "the
-  image could not be checked", a passing "no" that replaces only an unconfirmed answer and that a
-  shared launch checks again after a day. A "no" made only of passing failures does not refuse a
-  worktree already person before create; Core's guard and the prepare decide. Migration 0138 takes
-  out of every "no" the reasons only Kubernetes caused and the owner-map refusals an older Core gave
-  for an image it had not probed, and drops a "no" left with none. Decision 7a is unchanged here.
+  release (SLNT-231, SLNT-232). sealant lets a per-person Pod raise privileges and refuses a
+  per-person workspace under gVisor; its nix image carries a setuid `sudo` outside the store and
+  runs a nix daemon for people. Mend drops its static vetoes: the deployment's Kubernetes mode, the
+  `k8s` and `k3s` runtimes, and nix images. Cloudflare stays ruled out. Three guards replace them.
+  The control plane must report `kubernetesPersonLayout`, a release floor for every runtime: with a
+  sealant older than the one that reports it, every new worktree runs shared and every worktree
+  already person is refused, and the words name that sealant version. The image probe finds `sudo`
+  only when it is setuid. Mend reads sealant's owner-map refusal by its code alone:
+  `owner-map-unsupported` is the image's answer, and `owner-map-unverified` (sealant read no probe
+  of the image) is recorded as "the image could not be checked", a passing "no" that replaces only
+  an unconfirmed answer and that a shared launch checks again after a day. A "no" made only of
+  passing failures does not refuse a worktree already person before create; sealant's guard and the
+  prepare decide. Migration 0138 takes out of every "no" the reasons only Kubernetes caused and the
+  owner-map refusals an older sealant gave for an image it had not probed, and drops a "no" left
+  with none. Decision 7a is unchanged here.
 - 2026-11-09 ([ADR 0024](0024-a-persons-mcp-servers.md)): decision 6's neutral context holds no
   one's memory or instructions, but MCP servers are tools, like the login. `H` still seeds none: the
   sender's own servers arrive by flag, from files in the sender's own home, and a hand-over carries

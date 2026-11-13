@@ -20,7 +20,7 @@ import {
 import { secretForms } from "./pickup-channel.ts";
 
 describe("no secret rides an exec's arguments (review of mend#552/#553, P1-1)", () => {
-  // Core keeps every exec's argv, in plaintext, for good. A person's secret files and their pi
+  // sealant keeps every exec's argv, in plaintext, for good. A person's secret files and their pi
   // profile (its `mcp.json` holds their MCP servers' keys) reach the executor through a pickup
   // ticket redeemed over the session channel; only the ticket and the paths ride the argv.
   it("a pi launch delivers the owner's secret files and pi profile, and no byte of either reaches the platform's argv", async () => {

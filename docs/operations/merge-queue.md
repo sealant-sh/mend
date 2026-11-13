@@ -172,9 +172,9 @@ seconds after the second runner came free.
 
 The same wait came back from other repositories. Merge group `38746126993` (#1018, `780c56b38`)
 passed its last lane at 14:02:05Z, then its 10-second `checks` job waited 13.4 minutes, until
-14:15:32Z. The two box runners serve Core and sealantd as well, in queue order, and an aggregate job
-is queued only when its last lane finishes. Everything those repositories queued in the meantime
-went first: sealantd's main-push CI and the CI of sealantd#168 and Core#368. `changes` and `checks`
-now run on GitHub's `ubuntu-24.04-arm` instead, free for this public repository, so neither waits
-for a box slot. Since 2026-10-17 the six lanes run on GitHub's `ubuntu-24.04` as well, and on the
-box only when CI is dispatched with `runner: box`.
+14:15:32Z. The two box runners serve sealant and sealantd as well, in queue order, and an aggregate
+job is queued only when its last lane finishes. Everything those repositories queued in the meantime
+went first: sealantd's main-push CI and the CI of sealantd#168 and sealant#368. `changes` and
+`checks` now run on GitHub's `ubuntu-24.04-arm` instead, free for this public repository, so neither
+waits for a box slot. Since 2026-10-17 the six lanes run on GitHub's `ubuntu-24.04` as well, and on
+the box only when CI is dispatched with `runner: box`.

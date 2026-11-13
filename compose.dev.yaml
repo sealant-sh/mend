@@ -1,5 +1,5 @@
 # Dev-only Postgres, on 5434 so it fights neither a local install (5432)
-# nor the Sealant Core dev Postgres (5433) on the same machine.
+# nor the sealant dev Postgres (5433) on the same machine.
 # The product compose (mend + postgres + Sealant env) is compose.yaml; the
 # distinct project name keeps the two stacks from recreating each other.
 #

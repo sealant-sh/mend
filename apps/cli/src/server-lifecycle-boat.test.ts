@@ -38,7 +38,7 @@ describe("Boat sessions: turning Boat on", { timeout: 120_000 }, () => {
     expect(valueIn(env, "SEALANT_BOAT_BUILDER_OWNER")).toMatch(UUID);
     expect(valueIn(env, "SEALANT_BOAT_GATEWAY_HOST_ID")).toMatch(UUID);
     expect(JSON.parse(files["server.json"] ?? "{}").boat).toEqual({ resources: true });
-    // A setting server.env does not carry reaches Core empty, which Core reads as unset: Compose
+    // A setting server.env does not carry reaches sealant empty, which sealant reads as unset: Compose
     // never stops to ask for one.
     const overlay = files["compose.boat.yaml"] ?? "";
     expect(overlay).toContain("SEALANT_BOAT_API_KEY: ${SEALANT_BOAT_API_KEY:-}");

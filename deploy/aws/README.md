@@ -290,7 +290,7 @@ configuration, privilege model, source-selection options and acceptance limits. 
 deployment now runs that release. The original ordinary-image acceptance below remains a separate
 observation.
 
-The official Core recipe at `abe4d6c7258a5d6b479b72162de368c45953d9ee` reproduces a packaging
+The official sealant recipe at `abe4d6c7258a5d6b479b72162de368c45953d9ee` reproduces a packaging
 failure: `sealantd:0.15.2` contains the daemon and socat but no `sealantctl`. The CLI is required
 for suspend and terminate capture flushes. Sealant 0.33.0 still uses that daemon release, so the
 packaging gap remains. The hook has not been removed or bypassed.
@@ -302,7 +302,7 @@ then remove the temporary pod. `scripts/sealantd-candidate.Dockerfile` adds only
 pinned public daemon image. The private candidate digest is recorded in `deployment.json`.
 
 Set `SEALANTD_IMAGE` to the candidate when running `scripts/build-workspace-image.sh`. The script
-defaults to the official Core 0.33.0 recipe at `17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3`, adds
+defaults to the official sealant 0.33.0 recipe at `17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3`, adds
 pinned pnpm/Codex/Claude CLI versions, and uses the scoped build role and artifact bucket. The fixed
 AWS image is **not** the OCI output of a workspace-profile BuildKit job. The original ordinary-image
 acceptance used `node:24-bookworm` (its custom-base contract requires Git, Node and npm), no extra

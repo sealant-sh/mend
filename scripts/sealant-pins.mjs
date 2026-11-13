@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Mend's pins of Sealant Core: the SDK and API contract in the pnpm catalog, the three Core images
+// Mend's pins of sealant: the SDK and API contract in the pnpm catalog, the three sealant images
 // the root Dockerfile copies by digest, and the version the bundle declares in its label, its
-// migration log line and its setup assets. They move together, to one Core version (stable or a
+// migration log line and its setup assets. They move together, to one sealant version (stable or a
 // `next` prerelease, docs/adr/0015-next-channel.md). A prerelease lives under separate names: the
 // catalog aliases `@sealant/sdk` to `npm:@sealant/sdk-next@<version>`, and the images come from
 // `sealant-api-next` and its siblings. A stable release is the plain names.
@@ -9,7 +9,7 @@
 //   node scripts/sealant-pins.mjs pin 0.39.0-next.12      # rewrite every pin, pnpm install, nix/pnpm-deps.json
 //   node scripts/sealant-pins.mjs pin 0.39.0 --no-install
 //
-// Mend never pins sealantd itself: the bundled worker bakes the sealantd its Core version pins.
+// Mend never pins sealantd itself: the bundled worker bakes the sealantd its sealant version pins.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
@@ -27,11 +27,11 @@ export const SEALANT_IMAGES = [
   { argument: "SEALANT_WORKER_IMAGE", repository: "sealant-sh/sealant-worker" },
   { argument: "SEALANT_SSH_GATEWAY_IMAGE", repository: "sealant-sh/sealant-ssh-gateway" },
   // Boat's resource gateway: the bundled worker runs it for Boat sessions linked to project
-  // resources. Core's next channel publishes it; its release workflow must too before a stable pin.
+  // resources. sealant's next channel publishes it; its release workflow must too before a stable pin.
   { argument: "MEND_BOAT_GATEWAY_IMAGE", repository: "sealant-sh/sealant-boat-gateway" },
 ];
 
-/** Production consumers that move with the pinned Core version and image digests. Tests are not write targets. */
+/** Production consumers that move with the pinned sealant version and image digests. Tests are not write targets. */
 export const PIN_FILES = [
   "Dockerfile",
   "pnpm-workspace.yaml",
@@ -76,11 +76,11 @@ export const readPins = ({ dockerfile, workspace }) => ({
   aliases: [...workspace.matchAll(/npm:@sealant\/[a-z0-9-]+-next@\S+/g)].map((match) => match[0]),
 });
 
-/** Where a Core version's image lives: `sealant-api` for a release, `sealant-api-next` before. */
+/** Where a sealant version's image lives: `sealant-api` for a release, `sealant-api-next` before. */
 export const repositoryFor = (repository, version) =>
   version.includes("-") ? `${repository}-next` : repository;
 
-/** The catalog entry for a Core package at `version`: plain for a release, an alias before. */
+/** The catalog entry for a sealant package at `version`: plain for a release, an alias before. */
 export const catalogSpec = (name, version) =>
   version.includes("-") ? `npm:${name}-next@${version}` : version;
 
@@ -91,9 +91,9 @@ export const pinnedDigest = (reference, repository) =>
   )?.[1];
 
 /**
- * What is wrong with a set of pins. Every release needs them consistent: one exact Core version
+ * What is wrong with a set of pins. Every release needs them consistent: one exact sealant version
  * everywhere, every image by digest, no preview sealantd. A stable release also needs that version
- * stable: a `-next` (or any prerelease) Core is refused.
+ * stable: a `-next` (or any prerelease) sealant is refused.
  */
 export const pinProblems = (pins, { stable }) => {
   const problems = [];
@@ -121,7 +121,7 @@ export const pinProblems = (pins, { stable }) => {
   }
   if (stable && version.includes("-")) {
     problems.push(
-      `A stable release cannot pin Sealant ${version}. Release Core ${version.split("-")[0]} and pin it first.`,
+      `A stable release cannot pin Sealant ${version}. Release sealant ${version.split("-")[0]} and pin it first.`,
     );
   }
   if (stable && (pins.aliases ?? []).length > 0) {
@@ -138,7 +138,7 @@ const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const asRegExpSource = (text) => text.replaceAll(".", "\\.").replaceAll("/", "\\/");
 
 /**
- * `text` with the old Core pins replaced by the new ones: each image reference (repository and
+ * `text` with the old sealant pins replaced by the new ones: each image reference (repository and
  * digest, as written and as a test writes it in a regular expression), the version (as written and
  * as `0\.38\.1`, and only as a whole version: `0.39.0-next.9` never rewrites part of
  * `0.39.0-next.90`), and the two catalog entries.
@@ -225,7 +225,7 @@ export const digestProblems = async (pins, fetchImpl = fetch) => {
 };
 
 /**
- * What the bundle's setup assets and supervisor say about the pinned Core version: each must name
+ * What the bundle's setup assets and supervisor say about the pinned sealant version: each must name
  * `version` where it names one, so an operator reads the version the image actually carries.
  */
 export const assetProblems = (files, version) => {
@@ -322,7 +322,7 @@ export const refreshNixPnpmDeps = (
 };
 
 const pin = async (version, { install }) => {
-  if (!SEMVER.test(version)) throw new Error(`"${version}" is not an exact Core version.`);
+  if (!SEMVER.test(version)) throw new Error(`"${version}" is not an exact sealant version.`);
   const current = await readRepositoryPins();
   const from = { version: current.sealantVersion, images: current.images };
   const to = {

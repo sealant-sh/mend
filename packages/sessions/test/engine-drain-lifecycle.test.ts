@@ -967,7 +967,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
           );
           const realNow = memory.clock.now;
           memory.clock.now = () => realNow() + 10 * 60 * 1000;
-          // Expired lease, Core down: nothing is settled, nothing picked up, nothing stopped.
+          // Expired lease, sealant down: nothing is settled, nothing picked up, nothing stopped.
           unreachable = true;
           yield* engine.reapCaptureLeases();
           expect(world.sessions.get(session.id)?.status).toBe("running");
@@ -2492,7 +2492,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
    * next launch past its admission (`holdNextLaunch`), answering it as the host would, hold the
    * next executor create (`holdNextCreate`: a launch past its relaunch plan), and fail the next
    * agent open (`failNextOpen`). `endExecutor`: the platform reports the current executor stopped
-   * until the next create, as Core does for one it ended.
+   * until the next create, as sealant does for one it ended.
    */
   const capReplacement = (
     scenario: (run: {
@@ -3775,10 +3775,10 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it.effect(
-    "an agent whose executor the host's Docker killed, and Core restarted on its own disk to save it, says the host stopped it, never `completed` (RC 0.36.0-next.768)",
+    "an agent whose executor the host's Docker killed, and sealant restarted on its own disk to save it, says the host stopped it, never `completed` (RC 0.36.0-next.768)",
     () =>
       // `systemctl restart docker` with a live session: Docker killed the workspace at its stop
-      // timeout (137), Core restarted the executor on its own disk to save it, and that boot
+      // timeout (137), sealant restarted the executor on its own disk to save it, and that boot
       // answered Mend's look. The session read `completed`, with nothing saying the host ended it.
       Effect.gen(function* () {
         const { world, memory, tmp, untilChanged, wrapCaptureChannel } = yield* signalledWorld();
@@ -4139,7 +4139,7 @@ describe("SessionEngine Stop against every takeover of its drain (SLNT-111)", ()
               const stopping = yield* Effect.forkChild(engine.stop(session.id));
               yield* untilChanged(() => closeReached, "the stop at the agent's close");
               expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
-              // The executor dies on its runtime and Core keeps it; its heartbeats stop.
+              // The executor dies on its runtime and sealant keeps it; its heartbeats stop.
               killed = true;
               const lapsed = memory.clock.now() + 1_000_000;
               memory.clock.now = () => lapsed;

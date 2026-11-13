@@ -114,9 +114,9 @@ takes running the Compose project yourself with the variable in an override file
   per-person launch, and a worktree that has run per person always runs per person. There is no way
   back, and a Mend older than 0.36 cannot resume that worktree's sessions. Decide before the upgrade
   if you want `shared`.
-- **The first session on an image Mend has not checked runs shared.** When neither Core nor Mend has
-  a record of what an image can do, the launch runs with one shared home and its prepare checks the
-  image; later launches on that image run per person.
+- **The first session on an image Mend has not checked runs shared.** When neither sealant nor Mend
+  has a record of what an image can do, the launch runs with one shared home and its prepare checks
+  the image; later launches on that image run per person.
 - **What it needs:** a setuid `sudo`, `useradd` and `setfacl` in the image, ACLs on `/workspace`,
   and no no-new-privileges on the executor. nix images, Kubernetes workspace runtimes and Docker
   hosts with no-new-privileges run every new worktree with a shared home and say why.

@@ -1333,7 +1333,7 @@ test(
   },
 );
 
-test("Executor callbacks admit only Core service Pods on the private port", { skip }, () => {
+test("Executor callbacks admit only sealant service Pods on the private port", { skip }, () => {
   const result = renderFixture("obc");
   assert.equal(result.status, 0, result.stderr);
   const policy = parseAllDocuments(

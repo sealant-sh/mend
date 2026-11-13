@@ -58,7 +58,7 @@ describe("mend run for scripts", spawning, () => {
     }
   });
 
-  it("launches a script that starts with a newline, as it was typed (Core 0.39.0-next.712)", async () => {
+  it("launches a script that starts with a newline, as it was typed (sealant 0.39.0-next.712)", async () => {
     const script = "\nset -e\necho hi\n";
     let launched: unknown = null;
     const routes = launchRoutes(

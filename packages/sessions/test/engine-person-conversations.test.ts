@@ -666,7 +666,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
       Effect.gen(function* () {
         const run = yield* scenario({ harness: "claude", shared: true, mode: "protocol" });
         const home = `/run/mend/conv/${run.sessionId}`;
-        // First start: the move, as the owner, then the exchange; Core writes the owner's login into H.
+        // First start: the move, as the owner, then the exchange; sealant writes the owner's login into H.
         const firstExecs = run.execCalls.slice(0, run.afterFirst.execs);
         const stages = firstExecs.filter(isStage);
         expect(stages).toHaveLength(1);
@@ -1312,7 +1312,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       endedAt: null,
     });
 
-  it("B's turn runs as B with A's conversation, and a hand-over costs two Core calls, DELETE then POST, one stop and one start", async () => {
+  it("B's turn runs as B with A's conversation, and a hand-over costs two sealant calls, DELETE then POST, one stop and one start", async () => {
     const created: Array<CreateOptions> = [];
     const spawned: Array<ReadonlyArray<string>> = [];
     const opened: Array<SessionOptions | PersonSessionOptions> = [];
@@ -2194,7 +2194,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         const run = yield* handOverToMaria({
           postFails: (_onBehalfOf, home) => home.startsWith("/run/mend/conv/") && intoHome++ > 0,
         });
-        expect(run.outcome?.message).toContain("Core did not answer");
+        expect(run.outcome?.message).toContain("sealant did not answer");
         expect(run.statuses.filter((status) => status.startsWith("settled"))).toEqual([
           "settled stopped",
         ]);
@@ -2212,7 +2212,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             onBehalfOf === MARIA && home.startsWith("/run/mend/conv/"),
         });
         const home = `/run/mend/conv/${run.sessionId}`;
-        expect(run.outcome?.message).toContain("Core did not answer");
+        expect(run.outcome?.message).toContain("sealant did not answer");
         // Alice's process was stopped for it; nothing of Maria's started.
         expect(run.stops).toHaveLength(1);
         expect(run.attached.map((entry) => entry.process.runsAs)).toEqual([
@@ -2232,7 +2232,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         expect(run.state.conversationHolders.get(run.sessionId)?.processId).toBe(restarted?.id);
         // Maria's turn fails with the line, and says what went wrong.
         expect(run.failed).toEqual([
-          { turnId: "turn-maria", words: expect.stringContaining("Core did not answer") },
+          { turnId: "turn-maria", words: expect.stringContaining("sealant did not answer") },
         ]);
         // The turns queued behind hers are not cancelled: Alice's restarted process takes them.
         expect(run.swept).not.toContain(run.attached[0]?.process.id);
@@ -2244,7 +2244,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     "a hand-over whose turn is withdrawn while it is prepared stops nothing and writes nothing into the home (review 2 of mend#572, P2-2)",
     () =>
       Effect.gen(function* () {
-        // S6: Maria withdraws while Mend asks Core for her login; the host's look at the stop says so.
+        // S6: Maria withdraws while Mend asks sealant for her login; the host's look at the stop says so.
         let withdrawn = false;
         const run = yield* handOverToMaria({
           logins: (accountId) => {
@@ -2285,11 +2285,11 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         const restart = yield* handOverToMaria({
           postFails: (_onBehalfOf, home) => home.startsWith("/run/mend/conv/") && intoHome++ > 0,
         });
-        expect(restart.outcome?.message).toContain("Core did not answer");
+        expect(restart.outcome?.message).toContain("sealant did not answer");
         expect(restart.summary).toContain("could not be started again");
         // The cause's own full stop is not doubled (RC 0.36.0-next.754, B-F4: `Nothing was sent..`).
         expect(restart.summary).toContain(
-          "could not be started again: Core did not answer. Resume",
+          "could not be started again: sealant did not answer. Resume",
         );
         // No process takes the conversation's queue: what waited behind Maria's turn ends with the
         // stopped process, as at any stop.
@@ -2554,14 +2554,14 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       "No Claude login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect claude --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
     );
     expect(unchosen.submitted).toEqual([]);
-    // Connected: queued, on the conversation, with one look at Core.
+    // Connected: queued, on the conversation, with one look at sealant.
     const active = await submitScenario({ harness: "claude", author: MARIA });
     expect(active.refused).toBeNull();
     expect(active.submitted).toEqual(["please"]);
     expect(active.calls).toEqual([`login:${MARIA}`]);
   }, 30_000);
 
-  it("the owner's own turns ask Core nothing", async () => {
+  it("the owner's own turns ask sealant nothing", async () => {
     const own = await submitScenario({
       harness: "claude",
       author: "user-fixture",

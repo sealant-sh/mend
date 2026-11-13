@@ -37,9 +37,9 @@ export const leaseWaitWords = (holder: {
   return `${LAUNCH_WAITING_PREFIX} is not answering`;
 };
 export const LAUNCH_BOOTING = "booting";
-/** The platform has the launch queued for a worker (Core's launch phase `queued`, sealant#342). */
+/** The platform has the launch queued for a worker (sealant's launch phase `queued`, sealant#342). */
 export const LAUNCH_QUEUED = "queued · waiting for a worker";
-/** The platform builds the workspace image (Core's launch phase `image-build`, sealant#342). */
+/** The platform builds the workspace image (sealant's launch phase `image-build`, sealant#342). */
 export const LAUNCH_BUILDING_PREFIX = "building the workspace image";
 /**
  * The image build as the builder reports it: `building the workspace image · step 3/12`, the step
@@ -57,7 +57,7 @@ export const launchBuildingWords = (
 };
 /**
  * No executor yet, a while into the create, on a platform that reports no launch phase (before
- * Core 0.39.0-next.706): what was observed and what it usually means, never that an image is
+ * sealant 0.39.0-next.706): what was observed and what it usually means, never that an image is
  * being built.
  */
 export const LAUNCH_PREPARING =

@@ -42,7 +42,7 @@ const isWriteTokenSession = (sessionId: string): boolean => sessionId.startsWith
 
 /**
  * How long a one-off write's token is accepted after it is issued: the longest a write waits for
- * its exec on a busy instance (Core's run-exec queue) and runs, with room to spare. A revocation
+ * its exec on a busy instance (sealant's run-exec queue) and runs, with room to spare. A revocation
  * lost to a store outage or a restart is bounded by it.
  */
 export const WRITE_TOKEN_TTL_MS = 15 * 60_000;

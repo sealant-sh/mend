@@ -55,7 +55,7 @@ const lostAnswer = () =>
   );
 
 /**
- * RC 3 (2026-10-11): an image build that failed launches no executor. Core reports the
+ * RC 3 (2026-10-11): an image build that failed launches no executor. sealant reports the
  * workspace `failed`, with no runtime and no drain, and refused every stop of it as "still
  * launching". Read as kept, the drain asked that stop forever, and the session read
  * `stopping · saving` until the machine was wiped.
@@ -102,7 +102,7 @@ describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
               const { engine, session } = yield* provisionIn(project);
               yield* engine.launch(session.id, ["codex"]);
               const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
-              // `docker kill`: the container is gone, Core marks the workspace failed and keeps
+              // `docker kill`: the container is gone, sealant marks the workspace failed and keeps
               // it for recovery; the heartbeat stops and the lease lapses.
               killed = true;
               const afterExpiry = Date.now() + 1_000_000;
@@ -116,7 +116,7 @@ describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
               expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
                 "not saved · executor kept for recovery · exited before its final flush completed · 0 pending",
               );
-              // Nothing released and nothing revoked: Core's recovery boot plans and ships with it.
+              // Nothing released and nothing revoked: sealant's recovery boot plans and ships with it.
               expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
               expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
               expect(tokenEvents).toContain(`issue:${launch}`);
@@ -300,7 +300,7 @@ describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
   );
 });
 
-describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28)", () => {
+describe("SessionEngine idempotent executor creates (sealant's next SDK, 2026-09-28)", () => {
   // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
   const layerWith = (
     created: Array<CreateOptions>,
@@ -488,7 +488,7 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
   );
 
   it(
-    "a create whose answer was lost, whose key found nothing and that Core fenced made no executor: the key clears and the worktree is free",
+    "a create whose answer was lost, whose key found nothing and that sealant fenced made no executor: the key clears and the worktree is free",
     { timeout: 20_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -523,7 +523,7 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
   );
 
   it(
-    "review 3 #21 a lookup that finds nothing is not proof: without Core's fence the key stays reserved and the worktree held; the next launch asks the same create again under it",
+    "review 3 #21 a lookup that finds nothing is not proof: without sealant's fence the key stays reserved and the worktree held; the next launch asks the same create again under it",
     { timeout: 20_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -859,7 +859,7 @@ describe("SessionEngine status words after end-to-end run 9", () => {
         const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
         const clock = yield* makeLaunchClock;
         let recovered = false;
-        /** Records the executor's seal: the recovery boot's FINAL, landing while Core ends it. */
+        /** Records the executor's seal: the recovery boot's FINAL, landing while sealant ends it. */
         let sealOnStop: (() => void) | null = null;
         yield* withPreparedEngineEffect(
           (world, tmp) => setup(tmp, world),
@@ -892,7 +892,7 @@ describe("SessionEngine status words after end-to-end run 9", () => {
                   sealedAt,
                 });
               };
-              // Core retained it and boots it for recovery; the next stop ends it.
+              // sealant retained it and boots it for recovery; the next stop ends it.
               recovered = true;
               for (let round = 0; round < 50; round += 1) {
                 if (world.sessions.get(session.id)?.summary?.includes("saved at ") === true) break;
@@ -1031,7 +1031,7 @@ describe("SessionEngine status words after end-to-end run 9", () => {
 /**
  * Review 2026-09-28 (19) #2: the reaper that recovers a create whose answer was lost drains the
  * executor it finds and settles the session `launch interrupted · … · its executor ended`. After a
- * saved final flush Core can take the stop and still report the executor (`requested`, status
+ * saved final flush sealant can take the stop and still report the executor (`requested`, status
  * `ready` past Mend's wait): the drain returned the same outcome as an observed end, and the session
  * read ended while nothing had been seen to end. The reviewer's probe, kept whole: the end never
  * observed (the session reads `stopping · … · stop requested · end not observed yet`, the row and
@@ -1063,7 +1063,7 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                   yield* repo.claim(session.worktreeId, session.id, 30, key);
                 }).pipe(Effect.provide(memory.layer));
                 yield* engine.reapCaptureLeases();
-                yield* clock.untilChanged(() => stops.length > 0, "Core stop requested");
+                yield* clock.untilChanged(() => stops.length > 0, "sealant stop requested");
                 if (end === "at once") {
                   yield* clock.untilChanged(
                     () => world.sessions.get(session.id)?.settledAt !== null,
@@ -1076,7 +1076,7 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                   );
                   return;
                 }
-                // Core reports the executor `ready` through Mend's whole wait for its end
+                // sealant reports the executor `ready` through Mend's whole wait for its end
                 // (`terminationWait`, 150 ms): nothing is said until that wait runs out.
                 yield* TestClock.adjust(Duration.millis(149));
                 expect(world.sessions.get(session.id)?.status).not.toBe("stopping");
@@ -1086,7 +1086,10 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                   "stopping while the end is not observed",
                 );
                 const pending = world.sessions.get(session.id);
-                expect(pending?.settledAt, "Core still reports ready: no end observed").toBeNull();
+                expect(
+                  pending?.settledAt,
+                  "sealant still reports ready: no end observed",
+                ).toBeNull();
                 expect(pending?.summary).toBe(
                   "launch interrupted · the create's answer was lost · stop requested · end not observed yet",
                 );
@@ -1094,7 +1097,7 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
                 expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
                 expect(logs.some((line) => line.includes("its executor ended"))).toBe(false);
                 if (end === "never") {
-                  // Another pass changes nothing while Core still reports the executor.
+                  // Another pass changes nothing while sealant still reports the executor.
                   yield* engine.reapCaptureLeases();
                   expect(world.sessions.get(session.id)?.settledAt).toBeNull();
                   expect(world.sessions.get(session.id)?.summary).toBe(pending?.summary);
