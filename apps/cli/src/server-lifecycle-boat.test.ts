@@ -77,6 +77,18 @@ describe("Boat sessions", { timeout: 120_000 }, () => {
     expect(f.files()["server.env"]).toBe(env);
     expect(await f.upgrade()).toEqual({ _tag: "ok" });
     expect(f.files()["server.env"]).toBe(env.replace("MEND_VERSION=0.23.0", "MEND_VERSION=0.24.0"));
+    // Core adopts the deployment name and builder owner into its own record the first time it
+    // starts with them set (sealant#637); an install that dropped them in that same upgrade would no
+    // longer recognise its VMs and saved images. So the upgrade keeps handing both to `mend`.
+    const upgraded = f.files();
+    expect(upgraded["server.env"]).toContain(`SEALANT_BOAT_DEPLOYMENT_ID=${DEPLOYMENT}\n`);
+    expect(upgraded["server.env"]).toContain(`SEALANT_BOAT_BUILDER_OWNER=${owner}\n`);
+    expect(upgraded["compose.boat.yaml"]).toContain(
+      "SEALANT_BOAT_DEPLOYMENT_ID: ${SEALANT_BOAT_DEPLOYMENT_ID",
+    );
+    expect(upgraded["compose.boat.yaml"]).toContain(
+      "SEALANT_BOAT_BUILDER_OWNER: ${SEALANT_BOAT_BUILDER_OWNER",
+    );
 
     // Resources off: no gateway host, and the overlay says nothing of one.
     expect(await serverCommand(["setup", "--offline", "--no-boat-resources"], f.runtime)).toEqual({
@@ -116,34 +128,6 @@ describe("Boat sessions", { timeout: 120_000 }, () => {
     expect(JSON.parse(f.files()["server.json"] ?? "{}").boat).toEqual({ resources: true });
     expect(await serverCommand(["setup", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
     expect(named()).toBe(first);
-  });
-
-  // Core adopts these two into its own record the first time it starts with them set
-  // (sealant#637); an install that dropped them in that same upgrade would no longer recognise its
-  // VMs and saved images. So an upgrade keeps handing both to the `mend` container.
-  it("keeps handing Core the deployment name and builder owner of an existing Boat install across an upgrade", async () => {
-    const f = await fixture();
-    f.update({ boatGatewayImage: GATEWAY });
-    expect(await f.setup()).toEqual({ _tag: "ok" });
-    expect(
-      await serverCommand(
-        ["setup", "--offline", "--session-runtime", "boat", "--boat-api-key-stdin", ...ENDPOINTS],
-        { ...f.runtime, readStdin: async () => KEY },
-      ),
-    ).toEqual({ _tag: "ok" });
-    const valueOf = (name: string) =>
-      new RegExp(`^${name}=(.+)$`, "m").exec(f.files()["server.env"] ?? "")?.[1];
-    const deployment = valueOf("SEALANT_BOAT_DEPLOYMENT_ID");
-    const owner = valueOf("SEALANT_BOAT_BUILDER_OWNER");
-    expect(deployment).toMatch(/^mend-/);
-    expect(owner).toMatch(UUID);
-
-    expect(await f.upgrade()).toEqual({ _tag: "ok" });
-    expect(valueOf("SEALANT_BOAT_DEPLOYMENT_ID")).toBe(deployment);
-    expect(valueOf("SEALANT_BOAT_BUILDER_OWNER")).toBe(owner);
-    const overlay = f.files()["compose.boat.yaml"] ?? "";
-    expect(overlay).toContain("SEALANT_BOAT_DEPLOYMENT_ID: ${SEALANT_BOAT_DEPLOYMENT_ID");
-    expect(overlay).toContain("SEALANT_BOAT_BUILDER_OWNER: ${SEALANT_BOAT_BUILDER_OWNER");
   });
 
   it("refuses resources on a Mend image that names no gateway, and a key that is not one", async () => {
