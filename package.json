@@ -31,7 +31,6 @@
     "@tanstack/intent": "^0.5.6",
     "@types/node": "catalog:",
     "@typescript/typescript6": "catalog:",
-    "effect-solutions": "^0.5.2",
     "oxfmt": "^0.40.0",
     "oxlint": "1.76.0",
     "tsrs": "0.24.0-ts7.1.0-beta",
