@@ -167,6 +167,11 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "boatKey.connect",
   "boatKey.check",
   "boatKey.disconnect",
+  // The caller's own Boat key in their active organization, and nobody else's: boat-key.test.ts.
+  "personBoatKey.status",
+  "personBoatKey.connect",
+  "personBoatKey.check",
+  "personBoatKey.disconnect",
   // The caller's organization and own links; owner/member boundaries: executor.test.ts.
   "executor.configuration",
   "executor.configure",
@@ -1571,6 +1576,8 @@ const PERSON_CREDENTIAL_ONLY = [
   "mcpServers.save",
   "organization.createInvitation",
   "organization.issuePasswordReset",
+  "personBoatKey.connect",
+  "personBoatKey.disconnect",
   "slack.confirmLink",
   "userDevices.approveCliAuth",
   "userDevices.cliAuthRequest",
