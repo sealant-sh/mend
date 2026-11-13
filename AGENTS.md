@@ -12,10 +12,10 @@ session, and steer it all from any device, over loopback, a private network, or 
 edge (ADR 0004). People using Mend need no issue tracker or PR; that describes the product, not how
 work on this repo lands.
 
-`MEND-AGENT-WORKBENCH-PLAN.md` is the canonical product direction and carries the decision log.
-Before a product or UX decision, read its §5 (product model) and §16 (UX rules), and search the
-decision log (§17) for the area. The retired issue-to-PR/queue documents live in `docs/archive/`:
-build against the plan, never against them.
+`PRODUCT.md` says what Mend is and is not: its principles, non-goals and direction. Read it before a
+product or UX decision, and check `docs/decisions.md` and `docs/adr/` for decisions already made in
+the area. The roadmap is in Linear. The retired issue-to-PR/queue documents live in `docs/archive/`:
+never build against them.
 
 - `apps/api`: the Mend server (Effect HttpApi): sessions engine, store, landing, Slack, workers.
 - `apps/cli`: the `mend` CLI (`@sealant/mend` on npm): OpenTUI dashboard, sessions, `mend server`.
@@ -39,8 +39,8 @@ build against the plan, never against them.
 Mend consumes the Sealant platform **only through the public SDK** (`@sealant/sdk` on npm):
 `workspaces.create({ repository, harness })`, blocking `harness.run(prompt)` or non-blocking
 `harness.start(prompt)` + `run.record.stream()`, `run.wait()`, `run.changes`, and the replayable
-record. **Never import Sealant internals.** If the SDK is missing something Mend needs, record it as
-platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
+record. **Never import Sealant internals.** If the SDK is missing something Mend needs, file it in
+Linear with the `sealant` label instead of working around it.
 
 ## Product Language Contract
 
@@ -69,9 +69,10 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   judgment ("safe to merge"). Mend reports; the human decides.
 - Each area has its own nouns. Before writing UI copy, API names, docs, tickets or code for tenancy
   and roles, access and exposure, access keys, Slack, landing, screens, resources, setup sessions
-  and proof artifacts, or Executor, read that area's section in `docs/product-language.md`.
-- Full vocabulary and voice rules: `MEND-AGENT-WORKBENCH-PLAN.md` §5 (product model) and §16 (UX
-  rules); design language in `DESIGN.md`.
+  and proof artifacts, or Executor, read that area's section of the public glossary,
+  `apps/docs/src/content/docs/reference/product-language.md`.
+- The product model is `apps/docs/src/content/docs/concepts/product-model.md`. The full glossary and
+  voice rules are in the public glossary above; design language and UX rules in `DESIGN.md`.
 
 ## Linear, Fixes and PRs
 
@@ -97,7 +98,8 @@ pnpm format:fix
 ```
 
 In a fresh worktree, run `pnpm install` before anything else, or `pnpm format:fix` rewrites files
-the change never touched.
+the change never touched. Then run `pnpm build` once: typecheck needs the route trees it generates.
+`DEVELOPMENT.md` covers running Mend from source and its tests.
 
 Typecheck runs [tsrs](https://github.com/oxc-project/tsrs), a Rust port of the TypeScript 7 checker,
 in every package except `apps/docs`, as `tsrs --checkers 1`. It is in beta and pinned exactly; if

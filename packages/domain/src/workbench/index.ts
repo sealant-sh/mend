@@ -1,6 +1,6 @@
 /**
  * @mend/domain/workbench — the agent-workbench object model
- * (MEND-AGENT-WORKBENCH-PLAN.md §5).
+ * (the product model in apps/docs concepts/product-model.md).
  *
  * ```
  * machine      1 ── 1..n organizations the tenant (docs/adr/0003)

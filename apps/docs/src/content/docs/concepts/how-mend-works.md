@@ -25,6 +25,10 @@ answers the control channel the Sealant control plane drives: a local control so
 host, an authenticated network channel on Kubernetes. When Mend attaches a terminal, replays a
 record, or runs a check, that request ends at `sealantd` in the workspace.
 
+Each part keeps its own state. Mend's database holds the product: organizations, projects,
+worktrees, sessions, checkpoints, comments and landings. Sealant keeps the process records, and Mend
+reads them through the SDK. Git, in the project store and the captures, holds the change itself.
+
 ```mermaid
 flowchart TB
   clients[CLI · Web · VS Code · Phone · Slack]
@@ -144,6 +148,21 @@ worktree holds many sessions over its life, several can be live at once, and it 
 of them: deleting a session leaves the worktree, its change, and its checkpoints standing. Agent
 processes can stop and resume over the life of a session. Supporting shells and Services use the
 same workspace and can keep it alive after an agent settles.
+
+## Following the work
+
+The web app is built around four places, and the other clients follow the same shape:
+
+- **Now** is your inbox across projects. Sessions sit under `Needs you`, `Running` and
+  `Ready to review`; you can snooze a row or settle it, for yourself only.
+- A **project** page lists its worktrees and sessions and holds the project's setup. You start
+  sessions from it or from Now.
+- A **session** page shows the conversation, the terminal, the record, previews and the change.
+- The **review** of a change shows the diff, the tour, comments and Mend's findings, and sends your
+  comments back to the session. See [Review a change](/guides/review-a-change/).
+
+A client that disconnects and comes back replays what it missed from the record; the session carried
+on without it.
 
 ## Where uncommitted files live
 

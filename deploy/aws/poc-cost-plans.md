@@ -9,8 +9,8 @@ installer. It does not authorize infrastructure changes, further acceptance VMs 
 See the [deployment overview](README.md),
 [Docker service record](../../docs/operations/aws-docker-service.md),
 [private access record](../../docs/operations/aws-access-deployment.md) and
-[teardown procedure](TEARDOWN.md). The [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md) remains
-the product source of truth.
+[teardown procedure](TEARDOWN.md). The [product statement](../../PRODUCT.md) remains the product
+source of truth.
 
 ## Summary
 
