@@ -21,7 +21,7 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
-// ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
+// ─── Workbench (the product model in apps/docs concepts/product-model.md) ────────────────────────
 
 /**
  * Where the bytes of a change read came from (docs/adr/0002-session-capture-store.md "Review"):

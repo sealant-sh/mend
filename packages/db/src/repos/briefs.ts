@@ -27,7 +27,7 @@ const decodeVersion = Schema.decodeUnknownEffect(BriefVersion);
 const encodeDocument = Schema.encodeEffect(BriefDocument);
 
 /**
- * The living document (ARCHITECTURE.md §3): one brief per change, replaced
+ * The living document (docs/archive/ARCHITECTURE.md §3): one brief per change, replaced
  * whole on every publish, prior versions kept so "what did the brief claim
  * when I approved" stays answerable. Documents are stored encoded (sequences
  * as decimal strings) — readable without a Sealant round-trip, forever.

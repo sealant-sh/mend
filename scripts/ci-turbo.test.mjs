@@ -70,10 +70,8 @@ for (const runner of ["self-hosted", "github-hosted"]) {
   for (const [event, ref, affected, force, writes] of [
     ["pull_request", "refs/pull/979/merge", true, false, false],
     ["push", "refs/heads/main", false, false, true],
-    ["merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abcd", false, false, true],
     ["schedule", "refs/heads/main", false, true, true],
     ["push", "refs/heads/feature", false, false, false],
-    ["merge_group", "refs/heads/gh-readonly-queue/other/pr-1", false, false, false],
     ["workflow_dispatch", "refs/heads/main", false, false, false],
   ]) {
     test(`${runner} ${event} ${ref} executes the intended cache and selection policy`, (t) => {
@@ -303,7 +301,7 @@ test("measurement dispatches are affected-only, cold disables remote, warm never
     );
     assert.equal(result.args.includes("--force"), false);
     assert.equal(run(["lint"], { ...env, TURBO_SCM_BASE: "main" }).status, 1);
-    for (const event of ["pull_request", "push", "merge_group", "schedule"]) {
+    for (const event of ["pull_request", "push", "schedule"]) {
       assert.equal(run(["lint"], { ...env, GITHUB_EVENT_NAME: event }).status, 1);
     }
     assert.equal(run(["lint"], { ...env, CI_MEASUREMENT_CACHE: "other" }).status, 1);
@@ -328,51 +326,20 @@ test("only the box measures warm; every other runner measures cold without the r
   }
 });
 
-test("a merge group runs only what it affects when the changes job says so and its base resolves", () => {
-  const queue = {
-    RUNNER_ENVIRONMENT: "self-hosted",
-    GITHUB_EVENT_NAME: "merge_group",
-    GITHUB_REF: "refs/heads/gh-readonly-queue/main/pr-1-abcd",
-    TURBO_SCM_BASE: "b".repeat(40),
-  };
-  const resolves = () => true;
-  for (const [env, commitExists, affected] of [
-    [{ ...queue, CI_GRAPH: "affected" }, resolves, true],
-    [{ ...queue, CI_GRAPH: "affected" }, () => false, false],
-    [{ ...queue, CI_GRAPH: "full" }, resolves, false],
-    [queue, resolves, false],
-    [{ ...queue, CI_GRAPH: "affected", TURBO_SCM_BASE: "" }, resolves, false],
-    [{ ...queue, CI_GRAPH: "affected", TURBO_SCM_BASE: "main" }, resolves, false],
+test("a push to main runs the full graph and writes the trusted cache without a base SHA", () => {
+  const push = { GITHUB_EVENT_NAME: "push", GITHUB_REF: "refs/heads/main" };
+  for (const [env, cache] of [
+    [{ ...push, RUNNER_ENVIRONMENT: "self-hosted" }, "--cache=local:rw,remote:rw"],
+    [{ ...push, RUNNER_ENVIRONMENT: "github-hosted" }, "--cache=local:rw"],
     [
-      {
-        ...queue,
-        CI_GRAPH: "affected",
-        GITHUB_EVENT_NAME: "schedule",
-        GITHUB_REF: "refs/heads/main",
-      },
-      resolves,
-      false,
+      { ...push, RUNNER_ENVIRONMENT: "self-hosted", TURBO_SCM_BASE: "" },
+      "--cache=local:rw,remote:rw",
     ],
   ]) {
-    const options = ciTurboOptions(env, { commitExists });
+    const options = ciTurboOptions(env);
     assert.equal(options._tag, "ok", JSON.stringify(env));
-    assert.equal(options.args.includes("--affected"), affected, JSON.stringify(env));
-    // The queue stays the trusted cache writer whichever graph it runs.
-    if (env.GITHUB_EVENT_NAME === "merge_group")
-      assert.ok(options.args.includes("--cache=local:rw,remote:rw"), JSON.stringify(env));
+    assert.equal(options.args.includes("--affected"), false, JSON.stringify(env));
+    assert.equal(options.args.includes("--force"), false, JSON.stringify(env));
+    assert.ok(options.args.includes(cache), JSON.stringify(env));
   }
-});
-
-test("a merge group whose base cannot be resolved runs the full graph rather than failing", (t) => {
-  const run = fixture(t);
-  const result = run(["build", "typecheck", "lint"], {
-    RUNNER_ENVIRONMENT: "self-hosted",
-    GITHUB_EVENT_NAME: "merge_group",
-    GITHUB_REF: "refs/heads/gh-readonly-queue/main/pr-1-abcd",
-    TURBO_SCM_BASE: "c".repeat(40),
-    CI_GRAPH: "affected",
-  });
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(result.args.includes("--affected"), false);
-  assert.ok(result.args.includes("--cache=local:rw,remote:rw"));
 });

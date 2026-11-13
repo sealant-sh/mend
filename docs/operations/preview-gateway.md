@@ -6,13 +6,14 @@ relays its requests to the preview's dev server over a forward, and starts a sto
 request reaches it. It is off until `MEND_PREVIEW_PORT` is set. It runs where the API's HTTP server
 runs (`MEND_MODE=all` or `api`) and never in `MEND_MODE=worker`.
 
-## After upgrading: everyone signs in once
+## The session cookie, from 0.37
 
-Mend's session cookie is `__Host-better-auth.session_token` on every install whose `APP_URL` is
-https (ADR 0017, delivery step 8b, D1). A browser's cookie from before the upgrade has the old name,
-which Mend no longer reads, so everyone signs in to Mend once more. Nothing is deleted: paired
-devices and their tokens keep working, and an earlier sign-in expires as it would have. Over plain
-http the cookie keeps the name `better-auth.session_token`.
+From 0.37, Mend's session cookie is `__Host-better-auth.session_token` on every install whose
+`APP_URL` is https (ADR 0017, delivery step 8b, D1; #1162). A browser's cookie from an earlier
+release has the old name, which Mend no longer reads, so after upgrading to 0.37 everyone signs in
+to Mend once more. Nothing is deleted: paired devices and their tokens keep working, and an earlier
+sign-in expires as it would have. Over plain http the cookie keeps the name
+`better-auth.session_token`.
 
 ## Variables
 
@@ -185,7 +186,8 @@ shares one address window: `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE` (1200 reque
 default) and `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE` (20 sign-ins a minute by default), for all of
 them together. The upgrade that moves Mend's cookies to `__Host-` signs everyone out once, so on
 that day the whole team signs in through those 20. A team that meets either window raises it in
-`server.env` (docs/operations/budgets.md); the per-account budgets still apply to each person.
+`server.env` ([budgets](../../apps/docs/src/content/docs/operate/exposure.md#budgets)); the
+per-account budgets still apply to each person.
 
 The gateway writes its own `X-Forwarded-Host` and `X-Forwarded-Proto`. It drops every inbound
 `Forwarded`, `X-Real-IP`, `X-Forwarded-*` and `Tailscale-*` field before the app sees the request,
@@ -345,7 +347,8 @@ of the gateway logs no URI for preview hosts:
   with no `X-Forwarded-For` is never counted. After the grant stands, the account budgets are open
   preview requests (`MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`), preview starts at once
   (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT`) and preview starts per minute
-  (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE`). See [Budgets](budgets.md). An open request is a
+  (`MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE`). See
+  [Budgets](../../apps/docs/src/content/docs/operate/exposure.md#budgets). An open request is a
   long-lived one: a request held while its preview starts, one holding a forward, or an upgrade. The
   gateway's own ceilings bound this process rather than an account: open requests for one preview
   (64), open requests across previews (256), requests waiting for a forward (2048) and open forwards

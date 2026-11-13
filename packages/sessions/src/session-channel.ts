@@ -417,7 +417,7 @@ export const handleSessionRequest = async (
         action[2] === "stop" ? api.stopService(action[1]) : api.restartService(action[1]);
       return respond(200, await Effect.runPromise(effect));
     }
-    // Repositories in a session (docs/adr/0010): `mend repo list|projects|add`. The add answers
+    // Repositories in a session (docs/adr/0011): `mend repo list|projects|add`. The add answers
     // 202 with the row in `adding`; the clone runs in the engine's lifetime, past this
     // request's 30 s, and the helper polls the list for `ready` or `failed`.
     if (route === "GET /repositories") {

@@ -583,7 +583,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       posture.budgetsOff.length === 0
         ? "every budget is set"
         : `budget(s) off: ${posture.budgetsOff.map(budgetEnvName).join(", ")}`,
-      "unset them, or set each to a positive number (docs/operations/budgets.md)",
+      "unset them, or set each to a positive number (https://docs.mend.run/operate/exposure/#budgets)",
     ),
     observed(
       "no-bearers-in-urls",

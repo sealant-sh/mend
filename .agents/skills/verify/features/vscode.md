@@ -11,8 +11,8 @@ as `sealant-sh.mend`. A verify run drives it live in a real VS Code with `script
 The driver builds the extension from a checkout, runs it with Microsoft's Remote-SSH on an Xvfb
 display, and clicks the workbench DOM over CDP against a packaged Mend server in Docker-in-Docker.
 Its evidence is numbered screenshots, a step log (`steps.jsonl`), the editor's and the server's
-logs, and a video of the display. The flows below follow the stories in
-`docs/specs/vscode-stories.md` (a to h) and say, per story, where today's extension differs.
+logs, and a video of the display. The flows below follow the stories in `apps/vscode/STORIES.md` (a
+to h) and say, per story, where today's extension differs.
 
 ## Sub-features
 

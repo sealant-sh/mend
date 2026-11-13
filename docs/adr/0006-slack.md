@@ -1,13 +1,13 @@
 # Slack: start a session by mentioning Mend
 
-Status: proposed 2026-09-22, amended 2026-09-24 by ADR 0007 (landing): a request that asks for a
-change now ends in a pushed branch and a pull request, as Cursor's does. It commits Mend to working
-in Slack the way Cursor's Slack integration does. A person writes `@mend fix the flaky login test`
-in a thread. Mend reads the thread, works out which project the thread is about, and starts a
-session for that person. The session reports into the thread, and a later `@mend` in the same thread
-adds a follow-up to it. This ADR names the identity, transport, inference, storage and disclosure
-rules this needs, and one refactor: Slack must start sessions through the same checks as the web
-app, not a second, weaker path.
+Status: accepted 2026-09-24 (#324); built in #325 to #335. Amended 2026-09-24 by ADR 0007 (landing,
+#349): a request that asks for a change now ends in a pushed branch and a pull request, as Cursor's
+does. It commits Mend to working in Slack the way Cursor's Slack integration does. A person writes
+`@mend fix the flaky login test` in a thread. Mend reads the thread, works out which project the
+thread is about, and starts a session for that person. The session reports into the thread, and a
+later `@mend` in the same thread adds a follow-up to it. This ADR names the identity, transport,
+inference, storage and disclosure rules this needs, and one refactor: Slack must start sessions
+through the same checks as the web app, not a second, weaker path.
 
 **What this ADR does not claim.** It does not make Slack a place to review a change. Review stays in
 Mend. Slack gets a status, the agent's summary, a link, and (ADR 0007) the branch and pull request
@@ -265,7 +265,7 @@ Starting a session records the Slack thread (`team_id`, `channel_id`, `thread_ts
 - A reply in the thread that does not mention `@mend` is conversation between people and never
   reaches the agent.
 - An agent that sits idle between turns is stopped after `MEND_PROTOCOL_IDLE_STOP_MINUTES` (15 by
-  default; docs/SELF-HOSTING.md, "Idle agents"). The status message reads
+  default; `0dd4b4bf:docs/SELF-HOSTING.md`, "Idle agents"). The status message reads
   `idle · stopped after 15 min · reply to resume` and the next mention resumes the session, as for
   any session that is no longer live.
 
@@ -438,25 +438,7 @@ exists.
 
 ## Delivery
 
-One ready-for-review PR per step, stacked:
-
-| PR  | What it delivers                                                                                                                                                                              |
-| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | This ADR, and the product-language amendments.                                                                                                                                                |
-| 2   | `SessionStart.startAs`, extracted from the create and launch handlers. No change in behaviour, and the existing route tests pass unchanged.                                                   |
-| 3   | Schema and repositories: `slack_installs`, `slack_links`, `slack_link_codes`, `slack_channel_defaults`, `slack_threads`, `slack_event_claims`, and `agent_sessions.origin`.                   |
-| 4   | `@mend/slack`: the manifest, the mention and option parser, repository-URL matching against `originUrl`, thread-context assembly and message formatting, as pure functions with tests.        |
-| 5   | Install and link: owner-only API routes, Settings → Slack (manifest, tokens, `auth.test` and `apps.connections.open`, the display settings), the `/slack/link/<code>` page, and audit events. |
-| 6   | The Socket Mode runner in the worker: connect per install, acknowledge, claim, pick the project without inference (message, thread URL, defaults, buttons), and start the session.            |
-| 7   | The thread reporter: reactions, the status message, agent messages, questions, the review count, and the display settings.                                                                    |
-| 8   | Project inference from the thread, in `@mend/inference`, with "Switch project".                                                                                                               |
-| 9   | Follow-ups, `new`, answers and resume in a thread, and `help`, `settings` and `list`.                                                                                                         |
-| 10  | Screenshots from the thread.                                                                                                                                                                  |
-| 11  | The session summary in the thread, from the review tour, and Claude's plans as a checklist.                                                                                                   |
-
-PRs 2 and 4 depend on nothing else. PR 6 needs 2, 3 and 5. After PR 7, `@mend <prompt>` in a thread
-that links a repository, or in a channel with a default, starts a session and reports back. That is
-the first slice worth using. PR 8 makes a thread that names no repository work too.
+Built in #325 to #335 after this ADR (#324), one pull request per step of a stacked series.
 
 ## Decision log
 
@@ -488,11 +470,12 @@ the first slice worth using. PR 8 makes a thread that names no repository work t
 ## Open questions
 
 1. **Resume with a prompt.** Whether a protocol resume takes an opening turn needs checking in
-   `engine.ts` before PR 9. If it does not, a mention on a settled session starts a new one.
-   Answered in PR 9: `SessionEngine.launchProtocol` on a session whose latest agent was a protocol
-   process of the same harness resumes the provider's session by its id and submits the prompt as
-   the opening turn. Slack resumes through `SessionStart.launchAs`, the web app's launch. A session
-   with no such agent (none launched, or no provider session id recorded) starts a new one.
+   `engine.ts` before follow-ups are built. If it does not, a mention on a settled session starts a
+   new one. Answered when follow-ups were built: `SessionEngine.launchProtocol` on a session whose
+   latest agent was a protocol process of the same harness resumes the provider's session by its id
+   and submits the prompt as the opening turn. Slack resumes through `SessionStart.launchAs`, the
+   web app's launch. A session with no such agent (none launched, or no provider session id
+   recorded) starts a new one.
 2. **Approvals as buttons.** Slack's interactive buttons arrive over the same socket. Answering an
    approval from Slack is a steering action, so it needs the same authorization as a turn. It also
    puts a one-tap "allow" in a channel.

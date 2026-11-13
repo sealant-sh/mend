@@ -14,7 +14,7 @@ export class CompileBriefJob extends Schema.Class<CompileBriefJob>("CompileBrief
 }) {}
 
 /**
- * The rules the brief never breaks (PRODUCT.md §4), addressed to the model.
+ * The rules the brief never breaks (docs/archive/PRODUCT.md §4), addressed to the model.
  * Everything else — anatomy, dispositions, grounding — is carried by the
  * document schema on the publish_brief tool.
  */

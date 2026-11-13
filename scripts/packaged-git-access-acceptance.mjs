@@ -275,8 +275,8 @@ export async function preparePackagedGitAccessAcceptance({
       const status = await api("/keys/bridge");
       return status.connected === true;
     });
-    // The second adoption is the regression in docs/BUGS.md (2026-08-30): a repeat bridge adopt
-    // that never consults the connected signer.
+    // The second adoption guards a 2026-08-30 regression: a repeat bridge adopt that never
+    // consulted the connected signer.
     for (const repository of ["bridge-first.git", "bridge-second.git"]) {
       const before = (await accepted()).filter((item) => item === keys.signer).length;
       const bridgeProject = `acceptance-${repository.replace(".git", "")}-${runId}`;

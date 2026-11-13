@@ -2886,7 +2886,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const processes = yield* SessionProcessesRepo;
         const rows = yield* processes.listForSession(params.id);
         const viewer = yield* (yield* ProjectAccess).viewer();
-        // The repositories the session holds beside its worktree (docs/adr/0010): each a worktree
+        // The repositories the session holds beside its worktree (docs/adr/0011): each a worktree
         // of another project with a change of its own, and how far that chain has moved. Only
         // the ones whose project the caller can see: a private sibling stays private.
         const projectsRepo = yield* ProjectsRepo;

@@ -1,9 +1,10 @@
 # Access keys: drive Mend from your own automation
 
-Status: accepted 2026-11-08. Yiannis asked for it the same day: "We need a way to expose a mend api
-behind an api key so external tools can access it. Imagine someone has setup a software factory and
-they need their slack bot to spin up a mend session or their whatever system to do so." Read against
-Mend `a9e9e9ea02`. Builds on [ADR 0003](0003-organizations-and-tenancy.md) (organizations),
+Status: accepted 2026-11-08; built in #1538 to #1540, hardened in #1556 and #1558. Yiannis asked for
+it the same day: "We need a way to expose a mend api behind an api key so external tools can access
+it. Imagine someone has setup a software factory and they need their slack bot to spin up a mend
+session or their whatever system to do so." Read against Mend `a9e9e9ea02`. Builds on
+[ADR 0003](0003-organizations-and-tenancy.md) (organizations),
 [ADR 0004](0004-access-without-a-private-network.md) (budgets, upgrade tickets),
 [ADR 0007](0007-landing.md) (who lands) and [ADR 0013](0013-whoever-sends-a-turn-pays.md) (who
 pays).
@@ -58,7 +59,7 @@ it, and never in another. A request with a key is refused unless its person is s
 that organization and their account is active. Removing the member revokes the key with their
 devices.
 
-Organization switching (one account in several organizations, being built beside this) pins the
+Organization switching (one account in several organizations, built beside this in #1542) pins the
 organization a sign-in or device acts in. A `key:` credential is never pinned and never switches:
 its organization is the key row's. A switch request made with a key is refused.
 

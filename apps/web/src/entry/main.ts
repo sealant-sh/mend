@@ -13,7 +13,7 @@ import { apiTargetOf, forwardHeaders, gzipsPage } from "./proxy-headers.ts";
 import { POLICY_ONLY_HEADERS, securityHeaders } from "./security-headers.ts";
 
 /**
- * The web tier's FRONT (ARCHITECTURE.md §2): one public port that owns the
+ * The web tier's FRONT (docs/archive/ARCHITECTURE.md §2): one public port that owns the
  * single concern nitro cannot — relaying `/api` verbatim to the Mend API
  * server, including WebSocket upgrades (/api/tty, the service tunnel, the
  * keys bridge) and unbuffered SSE. Everything else — pages, assets, and the

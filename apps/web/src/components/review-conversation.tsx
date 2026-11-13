@@ -9,7 +9,7 @@ import {
   type RoutedActionDto,
 } from "#/lib/api";
 
-// The review conversation (PRODUCT.md, Iteration): reviewer comments thread
+// The review conversation (docs/archive/PRODUCT.md, Iteration): reviewer comments thread
 // onto the brief; Mend reads each one and routes it — a follow-up run, a
 // verification pass, or a question back — with the routed decision shown on
 // the comment itself, as evidence.

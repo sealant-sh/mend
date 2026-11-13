@@ -105,15 +105,49 @@ main:
 
 A preview of a branch is built by the workflow and deployed by hand, with the command above.
 
+## The box
+
+The box is set up by hand. None of this is in a repository, so check it on the box before you rely
+on it.
+
+- **The Proxmox host** (`49.12.133.97`):
+  - DNAT on `eno1`: 80/tcp, 443/tcp and 443/udp to `10.0.0.40`, and 2223/tcp to `10.0.0.40:22`;
+  - hairpin DNAT for `tailscale0` and for `OUTPUT` to `49.12.133.97`;
+  - `ethtool -K eno1 tso off gso off`, against the e1000e hang;
+  - the Hetzner Robot firewall allows 22, 80, 443 (any protocol), 2223 and 41641/udp, among others.
+- **VM 130, `mend`** (`10.0.0.40`):
+  - Ubuntu 24.04, 12 vCPU, 40 GB RAM, 400 GB disk, `onboot 1`;
+  - Docker with `"shutdown-timeout": 3600` in `daemon.json`;
+  - Node in `/opt/node`;
+  - cloud-init `ssh_deletekeys: false`, so a hard reset keeps the pinned host key.
+- **The `deploy` user:**
+  - its key is in `authorized_keys` with `restrict,command=/usr/local/bin/mend-ci-deploy`;
+  - sshd has `Match User deploy` with `ForceCommand`, no TTY and no forwarding;
+  - `mend-ci-deploy` accepts exactly `deploy <version> <40-hex sha> [even-if-live]` and runs
+    `/usr/local/bin/mend-ci-deploy-root` through `sudo` (`/etc/sudoers.d/mend-ci-deploy`);
+  - that script fetches `scripts/preview-deploy.sh` and runs it as root, with
+    `PREVIEW_DEPLOY_EVEN_IF_LIVE=1` for `even-if-live`. The private key exists only as the
+    `box-deploy` environment's secret.
+- **Ways in:**
+  - `https://alpha.mend.run`: the Caddy edge on `0.0.0.0:80/443`;
+  - `https://mend-box.tailc79e49.ts.net:8443`, which `tailscale serve` forwards to `127.0.0.1:3105`;
+  - SSH: `ssh -J root@100.94.101.28 root@10.0.0.40`.
+- **The install:**
+
+  ```sh
+  mend server setup --edge alpha.mend.run --url https://alpha.mend.run --bind 127.0.0.1 \
+    --origin https://mend-box.tailc79e49.ts.net:8443
+  mend server setup --exposure public --tenancy multi
+  ```
+
+  The `mend` CLI on the box is whatever `npm install --global @sealant/mend@<version>` put there
+  last. No deploy updates it.
+
 ## Limits
 
 - `mend server upgrade` refuses an equal or lower version, so a preview of a branch cut before the
   box's version cannot be installed over it. Neither can a release older than the preview: a box on
   `0.36.0-next.56.preview.17` takes `0.36.0-next.57`, `0.36.0` or later.
-- Previews before ADR 0015 were numbered `0.36.0-preview.R`. `preview` sorts after `next`, so a box
-  on one of those refuses every `0.36.0-next.*`, new-style previews included. Move it once with
-  `mend server upgrade --version <version> --from-preview` (steps in
-  [The next channel](next-channel.md)); after that this deploy script works as usual.
 - A preview applies its Mend and Sealant migrations to the box's databases, and they are not
   reversed. Use a box you can rebuild.
 - Mend imports `@sealant/sdk` and `@sealant/api-contracts` from npm, and sealant imports the

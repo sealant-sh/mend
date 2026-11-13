@@ -14,7 +14,7 @@ interface NewInferenceCall {
 }
 
 /**
- * The interface-inference audit trail (ARCHITECTURE.md §3, `inference_calls`).
+ * The interface-inference audit trail (docs/archive/ARCHITECTURE.md §3, `inference_calls`).
  * Every tool call and model exchange lands here — the log is part of the
  * product's audit surface, not diagnostics.
  */

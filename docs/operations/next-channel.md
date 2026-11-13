@@ -257,22 +257,13 @@ or a registry, runs on a GitHub-hosted runner: a fresh VM per job. The box's run
 between jobs (Docker images, the setup-node tool cache, the pnpm store), so code from an earlier
 pull request could change what a job there builds, accepts or pushes. A test in each repository
 refuses any other runner in those workflows. This holds for runs created from the workflow files
-since that change, in all three repositories: Mend (this change), sealant and sealantd (their own
-pull requests).
+since that change (#1021 in Mend, and its counterparts in sealant and sealantd).
 
 **Never re-run a publishing run created before that change.** A re-run uses the workflow files of
 the run's own commit, so it runs on the box again. A new run is only safe if it targets a commit
 whose workflow files contain the change: a tag on an older commit, or a dispatch on an older branch,
 runs that commit's files. Mend's `release-cli.yml` before the change still has the `v*` trigger and
 its box `pins` job, so a release tag on such a commit runs on the box.
-
-Before merging that change in each repository:
-
-1. List the repository's unfinished runs of every publishing workflow: queued, waiting, requested,
-   pending and in progress.
-2. Cancel every one that has not started. Let an in-progress run finish, and watch what it
-   publishes.
-3. Record the run IDs, or that there were none, in the pull request.
 
 ## Dry-run a release
 
@@ -531,88 +522,6 @@ git tag --delete "v$version"
 If its release already published to npm, leave the tag: the version is spent, and the tag records
 it.
 
-## Move the box onto the next channel, once
-
-The box runs previews numbered `0.36.0-preview.K`, from before this channel. `preview` sorts after
-`next`, so it refuses every `0.36.0-next.N` and every new-style preview `0.36.0-next.N.preview.R` as
-a downgrade. The one-time path:
-
-1. Merge the next-channel pull requests, cut the first Mend next build (above), approve it, and wait
-   for `@sealant/mend@<version>` on npm.
-2. On the box, as root, install that CLI, which carries `--from-preview`:
-
-   ```sh
-   npm install --global @sealant/mend@<version>
-   ```
-
-3. Upgrade, online (the setup assets come from that version's GitHub prerelease):
-
-   ```sh
-   mend server upgrade --version <version> --from-preview
-   ```
-
-   Before anything stops it reads both databases' applied migrations and compares them with the
-   target image's `/app/migrations.txt`. It refuses, naming each one, when:
-   - a Mend migration the box applied is not in the target (compared by id and name, as Effect
-     stores them);
-   - the target has a Mend migration with an id at or below the highest the box applied that the box
-     never ran: Effect's migrator would skip it forever;
-   - a Sealant migration the box applied is not in the target, or its SQL changed since (drizzle's
-     hash).
-
-   It cannot see a Mend migration whose code changed under the same id and name: Mend stores no hash
-   of it. Before running this, check every preview the box ever ran. The server keeps one generation
-   per install and upgrade under its configuration directory, each with its `serverVersion`; each
-   preview image carries its commit in `org.opencontainers.image.revision`. On the box, as root,
-   with a Mend checkout at `~/src/mend`:
-
-   ```sh
-   set -eu
-   repo=~/src/mend
-   config="${XDG_CONFIG_HOME:-$HOME/.config}/mend"
-   command -v jq >/dev/null || { echo "CHECK BY HAND: jq is not installed"; exit 1; }
-   ls "$config"/generations/*/server.json >/dev/null 2>&1 ||
-     { echo "CHECK BY HAND: no generations under $config"; exit 1; }
-   # Collected first: a failure inside a `for` list would not stop the script.
-   versions=$(jq -r .serverVersion "$config"/generations/*/server.json | sort -u | grep -- '-preview\.' || true)
-   [ -n "$versions" ] || { echo "CHECK BY HAND: no preview found in $config/generations"; exit 1; }
-   git -C "$repo" fetch -q origin
-   git -C "$repo" checkout -q --detach origin/main
-   for version in $versions; do
-     image="ghcr.io/sealant-sh/mend:$version"
-     echo "== $version"
-     # A pruned image is pulled again; one that cannot be read is checked by hand, never skipped.
-     if ! docker image inspect "$image" >/dev/null 2>&1 && ! docker pull -q "$image" >/dev/null; then
-       echo "CHECK BY HAND: $image can no longer be pulled"; continue
-     fi
-     rev=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")
-     if [ -z "$rev" ] || ! git -C "$repo" fetch -q origin "$rev"; then
-       echo "CHECK BY HAND: no readable commit for $image (revision '${rev}')"; continue
-     fi
-     base=$(git -C "$repo" merge-base "$rev" origin/main)
-     git -C "$repo" diff -U0 "$base" "$rev" -- packages/db/src/migrations.ts > /tmp/preview.diff
-     if [ ! -s /tmp/preview.diff ]; then echo "no migration changes"; continue; fi
-     # Main must carry the branch's migration change exactly. -U0 ignores what main appended after.
-     if git -C "$repo" apply --check --reverse --unidiff-zero /tmp/preview.diff 2>/dev/null; then
-       echo "main has these migration changes as the preview had them"
-     else
-       echo "CHECK BY HAND: the preview's migration changes differ from main's"; cat /tmp/preview.diff
-     fi
-   done
-   ```
-
-   Everything that is not a clean "no migration changes" or "main has these" says `CHECK BY HAND`:
-   no `jq`, no generations (it reads `$XDG_CONFIG_HOME/mend`, or `~/.config/mend`), no preview in
-   them, an image that can no longer be pulled, a missing label, an unfetchable commit, a change
-   main does not carry exactly. Sealant's migrations need no such check: their hashes are compared.
-
-4. If it refuses: the named migrations came from a branch the box ran that main does not have (or
-   has in another form). Merge that branch, cut a next build that contains it, and repeat step 3;
-   or, for a changed or skipped migration, restore the box from a backup taken before that preview.
-   A failure before the target starts brings back the preview's own image.
-5. After the move, `deploy-box.yml` and `scripts/preview-deploy.sh` work as usual for next builds
-   and new-style previews.
-
 ## Pin a sealant prerelease in Mend
 
 When sealant's `next.yml` has published `0.39.0-next.N` (the run's summary names it):
@@ -703,76 +612,22 @@ The `dist-tag add` is what moves `next` back; deprecating alone does not. The sa
 withdrawn Mend prerelease's notes on GitHub to say which version replaces it; do not delete it. A
 server already on the bad version moves forward only, to a fixed next build. A bad sealant
 prerelease pinned in Mend: revert the pin pull request. After moving `next` back by hand, the next
-merge publishes as usual: it computes a version above the withdrawn one, which is above the version
-`next` points at now.
+merge to sealant or sealantd publishes as usual: it computes a version above the withdrawn one,
+which is above the version `next` points at now. Mend publishes nothing on merge: its next build
+comes from a tag cut by hand ("Cut a Mend next build"), and the next one computes a version above
+the withdrawn one in the same way.
 
-## Once, before the first publish
+## The publishing boundary
 
-npm lets a trusted publisher be added only to a package that exists, so each `-next` package is
-created once, by hand, with your npm login and 2FA, from an empty directory:
-
-```sh
-cd "$(mktemp -d)"
-for name in sdk api-contracts runtime-protocol runtime-client; do
-  rm -f package.json
-  npm init -y --scope=@sealant >/dev/null
-  npm pkg set name="@sealant/$name-next" version=0.0.0-next.0 \
-    description="Prereleases of @sealant/$name from main, for exact pins and @next only. Install @sealant/$name instead." \
-    license=Apache-2.0
-  npm publish --access public --tag next
-done
-```
-
-npm sends only the `next` dist-tag (checked against a stub registry); whether the registry also
-points `latest` at a package's first version was not tested, since that needs a real publish. Treat
-`latest` on a `-next` package as meaningless: it may name the empty placeholder. Install a `-next`
-package only by `@next` or by an exact version, as Mend's catalog alias does; never
-`npm install @sealant/sdk-next` bare.
-
-Then, on npmjs.com, for each of the four `-next` packages, **and only those**:
-
-- `@sealant/sdk-next` and `@sealant/api-contracts-next`: trusted publisher, repository
-  `sealant-sh/sealant`, workflow `next.yml`, environment `next`;
-- `@sealant/runtime-protocol-next` and `@sealant/runtime-client-next`: repository
-  `sealant-sh/sealantd`, workflow `next.yml`, environment `next`;
-- **Require two-factor authentication and disallow tokens** on each.
-
-Never add `next.yml` as a trusted publisher of a stable package (`@sealant/sdk`,
-`@sealant/api-contracts`, `@sealant/runtime-*`, `@sealant/mend`). That boundary is what keeps a
-compromised next job away from them.
-
-In sealant-sh/sealant and sealant-sh/sealantd:
-
-- Create the environment `next` before merging, with its deployment branch policy set to `main` only
-  (a new environment allows every branch until you set it, and a job that names a missing
-  environment creates it with no policy), and no required reviewer.
-- On `main`: require a pull request with review from code owners. CODEOWNERS covers `.github/`, the
-  release scripts, the Dockerfiles, the published packages' `package.json` files, the changesets
-  config, the root `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, `.pnpmfile.cjs`,
-  `.pnpmfile.mjs` (pnpm 11 loads it first), `.npmrc`, and in sealantd `Cargo.toml`/`Cargo.lock`.
-- After the first next run pushes them, make the new image packages public, once:
-  `sealant-api-next`, `sealant-worker-next`, `sealant-ssh-gateway-next` and `sealantd-next`
-  (Settings → Danger Zone → Change visibility, at
-  `https://github.com/orgs/sealant-sh/packages/container/<name>/settings`). **This cannot be
-  undone:** GitHub does not let a public package become private again. Mend's pin check reads them
-  anonymously, and Mend's image build pulls them.
-- Mend's image build logs in to GHCR with Mend's own token before it pulls sealant's images, and a
-  logged-in token can be refused on a package not linked to its repository. Open the stable
-  `sealant-api` package's settings: if **Manage Actions access** lists `sealant-sh/mend`, add
-  `sealant-sh/mend` with the **Read** role to the three sealant `-next` image packages too (and
-  `sealant-sh/sealant` to `sealantd-next` if `sealantd` lists it). This could not be checked from
-  here: reading package settings needs a token with `read:packages`.
-
-In sealant-sh/mend, Mend's next builds use `release-cli.yml` and its `release` environment, already
-registered as `@sealant/mend`'s trusted publisher. One setting is missing:
-
-- Give the `release` environment a **deployment tag policy of `v*.*.*`**, as sealant's and
-  sealantd's `release` environments have. Today the approval is the only thing between a branch
-  workflow that names `release` and an npm publish of `@sealant/mend`; with the policy, only a
-  `v*.*.*` tag (which only admins can create) can deploy to it at all. Settings → Environments →
-  `release` → Deployment branches and tags → Selected branches and tags → add a tag rule `v*.*.*`.
-  It had no such policy when this was written (read from the environments API on 2026-10-05;
-  sealant's has the tag rule).
+The `-next` packages exist, and on npmjs.com only `next.yml` is their trusted publisher:
+`@sealant/sdk-next` and `@sealant/api-contracts-next` from sealant-sh/sealant,
+`@sealant/runtime-protocol-next` and `@sealant/runtime-client-next` from sealant-sh/sealantd, each
+in the `next` environment, with two-factor authentication required and tokens disallowed. Never add
+`next.yml` as a trusted publisher of a stable package (`@sealant/sdk`, `@sealant/api-contracts`,
+`@sealant/runtime-*`, `@sealant/mend`). Install a `-next` package only by `@next` or by an exact
+version, as Mend's catalog alias does: its `latest` may name the empty placeholder it was created
+with. Mend's next builds use `release-cli.yml` and its `release` environment, which deploys only
+from a `v*.*.*` tag, as sealant's and sealantd's `release` environments do.
 
 What that buys, exactly:
 

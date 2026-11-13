@@ -1,10 +1,11 @@
 import { spawnSync } from "node:child_process";
 
-const commitResolves = (sha) =>
-  spawnSync("git", ["cat-file", "-e", `${sha}^{commit}`], { stdio: "ignore" }).status === 0;
-
-/** Shared event policy for static checks and both processes in each test lane. */
-export const ciTurboOptions = (env, { commitExists = commitResolves } = {}) => {
+/**
+ * Shared event policy for static checks and both processes in each test lane. A pull request runs
+ * what it affects; a push to main runs the full graph and is the trusted cache writer; the nightly
+ * schedule runs the full graph forced.
+ */
+export const ciTurboOptions = (env) => {
   const measurement = env.CI_MEASUREMENT_CACHE;
   if (
     measurement &&
@@ -23,14 +24,6 @@ export const ciTurboOptions = (env, { commitExists = commitResolves } = {}) => {
     };
   }
   const exactBase = /^[a-f0-9]{40}$/i.test(env.TURBO_SCM_BASE ?? "");
-  // A merge group runs what its pull requests affect only when the changes job found nothing on
-  // the full-graph list (CI_GRAPH, scripts/ci-scope.mjs) and its base commit resolves here. Any
-  // doubt runs the full graph instead of refusing: the queue must not stop on a missing base.
-  const queueAffected =
-    env.GITHUB_EVENT_NAME === "merge_group" &&
-    env.CI_GRAPH === "affected" &&
-    exactBase &&
-    commitExists(env.TURBO_SCM_BASE);
   const affected = env.GITHUB_EVENT_NAME === "pull_request" || Boolean(measurement);
   if (affected && !exactBase) {
     return {
@@ -39,10 +32,7 @@ export const ciTurboOptions = (env, { commitExists = commitResolves } = {}) => {
     };
   }
   const trusted =
-    (["push", "schedule"].includes(env.GITHUB_EVENT_NAME) &&
-      env.GITHUB_REF === "refs/heads/main") ||
-    (env.GITHUB_EVENT_NAME === "merge_group" &&
-      env.GITHUB_REF?.startsWith("refs/heads/gh-readonly-queue/main/"));
+    ["push", "schedule"].includes(env.GITHUB_EVENT_NAME) && env.GITHUB_REF === "refs/heads/main";
   const remote = env.RUNNER_ENVIRONMENT === "self-hosted" && measurement !== "cold";
   const force = env.GITHUB_EVENT_NAME === "schedule" && trusted;
   return {
@@ -54,7 +44,7 @@ export const ciTurboOptions = (env, { commitExists = commitResolves } = {}) => {
       ...(force
         ? ["--force"]
         : [`--cache=local:rw${remote ? (trusted ? ",remote:rw" : ",remote:r") : ""}`]),
-      ...(affected || queueAffected ? ["--affected"] : []),
+      ...(affected ? ["--affected"] : []),
       "--summarize",
     ],
   };

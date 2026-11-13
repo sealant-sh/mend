@@ -5,10 +5,6 @@ sidebar:
   order: 7.5
 ---
 
-:::note[Design agreed on November 1, 2026] This guide describes the agreed resource model for the
-next implementation. The October 31 build has different start, file and env behavior. Updating this
-guide does not change that build. :::
-
 Suppose your app needs Postgres, Redis and a mail catcher. Declare them once in the worktree's
 `.mend/mend.toml`, then start each where you want it. A project resource is one instance every
 worktree can use. A worktree resource is a copy for one branch, shared by all sessions in that

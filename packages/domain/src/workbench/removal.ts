@@ -61,7 +61,7 @@ export type Person = typeof Person.Type;
 /**
  * What holds a session's worktree in place: `live` (starting, running, waiting or idle),
  * `starting` (a launch or a shell admitted and still under way), `stopping` (only for a session
- * holding the worktree as a repository, docs/adr/0010: its drain is saving the repository's
+ * holding the worktree as a repository, docs/adr/0011: its drain is saving the repository's
  * files), a process that has not exited, or an open Service forward.
  */
 export const SessionActivity = Schema.Literals([
@@ -89,7 +89,7 @@ export const NestedRepository = Schema.Struct({ path: Schema.String, branch: Sch
 export type NestedRepository = typeof NestedRepository.Type;
 
 /**
- * How a session works in a worktree: in it, holding it as a repository (docs/adr/0010), or
+ * How a session works in a worktree: in it, holding it as a repository (docs/adr/0011), or
  * mounting it as a linked project's worktree (ADR-0001).
  */
 export const SessionRole = Schema.Literals(["inhabitant", "holder", "linked"]);

@@ -1,13 +1,12 @@
 # macOS packaging validation
 
 The test target is the Mend deployment (Mend, Postgres and Garage, plus the npm and Docker Hub
-mirrors since 0.36) that `mend server setup` installs, first planned in
-[PACKAGING-PLAN.md](archive/PACKAGING-PLAN.md), not the retired host-process installer.
+mirrors since 0.36) that `mend server setup` installs, not the retired host-process installer.
 
-Sealant 0.28.0 first supplied the volume-backed runtime capability; the bundle pins Sealant
-0.39.0-next.726 today (`deploy/docker/setup-contract.v2.json`). Its containerized-launcher E2E
-passed on Linux. No macOS-specific failure has been demonstrated in the proposed architecture.
-Actual Mac and installed VS Code acceptance remain unverified.
+Sealant 0.28.0 first supplied the volume-backed runtime capability; the bundle pins the Sealant
+version named in `deploy/docker/setup-contract.v2.json`. Its containerized-launcher E2E passed on
+Linux. No macOS-specific failure has been demonstrated in the proposed architecture. Actual Mac and
+installed VS Code acceptance remain unverified.
 
 ## Optional prerequisite probe
 
@@ -47,8 +46,9 @@ OrbStack need separate observations; one passing combination does not prove the 
 1. Install the CLI from npm. Verify no server starts. Repeat the shell bootstrap independently.
 2. Run `mend server setup`, selecting localhost. Do not set manual volume mappings, access the VM
    shell, or choose a Sealant version.
-3. Confirm only the Mend application, Postgres and Garage containers run at idle, with only intended
-   ports published. Workspace containers are additional only when workspaces exist.
+3. Confirm only the five product containers run at idle (the Mend application, Postgres, Garage, and
+   the npm and Docker mirrors; a sixth, Caddy, with `--edge`), with only intended ports published.
+   Workspace containers are additional only when workspaces exist.
 4. Open the printed URL, create an account, and run `mend login`. Connect a provider normally.
 5. Repeat setup. Confirm accounts, secrets, selected context/ports, volumes, and SSH host keys
    remain.

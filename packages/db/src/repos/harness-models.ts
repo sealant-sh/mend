@@ -13,7 +13,7 @@ import { harnessModels } from "../schema/workbench.ts";
 
 /**
  * The server-owned model catalog (docs/models-audit.md): what every picker lists and what a launch
- * resolves a missing model against. Read-only here; migration 0101 seeds it and an operator edits
+ * resolves a missing model against. Read-only here; migration 0102 seeds it and an operator edits
  * the rows in place until there is a write route.
  */
 export class HarnessModelsRepo extends Context.Service<

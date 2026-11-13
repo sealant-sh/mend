@@ -1,11 +1,11 @@
 # Organizations and tenancy: one boundary for single-user, team and multi-tenant Mend
 
-Status: accepted 2026-09-17. Settles the product decisions that
-[team support findings](../archive/reviews/team-support-findings.md) asked for before permissions
-are implemented, and the Mend half of the account and authorization blockers in
-[public exposure findings](../archive/reviews/public-exposure-findings.md). Budgets (MEND-05,
-CORE-04) are deliberately deferred; see "Multi mode gate". Teams inside an organization are out of
-scope.
+Status: accepted 2026-09-17; built in #263 to #280. Amended 2026-10-30 (removed projects, #1253) and
+2026-11-08 (organization switching, #1542). Settles the product decisions that team support findings
+(`0dd4b4bf:docs/archive/reviews/team-support-findings.md`) asked for before permissions are
+implemented, and the Mend half of the account and authorization blockers in public exposure findings
+(`0dd4b4bf:docs/archive/reviews/public-exposure-findings.md`). Budgets (MEND-05, CORE-04) are
+deliberately deferred; see "Multi mode gate". Teams inside an organization are out of scope.
 
 ## Context
 
@@ -251,41 +251,6 @@ create one organization; every existing account joins it; the oldest account bec
 owner; every existing project becomes shared; sessions with no owner are assigned to the oldest
 account, matching today's fallback.
 
-## Consequences
-
-- The product language gains nouns: `organization`, `operator`, `owner`, `member`, `invitation`,
-  private and shared `project` visibility, `shared control` and `folder`. `AGENTS.md` and
-  `MEND-AGENT-WORKBENCH-PLAN.md` §5 need amending to match.
-- Mend still calls sealant with its service key and a derived `ownerUserId`. sealant keeps trusting
-  Mend as a server caller. Isolation is enforced in Mend; sealant's own owner scoping (CORE-03) is
-  later hardening, not a precondition for the beta.
-- Every internal job resolves authority from durable resource relationships (session owner, project
-  organization) and never takes a browser's current user or a raw path or object key.
-- Migrations and ADR numbers from the team branch are not reused. The branch's migration test that
-  expects `ON DELETE SET NULL` to widen a project to instance scope is the opposite of this
-  decision.
-
-## Delivery
-
-One ready-for-review PR per step, stacked:
-
-1. This ADR; the two-organization authorization harness; authorize before stop, before protocol and
-   lifecycle disclosure, and before adoption-conflict detail.
-2. Organization domain and persistence: schema and migration, membership with the one-organization
-   constraint, invitations and the last-owner lock (ported), `MEND_TENANCY`, the operator role,
-   closed registration, and the upgrade.
-3. `ProjectAccess` on every current-main route, including private/shared visibility, capture-backed
-   reads, SSE filtering and link checks.
-4. Per-user resources: signer, push devices, notifications, GitHub identity, organization
-   references, folders.
-5. Runtime identity: hot pool partitioning, shared control, removal and revocation, the audit log.
-6. Web and CLI: Members, Folders and References settings; the invitation join flow; recovery links;
-   `mend operator`.
-7. The multi mode gate: egress and local-source policy, upload length binding, and the startup
-   check.
-
-Budgets follow after the private beta opens.
-
 ### Removed projects (2026-10-30)
 
 Decided by recommendation; Yiannis to confirm: removal keeps the same project, its files, settings,
@@ -349,3 +314,22 @@ between them.
   Executor links, the audit log and budgets stay per organization.
 - `single` is unchanged: one organization, the operator cannot create a second or add anyone to one,
   and nothing about switching shows.
+
+## Consequences
+
+- The product language gains nouns: `organization`, `operator`, `owner`, `member`, `invitation`,
+  private and shared `project` visibility, `shared control` and `folder`. `AGENTS.md` and
+  `0dd4b4bf:MEND-AGENT-WORKBENCH-PLAN.md` §5 need amending to match.
+- Mend still calls sealant with its service key and a derived `ownerUserId`. sealant keeps trusting
+  Mend as a server caller. Isolation is enforced in Mend; sealant's own owner scoping (CORE-03) is
+  later hardening, not a precondition for the beta.
+- Every internal job resolves authority from durable resource relationships (session owner, project
+  organization) and never takes a browser's current user or a raw path or object key.
+- Migrations and ADR numbers from the team branch are not reused. The branch's migration test that
+  expects `ON DELETE SET NULL` to widen a project to instance scope is the opposite of this
+  decision.
+
+## Delivery
+
+Built in #263 to #280, one pull request per step of a stacked series; the steps are in git history.
+Budgets followed in [ADR 0004](0004-access-without-a-private-network.md).

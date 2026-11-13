@@ -1,6 +1,8 @@
 # Standby workspaces: mount the parent, bind the worktree at claim
 
-Status: accepted 2026-09-02. Cross-repo: sealantd (bind operation, boot), sealant (standby source,
+Status: accepted 2026-09-02; built in #195 and #196. Since captures became the default (ADR 0002,
+#235), the mount and bind apply only to the deprecated co-located store, and captured workspaces get
+no linked projects (ADR 0011). Cross-repo: sealantd (bind operation, boot), sealant (standby source,
 bindable mounts, `workspace.bind`), Mend (hot pool, linked projects).
 
 ## Context

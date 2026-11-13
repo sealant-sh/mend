@@ -212,5 +212,27 @@ Each was a live option, rejected. These are hard guardrails for every component 
 
 ---
 
+## 7. Product rules for Mend
+
+How the principles above apply to Mend's review, sessions and status.
+
+- **Evidence beside the claim, linked.** A change summary, review question or provenance statement
+  links straight to the session event, git fact, context item or verification record behind it.
+- **The diff remains primary.** Don't surround it with dashboard chrome. Review stays fast for
+  someone who never opens provenance.
+- **Provenance is progressive disclosure.** The default view says what changed. A drawer or
+  secondary pane answers why, when, and from which session.
+- **Status language is factual.** Use words such as _running, waiting, completed, failed, observed,
+  verified in clean workspace, not executed, attribution unknown, context snapshot stale_. Never
+  _low risk, agent score, trusted change_, nor the banned register in §6.
+- **Desktop is keyboard-first; mobile is touch-first.** Desktop review needs full keyboard
+  navigation. Mobile needs readable unified diffs, large comment targets, and only the few actions
+  that matter.
+- **Avoid vanity dashboards.** Don't show token counts, lines generated, agent productivity scores
+  or fleet metrics just because the data exists. Show information only when it helps the developer
+  continue, review or understand the work.
+
+---
+
 Every token and component reduces to one rule: **show the reviewer the thing and its proof in the
 same place, in plain language, and let them decide.**

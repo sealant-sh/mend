@@ -26,8 +26,8 @@ mend server status
 
 The upgrade still validates the target before it stops anything, writes a private database backup,
 and never downgrades or restores a database on its own
-([self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md#upgrade-deliberately)).
-What it does on top of that, in order:
+([Backup and recovery](/operate/backup-and-recovery/#upgrades)). What it does on top of that, in
+order:
 
 - **Sealant's argument purge.** The bundled Sealant (0.39) no longer stores the arguments a process
   or terminal started with, since they can carry secrets. Before Sealant starts, the upgrade purges

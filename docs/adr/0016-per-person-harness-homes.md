@@ -1,12 +1,13 @@
 # Per-person harness homes: a Linux user per person, one shared conversation
 
-Status: accepted 2026-10-05, for 0.36; rewritten 2026-10-06 on the owner's direction after three
-adversarial design reviews (round 1: 7 P1, 9 P2, 12 P3; round 2: 5 P1, 9 P2, 12 P3; round 3: 5 P1, 9
-P2, 10 P3), then revised after round 4 (4 P1, 7 P2, 15 P3) and round 5's fix check (1 P1, 5 P2, 10
-P3). The design is final; the build starts with Delivery 2. Amended 2026-10-07 with what the
-platform's builds and reviews settled (sealantd#144–#148, sealant#327–#332, mend#551–#559; see the
-decision log), and on 2026-10-10 with a person's own other agent login (decision 5). Earlier drafts
-gave every process a `HOME` of its own inside root; this one gives every person a Linux user. Amends
+Status: accepted 2026-10-05; built in 0.36 (Deliveries 12 to 22, #551 to #588), the default layout
+since #582. Amended by ADR 0018 and ADR 0024. Rewritten 2026-10-06 on the owner's direction after
+three adversarial design reviews (round 1: 7 P1, 9 P2, 12 P3; round 2: 5 P1, 9 P2, 12 P3; round 3: 5
+P1, 9 P2, 10 P3), then revised after round 4 (4 P1, 7 P2, 15 P3) and round 5's fix check (1 P1, 5
+P2, 10 P3). Amended 2026-10-07 with what the platform's builds and reviews settled
+(sealantd#144–#148, sealant#327–#332, mend#551–#559; see the decision log), and on 2026-10-10 with a
+person's own other agent login (decision 5). Earlier drafts gave every process a `HOME` of its own
+inside root; this one gives every person a Linux user. Amends
 [ADR 0003](0003-organizations-and-tenancy.md) (a session runs as its owner),
 [ADR 0009](0009-agent-memory-per-person-per-project.md) (memory in capture mode, and under shared
 control), [ADR 0010](0010-secret-files.md) (where secret files go) and
@@ -773,7 +774,7 @@ session line and the database left as it is.
 This is a narrow exception to "logins are never saved": such a login is in the captures taken while
 that opencode process ran, in that person's own directory, where anyone working in the worktree can
 read it. Known issues says so. sealantd scrubbing those tables from captures is a follow-up
-(PLATFORM-FEEDBACK 2026-10-04).
+(`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-10-04).
 
 ### 9. Memory per person (replaces mend#528's hand-over)
 
@@ -978,25 +979,8 @@ exception aside), but it is not a boundary between people.
 ## Performance
 
 The owner's rule (2026-10-06): no performance penalty for this feature. Every number below is a hard
-limit. A limit missed blocks turning the flag on for the box and blocks the release; only the owner
-grants an exception.
-
-### What is measured
-
-Everything this decision can affect, on the box, before and after, at the same commit base, with the
-same project (Mend's own repository), the same image and the same harness versions:
-
-- **Sessions:** a new session to the first agent output, for Claude, Codex, pi and opencode; a
-  resume after a Stop; a second session of the same person in a live executor; a join by a different
-  person; a steered turn, from the steerer's send to the first output, with the hand-over when the
-  sender changes and nothing runs in the background.
-- **Saves and restores:** the Stop's save; a checkpoint save during a turn; capture size per
-  worktree and its growth per extra person; restore time and bytes.
-- **Delivery and agents:** memory, skills and secret-file delivery; Codex's first start (its thread
-  index); the first turn's latency.
-- **Interactive:** opening a shell and a terminal; `git push` and `git fetch` through the shim;
-  typing latency in the web terminal (keystroke to echo).
-- **Resources:** executor disk and memory; Mend API latency for the session list and a session view.
+limit. The benchmark in `scripts/bench/` and the CI guards under Method check them; gate P1 passed
+on the release candidate `0.36.0-next.754` (2026-10-11, decision log).
 
 ### Budgets
 
@@ -1060,38 +1044,22 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 
 ### Method
 
-- **A benchmark script in the repository** (`scripts/bench/`, Delivery 2), run against the box. It
-  drives the box through the API and the CLI with two accounts, runs each gated scenario at least 10
-  times, takes each step's time from the session record, the server's log lines and the capture
-  records (as the 2026-10-03 Stop measurement did), and writes a JSON record and a table: the median
-  and the 90th percentile per measure, with the commit, image, harness versions, project and the
-  layout of each run. A measure that misses its limit has its whole set of at least 10 runs repeated
-  (one extra run cannot move a median); it fails only if the repeated set misses again.
-- **The gate compares `shared` launches against `person` launches at the same commit** (gates P1 and
-  P2), on the same box, images and harness versions, so other 0.36 work neither hides this feature's
-  cost nor fails its gate. The layout is chosen per launch on fresh worktrees, with the
-  operator-only `harnessLayout` (decision 14); the instance flag is never flipped to take a record.
-  Both records are checked in under `docs/perf/`.
-- **The `shared` layout's own cost is gated too.** Deliveries 3, 4, 9 and 10 change behaviour for
-  `shared` executors as well (the tables, the restore `chmod`, the images, the pins), which a
-  `shared`-against-`person` comparison cannot see. Gate P1 includes a named check: `shared` launches
-  on the new images and pins against gate B's record, in the same compare mode and budgets.
-- **History** (gate B): the benchmark on the box at `0.36.0-next.601`/`602`, before any per-person
-  code lands, checked in as `docs/perf/0016-baseline.json` and named in the decision log. It records
-  the drift of the whole release; it is not the gate.
+- **The benchmark** (`scripts/bench/`, Delivery 2) drives an instance through the API and the CLI
+  with two accounts, runs each gated scenario at least 10 times, and writes the median and the 90th
+  percentile per measure. A measure that misses its limit has its whole set repeated (one extra run
+  cannot move a median); it fails only if the repeated set misses again.
+- **The gate compares `shared` launches against `person` launches at the same commit** (gate P1), on
+  the same instance, images and harness versions, each on a fresh worktree, with the operator-only
+  `harnessLayout` (decision 14); the instance flag is never flipped to take a record.
 - **CI guards:** engine tests count the execs and sealant calls of a cold launch, a join, a resume
-  and a hand-over and fail when the count grows past its budget (cold launch: no more than today;
-  join: at most two more synchronous execs than a same-person second session, plus the one
-  asynchronous worktree repair; hand-over: two sealant calls, DELETE then POST, one stop, one
-  start). The `chmod` of `C` and the ACL step at boot are folded into existing execs, so they count
-  nothing new. A layout test fails when the bytes written into saved state per person, outside
+  and a hand-over and fail when the count grows past its budget (cold launch: no more than before
+  this feature; join: at most two more synchronous execs than a same-person second session, plus the
+  one asynchronous worktree repair; hand-over: two sealant calls, DELETE then POST, one stop, one
+  start). A layout test fails when the bytes written into saved state per person, outside
   conversation state and memory, exceed 64 KB; conversation state is decision 2's list, `codex-db`
   and its WAL included. `codex-db/logs_*` and `codex-db/*-shm` are machine state (Delivery 3), never
   saved, so they count nothing. No step is added to the launch path's synchronous part without a
-  measured budget in its PR.
-- **Every PR in the plan states its expected effect.** One that touches the launch, join, resume,
-  Stop or capture path carries a `shared` and a `person` run of the affected scenarios, or the unit
-  budget test that covers it.
+  measured budget.
 
 ## Known limits
 
@@ -1184,240 +1152,25 @@ exceed `shared`'s by at most 2 per 10 resumes, and it may not reinstall at every
 
 ## Delivery
 
-Ordered; each is one pull request; sizes are lines changed, tests included. Every PR states its
-expected performance effect (**Perf**); one that touches the launch, join, resume, Stop or capture
-path carries a before-and-after run of the affected benchmark scenarios, or the unit budget test
-that covers it.
+Built in 0.36, one pull request per delivery; the steps as planned and their tests are in git
+history. Gate B recorded the drift of the release on the box at `0.36.0-next.601`/`602` before any
+per-person code merged, and gate P1 passed on `0.36.0-next.754`. Code and commits cite the delivery
+numbers:
 
-- **Gates.** **B, history recorded:** the benchmark has run on the box at `0.36.0-next.601`/`602`
-  and its record is checked in, before any per-person code merges. **P, budgets met:** the
-  benchmark's `person` launches meet every limit in Performance against its `shared` launches at the
-  same commit, each on a fresh worktree, and P1 adds the `shared`-against-baseline check; it blocks
-  turning the flag on for the box (P1) and blocks the flip and the release (P2). No exception
-  without the owner.
-- **Platform (3–10)** runs in parallel with Mend 11; 3 and 4 are load-bearing and must be in the
-  box's images before its flag goes on.
-- **Mend 12–16 are one stack behind `MEND_HARNESS_LAYOUT=person`** (default `shared`), built and
-  exercised on a scratch instance. The flag decides only worktrees with no layout yet; a worktree
-  that has run `person` stays `person` (decision 14). Codex's `thread/start` fallback on a failed
-  resume is removed in 12, in both layouts. Until 18 lands, a steer turn in a person executor is
-  refused with the reason.
-- **The box turns the flag on** only when all of these hold: 3, 4 and 5 (sealantd) and 7, 8, 9 and
-  10 (sealant, the images and the pins) are released and in the box's images, rebuilt (cold launches
-  pay one image build per project once); the box's executors report the sealantd capabilities of
-  decision 1, and sealant reports the capability for the box's images ahead of create; 12–17 have
-  merged; and gate P1 has passed on the scratch instance. Turning it on changes only the layout of
-  worktrees that have none yet.
-
-1. **Mend · this ADR.** Amendment notes in 0003, 0009, 0010, 0013; PLATFORM-FEEDBACK. ~1,350. Perf:
-   none.
-2. **Mend · the benchmark (`scripts/bench/`).** A Node script that drives an instance through the
-   API and the CLI with two accounts on Mend's own repository: every scenario in Performance, each
-   gated one run at least 10 times, each step timed from the session record, the server's log lines
-   and the capture records; a new worktree for every run; `--layout shared|person` passing the
-   operator-only `harnessLayout` (from 12 on; without it the instance decides, as at gate B); a JSON
-   record and a median-and-p90 table with commit, image, harness versions, project and each run's
-   recorded layout; a compare mode that checks a `person` record against a `shared` one (or a
-   baseline) and the budgets, repeats the whole set of a missed measure, and exits non-zero on a
-   repeated miss. Unit tests for the parsing, the comparison and the re-run rule. M, ~800. Perf:
-   none (tooling).
-
-**B · Gate: history recorded.** The benchmark on the box at `0.36.0-next.601`/`602`; the record in
-`docs/perf/0016-baseline.json` and the decision log. It tracks the release's drift and is the
-reference for P1's `shared`-layout check; gates P1 and P2 compare `shared` launches against `person`
-launches.
-
-3. **sealantd · the tables under `people/*/`.** Sibling-suffix rule included; `codex-db/logs_*` and
-   `codex-db/*-shm` as machine state. Round-trip test: a person directory with every listed path,
-   and a regular `auth.json` where a link was, restores none of them; a `codex-db` with its `-wal`
-   and `-shm` files restores the WAL and not the `-shm`. S, ~150. Perf: none (listing filter).
-4. **sealantd · ownership on restore.** The owner map in the capture spec; in the `chmod` it already
-   makes, for `tree/`, git and `conversations/` only, the owner's read, write and execute bits
-   copied to the group, setgid on directories; `people/<id>/` `lchown`ed to its uid with `P` 0710,
-   `conversations/` group-readable and -writable whatever the recorded mode, and the rest of
-   `people/<id>/` at its recorded mode; the roots of `tree/` and git owned by the change's owner;
-   default ACLs on the roots and, at boot, on the image's `/opt` and `/var/cache` top directories;
-   reused files included; the capability report. Tests: a capture recorded 0644/0755 is writable and
-   creatable-in by a second uid after restore; a 0600 transcript in `conversations/` comes back
-   group-writable; a 0600 transcript and `codex-db` outside `conversations/` come back 0600; two
-   people's directories restored with their uids; no owner recorded; a restore of a 200k-entry tree
-   makes no more syscalls than before plus one per `people/` entry. M, ~500. Perf: restore within
-   budget, measured on the box's largest worktree.
-5. **sealantd · run as a user, and dotfiles as a user.** Exec and sessions with a uid (setgid,
-   initgroups, setuid, passwd `HOME`, umask, the private `TMPDIR` and `XDG_RUNTIME_DIR`); the
-   dotfiles applier as a given user into their home, through a control verb (boot applies only
-   root's, into `/root`), reporting when files are applied separately from `install.sh`; the
-   capabilities `exec.user` and `dotfiles.user`, also printed by `sealantd capabilities --json`
-   without booting, so an image build can record them. Tests: a process's ids and `HOME`;
-   `install.sh` runs as the user; the offline report matches the booted one. M, ~500. Perf: process
-   start unchanged within noise (unit timing of the spawn path).
-6. **sealant · sealant#316 as it is.** S, open. Perf: none.
-7. **sealant · sealant#315 reshaped into per-home injection.** `home` (a person's home, a
-   conversation home, or `/root` for decision 1's fallback); files owned by the home's owner; the
-   record per instance and home (`home-held`, release and retake only when idle); GitHub as
-   `hosts.yml`; DELETE removing the files; one row lock. M, ~+550 / −250. Perf: one control-channel
-   write per call; measured for the hand-over (DELETE then POST).
-8. **sealant · SDK and workspace surface.** `user` on sessions and exec; `credentialsHome`; `GET`;
-   sync-back per home; the dotfiles verb; the capture owner map in the spec; `sshUser` for the
-   gateway; the person-layout capability of an image (from 9's probe) and ACL support per runtime,
-   readable before create. M, ~650. Perf: no new call at create (the capability is read with the
-   image Mend already resolves).
-9. **sealant · images.** Group `mend` (gid 40000); `sudo` with `NOPASSWD` for the group, `env_keep`
-   for the toolchain variables and `umask=0002, umask_override`; added where a base lacks them:
-   `sudo` (Ubuntu, Arch), `acl` (Ubuntu, Fedora), `util-linux` (Fedora); toolchains under `/opt` and
-   caches under `/var/cache` (2775) with their `ENV`, `npm_config_prefix=/opt/npm-global`;
-   `/etc/skel` links to shared caches; `/etc/gitconfig` `safe.directory = *`; `docker` group; the
-   same for the MicroVM images; nix images unchanged and documented as one-person. Image tests run
-   in a container started from the built image: a second uid runs `pnpm install`, `mise install`,
-   `cargo build`, `npm i -g` and Playwright against the shared paths; a root `cargo install` and
-   `npm i -g` still work in the `shared` layout. The image build's probe, for sealant's images and
-   custom ones: `sealantd capabilities --json`, `sudo`, `useradd`, `setfacl`, and no user or group
-   in 40000–49999 other than `mend`, recorded on the image. M, ~550. Perf: image size, and the
-   benchmark's `shared` launches on the new images against the old (no regression for `shared`
-   executors or other Sealant users).
-10. **sealant and sealantd · release chain.** `next` prereleases, sealant's pin of sealantd, image
-    builds, Mend's pin. S. Perf: the benchmark's `shared` launches at the new pin match the baseline
-    within budget.
-11. **Mend · mend#526, merged without its pi refusal.** The owner rejects any rule that stops two
-    people working in one worktree, so `PI_PROFILE_IN_USE` was taken out before it merged
-    (2026-10-06). In a `shared` executor a pi that joins a live pi, anyone's, runs on the profile
-    already there, as before #526, and Known issues says so; with no pi live, the launch clears the
-    harness home and delivers its owner's profile, or refuses with `PI_PROFILE_NOT_DELIVERED`. In a
-    `person` executor each pi runs on its own person's profile (15). S, merged. Perf: none; its pi
-    launch scenario run.
-12. **Mend · users and layout behind the flag.** Linux identity per account (migration: name, uid in
-    40000–49999); `useradd` at prepare, serialised, for the launcher and every restored current
-    member, at first process for joiners, after a passwd and group collision check; the layout
-    chosen before create (decision 1): the worktree's sticky layout, then sealant's image capability
-    and Mend's record per image digest and runtime, then the flag; prepare's check as the backstop,
-    refusing on a `person` worktree and re-posting the launcher's logins to `/root` on a fresh one
-    (their dotfiles are not applied there: the verb refuses root, decision 1); `harness_layout` on
-    the launch and `worktrees.harness_layout`, set with the first `person` launch and never cleared;
-    the operator-only `harnessLayout` on a start that creates a worktree; the refusal lines; the
-    Codex adapter's `thread/start` fallback removed; `user` on every session and exec; `P` (0710)
-    with decision 2's conversation-state links, `C` and `P/codex-db`; `core.sharedRepository`; the
-    worktree repair (`-cnewer` a per-repair marker, `chmod g+rwX`, one asynchronous exec); install
-    and setup as the launcher; `/root` 0755; the exec-count budget test for cold launch, join and
-    resume. Tests: each harness writes only under its user's home and `P`; a Claude task list, plan
-    file and archived Codex thread survive a Stop and resume; two users edit the same worktree file;
-    after `tar x` of an archive with old mtimes, `install -m 644` and `open(…, 0644)` by one user,
-    the repair lets the other write and create in every entry, and a second repair walks only what
-    changed since the first; a JVM tool and `ssh-keygen` use the person's home; bytes in saved state
-    per person outside conversation state and memory under 64 KB. **No way back:** a worktree with a
-    `person` launch, then the flag set to `shared`, launches `person`; the same worktree with an
-    image whose capability says no `sudo` (and, separately, a nix image, uid 40001 in the image's
-    passwd, a sealantd without the capabilities) is refused before create with the line and no
-    executor; with the capability unknown, prepare refuses, releases the executor and runs nothing;
-    a Codex session of that worktree whose rollout is missing fails the turn and the adapter never
-    sends `thread/start`, and the same holds in a `shared` launch; `harnessLayout: shared` on an
-    existing `person` worktree is refused, and on a new worktree is recorded with its source.
-    **Capability before create:** a fresh worktree on an image whose capability is unknown launches
-    `shared` with the logins at `$HOME` and records prepare's answer for the digest; sealant saying
-    yes and prepare saying no on a fresh worktree re-posts the launcher's logins to `/root`, records
-    their dotfiles as not applied (no sealant verb applies them as root), records `shared` and
-    corrects the record, and the agent starts with a login. M, ~1,250. Perf: `useradd` folded into
-    existing execs; the repair one asynchronous exec in the join budget; cold launch exec count
-    unchanged, the capability read with the image Mend already resolves; new session and join
-    scenarios.
-13. **Mend · git and Mend identity.** The per-(launch, person) token, binding and revocation; the
-    container token refused, keyed on the executor's recorded layout so pre-release executors keep
-    working; no `mend.sock` in capture mode; transport signs as the token's person; helper routes
-    authorise it; `mend-git-credential`; `~/.config/git/config`. Tests: a joiner's push signs as the
-    joiner in key and bridge modes; a joiner's `mend land` refused; a `shared` executor's push still
-    works. M, ~550. Perf: `git push` and `fetch` through the shim unchanged within noise
-    (benchmark).
-14. **Mend · logins per person.** `credentialsHome` only for `person` launches; POST per person in
-    parallel; DELETE, retried, with the launcher's create-time home kept while the executor lives;
-    reconciliation at startup; refusal before start; re-post on authentication failure; pi's and
-    opencode's ChatGPT logins written by sealant. Tests: a join never reads the holder's login;
-    files owned by the user; no regular `auth.json` under `P`; the join adds exactly one sealant
-    call. M, ~400. Perf: join scenario.
-15. **Mend · deliveries per person.** Dotfiles through the verb (with `bootstrap`; a joiner's
-    `install.sh` beside the agent unless "Start my agents after install.sh" is on, and the line when
-    it finishes late), shell profile, skills, pi profile, memory, Codex carry, secret files, as the
-    user; the opencode scrub at end, in the layout step and at prepare. Tests per delivery; two
-    people's pi profiles live in one executor; the scrub leaves no row and no WAL page. M, ~700.
-    Perf: delivery scenarios; the scrub runs off the launch path except before opencode starts
-    (measured on the opencode new-session scenario).
-16. **Mend · readers per person.** Prefixes for personal and shared conversations; links skipped;
-    memory read-back per process's person for sessions never shared; the pre-release transcript copy
-    from the worktree's last `shared`-layout capture, only when absent. Tests: two people's
-    transcripts and memory in one capture, each read back only for its person; a transcript written
-    by the last `shared` executor after an earlier capture is the one copied. M, ~600. Perf: Stop
-    and resume scenarios.
-17. **Mend · the conversation home and the restart path.** `C` and the move into it (sub-agent
-    rollouts and the task list included; never file history, which is not saved) when shared control
-    turns on, kept for the rest of the session; `H` with its links (Claude `projects/`, `plans/`,
-    `todos/`, `tasks/`, `jobs/`, `teams/`; Codex `sessions/`, `archived_sessions/`,
-    `session_index.jsonl`), `CODEX_SQLITE_HOME=H/.codex`, the neutral seed and the Claude settings
-    passed inline with `--settings '<json>'` (`neutral`: `autoMemoryEnabled: false` and `env` with
-    `CLAUDE_CODE_DISABLE_AUTO_MEMORY`, `CLAUDE_CODE_DISABLE_ORG_MEMORY`, `CLAUDE_CODE_DISABLE_CRON`
-    and `CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS`; `no-cron`; `personal`), the same variables in the
-    environment, no external-include approval; Codex `HOME=H` with `shell_environment_policy` and
-    `features.plugins=false`; `H.next` made as the sender, 0700, exchanged with `H` by
-    `renameat2(RENAME_EXCHANGE)` once the old process group and cgroup are empty, the old directory
-    removed in the background; the `chmod -R g+rwX C` as the owner with only `CAP_FOWNER`; one live
-    process per conversation with fencing; the stop protocol; no-fork resume; a rejection of foreign
-    reasoning failing the turn with its line; Shared control on a terminal session changing nothing;
-    the hand-over budget test (two sealant calls, DELETE then POST, one stop, one start). Tests with
-    fake harnesses: Alice's transcript created 0600, Bob's resume works, then Alice's (five turns,
-    two uids); a steered Claude turn's large tool output and a steered Codex sub-agent's rollout
-    land in `C` and stay; the task list survives a change of sender; after a steered Codex turn,
-    `P_bob/codex-db/state_5` has no row for Alice's thread; every personal canary (the sender's
-    home, the worktree's local settings, a repository `@~/` import) stays out of the request; an
-    `env` canary (`CLAUDE_CODE_DISABLE_AUTO_MEMORY: "0"` and `CLAUDE_CODE_DISABLE_CRON: ""` in the
-    repository's settings and in `settings.local.json`) leaves no memory section, no memory
-    directory in `C` and no cron tools; no Codex `git` child outlives a hand-over and the exchange
-    never fails on a busy directory; the owner's transcript has no path under the steerer's home; a
-    missing rollout fails the turn. M, ~1,000. Perf: hand-over under 5 s, Codex's one-conversation
-    re-index and both sealant calls included.
-18. **Mend · steering dispatch.** Quiescence for Claude (session state, background-task set, paused
-    tasks, wakeups, monitors, session crons) and Codex (child threads, background terminals, goals,
-    1 s settle); the Claude adapter handling the events it drops today; a Codex turn aborted by the
-    stop recorded as interrupted by the hand-over; the waiting line and its actions; the queue on
-    the conversation; crons off in shared sessions and for everyone but the change owner (the inline
-    `no-cron` settings); mode switch and takeover through the same rules; payer from the process;
-    cancellations; Slack; automatic landing; shared control refused for opencode sessions, at the
-    toggle and at submit. Engine tests: B's turn runs as B with A's conversation; A's sub-agent,
-    goal, background terminal and monitor each delay B's turn and finish as A; a takeover waits. M,
-    ~900. Perf: the steered-turn scenario; same-person turns pay nothing.
-
-**P1 · Gate: budgets met,** `person` launches against `shared` launches at the same commit, each on
-a fresh worktree, on the scratch instance, then on the box once the conditions above hold; and
-`shared` launches on the new images and pins against gate B's record.
-
-19. **Mend · the migration job and replacement.** Server-side memory crediting; the completion
-    record naming the capture it read, provisional until the worktree's last `shared`-layout
-    capture, and re-run over that capture when the worktree turns `person`; `retiring`, the `ps` and
-    `docker ps` checks, replacement only after a saved flush; "Replace this workspace now"; the
-    refusal; the opencode pre-release refusal. Tests: nothing lost; ambiguous memory credits nobody;
-    memory a `shared` executor writes after a provisional run is credited when the worktree turns
-    `person`, and a re-run credits nothing twice; an executor with a hand-started Service is not
-    replaced automatically. M, ~700. Perf: off every launch path (a test asserts no launch waits on
-    it).
-20. **Mend · what the product says.** The API's live people; the lines of decision 13 and the
-    waiting line in the web app, CLI, desktop, phone, VS Code and t3 gateway; the Shared control
-    confirmation; the GitHub settings copy; docs: Known issues, provider logins, agent memory,
-    secret files, dotfiles, shared control, sudo, performance, release notes. M, ~600. Perf: session
-    list and session view API latency within budget (the live-people field read in the same query).
-
-**P2 · Gate: budgets met** on the box, `person` launches against `shared` launches on fresh
-worktrees at the commit to be flipped, after a week of use with the box's flag on; the flag is not
-flipped to take the `shared` record. Both records are checked in.
-
-21. **Mend · the flip.** `person` becomes the default; the `/root` relocation kept only for `shared`
-    executors, where a joining pi still runs on the live pi's profile (11). S, ~150. Perf: none
-    beyond P2.
-22. **Mend · removing what is dead.** The hand-over at launch, withholding, the owner record,
-    `agent_memory_homes` writes (reads stay for 19 until 0.37), joiner memory flags; ADR 0010's join
-    rule; stale Known issues. The credential tables stay. L, ~−1,500 / +200. Perf: fewer execs on
-    the launch path; the budget tests lowered to match. As built, S: the `shared` layout stays an
-    opt-out and a fallback, and every item here is its own (Decision log, 2026-10-09).
-
-Then the box with the default flipped: two people in one worktree editing the same files, a join, a
-steered Claude and Codex conversation with a sub-agent and a background task in flight, `ssh` and a
-Gradle build as two people, a migrated worktree and a replaced pre-release executor, and the
-benchmark once more, before 0.36 is tagged.
+- 1, this ADR (#534); 2, the benchmark, `scripts/bench/` (#549).
+- 3 to 5, sealantd: the tables under `people/*/`, ownership on restore, and running as a user with
+  dotfiles as that user. 6 to 10, sealant: sealant#316, sealant#315 as per-home injection, the SDK
+  and workspace surface, the images, and the release chain. The decision log names what each
+  settled.
+- 11, mend#526, merged without its pi refusal.
+- 12, users and the sticky layout behind `MEND_HARNESS_LAYOUT` (#551); 13, git and Mend identity
+  (#553); 14, logins per person (#564); 15, deliveries per person (#566); 16, readers per person
+  (#567); 17, the conversation home and the restart path (#570); 18, steering dispatch (#571); 19,
+  the migration job and the replacement of pre-release executors (#575); 20, what the product says
+  (#576).
+- 21, the flip: `person` by default, `MEND_HARNESS_LAYOUT=shared` to opt out (#582).
+- 22, removing what is dead. As built, the `shared` layout stays an opt-out and a fallback, and
+  every item it lists stays for it (#588, decision log 2026-10-09).
 
 ## Considered
 
@@ -1539,21 +1292,21 @@ benchmark once more, before 0.36 is tagged.
   the executor turned `retiring` (a launch under way, a turn being queued or queued, an `install.sh`
   running) would stop, so the check sees them. Containers are what `docker ps` lists with sealantd's
   own `DOCKER_HOST`; a `docker ps` that cannot answer is "could not check", never "none"
-  (PLATFORM-FEEDBACK 2026-10-08). The check runs on every look, so the owner's "Replace this
-  workspace now" lists all of it; the request names what the owner was shown (the set of things, not
-  when it was checked), and Mend ends nothing more (it is refused when more would stop now, counted
-  as a multiset). The check exec is bounded (30 s), and error text reaches the change's owner only.
-  A `retiring` row nothing moves (a crash, a restart) goes back to `marked` at boot, on the sweep
-  after ten minutes, or when the owner asks again; every other way a replacement does not finish
-  takes it back at once, with why. A failed final flush leaves the executor's drain to ask again, as
-  every kept drain does. The holder's protocol agent and its own `mend.toml` Services start again; a
-  joiner's do not, and terminal sessions end resumable. Memory is credited by the home's record only
-  when nothing is pending and the record is the executor's that wrote the capture read, and by the
-  only-person rule only from `worktree_session_owners` (kept when a session is deleted) on a
-  worktree made after it began, or on an older one whose organization has exactly one member who
-  owns every session it kept (owner decision 2026-10-08); otherwise nobody. A replacement whose
-  final flush was sent stays `retiring` while its drain asks again, and the Services it starts again
-  are kept with the row for a restart.
+  (`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-10-08). The check runs on every look, so the owner's
+  "Replace this workspace now" lists all of it; the request names what the owner was shown (the set
+  of things, not when it was checked), and Mend ends nothing more (it is refused when more would
+  stop now, counted as a multiset). The check exec is bounded (30 s), and error text reaches the
+  change's owner only. A `retiring` row nothing moves (a crash, a restart) goes back to `marked` at
+  boot, on the sweep after ten minutes, or when the owner asks again; every other way a replacement
+  does not finish takes it back at once, with why. A failed final flush leaves the executor's drain
+  to ask again, as every kept drain does. The holder's protocol agent and its own `mend.toml`
+  Services start again; a joiner's do not, and terminal sessions end resumable. Memory is credited
+  by the home's record only when nothing is pending and the record is the executor's that wrote the
+  capture read, and by the only-person rule only from `worktree_session_owners` (kept when a session
+  is deleted) on a worktree made after it began, or on an older one whose organization has exactly
+  one member who owns every session it kept (owner decision 2026-10-08); otherwise nobody. A
+  replacement whose final flush was sent stays `retiring` while its drain asks again, and the
+  Services it starts again are kept with the row for a restart.
 - 2026-10-08, Delivery 20 as built: the lines of decision 13 are one module
   (`@mend/domain/workbench`, `shared-workspace.ts`) every client draws from. The live people are the
   distinct `runs_as` of live processes in the session's executor, so a `shared` executor lists

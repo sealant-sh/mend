@@ -6,11 +6,9 @@
 Updated 2026-09-16. This records the cost review and the path from the running POC to a customer
 installer. It does not authorize infrastructure changes, further acceptance VMs or team access.
 
-See the [deployment overview](README.md),
-[Docker service record](../../docs/operations/aws-docker-service.md),
-[private access record](../../docs/operations/aws-access-deployment.md) and
-[teardown procedure](TEARDOWN.md). The [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md) remains
-the product source of truth.
+See the [deployment overview](README.md), including its access section, and the
+[teardown procedure](TEARDOWN.md). The [product statement](../../PRODUCT.md) remains the product
+source of truth.
 
 ## Summary
 

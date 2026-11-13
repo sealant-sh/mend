@@ -142,6 +142,14 @@ in-cluster endpoint; a bucket URL without `endpoint=` (an AWS-region bucket) nee
 has the CephObjectStore, bucket StorageClass and ObjectBucketClaim manifests, and a Garage
 Deployment with the commands that create its bucket and key.
 
+Give the bucket a lifecycle rule that aborts incomplete multipart uploads after one day
+(`AbortIncompleteMultipartUpload`, `DaysAfterInitiation: 1`). Captures at or above
+`MEND_CAPTURE_MULTIPART_THRESHOLD` upload in parts, and an executor that dies between its parts and
+the completing request leaves an open upload whose parts are billed until it is aborted. Mend's
+hourly retention pass aborts those itself; the rule covers the hours Mend is down. S3 calls it a
+bucket lifecycle configuration, R2 an object lifecycle rule to abort multipart uploads, and Garage
+takes the same S3 rule shape.
+
 ## Step 3: install Mend
 
 Create the namespace and secret. `SEALANT_SERVICE_KEY` is the Mend key you listed in

@@ -7,7 +7,7 @@ import {
   repositorySavedWords,
 } from "./repository.ts";
 
-describe("repositories in a session (docs/adr/0010)", () => {
+describe("repositories in a session (docs/adr/0011)", () => {
   it("names a directory under /workspace/repos, and the nested place its files live today", () => {
     expect(repositoryPath("core")).toBe("/workspace/repos/core");
     expect(nestedRepositoryPath("core")).toBe("/workspace/repo/.mend/repos/core");

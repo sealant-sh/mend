@@ -72,7 +72,7 @@ const makeWorkspace = () => {
   return { root, main, origin, baseSha };
 };
 
-describe("repositories in a session: the shell that brings one in (docs/adr/0010)", () => {
+describe("repositories in a session: the shell that brings one in (docs/adr/0011)", () => {
   it("clones the origin nested in the main worktree, on the session's branch at the base, linked at /workspace/repos/<name>, and excluded from the main repository", () => {
     const { root, main, origin, baseSha } = makeWorkspace();
     const script = inScratch(

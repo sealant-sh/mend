@@ -284,9 +284,9 @@ hub_cache() {
   esac
 }
 
-# The local outer's budgets (docs/operations/budgets.md): room for at most 4 stacks live (SKILL.md)
-# with a few drivers each, every one from 127.0.0.1 as the outer's one account. Sign-in attempts
-# keep the product's default: no driver signs in to the outer.
+# The local outer's budgets (https://docs.mend.run/operate/exposure/#budgets): room for at most 4
+# stacks live (SKILL.md) with a few drivers each, every one from 127.0.0.1 as the outer's one
+# account. Sign-in attempts keep the product's default: no driver signs in to the outer.
 BUDGETS='
 MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE=12000
 MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE=12000

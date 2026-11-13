@@ -15,8 +15,8 @@ import { Timestamp } from "../timestamp.ts";
 import { CREDENTIAL_PROVIDER_LABELS } from "./default-login.ts";
 
 /**
- * A project-owned, explicitly NON-SECRET environment name/value pair (plan:
- * `docs/archive/plans/project-environment-variables.md`). Values are ordinary configuration, persisted and
+ * A project-owned, explicitly NON-SECRET environment name/value pair (see
+ * the project-environment plan in git history). Values are ordinary configuration, persisted and
  * returned as plaintext by design; the UI states this before creation. Each fresh workspace launch
  * reads the project's complete current set once and passes it at workspace creation — a live
  * workspace never changes.

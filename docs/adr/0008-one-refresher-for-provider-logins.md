@@ -1,11 +1,11 @@
 # Provider logins: one refresher, copies that cannot rotate
 
-Status: accepted 2026-10-01. Builds on
-[ADR 0005](0005-claude-credentials-and-a-grant-of-mends-own.md) (a grant of Mend's own) and replaces
-its "Refresh stays where the credential lives" section. Commits the platform to being the **only**
-place a Claude or Codex login is refreshed, to handing every other copy a credential that **cannot
-rotate**, and to pushing a refreshed credential into running sessions without restarting them. Codex
-gets a grant of Mend's own, as Claude did.
+Status: accepted 2026-10-01; built in #439 and #447, with sealant's refresher. Amended by ADR 0018.
+Builds on [ADR 0005](0005-claude-credentials-and-a-grant-of-mends-own.md) (a grant of Mend's own)
+and replaces its "Refresh stays where the credential lives" section. Commits the platform to being
+the **only** place a Claude or Codex login is refreshed, to handing every other copy a credential
+that **cannot rotate**, and to pushing a refreshed credential into running sessions without
+restarting them. Codex gets a grant of Mend's own, as Claude did.
 
 Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): a key is never
 refreshed. The refresher skips key accounts, and the push never writes a subscription copy over a

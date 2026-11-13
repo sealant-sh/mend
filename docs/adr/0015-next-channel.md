@@ -1,14 +1,15 @@
 # A `next` channel: prereleases from main, and a stable release as their promotion
 
-Status: proposed 2026-10-04, revised after five reviews (the fifth on 2026-10-05). Covers
-`sealant-sh/mend`, `sealant-sh/sealant` and `sealant-sh/sealantd`. Amends ROADMAP "How releases
-work". Read against Mend `6d2b48e01`, sealant `3599f9d` (SDK 0.38.1) and sealantd `05ce137`
-(0.19.0).
+Status: accepted 2026-10-05 (#521); built in #522 and #1023, with sealant's and sealantd's next
+workflows. Mend publishes a next build when a `-next` tag is pushed. Revised after five reviews (the
+fifth on 2026-10-05). Covers `sealant-sh/mend`, `sealant-sh/sealant` and `sealant-sh/sealantd`.
+Amends `0dd4b4bf:ROADMAP.md` "How releases work". Read against Mend `6d2b48e01`, sealant `3599f9d`
+(SDK 0.38.1) and sealantd `05ce137` (0.19.0).
 
-## Decisions for the owner
+## Decisions
 
-Each has a recommendation. The pull requests implement the recommendation; the ones marked
-**action** need a setting only an organization owner can change, before the publish jobs run.
+Each was the recommendation, accepted with this ADR, and the pull requests implemented it. The ones
+marked **action** need a setting only an organization owner can change, before the publish jobs run.
 
 1. **One version scheme in all three repositories, monotonic by construction:** `B-next.N`. N is the
    commit's whole history (`git rev-list --count`), so it never restarts. B is the larger of what
@@ -609,22 +610,6 @@ Left as they are here, and why a rebuilt stable release is not byte-for-byte the
 - The box's deploy command (outside this repository) must accept `0.36.0-next.N` and
   `0.36.0-next.N.preview.R`. `scripts/preview-deploy.sh` does; the one-time `--from-preview` move is
   run by hand.
-
-## Delivery
-
-| Repository | Pull request                                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------------------------------- |
-| sealant    | 1. Every install reads the committed lockfile                                                                     |
-| sealantd   | 2. `next.yml` with a credential-free pack job; exact `runtime-protocol`; release guards; `--locked`; CODEOWNERS   |
-| sealant    | 3. `next.yml` with a credential-free pack job; release guards; recovery check; exact deps; CODEOWNERS             |
-| Mend       | 4. This ADR                                                                                                       |
-| Mend       | 5. The `next` channel: release guard, promotion check, pin script, `image.yml`, `--from-preview`, preview numbers |
-| Mend       | 6. Docs: try a preview (merges after the first Mend next build publishes)                                         |
-| Mend       | 7. ROADMAP "How releases work"                                                                                    |
-
-Then, once you have done decision 4: the first sealant and sealantd prereleases publish on their
-next merge. sealant pins a sealantd prerelease when it needs one; Mend pins sealant `0.39.0-next.N`
-to unblock sealant#313, #315 and #316.
 
 ## Decision log
 

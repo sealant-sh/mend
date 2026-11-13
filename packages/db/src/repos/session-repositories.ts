@@ -52,7 +52,7 @@ export interface NewSessionRepository {
 }
 
 /**
- * The repositories a session holds beside its own worktree (docs/adr/0010): table
+ * The repositories a session holds beside its own worktree (docs/adr/0011): table
  * `session_repositories`. Each row names a worktree of another project; the worktree owns the
  * change and the chain, this row the session's view of it (name, path, state, how it is saved).
  */

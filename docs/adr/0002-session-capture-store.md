@@ -1,12 +1,13 @@
 # Session capture store: leases per worktree, executor replacement, capture-backed SessionRepository
 
-Status: accepted 2026-09-12; amended 2026-09-13 by decisions 2, 6, 8 and 9 (marked "amended
-2026-09-13" below): captures everywhere from day one, dependency trees captured with a per-project
-shared cache fed only by Mend-controlled installs, credential files (decision 6, corrected
-2026-09-18: the daemon excludes them). Cross-repo: sealantd ADR-0015 (capture engine, pack kinds,
-cadence — being amended in parallel; this ADR references it and does not restate the format),
-sealant (`capture` workspace source, `microvm` adapter, bridge `stop()`), Mend (everything below).
-Supersedes the co-located store invariant of `docs/DEPLOYMENT-STRATEGIES.md` and
+Status: accepted 2026-09-12, amended 2026-09-13; built in #233 to #236 (0.27.0) and the default
+store since. The amendment changed decisions 2, 6, 8 and 9 (marked "amended 2026-09-13" below):
+captures everywhere from day one, dependency trees captured with a per-project shared cache fed only
+by Mend-controlled installs, credential files (decision 6, corrected 2026-09-18: the daemon excludes
+them). Cross-repo: sealantd ADR-0015 (capture engine, pack kinds, cadence — being amended in
+parallel; this ADR references it and does not restate the format), sealant (`capture` workspace
+source, `microvm` adapter, bridge `stop()`), Mend (everything below). Supersedes the co-located
+store invariant of the deployment strategies (now "Strategies and their ports", below) and
 `docs/KUBERNETES.md` for every remote deployment. Evidence and arithmetic: the 2026-09-12
 remote-session-storage decision record (§2.3 components and SQL, §2.4 latency, §2.6 cost, §2.7 lease
 settlement); figures below are marked as it marks them: measured, cited, or estimate.
@@ -26,7 +27,8 @@ Three facts end that model for remote executors:
   task: on the AWS POC, FSx over NFS put `git worktree add` on `nodejs/node` at 872 s against 2.5 s
   on the MicroVM's local disk, and warm `git status` at 4.8 s against 67 ms (measured, bench
   `20260912-*`). Longhorn and CephFS on the cluster produced the same incident class (uid split,
-  root `gc` poisoning, stale sockets: `PLATFORM-FEEDBACK.md` 2026-08-29/30, `docs/BUGS.md`).
+  root `gc` poisoning, stale sockets: `0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-08-29/30,
+  `0dd4b4bf:docs/BUGS.md`).
 - Cloudflare is a hard requirement and has no durable POSIX disk: container and sandbox disk is
   ephemeral (cited, Containers architecture), every request to a container crosses a Worker whose
   body is capped at 100/200 MB (cited, Workers limits). A resident POSIX truth cannot exist there
@@ -270,8 +272,8 @@ Same port, `packages/sessions/src/session-repository-captured.ts`, selected at t
 - `checkpoint` = ask the lease holder over the channel for a `checkpoint` capture and await its
   register CAS; the returned `{ref, sha}` come from the manifest's `checkpoint` field.
 - `removeWorktreeForce` = release the lease, mark the chain ended; packs retire by retention.
-- `worktreeMount` → `undefined`. Callers already treat absence as a capability gap
-  (`docs/DEPLOYMENT-STRATEGIES.md`).
+- `worktreeMount` → `undefined`. Callers already treat absence as a capability gap ("Strategies and
+  their ports", below).
 
 Engine changes, by function (`engine.ts` at `ade9996`):
 
@@ -316,7 +318,7 @@ Engine changes, by function (`engine.ts` at `ade9996`):
   pasted (`SessionEngine.storePastedImage`; no live workspace answers `SessionNotLive`), the skills
   in `launchInternal` once the harness home is relocated, cold or claimed. The bytes ride argv as
   chunked base64 (`packages/sessions/src/workspace-files.ts`) until the SDK can write a file
-  (PLATFORM-FEEDBACK.md, "A file into a workspace").
+  (`0dd4b4bf:PLATFORM-FEEDBACK.md`, "A file into a workspace").
 
 ### Replacement and pickup
 
@@ -365,7 +367,7 @@ or `booting`. Until 2026-10-02 the middle one said `building the workspace image
 cannot observe. The launch goes on to `running`, or settles `failed` with the reason. The account's
 launch slot is held until the launch ends, not until the answer. Mend infers "building" from what
 the platform reports: no executor 20 s after the create was accepted. SDK 0.38.0 reports no build
-state (PLATFORM-FEEDBACK.md 2026-09-30).
+state (`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-09-30).
 
 ### Stop drains, then terminates
 
@@ -453,9 +455,9 @@ cadence window.
 - **Removal** of a session whose workspace is up is recorded and happens after the workspace has
   gone, so the workspace is never left unaddressable.
 
-What waits on the platform (PLATFORM-FEEDBACK.md 2026-09-27): the runtime deadline, a final flush
-that snapshots bulk with a deadline and no 10 s clamp, `pending_bytes` / `pending_bulk` / `refused`
-on the status, and sealant's reapers draining before they terminate.
+What waits on the platform (`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-09-27): the runtime deadline, a
+final flush that snapshots bulk with a deadline and no 10 s clamp, `pending_bytes` / `pending_bulk`
+/ `refused` on the status, and sealant's reapers draining before they terminate.
 
 ### Review
 
@@ -506,6 +508,50 @@ credentials (the Mend key or the bridge), never from an executor.
 MinIO is not an option: `minio/minio` entered maintenance 2025-12-03 and was archived 2026-04-25
 (cited). Garage lacks bucket policies, versioning and conditional writes; the design needs none of
 them, because keys are epoch-prefixed, promotion copies and readers verify.
+
+### Strategies and their ports
+
+The programs are fixed: Mend API and engine, Mend web, Sealant API, Sealant worker, sealantd. A
+deployment strategy is a named, tested composition that supplies each program's ports. Arbitrary mix
+and match is not offered. The capture store is the authority in every strategy; the co-located store
+(`MEND_SESSION_STORE=colocated`) is deprecated, starts with a warning, and nothing above these ports
+may assume it.
+
+| Port                                                    | `local` (default)              | `kubernetes`                      | `aws-microvm` (alpha)                       | Boat                                                      | `cloudflare-hosted` (not built)      |
+| ------------------------------------------------------- | ------------------------------ | --------------------------------- | ------------------------------------------- | --------------------------------------------------------- | ------------------------------------ |
+| Workspace runtime (`RuntimeAdapter`, sealant)           | Docker container               | Workspace Pod                     | Lambda MicroVM                              | a Boat VM per session, in the organization's Boat account | Sandbox via bridge Worker            |
+| Session workspace authority (`SessionRepository`, mend) | capture store (Garage)         | capture store (RGW or Garage)     | capture store (S3)                          | capture store (the server's Garage)                       | capture store (R2)                   |
+| Control transport (`SealantTarget`, sealant)            | unix socket / docker-exec      | mTLS WebSocket                    | WebSocket through the VM's endpoint         | HTTPS through Boat's hosted proxy to the in-VM agent      | bearer-token WebSocket via bridge    |
+| Session channel (mend)                                  | network endpoint (`mend:3106`) | authenticated network endpoint    | authenticated network endpoint (3106)       | authenticated public HTTPS address (session traffic)      | authenticated network endpoint       |
+| Launch material (sealant `LaunchMaterialStager`)        | host directories               | Secret projection                 | pushed to the in-VM agent over the endpoint | sealed once, pushed to the in-VM agent                    | inline over the bridge's HTTPS       |
+| Image build (sealant `WorkspaceImageBuilder`)           | docker build/save              | rootless BuildKit Job             | AWS managed image build                     | a build VM, saved as a Boat snapshot                      | prebuilt runtime class (deploy-time) |
+| Run record / product store                              | Postgres                       | Postgres                          | Postgres (PlanetScale)                      | Postgres on the server                                    | Postgres (Hyperdrive); R2 later      |
+| Service exposure                                        | loopback forwards              | forwards over the control channel | loopback on the Mend host, CLI tunnel       | forwards through sealant; resources through the gateway   | authenticated HTTP/WS previews only  |
+| Bucket, executor disk                                   | Garage volume, container       | RGW/Garage, `emptyDir`            | S3, MicroVM disk                            | Garage at a public HTTPS address, VM disk                 | R2, sandbox disk                     |
+
+`aws-microvm` is not a `MEND_DEPLOYMENT_MODE` value. It is the `deploy/aws` stack: one EC2 instance
+in `local` mode with Sealant's MicroVM adapter, or the EKS cluster in the chart's `kubernetes` mode.
+Boat is not a mode either: it is a session runtime a `local` install turns on
+(`mend server setup --session-runtime boat`). Sessions run in each organization's Boat VMs, and the
+server keeps projects, logins, Postgres, records and the bucket, reached by the VMs over two public
+HTTPS addresses (`apps/docs/src/content/docs/operate/boat.md`). The `cloudflare-hosted` column is a
+design that has not been built.
+
+Capabilities differ per strategy and are reported, never assumed: sealant's `supports()` refuses
+what a runtime cannot do, the API refuses at create with a stable code, and `worktreeMount` answers
+`undefined` everywhere but the deprecated co-located adapter.
+
+The two Mend-side ports:
+
+- **`SessionRepository`** (`packages/sessions/src/session-repository.ts`): the identity-keyed
+  authority. `createWorktree` / `attachWorktree` / `resetWorktree` / `removeWorktreeForce` /
+  `checkpoint`, keyed by project, session and worktree name. `SessionRepositoryCapturedLive`
+  (`session-repository-captured.ts`) serves every strategy from the bucket and the pointer store;
+  `SessionRepositoryLocalLive` is the deprecated co-located adapter. `worktreeMount` is the explicit
+  co-location capability and answers `undefined` on the captured adapter.
+- **`DeploymentConfig`** (`packages/store/src/deployment.ts`): the one deployment fact
+  (`local | kubernetes`) plus the session-endpoint contract. The session channel keys its behaviour
+  off the endpoint's presence, not the mode, and that stays the rule as modes grow.
 
 ### Security
 
@@ -670,9 +716,9 @@ Mend-side details the decision record left open, decided in this ADR:
     across 134,103 files (cluster, 2026-09-14), which the executor uploaded in full before a
     register-time 413 it then retried every 5 s. sealantd today classifies the 409 as a conflict and
     the 413 as a protocol error — both stop the shipping pass, neither drops the entry, so the
-    worker re-attempts it on every tick (`PLATFORM-FEEDBACK.md` 2026-09-14). Bytes that landed
-    before a register refusal are off-chain under a live epoch; the retention pass sweeps them once
-    that epoch is fenced by a later claim, not before.
+    worker re-attempts it on every tick (`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-09-14). Bytes that
+    landed before a register refusal are off-chain under a live epoch; the retention pass sweeps
+    them once that epoch is fenced by a later claim, not before.
 28. (2026-09-27) Chunked sections carry a `format` (sealantd PR #99, "Dir packs"). Format 1, the
     field absent, is one object per directory at `…/trees/<sha256>`, `root` and `child` being keys:
     every capture before this. Format 2 packs a section's dir objects into dir packs — the CDC pack
@@ -816,9 +862,9 @@ Mend-side details the decision record left open, decided in this ADR:
       captured on another platform than the one the request names (the executor must carry it).
       `raw_names` is found by walking the answered sections' dir objects, only for an executor that
       does not list it. The answer's `manifest_features` lists every feature Mend reads. Until
-      sealantd sends the list (PLATFORM-FEEDBACK 2026-09-28), a head holding any of them is refused
-      and one holding none is handed out as before. `raw_names` is also held by an escaped key in
-      the git section: a ref name, a symbolic ref or its target, or `head`.
+      sealantd sends the list (`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-09-28), a head holding any of
+      them is refused and one holding none is handed out as before. `raw_names` is also held by an
+      escaped key in the git section: a ref name, a symbolic ref or its target, or `head`.
     - **`plan.get` names the executor** (`executor`, session and standby plans): the executor the
       session token was issued for, the value register compares `final_seal.executor` against.
       sealantd writes a seal only when it knows it. It is Mend's session id, the same for every
@@ -1024,7 +1070,7 @@ Mend-side details the decision record left open, decided in this ADR:
       `CaptureStatusReport.overdue` from any status or flush answer, records it on the session
       (migration 0093) and says `capture step overdue · <step> · running 17 min · bound 2 min`; such
       an answer never reads saved, caught up or idle. sealant's contract and SDK 0.37.2 drop the
-      field today (PLATFORM-FEEDBACK.md).
+      field today (`0dd4b4bf:PLATFORM-FEEDBACK.md`).
     - **SHA-256 projects (F4).** Capture 0 and a standby's base plan name the store repository's
       object format when it is not `sha1`.
     - **Status lines say what was observed.** `sealing` reads `final seal not confirmed` (it read

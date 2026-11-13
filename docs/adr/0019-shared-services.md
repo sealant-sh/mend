@@ -1,9 +1,7 @@
 # Resources: long-running services for a project or a worktree
 
-Status: accepted 2026-10-31, amended 2026-11-01. The November 1 amendment below is the design to
-build next. The October 31 build merged as Mend `f7b8776`; this document describes the agreed
-replacement behavior, not a claim that it is already implemented. Earlier proposals and decision
-wording remain in git history.
+Status: accepted 2026-10-31, amended 2026-11-01; built in #1295 to #1305, and the amendment in #1311
+to #1341. Earlier proposals and decision wording remain in git history.
 
 A resource is a long-running service a project declares, such as Postgres, Redis or any image.
 Sealant runs it beside the project's sessions. Sessions reach it by name over the project network;
@@ -428,16 +426,14 @@ November 1 amendments and supersede the earlier recommendations.
 ## Platform boundary and delivery
 
 The October 31 runtime, reach networks, retained volumes, exec, loading and archive mechanisms
-remain the foundation. Mend uses only `@sealant/sdk`; any missing capability is recorded in
-[PLATFORM-FEEDBACK.md](../../PLATFORM-FEEDBACK.md), never implemented by reaching into Sealant.
-Resource ports remain on the project network, never host-published or relayed through Mend. A
-browser or desktop database client reaching a resource directly needs later platform work.
+remain the foundation. Mend uses only `@sealant/sdk`; any missing capability is filed in Linear with
+the `sealant` label, never implemented by reaching into Sealant. Resource ports remain on the
+project network, never host-published or relayed through Mend. A browser or desktop database client
+reaching a resource directly needs later platform work.
 
-Implementation of this amendment must cover file lookup and writes, explicit starts and idle-only
-wake, both levels for every definition, visibility defaults, definition-difference reporting,
-namespaced env and recipe references, workspace-note instructions and switch messages. A feature PR
-needs an independent check on the box under AGENTS.md. This documentation PR changes no code and
-needs no box check.
+The amendment's build covers file lookup and writes, explicit starts and idle-only wake, both levels
+for every definition, visibility defaults, definition-difference reporting, namespaced env and
+recipe references, workspace-note instructions and switch messages.
 
 ## Consequences
 
