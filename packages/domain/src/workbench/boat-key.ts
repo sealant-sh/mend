@@ -1,14 +1,41 @@
+import { Schema } from "effect";
+
 import type { OrganizationId } from "../ids.ts";
 
 /**
  * Whose Boat key a Boat launch spends. Sealant Core holds the key, sealed, as one of its Boat
- * accounts; Mend keeps only which owner that account belongs to. Today the owner is an
- * organization (SLNT-790). A person's own key (SLNT-797) is the next kind of owner: a launch takes
- * the person's key over the organization's, and the organization's over the server's.
+ * accounts; Mend keeps only which owner that account belongs to: an organization (SLNT-790), or
+ * one person in one organization (SLNT-797). A launch takes the person's key over the
+ * organization's, and the organization's over the server's.
  */
-export type BoatKeyOwner = {
-  readonly kind: "organization";
-  readonly organizationId: OrganizationId;
+export type BoatKeyOwner =
+  | { readonly kind: "organization"; readonly organizationId: OrganizationId }
+  | {
+      readonly kind: "person";
+      readonly organizationId: OrganizationId;
+      readonly userId: string;
+    };
+
+/**
+ * Which key a Boat workspace was created on: its session owner's own key in the organization, the
+ * organization's, or the server's. Recorded with the workspace and never rewritten.
+ */
+export const BoatKeyChoice = Schema.Literals(["person", "organization", "server"]);
+export type BoatKeyChoice = typeof BoatKeyChoice.Type;
+
+/** What a Boat launch names: the Core account of the key that decided, null for the server's. */
+export type BoatLaunchKey =
+  | {
+      readonly decidedBy: "person" | "organization";
+      readonly sealantBoatAccountId: string;
+    }
+  | { readonly decidedBy: "server"; readonly sealantBoatAccountId: null };
+
+/** Where a session runs, in the words every client shows beside it. */
+export const BOAT_KEY_CHOICE_WORDS: Record<BoatKeyChoice, string> = {
+  person: "on Boat · its owner's own Boat key",
+  organization: "on Boat · the organization's Boat key",
+  server: "on Boat · the server's Boat key",
 };
 
 /** What Core takes as a Boat key (`BoatSecret`): checked before anything is sent. */

@@ -117,6 +117,7 @@ import {
   InheritedHistory,
 } from "@mend/domain/workbench";
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
+import type { BoatLaunchKey } from "@mend/domain/workbench";
 import {
   McpServerName,
   McpServerUrl,
@@ -13453,13 +13454,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* input.onFailure(error.message, error);
           return yield* error;
         }
-        // The Boat account this workspace runs in and is billed to, for its whole life (SLNT-790):
-        // the project's organization's key when it has one, else none (the server's). A standby
-        // asks as its owner, the person whose launch claims it.
-        const boatAccountId =
+        // The Boat account this workspace runs in and is billed to, for its whole life: the
+        // owner's own key in the organization (SLNT-797), else the organization's (SLNT-790), else
+        // none (the server's). A standby asks as its owner, the person whose launch claims it.
+        const boatKey =
           input.runtime === "boat"
-            ? yield* boatKeys.accountForLaunch(project.organizationId, ownerUserId)
+            ? yield* boatKeys.launchKey(project.organizationId, ownerUserId)
             : null;
+        const boatAccountId = boatKey?.sealantBoatAccountId ?? null;
         const launchLayout = input.layout?.launch ?? input.standbyPerson ?? SHARED_AS_BEFORE;
         const report = <A, E extends { readonly message: string }>(
           effect: Effect.Effect<A, E>,
@@ -13965,6 +13967,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return {
           workspace,
           workspaceImage,
+          /** Which Boat key the workspace was created on; null off Boat. */
+          boatKey: boatKey?.decidedBy ?? null,
           /** The capture the setup commands were skipped for (`prepareExecutor`); null when they ran. */
           setupSkippedFrom: prepared?.setupSkippedFrom ?? null,
           /** What prepare found the executor runs (docs/adr/0016); a standby's is `shared`. */
@@ -14439,6 +14443,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return {
           workspace: live,
           workspaceImage: entry.workspaceImage,
+          boatKey: entry.boatKey,
           dotfiles: entry.dotfiles ?? { repository: null, snapshotSha: null, notApplied: [] },
           environmentManifest: entry.environment,
           referenceMounts: entry.referenceMounts,
@@ -20231,6 +20236,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
         // workspace: whatever the prewarm actually applied).
         yield* sessions.setDotfiles(sessionId, launched.dotfiles);
+        yield* sessions.setBoatKey(sessionId, provisioned.boatKey);
         // The owner's git author (docs/GIT-ACCESS.md, "Git author"), for a cold workspace and a
         // claimed standby alike: system config, written before the harness starts, so dotfiles
         // and repository config still decide over it.
@@ -29534,7 +29540,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           runtime,
           boatAccountId:
             runtime === "boat"
-              ? yield* boatKeys.accountForLaunch(project.organizationId, ownerUserId)
+              ? (yield* boatKeys.launchKey(project.organizationId, ownerUserId))
+                  .sealantBoatAccountId
               : null,
           workspaceImage,
           applyDotfiles: project.applyDotfiles,
@@ -29766,6 +29773,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             sealantWorkspaceId: SealantWorkspaceId.make(provisioned.workspace.id),
             workspaceImage: provisioned.workspaceImage,
             dotfiles: provisioned.dotfiles,
+            boatKey: provisioned.boatKey,
             environment: provisioned.environmentManifest,
             referenceMounts: provisioned.referenceMounts,
             extraMounts: provisioned.extraMounts,
@@ -29884,19 +29892,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A hot workspace runs as one account and only that account claims it (docs/adr/0003),
         // so the pool is kept per owner: the recent owners who may still run here, each with the
         // fingerprint the project resolves to for them.
-        const owners = target === 0 ? [] : yield* hotPoolOwners(project);
+        const recentOwners = target === 0 ? [] : yield* hotPoolOwners(project);
+        // The key each owner's Boat launches name now. A person's own key keeps no standby
+        // (SLNT-797): it would be a VM billed to them that they did not start, holding one of
+        // their account's running VMs. Theirs drain as an owner the pool no longer serves.
+        const launchKeys = new Map<string, BoatLaunchKey>();
+        if ((yield* newWorktreeRuntime(project.organizationId)) === "boat") {
+          for (const owner of new Set([
+            ...recentOwners,
+            ...entries.map((entry) => entry.ownerUserId),
+          ])) {
+            launchKeys.set(owner, yield* boatKeys.launchKey(project.organizationId, owner));
+          }
+        }
+        const owners = recentOwners.filter(
+          (owner) => launchKeys.get(owner)?.decidedBy !== "person",
+        );
         // Owners whose standbys run in a Boat account a key change keeps standbys out of
         // (SLNT-803): none warms for them, and theirs drain, counted for that change.
         const leavingFor = new Map<string, LeavingBoatAccount>();
-        if (
-          leavingBoatAccounts.size > 0 &&
-          (yield* newWorktreeRuntime(project.organizationId)) === "boat"
-        ) {
-          for (const owner of new Set([...owners, ...entries.map((entry) => entry.ownerUserId)])) {
-            const account = yield* boatKeys.accountForLaunch(project.organizationId, owner);
-            const leaving = account === null ? undefined : leavingBoatAccounts.get(account);
-            if (leaving !== undefined) leavingFor.set(owner, leaving);
-          }
+        for (const [owner, key] of launchKeys) {
+          const leaving =
+            key.sealantBoatAccountId === null
+              ? undefined
+              : leavingBoatAccounts.get(key.sealantBoatAccountId);
+          if (leaving !== undefined) leavingFor.set(owner, leaving);
         }
         // What is still stopping here is what this pass lists: a standby claimed meanwhile is a
         // person's session now.

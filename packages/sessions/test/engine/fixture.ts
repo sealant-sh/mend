@@ -148,7 +148,12 @@ import {
   type CapturePosition,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
-import type { AgentWait, HarnessLayout, ServiceLaunch } from "@mend/domain/workbench";
+import type {
+  AgentWait,
+  BoatLaunchKey,
+  HarnessLayout,
+  ServiceLaunch,
+} from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
@@ -320,11 +325,27 @@ export const sessionPagesLayerOf = (
   });
 
 /** No pool in these worlds — claims miss and the boot sweep sees nothing. */
-/** Each organization's Core Boat account (SLNT-790); none unless a test names one. */
-export const boatKeysLayer = (accounts: ReadonlyMap<string, string> = new Map()) =>
-  Layer.mock(BoatKeysRepo, {
-    accountForLaunch: (organizationId) => Effect.sync(() => accounts.get(organizationId) ?? null),
+/**
+ * Each organization's Core Boat account (SLNT-790), and each person's own, keyed
+ * `organization/person` (SLNT-797); none unless a test names one. Read at each call, so a test may
+ * change either map between launches.
+ */
+export const boatKeysLayer = (
+  accounts: ReadonlyMap<string, string> = new Map(),
+  personAccounts: ReadonlyMap<string, string> = new Map(),
+) => {
+  const launchKey = (organizationId: string, userId: string | null): BoatLaunchKey => {
+    const own = userId === null ? undefined : personAccounts.get(`${organizationId}/${userId}`);
+    if (own !== undefined) return { decidedBy: "person", sealantBoatAccountId: own };
+    const organization = accounts.get(organizationId);
+    return organization === undefined
+      ? { decidedBy: "server", sealantBoatAccountId: null }
+      : { decidedBy: "organization", sealantBoatAccountId: organization };
+  };
+  return Layer.mock(BoatKeysRepo, {
+    launchKey: (organizationId, userId) => Effect.sync(() => launchKey(organizationId, userId)),
   });
+};
 
 /** Each organization's choice of where its new sessions run (SLNT-794); none unless a test sets one. */
 export const organizationRuntimesLayer = (
@@ -2951,6 +2972,7 @@ export const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { sealantSessionId })),
     setWorkspaceImage: (id, image) => Effect.sync(() => update(id, { workspaceImage: image })),
     setDotfiles: (id, dotfiles) => Effect.sync(() => update(id, { dotfiles })),
+    setBoatKey: (id, boatKey) => Effect.sync(() => update(id, { boatKey })),
     setHasTranscript: (id, hasTranscript) => Effect.sync(() => update(id, { hasTranscript })),
     listSettledUnclassified: (limit) =>
       Effect.succeed(
@@ -3937,6 +3959,8 @@ interface EngineOptions {
   readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
   /** Organizations with a Boat key, by id, to the Core Boat account that holds it. */
   readonly boatAccounts?: ReadonlyMap<string, string>;
+  /** People's own Boat accounts, keyed `organization/person` (`boatKeysLayer`). */
+  readonly personBoatAccounts?: ReadonlyMap<string, string>;
   readonly skillsLayer?: Layer.Layer<SkillsRepo>;
   readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
   readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
@@ -4303,7 +4327,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
           options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
-          boatKeysLayer(options.boatAccounts),
+          boatKeysLayer(options.boatAccounts, options.personBoatAccounts),
           organizationRuntimesLayer(options.organizationRuntimes),
           options.seals ?? CaptureSealsNone,
           options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
