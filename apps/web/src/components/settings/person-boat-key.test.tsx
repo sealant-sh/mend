@@ -85,8 +85,7 @@ const open = async (status: Answer, extra: Partial<World> = {}) => {
           if ("data" in state.disconnect) state.status = { data: notConnected() };
           return state.disconnect;
         case "personBoatKey.chooseWallet": {
-          const status = state.status;
-          if (!("data" in status)) return status;
+          if (!("data" in state.status)) return state.status;
           const own = connected();
           state.status = {
             data: {

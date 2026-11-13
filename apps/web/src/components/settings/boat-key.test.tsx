@@ -710,13 +710,13 @@ describe("the Boat page's people with their own key (SLNT-797)", () => {
   });
 });
 
-describe("the wallet the key bills (SLNT-821)", () => {
-  const radios = () =>
-    [...document.querySelectorAll<HTMLElement>('[role="radio"]')].map((radio) => ({
-      text: radio.textContent ?? "",
-      checked: radio.getAttribute("aria-checked") === "true",
-    }));
+const radios = () =>
+  [...document.querySelectorAll<HTMLElement>('[role="radio"]')].map((radio) => ({
+    text: radio.textContent ?? "",
+    checked: radio.getAttribute("aria-checked") === "true",
+  }));
 
+describe("the wallet the key bills (SLNT-821)", () => {
   it("says a Boat organization's key bills its organization, fixed, and offers no choice", async () => {
     await open({ status: connected(organizationKeyReportFixture()), role: "owner" });
     expect(rows()).toContainEqual(
