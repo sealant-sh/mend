@@ -480,22 +480,6 @@ describe("the server's session runtime choice", () => {
     });
   }
 
-  it("refuses an existing Arch project with the environment fix before creating a workspace", async () => {
-    const created: CreateOptions[] = [];
-    await withEngine(
-      (world, tmp) =>
-        Effect.gen(function* () {
-          const { engine, session } = yield* launchOnce(world, tmp);
-          const outcome = yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
-          expect(created).toEqual([]);
-          expect(failureText(outcome)).toContain(
-            "Switch the project's environment to Ubuntu or Nix",
-          );
-        }),
-      { sessionRuntime: "boat", sealantLayer: lifecycleLayer(created) },
-    );
-  });
-
   for (const refusal of [
     {
       status: 503,
@@ -515,8 +499,8 @@ describe("the server's session runtime choice", () => {
       status: 422,
       _tag: "WorkspaceRuntimeRequirementUnsupportedError",
       code: "runtime-os-unsupported",
-      message: "Boat does not support this operating system.",
-      copy: "Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
+      message: "Boat supports Ubuntu and Nix; Arch is unsupported.",
+      copy: "Boat supports Ubuntu and Nix; Arch is unsupported. Switch the project's environment to one Boat runs, then start the session again.",
     },
   ]) {
     it(`surfaces Core's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {

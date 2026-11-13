@@ -17,6 +17,7 @@ import {
   type ProjectDto,
 } from "#/lib/api";
 import { listChangeOptions } from "#/lib/project-settings";
+import { serverFoldersNote, useRuntimeFacts } from "#/lib/runtime-support";
 import { useTRPC } from "#/lib/trpc";
 
 import type { SettingsReads } from "./reads";
@@ -79,7 +80,9 @@ export function FoldersSettings({ detail }: { readonly detail: ProjectDetailDto 
         manage={capabilities.manage}
         captured={mountDelivery === "sources"}
       />
-      {capabilities.hostMounts ? <ServerFolders project={project} /> : null}
+      {capabilities.hostMounts ? (
+        <ServerFolders project={project} captured={mountDelivery === "sources"} />
+      ) : null}
     </Panel>
   );
 }
@@ -197,8 +200,15 @@ function OrganizationFolders({
  * mounted at `/workspace/home/<name>`. Writes to a read-and-write one land on the server folder
  * directly, outside the reviewed change.
  */
-function ServerFolders({ project }: { readonly project: ProjectDto }) {
+function ServerFolders({
+  project,
+  captured,
+}: {
+  readonly project: ProjectDto;
+  readonly captured: boolean;
+}) {
   const trpc = useTRPC();
+  const unmounted = serverFoldersNote(useRuntimeFacts(), captured, project.name);
   const queryClient = useQueryClient();
   const mounts = useQuery(trpc.projects.mounts.queryOptions({ id: project.id }));
   const remove = useMutation({
@@ -260,6 +270,9 @@ function ServerFolders({ project }: { readonly project: ProjectDto }) {
             ],
           }))}
         />
+      )}
+      {unmounted === null ? null : (
+        <p className="mt-2.5 max-w-[60ch] text-[12.5px] text-muted-foreground">{unmounted}</p>
       )}
       <p role="alert" className="mt-2 font-mono text-[11.5px] text-danger empty:hidden">
         {remove.isError ? `Not unmounted: ${errorWords(remove.error)}` : ""}

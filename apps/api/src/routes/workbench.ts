@@ -123,11 +123,14 @@ import {
   UserGitAccessRepo,
   UserGitAuthorRepo,
 } from "@mend/db";
-import { newProjectWorkspaceImage } from "@mend/domain";
 import {
   ClientMessageId,
   dotfilesRepositoryUrlCredentialIssue,
   MendSettings,
+  observedSupport,
+  reservedPortRefusal,
+  runtimeSupportFor,
+  type WorkspaceImage,
   workspaceImagesEqual,
   type ChangeId,
   ProjectId,
@@ -180,7 +183,7 @@ import {
   redactRepositoryUrl,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
-import { asSealantUser, SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient, WorkspaceRuntimesReport } from "@mend/sealant";
 import { ResourceStatusReads } from "@mend/sessions";
 import {
   CaptureRuntime,
@@ -239,7 +242,11 @@ import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
 import { requireOwnerRuns, SessionSteering, sessionControlView } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
-import { organizationSessionRuntime } from "./organization-settings.ts";
+import {
+  newProjectWorkspaceImageFor,
+  refuseUnrunnableEnvironment,
+  reservedPortRefusalFor,
+} from "./organization-settings.ts";
 import { projectContents, projectRawFile } from "./project-file-reads.ts";
 import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
 
@@ -574,6 +581,17 @@ export const withSignerContext = <A, E, R>(
  * the operator's (docs/adr/0003); every member reads them. An organization's owners set their own
  * defaults over them at `/organization/settings` (routes/organization-settings.ts).
  */
+/**
+ * The instance's environment is what organizations that set none inherit; the operator saving it
+ * is refused where their own organization's sessions could not run it, as an owner would be.
+ */
+const refuseUnrunnableForCaller = (image: WorkspaceImage) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    const found = yield* (yield* OrganizationsRepo).activeMembership(signInOf(caller));
+    if (found !== null) yield* refuseUnrunnableEnvironment(found.organization.id, image);
+  });
+
 export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (handlers) =>
   handlers
     .handle("get", () =>
@@ -600,6 +618,7 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
           );
         }
 
+        yield* refuseUnrunnableForCaller(payload.workspaceImage);
         const result = yield* saveResolvedWorkspaceEnvironment(
           payload.workspaceImage,
           (_latest, workspaceImage) => new MendSettings({ ...payload, workspaceImage }),
@@ -615,6 +634,7 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
     .handle("setWorkspaceEnvironment", ({ payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).requireOperator("settings");
+        yield* refuseUnrunnableForCaller(payload);
         return yield* saveResolvedWorkspaceEnvironment(
           payload,
           (latest, workspaceImage) => new MendSettings({ ...latest, workspaceImage }),
@@ -746,9 +766,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
                 defaultBranch: adopted.defaultBranch,
                 adoptedSha: adopted.headSha,
                 gitAuthMode: mode,
-                workspaceImage: newProjectWorkspaceImage(
-                  (yield* organizationSessionRuntime(organizationId)).effective,
-                ),
+                workspaceImage: yield* newProjectWorkspaceImageFor(organizationId),
               })
               .pipe(
                 // Another adoption of the same name won the race; drop the clone this one made.
@@ -986,6 +1004,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           yield* rewarmHotSessions(params.id);
           return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
         }
+        const current = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (
+          current.workspaceImage === null ||
+          !workspaceImagesEqual(current.workspaceImage, payload.workspaceImage)
+        )
+          yield* refuseUnrunnableEnvironment(current.organizationId, payload.workspaceImage);
         const resolved = yield* resolveWorkspaceEnvironmentWithSealant(payload.workspaceImage);
         const resolutions = resolved.resolutions.map(
           (resolution) => new WorkspacePackageResolutionView(resolution),
@@ -2282,7 +2308,7 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
         yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const recipes = yield* ProjectServiceRecipesRepo;
-        yield* projects
+        const project = yield* projects
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         if (!RECIPE_NAME.test(payload.name)) {
@@ -2293,6 +2319,8 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
         if (payload.port < 1 || payload.port > 65535) {
           return yield* new StoreFailure({ message: `Port out of range: ${payload.port}` });
         }
+        const reserved = yield* reservedPortRefusalFor(project.organizationId, payload.port);
+        if (reserved !== null) return yield* new StoreFailure({ message: reserved });
         const command = payload.command?.trim();
         const protocol = payload.protocol ?? "tcp";
         const browserScheme = payload.browserScheme ?? null;
@@ -2331,6 +2359,20 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
       }),
     ),
 );
+
+/**
+ * Refuse a Service on a port the runtime this session's worktree runs on holds for itself, with
+ * the reason. The worktree keeps the runtime it was created on, whatever its organization chose
+ * since. An unread report refuses nothing.
+ */
+const refuseReservedSessionPort = (session: Session, port: number) =>
+  Effect.gen(function* () {
+    const worktree = yield* (yield* WorktreesRepo).byId(session.worktreeId).pipe(Effect.orDie);
+    const reading = yield* (yield* WorkspaceRuntimesReport).read();
+    const support = observedSupport(runtimeSupportFor(reading, worktree.sessionRuntime));
+    const refusal = support === null ? null : reservedPortRefusal(support, port);
+    if (refusal !== null) return yield* new StoreFailure({ message: refusal });
+  });
 
 /** The caller's own git access: how references they add or refresh are fetched. */
 const callerGitMode = Effect.gen(function* () {
@@ -3324,7 +3366,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("addService", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        yield* refuseReservedSessionPort(yield* steering.session(params.id), payload.port);
         const engine = yield* SessionEngine;
         return yield* engine
           .addService(
@@ -3357,7 +3399,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         // Any argv, on whatever login the workspace holds: the owner's alone (docs/adr/0013).
-        yield* requireOwnerRuns(yield* steering.session(params.id), "command");
+        const session = yield* steering.session(params.id);
+        yield* requireOwnerRuns(session, "command");
+        yield* refuseReservedSessionPort(session, payload.port);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
         return yield* engine

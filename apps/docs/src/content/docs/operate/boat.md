@@ -256,12 +256,22 @@ the `mend_mend-boat-state` volume. Boat also stops a build VM by itself after 15
 
 ## Limits
 
-- New projects on Boat start with Ubuntu and Docker inside the session. An Arch project needs its
-  environment switched to Ubuntu or Nix first.
-- Custom container images and host folder mounts are refused: a Boat VM cannot use them.
-- Boat sessions download straight from npm and Docker Hub, not through the server's mirrors.
+Mend does not keep its own list of what Boat can run: it asks Sealant, and the pages that offer a
+choice follow the answer. An environment Boat cannot run is shown as unavailable in the environment
+pickers, with Sealant's reason, and saving it is refused. A project Service on a port Boat holds is
+refused when it is saved, and so is running or adopting one on that port from the web app or the
+CLI. With Sealant 0.40.0-next.870, Sealant reports:
+
+- Boat runs Ubuntu and Nix environments. A new project in an organization on Boat starts on the
+  first family Boat runs when the environment it would inherit cannot run there. An existing Arch or
+  Fedora environment is kept as it was, and its picker says what to pick instead.
+- Boat cannot boot a custom container image, and cannot bind folders from the server: a project's
+  server folders say so on its **Folders** page, and its sessions start without them.
 - Inside a Boat VM, port 8080 is held by Sealant's agent. Serve your app on another port.
 - Dotfiles apply on Boat only in a session that runs each person as their own user, the default
   layout. A session that runs everyone in one shared home (`MEND_HARNESS_LAYOUT=shared`, or an image
   that cannot run per-person users) starts without them, and the session says
   `dotfiles · repo not applied` or `dotfiles · snapshot not applied` with the reason.
+- Boat bills a VM by the second while it runs, idle or not. The **Ready workspaces** setting of a
+  project on Boat says so, since each ready workspace is a running VM.
+- Boat sessions download straight from npm and Docker Hub, not through the server's mirrors.

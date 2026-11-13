@@ -199,6 +199,22 @@ flowchart TD
 Changing a default affects every project that inherits it. Mend uses the resolved definition as part
 of the hot-workspace fingerprint, so incompatible ready workspaces are replaced.
 
+## Where sessions run
+
+Not every place sessions run can run every environment. Mend asks Sealant what the runtime of the
+organization's new sessions supports, and the environment pickers follow that answer: a choice the
+runtime cannot run is shown as unavailable, with Sealant's reason, and saving it is refused with the
+same reason, from the web app, the CLI or the API. An organization on this server's Docker can run
+every family and a custom base; one on Boat sees Boat's limits (see [Boat](/operate/boat/#limits)).
+
+An environment saved before its organization moved to a runtime that cannot run it stays as it was.
+Its picker says it cannot run there and what to pick instead; Mend never changes it for you.
+Worktrees keep the runtime they were created on, so a project can have sessions in both places while
+the pickers describe where its next new session runs.
+
+When Mend cannot reach Sealant to ask, the pickers say the choices were not checked, and every
+choice stays available. A session that then cannot start says why.
+
 ## Private images
 
 A custom base may require registry access. The platform must be able to resolve and pull the image

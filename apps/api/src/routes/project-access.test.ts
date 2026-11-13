@@ -151,6 +151,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.issuePasswordReset",
   // Every member reads the defaults their projects inherit: organization.test.ts.
   "organization.settings",
+  // Every member reads where new sessions run and what that runtime supports: runtime-support.test.ts.
+  "organization.runtime",
   "invitations.preview",
   "accountOrganizations.list",
   "accountOrganizations.switch",
@@ -960,8 +962,12 @@ const ADMITTED: Readonly<
   "screens.log": { status: 500, calls: ["screensRepo.ofSession"] },
   "sessions.wakeScreen": { status: 500, calls: ["engine.wakeScreen"] },
   // Settings get defects before save.
-  "settings.set": { status: 500, calls: ["settings.get"] },
-  "settings.setWorkspaceEnvironment": { status: 500, calls: ["sealant.resolveWorkspacePackage"] },
+  "settings.set": { status: 500, calls: ["settings.get", "settings.modify"] },
+  // Where the operator's organization runs is read before the packages are resolved.
+  "settings.setWorkspaceEnvironment": {
+    status: 500,
+    calls: ["organizationSettings.sessionRuntime", "sealant.resolveWorkspacePackage"],
+  },
   "issues.list": { status: 500, calls: ["issues.list"] },
   "issues.create": { status: 500, calls: ["issues.create"] },
   "issues.detail": { status: 500, calls: ["issues.byId"] },
@@ -1008,9 +1014,15 @@ const ADMITTED: Readonly<
   // Shared runs.byId lookup defects before distinct SDK/detail behavior.
   "runs.sources": { status: 500, calls: ["runs.byId"] },
   // Settings snapshot masks save.
-  "organization.setSettings": { status: 500, calls: ["organizationSettings.get"] },
+  "organization.setSettings": {
+    status: 500,
+    calls: ["organizationSettings.get", "organizationSettings.modify"],
+  },
   // Same settings snapshot masks environment save.
-  "organization.setWorkspaceEnvironment": { status: 500, calls: ["organizationSettings.get"] },
+  "organization.setWorkspaceEnvironment": {
+    status: 500,
+    calls: ["organizationSettings.get", "organizationSettings.modify"],
+  },
   // The choice is written before anything else is read.
   "organization.setSessionRuntime": {
     status: 500,
@@ -1184,7 +1196,11 @@ const ADMITTED: Readonly<
   // Unimplemented subordinate link lookup masks remove.
   "projectLinks.remove": { status: 500, calls: ["links.byId"] },
   "projectRecipes.list": { status: 500, calls: ["recipes.listForProject"] },
-  "projectRecipes.add": { status: 500, calls: ["recipes.create"] },
+  // Where the organization's sessions run is read for the ports its runtime holds.
+  "projectRecipes.add": {
+    status: 500,
+    calls: ["organizationSettings.sessionRuntime", "recipes.create"],
+  },
   "projectRecipes.remove": { status: 500, calls: ["recipes.remove"] },
   // The page's reads run together, so all are asked before the first unimplemented one fails.
   "resources.list": {
