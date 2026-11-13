@@ -8,6 +8,11 @@ import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { accessKeyBearerOf, organizationIdOf } from "../../test/support/tenancy-harness.ts";
 
+/** A Boat key status's details as a test reads them: the report is compared, not decoded. */
+const detailsBody = Schema.decodeUnknownSync(
+  Schema.Struct({ details: Schema.NullOr(Schema.Struct({ report: Schema.Unknown })) }),
+);
+
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
 
@@ -428,14 +433,12 @@ describe("an organization's Boat key", () => {
     const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
     const report = boatKeyReportFixture({}, OBSERVED);
     const statusOf = async (user: "alice" | "carol") =>
-      (await (await api.request(user, "GET", "/api/organization/boat-key")).json()) as {
-        details: { report: unknown } | null;
-      };
+      detailsBody(await (await api.request(user, "GET", "/api/organization/boat-key")).json());
 
     it("answers sealant's report after a connect, without asking Boat again", async () => {
       boat.observe(report);
-      const body = (await (await connect("alice")).json()) as { details: { report: unknown } };
-      expect(body.details.report).toMatchObject({
+      const body = detailsBody(await (await connect("alice")).json());
+      expect(body.details?.report).toMatchObject({
         observedAt: OBSERVED.toISOString(),
         identity: { observed: true, login: "acme-ci" },
         permissions: { observed: true, missing: [] },
@@ -470,10 +473,8 @@ describe("an organization's Boat key", () => {
         OBSERVED,
       );
       boat.observe(expired);
-      const body = (await (await connect("alice", REPLACEMENT)).json()) as {
-        details: { report: unknown };
-      };
-      expect(body.details.report).toMatchObject({ expiry: { observed: true, expired: true } });
+      const body = detailsBody(await (await connect("alice", REPLACEMENT)).json());
+      expect(body.details?.report).toMatchObject({ expiry: { observed: true, expired: true } });
     });
 
     it("checks the key with Boat now on Check now, and answers the fresh report", async () => {
@@ -630,18 +631,14 @@ describe("a person's own Boat key (SLNT-797)", () => {
   it("answers what Boat says about the caller's own key, as the organization's", async () => {
     const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
     boat.observe(boatKeyReportFixture({}, OBSERVED));
-    const connected = (await (await connectOwn("carol")).json()) as {
-      details: { report: unknown };
-    };
-    expect(connected.details.report).toMatchObject({
+    const connected = detailsBody(await (await connectOwn("carol")).json());
+    expect(connected.details?.report).toMatchObject({
       observedAt: OBSERVED.toISOString(),
       identity: { observed: true, login: "acme-ci" },
     });
     core.length = 0;
-    const status = (await (await api.request("carol", "GET", ROUTE)).json()) as {
-      details: { report: unknown };
-    };
-    expect(status.details.report).toMatchObject({ wallet: { observed: true } });
+    const status = detailsBody(await (await api.request("carol", "GET", ROUTE)).json());
+    expect(status.details?.report).toMatchObject({ wallet: { observed: true } });
     expect(core.map((call) => call.call)).toEqual(["list"]);
     core.length = 0;
     const checked = await api.request("carol", "POST", `${ROUTE}/check`);
