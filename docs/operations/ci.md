@@ -35,7 +35,8 @@ literal `false` path-selection output lets an optional job be skipped.
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `changes`         | The path classifier (`scripts/ci-scope.mjs`): which optional jobs a pull request runs.                                                                                                         |
 | `static`          | Frozen install, CI regression tests, shard inventory, lockfile policy, build, typecheck, lint, formatting and Helm lint.                                                                       |
-| `test-engines`    | PostgreSQL 17, the zsh fixture, sessions, API, database, jobs, store and the other backend packages. Sessions has its own lane so shorter tasks cannot delay its start.                        |
+| `test-engines`    | PostgreSQL 17, the zsh fixture, sessions shard 1/2 alongside the eight other backend packages, including database, jobs and store.                                                             |
+| `test-engines-b`  | API server tests alongside sessions shard 2/2, with the same PostgreSQL, zsh fixture, worker limits and evidence uploads as `test-engines`.                                                    |
 | `test-clients-a`  | The first CLI shard and one lane of client packages; locked Chromium for desktop, marketing's installer copy; the AWS shell checks and the Garage and MinIO contracts.                         |
 | `test-clients-b`  | The second CLI shard and the remaining client packages. Docs builds its pages through its test script.                                                                                         |
 | `packaging`       | The Node packaging, acceptance and verify command, with Docker, Caddy, OpenTofu and locked Chromium.                                                                                           |
@@ -44,9 +45,10 @@ literal `false` path-selection output lets an optional job be skipped.
 | `checks`          | The required aggregate. It reads only `needs`: no checkout or setup.                                                                                                                           |
 
 Run `node scripts/ci-shards.mjs --check` after adding or renaming a workspace package. It reads
-`pnpm-workspace.yaml` and rejects missing, duplicate or unknown lane assignments. The CLI is split
-with Vitest's `--shard=1/2` and `--shard=2/2`; every other test script runs once, through Turbo and
-the package's own script.
+`pnpm-workspace.yaml` and rejects missing, duplicate or unknown lane assignments, including any
+missing or repeated native shard index. The CLI and sessions are each split with Vitest's
+`--shard=1/2` and `--shard=2/2`; every other test script runs once, through Turbo and the package's
+own script.
 
 ## Concurrency
 
