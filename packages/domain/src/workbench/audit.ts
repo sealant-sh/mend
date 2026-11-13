@@ -23,6 +23,9 @@ export const AuditAction = Schema.Literals([
   "project.restored",
   "project.purge_started",
   "project.purged",
+  // An owner moved a project's environment to one the organization's new runtime runs, in the
+  // same step as choosing it (SLNT-796).
+  "project.environment_moved",
   "folder.created",
   "folder.removed",
   "reference.added",
@@ -39,6 +42,8 @@ export const AuditAction = Schema.Literals([
   "organization.renamed",
   // An owner changed the defaults every project in the organization inherits.
   "organization.settings_changed",
+  // An owner moved the organization's environment to one its new runtime runs (SLNT-796).
+  "organization.environment_moved",
   "recovery.owner_granted",
   "recovery.password_reset_issued",
   // docs/adr/0006-slack.md, "Audit".

@@ -147,6 +147,10 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
         ? "changed the organization defaults"
         : `set the organization defaults: ${changed}`;
     }
+    case "organization.environment_moved":
+      return `moved the organization's workspace environment from ${text(event.data["from"]) ?? "?"} to ${text(event.data["to"]) ?? "?"}, which ${text(event.data["runtime"]) ?? "its new runtime"} runs`;
+    case "project.environment_moved":
+      return `moved project ${name ?? event.subjectId}'s workspace environment from ${text(event.data["from"]) ?? "?"} to ${text(event.data["to"]) ?? "?"}, which ${text(event.data["runtime"]) ?? "its new runtime"} runs`;
     case "recovery.owner_granted":
       return `made ${subject} an owner, as the operator`;
     case "recovery.password_reset_issued":
