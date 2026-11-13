@@ -165,6 +165,7 @@ export type AccountOrganizationDto = Outputs["organizations"]["list"][number];
 export type AuditEntryDto = Outputs["organization"]["audit"][number];
 export type OrganizationSettingsViewDto = Outputs["organization"]["settings"];
 export type OrganizationSettingsDto = OrganizationSettingsViewDto["organization"];
+export type OrganizationRuntimeSwitchDto = Outputs["organization"]["runtimeSwitch"];
 export type OrganizationWorkspaceEnvironmentSaveResultDto =
   Outputs["organization"]["setWorkspaceEnvironment"];
 export type BoatKeyStatusDto = Outputs["boatKey"]["status"];

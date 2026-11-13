@@ -6,12 +6,22 @@ import {
 } from "@mend/api-contracts";
 import {
   defaultSettings,
+  defaultWorkspaceImage,
   inheritedOrganizationSettings,
   MendSettings,
   OrganizationId,
   organizationDefaults,
   OrganizationSettings,
+  ProjectId,
+  type RuntimeSupportReading,
+  runtimeSwitchImpact,
+  type SessionRuntime,
 } from "@mend/domain";
+import {
+  BOAT_SUPPORT,
+  DOCKER_SUPPORT,
+  observedSupportReading,
+} from "@mend/domain/runtime-support-fixtures";
 import { Organization, type OrganizationRole } from "@mend/domain/workbench";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createTRPCClient, httpLink } from "@trpc/client";
@@ -85,10 +95,25 @@ const TWO_ORGANIZATIONS = [
   },
 ];
 
+/** Answers a test need not state: Docker runs everything an organization has. */
+const FALLBACK: Record<string, unknown> = {
+  "organization.runtimeSwitch": {
+    chosen: null,
+    effective: "docker",
+    impact: runtimeSwitchImpact({
+      reading: observedSupportReading(DOCKER_SUPPORT),
+      organizationDefault: { image: defaultWorkspaceImage, inherited: true },
+      projects: [],
+    }),
+  },
+};
+
 let root: Root;
 let answers: Record<string, unknown>;
 let refuse: ReadonlySet<string>;
 let calls: Array<string>;
+/** What each mutation sent, decoded. */
+let sent: Array<{ readonly path: string; readonly input: unknown }>;
 /** Lets a refused call answer only when the test says so, to look at the screen before it does. */
 let release: () => void = () => undefined;
 
@@ -99,9 +124,11 @@ const render = async (node: ReactNode) => {
       httpLink({
         url: "http://mend.test/trpc",
         transformer: superjson,
-        fetch: async (url) => {
+        fetch: async (url, init) => {
           const path = new URL(url.toString()).pathname.replace("/trpc/", "");
           calls.push(path);
+          if (typeof init?.body === "string")
+            sent.push({ path, input: JSON.parse(init.body).json });
           if (refuse.has(path)) {
             await new Promise<void>((resolve) => {
               release = resolve;
@@ -117,7 +144,9 @@ const render = async (node: ReactNode) => {
               { status: 403 },
             );
           }
-          return Response.json({ result: { data: serialize(answers[path] ?? null) } });
+          return Response.json({
+            result: { data: serialize(answers[path] ?? FALLBACK[path] ?? null) },
+          });
         },
       }),
     ],
@@ -163,6 +192,7 @@ beforeEach(() => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
   refuse = new Set();
   calls = [];
+  sent = [];
   const host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -220,6 +250,22 @@ describe("Organization · Defaults", () => {
   });
 });
 
+/** One project the switch compares: visible and inheriting unless stated. */
+const project = (
+  name: string,
+  facts: Partial<Parameters<typeof runtimeSwitchImpact>[0]["projects"][number]> = {},
+) => ({
+  id: ProjectId.make(`p-${name}`),
+  name,
+  visible: true,
+  workspaceImage: null,
+  services: [],
+  serverFolders: 0,
+  ...facts,
+});
+
+const switchDialog = () => document.querySelector('[role="dialog"]');
+
 describe("Organization · Defaults · where new sessions run (SLNT-794)", () => {
   const RUNTIME = "Where new sessions run";
   const choseBoat = new OrganizationSessionRuntimeView({
@@ -228,10 +274,47 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     effective: "boat",
   });
 
-  it("lets an owner pick among what the server offers, shown at once", async () => {
+  const arch = { ...defaultWorkspaceImage, os: "arch" as const };
+  /** What choosing `chosen` would change, compared by the domain as the API does. */
+  const switchView = (
+    chosen: SessionRuntime | null,
+    reading: RuntimeSupportReading,
+    projects: Parameters<typeof runtimeSwitchImpact>[0]["projects"] = [],
+  ) => ({
+    chosen,
+    effective: chosen ?? "docker",
+    impact: runtimeSwitchImpact({
+      reading,
+      organizationDefault: { image: arch, inherited: true },
+      projects,
+    }),
+  });
+  const breaksOnBoat = switchView("boat", observedSupportReading(BOAT_SUPPORT), [
+    project("web", {
+      workspaceImage: { ...defaultWorkspaceImage, os: "fedora" },
+      services: [{ name: "dev", port: 8080 }],
+    }),
+    project("docs"),
+    project("hidden", { visible: false, workspaceImage: arch }),
+  ]);
+  const press = async (text: string) => {
+    const found = [...document.querySelectorAll("button")].find(
+      (element) => element.textContent?.trim() === text,
+    );
+    if (found === undefined) throw new Error(`no button ${text}`);
+    await act(async () => found.click());
+    await settle();
+  };
+  const switchesSent = () =>
+    sent
+      .filter((entry) => entry.path === "organization.setSessionRuntime")
+      .map((entry) => entry.input);
+
+  it("switches in one step, as before, when the new runtime runs everything", async () => {
     answers = {
       "organization.current": viewer("owner"),
       "organization.settings": settingsView(true, bothRuntimes),
+      "organization.runtimeSwitch": switchView("boat", observedSupportReading(DOCKER_SUPPORT)),
       "organization.setSessionRuntime": settingsView(true, choseBoat),
     };
     await render(<DefaultsTab />);
@@ -240,8 +323,110 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     answers = { ...answers, "organization.settings": settingsView(true, choseBoat) };
     await act(async () => option(RUNTIME, "Boat").click());
     await settle();
-    expect(calls).toContain("organization.setSessionRuntime");
+    expect(calls).toContain("organization.runtimeSwitch");
+    expect(switchDialog()).toBeNull();
+    expect(switchesSent()).toEqual([{ sessionRuntime: "boat" }]);
     expect(pressed(RUNTIME)).toBe("Boat");
+  });
+
+  it("lists what Boat would not run before anything is saved, and moves it in the same step", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, bothRuntimes),
+      "organization.runtimeSwitch": breaksOnBoat,
+      "organization.setSessionRuntime": settingsView(true, choseBoat),
+    };
+    await render(<DefaultsTab />);
+    await act(async () => option(RUNTIME, "Boat").click());
+    await settle();
+    expect(switchesSent()).toEqual([]);
+    const text = switchDialog()?.textContent ?? "";
+    expect(text).toContain("Before new sessions run on Boat");
+    expect(text).toContain("Acme's environment");
+    expect(text).toContain(
+      "arch · 19 packages, from the instance → Ubuntu with Mend's default packages",
+    );
+    expect(text).toContain("Boat supports Ubuntu and Nix; Arch is unsupported.");
+    expect(text).toContain("fedora · 19 packages → Ubuntu with Mend's default packages");
+    expect(text).toContain("Service dev on port 8080 cannot listen: Boat holds that port");
+    expect(text).toContain("Follows the organization's environment");
+    expect(text).toContain("1 private project");
+    expect(text).not.toContain("hidden");
+    expect(text).toContain("takes a few minutes the first time");
+    // Nothing saved yet: the choice shown is still the saved one.
+    expect(pressed(RUNTIME)).toContain("Inherit · Docker");
+
+    await press("Move 2 and switch");
+    expect(switchesSent()).toEqual([
+      { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
+    ]);
+  });
+
+  it("switches without moving anything when the owner asks for that", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, bothRuntimes),
+      "organization.runtimeSwitch": breaksOnBoat,
+      "organization.setSessionRuntime": settingsView(true, choseBoat),
+    };
+    await render(<DefaultsTab />);
+    await act(async () => option(RUNTIME, "Boat").click());
+    await settle();
+    await press("Switch without moving");
+    expect(switchesSent()).toEqual([{ sessionRuntime: "boat" }]);
+  });
+
+  it("cancels with nothing saved", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, bothRuntimes),
+      "organization.runtimeSwitch": breaksOnBoat,
+    };
+    await render(<DefaultsTab />);
+    await act(async () => option(RUNTIME, "Boat").click());
+    await settle();
+    await press("Cancel");
+    expect(switchesSent()).toEqual([]);
+    expect(pressed(RUNTIME)).toContain("Inherit · Docker");
+  });
+
+  it("says Mend cannot tell when Sealant was not read, and never that nothing breaks", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, bothRuntimes),
+      "organization.runtimeSwitch": switchView("boat", {
+        state: "unread",
+        reason: "Sealant could not be reached",
+      }),
+      "organization.setSessionRuntime": settingsView(true, choseBoat),
+    };
+    await render(<DefaultsTab />);
+    await act(async () => option(RUNTIME, "Boat").click());
+    await settle();
+    expect(switchDialog()?.textContent).toContain(
+      "Not checked: Mend could not read what the new runtime runs (Sealant could not be reached), so it cannot tell which projects in Acme would stop starting.",
+    );
+    expect(switchDialog()?.textContent).not.toContain("Move");
+    await press("Switch to Boat anyway");
+    expect(switchesSent()).toEqual([{ sessionRuntime: "boat" }]);
+  });
+
+  it("shows an owner on Boat what still would not start, with the same move", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, choseBoat),
+      "organization.runtimeSwitch": breaksOnBoat,
+      "organization.setSessionRuntime": settingsView(true, choseBoat),
+    };
+    await render(<DefaultsTab />);
+    expect(switchDialog()).toBeNull();
+    expect(document.body.textContent).toContain(
+      "New sessions in Acme run on Boat, which cannot run everything here as it is",
+    );
+    await press("Move 2 to what Boat runs");
+    expect(switchesSent()).toEqual([
+      { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
+    ]);
   });
 
   it("offers an owner no choice the server does not offer", async () => {

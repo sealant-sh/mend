@@ -1,7 +1,17 @@
-import { organizationDefaults, organizationDefaultSources } from "@mend/domain";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import {
+  movesAnything,
+  offeredMoves,
+  organizationDefaults,
+  organizationDefaultSources,
+  runtimeName,
+  type RuntimeSwitchMoves,
+  switchChangesNothing,
+} from "@mend/domain";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { useState } from "react";
 
+import { Button } from "#/components/kit/button";
 import {
   InheritChoice,
   InheritedValue,
@@ -11,13 +21,19 @@ import {
 } from "#/components/kit/inherit-choice";
 import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText } from "#/components/kit/status";
-import type { OrganizationSettingsDto, OrganizationSettingsViewDto } from "#/lib/api";
+import type {
+  OrganizationRuntimeSwitchDto,
+  OrganizationSettingsDto,
+  OrganizationSettingsViewDto,
+} from "#/lib/api";
 import { documentWriter } from "#/lib/optimistic";
 import { SESSION_RUNTIME_WORDS } from "#/lib/organization";
 import { DEFAULT_SWITCHES, onOff, type DefaultSwitch } from "#/lib/organization-defaults";
+import { clockTime } from "#/lib/session-view";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { useOrganizationView } from "./org-parts";
+import { RuntimeImpactList, RuntimeSwitchDialog } from "./runtime-switch";
 
 const choiceOf = (value: boolean | null): InheritValue =>
   value === null ? "inherit" : value ? "on" : "off";
@@ -50,26 +66,36 @@ const organizationDefaultsWriter = documentWriter<
 
 type SessionRuntime = OrganizationSettingsViewDto["sessionRuntime"]["offered"][number];
 
+/** Where new sessions run once `chosen` is saved: the choice while offered, else the default. */
+const effectiveOf = (
+  runtime: OrganizationSettingsViewDto["sessionRuntime"],
+  chosen: SessionRuntime | null,
+): SessionRuntime | null =>
+  chosen !== null && runtime.offered.includes(chosen) ? chosen : runtime.serverDefault;
+
+/** An owner's choice of where new sessions run, and the environments it moves in the same step. */
+interface RuntimeChange {
+  readonly sessionRuntime: SessionRuntime | null;
+  readonly moves?: RuntimeSwitchMoves;
+}
+
 /** An owner's pending choice of where new sessions run, over the server's view. */
 const withSessionRuntime = (
   view: OrganizationSettingsViewDto,
-  chosen: SessionRuntime | null,
+  change: RuntimeChange,
 ): OrganizationSettingsViewDto => ({
   ...view,
   sessionRuntime: {
     ...view.sessionRuntime,
-    chosen,
-    effective:
-      chosen !== null && view.sessionRuntime.offered.includes(chosen)
-        ? chosen
-        : view.sessionRuntime.serverDefault,
+    chosen: change.sessionRuntime,
+    effective: effectiveOf(view.sessionRuntime, change.sessionRuntime),
   },
 });
 
 /** The runtime choice has its own route, so its own writer over the same document. */
 const sessionRuntimeWriter = documentWriter<
   OrganizationSettingsViewDto,
-  SessionRuntime | null,
+  RuntimeChange,
   OrganizationSettingsViewDto
 >({
   overlay: withSessionRuntime,
@@ -155,6 +181,50 @@ function SessionRuntimeRow({
   );
 }
 
+/**
+ * What the runtime new sessions run on now would not run, for its owners: after a switch without
+ * moving, or on a server whose default runtime cannot run what the organization inherits. The
+ * same moves the switch offers, without a switch. Nothing shows while Sealant was not read: the
+ * pickers already say so.
+ */
+function StandingImpact({
+  view,
+  organization,
+  pending,
+  onMove,
+}: {
+  readonly view: OrganizationRuntimeSwitchDto;
+  readonly organization: string;
+  readonly pending: boolean;
+  readonly onMove: (moves: RuntimeSwitchMoves) => void;
+}) {
+  const { impact } = view;
+  if (impact.state !== "observed" || switchChangesNothing(impact)) return null;
+  const moves = offeredMoves(impact);
+  const count = (moves.organizationDefault ? 1 : 0) + moves.projects.length;
+  const runtime = runtimeName(impact.runtime);
+  return (
+    <div className="mt-3 grid max-w-[760px] gap-2.5">
+      <p className="border-l-2 border-[var(--sw-amber)] pl-3 text-[13px] leading-relaxed text-ink-2">
+        New sessions in {organization} run on {runtime}, which cannot run everything here as it is,
+        as Sealant reported at {clockTime(impact.observedAt)}.
+      </p>
+      <RuntimeImpactList impact={impact} organization={organization} />
+      {movesAnything(moves) ? (
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Button disabled={pending} onClick={() => onMove(moves)}>
+            {pending ? "Moving…" : `Move ${count} to what ${runtime} runs`}
+          </Button>
+          <span className="text-[12.5px] text-muted-foreground">
+            Packages a project added are not kept. The next session in each builds the new
+            environment, which takes a few minutes the first time.
+          </span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Where Inherit's value comes from: the instance, which its operator sets. */
 export const instanceSource = (organizationName: string, operator: boolean): InheritSource => ({
   title: "From the instance default",
@@ -197,10 +267,49 @@ export function DefaultsTab() {
       queryClient,
       documentKey: trpc.organization.settings.queryKey(),
       mutationKey: trpc.organization.setSessionRuntime.mutationKey(),
-      send: (sessionRuntime) => client.organization.setSessionRuntime.mutate({ sessionRuntime }),
+      send: (change) => client.organization.setSessionRuntime.mutate(change),
+      // The pickers' facts, what the runtime would not run, and moved projects' environments.
+      related: [
+        trpc.organization.runtime.queryKey(),
+        trpc.organization.runtimeSwitch.queryKey(),
+        trpc.projects.list.queryKey(),
+      ],
     }),
   );
-  const error = save.error ?? saveRuntime.error;
+  const effective = settings.sessionRuntime.effective;
+  const standing = useQuery({
+    ...trpc.organization.runtimeSwitch.queryOptions({ sessionRuntime: effective }),
+    enabled: settings.editable && effective !== null,
+  });
+  /** What the switch the owner asked for would change, while they decide. */
+  const [asked, setAsked] = useState<OrganizationRuntimeSwitchDto | null>(null);
+  const [checking, setChecking] = useState<SessionRuntime | null>(null);
+  const [checkError, setCheckError] = useState<unknown>(null);
+  const chooseRuntime = async (runtime: SessionRuntime | null) => {
+    if (settings.sessionRuntime.chosen === runtime || checking !== null) return;
+    setCheckError(null);
+    if (effectiveOf(settings.sessionRuntime, runtime) === effective) {
+      saveRuntime.mutate({ sessionRuntime: runtime });
+      return;
+    }
+    setChecking(runtime ?? settings.sessionRuntime.serverDefault);
+    try {
+      const impact = await queryClient.fetchQuery({
+        ...trpc.organization.runtimeSwitch.queryOptions({ sessionRuntime: runtime }),
+        staleTime: 0,
+      });
+      if (switchChangesNothing(impact.impact)) saveRuntime.mutate({ sessionRuntime: runtime });
+      else setAsked(impact);
+    } catch (cause) {
+      setCheckError(cause);
+    } finally {
+      setChecking(null);
+    }
+  };
+  const error =
+    save.error ??
+    saveRuntime.error ??
+    (checkError === null ? null : new Error(`Not switched: ${errorText(checkError)}`));
   const sources = organizationDefaultSources(settings.organization);
   const instance = instanceSource(name, view.operator);
   const choose = (key: DefaultSwitch, choice: InheritValue) => {
@@ -247,11 +356,38 @@ export function DefaultsTab() {
         <SessionRuntimeRow
           settings={settings}
           name={name}
-          onChoose={(runtime) => {
-            if (settings.sessionRuntime.chosen !== runtime) saveRuntime.mutate(runtime);
+          onChoose={(runtime) => void chooseRuntime(runtime)}
+        />
+        {checking === null ? null : (
+          <p role="status" className="mt-2 font-mono text-[11.5px] text-muted-foreground">
+            Reading what {runtimeName(checking)} runs…
+          </p>
+        )}
+        {standing.data === undefined ? null : (
+          <StandingImpact
+            view={standing.data}
+            organization={name}
+            pending={saveRuntime.isPending}
+            onMove={(moves) =>
+              saveRuntime.mutate({ sessionRuntime: settings.sessionRuntime.chosen, moves })
+            }
+          />
+        )}
+        {error === null ? null : <ErrorNote className="mt-3">{errorText(error)}</ErrorNote>}
+        <RuntimeSwitchDialog
+          view={asked}
+          organization={name}
+          pending={saveRuntime.isPending}
+          onCancel={() => setAsked(null)}
+          onSwitch={(moves) => {
+            if (asked === null) return;
+            const sessionRuntime = asked.chosen;
+            saveRuntime.mutate(
+              moves === undefined ? { sessionRuntime } : { sessionRuntime, moves },
+              { onSettled: () => setAsked(null) },
+            );
           }}
         />
-        {error === null ? null : <ErrorNote className="mt-3">{errorText(error)}</ErrorNote>}
       </SettingsSection>
     </Panel>
   );
