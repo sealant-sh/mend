@@ -237,3 +237,12 @@ it("standbys distinguish automatic selection from each explicit runtime", () => 
   expect(new Set([automatic, docker, boat]).size).toBe(3);
   expect(hotFingerprint({ ...base, runtime: null }, SHARED)).toBe(automatic);
 });
+
+it("a Boat standby serves only launches that name its Boat account (SLNT-790)", () => {
+  const boat = { ...base, runtime: "boat" as const };
+  const server = hotFingerprint(boat, SHARED);
+  expect(hotFingerprint({ ...boat, boatAccountId: null }, SHARED)).toBe(server);
+  const acme = hotFingerprint({ ...boat, boatAccountId: "core-boat-acme" }, SHARED);
+  const other = hotFingerprint({ ...boat, boatAccountId: "core-boat-other" }, SHARED);
+  expect(new Set([server, acme, other]).size).toBe(3);
+});

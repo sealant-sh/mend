@@ -1,4 +1,5 @@
 export * from "./accounts.ts";
+export * from "./boat-accounts.ts";
 export * from "./client.ts";
 export * from "./config.ts";
 export * from "./connection.ts";

@@ -10,7 +10,12 @@ import {
   linuxLoginNameOf,
   makeHarnessLayoutsMemoryState,
 } from "@mend/db";
-import { SessionId, WorktreeId, type DotfilesRepository } from "@mend/domain";
+import {
+  defaultWorkspaceImage,
+  SessionId,
+  WorktreeId,
+  type DotfilesRepository,
+} from "@mend/domain";
 import { HotWorkspace, Project, Session } from "@mend/domain/workbench";
 import type { HarnessLayout } from "@mend/domain/workbench";
 import {
@@ -148,6 +153,52 @@ const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =
   );
 
 describe("SessionEngine capture mode", () => {
+  it.effect(
+    "warms a Boat standby in its organization's Boat account, and warms another when the key changes (SLNT-790)",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const accounts = new Map([["org-test", "core-boat-acme"]]);
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              world.recentOwners = ["user-fixture"];
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby",
+              );
+              // The organization removed its key: the standby runs in an account no launch names
+              // now, so it drains and one on the server's key takes its place.
+              accounts.delete("org-test");
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => created.length === 2 && pool.entries.length === 1,
+                "a standby on the server's key",
+              );
+              expect(created.map((options) => [options.runtime, options.boatAccountId])).toEqual([
+                ["boat", "core-boat-acme"],
+                ["boat", undefined],
+              ]);
+            }),
+          {
+            captured: makeMemoryCaptureStore(),
+            sealantLayer: clock.wrapSealant(sealantLaunchLayer(created)),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            sessionRuntime: "boat",
+            workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } },
+            boatAccounts: accounts,
+          },
+        );
+      }),
+  );
+
   it.effect(
     "under the default, keeps standbys in the layout launches run: shared ones where they run shared, person ones booted as their owner once they run per person, never draining a claimed one (docs/adr/0016, per-person standbys)",
     () =>

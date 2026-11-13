@@ -69,6 +69,7 @@ export * from "./repos/skills.ts";
 export * from "./repos/slack-defaults.ts";
 export * from "./repos/slack-event-claims.ts";
 export * from "./repos/slack-installs.ts";
+export * from "./repos/boat-keys.ts";
 export * from "./repos/slack-links.ts";
 export * from "./repos/slack-threads.ts";
 export * from "./repos/store-refs.ts";

@@ -161,6 +161,12 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "slack.unlink",
   "slack.previewLink",
   "slack.confirmLink",
+  // The caller's organization's Boat key; owner, member and other-organization boundaries:
+  // boat-key.test.ts.
+  "boatKey.status",
+  "boatKey.connect",
+  "boatKey.check",
+  "boatKey.disconnect",
   // The caller's organization and own links; owner/member boundaries: executor.test.ts.
   "executor.configuration",
   "executor.configure",

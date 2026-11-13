@@ -71,6 +71,11 @@ export const AuditAction = Schema.Literals([
   "access_key.created",
   "access_key.revoked",
   "access_key.used",
+  // An owner connected, replaced or removed the organization's Boat key (SLNT-790). The subject
+  // is Core's Boat account; the key is never recorded.
+  "boat_key.connected",
+  "boat_key.replaced",
+  "boat_key.removed",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
@@ -95,7 +100,7 @@ export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   /**
    * What the action touched: `member`, `invitation`, `project`, `session`, `folder`, `reference`,
    * `organization` (its name or defaults), `slack` (the organization's Slack app), `change` (a
-   * landing) or `access_key`.
+   * landing), `access_key` or `boat_key` (Core's Boat account behind the organization's key).
    */
   subjectType: Schema.String,
   subjectId: Schema.String,

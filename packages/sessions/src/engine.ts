@@ -23,6 +23,7 @@ import {
   AgentTurnNotFoundError,
   type AgentRequestAlreadyResolvedError,
   AgentRequestNotFoundError,
+  BoatKeysRepo,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectClusterBindingsRepo,
@@ -3652,6 +3653,7 @@ type SessionEngineRequirements =
   | ProtocolHost
   | SessionsRepo
   | HotWorkspacesRepo
+  | BoatKeysRepo
   | UserDotfilesRepo
   | UserGitAuthorRepo
   | UserAgentLoginsRepo
@@ -8554,6 +8556,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const protocolHost = yield* ProtocolHost;
       const sessions = yield* SessionsRepo;
       const hotWorkspaces = yield* HotWorkspacesRepo;
+      const boatKeys = yield* BoatKeysRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
       const gitAuthors = yield* UserGitAuthorRepo;
       const agentLogins = yield* UserAgentLoginsRepo;
@@ -13410,6 +13413,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* input.onFailure(error.message, error);
           return yield* error;
         }
+        // The Boat account this workspace runs in and is billed to, for its whole life (SLNT-790):
+        // the project's organization's key when it has one, else none (the server's). A standby
+        // asks as its owner, the person whose launch claims it.
+        const boatAccountId =
+          input.runtime === "boat"
+            ? yield* boatKeys.accountForLaunch(project.organizationId, ownerUserId)
+            : null;
         const launchLayout = input.layout?.launch ?? input.standbyPerson ?? SHARED_AS_BEFORE;
         const report = <A, E extends { readonly message: string }>(
           effect: Effect.Effect<A, E>,
@@ -13661,6 +13671,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sealant.createWorkspace(
                 withLayoutOptions({
                   ...(input.runtime === null ? {} : { runtime: input.runtime }),
+                  ...(boatAccountId === null ? {} : { boatAccountId }),
                   ...(input.resources === undefined ? {} : { resources: input.resources }),
                   // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
                   // does not exist until the launch binds it to one worktree. Neither Docker nor
@@ -29471,6 +29482,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
         const inputs: HotFingerprintInputs = {
           runtime: newWorktreeRuntime,
+          boatAccountId:
+            newWorktreeRuntime === "boat"
+              ? yield* boatKeys.accountForLaunch(project.organizationId, ownerUserId)
+              : null,
           workspaceImage,
           applyDotfiles: project.applyDotfiles,
           inheritUserSkills: project.inheritUserSkills,

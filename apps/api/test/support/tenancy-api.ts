@@ -9,6 +9,7 @@ import { ProjectNameTakenError } from "@mend/db";
 import {
   AccessKeysRepo,
   AuditEventsRepo,
+  BoatKeysRepo,
   MemberRevocationsRepo,
   BriefCommentsRepo,
   BriefsRepo,
@@ -368,6 +369,14 @@ export const createTenancyApi = async (
       readonly executor?: Layer.PartialEffectful<OrganizationExecutor["Service"]>;
       readonly executorRepo?: Layer.PartialEffectful<ExecutorRepo["Service"]>;
       readonly slackInstalls?: Layer.PartialEffectful<SlackInstallsRepo["Service"]>;
+      readonly boatKeys?: Layer.PartialEffectful<BoatKeysRepo["Service"]>;
+      /** Core's Boat accounts, as the platform answers them (SLNT-790). */
+      readonly boatAccounts?: Partial<
+        Pick<
+          SealantClients["Service"],
+          "createBoatAccount" | "listBoatAccounts" | "rotateBoatAccountKey" | "removeBoatAccount"
+        >
+      >;
       readonly slackDefaults?: Layer.PartialEffectful<SlackDefaultsRepo["Service"]>;
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
@@ -854,6 +863,7 @@ export const createTenancyApi = async (
           ...(options.implement?.controlPlaneFeatures === undefined
             ? {}
             : { controlPlaneFeatures: options.implement.controlPlaneFeatures }),
+          ...options.implement?.boatAccounts,
         },
         calls,
       ),
@@ -967,6 +977,7 @@ export const createTenancyApi = async (
       recording(SlackApi, "slackApi", {}, calls),
       recording(SlackDefaultsRepo, "slackDefaults", options.implement?.slackDefaults ?? {}, calls),
       recording(SlackInstallsRepo, "slackInstalls", options.implement?.slackInstalls ?? {}, calls),
+      recording(BoatKeysRepo, "boatKeys", options.implement?.boatKeys ?? {}, calls),
       recording(
         SlackLinksRepo,
         "slackLinks",
