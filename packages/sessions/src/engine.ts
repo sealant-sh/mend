@@ -641,6 +641,7 @@ import {
   DOTFILES_APPLY_BOUND_MS,
   BOOTSTRAP_WAIT_BOUND_MS,
   DOTFILES_LANDED_LATE_WORDS,
+  DOTFILES_NOT_ON_BOAT_SHARED,
   DOTFILES_NOT_PER_PERSON,
   DOTFILES_STILL_APPLYING,
   DOTFILES_STILL_APPLYING_WORDS,
@@ -13291,14 +13292,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * A person's dotfiles where the platform cannot apply them as that person yet
-       * (`PersonLayoutPlatform.dotfilesUser`, docs/adr/0016): nothing is resolved or applied, and
-       * every source the person keeps is named as not applied, with the reason. Two reads, no
-       * clone.
+       * (`PersonLayoutPlatform.dotfilesUser`, docs/adr/0016), or where Boat cannot apply them at
+       * all: nothing is resolved or applied, and every source the person keeps is named as not
+       * applied, with the reason. Two reads, no clone.
        */
       const dotfilesNotPerPerson = Effect.fn("SessionEngine.dotfilesNotPerPerson")(function* (
         project: Project,
         workspaceImage: WorkspaceImage,
         accountId: string | null,
+        reason: string = DOTFILES_NOT_PER_PERSON,
       ) {
         const enabled =
           project.applyDotfiles && workspaceImage.mode !== "custom" && accountId !== null;
@@ -13309,12 +13311,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? yield* dotfilesStore.current(accountId).pipe(Effect.orElseSucceed(() => null))
             : null;
         const notApplied: Array<SessionDotfilesNotApplied> = [
-          ...(repository === null
-            ? []
-            : [{ source: "repository" as const, reason: DOTFILES_NOT_PER_PERSON }]),
-          ...(snapshot === null
-            ? []
-            : [{ source: "snapshot" as const, reason: DOTFILES_NOT_PER_PERSON }]),
+          ...(repository === null ? [] : [{ source: "repository" as const, reason }]),
+          ...(snapshot === null ? [] : [{ source: "snapshot" as const, reason }]),
         ];
         return {
           repository,
@@ -13513,7 +13511,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Dotfiles are the OWNER's (`resolveDotfiles`). Custom images skip dotfiles entirely. A
         // person launch applies none at boot (docs/adr/0016, decision 11): the launcher's go
         // through `dotfiles.apply` as them once prepare has made their user, or, where the
-        // platform cannot do that yet, are not applied and the session says so.
+        // platform cannot do that yet, are not applied and the session says so. A shared launch
+        // sends them with the create, which Core's Boat runtime refuses, and `dotfiles.apply`
+        // never writes root's home: a shared Boat launch starts without them and says so.
         const personLaunch = launchLayout.layout === "person";
         const {
           repository: dotfilesRepository,
@@ -13525,7 +13525,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             NO_DOTFILES
           : personLaunch && !personPlatform.dotfilesUser
             ? yield* dotfilesNotPerPerson(project, workspaceImage, ownerUserId)
-            : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
+            : !personLaunch && input.runtime === "boat"
+              ? yield* dotfilesNotPerPerson(
+                  project,
+                  workspaceImage,
+                  ownerUserId,
+                  DOTFILES_NOT_ON_BOAT_SHARED,
+                )
+              : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
         // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride

@@ -162,6 +162,9 @@ const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
         connectedByName: connectedBy?.name ?? null,
         connectedAt: key.connectedAt,
         keyReplacedAt: key.keyReplacedAt,
+        // SLNT-781 seam: Core's last report for the account (`boatAccounts.list()`), once the
+        // pinned SDK returns one. Until then Mend has observed nothing about the key itself.
+        report: null,
       }),
     });
   });

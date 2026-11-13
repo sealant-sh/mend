@@ -237,6 +237,10 @@ CLI. With Sealant 0.40.0-next.870, Sealant reports:
 - Boat cannot boot a custom container image, and cannot bind folders from the server: a project's
   server folders say so on its **Folders** page, and its sessions start without them.
 - Inside a Boat VM, port 8080 is held by Sealant's agent. Serve your app on another port.
+- Dotfiles apply on Boat only in a session that runs each person as their own user, the default
+  layout. A session that runs everyone in one shared home (`MEND_HARNESS_LAYOUT=shared`, or an image
+  that cannot run per-person users) starts without them, and the session says
+  `dotfiles · repo not applied` or `dotfiles · snapshot not applied` with the reason.
 - Boat bills a VM by the second while it runs, idle or not. The **Ready workspaces** setting of a
   project on Boat says so, since each ready workspace is a running VM.
 - Boat sessions download straight from npm and Docker Hub, not through the server's mirrors.
