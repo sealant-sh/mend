@@ -1,5 +1,10 @@
 import { SessionRuntime } from "@mend/domain";
-import { BoatKeyProof, BoatKeyReport } from "@mend/domain/workbench";
+import {
+  BoatKeyProof,
+  BoatKeyReport,
+  BoatUnreachable,
+  ServerBoatKey,
+} from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -25,8 +30,9 @@ export class BoatKeyRefused extends Schema.TaggedError<BoatKeyRefused>()(
     /**
      * `shape`: not a Boat key, nothing sent. `refused`: Boat said no. `unverified`: Boat did not
      * answer. `missing-permissions`: the key lacks Boat permissions Mend needs; the message names them.
+     * `wallet`: a wallet the key's Boat account cannot bill was chosen (SLNT-821).
      */
-    reason: Schema.Literals(["shape", "refused", "unverified", "missing-permissions"]),
+    reason: Schema.Literals(["shape", "refused", "unverified", "missing-permissions", "wallet"]),
   },
   { httpApiStatus: 422 },
 ) {}
@@ -49,6 +55,8 @@ export class BoatKeyConflict extends Schema.TaggedError<BoatKeyConflict>()(
       "taken",
       "proof-running",
       "none",
+      // A wallet was chosen for a Boat organization's key, which bills its organization only.
+      "key-organization",
     ]),
     liveRuns: Schema.NullOr(Schema.Number),
     buildsInFlight: Schema.NullOr(Schema.Number),
@@ -102,6 +110,14 @@ export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails
   report: Schema.NullOr(BoatKeyReport).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** The key's full check. A server from before the full check answers without the field. */
   fullCheck: BoatKeyFullCheck.pipe(Schema.withDecodingDefaultKey(Effect.succeed(NO_FULL_CHECK))),
+  /**
+   * What the key's Boat account made before sealant recorded wallets and Boat now has in no wallet
+   * the key can bill (sealant#641): kept, never used or removed by sealant. Null when there is
+   * nothing, and from a server before it.
+   */
+  unreachable: Schema.NullOr(BoatUnreachable).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 }) {}
 
 /** What the removal this request made did first (SLNT-803). */
@@ -182,6 +198,13 @@ export class BoatKeyCheck extends Schema.Class<BoatKeyCheck>("BoatKeyCheck")({
   ),
 }) {}
 
+/**
+ * The wallet a personal key bills from now on (SLNT-821): an id from the report's `wallets`, a
+ * Boat organization's id or `personal`. It takes effect at once; what the key's account made stays
+ * in the wallet it was made in.
+ */
+export const ChooseBoatWalletRequest = Schema.Struct({ wallet: Schema.NonEmptyString });
+
 export const ConnectBoatKeyRequest = Schema.Struct({
   /** The Boat key, exactly as Boat showed it. Checked by Boat before sealant keeps it. */
   key: Schema.String,
@@ -213,6 +236,15 @@ export const boatKeyGroup = HttpApiGroup.make("boatKey")
     // session would and deletes it. Answers within a few seconds: finished, or running since.
     HttpApiEndpoint.post("fullCheck", "/organization/boat-key/full-check", {
       success: BoatKeyFullCheck,
+      error: [NotFound, BoatKeyOwnersOnly, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
+    }),
+  )
+  .add(
+    // Points the organization's personal key at another wallet its Boat account can bill, without
+    // the key. Owners only.
+    HttpApiEndpoint.put("chooseWallet", "/organization/boat-key/wallet", {
+      payload: ChooseBoatWalletRequest,
+      success: BoatKeyStatus,
       error: [NotFound, BoatKeyOwnersOnly, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
     }),
   )
@@ -260,11 +292,32 @@ export const personBoatKeyGroup = HttpApiGroup.make("personBoatKey")
     }),
   )
   .add(
+    // Points the person's own key at another wallet their Boat account can bill, without the key.
+    HttpApiEndpoint.put("chooseWallet", "/me/boat-key/wallet", {
+      payload: ChooseBoatWalletRequest,
+      success: PersonBoatKeyStatus,
+      error: [NotFound, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
+    }),
+  )
+  .add(
     // The person's Boat sessions go back to the organization's key, or the server's. Mend first
     // drains any standby it started in the account; refused while a session's VM holds it.
     HttpApiEndpoint.delete("disconnect", "/me/boat-key", {
       success: PersonBoatKeyStatus,
       error: [NotFound, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
     }).middleware(PersonCredentialOnly),
+  )
+  .middleware(AuthMiddleware);
+
+/**
+ * The server's own Boat key, checked on demand by its operator (SLNT-822): sealant asks Boat now
+ * (read-only), and the machine view reads the answer afterwards. Anyone but an operator gets a 404.
+ */
+export const serverBoatKeyGroup = HttpApiGroup.make("serverBoatKey")
+  .add(
+    HttpApiEndpoint.post("check", "/machine/boat-key/check", {
+      success: ServerBoatKey,
+      error: [NotFound, BoatUnavailable],
+    }),
   )
   .middleware(AuthMiddleware);

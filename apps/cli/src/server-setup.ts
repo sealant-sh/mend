@@ -42,6 +42,7 @@ import {
   WORKSPACE_STOP_TIMEOUT_SECONDS,
 } from "./docker-shutdown.ts";
 import { redact } from "./doctor-bundle.ts";
+import { promptHidden } from "./mcp-servers.ts";
 import { renderExposure, renderGate } from "./organization.ts";
 import { createFirstAccount, type FirstAccountReceipt } from "./server-account.ts";
 import {
@@ -301,6 +302,13 @@ export interface ServerSetupRuntime {
   readonly sshProbeBoundMs?: number;
   /** Read standard input to its end: `--docker-hub-token-stdin` takes the token from here. */
   readonly readStdin?: () => Promise<string>;
+  /**
+   * Whether standard input is a terminal: then `--boat-api-key-stdin` asks for the key with
+   * `askHidden` instead of reading standard input, which would echo a pasted key (SLNT-822).
+   */
+  readonly stdinIsTerminal?: boolean;
+  /** Reads one line without echoing it, as `mend boat connect` does; null when cancelled. */
+  readonly askHidden?: (label: string) => Promise<string | null>;
   /**
    * A terminal to ask on. Present, `mend server setup` with no flags asks its questions
    * (server-setup-guide.ts); absent, it asks nothing, and a fresh install with no flags is refused
@@ -3984,9 +3992,16 @@ const resolveServerBoatKey = async (
   const saved = active === null ? undefined : parseSecrets(active.files.env).boatKey;
   let given: string | undefined;
   if (options.boat.apiKeyStdin) {
-    if (runtime.readStdin === undefined)
+    // At a terminal, the key is asked for without echo, as mend boat connect asks for it: read to
+    // the end of standard input, a pasted key would show on the screen and in the scrollback.
+    const hidden =
+      runtime.stdinIsTerminal === true && runtime.askHidden !== undefined
+        ? await runtime.askHidden("This server's Boat key (hidden): ")
+        : undefined;
+    if (hidden === null) throw setupError("Cancelled · no Boat key was read, and nothing changed.");
+    if (hidden === undefined && runtime.readStdin === undefined)
       throw setupError("--boat-api-key-stdin needs standard input, and none is available.");
-    const key = parseBoatApiKey(await runtime.readStdin());
+    const key = parseBoatApiKey(hidden ?? (await (runtime.readStdin?.() ?? Promise.resolve(""))));
     if (key instanceof ServerSetupError) throw key;
     given = key;
   }
@@ -6105,6 +6120,8 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
         chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
       return Buffer.concat(chunks).toString("utf8");
     },
+    stdinIsTerminal: process.stdin.isTTY,
+    askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
   };
 };
 

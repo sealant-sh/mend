@@ -8,6 +8,13 @@ import {
 import {
   type BoatKeyProof,
   type BoatKeyReport,
+  type BoatUnreachable,
+  boatWalletChoices,
+  type BoatWalletChoices,
+  hasUnreachable,
+  unreachableWords,
+  type WalletReader,
+  walletOptionLabel,
   boatKeyCreateCommand,
   boatKeyStatusLine,
   boatKeyFacts,
@@ -48,9 +55,15 @@ const FullCheckWire = Schema.toCodecJson(BoatKeyFullCheck);
 const FULL_CHECK_POLL_MS = 3_000;
 const FULL_CHECK_WAIT_MS = 5 * 60_000;
 
-type BoatVerb = "Status" | "Connect" | "Check" | "Disconnect";
+type BoatVerb = "Status" | "Connect" | "Check" | "Wallet" | "Disconnect";
 type BoatRequest =
-  | { readonly _tag: BoatVerb; readonly mine: boolean; readonly full: boolean }
+  | {
+      readonly _tag: BoatVerb;
+      readonly mine: boolean;
+      readonly full: boolean;
+      /** `mend boat wallet <wallet>`: the wallet to choose; null lists them. */
+      readonly wallet: string | null;
+    }
   | { readonly _tag: "Invalid"; readonly message: string };
 
 const KEY_NOT_AN_ARGUMENT =
@@ -60,6 +73,7 @@ const VERBS: Record<string, { readonly verb: BoatVerb; readonly extra: string }>
   status: { verb: "Status", extra: usageOf("boat status") },
   connect: { verb: "Connect", extra: KEY_NOT_AN_ARGUMENT },
   check: { verb: "Check", extra: usageOf("boat check") },
+  wallet: { verb: "Wallet", extra: usageOf("boat wallet") },
   disconnect: { verb: "Disconnect", extra: usageOf("boat disconnect") },
 };
 
@@ -78,10 +92,19 @@ const requestOf = (args: ReadonlyArray<string>): BoatRequest => {
   const known = Object.hasOwn(VERBS, word) ? VERBS[word] : undefined;
   if (known === undefined)
     return { _tag: "Invalid", message: `unknown subcommand ${word} · mend help boat` };
-  return extra.length === 0
-    ? { _tag: known.verb, mine: args.includes("--mine"), full: args.includes("--full") }
+  // Only `wallet` takes a word: the wallet to choose.
+  const [wallet = null, ...beyond] = known.verb === "Wallet" ? extra : [];
+  return (known.verb === "Wallet" ? beyond.length : extra.length) === 0
+    ? {
+        _tag: known.verb,
+        mine: args.includes("--mine"),
+        full: args.includes("--full"),
+        wallet,
+      }
     : { _tag: "Invalid", message: known.extra };
 };
+
+const capital = (words: string): string => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 
 /** `2026-11-13 14:02 UTC`: when something was observed, to the minute. */
 const at = (date: Date): string => `${date.toISOString().slice(0, 16).replace("T", " ")} UTC`;
@@ -111,15 +134,75 @@ export const renderReport = (
       `Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check${mine ? " --mine" : ""} asks Boat.`,
     ];
   }
-  const facts = boatKeyFacts(report, now);
+  const reader: WalletReader = mine ? "own" : "other";
+  const facts = boatKeyFacts(report, now, reader);
   const width = Math.max(...facts.map((fact) => fact.label.length));
+  const choices = boatWalletChoices(report, reader);
   return [
     `What Boat said about the key · observed ${at(report.observedAt)}`,
     ...facts.map((fact) => `  ${fact.label.padEnd(width)}  ${fact.value}`),
-    ...boatKeyWarnings(report, now, replaceFromCli(mine)).map((warning) =>
+    ...boatKeyWarnings(report, now, replaceFromCli(mine), reader).map((warning) =>
       warning.tone === "note" ? warning.text : `! ${warning.text}`,
     ),
+    ...(choices === null
+      ? []
+      : [
+          `This key's Boat account can bill ${choices.options.length} wallets. mend boat wallet${mine ? " --mine" : ""} lists them; mend boat wallet <wallet>${mine ? " --mine" : ""} bills another, from the next session on.`,
+        ]),
   ];
+};
+
+/** What sealant cannot reach in any wallet the key can bill, as a line that needs a person. */
+const unreachableLines = (
+  unreachable: BoatUnreachable | null,
+  mine: boolean,
+): ReadonlyArray<string> =>
+  hasUnreachable(unreachable)
+    ? [`! ${unreachableWords(unreachable, mine ? "person" : "organization")}`]
+    : [];
+
+/**
+ * The wallets a key's Boat account can bill, the one it bills now marked, or why there is nothing
+ * to choose: a Boat organization's key, one wallet, or a list Boat did not show.
+ */
+export const renderWallets = (
+  report: BoatKeyReport | null,
+  mine = false,
+): ReadonlyArray<string> => {
+  if (report === null)
+    return [
+      `Not observed yet: sealant has not checked this key with Boat since it was connected. mend boat check${mine ? " --mine" : ""} asks Boat.`,
+    ];
+  const reader: WalletReader = mine ? "own" : "other";
+  const choices = boatWalletChoices(report, reader);
+  const bills = boatKeyFacts(report, report.observedAt, reader).find(
+    (fact) => fact.label === "Bills",
+  );
+  if (choices === null)
+    return [
+      `Bills ${bills?.value ?? "not observed"} · observed ${at(report.observedAt)}`,
+      "There is no other wallet to choose: a Boat organization's key bills its organization only, and this key's Boat account lists no other wallet it can bill.",
+    ];
+  return [
+    `Wallets this key's Boat account can bill · observed ${at(report.observedAt)}`,
+    ...choices.options.map(
+      (option) =>
+        `  ${option.id === choices.current ? "*" : " "} ${option.label}${option.detail === null ? "" : ` · ${option.detail}`}${option.id === choices.current ? " · bills now" : ""}`,
+    ),
+    `mend boat wallet <wallet>${mine ? " --mine" : ""} bills another (a Boat organization's name or id, or personal). It applies to the Boat sessions that start next; sessions running now stay in the wallet they started in.`,
+  ];
+};
+
+/** The option a typed wallet names: its id, a Boat organization's name, or `personal`. */
+export const walletNamed = (choices: BoatWalletChoices, typed: string): string | null => {
+  const wanted = typed.trim().toLowerCase();
+  const found = choices.options.find(
+    (option) =>
+      option.id.toLowerCase() === wanted ||
+      option.label.toLowerCase() === `the boat organization ${wanted}` ||
+      (wanted === "personal" && option.id === "personal"),
+  );
+  return found?.id ?? null;
 };
 
 /**
@@ -245,6 +328,7 @@ export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {
     `New Boat sessions run in, and are billed to, its Boat account (Sealant account ${details.sealantBoatAccountId}). Running sessions stay where they started.`,
     ...runtimeNote(status),
     ...renderReport(details.report),
+    ...unreachableLines(details.unreachable, false),
     ...(details.fullCheck.last === null && details.fullCheck.runningSince === null
       ? []
       : renderFullCheck(details.fullCheck)),
@@ -277,6 +361,7 @@ export const renderPersonStatus = (status: PersonBoatKeyStatus): ReadonlyArray<s
     `The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account ${details.sealantBoatAccountId}). Mend keeps no standby workspace on it.`,
     ...runtime,
     ...renderReport(details.report, new Date(), true),
+    ...unreachableLines(details.unreachable, true),
     ...(details.fullCheck.last === null && details.fullCheck.runningSince === null
       ? []
       : renderFullCheck(details.fullCheck, true)),
@@ -445,6 +530,7 @@ export const boatCommand = async (
     verb: Exclude<BoatVerb, "Status">,
     target: Target<S>,
     full = false,
+    wallet: string | null = null,
   ): Promise<0 | 1> => {
     const printStatus = (status: S, lead: ReadonlyArray<string> = []) => {
       if (json)
@@ -490,6 +576,61 @@ export const boatCommand = async (
         else print(renderCheck(answer.ok, mine));
         return 0;
       }
+      case "Wallet": {
+        const before = await call(target.wire, "GET", undefined, target.route);
+        if ("failed" in before) return before.failed;
+        const details = before.ok.details;
+        if (details === null)
+          return fail(
+            "BoatKeyMissing",
+            before.ok.connected
+              ? "only an owner reads or changes the organization's Boat key"
+              : `${target.none} · nothing to choose. Connect one with mend boat connect${mine ? " --mine" : ""}.`,
+          );
+        const report = details.report;
+        const choices = report === null ? null : boatWalletChoices(report, mine ? "own" : "other");
+        if (wallet === null) {
+          if (json)
+            boundary.stdout(
+              `${jsonWithoutCredentials({
+                version: 1,
+                wallets:
+                  choices === null
+                    ? null
+                    : {
+                        current: choices.current,
+                        options: choices.options.map((option) => ({ ...option })),
+                      },
+              })}\n`,
+            );
+          else print(renderWallets(report, mine));
+          return 0;
+        }
+        if (choices === null)
+          return fail(
+            "BoatWalletNoChoice",
+            "This key has no other wallet to choose: a Boat organization's key bills its organization only, and this key's Boat account lists no other wallet it can bill. Nothing changed.",
+          );
+        const id = walletNamed(choices, wallet);
+        if (id === null)
+          return fail(
+            "BoatWalletUnknown",
+            `${wallet} is not one of the wallets this key's Boat account can bill (${choices.options.map((option) => (option.id === "personal" ? "personal" : option.label.replace(/^the Boat organization /, ""))).join(", ")}). Nothing changed. mend boat check${mine ? " --mine" : ""} reads the list from Boat again.`,
+          );
+        const label = walletOptionLabel(choices, id);
+        if (id === choices.current && choices.pinned) {
+          printStatus(before.ok, [
+            `${capital(target.key)} bills ${label} already · nothing changed`,
+          ]);
+          return 0;
+        }
+        const answer = await call(target.wire, "PUT", { wallet: id }, `${target.route}/wallet`);
+        if ("failed" in answer) return answer.failed;
+        printStatus(answer.ok, [
+          `✓ ${target.key} bills ${label} from the next Boat session on · sessions running now stay in the wallet they started in`,
+        ]);
+        return 0;
+      }
       case "Disconnect": {
         const before = await call(target.wire, "GET", undefined, target.route);
         if ("failed" in before) return before.failed;
@@ -520,8 +661,8 @@ export const boatCommand = async (
   };
   if (asked._tag !== "Status") {
     return asked.mine
-      ? act(asked._tag, own, asked.full)
-      : act(asked._tag, organization, asked.full);
+      ? act(asked._tag, own, asked.full, asked.wallet)
+      : act(asked._tag, organization, asked.full, asked.wallet);
   }
   if (asked.mine) {
     const answer = await call(PersonStatusWire, "GET", undefined, MINE);

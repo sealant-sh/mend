@@ -2,7 +2,11 @@ import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 
 import { SessionRuntimeOffer } from "@mend/domain";
-import { refusedKeyReportFixture, serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
+import {
+  boatUnreachableFixture,
+  refusedKeyReportFixture,
+  serverBoatFactsFixture,
+} from "@mend/domain/boat-key-fixtures";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -20,7 +24,7 @@ const machineOf = async (
     {
       sessionRuntimes: offer,
       machineBoat: serverBoatFactsFixture(
-        { serverKey: { state: "held", report: refusedKeyReportFixture(NOW) } },
+        { serverKey: { state: "held", unreachable: null, report: refusedKeyReportFixture(NOW) } },
         NOW,
       ),
     },
@@ -99,6 +103,40 @@ describe("whether Sealant lists Boat", () => {
       state: "unread",
       reason: "Sealant could not be reached",
     });
+  });
+});
+
+describe("the operator's check of the server's own Boat key (SLNT-822)", () => {
+  it("answers the operator what sealant observed now, with what it cannot reach, and nobody else", async () => {
+    const api = await createTenancyApi(
+      {},
+      {
+        sessionRuntimes: BOTH,
+        machineBoat: serverBoatFactsFixture(
+          {
+            serverKey: {
+              state: "held",
+              unreachable: boatUnreachableFixture,
+              report: refusedKeyReportFixture(NOW),
+            },
+          },
+          NOW,
+        ),
+      },
+    );
+    try {
+      const operator = await api.request("alice", "POST", "/api/machine/boat-key/check");
+      expect(operator.status).toBe(200);
+      expect(await operator.json()).toMatchObject({
+        state: "held",
+        unreachable: boatUnreachableFixture,
+        report: { observedAt: NOW.toISOString() },
+      });
+      const member = await api.request("carol", "POST", "/api/machine/boat-key/check");
+      expect(member.status).toBe(404);
+    } finally {
+      await api.dispose();
+    }
   });
 });
 

@@ -6950,6 +6950,7 @@ const main = async () => {
           {
             harness: takeFlagValue(rest, "--harness"),
             project: takeFlagValue(rest, "--project"),
+            checkBoatKey: rest.includes("--check-boat-key"),
             api: (method, route, body) =>
               request(config, method, route, body, "follow", AbortSignal.timeout(130_000)),
           },

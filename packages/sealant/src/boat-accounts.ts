@@ -23,6 +23,8 @@ import type { SealantPlatformError } from "./errors.ts";
 
 /** The SDK's `BoatAccount`, which its index does not export. */
 type BoatAccount = Awaited<ReturnType<Sealant["boatAccounts"]["create"]>>;
+/** The SDK's `BoatInstallKey`, which its index does not export. */
+type CoreBoatInstallKey = Awaited<ReturnType<Sealant["boatAccounts"]["installKey"]>>;
 /** The SDK's `BoatUnreachable`, which its index does not export either. */
 type CoreBoatUnreachable = NonNullable<BoatAccount["unreachable"]>;
 
@@ -155,6 +157,25 @@ export interface BoatAccountsApi {
     BoatInstallKeyReading | null,
     BoatAccountRefusal | SealantPlatformError
   >;
+  /**
+   * Checks the install's own key with Boat now (read-only) and answers the new report; null when
+   * the install has none. Boat not answering is `key-unverified`, and sealant keeps the last report.
+   */
+  readonly checkInstallKey: () => Effect.Effect<
+    BoatInstallKeyReading | null,
+    BoatAccountRefusal | SealantPlatformError
+  >;
+  /**
+   * Points an account with a personal key at another wallet it can bill, without its key
+   * (sealant#641): `wallet` is an id from the report's `wallets` (`personal` for the key's own Boat
+   * account). It takes effect at once and waits for nothing: what the account made stays in the
+   * wallet it was made in. Refused for a Boat organization's key (`key-organization`) and for a
+   * wallet the key cannot bill (`bad-request`).
+   */
+  readonly setOrganization: (
+    boatAccountId: string,
+    wallet: string,
+  ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
 }
 
 const REASONS_BY_TAG: Readonly<Record<string, BoatAccountRefusalReason>> = {
@@ -387,6 +408,20 @@ export const makeBoatAccountsApi = (
       catch: (cause): BoatAccountRefusal | SealantPlatformError =>
         boatAccountRefusalOf(cause) ?? toPlatformError(cause),
     });
+  // sealant answers 503 both without a key of its own and without Boat at all: either way, none.
+  const installKeyOf = (read: () => Promise<CoreBoatInstallKey>) =>
+    call(read).pipe(
+      Effect.map(
+        (key): BoatInstallKeyReading => ({
+          report: key.report === null ? null : boatKeyReportOf(key.report),
+          unreachable: boatUnreachableOf(key.unreachable),
+        }),
+      ),
+      Effect.catchIf(
+        (error) => error._tag === "BoatAccountRefusal" && error.reason === "unavailable",
+        () => Effect.succeed(null),
+      ),
+    );
   return {
     create: (label, key) =>
       call(() => admin.boatAccounts.create({ label, apiKey: Redacted.value(key) })).pipe(
@@ -406,19 +441,11 @@ export const makeBoatAccountsApi = (
       call(() => admin.boatAccounts.check(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
     prove: (boatAccountId) =>
       call(() => admin.boatAccounts.prove(boatAccountId)).pipe(Effect.map(boatKeyProofOf)),
-    // sealant answers 503 both without a key of its own and without Boat at all: either way, none.
-    installKey: () =>
-      call(() => admin.boatAccounts.installKey()).pipe(
-        Effect.map(
-          (key): BoatInstallKeyReading => ({
-            report: key.report === null ? null : boatKeyReportOf(key.report),
-            unreachable: boatUnreachableOf(key.unreachable),
-          }),
-        ),
-        Effect.catchIf(
-          (error) => error._tag === "BoatAccountRefusal" && error.reason === "unavailable",
-          () => Effect.succeed(null),
-        ),
+    setOrganization: (boatAccountId, wallet) =>
+      call(() => admin.boatAccounts.setOrganization(boatAccountId, wallet)).pipe(
+        Effect.map(toPlatformBoatAccount),
       ),
+    installKey: () => installKeyOf(() => admin.boatAccounts.installKey()),
+    checkInstallKey: () => installKeyOf(() => admin.boatAccounts.checkInstallKey()),
   };
 };

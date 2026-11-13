@@ -3,7 +3,7 @@ import { HttpApi } from "effect/http-api";
 import { accessKeysGroup } from "./access-keys.ts";
 import { accountsGroup } from "./accounts.ts";
 import { agentMemoryGroup } from "./agent-memory.ts";
-import { boatKeyGroup, personBoatKeyGroup } from "./boat-key.ts";
+import { boatKeyGroup, personBoatKeyGroup, serverBoatKeyGroup } from "./boat-key.ts";
 import { sessionChangesGroup } from "./changes.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { dopplerGroup } from "./doppler.ts";
@@ -71,6 +71,7 @@ export const MendApi = HttpApi.make("mend")
   .add(slackGroup)
   .add(boatKeyGroup)
   .add(personBoatKeyGroup)
+  .add(serverBoatKeyGroup)
   .add(operatorGroup)
   .add(foldersGroup)
   .add(settingsGroup)

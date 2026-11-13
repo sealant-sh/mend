@@ -1,4 +1,4 @@
-import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import { boatKeyReportFixture, threeWalletsReportFixture } from "@mend/domain/boat-key-fixtures";
 // @vitest-environment jsdom
 import { QueryClient } from "@tanstack/react-query";
 import { act } from "react";
@@ -39,6 +39,7 @@ const connected = (organizationKey = false): PersonBoatKeyStatusDto => ({
     keyReplacedAt: null,
     report: null,
     fullCheck: { last: null, runningSince: null },
+    unreachable: null,
   },
 });
 
@@ -83,6 +84,26 @@ const open = async (status: Answer, extra: Partial<World> = {}) => {
         case "personBoatKey.disconnect":
           if ("data" in state.disconnect) state.status = { data: notConnected() };
           return state.disconnect;
+        case "personBoatKey.chooseWallet": {
+          if (!("data" in state.status)) return state.status;
+          const own = connected();
+          state.status = {
+            data: {
+              ...own,
+              details:
+                own.details === null
+                  ? null
+                  : {
+                      ...own.details,
+                      report: {
+                        ...threeWalletsReportFixture(),
+                        billing: { mode: "pinned", organization: "personal" },
+                      },
+                    },
+            },
+          };
+          return state.status;
+        }
         default:
           return { data: null };
       }
@@ -192,5 +213,34 @@ describe("a person's own Boat key on the account page (SLNT-797)", () => {
   it("is left out for a sign-in with no organization", async () => {
     await open({ refuse: "NotFound" });
     expect(text()).toBe("");
+  });
+});
+
+describe("a person's own key's wallet (SLNT-821)", () => {
+  it("names the wallets as the person's own, and points the key at their personal account", async () => {
+    const own = connected();
+    const status = {
+      ...own,
+      details:
+        own.details === null ? null : { ...own.details, report: threeWalletsReportFixture() },
+    };
+    const { state } = await open({ data: status });
+    const radios = [...document.querySelectorAll<HTMLElement>('[role="radio"]')];
+    expect(radios.map((radio) => radio.textContent ?? "")).toEqual([
+      expect.stringContaining("Your personal Boat account"),
+      expect.stringContaining("bills now"),
+      expect.stringContaining("your role: member · active in Boat now"),
+    ]);
+    const personal = radios[0];
+    if (personal === undefined) throw new Error("no personal wallet");
+    await click(personal);
+    await click(byText("button", "Bill your personal Boat account"));
+    expect(state.calls).toContainEqual({
+      path: "personBoatKey.chooseWallet",
+      input: { wallet: "personal" },
+    });
+    expect(text()).toContain(
+      "your personal Boat account · fixed: sealant names it on every request",
+    );
   });
 });

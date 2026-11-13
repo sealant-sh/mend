@@ -4,8 +4,9 @@ import {
   type StatusLine,
   type StatusState,
 } from "@mend/domain/workbench";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
+import { Button } from "#/components/kit/button";
 import { SettingsSection } from "#/components/kit/section";
 import { ErrorNote, StatusWord, type Tone, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
@@ -33,8 +34,17 @@ const WORDS: Readonly<Record<StatusState, string>> = {
  */
 export function SessionsAndBoat({ now = new Date() }: { readonly now?: Date }) {
   const trpc = useTRPC();
+  const queryClient = useQueryClient();
   const machine = useQuery(trpc.platform.machine.queryOptions(undefined, { retry: false }));
+  // The operator asks sealant to check the server's own key with Boat now (SLNT-822); the machine
+  // view, read again, shows what it observed.
+  const checkKey = useMutation(
+    trpc.platform.checkServerBoatKey.mutationOptions({
+      onSettled: () => queryClient.invalidateQueries(trpc.platform.machine.pathFilter()),
+    }),
+  );
   const view = machine.data;
+  const serverKey = view?.boat?.serverKey.state;
   const lines: ReadonlyArray<StatusLine> =
     view?.sessionRuntimes === undefined
       ? []
@@ -82,6 +92,19 @@ export function SessionsAndBoat({ now = new Date() }: { readonly now?: Date }) {
             ],
           }))}
         />
+      )}
+      {serverKey === "held" ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          <Button size="sm" disabled={checkKey.isPending} onClick={() => checkKey.mutate()}>
+            {checkKey.isPending ? "Checking with Boat…" : "Check the server's Boat key now"}
+          </Button>
+          <span className="text-[12.5px] text-muted-foreground">
+            sealant asks Boat about the key now, read-only; otherwise it checks once a day.
+          </span>
+        </div>
+      ) : null}
+      {checkKey.error === null ? null : (
+        <ErrorNote className="mt-3">{errorText(checkKey.error)}</ErrorNote>
       )}
     </SettingsSection>
   );

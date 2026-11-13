@@ -5,6 +5,7 @@ import type {
   BoatKeyProof,
   BoatKeyProofStep,
   BoatKeyReport,
+  BoatUnreachable,
 } from "./boat-key.ts";
 import type { ServerBoatFacts } from "./server-boat.ts";
 
@@ -98,11 +99,80 @@ export const organizationKeyReportFixture = (now: Date = new Date()): BoatKeyRep
     {
       organization: "acme-boat",
       keyKind: { observed: true, kind: "organization" },
+      wallets: null,
+      billing: { mode: "key-organization" },
       permissions: refusedKeyList,
       expiry: refusedKeyList,
     },
     now,
   );
+
+/** A personal key whose Boat account bills its own wallet only: nothing to choose. */
+export const oneWalletReportFixture = (now: Date = new Date()): BoatKeyReport =>
+  boatKeyReportFixture(
+    {
+      organization: "personal",
+      wallet: {
+        observed: true,
+        kind: "personal",
+        organizationId: null,
+        organizationName: null,
+        role: null,
+      },
+      wallets: {
+        observed: true,
+        choices: [{ id: "personal", kind: "personal", name: null, role: null, active: true }],
+      },
+      billing: { mode: "pinned", organization: "personal" },
+    },
+    now,
+  );
+
+/**
+ * A personal key whose Boat account can bill three wallets, pinned to the Boat organization
+ * acme-boat; Boat has beta-labs active now.
+ */
+export const threeWalletsReportFixture = (now: Date = new Date()): BoatKeyReport =>
+  boatKeyReportFixture(
+    {
+      wallets: {
+        observed: true,
+        choices: [
+          { id: "personal", kind: "personal", name: null, role: null, active: false },
+          { id: "org_9", kind: "organization", name: "acme-boat", role: "admin", active: false },
+          { id: "org_12", kind: "organization", name: "beta-labs", role: "member", active: true },
+        ],
+      },
+      billing: { mode: "pinned", organization: "org_9" },
+    },
+    now,
+  );
+
+/**
+ * A personal key connected before sealant pinned keys, not pinned yet, whose Boat account's
+ * active wallet moved from the personal account to acme-boat.
+ */
+export const walletChangedReportFixture = (now: Date = new Date()): BoatKeyReport =>
+  boatKeyReportFixture(
+    {
+      organization: null,
+      billing: {
+        mode: "active-wallet",
+        walletChanged: {
+          from: { kind: "personal", organizationId: null, organizationName: null, role: null },
+          observedAt: new Date("2026-11-13T09:30:00.000Z"),
+        },
+      },
+    },
+    now,
+  );
+
+/** What sealant finds in no wallet a key can bill: two saved images, a run's VM and a build. */
+export const boatUnreachableFixture: BoatUnreachable = {
+  savedImages: ["sealant-img-a1b2", "sealant-img-c3d4"],
+  runs: ["run_old1"],
+  builds: ["pub_old1"],
+};
 
 /** A key Boat refuses outright (`403 api_key_expired`): every fact Sealant asks about is unread. */
 export const refusedKeyReportFixture = (now: Date = new Date()): BoatKeyReport => {
@@ -153,7 +223,7 @@ export const serverBoatFactsFixture = (
       observedAt: now,
     },
   ],
-  serverKey: { state: "held", report: boatKeyReportFixture({}, now) },
+  serverKey: { state: "held", unreachable: null, report: boatKeyReportFixture({}, now) },
   storedKeys: 1,
   launch: { state: "listed", observedAt: now, resourceGateway: true },
   ...overrides,

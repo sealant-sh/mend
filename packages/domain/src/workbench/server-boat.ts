@@ -1,6 +1,6 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
-import { BoatKeyReport } from "./boat-key.ts";
+import { BoatKeyReport, BoatUnreachable } from "./boat-key.ts";
 
 /**
  * What a server that offers Boat sessions observed about Boat, for its operator (SLNT-799): the
@@ -36,7 +36,14 @@ export type BoatAddress = typeof BoatAddress.Type;
  */
 export const ServerBoatKey = Schema.Union([
   Schema.Struct({ state: Schema.Literal("none") }),
-  Schema.Struct({ state: Schema.Literal("held"), report: Schema.NullOr(BoatKeyReport) }),
+  Schema.Struct({
+    state: Schema.Literal("held"),
+    report: Schema.NullOr(BoatKeyReport),
+    /** What the key made in Boat that sealant cannot reach in any wallet it can bill. */
+    unreachable: Schema.NullOr(BoatUnreachable).pipe(
+      Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    ),
+  }),
   Schema.Struct({ state: Schema.Literal("unread"), reason: Schema.String }),
 ]);
 export type ServerBoatKey = typeof ServerBoatKey.Type;

@@ -168,6 +168,17 @@ export const readMachine = (
   });
 };
 
+/** The operator's check of the server's own Boat key, now (SLNT-822). */
+export const ServerBoatKeyGroupLive = HttpApiBuilder.group(MendApi, "serverBoatKey", (handlers) =>
+  handlers.handle("check", () =>
+    Effect.gen(function* () {
+      // The server's own key is its operator's (docs/adr/0003): anyone else gets a 404.
+      yield* (yield* ProjectAccess).requireOperator("machine");
+      return yield* (yield* MachineBoatReport).checkServerKey();
+    }),
+  ),
+);
+
 export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handlers) =>
   handlers.handle("get", () =>
     Effect.gen(function* () {

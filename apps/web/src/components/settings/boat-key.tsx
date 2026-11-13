@@ -2,6 +2,12 @@ import {
   type BoatKeyHolder,
   boatKeyFacts,
   boatKeyWarnings,
+  boatWalletChoices,
+  type BoatWalletChoices,
+  hasUnreachable,
+  unreachableWords,
+  type WalletReader,
+  walletOptionLabel,
   dayOf,
   FULL_CHECK_COST,
   FULL_CHECK_WHY,
@@ -17,6 +23,7 @@ import { Redacted } from "effect";
 import { useState } from "react";
 
 import { Button } from "#/components/kit/button";
+import { ChoiceCards } from "#/components/kit/choice-cards";
 import { CodeBox } from "#/components/kit/code-box";
 import { Field, TextInput } from "#/components/kit/field";
 import { ModalDialog } from "#/components/kit/modal";
@@ -70,6 +77,8 @@ export interface BoatKeyBinding {
    * runs, `status` is read again until its result replaces it.
    */
   readonly fullCheck: BoatKeyCall<void, BoatKeyFullCheckDto>;
+  /** Points a personal key at another wallet its Boat account can bill (SLNT-821). */
+  readonly chooseWallet: BoatKeyCall<string, BoatKeyCardStatus>;
   readonly disconnect: BoatKeyCall<void, BoatKeyCardStatus>;
 }
 
@@ -134,10 +143,17 @@ export const useOrganizationBoatKey = (): BoatKeyBinding & {
   });
   const check = useMutation(trpc.boatKey.check.mutationOptions({ onSettled: refresh }));
   const fullCheck = useMutation(trpc.boatKey.fullCheck.mutationOptions({ onSettled: refresh }));
+  const chooseWallet = useMutation({
+    mutationKey: trpc.boatKey.chooseWallet.mutationKey(),
+    mutationFn: (wallet: string) => client.boatKey.chooseWallet.mutate({ wallet }),
+    // A check from before the change reports the wallet the key billed then.
+    onSuccess: () => check.reset(),
+    onSettled: refresh,
+  });
   const disconnect = useMutation(
     trpc.boatKey.disconnect.mutationOptions({ onSuccess: () => check.reset(), onSettled: refresh }),
   );
-  return { status, connect, check, fullCheck, disconnect };
+  return { status, connect, check, fullCheck, chooseWallet, disconnect };
 };
 
 /** Settings, Organization, Boat (SLNT-791). */
@@ -247,13 +263,21 @@ export const usePersonBoatKey = ():
   const fullCheck = useMutation(
     trpc.personBoatKey.fullCheck.mutationOptions({ onSettled: refresh }),
   );
+  const chooseWallet = useMutation({
+    mutationKey: trpc.personBoatKey.chooseWallet.mutationKey(),
+    mutationFn: (wallet: string) => client.personBoatKey.chooseWallet.mutate({ wallet }),
+    onSuccess: () => check.reset(),
+    onSettled: refresh,
+  });
   const disconnect = useMutation(
     trpc.personBoatKey.disconnect.mutationOptions({
       onSuccess: () => check.reset(),
       onSettled: refresh,
     }),
   );
-  return status === undefined ? null : { status, connect, check, fullCheck, disconnect };
+  return status === undefined
+    ? null
+    : { status, connect, check, fullCheck, chooseWallet, disconnect };
 };
 
 /** Settings, Account, Boat key: the caller's own (SLNT-797). */
@@ -450,7 +474,9 @@ function ConnectedKey({
   const now = new Date();
   const checked = check.data ?? null;
   const report = checked?.report ?? details.report;
-  const warnings = report === null ? [] : boatKeyWarnings(report, now, REPLACE_ON_PAGE);
+  const reader: WalletReader = subject.holder === "person" ? "own" : "other";
+  const warnings = report === null ? [] : boatKeyWarnings(report, now, REPLACE_ON_PAGE, reader);
+  const wallets = report === null ? null : boatWalletChoices(report, reader);
   const checkState =
     checked === null || checked.state === "active" ? null : CHECK_STATE[checked.state];
   const observed = report?.observedAt ?? checked?.observedAt ?? null;
@@ -499,7 +525,7 @@ function ConnectedKey({
               { head: "Fact", width: "0.6fr" },
               { head: "Observed", width: "2fr" },
             ]}
-            rows={boatKeyFacts(report, now).map((fact) => ({
+            rows={boatKeyFacts(report, now, reader).map((fact) => ({
               key: fact.label,
               cells: [
                 <span key="label" className="text-[13px] text-ink-2">
@@ -522,6 +548,10 @@ function ConnectedKey({
           />
         </div>
       )}
+      {wallets === null ? null : <WalletChoice binding={binding} choices={wallets} />}
+      {hasUnreachable(details.unreachable) ? (
+        <Notice>{unreachableWords(details.unreachable, subject.holder)}</Notice>
+      ) : null}
       <FullCheckResult fullCheck={details.fullCheck} holder={subject.holder} now={now} />
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" disabled={check.isPending} onClick={() => check.mutate()}>
@@ -628,6 +658,85 @@ function ConnectedKey({
         {disconnect.error === null ? null : <ErrorNote>{errorText(disconnect.error)}</ErrorNote>}
       </ModalDialog>
     </SettingsSection>
+  );
+}
+
+const capitalized = (words: string): string => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
+
+/**
+ * Which wallet a personal key bills, and the others its Boat account can bill (SLNT-821). sealant
+ * pinned the key, when it was connected, to the wallet it billed then; choosing another here
+ * takes effect at once, without the key, for the sessions that start next. Shown only when there is
+ * a choice: never for a Boat organization's key, or a Boat account with one wallet.
+ */
+function WalletChoice({
+  binding,
+  choices,
+}: {
+  readonly binding: BoatKeyBinding;
+  readonly choices: BoatWalletChoices;
+}) {
+  const { chooseWallet } = binding;
+  const current = choices.current;
+  // What the person picked, until they confirm it; the wallet billed now otherwise.
+  const [picked, setPicked] = useState<string | null>(null);
+  const selected = picked ?? current ?? choices.options[0]?.id ?? "";
+  // A key not pinned yet is pinned by choosing, even the wallet it bills now.
+  const changed = selected !== current || !choices.pinned;
+  return (
+    <div className="mt-4 grid gap-2">
+      <Caption>Wallet this key bills</Caption>
+      <p className="text-[13px] leading-relaxed text-muted-foreground">
+        {choices.pinned
+          ? "This key's Boat account can bill more than one wallet. sealant names the one below on every request, so switching wallets in Boat does not move this bill. A change applies to the Boat sessions that start next; sessions running now stay in the wallet they started in."
+          : "This key is not pinned to a wallet yet, so it bills whichever wallet is active in Boat. Choosing one pins it: sealant names it on every request from then on, for the Boat sessions that start next."}
+      </p>
+      <ChoiceCards
+        label="Wallet this key bills"
+        value={selected}
+        disabled={chooseWallet.isPending}
+        onChange={(next) => {
+          chooseWallet.reset();
+          setPicked(next);
+        }}
+        options={choices.options.map((option) => ({
+          value: option.id,
+          title: capitalized(option.label),
+          ...(option.detail === null ? {} : { tag: option.detail }),
+          detail:
+            option.id === current
+              ? "New Boat sessions on this key are billed here."
+              : "Bill new Boat sessions on this key here instead.",
+          ...(option.id === current
+            ? { status: <StatusWord tone="ok">bills now</StatusWord> }
+            : {}),
+        }))}
+      />
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant="primary"
+          disabled={!changed || chooseWallet.isPending}
+          onClick={() =>
+            chooseWallet.mutate(selected, {
+              onSuccess: () => setPicked(null),
+            })
+          }
+        >
+          {chooseWallet.isPending
+            ? "Changing…"
+            : changed
+              ? `Bill ${walletOptionLabel(choices, selected)}`
+              : "Billed here now"}
+        </Button>
+        {changed && !chooseWallet.isPending ? (
+          <Button size="sm" variant="ghost" onClick={() => setPicked(null)}>
+            Keep {walletOptionLabel(choices, current ?? selected)}
+          </Button>
+        ) : null}
+      </div>
+      {chooseWallet.error === null ? null : <ErrorNote>{errorText(chooseWallet.error)}</ErrorNote>}
+    </div>
   );
 }
 

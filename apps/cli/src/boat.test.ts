@@ -1,7 +1,10 @@
 import {
   boatKeyProofFixture,
   boatKeyReportFixture,
+  boatUnreachableFixture,
   organizationKeyReportFixture,
+  threeWalletsReportFixture,
+  walletChangedReportFixture,
 } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
@@ -33,6 +36,7 @@ const ownerView = {
     keyReplacedAt: null,
     report: null,
     fullCheck: { last: null, runningSince: null },
+    unreachable: null,
   },
 };
 
@@ -103,10 +107,11 @@ describe("mend boat status", () => {
       details: { ...ownerView.details, report },
     }));
     const lines = stdout.split("\n");
-    expect(lines.slice(2, 9)).toEqual([
+    expect(lines.slice(2, 10)).toEqual([
       "What Boat said about the key · observed 2026-11-13 14:02 UTC",
       "  Key of           Acme CI @acme-ci service account · a personal key",
-      "  Bills            the Boat organization acme-boat · the key's role there: admin",
+      "  Bills            the Boat organization acme-boat · the key's role there: admin · fixed: sealant names it on every request",
+      "  Can bill         the personal Boat account of @acme-ci; the Boat organization acme-boat (admin) · active in Boat now",
       "  Starts a VM      yes · 2 of 5 VMs running",
       "  Saved snapshots  7 of 10 included slots used",
       "  Permissions      11 permissions · none Mend needs missing",
@@ -190,6 +195,7 @@ const ownConnected = {
     keyReplacedAt: null,
     report: null,
     fullCheck: { last: null, runningSince: null },
+    unreachable: null,
   },
 };
 
@@ -644,5 +650,136 @@ describe("mend help boat", () => {
     expect(flagRefusal(["boat", "--json"])).toBeNull();
     expect(flagRefusal(["boat", "connect", "--json"])).toBeNull();
     expect(flagRefusal(["boat", "connect", "--key"])).toMatch(/^unknown flag --key/);
+  });
+});
+
+describe("the wallet a Boat key bills (SLNT-821)", () => {
+  const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
+  const withReport = (report: unknown, unreachable: unknown = null) => ({
+    ...ownerView,
+    details: { ...ownerView.details, report, unreachable },
+  });
+  const ownView = (report: unknown) => ({
+    organizationName: "Acme",
+    connected: true,
+    sessionRuntime: "boat",
+    organizationKey: false,
+    details: { ...ownerView.details, connectedByUserId: "carol", report },
+  });
+
+  it("prints every wallet a personal key can bill in status, and how to choose another", async () => {
+    const { stdout } = await run([], (call) =>
+      call.route === "/me/boat-key" ? none : withReport(threeWalletsReportFixture(OBSERVED)),
+    );
+    expect(stdout).toContain(
+      "  Bills            the Boat organization acme-boat · the key's role there: admin · fixed: sealant names it on every request",
+    );
+    expect(stdout).toContain(
+      "  Can bill         the personal Boat account of @acme-ci; the Boat organization acme-boat (admin); the Boat organization beta-labs (member) · active in Boat now",
+    );
+    expect(stdout).toContain(
+      "This key's Boat account can bill 3 wallets. mend boat wallet lists them; mend boat wallet <wallet> bills another, from the next session on.",
+    );
+  });
+
+  it("lists the wallets with the one billed now marked, and as JSON", async () => {
+    const { stdout } = await run(["wallet"], () => withReport(threeWalletsReportFixture(OBSERVED)));
+    expect(stdout.split("\n")).toEqual([
+      "Wallets this key's Boat account can bill · observed 2026-11-13 14:02 UTC",
+      "    the personal Boat account of @acme-ci",
+      "  * the Boat organization acme-boat · the key's role: admin · bills now",
+      "    the Boat organization beta-labs · the key's role: member · active in Boat now",
+      "mend boat wallet <wallet> bills another (a Boat organization's name or id, or personal). It applies to the Boat sessions that start next; sessions running now stay in the wallet they started in.",
+      "",
+    ]);
+    const json = await run(["wallet", "--json"], () =>
+      withReport(threeWalletsReportFixture(OBSERVED)),
+    );
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      version: 1,
+      wallets: {
+        current: "org_9",
+        options: [{ id: "personal" }, { id: "org_9" }, { id: "org_12" }],
+      },
+    });
+  });
+
+  it("chooses a wallet by its Boat organization's name, without the key, and says what it changes", async () => {
+    const report = threeWalletsReportFixture(OBSERVED);
+    const { code, sent, stdout } = await run(["wallet", "beta-labs"], (call) =>
+      call.method === "PUT"
+        ? withReport({ ...report, billing: { mode: "pinned", organization: "org_12" } })
+        : withReport(report),
+    );
+    expect(code).toBe(0);
+    expect(sent.at(-1)).toEqual({
+      method: "PUT",
+      route: "/organization/boat-key/wallet",
+      body: { wallet: "org_12" },
+    });
+    expect(stdout).toContain(
+      "✓ the organization's Boat key bills the Boat organization beta-labs from the next Boat session on · sessions running now stay in the wallet they started in",
+    );
+    expect(JSON.stringify(sent)).not.toContain(KEY);
+  });
+
+  it("refuses a wallet the key cannot bill, and a choice for an organization's key, sending nothing", async () => {
+    const unknown = await run(["wallet", "gamma"], () =>
+      withReport(threeWalletsReportFixture(OBSERVED)),
+    );
+    expect(unknown.code).toBe(1);
+    expect(unknown.stderr).toContain(
+      "gamma is not one of the wallets this key's Boat account can bill (personal, acme-boat, beta-labs). Nothing changed.",
+    );
+    expect(unknown.sent.every((call) => call.method === "GET")).toBe(true);
+    const organizationKey = await run(["wallet", "personal"], () =>
+      withReport(organizationKeyReportFixture(OBSERVED)),
+    );
+    expect(organizationKey.code).toBe(1);
+    expect(organizationKey.stderr).toContain("This key has no other wallet to choose");
+    expect(organizationKey.sent.every((call) => call.method === "GET")).toBe(true);
+  });
+
+  it("chooses the person's own wallet with --mine, naming it as theirs", async () => {
+    const report = threeWalletsReportFixture(OBSERVED);
+    const { sent, stdout } = await run(["wallet", "personal", "--mine"], (call) =>
+      call.method === "PUT"
+        ? ownView({ ...report, billing: { mode: "pinned", organization: "personal" } })
+        : ownView(report),
+    );
+    expect(sent.at(-1)).toEqual({
+      method: "PUT",
+      route: "/me/boat-key/wallet",
+      body: { wallet: "personal" },
+    });
+    expect(stdout).toContain("✓ your own Boat key bills your personal Boat account from the next");
+    expect(stdout).toContain("  Bills            your personal Boat account");
+  });
+
+  it("says the bill moved for a key sealant has not pinned, and names what sealant cannot reach", async () => {
+    const { stdout } = await run([], (call) =>
+      call.route === "/me/boat-key"
+        ? none
+        : withReport(walletChangedReportFixture(OBSERVED), boatUnreachableFixture),
+    );
+    expect(stdout).toContain(
+      "! The bill moved: this key billed the personal Boat account of @acme-ci",
+    );
+    expect(stdout).toContain(
+      "! sealant could not find the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat)",
+    );
+    const json = await run(["--json"], (call) =>
+      call.route === "/me/boat-key"
+        ? none
+        : withReport(walletChangedReportFixture(OBSERVED), boatUnreachableFixture),
+    );
+    expect(JSON.parse(json.stdout)).toMatchObject({
+      status: {
+        details: {
+          unreachable: boatUnreachableFixture,
+          report: { billing: { mode: "active-wallet" } },
+        },
+      },
+    });
   });
 });

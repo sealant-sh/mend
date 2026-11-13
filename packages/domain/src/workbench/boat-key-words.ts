@@ -3,6 +3,7 @@ import {
   type BoatKeyReport,
   missingBoatKeyPermissions,
 } from "./boat-key.ts";
+import { billsFact, canBillFact, walletWarnings, type WalletReader } from "./boat-wallet-words.ts";
 
 /**
  * What Mend says about a Boat key's report (SLNT-791): one row per fact Sealant observed, or did
@@ -139,17 +140,6 @@ const identityRow = (report: BoatKeyReport): BoatKeyFact => {
   return row("Key of", value, status === null ? null : "bad");
 };
 
-const walletRow = (report: BoatKeyReport): BoatKeyFact => {
-  const { wallet } = report;
-  if (!wallet.observed) return unobserved("Bills", wallet);
-  if (wallet.kind === "personal") return row("Bills", "a personal wallet");
-  const name = wallet.organizationName ?? wallet.organizationId ?? "a Boat organization";
-  return row(
-    "Bills",
-    `the Boat organization ${name}${wallet.role === null ? "" : ` · the key's role there: ${wallet.role}`}`,
-  );
-};
-
 const startRow = (report: BoatKeyReport): BoatKeyFact => {
   const { start } = report;
   if (!start.observed) return unobserved("Starts a VM", start);
@@ -216,9 +206,14 @@ const expiryRow = (report: BoatKeyReport, now: Date): BoatKeyFact => {
 };
 
 /** Every fact the report holds, in the order Mend lists them. */
-export const boatKeyFacts = (report: BoatKeyReport, now: Date): ReadonlyArray<BoatKeyFact> => [
+export const boatKeyFacts = (
+  report: BoatKeyReport,
+  now: Date,
+  reader: WalletReader = "other",
+): ReadonlyArray<BoatKeyFact> => [
   identityRow(report),
-  walletRow(report),
+  billsFact(report, reader, unobserved),
+  ...[canBillFact(report, reader, unobserved)].filter((fact) => fact !== null),
   startRow(report),
   snapshotsRow(report),
   permissionsRow(report),
@@ -253,8 +248,9 @@ export const boatKeyWarnings = (
   report: BoatKeyReport,
   now: Date,
   replace: string,
+  reader: WalletReader = "other",
 ): ReadonlyArray<BoatKeyWarning> => {
-  const warnings: Array<BoatKeyWarning> = [];
+  const warnings: Array<BoatKeyWarning> = [...walletWarnings(report, reader)];
   const { expiry, permissions, start, identity, snapshots } = report;
   if (expiry.observed) {
     const state = expiryState(expiry, now);

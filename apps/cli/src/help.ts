@@ -454,7 +454,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "start",
     summary: "check server readiness, or bundle diagnostics for a bug report",
     synopsis: [
-      "[--harness claude|codex|pi] [--project <p>] [--json]",
+      "[--harness claude|codex|pi] [--project <p>] [--check-boat-key] [--json]",
       "--bundle [--out <path>] [--tail <n>]",
     ],
     description: [
@@ -471,6 +471,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         flag: "--json",
         text: "v1 checklist; server, sign-in, chosen harness and project Git block readiness; info items are advisory; incompatible with --bundle",
+      },
+      {
+        flag: "--check-boat-key",
+        text: "operators only: ask Boat about the server's own Boat key now, read-only, before its lines are read; otherwise sealant checks it once a day",
       },
       { flag: "--bundle", text: "write the diagnostic archive instead of printing the checklist" },
       {
@@ -1984,13 +1988,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[--mine] [--json]"],
     description: [
       "A Boat session runs in, and is billed to, the Boat account of its owner's own key in the organization, else the organization's key, else the server's. Prints the organization's key, then your own. Members see whether the organization has one; owners also see who connected it, when, when it was last replaced, what Boat said about it the last time Sealant checked, and which members have their own key, never its details.",
+      "What Boat said includes the wallet the key bills and whether that is fixed: a Boat organization's key bills that organization only; a personal key is pinned by sealant, when it is connected, to the wallet it billed then, and lists every wallet its Boat account can bill. When sealant reports things the key's account made in Boat that it cannot reach in any of those wallets, status names them and says what to do.",
       "A running session stays in the Boat account it started in, whoever steers it. Its next start uses the key that decides then.",
     ],
     options: [
       { flag: "--mine", text: "act on your own Boat key in your active organization instead" },
       { flag: "--json", text: "print the versioned status or error as JSON" },
     ],
-    see: ["boat connect", "boat check", "boat disconnect"],
+    see: ["boat connect", "boat check", "boat wallet", "boat disconnect"],
   },
   {
     name: "boat connect",
@@ -2041,6 +2046,26 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--json", text: "print the versioned status or error as JSON" },
     ],
     see: ["boat status", "boat connect"],
+  },
+  {
+    name: "boat wallet",
+    section: "organization",
+    summary: "show or choose the Boat wallet a personal key bills",
+    synopsis: ["[<wallet>] [--mine] [--json]"],
+    description: [
+      "Owners only for the organization's key; with --mine, your own. With no wallet, lists the wallets the key's Boat account can bill, as sealant last observed them, and marks the one it bills now. With a wallet (a Boat organization's name or id as listed, or personal), points the key at it, without the key: sealant names that wallet on every request from then on. It takes effect at once for the Boat sessions that start next; sessions running now, and images already saved, stay in the wallet they were made in.",
+      "A Boat organization's key bills its organization only, and a key whose Boat account belongs to one wallet has nothing to choose: both are refused with a sentence. mend boat check reads the list from Boat again.",
+    ],
+    options: [
+      { flag: "--mine", text: "act on your own Boat key in your active organization instead" },
+      { flag: "--json", text: "print the versioned status or error as JSON" },
+    ],
+    examples: [
+      { command: "mend boat wallet", text: "list the wallets the organization's key can bill" },
+      { command: "mend boat wallet acme-boat", text: "bill the Boat organization acme-boat" },
+      { command: "mend boat wallet personal --mine", text: "bill your personal Boat account" },
+    ],
+    see: ["boat status", "boat check"],
   },
   {
     name: "folder list",
@@ -2353,7 +2378,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--boat-api-key-stdin",
-        text: "optional: give this server a Boat key of its own, read from standard input (pipe the key alone). Boat sessions of every organization with no key connected then run in that key's Boat account, which pays for all of them. Without it, each organization's owner connects its own key. Kept in server.env only, across reruns and upgrades",
+        text: "optional: give this server a Boat key of its own: at a terminal, asked for with a hidden prompt; otherwise read from standard input (pipe the key alone). Boat sessions of every organization with no key connected then run in that key's Boat account, which pays for all of them. Without it, each organization's owner connects its own key. Kept in server.env only, across reruns and upgrades",
       },
       {
         flag: "--no-boat-api-key",

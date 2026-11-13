@@ -1,4 +1,4 @@
-import { ConnectBoatKeyRequest } from "@mend/api-contracts";
+import { ChooseBoatWalletRequest, ConnectBoatKeyRequest } from "@mend/api-contracts";
 
 import { run } from "../api/index.ts";
 import { input, procedure, router } from "./trpc.ts";
@@ -15,6 +15,11 @@ export const boatKeyRouter = router({
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.boatKey.connect({ payload }))),
   check: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.check())),
   fullCheck: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.fullCheck())),
+  chooseWallet: procedure
+    .input(input(ChooseBoatWalletRequest))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.boatKey.chooseWallet({ payload })),
+    ),
   disconnect: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.disconnect())),
 });
 
@@ -31,5 +36,10 @@ export const personBoatKeyRouter = router({
     ),
   check: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.check())),
   fullCheck: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.fullCheck())),
+  chooseWallet: procedure
+    .input(input(ChooseBoatWalletRequest))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.personBoatKey.chooseWallet({ payload })),
+    ),
   disconnect: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.disconnect())),
 });

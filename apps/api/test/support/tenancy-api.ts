@@ -422,6 +422,7 @@ export const createTenancyApi = async (
           | "removeBoatAccount"
           | "checkBoatAccount"
           | "proveBoatAccount"
+          | "setBoatAccountOrganization"
         >
       >;
       readonly slackDefaults?: Layer.PartialEffectful<SlackDefaultsRepo["Service"]>;
@@ -1072,6 +1073,9 @@ export const createTenancyApi = async (
       workspaceRuntimesReportOf(options.workspaceRuntimes ?? DOCKER_AND_BOAT),
       Layer.succeed(MachineBoatReport, {
         read: () => Effect.succeed(options.machineBoat ?? serverBoatFactsFixture()),
+        // The operator's check answers what the machine view would read afterwards.
+        checkServerKey: () =>
+          Effect.succeed((options.machineBoat ?? serverBoatFactsFixture()).serverKey),
       }),
       Layer.succeed(DeploymentConfig, {
         mode: "local",
