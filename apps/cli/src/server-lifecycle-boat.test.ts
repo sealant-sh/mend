@@ -77,7 +77,7 @@ describe("Boat sessions", { timeout: 120_000 }, () => {
     expect(f.files()["server.env"]).toBe(env);
     expect(await f.upgrade()).toEqual({ _tag: "ok" });
     expect(f.files()["server.env"]).toBe(env.replace("MEND_VERSION=0.23.0", "MEND_VERSION=0.24.0"));
-    // Core adopts the deployment name and builder owner into its own record the first time it
+    // sealant adopts the deployment name and builder owner into its own record the first time it
     // starts with them set (sealant#637); an install that dropped them in that same upgrade would no
     // longer recognise its VMs and saved images. So the upgrade keeps handing both to `mend`.
     const upgraded = f.files();
