@@ -448,7 +448,9 @@ describe.skipIf(postgres.skip)("Mend's MCP server over the session channel", () 
       for (const answer of answers) expect(resultOf(answer).isError).toBe(false);
       const stored = await rows();
       expect(
-        stored.map((row) => [row["title"], row["session_id"], row["account_id"]]).toSorted(),
+        stored
+          .map((row) => [row["title"], row["session_id"], row["account_id"]])
+          .toSorted((a, b) => String(a[0]).localeCompare(String(b[0]))),
       ).toEqual([
         ["a0", ALICE_SESSION, "alice"],
         ["a2", ALICE_SESSION, "alice"],

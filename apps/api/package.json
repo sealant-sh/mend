@@ -7,7 +7,7 @@
     "bench:worktree-reads": "vitest run --config vitest.performance.config.ts",
     "build": "BUNDLE_ENTRIES=src/main.ts,src/page-check-worker.ts,src/screen-worker.ts BUNDLE_EXTERNAL=bufferutil,utf-8-validate,pg-native,@opentelemetry/api BUNDLE_ASSETS=../../packages/sessions/src/shell-profile node ../../tooling/scripts/bundle-app.mjs",
     "dev": "tsx watch src/main.ts",
-    "lint": "oxlint .",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware .",
     "start": "node --experimental-strip-types src/main.ts",
     "test": "vitest run --passWithNoTests",
     "test:preview-acceptance": "vitest run --config vitest.preview.config.ts",

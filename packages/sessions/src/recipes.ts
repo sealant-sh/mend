@@ -405,6 +405,7 @@ const readRecipe = (
     ignore: (key) => ignored.push(new IgnoredDeclaration({ name, key })),
   };
   const draft: Draft = { ...DEFAULTS };
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- K correlates READERS[key] with the field it fills
   const assign = <K extends keyof RecipeFields>(key: K, value: unknown) => {
     const read = READERS[key](value, context);
     if (read !== undefined) draft[key] = read;

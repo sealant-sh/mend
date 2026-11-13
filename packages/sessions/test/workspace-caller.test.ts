@@ -67,7 +67,9 @@ const sessionOf = (id: string, ownerUserId: string, workspaceId: string | null) 
   });
 
 // Only their ids are read on the way through; the platform beneath is a mock.
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fixture: the code under test reads only its id
 const workspace = { id: HOLDER_WORKSPACE } as unknown as Workspace;
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fixture: the code under test reads only its id
 const run = { id: "run-joined" } as unknown as Run;
 
 const joinedRun = new SessionRun({

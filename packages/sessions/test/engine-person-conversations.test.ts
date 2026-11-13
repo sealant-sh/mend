@@ -650,10 +650,10 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
               cwd: "/workspace/repo",
               providerSessionId: run.attached[index]?.process.providerSessionId,
               configDirectory: shared
-                ? `/run/mend/conv/${run.sessionId}/.claude`
+                ? `/run/mend/conv/${String(run.sessionId)}/.claude`
                 : `${linuxHomeOf(person)}/.claude`,
               savedClaudeDirectory: shared
-                ? `/workspace/harness-home/people/user-fixture/conversations/${run.sessionId}/.claude`
+                ? `/workspace/harness-home/people/user-fixture/conversations/${String(run.sessionId)}/.claude`
                 : "/workspace/harness-home/people/user-fixture/.claude",
             });
         }),
@@ -665,7 +665,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
     () =>
       Effect.gen(function* () {
         const run = yield* scenario({ harness: "claude", shared: true, mode: "protocol" });
-        const home = `/run/mend/conv/${run.sessionId}`;
+        const home = `/run/mend/conv/${String(run.sessionId)}`;
         // First start: the move, as the owner, then the exchange; sealant writes the owner's login into H.
         const firstExecs = run.execCalls.slice(0, run.afterFirst.execs);
         const stages = firstExecs.filter(isStage);
@@ -723,7 +723,7 @@ describe("the conversation home of a shared conversation (docs/adr/0016, Deliver
     () =>
       Effect.gen(function* () {
         const run = yield* scenario({ harness: "codex", shared: true, mode: "protocol" });
-        const home = `/run/mend/conv/${run.sessionId}`;
+        const home = `/run/mend/conv/${String(run.sessionId)}`;
         const agentOptions = run.opened.filter(
           (options) => "env" in options && options.env?.["CODEX_HOME"] !== undefined,
         );
@@ -882,7 +882,7 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
       },
     );
     if (sessionId === null) throw new Error("no session");
-    const home = `/run/mend/conv/${sessionId}`;
+    const home = `/run/mend/conv/${String(sessionId)}`;
     // The terminal agent: the owner's, in H, with the neutral settings and its transcript there.
     const terminal = spawned.at(-1) ?? [];
     expect(terminal).not.toContain("stream-json");
@@ -1089,7 +1089,9 @@ describe("a terminal takeover of a once-shared conversation (review of mend#572,
     expect(pinned).toMatch(/^[0-9a-f-]{36}$/);
     const settings: unknown = JSON.parse(terminal[terminal.indexOf("--settings") + 1] ?? "{}");
     expect(settings).toEqual({ ...claudeSettingsOf("neutral"), hooks: CLAUDE_AGENT_HOOKS });
-    expect(opened.at(-1)?.env?.["CLAUDE_CONFIG_DIR"]).toBe(`/run/mend/conv/${sessionId}/.claude`);
+    expect(opened.at(-1)?.env?.["CLAUDE_CONFIG_DIR"]).toBe(
+      `/run/mend/conv/${String(sessionId)}/.claude`,
+    );
     expect(agentRows.map((row) => row.providerSessionId)).toEqual([pinned]);
   }, 30_000);
 
@@ -2211,7 +2213,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           postFails: (onBehalfOf, home) =>
             onBehalfOf === MARIA && home.startsWith("/run/mend/conv/"),
         });
-        const home = `/run/mend/conv/${run.sessionId}`;
+        const home = `/run/mend/conv/${String(run.sessionId)}`;
         expect(run.outcome?.message).toContain("sealant did not answer");
         // Alice's process was stopped for it; nothing of Maria's started.
         expect(run.stops).toHaveLength(1);
@@ -2253,7 +2255,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
           },
           stillQuiescent: Effect.sync(() => !withdrawn),
         });
-        const home = `/run/mend/conv/${run.sessionId}`;
+        const home = `/run/mend/conv/${String(run.sessionId)}`;
         expect(withdrawn).toBe(true);
         expect(run.outcome?.code).toBe("hand_over_not_now");
         expect(run.stops).toEqual([]);

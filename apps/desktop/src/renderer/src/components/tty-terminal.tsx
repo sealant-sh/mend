@@ -305,7 +305,7 @@ export function TtyTerminal({
       onData: (data) => {
         if (readOnly) return;
         if (ws !== null && ws.readyState === WebSocket.OPEN) {
-          ws.send(encoder.encode(data).buffer as ArrayBuffer);
+          ws.send(encoder.encode(data).buffer);
         }
       },
       onResize: (cols, rows) => sendResize(cols, rows),

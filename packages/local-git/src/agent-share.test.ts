@@ -87,6 +87,8 @@ const bridgeServer = async () => {
   wss.on("connection", (socket) => {
     sockets.push(socket);
     socket.on("message", (data) => {
+      // ws hands text frames over as one Buffer unless binaryType says otherwise.
+      if (!Buffer.isBuffer(data)) throw new Error("Expected a Buffer message");
       replies.push(JSON.parse(data.toString()));
       notify();
     });

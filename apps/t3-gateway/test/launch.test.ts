@@ -582,7 +582,7 @@ describe("orchestration.launchThread", () => {
             base: "main",
             mode: "protocol",
           });
-          assert.match(String(name), /^health-check-[a-z0-9]{6}$/);
+          assert.match(name, /^health-check-[a-z0-9]{6}$/);
           // The client opens a launched thread once the shell shows it, by its own id.
           const shown = yield* shell.next(shellThread("draft-thread-1"));
           assert.isNotNull(shown.thread.latestUserMessageAt);

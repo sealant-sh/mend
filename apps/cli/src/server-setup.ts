@@ -237,11 +237,11 @@ export interface ServerSetupRuntime {
   /** Version of this CLI, used for a fresh server pin. */
   readonly cliVersion: string;
   /** Run without a shell; enforce deadlines and await group termination; capture bounded output or stream stdout to an exclusive private file. */
-  run(
+  readonly run: (
     command: string,
     args: ReadonlyArray<string>,
     options?: ServerProcessOptions,
-  ): Promise<CommandOutput>;
+  ) => Promise<CommandOutput>;
   /** Fetch text with a bounded request timeout, and the headers given, when any. */
   fetchText(
     url: string,
@@ -253,7 +253,7 @@ export interface ServerSetupRuntime {
   /** Wait between advertised health probes. */
   sleep(milliseconds: number): Promise<void>;
   /** Print one progress or result line. */
-  writeLine(line: string): void;
+  readonly writeLine: (line: string) => void;
   /** Receives only public facts while the installation lock is held. */
   readonly observe?: (observation: ServerObservation) => void;
   /**
@@ -1692,7 +1692,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     );
   }
   const declared = Array.isArray(declaredField)
-    ? declaredField.filter((item): item is DeclarableItem => isDeclarableItem(String(item)))
+    ? declaredField.filter((item): item is DeclarableItem => isDeclarableItem(item))
     : [];
   const t3GatewayPort = fields.has("t3GatewayPort")
     ? requiredInteger(fields, "t3GatewayPort")
@@ -5567,7 +5567,8 @@ const operatorReportLines = async (
     ];
   }
   const headers = { Authorization: `Bearer ${login.token}` };
-  const read = async (route: string): Promise<unknown | string> => {
+  // The answer's JSON, or its text when it is not JSON.
+  const read = async (route: string): Promise<unknown> => {
     const response = await runtime.fetchText(
       `${healthOrigin(installation.config)}/api${route}`,
       5_000,
@@ -5967,9 +5968,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     ...(environment["DOCKER_CONTEXT"] === undefined || environment["DOCKER_CONTEXT"].trim() === ""
       ? {}
       : { dockerContextVariable: environment["DOCKER_CONTEXT"].trim() }),
-    ...(process.stdin.isTTY === true && process.stdout.isTTY === true
-      ? { prompter: askOnTerminal }
-      : {}),
+    ...(process.stdin.isTTY && process.stdout.isTTY ? { prompter: askOnTerminal } : {}),
     lookupHost: async (host) => {
       try {
         return (await dns.lookup(host, { all: true })).map((entry) => entry.address);

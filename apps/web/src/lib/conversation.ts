@@ -26,7 +26,7 @@ export interface TurnView extends AgentTurnDto {
   readonly unreachable?: UnreachableCause | null;
 }
 
-export type ConversationView = AgentConversation<TurnView, AgentItemDto, AgentRequestDto>;
+export type ConversationView = AgentConversation<TurnView>;
 
 const iso = (date: Date): string => date.toISOString();
 const isoOrNull = (date: Date | null): string | null => (date === null ? null : iso(date));

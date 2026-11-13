@@ -723,7 +723,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           expect(
             yield* refusedBy(sql`UPDATE preview_controls SET state = ${state}, stopped_by = ${by},
               stopped_at = ${stoppedAt} WHERE preview_id = ${preview.id}`),
-            `${state} ${by} ${stoppedAt}`,
+            `${state} ${by} ${String(stoppedAt)}`,
           ).toBe(constraint);
         }
         expect(
@@ -997,7 +997,7 @@ describe.skipIf(postgres.skip)("preview identity and binding in Postgres", () =>
           const assigned = answers.flatMap((answer) =>
             answer._tag === "Assigned" ? [answer.port] : [],
           );
-          expect(assigned.toSorted()).toEqual(set);
+          expect(assigned.toSorted((a, b) => a - b)).toEqual(set);
           expect(
             answers.flatMap((answer) => (answer._tag === "PoolFull" ? [answer.size] : [])),
           ).toEqual([2]);

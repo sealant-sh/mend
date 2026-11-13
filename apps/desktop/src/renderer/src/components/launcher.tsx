@@ -241,7 +241,7 @@ export function SessionComposer({
       aria-label={`New session in ${project.name}`}
       onSubmit={(event) => {
         event.preventDefault();
-        void submit();
+        submit();
       }}
       onKeyDown={(event) => {
         if (event.key === "Escape" && menu === null && busy === null) onClose?.();

@@ -81,8 +81,8 @@ function Segmented<T extends string>({
     <ToggleGroup
       value={[value]}
       onValueChange={(next: string[]) => {
-        const picked = next[0];
-        if (picked !== undefined && options.includes(picked as T)) onChange(picked as T);
+        const picked = options.find((option) => option === next[0]);
+        if (picked !== undefined) onChange(picked);
       }}
       className="flex rounded-xl border border-rule bg-background p-0.5"
     >
@@ -326,7 +326,10 @@ const PROVIDERS: ReadonlyArray<{
 
 const accountHint = (account: ConnectedAccountDto): string => {
   const meta = account.metadata;
-  const pick = (key: string) => (typeof meta[key] === "string" ? String(meta[key]) : null);
+  const pick = (key: string) => {
+    const value = meta[key];
+    return typeof value === "string" ? value : null;
+  };
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
   const suffix = pick("tokenSuffix");
   const parts = [

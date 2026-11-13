@@ -42,7 +42,7 @@
   "main": "./dist/extension.js",
   "scripts": {
     "build": "tsc -p tsconfig.json --noEmit && node build.mjs",
-    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware . --no-error-on-unmatched-pattern",
     "package": "vsce package --no-dependencies",
     "test": "vitest run",
     "test:e2e": "node ../../scripts/vscode-remote-acceptance.mjs",

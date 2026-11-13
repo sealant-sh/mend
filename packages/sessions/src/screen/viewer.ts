@@ -57,7 +57,7 @@ export type WatchEnd =
 export interface RelayPorts {
   /** A connection to the screen's Xvnc and the view-only password, or the end it met instead. */
   readonly dial: Effect.Effect<
-    { readonly bytes: ForwardBytes; readonly password: Redacted.Redacted<string> },
+    { readonly bytes: ForwardBytes; readonly password: Redacted.Redacted },
     WatchEnd,
     Scope.Scope
   >;

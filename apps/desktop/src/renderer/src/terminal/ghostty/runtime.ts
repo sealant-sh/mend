@@ -1,8 +1,6 @@
 import ghosttyWasmUrl from "./vendor/ghostty-vt.wasm?url";
 import ghosttyWritePtyWasmUrl from "./vendor/ghostty-write-pty.wasm?url&no-inline";
 
-type WasmFunction = (...args: Array<number | bigint>) => number;
-
 interface TypeField {
   readonly offset: number;
   readonly size: number;
@@ -38,7 +36,8 @@ export class GhosttyRuntime {
     const bytes = new Uint8Array(memory.buffer);
     let end = jsonPointer;
     while (end < bytes.length && bytes[end] !== 0) end += 1;
-    this.layouts = JSON.parse(textDecoder.decode(bytes.subarray(jsonPointer, end))) as TypeLayouts;
+    const layouts: TypeLayouts = JSON.parse(textDecoder.decode(bytes.subarray(jsonPointer, end)));
+    this.layouts = layouts;
   }
 
   static async load(): Promise<GhosttyRuntime> {
@@ -70,7 +69,8 @@ export class GhosttyRuntime {
     if (typeof fn !== "function") {
       throw new Error(`libghostty-vt export is unavailable: ${name}`);
     }
-    return (fn as WasmFunction)(...args);
+    // A WebAssembly export's signature lives in the module; every one Mend calls answers a number.
+    return fn(...args);
   }
 
   layout(name: string): TypeLayout {

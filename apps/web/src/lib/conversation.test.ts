@@ -120,7 +120,7 @@ const world = () => {
 };
 
 const texts = (view: { readonly items: ReadonlyArray<{ readonly text: string | null }> }) =>
-  view.items.map((row) => row.text).toSorted();
+  view.items.map((row) => row.text).toSorted((a, b) => String(a).localeCompare(String(b)));
 
 describe("a conversation read newest first, a window at a time", () => {
   it("reads only the newest window at first: its items, its turns and their requests, in one request", async () => {

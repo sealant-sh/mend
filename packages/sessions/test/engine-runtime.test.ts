@@ -358,36 +358,41 @@ describe("the server's session runtime choice", () => {
   });
 
   for (const runtime of ["docker", "boat"] as const) {
-    it(`${runtime === "boat" ? "tells sealant a Boat workspace has no resources only while its worktree binds none" : "never tells sealant a Docker workspace has no resources"}`, async () => {
-      const created: CreateOptions[] = [];
-      const bindings = { present: false };
-      const resourceRuntime = Layer.effect(
-        ResourceRuntime,
-        Effect.gen(function* () {
-          const none = yield* ResourceRuntime;
-          return { ...none, bindsAny: () => Effect.sync(() => bindings.present) };
-        }),
-      ).pipe(Layer.provide(ResourceRuntimeNone));
-      await withEngine(
-        (world, tmp) =>
+    it(
+      runtime === "boat"
+        ? "tells sealant a Boat workspace has no resources only while its worktree binds none"
+        : "never tells sealant a Docker workspace has no resources",
+      async () => {
+        const created: CreateOptions[] = [];
+        const bindings = { present: false };
+        const resourceRuntime = Layer.effect(
+          ResourceRuntime,
           Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            yield* engine.stop(session.id);
-            bindings.present = true;
-            yield* engine.resumeSession(session.id, "shell");
-            expect(created.map((options) => options.resources)).toEqual(
-              runtime === "boat" ? ["none", undefined] : [undefined, undefined],
-            );
+            const none = yield* ResourceRuntime;
+            return { ...none, bindsAny: () => Effect.sync(() => bindings.present) };
           }),
-        {
-          sessionRuntime: runtime,
-          workspaceImage: ubuntu,
-          sealantLayer: lifecycleLayer(created),
-          resourceRuntime,
-        },
-      );
-    });
+        ).pipe(Layer.provide(ResourceRuntimeNone));
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              yield* engine.launch(session.id, ["codex"]);
+              yield* engine.stop(session.id);
+              bindings.present = true;
+              yield* engine.resumeSession(session.id, "shell");
+              expect(created.map((options) => options.resources)).toEqual(
+                runtime === "boat" ? ["none", undefined] : [undefined, undefined],
+              );
+            }),
+          {
+            sessionRuntime: runtime,
+            workspaceImage: ubuntu,
+            sealantLayer: lifecycleLayer(created),
+            resourceRuntime,
+          },
+        );
+      },
+    );
   }
 
   /**
@@ -396,78 +401,83 @@ describe("the server's session runtime choice", () => {
    * names each source the person keeps as not applied. Docker sends them as before.
    */
   for (const runtime of ["docker", "boat"] as const) {
-    it(`${runtime === "boat" ? "starts a shared Boat session without dotfiles archives and says so" : "sends a shared Docker session's dotfiles with the create"}`, async () => {
-      const created: CreateOptions[] = [];
-      const cloned: string[] = [];
-      let recorded: SessionDotfiles | null = null;
-      await withEngine(
-        (world, tmp) =>
-          Effect.gen(function* () {
-            const { engine, session } = yield* launchOnce(world, tmp);
-            yield* engine.launch(session.id, ["codex"]);
-            recorded = world.sessions.get(session.id)?.dotfiles ?? null;
-          }),
-        {
-          sessionRuntime: runtime,
-          workspaceImage: ubuntu,
-          sealantLayer: lifecycleLayer(created),
-          userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
-            repository: () =>
-              Effect.succeed(
-                runtime === "boat"
-                  ? {
-                      url: "https://example.test/dotfiles.git",
-                      ref: null,
-                      subdirectory: null,
-                      manager: "auto" as const,
-                      bootstrap: true,
-                    }
-                  : null,
-              ),
-            setRepository: (_userId, value) => Effect.succeed(value),
-            startAgentsAfterInstall: () => Effect.succeed(false),
-            setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
-          }),
-          dotfilesClonerLayer: Layer.succeed(DotfilesCloner, {
-            archive: (_owner, repository) =>
-              Effect.sync(() => {
-                cloned.push(repository.url);
-                return { data: "cmVwbw==", manager: "auto" as const, bootstrap: true };
-              }),
-          }),
-          dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
-            snapshot: () => Effect.die("not in test"),
-            current: () =>
-              Effect.succeed({
-                sha: SNAPSHOT.sha,
-                source: "laptop",
-                committedAt: new Date(0),
-                files: [],
-              }),
-            archive: () => Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
-            clear: () => Effect.void,
-          }),
-        },
-      );
-      expect(created).toHaveLength(1);
-      if (runtime === "docker") {
-        expect(created[0]?.dotfiles).toEqual({
-          archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+    it(
+      runtime === "boat"
+        ? "starts a shared Boat session without dotfiles archives and says so"
+        : "sends a shared Docker session's dotfiles with the create",
+      async () => {
+        const created: CreateOptions[] = [];
+        const cloned: string[] = [];
+        let recorded: SessionDotfiles | null = null;
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              yield* engine.launch(session.id, ["codex"]);
+              recorded = world.sessions.get(session.id)?.dotfiles ?? null;
+            }),
+          {
+            sessionRuntime: runtime,
+            workspaceImage: ubuntu,
+            sealantLayer: lifecycleLayer(created),
+            userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+              repository: () =>
+                Effect.succeed(
+                  runtime === "boat"
+                    ? {
+                        url: "https://example.test/dotfiles.git",
+                        ref: null,
+                        subdirectory: null,
+                        manager: "auto" as const,
+                        bootstrap: true,
+                      }
+                    : null,
+                ),
+              setRepository: (_userId, value) => Effect.succeed(value),
+              startAgentsAfterInstall: () => Effect.succeed(false),
+              setStartAgentsAfterInstall: (_userId, value) => Effect.succeed(value),
+            }),
+            dotfilesClonerLayer: Layer.succeed(DotfilesCloner, {
+              archive: (_owner, repository) =>
+                Effect.sync(() => {
+                  cloned.push(repository.url);
+                  return { data: "cmVwbw==", manager: "auto" as const, bootstrap: true };
+                }),
+            }),
+            dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
+              snapshot: () => Effect.die("not in test"),
+              current: () =>
+                Effect.succeed({
+                  sha: SNAPSHOT.sha,
+                  source: "laptop",
+                  committedAt: new Date(0),
+                  files: [],
+                }),
+              archive: () => Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
+              clear: () => Effect.void,
+            }),
+          },
+        );
+        expect(created).toHaveLength(1);
+        if (runtime === "docker") {
+          expect(created[0]?.dotfiles).toEqual({
+            archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+          });
+          expect(recorded).toEqual({ repository: null, snapshotSha: SNAPSHOT.sha, notApplied: [] });
+          return;
+        }
+        expect(created[0]?.dotfiles).toBeUndefined();
+        expect(cloned).toEqual([]);
+        expect(recorded).toEqual({
+          repository: { url: "https://example.test/dotfiles.git", ref: null },
+          snapshotSha: null,
+          notApplied: [
+            { source: "repository", reason: DOTFILES_NOT_ON_BOAT_SHARED },
+            { source: "snapshot", reason: DOTFILES_NOT_ON_BOAT_SHARED },
+          ],
         });
-        expect(recorded).toEqual({ repository: null, snapshotSha: SNAPSHOT.sha, notApplied: [] });
-        return;
-      }
-      expect(created[0]?.dotfiles).toBeUndefined();
-      expect(cloned).toEqual([]);
-      expect(recorded).toEqual({
-        repository: { url: "https://example.test/dotfiles.git", ref: null },
-        snapshotSha: null,
-        notApplied: [
-          { source: "repository", reason: DOTFILES_NOT_ON_BOAT_SHARED },
-          { source: "snapshot", reason: DOTFILES_NOT_ON_BOAT_SHARED },
-        ],
-      });
-    });
+      },
+    );
   }
 
   for (const refusal of [

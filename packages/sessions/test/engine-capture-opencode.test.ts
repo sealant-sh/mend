@@ -171,7 +171,7 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
             expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(false);
             expect(fs.existsSync(path.join(stateDir, "manifest.json"))).toBe(false);
             const refusal = yield* engine.resumeSession(session.id, null).pipe(Effect.flip);
-            expect(String(refusal.message)).toContain(
+            expect(refusal.message).toContain(
               "opencode left no conversation Mend can tell is session",
             );
             expect(opens).toBe(1);
@@ -198,7 +198,7 @@ const verifyOpencodeHarvest = (kind: "own" | "none" | "unattributed" | "unprompt
               "the first process settle",
             );
             const refusal = yield* engine.resumeSession(session.id, null).pipe(Effect.flip);
-            expect(String(refusal.message)).toContain(
+            expect(refusal.message).toContain(
               "opencode left no conversation Mend can tell is session",
             );
             expect(opens).toBe(1);

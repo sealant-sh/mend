@@ -326,11 +326,16 @@ export function ServicesSheet({
   };
   const submit = (form: HTMLFormElement) => {
     const data = new FormData(form);
-    const command = String(data.get("command") ?? "").trim();
-    const name = String(data.get("name") ?? "").trim() || null;
+    // Every field read here is a text input, so its entry is a string; a missing one reads empty.
+    const text = (key: string): string => {
+      const value = data.get(key);
+      return typeof value === "string" ? value : "";
+    };
+    const command = text("command").trim();
+    const name = text("name").trim() || null;
     const port = Number(data.get("port"));
     const protocol = data.get("udp") === "on" ? "udp" : "tcp";
-    const requested = String(data.get("scheme") ?? "");
+    const requested = text("scheme");
     let browserScheme: "http" | "https" | null = null;
     if (protocol === "tcp" && requested === "http") browserScheme = "http";
     if (protocol === "tcp" && requested === "https") browserScheme = "https";

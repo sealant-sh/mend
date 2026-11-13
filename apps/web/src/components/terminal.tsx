@@ -347,8 +347,13 @@ export function SessionTerminal({
           if (disposed || socket !== ws) return;
           if (typeof event.data === "string") {
             try {
-              const frame = JSON.parse(event.data) as { readonly t?: string };
-              if (frame.t === "end") {
+              const frame: unknown = JSON.parse(event.data);
+              if (
+                typeof frame === "object" &&
+                frame !== null &&
+                "t" in frame &&
+                frame.t === "end"
+              ) {
                 settled = true;
                 setState("settled");
               }

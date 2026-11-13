@@ -928,7 +928,7 @@ describe.skipIf(!composeAvailable)(
         ]),
       });
       // Only edge HTTP/TLS and Mend screen streams are published beyond loopback.
-      const published = Object.entries(
+      const published: Array<string> = Object.entries(
         typeof services === "object" && services !== null ? services : {},
       ).flatMap(([name, service]) =>
         typeof service === "object" &&

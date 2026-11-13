@@ -9,6 +9,7 @@ import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
 import { usePreviewOpen } from "@/data/preview-queries";
 import type { PreviewToOpen } from "@/data/previews";
+import { requestUrl } from "@/test/fake-fetch";
 
 const browser = vi.hoisted(() => ({
   answer: (): Promise<{ readonly type: string }> => new Promise(() => undefined),
@@ -36,7 +37,7 @@ const WEB: PreviewToOpen = {
 
 const server = { refuse: false, mints: 0 };
 const serve = async (input: RequestInfo | URL): Promise<Response> => {
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   if (url.pathname !== "/api/previews/preview-web/open") {
     return new Response(JSON.stringify({ _tag: "NotFound" }), { status: 404 });
   }
