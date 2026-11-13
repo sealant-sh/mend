@@ -9,7 +9,8 @@ who use coding agents heavily**: adopt a repository into Mend's central store, r
 (`mend codex`, `mend claude`, an arbitrary command) in a recorded git worktree, review the
 accumulated local change with evidence beside every claim, send review comments back to the same
 session, and steer it all from any device, over loopback, a private network, or publicly behind an
-edge (ADR 0004). No issue tracker or PR required.
+edge (ADR 0004). People using Mend need no issue tracker or PR; that describes the product, not
+how work on this repo lands.
 
 `MEND-AGENT-WORKBENCH-PLAN.md` is the canonical product direction and carries the decision log.
 Before a product or UX decision, read its §5 (product model) and §16 (UX rules), and search the
@@ -58,8 +59,8 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   comments and proposed checks, never verdicts; every finding links to the record or ships a
   runnable check). Cardinality: sessions are many per project, each runs in one worktree and a
   worktree can hold several; one change per worktree (every session in the worktree contributes to
-  it; its owner is the owner of the worktree's first session); landing a change (merge/commit/PR) is
-  publication, optional by definition.
+  it; its owner is the owner of the worktree's first session); for the person using Mend, landing a
+  change (merge/commit/PR) is publication, optional by definition.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
   mount their worktree), `run` (a session is backed by a run and its durable record), `harness`.
 - Issues and PRs are optional references attached to work, never its identity. The queue is gone: no
@@ -80,7 +81,8 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   carrying on.
 - Fix a problem straight away only if it meets Fix Now or File in `../agent-home/AGENTS.md`. File
   the rest in Linear.
-- Open PRs with the `file-pr` skill (`../agent-home/.agents/skills/file-pr/`).
+- Every change lands through a PR, docs and config included; never push to `main`. Open it with the
+  `file-pr` skill (`../agent-home/.agents/skills/file-pr/`).
 
 ## Checks Before a PR
 
