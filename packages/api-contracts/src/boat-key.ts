@@ -1,5 +1,5 @@
 import { SessionRuntime } from "@mend/domain";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
@@ -55,6 +55,85 @@ export class BoatUnavailable extends Schema.TaggedError<BoatUnavailable>()(
   { httpApiStatus: 503 },
 ) {}
 
+/**
+ * A fact about the key Boat did not let Sealant observe, and why. `refused`: Boat refused the
+ * read (an organization key is refused Boat's key list). `no-answer`: Boat did not answer.
+ * `not-listed`: Boat's key list did not include this key, or included more than one that could be
+ * it. `unreadable`: Boat answered with something Sealant could not read. Never shown as fine.
+ */
+export const BoatKeyNotObserved = Schema.Struct({
+  observed: Schema.Literal(false),
+  reason: Schema.Literals(["refused", "no-answer", "not-listed", "unreadable"]),
+  /** What Boat itself said, when it answered: its error code, status and message. */
+  boat: Schema.NullOr(
+    Schema.Struct({
+      code: Schema.NullOr(Schema.String),
+      status: Schema.NullOr(Schema.Number),
+      message: Schema.NullOr(Schema.String),
+    }),
+  ),
+});
+export type BoatKeyNotObserved = typeof BoatKeyNotObserved.Type;
+
+const observedOr = <F extends Schema.Struct.Fields>(fields: F) =>
+  Schema.Union([Schema.Struct({ observed: Schema.Literal(true), ...fields }), BoatKeyNotObserved]);
+
+/**
+ * What Sealant last observed of a Boat key, from Boat's own answers, at `observedAt`: Core's
+ * `BoatKeyReport` (SLNT-781) field for field, with Mend's dates and nulls. Each fact is observed
+ * with its value, or not observed with why. The page judges missing permissions by comparing
+ * `permissions.held` with `BOAT_KEY_REQUIRED_PERMISSIONS`, the list its create-key command shows.
+ */
+export const BoatKeyReport = Schema.Struct({
+  observedAt: Schema.Date,
+  /** The Boat organization every request for the account names, or null when none is named. */
+  organization: Schema.NullOr(Schema.String),
+  /** Who the key is (Boat's `GET /me`). `accountId` is Boat's account id, not a person. */
+  identity: observedOr({
+    accountId: Schema.NullOr(Schema.String),
+    login: Schema.NullOr(Schema.String),
+    displayName: Schema.NullOr(Schema.String),
+    serviceAccount: Schema.NullOr(Schema.Boolean),
+    accountStatus: Schema.Literals(["active", "suspended", "closed", "unknown"]),
+  }),
+  /** A personal (account) key, or a Boat organization's key. */
+  keyKind: observedOr({ kind: Schema.Literals(["personal", "organization"]) }),
+  /** Which wallet a VM started with the key bills (`GET /limits`). */
+  wallet: observedOr({
+    kind: Schema.Literals(["personal", "organization"]),
+    organizationId: Schema.NullOr(Schema.String),
+    organizationName: Schema.NullOr(Schema.String),
+    role: Schema.NullOr(Schema.String),
+  }),
+  /** The permissions Core needs of every key, as Core lists them. */
+  requiredPermissions: Schema.Array(Schema.String),
+  /** The key's permissions (`GET /api-keys`), and which of Core's required ones it lacks. */
+  permissions: observedOr({
+    held: Schema.Array(Schema.String),
+    missing: Schema.Array(Schema.String),
+    /** The key is limited to some VMs or environments, so it cannot reach the VMs Sealant makes. */
+    limitedToSandboxes: Schema.Boolean,
+  }),
+  /** When the key expires; `expiresAt` null: it never does. */
+  expiry: observedOr({
+    expiresAt: Schema.NullOr(Schema.Date),
+    expired: Schema.Boolean,
+    /** Boat's own judgement that expiry is near; the page warns from fourteen days either way. */
+    expiringSoon: Schema.Boolean,
+  }),
+  /** Whether the wallet can start a VM now, Boat's reason when it cannot, and its VM counts. */
+  start: observedOr({
+    canStart: Schema.Boolean,
+    blockedReason: Schema.NullOr(Schema.String),
+    billingStatus: Schema.NullOr(Schema.String),
+    runningVms: Schema.Number,
+    allowedVms: Schema.Number,
+  }),
+  /** The wallet's saved snapshot slots (`GET /saved-snapshots`). */
+  snapshots: observedOr({ used: Schema.Number, included: Schema.Number }),
+});
+export type BoatKeyReport = typeof BoatKeyReport.Type;
+
 /** Who connected the key and when, and when it was last replaced. Owners only. */
 export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails")({
   /** Core's id for the Boat account that holds the key: what a launch names. */
@@ -64,6 +143,11 @@ export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails
   connectedByName: Schema.NullOr(Schema.String),
   connectedAt: Schema.Date,
   keyReplacedAt: Schema.NullOr(Schema.Date),
+  /**
+   * What Sealant last observed of the key, without asking Boat again; null until this server's
+   * Sealant returns a report. A server from before the report answers without the field.
+   */
+  report: Schema.NullOr(BoatKeyReport).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")({
@@ -88,9 +172,10 @@ export class BoatKeyCheck extends Schema.Class<BoatKeyCheck>("BoatKeyCheck")({
   keyReplacedAt: Schema.NullOr(Schema.Date),
   /**
    * Boat's own report about the key (who it is, the wallet it bills, permissions, expiry, whether
-   * it can start a VM), once this server's Sealant returns one (SLNT-781). Null until then.
+   * it can start a VM), observed by this check, once this server's Sealant returns one (SLNT-781).
+   * Null until then.
    */
-  report: Schema.Null,
+  report: Schema.NullOr(BoatKeyReport),
 }) {}
 
 export const ConnectBoatKeyRequest = Schema.Struct({

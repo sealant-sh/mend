@@ -25,6 +25,7 @@ const ownerView = {
     connectedByName: "Alice",
     connectedAt: "2026-11-13T12:00:00.000Z",
     keyReplacedAt: null,
+    report: null,
   },
 };
 
