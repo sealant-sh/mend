@@ -1,4 +1,9 @@
-import { boatKeyProofFixture, boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import {
+  boatKeyProofFixture,
+  boatKeyReportFixture,
+  boatUnreachableFixture,
+  threeWalletsReportFixture,
+} from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { Deferred, Duration, Effect, Predicate, Schema } from "effect";
@@ -742,6 +747,95 @@ describe("an organization's Boat key", () => {
     );
   });
 
+  describe("the wallet the key bills (SLNT-821)", () => {
+    const WALLET = "/api/organization/boat-key/wallet";
+    const choose = (user: "alice" | "bob" | "carol", wallet: string) =>
+      api.request(user, "PUT", WALLET, { wallet });
+
+    it("lets an owner point the key at another wallet without the key, at once, and records it", async () => {
+      boat.observe(threeWalletsReportFixture());
+      await connect("alice");
+      core.length = 0;
+      audited.length = 0;
+      const response = await choose("alice", "org_12");
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        details: { report: { billing: { mode: "pinned", organization: "org_12" } } },
+      });
+      expect(core).toContainEqual({
+        call: "setOrganization",
+        boatAccountId: "core-boat-1",
+        wallet: "org_12",
+      });
+      expect(audited).toEqual([
+        {
+          action: "boat_key.wallet_changed",
+          subjectId: "core-boat-1",
+          data: { wallet: "org_12", walletName: "beta-labs" },
+          actor: "alice",
+        },
+      ]);
+      // A wallet is not a credential: nothing about the key is in the answer or the log.
+      expect(JSON.stringify(audited)).not.toContain(KEY);
+    });
+
+    it("refuses a member and a caller of another organization, and asks sealant nothing", async () => {
+      await connect("alice");
+      core.length = 0;
+      const member = await choose("carol", "org_12");
+      expect(member.status).toBe(403);
+      expect(await messageOf(member)).toContain("Only an owner of this organization");
+      // Bob owns organization B, which has no key: nothing of A's is reachable from there.
+      const other = await choose("bob", "org_12");
+      expect(other.status).toBe(409);
+      expect(core).toEqual([]);
+    });
+
+    it("says there is nothing to choose without a key", async () => {
+      const response = await choose("alice", "org_12");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        reason: "none",
+        message:
+          "This organization has no Boat key connected, so there is no wallet to choose. Connect one first.",
+      });
+    });
+
+    it("words a wallet the key cannot bill and an organization's key, and changes nothing", async () => {
+      await connect("alice");
+      boat.refuseNext(refusal("bad-request"));
+      const unknown = await choose("alice", "org_404");
+      expect(unknown.status).toBe(422);
+      expect(await unknown.json()).toMatchObject({
+        reason: "wallet",
+        message: expect.stringContaining("This key's Boat account cannot bill that wallet"),
+      });
+      boat.refuseNext(refusal("key-organization"));
+      const organizationKey = await choose("alice", "personal");
+      expect(organizationKey.status).toBe(409);
+      expect(await organizationKey.json()).toMatchObject({
+        reason: "key-organization",
+        message: expect.stringMatching(
+          /^This Boat key is a Boat organization's key: it bills that Boat organization and nothing else, and has no wallet to choose\. Nothing changed\./,
+        ),
+      });
+      expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
+    });
+
+    it("shows an owner what sealant cannot reach, and a member nothing of it", async () => {
+      await connect("alice");
+      const account = boat.accounts.get("core-boat-1");
+      if (account === undefined) throw new Error("no account");
+      boat.accounts.set("core-boat-1", { ...account, unreachable: boatUnreachableFixture });
+      const owner = await api.request("alice", "GET", "/api/organization/boat-key");
+      expect(await owner.json()).toMatchObject({
+        details: { unreachable: boatUnreachableFixture },
+      });
+      const member = await api.request("carol", "GET", "/api/organization/boat-key");
+      expect(await member.json()).toMatchObject({ details: null });
+    });
+  });
+
   it("never writes the key to a response, an error, the audit log or a log line", async () => {
     const bodies: Array<string> = [];
     bodies.push(await (await connect("alice")).text());
@@ -1056,6 +1150,31 @@ describe("a person's own Boat key (SLNT-797)", () => {
     }
     expect(core).toEqual([]);
     expect(keys.size).toBe(0);
+  });
+
+  it("lets a person point their own key at another wallet, recorded as theirs, and nobody else's", async () => {
+    boat.observe(threeWalletsReportFixture());
+    await connectOwn("carol");
+    audited.length = 0;
+    const response = await api.request("carol", "PUT", `${ROUTE}/wallet`, { wallet: "personal" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      details: { report: { billing: { mode: "pinned", organization: "personal" } } },
+    });
+    expect(audited).toEqual([
+      {
+        action: "boat_key.wallet_changed",
+        subjectId: "core-boat-1",
+        data: { key: "own", wallet: "personal", walletName: null },
+        actor: "carol",
+      },
+    ]);
+    // Alice, an owner of the same organization, has no key of her own: hers is refused, and
+    // Carol's is untouched.
+    core.length = 0;
+    const owner = await api.request("alice", "PUT", `${ROUTE}/wallet`, { wallet: "org_9" });
+    expect(owner.status).toBe(409);
+    expect(core).toEqual([]);
   });
 
   it("never writes the key to a response, an error, the audit log or a log line", async () => {

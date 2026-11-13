@@ -125,7 +125,10 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
     const key = labelled(
       await doctorAgainst({
         sessionRuntimes: BOTH,
-        boat: serverBoatFactsFixture({ serverKey: { state: "held", report } }, now),
+        boat: serverBoatFactsFixture(
+          { serverKey: { state: "held", unreachable: null, report } },
+          now,
+        ),
       }),
       "boat key",
     );
@@ -139,7 +142,7 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
       await doctorAgainst({
         sessionRuntimes: BOTH,
         boat: serverBoatFactsFixture(
-          { serverKey: { state: "held", report: refusedKeyReportFixture(now) } },
+          { serverKey: { state: "held", unreachable: null, report: refusedKeyReportFixture(now) } },
           now,
         ),
       }),

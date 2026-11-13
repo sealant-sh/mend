@@ -1,3 +1,4 @@
+import { BoatUnavailable } from "@mend/api-contracts";
 import type { WorkspaceRuntimesReading } from "@mend/domain";
 import type {
   BoatAddress,
@@ -6,6 +7,7 @@ import type {
   ServerBoatFacts,
   ServerBoatKey,
 } from "@mend/domain/workbench";
+import { boatProblemText } from "@mend/domain/workbench";
 import { SealantClients, WorkspaceRuntimesReport } from "@mend/sealant";
 import { BlobStoreConfig, DeploymentConfig } from "@mend/store";
 import { Clock, Duration, Effect, Layer, Ref } from "effect";
@@ -18,7 +20,15 @@ import * as Context from "effect/Context";
  */
 export class MachineBoatReport extends Context.Service<
   MachineBoatReport,
-  { readonly read: () => Effect.Effect<ServerBoatFacts> }
+  {
+    readonly read: () => Effect.Effect<ServerBoatFacts>;
+    /**
+     * Asks sealant to check the server's own Boat key with Boat now (SLNT-822, read-only) and
+     * answers what it observed; the next `read` shows it. Fails with the sentence to show when Boat
+     * or sealant did not answer.
+     */
+    readonly checkServerKey: () => Effect.Effect<ServerBoatKey, BoatUnavailable>;
+  }
 >()("@mend/api/MachineBoatReport") {}
 
 /** A reading is kept this long, so a page that asks every thirty seconds asks Boat's addresses at most twice a minute. */
@@ -131,6 +141,33 @@ export const MachineBoatReportLive: Layer.Layer<
       yield* Ref.set(kept, { until: now + Duration.toMillis(MACHINE_BOAT_KEPT), facts });
       return facts;
     });
-    return { read };
+    /** How long the operator's own check may take: Boat answers several reads. */
+    const checkTimeout = Duration.seconds(20);
+    const checkServerKey = Effect.fn("MachineBoatReport.checkServerKey")(function* () {
+      const checked = yield* clients.checkBoatInstallKey().pipe(
+        Effect.timeout(checkTimeout),
+        Effect.mapError((error) => {
+          if (error._tag === "BoatAccountRefusal" && error.boat !== null)
+            return new BoatUnavailable({
+              message: boatProblemText(
+                { kind: error.boat.kind, failure: error.boat },
+                { holder: "server", place: "key-check" },
+              ).replace("\n", " "),
+            });
+          return new BoatUnavailable({
+            message:
+              error._tag === "BoatAccountRefusal" && error.reason === "key-unverified"
+                ? "Boat did not answer this check, so sealant kept its last report. Try again in a minute."
+                : "sealant did not answer this check, so nothing new was observed. Try again in a minute.",
+          });
+        }),
+      );
+      const key: ServerBoatKey =
+        checked === null ? { state: "none" } : { state: "held", ...checked };
+      // The next read shows this check, not a reading from before it.
+      yield* Ref.set(kept, null);
+      return key;
+    });
+    return { read, checkServerKey };
   }),
 );

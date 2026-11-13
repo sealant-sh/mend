@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 import { MachineView } from "@mend/api-contracts";
-import { refusedKeyReportFixture, serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
+import {
+  boatKeyReportFixture,
+  boatUnreachableFixture,
+  refusedKeyReportFixture,
+  serverBoatFactsFixture,
+} from "@mend/domain/boat-key-fixtures";
 import { act } from "react";
 import type { Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SessionsAndBoat } from "./exposure-sessions.tsx";
-import { renderWithTrpc } from "./sessions-test-trpc.tsx";
+import { byText, click, renderWithTrpc } from "./sessions-test-trpc.tsx";
 
 const NOW = new Date("2026-11-13T14:02:00Z");
 
@@ -52,7 +57,7 @@ describe("where sessions run, on the instance's Exposure page (SLNT-799)", () =>
       machine({
         sessionRuntimes: { offered: ["docker", "boat"], default: "boat" },
         boat: serverBoatFactsFixture(
-          { serverKey: { state: "held", report: refusedKeyReportFixture(NOW) } },
+          { serverKey: { state: "held", unreachable: null, report: refusedKeyReportFixture(NOW) } },
           NOW,
         ),
       }),
@@ -67,5 +72,45 @@ describe("where sessions run, on the instance's Exposure page (SLNT-799)", () =>
     );
     expect(text).toContain("a worker reported that it launches Boat VMs");
     expect(text).toContain("present on the worker that launches Boat");
+  });
+
+  it("lets the operator check the server's key now, then reads the machine view again", async () => {
+    const before = machine({
+      sessionRuntimes: { offered: ["docker", "boat"], default: "boat" },
+      boat: serverBoatFactsFixture(
+        { serverKey: { state: "held", unreachable: null, report: refusedKeyReportFixture(NOW) } },
+        NOW,
+      ),
+    });
+    const after = machine({
+      sessionRuntimes: { offered: ["docker", "boat"], default: "boat" },
+      boat: serverBoatFactsFixture(
+        {
+          serverKey: {
+            state: "held",
+            unreachable: boatUnreachableFixture,
+            report: boatKeyReportFixture({}, NOW),
+          },
+        },
+        NOW,
+      ),
+    });
+    const calls: Array<string> = [];
+    let view = before;
+    root = await renderWithTrpc(<SessionsAndBoat now={NOW} />, (path) => {
+      calls.push(path);
+      if (path === "platform.machine") return { data: structuredClone(view) };
+      if (path === "platform.checkServerBoatKey") {
+        view = after;
+        return { data: structuredClone(after.boat?.serverKey) };
+      }
+      return { refuse: `unexpected ${path}` };
+    });
+    await click(byText("button", "Check the server's Boat key now"));
+    expect(calls).toContain("platform.checkServerBoatKey");
+    const text = document.body.textContent ?? "";
+    expect(text).not.toContain("has expired");
+    expect(text).toContain("boat unreachable");
+    expect(text).toContain("give this server a key whose Boat account can see them");
   });
 });

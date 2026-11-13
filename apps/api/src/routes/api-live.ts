@@ -78,7 +78,7 @@ import { HandoffsGroupLive } from "./handoffs.ts";
 import { HarnessModelsGroupLive } from "./harness-models.ts";
 import { LandingsGroupLive } from "./landing.ts";
 import { ProjectLocalWorktreesGroupLive } from "./local-worktrees.ts";
-import { MachineGroupLive } from "./machine.ts";
+import { MachineGroupLive, ServerBoatKeyGroupLive } from "./machine.ts";
 import { McpAppsGroupLive } from "./mcp-apps.ts";
 import { McpServersGroupLive } from "./mcp-servers.ts";
 import { OperatorGroupLive } from "./operator.ts";
@@ -760,6 +760,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       HealthGroupLive,
       InstanceGroupLive,
       MachineGroupLive,
+      ServerBoatKeyGroupLive,
       SealantGroupLive,
       AccountsGroupLive,
       PersonSettingsGroupLive,

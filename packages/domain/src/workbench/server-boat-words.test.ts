@@ -46,7 +46,7 @@ describe("the Boat lines of a server's machine view", () => {
       "session traffic at https://mend.example.ts.net:8443 · answered HTTP 404 from the server · observed 2026-11-13 14:02 UTC",
     );
     expect(byLabel(all, "boat key").detail).toMatch(
-      /^key of Acme CI @acme-ci service account · a personal key · bills the Boat organization acme-boat · the key's role there: admin · starts a VM: yes · 2 of 5 VMs running · expires .* · in 200 days · observed 2026-11-13 14:02 UTC$/,
+      /^key of Acme CI @acme-ci service account · a personal key · bills the Boat organization acme-boat · the key's role there: admin · fixed: sealant names it on every request · starts a VM: yes · 2 of 5 VMs running · expires .* · in 200 days · observed 2026-11-13 14:02 UTC$/,
     );
     expect(all.every((line) => line.fix === null)).toBe(true);
   });
@@ -63,7 +63,10 @@ describe("the Boat lines of a server's machine view", () => {
       },
       NOW,
     );
-    const key = byLabel(lines({ serverKey: { state: "held", report } }), "boat key");
+    const key = byLabel(
+      lines({ serverKey: { state: "held", unreachable: null, report } }),
+      "boat key",
+    );
     expect(key.state).toBe("todo");
     expect(key.fix).toMatch(
       /^This Boat key expires on .*, in 9 days\. After that, new Boat sessions cannot start with it\. Give this server a new key with mend server setup --boat-api-key-stdin\.$/,
@@ -72,7 +75,9 @@ describe("the Boat lines of a server's machine view", () => {
 
   it("reports a key Boat refuses in the Boat failure table's words", () => {
     const key = byLabel(
-      lines({ serverKey: { state: "held", report: refusedKeyReportFixture(NOW) } }),
+      lines({
+        serverKey: { state: "held", unreachable: null, report: refusedKeyReportFixture(NOW) },
+      }),
       "boat key",
     );
     expect(key.state).toBe("failed");

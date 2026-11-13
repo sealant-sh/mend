@@ -17,6 +17,8 @@ export const platformRouter = router({
   /** Public: the login page asks whether any account exists before it renders. */
   instance: procedure.query(({ ctx }) => run(ctx, (api) => api.instance.get())),
   machine: procedure.query(({ ctx }) => run(ctx, (api) => api.machine.get())),
+  /** The operator's check of the server's own Boat key, now (SLNT-822). */
+  checkServerBoatKey: procedure.mutation(({ ctx }) => run(ctx, (api) => api.serverBoatKey.check())),
   /**
    * What the operator declared (`MEND_EXPOSURE`) and every public exposure gate item with how it
    * was established (docs/adr/0004). The operator's only: anyone else gets 404.

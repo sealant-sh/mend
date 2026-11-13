@@ -144,7 +144,7 @@ describe(
       });
       const key = lineOf(
         await statusOf(f, {
-          boat: serverBoatFactsFixture({ serverKey: { state: "held", report } }),
+          boat: serverBoatFactsFixture({ serverKey: { state: "held", unreachable: null, report } }),
         }),
         "boat key · ",
       );
@@ -157,7 +157,7 @@ describe(
       const key = lineOf(
         await statusOf(f, {
           boat: serverBoatFactsFixture({
-            serverKey: { state: "held", report: refusedKeyReportFixture() },
+            serverKey: { state: "held", unreachable: null, report: refusedKeyReportFixture() },
           }),
         }),
         "boat key · ",

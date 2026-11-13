@@ -249,6 +249,16 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return event.data["key"] === "own"
         ? "removed their own Boat key"
         : "removed the organization's Boat key";
+    case "boat_key.wallet_changed": {
+      const name = event.data["walletName"];
+      const wallet =
+        event.data["wallet"] === "personal"
+          ? "its personal Boat account"
+          : `the Boat organization ${typeof name === "string" ? name : String(event.data["wallet"])}`;
+      return event.data["key"] === "own"
+        ? `pointed their own Boat key at ${wallet === "its personal Boat account" ? "their personal Boat account" : wallet}`
+        : `pointed the organization's Boat key at ${wallet}`;
+    }
   }
 };
 

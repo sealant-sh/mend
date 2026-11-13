@@ -24,10 +24,11 @@ type Implement = NonNullable<NonNullable<Parameters<typeof createTenancyApi>[1]>
 
 /** What sealant is asked, with the key unwrapped only here, to prove it went to sealant and nowhere else. */
 export interface CoreCall {
-  readonly call: "create" | "list" | "rotate" | "remove" | "check" | "prove";
+  readonly call: "create" | "list" | "rotate" | "remove" | "check" | "prove" | "setOrganization";
   readonly label?: string;
   readonly key?: string;
   readonly boatAccountId?: string;
+  readonly wallet?: string;
 }
 
 export const refusal = (
@@ -145,7 +146,8 @@ export const makeBoatWorld = () => {
             report: observed,
             lastProof: null,
             // sealant pins a personal key to the wallet it bills at connect (sealant#641).
-            organization: observed?.billing?.mode === "pinned" ? observed.billing.organization : null,
+            organization:
+              observed?.billing?.mode === "pinned" ? observed.billing.organization : null,
             unreachable: null,
           };
           accounts.set(boatAccountId, account);
@@ -218,6 +220,24 @@ export const makeBoatWorld = () => {
         answer(() => {
           core.push({ call: "list" });
           return [...accounts.values()];
+        }),
+      // sealant's re-pin (sealant#641): at once, and the report says the account is pinned.
+      setBoatAccountOrganization: (boatAccountId, wallet) =>
+        answer(() => {
+          core.push({ call: "setOrganization", boatAccountId, wallet });
+          const account = accounts.get(boatAccountId);
+          if (account === undefined) throw new Error("pinned an unknown account");
+          const report =
+            account.report === null
+              ? null
+              : {
+                  ...account.report,
+                  organization: wallet,
+                  billing: { mode: "pinned" as const, organization: wallet },
+                };
+          const pinned = { ...account, organization: wallet, report };
+          accounts.set(boatAccountId, pinned);
+          return pinned;
         }),
     },
     audit: {

@@ -39,6 +39,7 @@ const connected = (organizationKey = false): PersonBoatKeyStatusDto => ({
     keyReplacedAt: null,
     report: null,
     fullCheck: { last: null, runningSince: null },
+    unreachable: null,
   },
 });
 

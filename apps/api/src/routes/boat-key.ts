@@ -372,6 +372,7 @@ const detailsOf = (key: BoatKey, account?: PlatformBoatAccount | null) =>
       keyReplacedAt: key.keyReplacedAt,
       report: known?.report ?? null,
       fullCheck: new BoatKeyFullCheck({ last: known?.lastProof ?? null, runningSince }),
+      unreachable: known?.unreachable ?? null,
     });
   });
 
@@ -577,7 +578,11 @@ const removeAccount = (boatAccountId: string, standbys: BoatAccountStandbys, wor
 
 const record = (
   found: OrganizationMembership,
-  action: "boat_key.connected" | "boat_key.replaced" | "boat_key.removed",
+  action:
+    | "boat_key.connected"
+    | "boat_key.replaced"
+    | "boat_key.removed"
+    | "boat_key.wallet_changed",
   sealantBoatAccountId: string,
   data: AuditData = {},
 ) =>
@@ -726,6 +731,72 @@ const removeKey = (holder: KeyHolder) =>
     );
   });
 
+/**
+ * sealant's refusal of a wallet change (SLNT-821) in words the person can act on: a wallet the key
+ * cannot bill, a Boat organization's key, and the rest as any change to the key.
+ */
+const walletFailure = (
+  error: BoatAccountRefusal | SealantPlatformError,
+  words: KeyWords,
+): BoatKeyRefused | BoatKeyConflict | BoatUnavailable => {
+  if (error._tag === "BoatAccountRefusal" && error.reason === "bad-request")
+    return new BoatKeyRefused({
+      reason: "wallet",
+      message:
+        "This key's Boat account cannot bill that wallet, so nothing changed. Choose one of the wallets Mend lists for the key; Check now reads them from Boat again.",
+    });
+  if (error._tag === "BoatAccountRefusal" && error.reason === "key-organization") {
+    const said = boatKeyAccountWords("key-organization", error.message, {
+      holder: words.holder,
+      place: "key-check",
+    });
+    return new BoatKeyConflict({
+      reason: "key-organization",
+      message: `${said.happened} ${said.todo}`,
+      liveRuns: null,
+      buildsInFlight: null,
+      unseen: null,
+    });
+  }
+  return boatKeyFailure(error, words);
+};
+
+/**
+ * Points the holder's personal key at another wallet its Boat account can bill, without the key
+ * (sealant's `setOrganization`). It takes effect at once and waits for nothing: what the account
+ * made stays in the wallet it was made in, and only what it makes next is made in the new one.
+ */
+const chooseWallet = (holder: KeyHolder, wallet: string) =>
+  Effect.gen(function* () {
+    const key = yield* (yield* BoatKeysRepo).byOwner(holder.owner);
+    if (key === null)
+      return yield* new BoatKeyConflict({
+        reason: "none",
+        message: `${capital(holder.words.none)}, so there is no wallet to choose. Connect one first.`,
+        liveRuns: null,
+        buildsInFlight: null,
+        unseen: null,
+      });
+    const account = yield* (yield* SealantClients)
+      .setBoatAccountOrganization(key.sealantBoatAccountId, wallet)
+      .pipe(
+        Effect.tapError(logBoatRefusal),
+        Effect.mapError((error) => walletFailure(error, holder.words)),
+      );
+    const report = account.report;
+    const pinned = account.organization ?? wallet;
+    const choice =
+      report?.wallets?.observed === true
+        ? report.wallets.choices.find((each) => each.id === pinned)
+        : undefined;
+    yield* record(holder.found, "boat_key.wallet_changed", key.sealantBoatAccountId, {
+      ...holder.audit,
+      wallet: pinned,
+      walletName: choice?.name ?? null,
+    });
+    return key;
+  });
+
 /** The server's running full checks, given to a handler's effects: one set for both groups. */
 const withFullChecks =
   (fullChecks: BoatKeyFullChecks["Service"]) =>
@@ -804,6 +875,15 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
           }),
         ),
       )
+      .handle("chooseWallet", ({ payload }) =>
+        checks(
+          Effect.gen(function* () {
+            const found = yield* ownership;
+            const key = yield* chooseWallet(organizationHolder(found), payload.wallet);
+            return yield* statusOf(found, key);
+          }),
+        ),
+      )
       .handle("disconnect", () =>
         checks(
           Effect.gen(function* () {
@@ -851,6 +931,15 @@ export const PersonBoatKeyGroupLive = HttpApiBuilder.group(MendApi, "personBoatK
         ),
       )
       .handle("check", () => checks(personHolder.pipe(Effect.flatMap(checkKey))))
+      .handle("chooseWallet", ({ payload }) =>
+        checks(
+          Effect.gen(function* () {
+            const holder = yield* personHolder;
+            const key = yield* chooseWallet(holder, payload.wallet);
+            return yield* personStatusOf(holder.found, key);
+          }),
+        ),
+      )
       .handle("disconnect", () =>
         checks(
           Effect.gen(function* () {

@@ -81,6 +81,9 @@ export const AuditAction = Schema.Literals([
   "boat_key.connected",
   "boat_key.replaced",
   "boat_key.removed",
+  // The key was pointed at another Boat wallet it can bill (SLNT-821): `wallet` is Boat's id for
+  // it (`personal` for the key's own account), `walletName` the organization's name when known.
+  "boat_key.wallet_changed",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

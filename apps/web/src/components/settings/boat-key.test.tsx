@@ -3,8 +3,12 @@ import { OrganizationView } from "@mend/api-contracts";
 import { OrganizationId } from "@mend/domain";
 import {
   boatKeyProofFixture,
+  boatUnreachableFixture,
   KEY_LIST_FORBIDDEN,
+  oneWalletReportFixture,
   organizationKeyReportFixture,
+  threeWalletsReportFixture,
+  walletChangedReportFixture,
 } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS } from "@mend/domain/workbench";
 import { Organization, type OrganizationRole } from "@mend/domain/workbench";
@@ -110,6 +114,7 @@ const NO_FULL_CHECK: BoatKeyDetailsDto["fullCheck"] = { last: null, runningSince
 const connected = (
   report: BoatKeyReportDto | null,
   fullCheck: BoatKeyDetailsDto["fullCheck"] = NO_FULL_CHECK,
+  unreachable: BoatKeyDetailsDto["unreachable"] = null,
 ): BoatKeyStatusDto => ({
   connected: true,
   sessionRuntime: "boat",
@@ -122,6 +127,7 @@ const connected = (
     keyReplacedAt: null,
     report,
     fullCheck,
+    unreachable,
   },
 });
 
@@ -146,16 +152,20 @@ interface World {
   check: BoatKeyCheckDto;
   /** What `boatKey.fullCheck` answers; a finished one becomes the status's last, as sealant keeps it. */
   fullCheck: { readonly data: BoatKeyFullCheckDto } | { readonly refuse: string };
+  /** What `boatKey.chooseWallet` answers; the status it answers becomes the world's. */
+  chooseWallet: { readonly data: BoatKeyStatusDto } | { readonly refuse: string };
 }
 
 const open = async (
-  world: Omit<World, "calls" | "connect" | "disconnect" | "check" | "fullCheck"> & Partial<World>,
+  world: Omit<World, "calls" | "connect" | "disconnect" | "check" | "fullCheck" | "chooseWallet"> &
+    Partial<World>,
 ) => {
   const state: World = {
     calls: [],
     connect: { refuse: "unset" },
     disconnect: { data: notConnected },
     fullCheck: { refuse: "unset" },
+    chooseWallet: { refuse: "unset" },
     check: {
       state: "active",
       observedAt: new Date(),
@@ -198,6 +208,11 @@ const open = async (
         case "boatKey.disconnect":
           if ("data" in state.disconnect) state.status = notConnected;
           return state.disconnect;
+        case "boatKey.chooseWallet": {
+          const answer = state.chooseWallet;
+          if ("data" in answer) state.status = answer.data;
+          return answer;
+        }
         default:
           return { data: null };
       }
@@ -692,5 +707,119 @@ describe("the Boat page's people with their own key (SLNT-797)", () => {
   it("shows a member nothing about who has one", async () => {
     await open({ status: { ...notConnected, peopleWithOwnKeys: null }, role: "member" });
     expect(text()).not.toContain("People with their own Boat key");
+  });
+});
+
+describe("the wallet the key bills (SLNT-821)", () => {
+  const radios = () =>
+    [...document.querySelectorAll<HTMLElement>('[role="radio"]')].map((radio) => ({
+      text: radio.textContent ?? "",
+      checked: radio.getAttribute("aria-checked") === "true",
+    }));
+
+  it("says a Boat organization's key bills its organization, fixed, and offers no choice", async () => {
+    await open({ status: connected(organizationKeyReportFixture()), role: "owner" });
+    expect(rows()).toContainEqual(
+      expect.stringContaining(
+        "the Boat organization acme-boat · the key's role there: admin · fixed: a Boat organization's key bills only its own organization",
+      ),
+    );
+    expect(radios()).toEqual([]);
+    expect(text()).not.toContain("Wallet this key bills");
+  });
+
+  it("names the personal account a key with one wallet bills, and offers no choice", async () => {
+    await open({ status: connected(oneWalletReportFixture()), role: "owner" });
+    expect(rows()).toContainEqual(
+      expect.stringContaining(
+        "the personal Boat account of @acme-ci · fixed: sealant names it on every request",
+      ),
+    );
+    expect(radios()).toEqual([]);
+  });
+
+  it("lets an owner choose among three wallets, with the one billed now chosen, and change it", async () => {
+    const report = threeWalletsReportFixture();
+    const { state } = await open({ status: connected(report), role: "owner" });
+    expect(radios()).toEqual([
+      expect.objectContaining({
+        text: expect.stringContaining("The personal Boat account of @acme-ci"),
+        checked: false,
+      }),
+      expect.objectContaining({ text: expect.stringContaining("bills now"), checked: true }),
+      expect.objectContaining({
+        text: expect.stringContaining("active in Boat now"),
+        checked: false,
+      }),
+    ]);
+    expect(rows()).toContainEqual(
+      expect.stringContaining("the Boat organization beta-labs (member) · active in Boat now"),
+    );
+    expect(byText("button", "Billed here now").hasAttribute("disabled")).toBe(true);
+    const beta = [...document.querySelectorAll<HTMLElement>('[role="radio"]')][2];
+    if (beta === undefined) throw new Error("no third wallet");
+    await click(beta);
+    state.chooseWallet = {
+      data: connected({
+        ...report,
+        organization: "org_12",
+        billing: { mode: "pinned", organization: "org_12" },
+      }),
+    };
+    await click(byText("button", "Bill the Boat organization beta-labs"));
+    expect(state.calls).toContainEqual({
+      path: "boatKey.chooseWallet",
+      input: { wallet: "org_12" },
+    });
+    expect(radios()[2]).toMatchObject({
+      checked: true,
+      text: expect.stringContaining("bills now"),
+    });
+    expect(byText("button", "Billed here now").hasAttribute("disabled")).toBe(true);
+  });
+
+  it("shows a refused change and keeps the wallet billed now", async () => {
+    const { state } = await open({ status: connected(threeWalletsReportFixture()), role: "owner" });
+    state.chooseWallet = {
+      refuse:
+        "This key's Boat account cannot bill that wallet, so nothing changed. Choose one of the wallets Mend lists for the key; Check now reads them from Boat again.",
+    };
+    const personal = [...document.querySelectorAll<HTMLElement>('[role="radio"]')][0];
+    if (personal === undefined) throw new Error("no personal wallet");
+    await click(personal);
+    await click(byText("button", "Bill the personal Boat account of @acme-ci"));
+    expect(alerts()).toContainEqual(
+      expect.stringContaining("This key's Boat account cannot bill that wallet"),
+    );
+    expect(radios()[1]).toMatchObject({ text: expect.stringContaining("bills now") });
+  });
+
+  it("says the bill moved for a key sealant has not pinned whose active wallet changed", async () => {
+    await open({ status: connected(walletChangedReportFixture()), role: "owner" });
+    expect(rows()).toContainEqual(
+      expect.stringContaining("not fixed: it follows the active wallet of the key's Boat account"),
+    );
+    expect(alerts()).toContainEqual(
+      expect.stringContaining(
+        "The bill moved: this key billed the personal Boat account of @acme-ci until the active wallet of its Boat account changed, observed 2026-11-13 09:30 UTC, and bills the Boat organization acme-boat now.",
+      ),
+    );
+  });
+
+  it("names what sealant cannot reach, by the names Boat shows, and what to do", async () => {
+    await open({
+      status: connected(threeWalletsReportFixture(), NO_FULL_CHECK, boatUnreachableFixture),
+      role: "owner",
+    });
+    expect(notices()).toContainEqual(
+      expect.stringContaining(
+        "sealant could not find the saved images sealant-img-a1b2 and sealant-img-c3d4 (Saved snapshots in Boat)",
+      ),
+    );
+    expect(notices()).toContainEqual(
+      expect.stringContaining(
+        "Remove them in Boat, or replace the organization's key with one whose Boat account can see them.",
+      ),
+    );
   });
 });

@@ -122,6 +122,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "health.status",
   "instance.get",
   "machine.get",
+  // The server's own Boat key, checked now; operators only: machine-boat.test.ts.
+  "serverBoatKey.check",
   "sealant.connection",
   "workspaceSsh.get",
   "workspaceSsh.ensureKey",
@@ -176,12 +178,14 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "boatKey.connect",
   "boatKey.check",
   "boatKey.fullCheck",
+  "boatKey.chooseWallet",
   "boatKey.disconnect",
   // The caller's own Boat key in their active organization, and nobody else's: boat-key.test.ts.
   "personBoatKey.status",
   "personBoatKey.connect",
   "personBoatKey.check",
   "personBoatKey.fullCheck",
+  "personBoatKey.chooseWallet",
   "personBoatKey.disconnect",
   // The caller's organization and own links; owner/member boundaries: executor.test.ts.
   "executor.configuration",

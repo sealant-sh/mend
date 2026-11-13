@@ -2,7 +2,8 @@ import type { SessionRuntime } from "../settings.ts";
 import { type BoatKeyHolder, boatProblemWords } from "./boat-failure-words.ts";
 import type { BoatFailure, BoatFailureKind } from "./boat-failure.ts";
 import { boatKeyFacts, boatKeyWarnings } from "./boat-key-words.ts";
-import type { BoatKeyReport } from "./boat-key.ts";
+import type { BoatKeyReport, BoatUnreachable } from "./boat-key.ts";
+import { hasUnreachable, unreachableWords } from "./boat-wallet-words.ts";
 import type { BoatAddress, BoatLaunch, ServerBoatFacts, ServerBoatKey } from "./server-boat.ts";
 
 /**
@@ -231,6 +232,24 @@ export const boatKeyStatusLine = (input: {
   };
 };
 
+/**
+ * What a key made in Boat that sealant cannot reach in any wallet it can bill, as a status line;
+ * null when sealant names nothing.
+ */
+export const boatUnreachableLine = (
+  label: string,
+  unreachable: BoatUnreachable | null,
+  holder: BoatKeyHolder,
+): StatusLine | null =>
+  hasUnreachable(unreachable)
+    ? {
+        label,
+        state: "todo",
+        detail: `${unreachable.savedImages.length + unreachable.runs.length + unreachable.builds.length} things in Boat in no wallet the key can bill · reported by sealant`,
+        fix: unreachableWords(unreachable, holder),
+      }
+    : null;
+
 const REPLACE_SERVER_KEY =
   "Give this server a new key with mend server setup --boat-api-key-stdin.";
 
@@ -279,9 +298,14 @@ export const serverBoatLines = (input: {
 }): ReadonlyArray<StatusLine> => {
   const { facts, now, from } = input;
   const gateway = boatGatewayLine(facts.launch, input.gatewayDeclared);
+  const unreachable =
+    facts.serverKey.state === "held"
+      ? boatUnreachableLine("boat unreachable", facts.serverKey.unreachable, "server")
+      : null;
   return [
     ...facts.addresses.map((address) => boatAddressLine(address, from)),
     serverBoatKeyLine(facts.serverKey, now),
+    ...(unreachable === null ? [] : [unreachable]),
     boatLaunchLine(facts.launch, facts),
     ...(gateway === null ? [] : [gateway]),
   ];
