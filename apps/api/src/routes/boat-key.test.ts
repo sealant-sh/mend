@@ -54,6 +54,8 @@ describe("an organization's Boat key", () => {
         connectedByUserId: "alice",
         connectedByName: "Alice",
         keyReplacedAt: null,
+        // Nothing observed about the key itself until the pinned SDK returns Core's report.
+        report: null,
       },
     });
     expect(core).toEqual([{ call: "create", label: "Mend · Organization A", key: KEY }]);
