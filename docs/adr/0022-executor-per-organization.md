@@ -1,8 +1,8 @@
 # Executor: one per organization, reached only through Mend
 
-Accepted by Yiannis, 2026-11-05. Amended the same day by Yiannis: "This isn't a trial. Build it. You
-have to … provide for every case": people using Mend on a private network, over Tailscale, and on a
-domain of their own. Being built for 0.38.
+Status: accepted 2026-11-05, amended the same day; built in #1442 to #1459. Yiannis accepted it, and
+amended it: "This isn't a trial. Build it. You have to … provide for every case": people using Mend
+on a private network, over Tailscale, and on a domain of their own.
 
 Agents in Mend sessions get tools for services such as Linear, Figma or Sentry through
 [Executor](https://executor.sh), an MIT-licensed integration gateway. Executor keeps the logins to
@@ -356,20 +356,6 @@ Not yet observed: a real Linear account connected end to end.
   Mend asks upstream for a supported service credential.
 - A Mend-run Executor costs about 1.5 GiB of memory per organization. Settings says so before start.
 - Executor's upgrade notes become part of Mend's release checklist while Executor is in beta.
-
-## Build order
-
-Each step is its own pull request in one stack and gets its own check on the box.
-
-1. **The `mend` MCP server for opencode and pi.**
-2. **Executor settings, links and the relay, for an organization's own Executor.** The tab, links
-   (browser consent), calls run as the right person and recorded in sessions, approvals in Mend,
-   `mend connect executor`.
-3. **The Mend-run Executor through Sealant.** One organization-owned scope and caller-only instance,
-   deployment caller configuration, the pinned image, stopped-volume backup on upgrade, Mend's
-   member created on first start, and clear refusal on unsupported runtimes.
-4. **Mend's private sign-in provider and one-click links** for a Mend-run Executor.
-5. **Services in Mend**: add, share, connect and disconnect accounts, for a Mend-run Executor.
 
 ## Open items
 

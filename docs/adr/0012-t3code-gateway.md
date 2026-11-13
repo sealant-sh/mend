@@ -298,16 +298,17 @@ and keeps the device token it gets back.
 
 ## Delivery
 
-| Phase | Scope                                                                                                                                                                                                                                                                                                                                                                  | Size         |
-| ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------ |
-| 0     | vendored contracts at the pin; descriptor, pairing, ticket, `/ws` on rc.115, config snapshot, lifecycle, empty shell, the full refusal table. Done when t3code desktop pairs and shows an empty, healthy environment                                                                                                                                                   | 2–3 days     |
-| 1     | per-person SSE fan-in; shell and thread projection; dispatch with relaunch; interrupt; respond; queue in memory; change diff; id map. Done when a person lists sessions, watches a codex or claude turn live, follows up (also after an idle stop), interrupts, approves under `ask`, reads the diff, and sees sessions started from Mend's web app, CLI or Slack live | 1.5–2 weeks  |
-| 2     | `launchThread`, rename, delete, images, `@`-mentions, VCS status, persisted queue with edit and reorder, replay after a sequence                                                                                                                                                                                                                                       | about 1 week |
-| 3     | the two additive reads and per-turn diffs; terminal over `/api/tty`; runtime-mode switch; archive                                                                                                                                                                                                                                                                      | about 1 week |
-| 4     | `mend server setup` opt-in, exposure gate entry, docs page, drift job                                                                                                                                                                                                                                                                                                  | 3–5 days     |
+Built in 0.36 in five phases (mend#494 to mend#727). Code cites the phase numbers:
 
-Separately, and first: fix resume dropping `ask` (`packages/sessions/src/engine.ts:11585,11684`) in
-its own pull request.
+- Phase 0: vendored contracts at the pin; descriptor, pairing, ticket, `/ws`, config snapshot,
+  lifecycle, the empty shell and the full refusal table.
+- Phase 1: per-person SSE fan-in; shell and thread projection; dispatch with relaunch; interrupt;
+  respond; queue in memory; change diff; id map.
+- Phase 2: `launchThread`, rename, delete, images, `@`-mentions, VCS status, persisted queue with
+  edit and reorder, replay after a sequence.
+- Phase 3: the two additive reads and per-turn diffs; terminal over `/api/tty`; runtime-mode switch;
+  archive.
+- Phase 4: `mend server setup` opt-in, exposure gate entry, docs page, drift job.
 
 ## Decision log
 

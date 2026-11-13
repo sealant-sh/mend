@@ -1,15 +1,16 @@
 # Landing: push a change and open its pull request
 
-Status: proposed 2026-09-23, amended 2026-09-24 with automatic landing, and again the same day: Mend
-never moves the session's branch, the change's owner lands it, and pulling a change has no side
-effects. Amended 2026-09-27 after a Slack session on alpha asked three times and landed nothing
-("Why a turn did not land", below). Commits Mend to one landing action. Mend commits what the
-worktree holds, pushes it to a branch on the project's origin, and opens or updates a GitHub pull
-request whose description is Mend's review tour. Like Cursor, it can do this automatically when the
-agent finishes a turn, and it does not do it for a request that asked a question rather than for a
-change. Merging stays on GitHub, and landing again after more work updates the same branch and pull
-request. The ADR also makes landing observable: what was pushed, by whom, and whether origin still
-has it.
+Status: accepted 2026-09-25 (#341); built in #342 to #349, #372, #396 and #489. Merge from a client
+(2026-11-07) built in #1517 and #1518, in T3 Code only. Amended 2026-09-24 with automatic landing,
+and again the same day: Mend never moves the session's branch, the change's owner lands it, and
+pulling a change has no side effects. Amended 2026-09-27 after a Slack session on alpha asked three
+times and landed nothing ("Why a turn did not land", below). Commits Mend to one landing action.
+Mend commits what the worktree holds, pushes it to a branch on the project's origin, and opens or
+updates a GitHub pull request whose description is Mend's review tour. Like Cursor, it can do this
+automatically when the agent finishes a turn, and it does not do it for a request that asked a
+question rather than for a change. Merging stays on GitHub, and landing again after more work
+updates the same branch and pull request. The ADR also makes landing observable: what was pushed, by
+whom, and whether origin still has it.
 
 **What this ADR does not claim.** It does not make Mend decide whether a change should merge. There
 is no approve control, no merge button and no "ready" state. Landing is publication (plan §5.9): it
@@ -268,11 +269,11 @@ through the SDK (`exec`):
 The session's own workspace is used only when that session is the change owner's, so `gh` never runs
 with a teammate's token. The short-lived workspace is not as small as it should be. The SDK requires
 a harness and a source for every workspace, so Mend names a harness it never starts and mounts an
-empty directory from under the store root (PLATFORM-FEEDBACK.md, 2026-09-24). A runtime that takes
-no host mounts, such as the MicroVM executors of the AWS private beta, refuses that workspace.
-There, a pull request for a session whose workspace is gone fails, and the landing records the
-platform's own words as the pull request step's failure, until the platform half ships. The push has
-already happened by then and is recorded as such.
+empty directory from under the store root (`0dd4b4bf:PLATFORM-FEEDBACK.md`, 2026-09-24). A runtime
+that takes no host mounts, such as the MicroVM executors of the AWS private beta, refuses that
+workspace. There, a pull request for a session whose workspace is gone fails, and the landing
+records the platform's own words as the pull request step's failure, until the platform half ships.
+The push has already happened by then and is recorded as such.
 
 The call is `gh pr create` or `gh pr edit`, reading the body from a file Mend writes, with the
 repository and branch given explicitly. Mend reads the pull request's number, URL and state from
@@ -537,22 +538,8 @@ into anyone's checkout.
 
 ## Delivery
 
-One ready-for-review PR per step, stacked:
-
-| PR  | What it delivers                                                                                                                                                                   |
-| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | This ADR, the product-language amendments, and the platform feedback for a GitHub call as a user.                                                                                  |
-| 2   | Schema and domain: `change_landings`, landing outcomes, the observed landing facts.                                                                                                |
-| 3   | Store and runner: the landing commit from a checkpoint's tree, fast-forward-only push with the project's auth mode, divergence detection, and the git bundle.                      |
-| 4   | The pull request step: the workspace `exec` of `gh pr create` / `gh pr edit`, the short-lived workspace, the description with its markers, and reading back number, URL and state. |
-| 5   | API: land, landing record, bundle and refresh routes; change-owner authorization; audit; `session_git_ops` exposed; worktree removal that recognizes a landed change.              |
-| 6   | Automatic landing: the per-turn trigger and its five checks, the intent reading in `@mend/inference`, the prompt guard, the project setting and the per-session override.          |
-| 7   | Web: the Land panel, the session page link, the project setting and the composer override.                                                                                         |
-| 8   | CLI: `mend land`, `mend pull`, and `--land` / `--no-land`.                                                                                                                         |
-| 9   | Slack: automatic landing from Slack, `autopr=`, the "Land automatically" setting, the status line, the button, and ADR 0006 corrected. Stacked on the Slack stack.                 |
-
-PRs 2 and 3 depend on nothing else. After PR 5, landing works from the API and every client can use
-it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to end.
+Built in #342 to #349 after this ADR (#341), one pull request per step, with #372, #396 and #489
+after it; merge from a client in #1517 and #1518.
 
 ## Decision log
 

@@ -1,8 +1,8 @@
 # Secret files: a person's credential files, written into every session, never captured
 
-Status: proposed 2026-10-03. The owner's decisions of 2026-10-03 (the noun, per person, never
-captured, shared with no one, the project secrets' posture) are taken as given here; the decisions
-below are the ones this document adds.
+Status: accepted 2026-10-03; built in #478 and #555 (0.36). Amended by ADR 0016. The owner's
+decisions of 2026-10-03 (the noun, per person, never captured, shared with no one, the project
+secrets' posture) are taken as given here; the decisions below are the ones this document adds.
 
 Amended 2026-10-06 by [ADR 0016](0016-per-person-harness-homes.md) §11, amending decision 3 below:
 each person has their own Linux user, and each person's set is written into that user's home, as
@@ -45,9 +45,9 @@ sealant's connected accounts arrive as `credentialFiles` on the runtime adapter'
 resolved by the worker from the account store, never by the caller: `docker exec -i … sh -c` with
 the base64 content on stdin, `umask 077`, `chmod`, into `$HOME` before the workspace reports ready
 (`writeCredentialFiles`, design doc §6). The SDK's `workspaces.create` has no field for a
-caller-supplied file (PLATFORM-FEEDBACK.md, 2026-10-03). Its `exec` takes argv only, and Mend
-already writes files through it after boot: skills, the pi profile and agent memory ride argv as
-base64 (`workspace-files.ts`).
+caller-supplied file (`0dd4b4bf:PLATFORM-FEEDBACK.md`, 2026-10-03). Its `exec` takes argv only, and
+Mend already writes files through it after boot: skills, the pi profile and agent memory ride argv
+as base64 (`workspace-files.ts`).
 
 ## Decision
 
@@ -136,8 +136,8 @@ base64 (`workspace-files.ts`).
 
    Before 2026-10-06 the bytes rode argv as base64, so every delivery since this ADR shipped is in
    sealant's database. sealant's side, a purge of those rows and argv redaction, is asked for in
-   PLATFORM-FEEDBACK.md (2026-10-06). A launch-time injection on sealant's credential-file channel
-   is still asked for there too.
+   `0dd4b4bf:PLATFORM-FEEDBACK.md` (2026-10-06). A launch-time injection on sealant's
+   credential-file channel is still asked for there too.
 
 6. **Surfaces.** `mend secrets`, `mend secrets add <path> [--from <file>]` (stdin without `--from`),
    `mend secrets rm <path>`; the settings page lists, adds and removes; the phone lists.
@@ -179,9 +179,9 @@ base64 (`workspace-files.ts`).
 
 - 2026-10-06: secret files and the pi profile leave exec argv for a single-use pickup ticket
   redeemed over the session channel (review of mend#552/#553, P1-1). sealant's purge and argv
-  redaction are recorded in PLATFORM-FEEDBACK.md. Review of mend#555: the ticket lives until its
-  exec ends (ten-minute backstop, not 30 s), is bound to the person for a person's token, and
-  carries every workspace file write, not only secrets.
+  redaction are recorded in `0dd4b4bf:PLATFORM-FEEDBACK.md`. Review of mend#555: the ticket lives
+  until its exec ends (ten-minute backstop, not 30 s), is bound to the person for a person's token,
+  and carries every workspace file write, not only secrets.
 
 - 2026-10-03: exec after relocation, not a dotfiles archive or a platform injection that does not
   exist; both stores share one path.

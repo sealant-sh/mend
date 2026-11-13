@@ -1,11 +1,12 @@
 # Agent memory: one per person per project
 
-Status: proposed 2026-10-02. Capture mode amended by [ADR 0016](0016-per-person-harness-homes.md)
-(2026-10-06): memory lives in each person's own directory of the worktree's home, and a session
-under shared control uses and saves no one's. Implements the roadmap's 0.36 "one agent home per
-person per project" and "import on adoption" (owner decisions of 2026-09-28 and 2026-09-29), by
-carrying the agents' **memory** between a person's sessions rather than sharing their whole harness
-home.
+Status: accepted 2026-10-02; built in #461 and #472 (0.36). Web and phone views, saving at
+checkpoints and transcript import are not built. Capture mode amended by
+[ADR 0016](0016-per-person-harness-homes.md) (2026-10-06): memory lives in each person's own
+directory of the worktree's home, and a session under shared control uses and saves no one's.
+Implements the roadmap's 0.36 "one agent home per person per project" and "import on adoption"
+(owner decisions of 2026-09-28 and 2026-09-29), by carrying the agents' **memory** between a
+person's sessions rather than sharing their whole harness home.
 
 ## Context
 

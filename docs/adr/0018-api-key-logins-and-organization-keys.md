@@ -1,14 +1,15 @@
 # API-key logins and organization keys
 
-Status: accepted 2026-10-25. Yiannis decided the eight questions of the spec on 2026-10-24 and the
-calls that came out of the design on 2026-10-25 (SLNT-102 to SLNT-109). Amends
+Status: accepted 2026-10-25, amended 2026-11-08; personal keys and custom endpoints built in #1547
+to #1557. Organization keys are not built. Yiannis decided the eight questions (D1 to D8) of the
+spec, `0dd4b4bf:docs/specs/api-key-logins.md`, on 2026-10-24 and the calls that came out of the
+design on 2026-10-25 (SLNT-102 to SLNT-109). Amends
 [ADR 0005](0005-claude-credentials-and-a-grant-of-mends-own.md) (keys as the fallback login),
 [ADR 0008](0008-one-refresher-for-provider-logins.md) (what the refresher and the push touch),
 [ADR 0013](0013-whoever-sends-a-turn-pays.md) (who pays for a turn) and
 [ADR 0016](0016-per-person-harness-homes.md) decision 5 ("no person ever runs on anyone else's
-login"). Read against Mend `7239f5cac` and sealant `9802ef32`. The product view, the risks and the
-harness behaviour this rests on are in the spec, [API-key logins](../specs/api-key-logins.md).
-Amended 2026-11-08 with a custom endpoint (decision 11).
+login"). Read against Mend `7239f5cac` and sealant `9802ef32`. Amended 2026-11-08 with a custom
+endpoint (decision 11).
 
 ## Amendment: a custom endpoint, 2026-11-08
 
@@ -231,6 +232,125 @@ only loopback, on the pinned Claude Code 2.1.292 and Codex 0.160.1.
    engines use the login's endpoint the same way the sessions do. The passes that name a fixed model
    (`claude-haiku-4-5`, `gpt-5.6-luna`) fail on an endpoint that does not serve it, and the read is
    skipped.
+
+## Invariants
+
+1. Mend never places, spends or restores one person's key login for another person (ADR 0013, ADR
+   0016). An organization key is no person's login: a member with no login of their own for the
+   provider runs on it (D1, decision 2). ADR 0016's known limits still apply: a person with sudo in
+   a workspace can read other people's files there.
+2. A key that Mend places never appears in a record Mend writes, a log line, argv, a file Mend
+   captures, or the T3 gateway. A key that the person's repository or dotfiles settings supply is
+   outside this invariant (D6). An agent that reads its own key file is a stated limit (2026-10-25):
+   Mend masks key-shaped text where it stores records, and sealantd's masking is extended across
+   output chunk boundaries.
+3. A key has no refresher. Its account turns `invalid` on a provider 401, and no refresh is tried.
+4. A key is written to a person's home with mode 0600, owned by that person, outside every capture
+   root.
+5. For a person who has connected a key, every surface that shows which login a turn spent says
+   whether it was a key or a subscription.
+6. A provider key from a project secret never decides which login a turn spends.
+
+## Risks a key adds over an OAuth login, and their containment
+
+1. **It never expires.**
+   - **Risk:** ADR 0008 makes every OAuth copy non-refreshing, so a leaked copy lapses within hours.
+     A leaked key works until it is revoked in the provider's console.
+   - **Contain:** show the last four characters everywhere. Disconnect says the key stays valid
+     until revoked.
+2. **Spend has no plan cap.**
+   - **Risk:** a key bills per token; a subscription stops at its usage limits.
+   - **Contain:** recommend a spend limit on the Anthropic Console workspace or the OpenAI project.
+     Words say "billed per token". A Mend `budget` per person can come later.
+3. **The agent's own shell inherits a key held in the environment.**
+   - **Risk:** Claude Code passes `ANTHROPIC_API_KEY` to Bash, hooks and MCP children unless
+     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1`. Codex's `ignore_default_excludes` defaults to true, so
+     key-shaped names reach its shell tool.
+   - **Contain:** no environment variables; files and the helper only. Claude Code's subprocess
+     scrub is not set, because on 2.1.292 it needs bubblewrap and turns permission bypass off (open
+     question 3). The agent can still read its own key file. Yiannis made that a stated limit on
+     2026-10-25, as it is for `.credentials.json` today.
+4. **A key from another source changes which login a turn spends.**
+   - **Risk:** in `--print` mode Claude Code prefers `ANTHROPIC_API_KEY` or `apiKeyHelper` over the
+     subscription, without asking. Mend's protocol sessions run `--print`
+     (`packages/domain/src/workbench/harness-launch.ts:280-289`).
+   - **Contain:** reserve the provider key names as project secret names. Report a key found in
+     repository or dotfiles settings as observed.
+5. **Redaction matches names, not values, in several places:**
+   - sealant's API logs;
+   - Mend's `redactingConsole`;
+   - sealantd's per-request env;
+   - sealant's capture masking of account values.
+
+   sealantd's `sk-` pattern covers both providers' keys in its redacted taps. Attach channels are
+   raw by design (`crates/sealant-protocol/src/stream.rs:34`).
+   - **Contain:** value patterns and literal seeding wherever a key is placed.
+
+6. **File mode.**
+   - **Risk:** person processes use umask 0002, so a file written without an explicit mode is
+     readable by group `mend`.
+   - **Contain:** every key file is written 0600, with a test.
+7. **Capture.**
+   - **Risk:** `.claude/settings.json` `env`, `.codex/config.toml` and pi's settings are captured
+     with the worktree.
+   - **Contain:** a key never goes into a captured file.
+8. **Argv.**
+   - **Risk:** sealant's `$HOME` launch passes env as `docker run -e`.
+   - **Contain:** keys take only the per-home stdin path.
+9. **The shared layout.**
+   - **Risk:** one home holds one set of logins. A join or a shared-control turn there would spend
+     the owner's key: cost with no plan cap, for someone who did not send the turn.
+   - **Contain:** none in this feature. D4 decided that this feature does no shared-layout work and
+     assumes the shared layout is gone. The feature therefore depends on the shared layout's
+     removal, planned as its own 0.37 work, landing first. Until then sealant refuses a Claude key
+     in the launcher's `/root`, a temporary guard that the removal retires (decision 4).
+10. **mend#684 widens where a key lands.**
+    - **Risk:** a Codex key also goes into the same person's Claude sessions.
+    - **Contain:** it is the same person; `selectedOnly` opts out.
+
+## Harness behaviour this rests on
+
+Pinned versions (sealant `packages/workspaces/src/harness/integrations.ts:30-34`):
+
+| Harness     | Version |
+| ----------- | ------- |
+| claude-code | 2.1.292 |
+| codex       | 0.160.1 |
+| opencode    | 1.18.34 |
+| pi          | 1.0.4   |
+
+**Claude Code** (code.claude.com docs: authentication, env-vars, settings-reference, remote-control,
+costs).
+
+- **Precedence:** cloud provider, then `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `apiKeyHelper`,
+  `CLAUDE_CODE_OAUTH_TOKEN`, and last `/login` OAuth.
+- **With `--print`**, a key in the environment is used without asking.
+- **`apiKeyHelper`** is a shell command whose output is cached for five minutes and rerun after
+  a 401.
+- **Billing:** a key bills per token. Remote Control, claude.ai connectors, scheduled routines and
+  cloud sessions need a subscription. The docs name no model limited to one kind.
+
+**Codex 0.160.1.**
+
+- `auth.json` fields: `auth_mode`, `OPENAI_API_KEY`, `tokens`, `last_refresh`.
+- `codex login --with-api-key` reads stdin. The app-server takes an API-key login request.
+- In `app-server`, a key in the environment is not used.
+- **Billing:** a key bills at API rates. Cloud tasks, GitHub review and Slack need a ChatGPT
+  sign-in. Models follow the key's API access.
+
+**Observed on 2026-10-24**, with fake keys against a local fake server, on Claude Code 2.1.308 and
+Codex 0.162.1 (decision 11 checked the pinned versions on 2026-11-08):
+
+- Claude Code used `"apiKeyHelper":"cat <file>"` passed through `--settings`, in `--print` mode and
+  in an interactive terminal once onboarding and folder trust were set, with no approval prompt. It
+  sent the key as `x-api-key` and retried after a 401.
+- The stream-json `system/init` line reports `apiKeySource` as `apiKeyHelper` for the helper, as
+  `ANTHROPIC_API_KEY` when an environment key is present (the environment key wins over the helper),
+  and as `none` with neither.
+- `codex login --with-api-key` writes `{"auth_mode":"apikey","OPENAI_API_KEY":"…"}` with mode 0600.
+
+**pi and opencode** read `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` and keep keys in their own
+`auth.json`. opencode supports Anthropic only by key.
 
 ## Consequences
 

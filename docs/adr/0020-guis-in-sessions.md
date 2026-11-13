@@ -1,16 +1,17 @@
 # GUIs in sessions: a screen the agent drives and people watch
 
-Status: accepted 2026-10-30. It commits Mend to a **screen** in a session. A screen is an X display
-in the session's workspace that the session's agent sees and drives through two tools on the `mend`
-MCP server, that people watch live from Mend, and that the owner can take over. Mend, not the
-workspace, holds every input to the screen. Mend keeps a **screen log** of what the screen showed
-and who acted on it, with its frames in Mend's own blob store. Proposed on 2026-10-29. On 2026-10-30
-Yiannis took the recommendation on every decision, D0 to D13, as the orchestrator thread relayed it
-("Take your recommendation on every one"). The mechanisms are an agent's design, and the decision
-log lists them so that he can overturn any one alone. One mechanism changed during the build, after
-his answers: an agent process names itself with an id, not a credential (decision log 7). He can
-overrule that change. On 2026-11-03 he changed D7: a screen now runs whenever its session does, with
-no browser of its own.
+Status: accepted 2026-10-30, D7 changed 2026-11-03; built for the server and web in #1174 to #1285
+and #1407. Phone, T3 Code and VS Code screens are not built. It commits Mend to a **screen** in a
+session. A screen is an X display in the session's workspace that the session's agent sees and
+drives through two tools on the `mend` MCP server, that people watch live from Mend, and that the
+owner can take over. Mend, not the workspace, holds every input to the screen. Mend keeps a **screen
+log** of what the screen showed and who acted on it, with its frames in Mend's own blob store.
+Proposed on 2026-10-29. On 2026-10-30 Yiannis took the recommendation on every decision, D0 to D13,
+as the orchestrator thread relayed it ("Take your recommendation on every one"). The mechanisms are
+an agent's design, and the decision log lists them so that he can overturn any one alone. One
+mechanism changed during the build, after his answers: an agent process names itself with an id, not
+a credential (decision log 7). He can overrule that change. On 2026-11-03 he changed D7: a screen
+now runs whenever its session does, with no browser of its own.
 
 **What this ADR does not claim.** A frame shows what the screen showed at one moment. It does not
 say that a flow works, that a change is correct, or that the agent's account of the screen is true.
@@ -19,8 +20,8 @@ The record keeps the frame beside the agent's report so that a person can compar
 agent. Other people's processes cannot use the display, but the owner's agent runs as the same Linux
 user, can read the display's password and cookie, and can drive it with any X client outside the
 screen log. Takeover arbitrates Mend's input paths, as the prototype's lease did
-(`docs/experiments/computer-use.md:139-142`). A screen on a `public` instance still needs ADR 0004's
-gate.
+(`0dd4b4bf:docs/experiments/computer-use.md:139-142`). A screen on a `public` instance still needs
+ADR 0004's gate.
 
 ## Context
 
@@ -63,16 +64,17 @@ it from Mend") and the brief that puts the tools on Mend's `mend` server.
 
 ### What the proof of concept proved and left open
 
-In branch `feat/desktop-pilot` (write-up `docs/experiments/computer-use.md`), Claude and Codex
-terminal sessions drove Chromium on an X display in their workspace while a person watched a
+In branch `feat/desktop-pilot` (write-up `0dd4b4bf:docs/experiments/computer-use.md`), Claude and
+Codex terminal sessions drove Chromium on an X display in their workspace while a person watched a
 Mend-bundled noVNC beside the terminal, took over and released (`:16-24`). "No release version or
-production architecture is approved by this experiment" (`MEND-AGENT-WORKBENCH-PLAN.md:1411-1418`).
+production architecture is approved by this experiment"
+(`d7f55349:MEND-AGENT-WORKBENCH-PLAN.md:1411-1418`).
 
 It proved that an unprivileged workspace with no GPU runs Xvnc, a window manager and Chromium
-(`computer-use.md:61-63`, `:93-95`), that ordinary Claude Code and Codex conversations drive it from
-MCP image results (`:54-57`, `:255-257`), that RFB over the SDK's forward feeds a viewer whose code
-is Mend's own (`:180-185`), and that a recording survives a workspace stop (`:24`). It left these
-open:
+(`0dd4b4bf:docs/experiments/computer-use.md:61-63`, `:93-95`), that ordinary Claude Code and Codex
+conversations drive it from MCP image results (`:54-57`, `:255-257`), that RFB over the SDK's
+forward feeds a viewer whose code is Mend's own (`:180-185`), and that a recording survives a
+workspace stop (`:24`). It left these open:
 
 - The controller's raw Service listener "reports `Mend auth: none`", and closing it "is a release
   requirement" (`:211-214`). Xvnc ran with `-SecurityTypes None` (`deploy/desktop/start:16`).
@@ -86,8 +88,8 @@ open:
   (`feat/desktop-pilot:apps/api/src/routes/desktop.ts:55-57`). No message from Yiannis covers who
   may watch or take over.
 
-Its sealant findings exist only in the branch's `PLATFORM-FEEDBACK.md`. This ADR carries them to
-main.
+Its sealant findings exist only in the branch's `feat/desktop-pilot:PLATFORM-FEEDBACK.md`. This ADR
+carries them to main.
 
 ### What exists since
 
@@ -265,7 +267,7 @@ while one runs answers `busy`, and a `screen_look` waits in the queue. A batch r
 well under the bridge's 110 s, and actions past it answer `skipped: time limit` (D13). Without a
 screen, both tools answer
 `This session's workspace has no screen. The project's owner turns it on in the project's Environment.`
-Nothing hangs, and no other agent starts (`computer-use.md:311-312`).
+Nothing hangs, and no other agent starts (`0dd4b4bf:docs/experiments/computer-use.md:311-312`).
 
 - **Caller attribution.** The engine gives each agent process its id in env,
   `MEND_AGENT_PROCESS_ID`, when it stages the launch. Codex's `env_vars` gains it. The `mend` helper
@@ -456,7 +458,7 @@ bundle, the workspace sends RFB rectangles, and frames are PNGs Mend encoded and
 0.37 has no video, audio, file transfer, second monitor, code-execution tool or separate pilot
 (D11). Size, resizing and clipboard are defaults in D13. Mend does not filter screen text. The tool
 description tells the agent to stop at passwords, payments and one-time codes, and the
-prompt-injection case (`computer-use.md:322-323`) joins the verify map.
+prompt-injection case (`0dd4b4bf:docs/experiments/computer-use.md:322-323`) joins the verify map.
 
 ## Data shapes
 
@@ -578,10 +580,10 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
   arena candidates that proposed (b) chose it for a watch channel with no input message and no RFB
   parser in Mend.
 - **Decided 2026-10-30, as recommended: (a).** People see real RFB updates through the viewer the
-  prototype proved (`computer-use.md:180-185`). The (b) candidates stream a few full frames a second
-  and say that stream must be measured before anyone calls it usable. Yiannis's bar for interactive
-  surfaces, as Mend's agent memory recorded it on 2026-07-25, is "anything other than instant is not
-  acceptable".
+  prototype proved (`0dd4b4bf:docs/experiments/computer-use.md:180-185`). The (b) candidates stream
+  a few full frames a second and say that stream must be measured before anyone calls it usable.
+  Yiannis's bar for interactive surfaces, as Mend's agent memory recorded it on 2026-07-25, is
+  "anything other than instant is not acceptable".
 - **The same under both.** Neither needs a platform image layer. A controller can be staged beside
   the `mend` helper and versioned with the server. Both start a process with `sessions.open`, so a
   lost start costs both the same.
@@ -646,7 +648,8 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
   keys and pastes, **(ii)** only the take and hand-back frames, or **(iii)** nothing more.
 - **Decided 2026-10-30, as recommended: (a) with (i).** His words of 2026-10-28, "Live recording is
   useless. We are building real artifacts", point to frames, though he said them about promo copy.
-  The prototype's MP4 could be unplayable after an abrupt stop (`computer-use.md:207-209`).
+  The prototype's MP4 could be unplayable after an abrupt stop
+  (`0dd4b4bf:docs/experiments/computer-use.md:207-209`).
 - **Under (b):** the image adds ffmpeg, the screen process writes closed segments, Mend imports them
   over the forward, and the log gains a `Segment` entry. **Under (c):** the agent still sees its
   frames, but the log holds none. **Under (ii) or (iii):** what a person did shows as counts.
@@ -663,7 +666,7 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
   measures it), under the harness-state capture's retention.
 - **Under (a):** no sweep, and storage grows until the budget. **Under (c):** every capture uploads
   the frames, and reading them after a stop needs the prototype's manifest scan
-  (`computer-use.md:206-209`).
+  (`0dd4b4bf:docs/experiments/computer-use.md:206-209`).
 
 ### D7. Always on or on demand, and when it stops
 
@@ -694,9 +697,9 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
 - **Decided 2026-10-30, as recommended: (a) with (i)**, with (b) for a family where the set fails to
   build (`settings.ts:16`). Yiannis's prototype message of 2026-10-07 began "Add a new image option
   (only for say x86 for now)", and no package set has been tried on arm64. The prototype's
-  hand-built base met the mutable-tag bug (`computer-use.md:245-246`). The image grows by 400 to 700
-  MB once per image plan, and each session pays the live screen's memory (D7), both guesses for PRs
-  10 and 11.
+  hand-built base met the mutable-tag bug (`0dd4b4bf:docs/experiments/computer-use.md:245-246`). The
+  image grows by 400 to 700 MB once per image plan, and each session pays the live screen's memory
+  (D7), both guesses for PRs 10 and 11.
 - **Under (b):** a project with its own base cannot have a screen. **Under (c):** 0.37 ships without
   screens unless sealant lands the layer first. **Under (d):** every workspace pays the size.
   **Under (ii):** PR 10 builds each family on both, and a failure hides the toggle there.
@@ -722,8 +725,8 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
 - **(a)** A fresh profile per screen, chosen by the wrapper, gone when the screen ends. **(b)** A
   profile saved per session and restored on resume. **(c)** A profile saved per person and project.
 - **Decided 2026-10-30, as recommended: (a).** "The POC promises artifact persistence, not durable
-  browser profiles" (`computer-use.md:290-292`). A profile holds cookies and logins outside the
-  harness credential paths that ADR 0016 manages.
+  browser profiles" (`0dd4b4bf:docs/experiments/computer-use.md:290-292`). A profile holds cookies
+  and logins outside the harness credential paths that ADR 0016 manages.
 - **Under (b) or (c):** the profile is a secret store with its own retention and deletion rules, and
   (c) also needs a rule for two live sessions. It is never shared between people.
 
@@ -733,15 +736,16 @@ took every recommendation on 2026-10-30. D13 groups small defaults in one table.
   harness on a copied login with its own home.
 - **Decided 2026-10-30, as recommended: (a).** His message of 2026-10-07 asked what it would take:
   "What other software would it need so we could spawn an agent that would just pilot it ?" The
-  write-up leaves the pilot open (`computer-use.md:278`), and it needs a copied login per session
-  (`:163-172`). The session's agent is the one that knows what it changed.
+  write-up leaves the pilot open (`0dd4b4bf:docs/experiments/computer-use.md:278`), and it needs a
+  copied login per session (`:163-172`). The session's agent is the one that knows what it changed.
 - **Under (b):** the pilot is a second attributed caller with its own credential and call keys.
   `Screens` does not change. The launch path and the login copy do.
 
 ### D12. Chromium's sandbox
 
-The prototype ran Chromium with `--no-sandbox` (`computer-use.md:292-293`). Whether a person's user
-(a uid in 40001-49999) can start the sandbox on each executor is untested.
+The prototype ran Chromium with `--no-sandbox`
+(`0dd4b4bf:docs/experiments/computer-use.md:292-293`). Whether a person's user (a uid in
+40001-49999) can start the sandbox on each executor is untested.
 
 - **(a)** The wrapper starts Chromium with its sandbox where the workspace allows it and with
   `--no-sandbox` otherwise, and the status line says `browser sandbox off`. **(b)** Always
@@ -758,15 +762,15 @@ The prototype ran Chromium with `--no-sandbox` (`computer-use.md:292-293`). Whet
 Yiannis took every default as proposed on 2026-10-30. Each row keeps its alternative. The first two
 are product calls. The rest are constants that the stack builds with their tests.
 
-| Item            | Default                                                                                    | Alternative                                                                              | Evidence                                                                                                                                                                                                                               |
-| --------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Lapsed holder   | `Paused` until the owner takes over or hands back, or 2 minutes pass, then `AwaitingAgent` | No timeout, so the agent waits for the owner; or no pause, so a lapse hands back at once | Whether an absent person blocks the agent. A phone back from the background reconnects within 2 minutes (a guess). With no timeout, a closed tab leaves the agent answering `held`.                                                    |
-| Noun            | `screen`                                                                                   | `display`; or `desktop`                                                                  | `desktop` is the Electron app (`apps/desktop`), and `display` is also the X variable. `screen` collides with ordinary UI usage: "The home screen is a sparse attention inbox" (`MEND-AGENT-WORKBENCH-PLAN.md:414`). Only names change. |
-| Screen size     | 1280x800, fixed, no resizing                                                               | 1440x900, as the prototype ran; or a size per project                                    | All three arena candidates chose 1280x800 (`deploy/desktop/start:16` on the branch). A resize moves every click target.                                                                                                                |
-| Clipboard       | The holder's paste goes through the hand and is logged as a count. Nothing copies out.     | No paste in 0.37; or copy-out to the holder, which needs a parsing relay                 | A relay passes every server message to every watcher, so copy-out cannot reach one person through it.                                                                                                                                  |
-| Heartbeat lease | 10 s                                                                                       | 30 s                                                                                     | A guess. Shorter frees the agent sooner, and longer survives a slower phone.                                                                                                                                                           |
-| Batch limits    | 20 actions, 2,000 characters per `type`, 5 s per `wait`, 60 s per batch                    | 120 s per batch, with a longer tool timeout                                              | The bridge gives up at 110 s (`session-socket.ts:40`, `caller.ts:9`) and does not retry a timeout.                                                                                                                                     |
-| Frame budget    | 500 MB per screen, 20 GB per organization, then `frames not kept · budget reached`         | Retention only, with no budget                                                           | D6's sizes. ADR 0004 `:229-231`: refuse new work, never stop running work.                                                                                                                                                             |
+| Item            | Default                                                                                    | Alternative                                                                              | Evidence                                                                                                                                                                                                                                        |
+| --------------- | ------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Lapsed holder   | `Paused` until the owner takes over or hands back, or 2 minutes pass, then `AwaitingAgent` | No timeout, so the agent waits for the owner; or no pause, so a lapse hands back at once | Whether an absent person blocks the agent. A phone back from the background reconnects within 2 minutes (a guess). With no timeout, a closed tab leaves the agent answering `held`.                                                             |
+| Noun            | `screen`                                                                                   | `display`; or `desktop`                                                                  | `desktop` is the Electron app (`apps/desktop`), and `display` is also the X variable. `screen` collides with ordinary UI usage: "The home screen is a sparse attention inbox" (`d7f55349:MEND-AGENT-WORKBENCH-PLAN.md:414`). Only names change. |
+| Screen size     | 1280x800, fixed, no resizing                                                               | 1440x900, as the prototype ran; or a size per project                                    | All three arena candidates chose 1280x800 (`deploy/desktop/start:16` on the branch). A resize moves every click target.                                                                                                                         |
+| Clipboard       | The holder's paste goes through the hand and is logged as a count. Nothing copies out.     | No paste in 0.37; or copy-out to the holder, which needs a parsing relay                 | A relay passes every server message to every watcher, so copy-out cannot reach one person through it.                                                                                                                                           |
+| Heartbeat lease | 10 s                                                                                       | 30 s                                                                                     | A guess. Shorter frees the agent sooner, and longer survives a slower phone.                                                                                                                                                                    |
+| Batch limits    | 20 actions, 2,000 characters per `type`, 5 s per `wait`, 60 s per batch                    | 120 s per batch, with a longer tool timeout                                              | The bridge gives up at 110 s (`session-socket.ts:40`, `caller.ts:9`) and does not retry a timeout.                                                                                                                                              |
+| Frame budget    | 500 MB per screen, 20 GB per organization, then `frames not kept · budget reached`         | Retention only, with no budget                                                           | D6's sizes. ADR 0004 `:229-231`: refuse new work, never stop running work.                                                                                                                                                                      |
 
 ## Considered
 
@@ -795,80 +799,33 @@ are product calls. The rest are constants that the stack builds with their tests
 
 ## Platform feedback
 
-This ADR adds five entries to `PLATFORM-FEEDBACK.md`, each with a draft Sealant issue: (1) named,
-versioned package layers that a client defines, an image capability report, and which executors let
-a person's process start Chromium's sandbox; (2) compiled images keyed by the base's digest, with
-three other build findings observed on 0.39.0-next.696 and not reproduced since; (3) which processes
-a session-bound forward accepts, and what happens to the others when the leader exits; (4) a keyed,
-reconcilable start of a supporting process, without which Mend reaps by display; and (5) a memory
-limit per PTY session. None blocks 0.37 under the recommendations, and none weighs on D0 (b) more
-than on (a).
+This ADR adds five entries to `0dd4b4bf:PLATFORM-FEEDBACK.md`, each with a draft Sealant issue: (1)
+named, versioned package layers that a client defines, an image capability report, and which
+executors let a person's process start Chromium's sandbox; (2) compiled images keyed by the base's
+digest, with three other build findings observed on 0.39.0-next.696 and not reproduced since; (3)
+which processes a session-bound forward accepts, and what happens to the others when the leader
+exits; (4) a keyed, reconcilable start of a supporting process, without which Mend reaps by display;
+and (5) a memory limit per PTY session. None blocks 0.37 under the recommendations, and none weighs
+on D0 (b) more than on (a).
 
 ## Delivery
 
-One `gh stack`. Each PR stays under about 250 production lines and ends in a check. "Verifier" is
-what the merge-gate verifier drives on a real stack through the project's `verify` skill. PRs 2 to 5
-started before the decisions, because none of them changed with an answer.
+Steps 1 to 17 and 21 are built for the server and web, from #1174 to #1285 with #1407 for D7's
+change; each PR and its check are in git history. The decisions above cite the built steps by
+number: 1, this ADR; 2, one ticket target list; 3 (with 4), the caller names its agent process; 5,
+the admission-and-recheck policy, moved into 15; 6, screen types and the input machine; 7, the RFB
+codec; 8, the hand; 9, screens, displays, the log and call claims; 10, the image's package set; 11,
+the screen process; 12, the display on every launch path; 13, the `Screens` service; 14, the two
+tools; 15, the routes, the viewer socket, tickets and the recheck policy; 16, the record's
+projection; 17, the web screen; 21, retention and the frame budget.
 
-1. **docs: this ADR and its platform feedback** (now, with the answers written in before it merges).
-   AGENTS.md gains the nouns. Verifier: each cited `file:line` still holds.
-2. **tickets: one target list.** Merged as #1174. The database type derives from the contract's.
-3. **sessions and mcp: the caller names its agent process** (PRs 3 and 4 as one). The engine gives
-   each agent launch `MEND_AGENT_PROCESS_ID`, the helper sends it, and the caller resolves it.
-   Check: a superseded process's page lands on its own turn, and another session's id resolves to
-   nothing. Verifier: the old MCP child calls after a resume, on Docker and on the network
-   transport.
-4. Folded into 3.
-5. **One admission-and-recheck policy.** Moved into PR 15, which brings its second caller, so that
-   previews are not the only user of an extracted layer.
-6. **domain: screen types and the input machine** (after D0, D3, D13). Check: a table test over
-   every state and event, boot included. Verifier: reads the table against D3 and D13.
-7. **sessions: the RFB codec, pure and bounded** (after D0). Check: bytes from noVNC with default
-   options against TigerVNC, split at every chunk boundary, the `SetEncodings` rewrite, and
-   malformed, oversized and decompression-bomb streams. Verifier: reruns the capture on the box.
-8. **sessions: the hand** (after D0). Check: an Xvnc container draws a known pattern and the PNG
-   matches, a click moves the pointer, a key held at a change of holder is released, and a
-   full-update benchmark passes the benchmark checklist. Verifier: the integration test on the box.
-9. **db: screens, per-session displays, the log and call claims** (after D0, D5, D6). Check: two
-   sessions in one workspace keep two displays across an idle stop, a claim replays, and forty
-   appends in one turn make one episode. Verifier: the repo tests on the box's Postgres.
-10. **image: the package set behind the Screen toggle** (after D1, D8). Check: the set resolves on
-    each offered family and architecture. Verifier: records the image size for D8.
-11. **sessions: the screen process** (after D7). Its module, the script, the helper's
-    `screen-secret` verb, teardown, the idle hold and the lost-start reap. Verifier: Xvnc on
-    loopback only, a client without the password and another person's user refused, a view-only
-    connection moves nothing, a killed window manager reads `degraded`, nothing outlives Xvnc, a
-    lost start reopens on its display, memory recorded.
-12. **sessions: the display on every launch path, and the wrapper** (after D10, D12). Check: each
-    path's env holds `DISPLAY`, `XAUTHORITY` and the wrapper first on PATH. Verifier: two sessions
-    in one workspace run `chromium <url>`, and each opens on its own screen and profile.
-13. **sessions: the `Screens` service** (after D3, D7, D13). Check: a Take during a batch skips the
-    rest and holds no key, a second act answers `busy`, a batch stops at its limit, a retry sends no
-    input, and a crash at each persistence step boots into the table's row. Verifier: look and act
-    through a test route, restart the API during a takeover, read a frame.
-14. **mcp: the two tools, the catalog, the receipt and compaction** (after D9). Check: no base64 and
-    no typed text in a stored item or approval request. Verifier: fresh Claude and Codex sessions,
-    protocol and terminal, then a resume and a mode switch, each reporting a page title, and the
-    native transcript's copy measured. It is the go or no-go for Codex images.
-15. **api: routes, the viewer socket, tickets, the viewer budget and the recheck policy extracted
-    from `preview-identity.ts`** (after D2, D3). Check: the preview tests pass unchanged, and a
-    non-owner's input moves nothing, the owner's moves only after Take, and a viewer closes when its
-    project turns private or its device is revoked. Verifier: two accounts, a hand-written RFB
-    client as the non-owner, and a default noVNC that stays connected.
-16. **record: the projection** (after D5). Check: in both modes, people's entries sit before the
-    next look, a terminal episode sits at its tool call, and no turn is created. Verifier: a
-    takeover between two turns, in a protocol and a terminal session.
-17. **web: the screen, screen items, the terminal predicate fix** (after D4). Verifier: the done
-    condition. An agent signs up a test user while a non-owner watches and cannot click, the owner
-    takes over and hands back, and the agent's next look reports it.
+Three client steps are not built:
+
 18. **phone: the embed, its renewal and screen items** (after D4). Verifier: watch, take over,
     background the app past the lease, return, and hand back.
 19. **T3 Code: episodes and notices** (after D4). Verifier: a protocol thread shows frames and the
     notice, and a terminal-only session shows both as notices.
 20. **VS Code: the record line and Mend: Watch Screen** (after D4). Verifier: the command opens it.
-21. **retention and the frame budget** (after D6, D13). Check: expired frames read `expired`, and at
-    the budget input works, the agent gets its image and the log reads `frames not kept`. Verifier:
-    a short retention and a small budget on the box.
 
 ## Built differently
 

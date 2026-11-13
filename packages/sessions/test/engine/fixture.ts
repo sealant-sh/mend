@@ -3720,7 +3720,7 @@ export const setup = (tmp: string, world: World) => {
 /**
  * A second project of the same organization, adopted from its own origin beside the fixture's
  * (served by the same git daemon, which exports everything under `tmp`): what `mend repo add`
- * brings into a session (docs/adr/0010).
+ * brings into a session (docs/adr/0011).
  */
 export const setupSibling = (tmp: string, world: World, name: string, fixtureOrigin: string) => {
   const origin = path.join(tmp, `${name}-origin`);

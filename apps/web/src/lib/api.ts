@@ -92,7 +92,7 @@ export type ScreenControlDto = Outputs["screens"]["take"];
 /** What Mend did with a sent message, with its own sentence for it (`explanation`). */
 export type SessionMessageReceiptDto = Outputs["sessions"]["sendMessage"];
 export type CheckpointDto = SessionDetailDto["checkpoints"][number];
-/** A repository the session holds beside its worktree (docs/adr/0010). */
+/** A repository the session holds beside its worktree (docs/adr/0011). */
 export type SessionRepositoryDto = SessionDetailDto["repositories"][number];
 export type SessionChangeDto = NonNullable<SessionDetailDto["change"]>;
 export type FollowUpDto = NonNullable<Outputs["sessions"]["pendingFollowUp"]>;

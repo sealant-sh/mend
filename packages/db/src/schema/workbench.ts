@@ -2653,7 +2653,7 @@ export const worktreeChanges = pgTable("worktree_changes", {
 });
 
 /**
- * The repositories a session holds beside its own worktree (docs/adr/0010): each a worktree of
+ * The repositories a session holds beside its own worktree (docs/adr/0011): each a worktree of
  * another project at `/workspace/repos/<name>`, with the state of its arrival and how it is saved.
  */
 export const sessionRepositories = pgTable(

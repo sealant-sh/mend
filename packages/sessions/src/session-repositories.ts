@@ -8,7 +8,7 @@ import {
 
 import { shellQuote } from "./workspace-files.ts";
 
-/** A project a session may add as a repository (docs/adr/0010), as `mend repo projects` lists it. */
+/** A project a session may add as a repository (docs/adr/0011), as `mend repo projects` lists it. */
 export interface AddableProject {
   readonly id: ProjectId;
   readonly name: string;
