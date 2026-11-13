@@ -22,3 +22,55 @@ export const boatKeyShapeProblem = (key: string): string | null =>
   BOAT_KEY_SHAPE.test(key.trim())
     ? null
     : "That is not a Boat key. A Boat key is the boat_… value Boat shows once when you create the key: at least 16 letters, digits and . _ ~ - with no spaces. Nothing was sent.";
+
+/**
+ * The Boat permissions Sealant Core needs of every key it runs sessions on, from the Boat calls it
+ * makes. Boat's `ci` preset is not enough: its `sandbox.delete-own` does not satisfy
+ * `sandbox.delete`. The one list the page's command and its missing-permissions comparison read.
+ */
+export const BOAT_KEY_REQUIRED_PERMISSIONS = [
+  "exec",
+  "file.write",
+  "host",
+  "sandbox.create",
+  "sandbox.delete",
+  "sandbox.read",
+  "sandbox.resume",
+  "sandbox.stop",
+  "snapshot.read",
+  "snapshot.write",
+] as const;
+
+/**
+ * What the key Mend asks people to create holds: the required permissions, and `account.read`,
+ * which lets Mend read the wallet the key bills, its limits and the key's own permissions and
+ * expiry.
+ */
+export const BOAT_KEY_COMMAND_PERMISSIONS = [
+  ...BOAT_KEY_REQUIRED_PERMISSIONS,
+  "account.read",
+] as const;
+
+/** The longest a Boat key may live; Boat's default is ninety days. */
+export const BOAT_KEY_LIFETIME = "365d";
+
+/**
+ * The Boat CLI command that creates a key Mend can use. `organization`: the Boat organization the
+ * key is for (its name, or a placeholder to replace); null makes a key for a personal account.
+ */
+export const boatKeyCreateCommand = (organization: string | null): string =>
+  [
+    "boat",
+    ...(organization === null ? [] : ["--org", organization]),
+    "api-key create mend",
+    `--ttl ${BOAT_KEY_LIFETIME}`,
+    `--actions ${BOAT_KEY_COMMAND_PERMISSIONS.join(",")}`,
+  ].join(" ");
+
+/** The required permissions a key does not hold, in the list's order. `*` holds every one. */
+export const missingBoatKeyPermissions = (
+  held: ReadonlyArray<string>,
+): ReadonlyArray<(typeof BOAT_KEY_REQUIRED_PERMISSIONS)[number]> =>
+  held.includes("*")
+    ? []
+    : BOAT_KEY_REQUIRED_PERMISSIONS.filter((permission) => !held.includes(permission));
