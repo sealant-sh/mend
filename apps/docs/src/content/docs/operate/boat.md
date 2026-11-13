@@ -476,8 +476,9 @@ wallet cannot pay for another, the session that needed a new image says so. Once
 removes the images it built that no session can start from any more: it keeps every image used in
 the last day (sealant's minimum age, `SEALANT_BOAT_IMAGE_MIN_AGE_HOURS`, 24 by default), and the
 image each session stopped in the last 14 days would start from. So an image goes at the first
-hourly pass after it is both unused and older than the minimum age. It also deletes the images it
-built in a Boat account when that account's key is removed from Mend.
+hourly pass after nothing can start from it and a day has passed since it was last used; the day
+counts from its last use, not from when it was made. It also deletes the images it built in a Boat
+account when that account's key is removed from Mend.
 
 ### After upgrading to sealant 0.40.0-next.880
 
@@ -488,10 +489,10 @@ Three things change once the server runs this sealant:
   and its sessions already running carry on. A key made without `account.read` is never pinned:
   replace it with one made with the command on the Boat page.
 - **Unused images go.** sealant removes an image it built at the first hourly pass after nothing can
-  start from it any more and it is older than the minimum age (a day by default), so the saved
-  snapshot count on the Boat page drops as each old image reaches that point. On a server whose key
-  can bill more than one wallet, images made before the upgrade were never removed by this build;
-  sealant 0.40.0-next.892 places and removes them (next section).
+  start from it any more and a day has passed since it was last used (the minimum age, counted from
+  its last use), so the saved snapshot count on the Boat page drops as each old image reaches that
+  point. On a server whose key can bill more than one wallet, images made before the upgrade were
+  never removed by this build; sealant 0.40.0-next.892 places and removes them (next section).
 - **Every Boat image is built once more.** Nix sessions on Boat now start with the shell their
   environment declares, which changes a file inside every Boat image. Each environment's next Boat
   session waits for its image to be built again, once.
@@ -502,9 +503,9 @@ Three things change once the server runs this sealant:
   recorded wallets again. Boat answers for such an image under every wallet the key can bill, so
   sealant records it in the wallet the key bills now. From then on it is an image like any other: a
   session uses it while its recipe still matches, and the hourly pass removes it once nothing can
-  start from it and it is older than the minimum age. On a server whose key can bill more than one
-  wallet, sealant 0.40.0-next.880 left these images in place for good; this build is what lets them
-  go.
+  start from it and a day has passed since it was last used. On a server whose key can bill more
+  than one wallet, sealant 0.40.0-next.880 left these images in place for good; this build is what
+  lets them go.
 - **The list of what sealant cannot reach clears by itself.** What Boat answers is gone under every
   wallet the key can bill is recorded gone. At sealant's first pass after the upgrade, which runs
   when it starts, the list on the Boat page, in `mend boat status` and in `mend doctor` drops
