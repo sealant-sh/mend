@@ -407,7 +407,7 @@ describe("mend boat disconnect", () => {
     expect(stdout.split("\n").slice(0, 3)).toEqual([
       "✓ removed the organization's Boat key · Sealant deletes the images it built in that Boat account",
       "Mend stopped 2 standby workspaces there first. Projects with hot sessions warm new ones where sessions run now.",
-      "This organization has no Boat key · new Boat sessions use the server's.",
+      "This organization has no Boat key · new Boat sessions use the server's own, if it has one; otherwise they are refused.",
     ]);
   });
 
