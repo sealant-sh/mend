@@ -251,7 +251,7 @@ describe("sealant's Boat accounts, through the SDK", () => {
     });
   });
 
-  it("answers no install key when Core has none of its own", async () => {
+  it("answers no install key when sealant has none of its own", async () => {
     next = {
       status: 503,
       body: {

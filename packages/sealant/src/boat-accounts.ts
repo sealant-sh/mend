@@ -120,8 +120,8 @@ export interface BoatAccountsApi {
     boatAccountId: string,
   ) => Effect.Effect<BoatKeyProof, BoatAccountRefusal | SealantPlatformError>;
   /**
-   * The install's own Boat key (its environment's) as Core last checked it: null when the install
-   * has none, which Core answers as unavailable. Never the key.
+   * The install's own Boat key (its environment's) as sealant last checked it: null when the install
+   * has none, which sealant answers as unavailable. Never the key.
    */
   readonly installKey: () => Effect.Effect<
     { readonly report: BoatKeyReport | null } | null,
@@ -322,7 +322,7 @@ export const makeBoatAccountsApi = (
       call(() => admin.boatAccounts.check(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
     prove: (boatAccountId) =>
       call(() => admin.boatAccounts.prove(boatAccountId)).pipe(Effect.map(boatKeyProofOf)),
-    // Core answers 503 both without a key of its own and without Boat at all: either way, none.
+    // sealant answers 503 both without a key of its own and without Boat at all: either way, none.
     installKey: () =>
       call(() => admin.boatAccounts.installKey()).pipe(
         Effect.map((key) => ({
