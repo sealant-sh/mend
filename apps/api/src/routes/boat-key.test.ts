@@ -16,6 +16,33 @@ const detailsBody = Schema.decodeUnknownSync(
 /** A refusal's words, as a test reads them. */
 const messageBody = Schema.decodeUnknownSync(Schema.Struct({ message: Schema.String }));
 
+/** A full check's answer as a test reads it: each step's Boat reason is compared, not decoded. */
+const fullCheckBody = Schema.decodeUnknownSync(
+  Schema.Struct({
+    last: Schema.NullOr(
+      Schema.Struct({
+        outcome: Schema.String,
+        steps: Schema.Array(
+          Schema.Struct({ step: Schema.String, outcome: Schema.String, boat: Schema.Unknown }),
+        ),
+      }),
+    ),
+    runningSince: Schema.NullOr(Schema.String),
+  }),
+);
+
+/** A status's full check: the last result is compared whole, not decoded. */
+const statusFullCheck = Schema.decodeUnknownSync(
+  Schema.Struct({
+    details: Schema.Struct({
+      fullCheck: Schema.Struct({
+        last: Schema.Unknown,
+        runningSince: Schema.NullOr(Schema.String),
+      }),
+    }),
+  }),
+);
+
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
 
@@ -597,10 +624,8 @@ describe("an organization's Boat key", () => {
     const fullCheck = (user: "alice" | "carol") =>
       api.request(user, "POST", "/api/organization/boat-key/full-check");
     const lastFullCheck = async () =>
-      (
-        (await (await api.request("alice", "GET", "/api/organization/boat-key")).json()) as {
-          details: { fullCheck: { last: { outcome: string } | null; runningSince: string | null } };
-        }
+      statusFullCheck(
+        await (await api.request("alice", "GET", "/api/organization/boat-key")).json(),
       ).details.fullCheck;
 
     for (const outcome of ["passed", "refused", "interrupted"] as const) {
@@ -610,13 +635,10 @@ describe("an organization's Boat key", () => {
         core.length = 0;
         const response = await fullCheck("alice");
         expect(response.status).toBe(200);
-        const body = (await response.json()) as {
-          last: { outcome: string; steps: Array<{ step: string; outcome: string }> };
-          runningSince: string | null;
-        };
+        const body = fullCheckBody(await response.json());
         expect(body.runningSince).toBeNull();
-        expect(body.last.outcome).toBe(outcome);
-        expect(body.last.steps.map((step) => step.step)).toEqual([
+        expect(body.last?.outcome).toBe(outcome);
+        expect(body.last?.steps.map((step) => step.step)).toEqual([
           "start-vm",
           "run-command",
           "publish-port",
@@ -636,12 +658,8 @@ describe("an organization's Boat key", () => {
     it("names the refused step's Boat reason in the answer", async () => {
       await connect("alice");
       boat.proves(boatKeyProofFixture("refused", FINISHED));
-      const body = (await (await fullCheck("alice")).json()) as {
-        last: {
-          steps: Array<{ step: string; outcome: string; boat: { permission: string } | null }>;
-        };
-      };
-      expect(body.last.steps[2]).toMatchObject({
+      const body = fullCheckBody(await (await fullCheck("alice")).json());
+      expect(body.last?.steps[2]).toMatchObject({
         step: "publish-port",
         outcome: "refused",
         boat: { permission: "host" },
@@ -692,15 +710,12 @@ describe("an organization's Boat key", () => {
         await connect("alice");
         boat.proves(boatKeyProofFixture("passed", FINISHED), true);
         core.length = 0;
-        const first = (await (await fullCheck("alice")).json()) as {
-          last: unknown;
-          runningSince: string | null;
-        };
+        const first = fullCheckBody(await (await fullCheck("alice")).json());
         expect(first.last).toBeNull();
         expect(first.runningSince).not.toBeNull();
         expect((await lastFullCheck()).runningSince).toBe(first.runningSince);
         // Asked again while it runs: answered as running, and sealant is not asked twice.
-        const second = (await (await fullCheck("alice")).json()) as { runningSince: string };
+        const second = fullCheckBody(await (await fullCheck("alice")).json());
         expect(second.runningSince).toBe(first.runningSince);
         expect(core.filter((call) => call.call === "prove")).toHaveLength(1);
         boat.releaseProof();
@@ -875,10 +890,8 @@ describe("a person's own Boat key (SLNT-797)", () => {
     expect(ran.status).toBe(200);
     expect(await ran.json()).toMatchObject({ last: { outcome: "passed" }, runningSince: null });
     expect(core).toEqual([{ call: "prove", boatAccountId: "core-boat-1" }]);
-    const status = (await (await api.request("carol", "GET", ROUTE)).json()) as {
-      details: { fullCheck: { last: { outcome: string } | null } };
-    };
-    expect(status.details.fullCheck.last?.outcome).toBe("passed");
+    const status = statusFullCheck(await (await api.request("carol", "GET", ROUTE)).json());
+    expect(status.details.fullCheck.last).toMatchObject({ outcome: "passed" });
     // Another member with no key of their own proves nothing of hers.
     core.length = 0;
     expect((await api.request("alice", "POST", `${ROUTE}/full-check`)).status).toBe(409);
