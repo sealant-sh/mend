@@ -20,8 +20,8 @@ the commit it was last confirmed at) are the project skill
 The model found one schedule on `origin/main` at `374094f416` in which a reconcile pass discarded
 the workspace a launch had just claimed and was adopting. `drainHotWorkspace` now reads the session
 again once `retire` has taken the row, and sends an ordinary stop when one exists (SLNT-823,
-mend#PR_NUMBER, commit `aa029659e3`). Row `mutant-no-reread` keeps the drain as it was, and TLC
-still breaks the promise there.
+mend#1628, commit `aa029659e3`). Row `mutant-no-reread` keeps the drain as it was, and TLC still
+breaks the promise there.
 
 The schedule, in Mend's words:
 

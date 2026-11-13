@@ -112,10 +112,10 @@ guards allow it, and the value it acts on was read where and when the code reads
 | `Settle`, `Resume`, `Restart`                                      | `settleSession`; a person's resume or wake running `launchSession`; a process restart (`resume()`, then the boot sweep)                                                                                                           |
 | (relied on, not modelled)                                          | `standbyApiFor` and `captureApiFor` (`packages/sessions/src/capture-channel.ts`, `engine.ts`): a workspace with no session under its id uploads nothing, which is why discarding an unclaimed standby loses nothing               |
 
-**Sync commit: `aa029659e3`** (2026-11-13), the SLNT-823 fix on the branch of mend#PR_NUMBER, on top
-of `origin/main` at `a37a2600f0`. Once that pull request merges, its squash commit on `main` stands
-for it: use that commit in step 1, or fetch this one with `git fetch origin pull/PR_NUMBER/head`.
-Between `374094f416` and `a37a2600f0` the covered code changed only in ways no action models:
+**Sync commit: `aa029659e3`** (2026-11-13), the SLNT-823 fix on the branch of mend#1628, on top of
+`origin/main` at `a37a2600f0`. Once that pull request merges, its squash commit on `main` stands for
+it: use that commit in step 1, or fetch this one with `git fetch origin pull/1628/head`. Between
+`374094f416` and `a37a2600f0` the covered code changed only in ways no action models:
 `reconcileHotPoolOnce` finds each owner's Boat key with `boatKeys.launchKey` and drains a person's
 own key's standbys (SLNT-797), which `RDrain` already covers, and `setReady` stamps the standby's
 `boatKey`. The model was last confirmed to describe the recorded code at this commit. Move it
