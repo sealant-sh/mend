@@ -12,9 +12,10 @@ description:
 
 `docs/specs/formal/standby-discard/` holds a TLA+ model of every actor that can reach
 `drainHotWorkspace`'s `stopWorkspace(…, { discardUnsaved: true })`, checked by TLC across every
-order of their steps. Its `README.md` explains the promise, the open finding, the bounds and the
-Postgres behaviour it rests on. This skill is the procedure: decide whether your change touches the
-model, run it, read what it says, and keep it true to the code.
+order of their steps. Its `README.md` explains the promise, the finding it made and how the code
+fixed it (SLNT-823), the bounds and the Postgres behaviour it rests on. This skill is the procedure:
+decide whether your change touches the model, run it, read what it says, and keep it true to the
+code.
 
 ## 1. Decide whether the change touches the model
 
@@ -22,8 +23,8 @@ The model stands for the code in the coverage record below. Diff that code from 
 your tree:
 
 ```sh
-git diff --stat 374094f416 -- packages/db/src/repos/hot-workspaces.ts packages/sessions/src/engine.ts packages/sessions/src/capture-channel.ts
-git diff 374094f416 -- packages/sessions/src/engine.ts packages/db/src/repos/hot-workspaces.ts | grep -nE '^[-+].*(hotWorkspaces\.|drainHotWorkspace|reconcileHotPoolOnce|hotPoolSweep|provisionHotWorkspace|claimHotSession|claimedEntry|adoptClaimedWorkspace|acceptExecutor|replanClaimedStandby|changingBoatKey|leavingBoatAccounts|discardUnsaved|retire|setFailed|setReady|sessions\.create)'
+git diff --stat aa029659e3 -- packages/db/src/repos/hot-workspaces.ts packages/sessions/src/engine.ts packages/sessions/src/capture-channel.ts
+git diff aa029659e3 -- packages/sessions/src/engine.ts packages/db/src/repos/hot-workspaces.ts | grep -nE '^[-+].*(hotWorkspaces\.|drainHotWorkspace|reconcileHotPoolOnce|hotPoolSweep|provisionHotWorkspace|claimHotSession|claimedEntry|adoptClaimedWorkspace|acceptExecutor|replanClaimedStandby|changingBoatKey|leavingBoatAccounts|discardUnsaved|retire|setFailed|setReady|sessions\.create)'
 ```
 
 `engine.ts` changes often. Read every hunk inside a function the record lists. The step is done when
@@ -40,17 +41,15 @@ docs/specs/formal/standby-discard/check.sh           # before handing off: full 
 Each row prints `as expected` or `NOT AS EXPECTED`, and the script exits 0 only when every row is
 `as expected`. The rows and their expected outcomes are the `ROWS` table in `check.sh`:
 
-- `code-promise` and `code-promise-atomic-retire` are expected to be **violated**. That is the open
-  finding (README, "The finding"): a reconcile pass can discard a workspace a launch is adopting,
-  when the sweep's not-ended `setFailed` overwrites `claimed` between that pass's session read and
-  its `retire`.
-- `code-promise-no-sweep` and `code-claimable` are the code, expected to hold.
-- `fix-reread-session` and `fix-setfailed-unless-claimed` are the code plus one candidate fix each.
-  While the finding keeps the code rows failing, a new break shows up in the rows that hold: a
-  `retire` stripped of its status check, modelled, turned `fix-setfailed-unless-claimed` and
-  `code-promise-no-sweep` to violated.
-- The `mutant-*` rows each break one check on a base that otherwise holds, and are expected to be
-  violated. A mutant that holds means the model lost the behaviour that break needs.
+- `code-promise`, `code-promise-atomic-retire` and `code-claimable` are the code, expected to hold.
+- `mutant-no-reread` is the drain as it was before SLNT-823, with no session read after `retire`. It
+  is expected to be **violated**: the finding (README, "The finding, fixed"). Its `-atomic-retire`
+  row is expected violated and its `-no-sweep` row to hold; together they say what the finding
+  needed.
+- The other `mutant-*` rows each break one check or one order of the code, and are expected to be
+  violated. A mutant that holds means either the model lost the behaviour that break needs, or the
+  code now catches that break another way. When the reread went in, `retire-ignores-status` started
+  to hold (11,263,702 states at full bounds) and was replaced by `reread-before-retire`.
 
 Done when the full run exits 0, or every `NOT AS EXPECTED` row is classified by step 3.
 
@@ -81,21 +80,20 @@ guards allow it, and the value it acts on was read where and when the code reads
 
 ## 4. Update the model for an intended change
 
-- Change the action that stands for the code you changed, in the part every base shares, so the code
-  rows and both fix rows see it. One action is one statement or one platform call; a read whose
-  value a later step uses is its own action.
+- Change the action that stands for the code you changed. One action is one statement or one
+  platform call; a read whose value a later step uses is its own action. When the change fixes a
+  break, keep the old behaviour as a mutant expected to fail, so the property is still shown to
+  bite.
 - A new caller of `drainHotWorkspace`, `claim`, `retire`, `setFailed`, `setReady` or `remove` is a
   new action (and a new drain slot for a new caller), added to `Next` and to the record below.
-- When the finding is fixed in the code: model that fix as the code and delete the candidate-fix
-  base it matches (or both). Set the `code-promise` rows to `holds`, move the mutants onto
-  `Base = "code"`, and update README's finding section.
 - Run the full check, update README's "Last full run" table, then move the sync commit.
 
 ## Coverage record
 
 | Model action                                                       | Code it stands for                                                                                                                                                                                                                |
 | ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `DAdopt`                                                           | `drainHotWorkspace` (`packages/sessions/src/engine.ts`): `adopted = keepWorktree \|\| sessions.byId(entry.id)` and the `discard = capture && entry.sealantWorkspaceId && !adopted && retire` decision                             |
+| `DAdopt`                                                           | `drainHotWorkspace` (`packages/sessions/src/engine.ts`): `adoptedBefore = keepWorktree \|\| sessions.byId(entry.id)` and `retired = capture && entry.sealantWorkspaceId && !adoptedBefore && retire`                              |
+| `DReread`                                                          | `drainHotWorkspace`: `adopted = adoptedBefore \|\| (retired && sessions.byId(entry.id))`, `discard = retired && !adopted` (SLNT-823)                                                                                              |
 | `DRetireScan`, `DRetireApply`                                      | `HotWorkspacesRepo.retire` (`packages/db/src/repos/hot-workspaces.ts`)                                                                                                                                                            |
 | `DStop`                                                            | `drainHotWorkspace`: `sealant.getWorkspace` then `sealant.stopWorkspace(workspace, discard ? { discardUnsaved: true } : undefined)`                                                                                               |
 | `DNotEnded`                                                        | `drainHotWorkspace`'s `if (!ended)` branch: `hotWorkspaces.setFailed` (`HotWorkspacesRepo.setFailed`, no status condition)                                                                                                        |
@@ -114,9 +112,15 @@ guards allow it, and the value it acts on was read where and when the code reads
 | `Settle`, `Resume`, `Restart`                                      | `settleSession`; a person's resume or wake running `launchSession`; a process restart (`resume()`, then the boot sweep)                                                                                                           |
 | (relied on, not modelled)                                          | `standbyApiFor` and `captureApiFor` (`packages/sessions/src/capture-channel.ts`, `engine.ts`): a workspace with no session under its id uploads nothing, which is why discarding an unclaimed standby loses nothing               |
 
-**Sync commit: `374094f416`** (`origin/main`, 2026-11-13). The model was last confirmed to describe
-the recorded code at this commit. Move it forward only after step 1 finds every change to that code
-since it accounted for in the model, and a full `check.sh` run ends with every row as expected.
+**Sync commit: `aa029659e3`** (2026-11-13), the SLNT-823 fix on the branch of mend#PR_NUMBER, on top
+of `origin/main` at `a37a2600f0`. Once that pull request merges, its squash commit on `main` stands
+for it: use that commit in step 1, or fetch this one with `git fetch origin pull/PR_NUMBER/head`.
+Between `374094f416` and `a37a2600f0` the covered code changed only in ways no action models:
+`reconcileHotPoolOnce` finds each owner's Boat key with `boatKeys.launchKey` and drains a person's
+own key's standbys (SLNT-797), which `RDrain` already covers, and `setReady` stamps the standby's
+`boatKey`. The model was last confirmed to describe the recorded code at this commit. Move it
+forward only after step 1 finds every change to that code since it accounted for in the model, and a
+full `check.sh` run ends with every row as expected.
 
 ## Running it in CI (not set up)
 

@@ -20,27 +20,23 @@
 EXTENDS Naturals, FiniteSets, TLC
 
 CONSTANTS
-  Standbys,  \* hot_workspaces ids. Each is also its standby's Sealant workspace
+  Standbys,  \* hot_workspaces ids. Each is also its standby's sealant workspace
              \* and the id a claiming session takes (claimHotSession creates the
              \* session under the pool row's id).
   Launches,  \* launches that may claim a standby (claimHotSession).
   NoId,      \* a model value: no row.
-  Base,      \* "code" is the code as it is; see Bases.
-  Mutant     \* "none", or one deliberate break; see Mutants.
+  Mutant     \* "none" is the code as it is; otherwise one deliberate break, see Mutants.
 
-(* The two "fix-" bases model candidate fixes for the finding in README.md;  *)
-(* they are not the code. A mutant breaks one check or one order of the code *)
-(* to show that a property can fail; check.sh expects each one to fail.      *)
-Bases == {"code",
-          "fix-reread-session",           \* the drain reads the session again once retire took the row
-          "fix-setfailed-unless-claimed"} \* the not-ended setFailed leaves a claimed row claimed
+(* A mutant breaks one check or one order of the code to show that a        *)
+(* property can fail; check.sh says what it expects of each.                 *)
 Mutants == {"none",
-            "retire-ignores-status",      \* retire: WHERE id = ?, without status <> 'claimed'
+            "no-reread",                  \* the drain as it was before SLNT-823: no session read after retire
+            "reread-before-retire",       \* the second session read is made before retire, not after
             "discard-before-retire",      \* the stop is sent before retire, whose answer goes unused
             "claim-leaves-ready",         \* claim selects FOR UPDATE but never sets 'claimed'
             "reused-id"}                  \* a new standby may take the id of one that was drained
 
-ASSUME Base \in Bases /\ Mutant \in Mutants
+ASSUME Mutant \in Mutants
 ASSUME NoId \notin Standbys
 
 \* A hot_workspaces row's status. "unborn": the id was never inserted.
@@ -64,7 +60,7 @@ VARIABLES
   status,      \* hot_workspaces.status, or "unborn"/"gone"
   wsid,        \* hot_workspaces.sealant_workspace_id is set (setReady)
   session,     \* the agent_sessions row under the standby's id: "none", "live", "settled"
-  \* What happened to each standby's Sealant workspace.
+  \* What happened to each standby's sealant workspace.
   adopted,     \* a launch recorded it as its session's executor (acceptExecutor)
   holdsWork,   \* the session's worktree was laid down in it (replan)
   discardSent, \* stopWorkspace(…, { discardUnsaved: true }) was sent for it
@@ -161,8 +157,8 @@ EndDrain(d) ==
   /\ dMatch' = [dMatch EXCEPT ![d] = FALSE]
   /\ dDiscard' = [dDiscard EXCEPT ![d] = FALSE]
 
-\* `const adopted = keepWorktree || sessions.byId(entry.id) found`, then
-\* `discard = capture && entry.sealantWorkspaceId !== null && !adopted && retire(…)`.
+\* `adoptedBefore = keepWorktree || sessions.byId(entry.id) found`, then
+\* `retired = capture && entry.sealantWorkspaceId !== null && !adoptedBefore && retire(…)`.
 DAdopt(d) ==
   /\ dpc[d] = "adopt"
   /\ LET e == dEntry[d]
@@ -172,7 +168,8 @@ DAdopt(d) ==
              THEN /\ dDiscard' = [dDiscard EXCEPT ![d] = dWs[d] /\ ~isAdopted]
                   /\ dpc' = [dpc EXCEPT ![d] = IF dWs[d] THEN "stop" ELSE "end"]
            ELSE IF dWs[d] /\ ~isAdopted
-             THEN /\ dpc' = [dpc EXCEPT ![d] = "rscan"]
+             THEN /\ dpc' = [dpc EXCEPT ![d] =
+                               IF Mutant = "reread-before-retire" THEN "reread" ELSE "rscan"]
                   /\ UNCHANGED dDiscard
            ELSE /\ dDiscard' = [dDiscard EXCEPT ![d] = FALSE]
                 /\ dpc' = [dpc EXCEPT ![d] = IF dWs[d] THEN "stop" ELSE "end"]
@@ -183,10 +180,7 @@ DAdopt(d) ==
 \* WHERE id = ? AND status <> 'claimed' RETURNING id
 \* (packages/db/src/repos/hot-workspaces.ts). Read Committed: the statement
 \* finds its target in its snapshot (this step) ...
-RetireWhere(e) ==
-  IF Mutant = "retire-ignores-status"
-    THEN Exists(status[e])
-    ELSE Exists(status[e]) /\ status[e] # "claimed"
+RetireWhere(e) == Exists(status[e]) /\ status[e] # "claimed"
 
 DRetireScan(d) ==
   /\ dpc[d] = "rscan"
@@ -206,7 +200,10 @@ DRetireApply(d) ==
         /\ IF Mutant = "discard-before-retire"
              THEN /\ dpc' = [dpc EXCEPT ![d] = "answered"]
                   /\ UNCHANGED dDiscard
-           ELSE IF Base = "fix-reread-session" /\ took
+           ELSE IF Mutant = "reread-before-retire"
+             THEN /\ dDiscard' = [dDiscard EXCEPT ![d] = dDiscard[d] /\ took]
+                  /\ dpc' = [dpc EXCEPT ![d] = "stop"]
+           ELSE IF Mutant # "no-reread" /\ took
              THEN /\ dpc' = [dpc EXCEPT ![d] = "reread"]
                   /\ UNCHANGED dDiscard
            ELSE /\ dDiscard' = [dDiscard EXCEPT ![d] = took]
@@ -214,12 +211,13 @@ DRetireApply(d) ==
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dMatch>>
 
-\* fix-reread-session only: sessions.byId(entry.id) again once retire took
-\* the row; a session found means an ordinary stop.
+\* `adopted = adoptedBefore || (retired && sessions.byId(entry.id) found)`,
+\* `discard = retired && !adopted`: once retire took the row, the session is
+\* read again, and one found means an ordinary stop (SLNT-823).
 DReread(d) ==
   /\ dpc[d] = "reread"
   /\ dDiscard' = [dDiscard EXCEPT ![d] = session[dEntry[d]] = "none"]
-  /\ dpc' = [dpc EXCEPT ![d] = "stop"]
+  /\ dpc' = [dpc EXCEPT ![d] = IF Mutant = "reread-before-retire" THEN "rscan" ELSE "stop"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dMatch>>
 
@@ -241,9 +239,7 @@ DStop(d) ==
 DNotEnded(d) ==
   /\ dpc[d] = "answered"
   /\ LET e == dEntry[d]
-         keepClaimed == Base = "fix-setfailed-unless-claimed" /\ status[e] = "claimed"
-     IN status' = IF Exists(status[e]) /\ ~keepClaimed
-                    THEN [status EXCEPT ![e] = "failed"] ELSE status
+     IN status' = IF Exists(status[e]) THEN [status EXCEPT ![e] = "failed"] ELSE status
   /\ EndDrain(d)
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, launches>>
 
@@ -501,7 +497,7 @@ Resume(s) ==
   /\ UNCHANGED <<status, wsid, platform, recon, sweep, claims, aWs, drains>>
 
 \* The Mend process restarts between any two steps: every fiber is gone and
-\* every in-memory map with it; the database and Sealant keep what they had.
+\* every in-memory map with it; the database and sealant keep what they had.
 \* A launch cut short does not come back (a person starting again is a new
 \* launch). The boot sweep is WStart, which may run at any time.
 Restart ==
