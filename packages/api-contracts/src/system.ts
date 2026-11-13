@@ -1,4 +1,5 @@
-import { Timestamp } from "@mend/domain";
+import { SessionRuntime, Timestamp } from "@mend/domain";
+import { ServerBoatFacts } from "@mend/domain/workbench";
 import { ADDRESS_KINDS } from "@mend/network";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
@@ -99,6 +100,20 @@ export class MachineView extends Schema.Class<MachineView>("MachineView")({
   t3Gateway: Schema.optional(
     Schema.Struct({ url: Schema.NullOr(Schema.String), published: Schema.NullOr(Schema.String) }),
   ),
+  /**
+   * Where this server lets sessions run, as declared (`MEND_SESSION_RUNTIMES`, `MEND_SESSION_RUNTIME`):
+   * what an organization may choose and what it gets until an owner does. Absent where Sealant
+   * picks (Kubernetes with no offer).
+   */
+  sessionRuntimes: Schema.optional(
+    Schema.Struct({ offered: Schema.Array(SessionRuntime), default: SessionRuntime }),
+  ),
+  /**
+   * What this server observed about Boat (SLNT-799): its public addresses, its own Boat key as
+   * Sealant last checked it, and whether Sealant lists Boat. The server's own facts, so present
+   * only for its operator, and only while it offers Boat sessions.
+   */
+  boat: Schema.optional(ServerBoatFacts),
 }) {}
 
 export const machineGroup = HttpApiGroup.make("machine")

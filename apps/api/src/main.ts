@@ -296,6 +296,7 @@ import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 
 import { ProjectAccessLive } from "./access.ts";
+import { MachineBoatReportLive } from "./machine-boat.ts";
 import { AdoptionsLive } from "./adoptions.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
 import { Budgets, BudgetsLive } from "./budgets.ts";
@@ -1103,7 +1104,14 @@ const MainLive = Layer.unwrap(
         ),
       ),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
-      Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
+      // The machine view's Boat facts for the operator (SLNT-799) ride here: `pipe` takes at most twenty.
+      Layer.provide(
+        Layer.mergeAll(
+          ProjectAccessLive,
+          GithubIdentityLive,
+          MachineBoatReportLive.pipe(Layer.provide(BlobStoreConfigLive)),
+        ),
+      ),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       // Budgets ride the same step: `pipe` takes at most twenty.
       // MEND_EXPOSURE: refuses to build a `public` instance while an observable gate item is open.
