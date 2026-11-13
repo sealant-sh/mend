@@ -1,5 +1,10 @@
 import { mkdtemp, readdir, rm } from "node:fs/promises";
-import { createServer, type IncomingHttpHeaders } from "node:http";
+import {
+  createServer,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -15,13 +20,15 @@ it("sends a 1 MB fs blob as exact raw bytes with Content-Length, without chunked
     method: string | undefined;
     body: Buffer;
   }> = [];
-  const server = createServer(async (request, response) => {
+  const receive = async (request: IncomingMessage, response: ServerResponse) => {
     const chunks: Array<Buffer> = [];
     for await (const chunk of request) chunks.push(Buffer.from(chunk));
     const body = Buffer.concat(chunks);
     received.push({ headers: request.headers, method: request.method, body });
     response.end(`OK - ${body.byteLength}`);
-  });
+  };
+  // A failed read rejects unhandled, which fails the test run.
+  const server = createServer((request, response) => void receive(request, response));
   try {
     await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
     const address = server.address();
