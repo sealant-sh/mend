@@ -42,7 +42,10 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 - **2026-10-24: T3 Code parity, thirteen decisions.** Yiannis decided the thirteen open questions in
   [`t3code-support-matrix.md`](t3code-support-matrix.md) (Linear SLNT-86 to SLNT-98). Each names the
-  matrix rows it settles. None is built unless it says so.
+  matrix rows it settles. By 2026-11-13: built: 1 (#1198), 3 (#1438), 4 (#1458, #1461, #1469), 6, 8,
+  10 (#1484, #1496), 11, 12 (#1486) and 13 (#1517, #1518); partly built: 2 (live model and effort in
+  #1435; provider switching is in progress) and 7 (usage in #1483; limits are not built); not built:
+  5 and 9.
   1. **Steering: real steering.** Build it in Mend first: an engine steer op for Codex and Claude
      (Codex `turn/steer {expectedTurnId}`, Claude a stream-json user message with priority `now`),
      `ProtocolHost.steerTurn` in `packages/sessions` and a Mend API route. Then hook T3 Code's
@@ -89,7 +92,8 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
       Only the change's owner lands. ADR 0012's "never" row splits into refused by rule (force-push,
       a landing by anyone but the change's owner), outside Mend (T3 Connect) and not yet (the
       matrix). This amends ADR 0007's "Mend never merges" for a merge a person presses; the ADR edit
-      has not been written. Rows: the group "Merge a person presses", A.89, E3.43b, E3.43c.
+      is ADR 0007's amendment of 2026-11-07. Rows: the group "Merge a person presses", A.89, E3.43b,
+      E3.43c.
 
 - **2026-10-19: a finished terminal turn is idle, not Needs you.** A terminal agent that finished
   its turn (`Stop`, claude's `idle_prompt`) keeps its `prompt` wait on the process row, and the
