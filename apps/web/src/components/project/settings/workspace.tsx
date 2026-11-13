@@ -9,6 +9,7 @@ import { StatusWord } from "#/components/kit/status";
 import { SwitchRow } from "#/components/kit/switch";
 import { type ProjectDetailDto, type ProjectDto, type ProjectInstallDetectionDto } from "#/lib/api";
 import { useProjectSetting } from "#/lib/project-settings";
+import { idleCostNote, useRuntimeFacts } from "#/lib/runtime-support";
 import { useTRPC } from "#/lib/trpc";
 
 import type { SettingsReads } from "./reads";
@@ -272,6 +273,7 @@ function ReadyWorkspacesSection({ project }: { readonly project: ProjectDto }) {
     trpc.projects.hotSessionsStatus.queryOptions({ id: project.id }, { refetchInterval: 5_000 }),
   );
   const count = useProjectSetting(project.id, "hotSessions");
+  const idleCost = idleCostNote(useRuntimeFacts());
   const observed = status.data;
   const parts: Array<string> = [];
   if (observed !== undefined) {
@@ -319,6 +321,9 @@ function ReadyWorkspacesSection({ project }: { readonly project: ProjectDto }) {
         <p className="mt-2 font-mono text-[11.5px] text-danger">
           warming failed · {observed.error}
         </p>
+      )}
+      {idleCost === null ? null : (
+        <p className="mt-2.5 max-w-[60ch] text-[12.5px] text-muted-foreground">{idleCost}</p>
       )}
       <SaveError error={count.error} />
     </SettingsSection>
