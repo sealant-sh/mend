@@ -1,6 +1,12 @@
 import { CurrentUser } from "@mend/api-contracts";
-import { OrganizationsRepo, ProjectsRepo, UserGitAccessRepo, UserGitAuthorRepo } from "@mend/db";
-import { newProjectWorkspaceImage, ProjectId } from "@mend/domain";
+import {
+  OrganizationSettingsRepo,
+  OrganizationsRepo,
+  ProjectsRepo,
+  UserGitAccessRepo,
+  UserGitAuthorRepo,
+} from "@mend/db";
+import { newProjectWorkspaceImage, ProjectId, sessionRuntimeFor } from "@mend/domain";
 import {
   firstCommitAuthor,
   type Project,
@@ -8,7 +14,7 @@ import {
   projectNameCandidates,
   scratchProjectName,
 } from "@mend/domain/workbench";
-import { DeploymentConfig, Store } from "@mend/store";
+import { DeploymentConfig, sessionRuntimeOfferOf, Store } from "@mend/store";
 import { Clock, Context, DateTime, Duration, Effect, Layer, Schema } from "effect";
 
 import { signInOf } from "./access.ts";
@@ -35,6 +41,7 @@ export const ProjectCreationLive: Layer.Layer<
   ProjectCreation,
   never,
   | OrganizationsRepo
+  | OrganizationSettingsRepo
   | ProjectsRepo
   | UserGitAccessRepo
   | UserGitAuthorRepo
@@ -48,7 +55,8 @@ export const ProjectCreationLive: Layer.Layer<
     const authors = yield* UserGitAuthorRepo;
     const access = yield* UserGitAccessRepo;
     const store = yield* Store;
-    const deployment = yield* DeploymentConfig;
+    const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
+    const organizationSettings = yield* OrganizationSettingsRepo;
     const refuse = (message: string) => Effect.fail(new ProjectCreationRefused({ message }));
     const exhausted = refuse("No project name is available for this request. Choose another name.");
 
@@ -92,7 +100,13 @@ export const ProjectCreationLive: Layer.Layer<
                 headSha: repository.headSha,
                 gitAuthMode,
                 purpose,
-                workspaceImage: newProjectWorkspaceImage(deployment.sessionRuntime ?? "docker"),
+                // A new project on Boat starts on Ubuntu: where the organization's sessions run.
+                workspaceImage: newProjectWorkspaceImage(
+                  sessionRuntimeFor(
+                    offer,
+                    yield* organizationSettings.sessionRuntime(creator.organizationId),
+                  ),
+                ),
               })
               .pipe(
                 Effect.map((project) => ({ kind: "created" as const, project })),

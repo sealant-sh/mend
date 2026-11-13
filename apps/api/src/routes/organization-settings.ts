@@ -1,4 +1,5 @@
 import {
+  OrganizationSessionRuntimeView,
   OrganizationSettingsView,
   OrganizationWorkspaceEnvironmentSaveResult,
   SettingsFailure,
@@ -15,12 +16,16 @@ import {
 import {
   ORGANIZATION_SETTING_KEYS,
   organizationDefaults,
+  type OrganizationId,
   OrganizationSettings,
+  type SessionRuntime,
+  sessionRuntimeFor,
   workspaceImagesEqual,
   type WorkspaceImage,
 } from "@mend/domain";
 import type { AuditData } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
+import { DeploymentConfig, sessionRuntimeOfferOf } from "@mend/store";
 import { Effect } from "effect";
 
 import {
@@ -67,6 +72,22 @@ export const organizationSettingsChanges = (
   return changes;
 };
 
+/**
+ * Where the organization's new sessions run: its own choice while the server offers it, else the
+ * server's default. Project creation and the Boat key's status read this too.
+ */
+export const organizationSessionRuntime = (organizationId: OrganizationId) =>
+  Effect.gen(function* () {
+    const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
+    const chosen = yield* (yield* OrganizationSettingsRepo).sessionRuntime(organizationId);
+    return new OrganizationSessionRuntimeView({
+      chosen,
+      effective: sessionRuntimeFor(offer, chosen),
+      offered: offer?.offered ?? [],
+      serverDefault: offer?.default ?? null,
+    });
+  });
+
 /** The organization's values, the instance's under them, and what a project on inherit gets. */
 export const organizationSettingsView = (
   found: OrganizationMembership,
@@ -81,7 +102,62 @@ export const organizationSettingsView = (
       instance,
       effective: organizationDefaults(instance, organization),
       editable: found.role === "owner",
+      sessionRuntime: yield* organizationSessionRuntime(found.organization.id),
     });
+  });
+
+/** Hot standbys are built for one runtime: rewarm every project's after a change of runtime. */
+const rewarmProjects = (organizationId: OrganizationId) =>
+  Effect.gen(function* () {
+    const projects = yield* (yield* ProjectsRepo).listForOrganization(organizationId);
+    const engine = yield* SessionEngine;
+    yield* Effect.forEach(
+      projects.filter((project) => project.hotSessions > 0),
+      (project) => engine.reconcileHotSessions(project.id),
+      { discard: true },
+    );
+  });
+
+const runtimeName = (runtime: SessionRuntime): string =>
+  runtime === "boat" ? "Boat" : "this server's Docker";
+
+/**
+ * Choose where the organization's new sessions run, as an owner: one of the runtimes the server
+ * offers, or null to follow the server's default. Worktrees that exist keep their runtime.
+ */
+export const saveOrganizationSessionRuntime = (
+  found: OrganizationMembership,
+  actorUserId: string,
+  runtime: SessionRuntime | null,
+) =>
+  Effect.gen(function* () {
+    const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
+    if (runtime !== null && (offer === null || !offer.offered.includes(runtime))) {
+      return yield* new SettingsFailure({
+        message:
+          offer === null
+            ? "Sealant picks where sessions run on this server, so an organization cannot choose. Its operator can offer runtimes with MEND_SESSION_RUNTIMES."
+            : `This server does not offer ${runtimeName(runtime)} for sessions. It offers ${offer.offered.map(runtimeName).join(" and ")}; its operator changes that with mend server setup --session-runtimes.`,
+      });
+    }
+    const organizationId = found.organization.id;
+    const before = yield* (yield* OrganizationSettingsRepo).setSessionRuntime(
+      organizationId,
+      runtime,
+    );
+    if (before !== runtime) {
+      yield* (yield* AuditEventsRepo).record({
+        organizationId,
+        actorUserId,
+        action: "organization.settings_changed",
+        subjectType: "organization",
+        subjectId: organizationId,
+        data: { sessionRuntime: runtime },
+      });
+      if (sessionRuntimeFor(offer, before) !== sessionRuntimeFor(offer, runtime))
+        yield* rewarmProjects(organizationId);
+    }
+    return yield* organizationSettingsView(found);
   });
 
 /**

@@ -239,6 +239,7 @@ import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
 import { requireOwnerRuns, SessionSteering, sessionControlView } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
+import { organizationSessionRuntime } from "./organization-settings.ts";
 import { projectContents, projectRawFile } from "./project-file-reads.ts";
 import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
 
@@ -746,7 +747,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
                 adoptedSha: adopted.headSha,
                 gitAuthMode: mode,
                 workspaceImage: newProjectWorkspaceImage(
-                  (yield* DeploymentConfig).sessionRuntime ?? "docker",
+                  (yield* organizationSessionRuntime(organizationId)).effective,
                 ),
               })
               .pipe(

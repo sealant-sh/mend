@@ -24,6 +24,8 @@ import {
   OrganizationId,
   OrganizationSettings,
   ProjectId,
+  type SessionRuntime,
+  SessionRuntimeOffer,
 } from "@mend/domain";
 import { Invitation, Organization, OrganizationMember, Project } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
@@ -225,6 +227,21 @@ const instanceSettings = new MendSettings({ ...defaultSettings, autoLand: false,
 const organizationDefaultsStore = new Map<string, OrganizationSettings>();
 /** Projects whose hot workspaces were asked to rewarm. */
 const reconciled: Array<string> = [];
+/** Each organization's choice of where its new sessions run, as the repo stores it. */
+const runtimeChoices = new Map<string, SessionRuntime>();
+const bothRuntimes = new SessionRuntimeOffer({ offered: ["docker", "boat"], default: "docker" });
+/** What the server offers; a test may set it up the old way. */
+const deployment: {
+  readonly mode: "local";
+  readonly sessionEndpoint: undefined;
+  readonly sessionStore: "captured";
+  sessionRuntimes: SessionRuntimeOffer | null;
+} = {
+  mode: "local",
+  sessionEndpoint: undefined,
+  sessionStore: "captured",
+  sessionRuntimes: bothRuntimes,
+};
 
 const dependencies = Layer.mergeAll(
   Layer.mock(ResourceArchivesRepo, {
@@ -310,6 +327,16 @@ const dependencies = Layer.mergeAll(
         organizationDefaultsStore.set(organizationId, next);
         return next;
       }),
+    sessionRuntime: (organizationId) =>
+      Effect.sync(() => runtimeChoices.get(organizationId) ?? null),
+    setSessionRuntime: (organizationId, runtime) =>
+      Effect.sync(() => {
+        const before = runtimeChoices.get(organizationId) ?? null;
+        writes.push(`sessionRuntime:${organizationId}:${runtime}`);
+        if (runtime === null) runtimeChoices.delete(organizationId);
+        else runtimeChoices.set(organizationId, runtime);
+        return before;
+      }),
   }),
   // Every package resolves to a canonical id except `nope`, which no catalog has.
   Layer.mock(SealantClient, {
@@ -333,11 +360,7 @@ const dependencies = Layer.mergeAll(
       ),
   }),
   Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
-  Layer.succeed(DeploymentConfig, {
-    mode: "local",
-    sessionEndpoint: undefined,
-    sessionStore: "captured",
-  }),
+  Layer.succeed(DeploymentConfig, deployment),
 );
 const api = HttpApi.make("mend").add(organizationGroup).add(invitationsGroup).prefix("/api");
 const apiLayer = HttpApiBuilder.layer(api).pipe(
@@ -373,6 +396,8 @@ beforeEach(() => {
   resets.splice(0, resets.length);
   reconciled.splice(0, reconciled.length);
   organizationDefaultsStore.clear();
+  runtimeChoices.clear();
+  deployment.sessionRuntimes = bothRuntimes;
 });
 
 describe("organization routes (docs/adr/0003)", () => {
@@ -913,6 +938,105 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
       { workspaceImage: null },
     ]);
     expect(reconciled).toEqual(["p-carol", "p-carol"]);
+  });
+});
+
+describe("where an organization's sessions run (SLNT-794)", () => {
+  const runtimeOf = async (user: string) =>
+    ((await (await call(user, "/api/organization/settings")).json()) as { sessionRuntime: unknown })
+      .sessionRuntime;
+
+  it("an owner chooses among what the server offers; the other organization is unaffected", async () => {
+    expect(await runtimeOf("alice")).toEqual({
+      chosen: null,
+      effective: "docker",
+      offered: ["docker", "boat"],
+      serverDefault: "docker",
+    });
+    const response = await put("alice", "/api/organization/settings/session-runtime", {
+      sessionRuntime: "boat",
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      sessionRuntime: { chosen: "boat", effective: "boat" },
+      editable: true,
+    });
+    expect(audited.map((event) => [event.action, event.organizationId, event.data])).toEqual([
+      ["organization.settings_changed", acme.id, { sessionRuntime: "boat" }],
+    ]);
+    // Standbys were built for Docker; Carol's project keeps some, so they rewarm.
+    expect(reconciled).toEqual(["p-carol"]);
+    // A member reads the choice; Globex, another organization, still gets the server's default.
+    expect(await runtimeOf("carol")).toMatchObject({ chosen: "boat", effective: "boat" });
+    expect(await runtimeOf("gina")).toMatchObject({ chosen: null, effective: "docker" });
+
+    // Choosing it again changes nothing, so nothing is recorded; null follows the server again.
+    await put("alice", "/api/organization/settings/session-runtime", { sessionRuntime: "boat" });
+    expect(audited).toHaveLength(1);
+    const back = await put("alice", "/api/organization/settings/session-runtime", {
+      sessionRuntime: null,
+    });
+    await expect(back.json()).resolves.toMatchObject({
+      sessionRuntime: { chosen: null, effective: "docker" },
+    });
+    expect(audited.at(-1)?.data).toEqual({ sessionRuntime: null });
+  });
+
+  it("refuses a member's choice as 404, before anything is written or recorded", async () => {
+    const response = await put("carol", "/api/organization/settings/session-runtime", {
+      sessionRuntime: "boat",
+    });
+    expect({ status: response.status, writes, audited, reconciled }).toEqual({
+      status: 404,
+      writes: [],
+      audited: [],
+      reconciled: [],
+    });
+  });
+
+  it("offers a server set up the old way its one runtime, and refuses any other", async () => {
+    deployment.sessionRuntimes = new SessionRuntimeOffer({
+      offered: ["docker"],
+      default: "docker",
+    });
+    expect(await runtimeOf("alice")).toEqual({
+      chosen: null,
+      effective: "docker",
+      offered: ["docker"],
+      serverDefault: "docker",
+    });
+    const response = await put("alice", "/api/organization/settings/session-runtime", {
+      sessionRuntime: "boat",
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "SettingsFailure",
+      message: expect.stringContaining("does not offer Boat"),
+    });
+    expect({ writes, audited }).toEqual({ writes: [], audited: [] });
+  });
+
+  it("follows the server's default when it stops offering what the organization chose", async () => {
+    runtimeChoices.set(acme.id, "boat");
+    deployment.sessionRuntimes = new SessionRuntimeOffer({
+      offered: ["docker"],
+      default: "docker",
+    });
+    expect(await runtimeOf("alice")).toMatchObject({ chosen: "boat", effective: "docker" });
+  });
+
+  it("leaves the choice to Sealant on Kubernetes with no offer", async () => {
+    deployment.sessionRuntimes = null;
+    expect(await runtimeOf("alice")).toEqual({
+      chosen: null,
+      effective: null,
+      offered: [],
+      serverDefault: null,
+    });
+    const response = await put("alice", "/api/organization/settings/session-runtime", {
+      sessionRuntime: "docker",
+    });
+    expect(response.status).toBe(422);
   });
 });
 
