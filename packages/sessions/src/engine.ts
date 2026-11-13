@@ -1423,7 +1423,7 @@ const causeWords = (cause: Cause.Cause<unknown>): string => {
   return squashed instanceof Error ? squashed.message : String(squashed);
 };
 
-/** Codes of a launch refused before anything ran: a login, a layout, a Boat workspace Core refused. */
+/** Codes of a launch refused before anything ran: a login, a layout, a Boat workspace sealant refused. */
 const LAUNCH_REFUSED_CODES: ReadonlySet<string> = new Set([
   "person_login_refused",
   "harness_layout_refused",
@@ -1432,7 +1432,7 @@ const LAUNCH_REFUSED_CODES: ReadonlySet<string> = new Set([
 
 /**
  * A launch that did not start, for its session line: refused before anything ran (a login the
- * person has not connected, a layout Mend cannot run, a Boat workspace Core refused), in a join's
+ * person has not connected, a layout Mend cannot run, a Boat workspace sealant refused), in a join's
  * words, failed in Boat (the Boat failure table's words), or failed.
  */
 const launchEndWords = (error: unknown): string =>
@@ -13864,7 +13864,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The platform's typed code IS Mend's capability check (a config flag could lie): the
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
-          // Boat's refusals, and Core's refusals of a Boat workspace before anything ran, in the
+          // Boat's refusals, and sealant's refusals of a Boat workspace before anything ran, in the
           // words of the one table (SLNT-793): what happened, who can fix it, what to do. Boat's own
           // code and request id go to the log, never to the session.
           Effect.tapError((error) =>
