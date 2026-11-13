@@ -76,7 +76,7 @@ export const makeBoatWorld = () => {
   /** sealant does the next removal, then its answer never reaches Mend. */
   const lose = { next: false };
   const changes = Semaphore.makeUnsafe(1);
-  /** What Core's check of a key observes, the next time it checks one (create, rotate, check). */
+  /** What sealant's check of a key observes, the next time it checks one (create, rotate, check). */
   let observed: BoatKeyReport | null = null;
   const answer = <A>(value: () => A) =>
     Effect.suspend(() => {
@@ -251,7 +251,7 @@ export const makeBoatWorld = () => {
     refuseNext: (...errors: ReadonlyArray<BoatAccountRefusal | SealantPlatformError>) => {
       refusals.push(...errors);
     },
-    /** What Core's checks observe from now on. */
+    /** What sealant's checks observe from now on. */
     observe: (report: BoatKeyReport | null) => {
       observed = report;
     },

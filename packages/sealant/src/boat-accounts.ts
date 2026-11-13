@@ -93,7 +93,7 @@ export interface BoatAccountsApi {
   /**
    * Checks the account's key with Boat again (read-only) and answers it with the new report. A
    * key Boat now refuses is reported, not refused; Boat not answering is `key-unverified`, and
-   * Core keeps the last report.
+   * sealant keeps the last report.
    */
   readonly check: (
     boatAccountId: string,
@@ -146,7 +146,7 @@ const dateOf = (iso: string): Date => new Date(iso);
 const dateOrNull = (iso: string | undefined | null): Date | null =>
   iso === undefined || iso === null ? null : dateOf(iso);
 
-/** Core's failure in Mend's shape: nulls for what Boat did not say. */
+/** sealant's failure in Mend's shape: nulls for what Boat did not say. */
 export const boatFailureOf = (failure: CoreBoatFailure): BoatFailure => ({
   kind: failure.kind,
   retryable: failure.retryable,
@@ -167,7 +167,7 @@ const notObserved = (fact: CoreBoatKeyNotObserved): BoatKeyNotObserved => ({
   boat: fact.boat === undefined ? null : boatFailureOf(fact.boat),
 });
 
-/** Core's report on a key in Mend's shape (`BoatKeyReport`): dates, and nulls for absent facts. */
+/** sealant's report on a key in Mend's shape (`BoatKeyReport`): dates, and nulls for absent facts. */
 export const boatKeyReportOf = (report: CoreBoatKeyReport): BoatKeyReport => {
   const { identity, keyKind, wallet, permissions, expiry, start, snapshots } = report;
   return {

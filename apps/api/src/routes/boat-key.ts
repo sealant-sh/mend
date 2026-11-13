@@ -194,8 +194,8 @@ const ownership = Effect.gen(function* () {
 });
 
 /**
- * Core needs a permission the page's create-key command does not ask for: Mend's list is behind
- * Core's, so every key made with the command would be refused. Said once per report, in the log.
+ * sealant needs a permission the page's create-key command does not ask for: Mend's list is behind
+ * sealant's, so every key made with the command would be refused. Said once per report, in the log.
  */
 const warnIfTheCommandLacks = (report: BoatKeyReport | null) => {
   const lacking = report === null ? [] : permissionsTheCommandLacks(report.requiredPermissions);
@@ -207,8 +207,8 @@ const warnIfTheCommandLacks = (report: BoatKeyReport | null) => {
 };
 
 /**
- * Core's Boat account for a key, with the last report Core keeps on it, from Core's list: no call
- * to Boat. Null when Core does not list the account, or could not be read (logged): the status
+ * sealant's Boat account for a key, with the last report sealant keeps on it, from sealant's list: no call
+ * to Boat. Null when sealant does not list the account, or could not be read (logged): the status
  * still answers. A person's own key (`/api/me/boat-key`, SLNT-797) reads its account the same way.
  */
 export const lastBoatKeyAccount = (sealantBoatAccountId: string) =>
@@ -231,7 +231,7 @@ const UNANSWERED =
 
 /**
  * Checks a key with Boat again (`boatAccounts.check`, read-only) and answers what Mend observed.
- * Boat not answering keeps Core's last report, and `unanswered` says so. A person's own key
+ * Boat not answering keeps sealant's last report, and `unanswered` says so. A person's own key
  * (`/api/me/boat-key/check`, SLNT-797) checks the same way.
  */
 export const checkBoatKeyAccount = (
@@ -292,8 +292,8 @@ export const checkBoatKeyAccount = (
   });
 
 /**
- * Who connected the key and when, and Core's last report on it. A connect or replace passes the
- * account Core just checked; a status reads the last report from Core's list.
+ * Who connected the key and when, and sealant's last report on it. A connect or replace passes the
+ * account sealant just checked; a status reads the last report from sealant's list.
  */
 const detailsOf = (key: BoatKey, account?: PlatformBoatAccount | null) =>
   Effect.gen(function* () {

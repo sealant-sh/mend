@@ -422,7 +422,7 @@ describe("an organization's Boat key", () => {
         details: { report: unknown } | null;
       };
 
-    it("answers Core's report after a connect, without asking Boat again", async () => {
+    it("answers sealant's report after a connect, without asking Boat again", async () => {
       boat.observe(report);
       const body = (await (await connect("alice")).json()) as { details: { report: unknown } };
       expect(body.details.report).toMatchObject({
@@ -434,7 +434,7 @@ describe("an organization's Boat key", () => {
       expect(core.map((call) => call.call)).toEqual(["create"]);
     });
 
-    it("reads the last report on status from Core's list, never a check", async () => {
+    it("reads the last report on status from sealant's list, never a check", async () => {
       boat.observe(report);
       await connect("alice");
       core.length = 0;
@@ -445,7 +445,7 @@ describe("an organization's Boat key", () => {
       expect(core.map((call) => call.call)).toEqual(["list"]);
     });
 
-    it("gives a member no details and asks Core nothing", async () => {
+    it("gives a member no details and asks sealant nothing", async () => {
       boat.observe(report);
       await connect("alice");
       core.length = 0;
@@ -493,7 +493,7 @@ describe("an organization's Boat key", () => {
       });
     });
 
-    it("names the missing permissions when Core refuses a key without them", async () => {
+    it("names the missing permissions when sealant refuses a key without them", async () => {
       boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["sandbox.delete"] }));
       const refused = await connect("alice");
       expect(refused.status).toBe(422);
@@ -507,7 +507,7 @@ describe("an organization's Boat key", () => {
       expect(keys.size).toBe(0);
     });
 
-    it("logs when Core needs a permission the page's command does not ask for", async () => {
+    it("logs when sealant needs a permission the page's command does not ask for", async () => {
       boat.observe(
         boatKeyReportFixture({
           requiredPermissions: [...BOAT_KEY_REQUIRED_PERMISSIONS, "sandbox.fork"],

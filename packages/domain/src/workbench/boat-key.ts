@@ -107,7 +107,7 @@ export const boatKeyCreateCommand = (organization: string | null): string =>
   ].join(" ");
 
 /**
- * The required permissions a key does not hold. `required` is what Core needs (its report's
+ * The required permissions a key does not hold. `required` is what sealant needs (its report's
  * `requiredPermissions`); Mend's own list is always added, so the page never judges a key by less
  * than the command asks for. `*` holds every one.
  */
@@ -122,7 +122,7 @@ export const missingBoatKeyPermissions = (
 
 const COMMAND_PERMISSIONS: ReadonlySet<string> = new Set(BOAT_KEY_COMMAND_PERMISSIONS);
 
-/** Permissions Core needs that the command on the page does not ask for: empty while they agree. */
+/** Permissions sealant needs that the command on the page does not ask for: empty while they agree. */
 export const permissionsTheCommandLacks = (
   required: ReadonlyArray<string>,
 ): ReadonlyArray<string> => required.filter((permission) => !COMMAND_PERMISSIONS.has(permission));
@@ -145,9 +145,9 @@ const observedOr = <F extends Schema.Struct.Fields>(fields: F) =>
   Schema.Union([Schema.Struct({ observed: Schema.Literal(true), ...fields }), BoatKeyNotObserved]);
 
 /**
- * What Sealant last observed of a Boat key, from Boat's own answers, at `observedAt`: Core's
+ * What Sealant last observed of a Boat key, from Boat's own answers, at `observedAt`: sealant's
  * `BoatKeyReport` (SLNT-781) field for field, with Mend's dates and nulls. Each fact is observed
- * with its value, or not observed with why. Missing permissions are Core's `required` the key does
+ * with its value, or not observed with why. Missing permissions are sealant's `required` the key does
  * not hold, never fewer than `BOAT_KEY_REQUIRED_PERMISSIONS`, the list the create-key command shows.
  */
 export const BoatKeyReport = Schema.Struct({
@@ -171,9 +171,9 @@ export const BoatKeyReport = Schema.Struct({
     organizationName: Schema.NullOr(Schema.String),
     role: Schema.NullOr(Schema.String),
   }),
-  /** The permissions Core needs of every key, as Core lists them. */
+  /** The permissions sealant needs of every key, as sealant lists them. */
   requiredPermissions: Schema.Array(Schema.String),
-  /** The key's permissions (`GET /api-keys`), and which of Core's required ones it lacks. */
+  /** The key's permissions (`GET /api-keys`), and which of sealant's required ones it lacks. */
   permissions: observedOr({
     held: Schema.Array(Schema.String),
     missing: Schema.Array(Schema.String),
