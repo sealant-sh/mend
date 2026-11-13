@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { describe, expect, it, TestClock } from "@mend/test-ci/effect-vitest";
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import { AgentBridge, AgentBridgeLive } from "../src/agent-bridge.ts";
 import { MendKeysConfig } from "../src/git-auth.ts";
@@ -22,6 +22,13 @@ const withBridge = <A, E>(work: Effect.Effect<A, E, AgentBridge>): Promise<A> =>
 };
 
 /** A framed agent message: 4-byte BE length + payload. */
+/** A request the bridge sends its share client. */
+const decodeRequestFrame = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({ id: Schema.Number, context: Schema.String, payload: Schema.String }),
+  ),
+);
+
 const agentMessage = (...bytes: ReadonlyArray<number>): Buffer => {
   const payload = Buffer.from(bytes);
   const header = Buffer.alloc(4);
@@ -60,11 +67,7 @@ describe("AgentBridge", () => {
         const handle = yield* bridge.attach("u1", {
           name: "test-laptop",
           send: (frame) => {
-            const parsed = JSON.parse(frame) as {
-              id: number;
-              context: string;
-              payload: string;
-            };
+            const parsed = decodeRequestFrame(frame);
             seenContexts.push(parsed.context);
             const response = agentMessage(12, 0, 0, 0, 0); // SSH_AGENT_IDENTITIES_ANSWER, 0 keys
             handleRef.current?.(
@@ -103,7 +106,7 @@ describe("AgentBridge", () => {
         const handle = yield* bridge.attach("u1", {
           name: "flaky-laptop",
           send: (frame) => {
-            const parsed = JSON.parse(frame) as { id: number };
+            const parsed = decodeRequestFrame(frame);
             handleRef.current?.(
               JSON.stringify({ t: "err", id: parsed.id, message: "agent timeout" }),
             );
@@ -164,7 +167,7 @@ describe("AgentBridge", () => {
         const alice = yield* bridge.attach("alice", {
           name: "alice-laptop",
           send: (frame) => {
-            const parsed = JSON.parse(frame) as { id: number; context: string };
+            const parsed = decodeRequestFrame(frame);
             aliceAsked.push(parsed.context);
             aliceRef.current?.(
               JSON.stringify({
