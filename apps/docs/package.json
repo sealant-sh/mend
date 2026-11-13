@@ -7,7 +7,7 @@
     "build": "astro build",
     "deploy": "pnpm run build && wrangler deploy",
     "dev": "astro dev --port 3103",
-    "lint": "oxlint src scripts astro.config.mjs --no-error-on-unmatched-pattern",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware src scripts astro.config.mjs --no-error-on-unmatched-pattern",
     "preview": "astro preview --port 3103",
     "test": "pnpm run build && node scripts/assert-rendered-docs.mjs",
     "typecheck": "astro check"
