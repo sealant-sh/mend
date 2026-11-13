@@ -1,5 +1,996 @@
 # @sealant/mend
 
+## 0.37.0
+
+### Minor Changes
+
+- 366a7b2: An API key for Claude or Codex can send its requests to a compatible endpoint, such as a
+  company gateway: `mend connect claude --api-key --endpoint <url>`, or **Endpoint (optional)** in
+  the API key form in Settings. Claude needs an Anthropic-compatible endpoint and Codex an
+  OpenAI-compatible one. If the endpoint takes no key, any value is accepted as the key. Every
+  session on the login sends its requests there and nowhere else: Claude Code gets the endpoint in
+  the settings Mend already passes it, and Codex gets a model provider of Mend's own on its command
+  line, never in a file the worktree keeps. The person who added the key sees its host after it
+  (`Claude · API key ····a1b2 · billed per token · endpoint gateway.example.com`) in Settings,
+  `mend accounts` and `mend doctor`; everyone else sees the login without it, and `--json` carries
+  only the host. When a turn cannot connect to the endpoint, the conversation says what Mend
+  observed and where from:
+  `Could not reach gateway.example.com from this session's workspace (connection refused) · observed 21:40`.
+  A Sealant that cannot keep an endpoint yet says so and saves nothing.
+- 2e48fc3: Connect an Anthropic or OpenAI API key for Claude or Codex, beside a subscription or
+  instead of one. `mend connect claude --api-key` and `mend connect codex --api-key` read the key
+  from stdin only and never print it; `--default` makes it the login your sessions spend, and
+  `--api-key --remove` disconnects it. Settings → Connected accounts takes one as **API key**, and
+  offers to make it your default when you already have a login. One login per provider is the
+  default, and Mend never moves your sessions to the other on its own. Wherever a key is involved,
+  Mend names it by its last four characters: `Claude · API key ····a1b2 · billed per token` in
+  Settings, `mend accounts`, `mend doctor` and T3 Code. A key is billed per token with no plan
+  limit, so the forms recommend a spend limit on the Anthropic Console workspace or OpenAI project.
+  Disconnecting a key does not revoke it: it stays valid at the provider until you revoke it there.
+  When you disconnect your default login and one other login for that provider is left, that one
+  becomes your default, so your sessions keep starting. A Sealant that cannot run sessions on a key
+  yet says so and saves nothing.
+- f419e27: A Boat session that does not start says why, who can fix it and what to do.
+  - **One sentence per reason Boat gives.** When Boat refuses to start a session's VM, or does not
+    answer, the session ends with `launch failed ·` and what happened (the Boat key expired, it
+    lacks a permission, the wallet needs paying, the plan's VM limit is reached, Boat has no machine
+    free, and the rest), then who can fix it and how: an owner of the organization when it has its
+    own Boat key, the person who runs the server when the session used the server's key, or the
+    person themselves when only a retry is needed. Boat's billing link and the time Boat asked to
+    wait are included when Boat sent them. The first line stands alone, so the dashboard's one line
+    says enough.
+  - **Refused before anything ran reads `launch refused`.** Boat not set up on the server, no
+    resource gateway, and an environment Boat cannot run now read `launch refused ·`, not
+    `launch failed:`.
+  - **Boat's own code and request id go to the server log** (`boat refused · …`), never into the
+    sentence.
+  - **The Boat page and `mend boat connect` word a key Boat refused the same way**, including an
+    expired key and a check Boat asked to wait on.
+  - **The Boat docs page lists every reason** in the words a session shows.
+
+- 12212ce: An owner can run a full check of the organization's Boat key from the Boat page or with
+  `mend boat check --full`.
+  - **It proves the key end to end.** Sealant starts the smallest VM in the key's Boat account, runs
+    a command, publishes a port and saves a snapshot, then deletes both. The page says what it costs
+    first: one VM start, about a minute, one saved snapshot slot for that minute.
+  - **Each step is shown** as passed, refused with Boat's reason, no answer, or not reached, with
+    when it finished and whether everything it made was confirmed removed. It is the one way to show
+    that a Boat organization's key, which cannot read its own permissions, can run sessions.
+  - **The result survives a closed tab.** Mend waits for Sealant on the server, and Sealant keeps
+    the result on the account; the page reads it back and shows a check still running.
+  - **Replacing or removing the key while a check's leftovers are not yet removed** is refused with
+    a sentence naming what Boat may still hold.
+
+- 4232454: Organization settings have a Boat page. An owner connects the organization's own Boat key
+  there: the page shows the Boat command that creates a key with the permissions Sealant needs, for
+  a Boat organization or a personal account, and one key field with Check and connect. The key is
+  never shown again. Once connected, the page says who connected it and when, and has Check now,
+  Replace key and Remove. Refusals read as sentences that say what to do. Members see only whether
+  the organization has its own key. The page lists what Sealant observed about the key (who it is,
+  the wallet it bills, whether it can start a VM, saved snapshot slots, permissions and expiry) and
+  warns from fourteen days before the key expires, once this server's Sealant reports those facts.
+  Until then it says they have not been observed yet. `GET /api/organization/boat-key` gains
+  `details.report` for owners, null for now.
+- 3f2ffa7: An organization's owner can connect the organization's own Boat key, and its new Boat
+  sessions then run in, and are billed to, that Boat account instead of the server's. Sealant holds
+  the key sealed; Mend keeps only which Sealant Boat account is the organization's.
+  `GET /api/organization/boat-key` says whether there is one (members see only that), and owners
+  connect or replace it with `PUT`, ask Sealant what it holds with
+  `POST /api/organization/boat-key/check`, and remove it with `DELETE`. Replacing a key with one
+  that cannot see the account's VMs, or removing it while the account still has VMs, is refused with
+  Sealant's counts and what to do. Connect, replace and remove appear in the organization's audit
+  log, never the key. Standby workspaces move to the new account. A session that is running stays in
+  the account it started in; its next start uses the key the organization has then.
+- af17c82: The Boat page and `mend boat` show what Boat says about the organization's Boat key.
+  - **Who the key is, the wallet it bills, and whether it can start a VM.** Settings, Organization,
+    Boat lists each fact Sealant observed when it last checked the key: the Boat account, the wallet
+    and the key's role in it, running and allowed VMs, saved snapshot slots, permissions and expiry.
+    A fact Boat did not show is marked not observed, with Boat's reason. Opening the page reads the
+    last report and does not ask Boat; **Check now**, connecting and replacing ask Boat again.
+  - **What needs doing, in one sentence each.** A key that expires within fourteen days, a missing
+    permission, a wallet that cannot start a VM and full snapshot slots each say what to do.
+  - **A Boat organization's key says what it cannot show.** Boat does not show such a key its own
+    permissions or expiry; the page says so and where to see them in Boat.
+  - **When Boat does not answer a check,** Mend says so and keeps the last report.
+  - **`mend boat status` and `mend boat check` print the same facts.**
+  - **The personal-account command names `--org personal`,** so the Boat CLI makes a personal key
+    even when an organization is its active wallet.
+
+- d255710: Setup turns Boat on without a Boat key.
+  - **`mend server setup --session-runtime boat` needs only the two public addresses Boat VMs
+    dial.** No key is asked for. An owner of each organization connects the organization's Boat key
+    in Settings, Organization, Boat, or with `mend boat connect`, and that Boat account pays for its
+    sessions. Setup's last lines say so, and say which sessions run where until a key is connected.
+  - **The guided `mend server setup` sets Boat up itself.** Pick Boat where sessions run and it asks
+    for the two addresses and whether Boat sessions reach project resources. It never asks for a
+    key.
+  - **The server's own Boat key is optional.** `--boat-api-key-stdin` still gives the server one, so
+    every organization with no key of its own shares its Boat account, which pays for all of them.
+    `--boat-organization` names the Boat organization it bills, and `--no-boat-api-key` drops it.
+  - **A server set up with its own key keeps working after an upgrade with nothing to do.**
+  - **`--no-boat` leaves a server that runs sessions on Docker.** It no longer leaves Boat as where
+    sessions run, which had every new session refused as not set up.
+  - **A session in an organization on Boat with no Boat key anywhere** is refused with a sentence
+    that says an owner connects one, and where.
+  - **A server whose default for new organizations is Boat starts on Ubuntu** as its default
+    environment, which Boat runs, instead of Arch, until its operator saves another.
+  - **The Nix module turns Boat on with `services.mend.boat`**, with no key.
+
+- 1714399: `mend server status`, `mend doctor` and Settings, Instance, Exposure now say where
+  sessions run and what was last observed about Boat. Each prints which runtimes the server offers
+  and which one new organizations get. On a server that offers Boat they add whether the two public
+  addresses Boat VMs dial answered, and when. For the operator they add the server's own Boat key as
+  Sealant last checked it: who it is, the wallet it bills, whether it can start a VM and when it
+  expires. They also say whether Sealant lists Boat, which it does once a worker reports that it
+  launches Boat VMs, and whether that worker has the resource gateway. `mend doctor` also checks the
+  organization's Boat key and your own, in the words `mend boat status` uses.
+
+  A line that needs a person says what to do. An expired or refused key, an address that does not
+  answer and a server that offers Boat with no worker able to launch it are problems. A key that
+  expires within fourteen days is a warning. A refused key is described in the words of the Boat
+  failure table. The machine view (`GET /api/machine`) carries the same facts: `sessionRuntimes` for
+  everyone, and `boat` for the operator only, signed in rather than through an access key.
+
+- b2c5e35: A Claude session runs on your Claude API key when that key is your default Claude login.
+  This works where each person has their own home in the workspace. Claude Code reads the key from
+  the file Sealant writes into your home, through an `apiKeyHelper` in the settings Mend passes
+  inline. The key never goes into a command line, an environment variable or anything Mend records.
+  This holds in a terminal, in a conversation and in a shared conversation's home.
+
+  A session that starts its workspace on your key asks Sealant to put the key into your home once
+  the workspace exists, since Sealant never writes a Claude key at create. Where everyone's logins
+  share one home, a Claude session on a key is refused with words that say the login is a key and
+  how to choose a subscription instead. Before, Claude started signed out.
+
+  When pi or opencode cannot use your Codex login because it is an API key, the session line now
+  names that key.
+
+- 57fb6e5: Mend's TLS edge can now serve the two addresses Boat VMs connect back to, each on a name
+  of its own on port 443. Give setup `--edge mend.example.com` with
+  `--session-endpoint-url https://session.mend.example.com` and
+  `--blob-store-public-url https://files.mend.example.com`: the edge gets a certificate for each
+  name and sends session traffic to Mend and saved work to its bucket. A public server with Boat
+  then needs only ports 80 and 443 open, and no Tailscale or proxy of its own. Addresses with a port
+  keep today's behaviour, forwarded by your own proxy.
+- 5c4709b: On an install whose `APP_URL` is `https:`, Mend's session cookie is now
+  `__Host-better-auth.session_token`: host-only, `Secure` and `Path=/`, so no other host on Mend's
+  site, such as a live preview on a tailnet's `ts.net` name, can set or replace it. Everyone signs
+  in to Mend once more after upgrading: the browser's old cookie is no longer read. Nothing is
+  deleted; paired devices keep working, and an earlier sign-in expires as it would have. Request
+  budgets count only a cookie with that exact name as a credential, so a look-alike cookie another
+  host plants cannot pool visitors into one window.
+- b73e355: Keep removed projects indefinitely and Restore them in Projects → Removed projects or
+  with `mend projects restore <id>`. Add `mend projects rm`, `removed`, and explicitly confirmed
+  `purge`; report retained local disk in `mend doctor`. Restore preserves identity and history and
+  starts nothing. A restored project reappears in T3 Code. Work asked of a removed project is
+  refused with words saying to restore it. Purge deletes exclusive content while keeping shared
+  assets, instance audit and backups, and purging an already purged project succeeds and says so.
+- e1abe10: Mend keeps a person's own MCP servers. `GET /api/me/mcp-servers` lists them, and
+  `PUT /api/me/mcp-servers/<name>` adds or replaces one. A server is either a stdio command with
+  environment variables or an HTTP or SSE URL with headers. `DELETE /api/me/mcp-servers/<name>`
+  removes one. Every variable and header value is sealed with the machine's secrets key, and so is a
+  URL. Responses show a URL with the parts that may hold a key as `…`, such as
+  `https://mcp.tavily.com/mcp/?tavilyApiKey=…`, and saving that URL again keeps the sealed one.
+  Responses name a server's variables and headers but never return their values, and an edit keeps
+  or replaces each value by name. The names `mend` and `executor`, and names that start with
+  `mend-`, are Mend's own. Each person can keep up to 16 servers. An access key cannot list or
+  change them. Settings, the CLI and delivery to sessions come in later releases.
+- b3aeae8: Sessions start with your own MCP servers. Every Claude, Codex or pi session you start
+  gets the servers you keep in Mend that are on, next to Mend's own server and the repository's
+  `.mcp.json`. Claude gets every server; Codex gets stdio and HTTP servers; pi gets them through
+  your pi profile's `mcp.json`; opencode gets none yet. Variable and header values reach the agent
+  in files only its user can read, never on a command line, a process row or in its environment.
+  When you steer someone else's session, your turn runs with your own servers, never theirs. The
+  session line says which servers a session got, or why it got none. See "Use your own MCP servers"
+  in the docs.
+- 2a643df: Settings has an MCP servers tab under You. It lists your own MCP servers with each one's
+  transport, its command or URL host and the names of its saved variables or headers, never their
+  values. On a phone each server is a card. You can add, edit, turn on or off, and remove a server
+  there. An edit keeps, replaces or removes each saved value by name and never shows one. Your
+  organization's Executor is a row in the same list: open it to link your account and, as an owner,
+  to set up the organization's Executor. The Executor tab under Organization is gone, and its old
+  address opens this row. The CLI gains `mend mcp`, `mend mcp add`, `mend mcp remove` and
+  `mend mcp on|off`. `mend mcp add` never reads a value from the command line: a terminal asks for
+  each one without showing it, and without a terminal stdin carries `NAME=value` lines.
+- e305a01: Sign in to an MCP server once. When you sign in to one of your HTTP or SSE MCP servers,
+  such as Figma, with `/mcp` in a Claude session, Mend keeps the sign-in, sealed, and puts it back
+  in every Claude session you start, so the server is connected without asking again. Settings → MCP
+  servers and `mend mcp` show `signed in · observed <time>`. **Forget**, or
+  `mend mcp forget <name>`, deletes Mend's copy and removes it from the Claude sessions that start
+  after. Changing a server's URL or transport forgets its sign-in too. Codex sign-ins are not kept
+  yet.
+- cf1ca74: `mend boat` manages the organization's Boat key from the CLI. `mend boat status` says
+  whether the organization has its own key, and owners also see who connected it and when.
+  `mend boat connect` connects or replaces it, reading the key from a hidden prompt or standard
+  input and never from the command line. `mend boat check` asks Sealant what it holds and says when
+  that was observed, and `mend boat disconnect` sends new Boat sessions back to the server's key.
+  Each takes `--json`.
+- 11a7b4d: Send steers your running turn by default. A message you send while your own turn runs
+  goes into that turn; otherwise, or with the setting off, it starts your next turn.
+  `mend message <session> <text>` sends one message that way and prints what Mend observed.
+  `mend settings` shows your settings, and `mend settings send-steers on|off` changes the one that
+  decides it.
+- d73a9c5: A recipe runs whoever added or changed it. The preview starts after a turn that changed
+  the worktree, with no Start first, and runs as the turn's sender, so a steerer's turn runs on the
+  steerer's login. A running preview whose command, `cwd`, `env` or `depends` the turn changed
+  starts again from the file. A restart replays the attempt it replaces, whoever asks. The lines
+  `recipe not approved · the owner's Start runs it` and `recipe changed · the owner's Start runs it`
+  are gone, and `mend service restart` no longer says a restart ran an approved version. Migration
+  `0170_drop_recipe_approvals` drops the `recipe_approvals` table and each attempt's launch source,
+  and records a turn that was refused for want of an approval as skipped, so it starts nothing after
+  the upgrade.
+- baeaae3: Each organization chooses where its new sessions run. The operator declares where
+  sessions may run on the server with `mend server setup --session-runtimes docker,boat`
+  (`MEND_SESSION_RUNTIMES`), and `--session-runtime` names what an organization gets until it
+  chooses. An organization's owner picks this server's Docker or Boat in Settings · Organization ·
+  Defaults; members see the choice, and the audit log records each change. New worktrees use the
+  organization's choice; existing worktrees keep the runtime they were created with. A server set up
+  before this change offers the one runtime it had and behaves as it did. New projects created in an
+  organization on Boat start on Ubuntu, the hot pool warms standbys for the organization's runtime,
+  and the host's user-namespace check runs whenever the server offers Docker sessions.
+- 412d615: Per-person workspaces run on Kubernetes (the runc runtime) and on nix images. Mend no
+  longer rules out a Kubernetes deployment, the `k8s` and `k3s` runtimes or nix images before it
+  asks Sealant; Cloudflare sandboxes still take one person. Per-person workspaces need Sealant
+  0.40.0 or later. With an older Sealant, on any runtime, every new worktree runs with a shared home
+  and the session says why, and a worktree that already ran per person is refused, naming the
+  Sealant version it needs, until Sealant is upgraded. The image check finds `sudo` only when it is
+  setuid. When Sealant could not check an image, the launch is refused with words to try again, Mend
+  records "the image could not be checked" without replacing an answer a per-person workspace
+  confirmed, a new worktree's next launch runs with a shared home, and a shared launch checks the
+  image again after a day. Migration 0138 takes out of each recorded "no" the reasons only
+  Kubernetes caused and the owner-map refusals an older Sealant gave for an image it had not
+  checked, and drops a "no" left with none, so the next launch on that image checks again.
+- ebdc7c3:
+  `mend server setup --preview-domain <domain> --preview-certificate <file> --preview-key <file>`
+  has the edge serve live previews, each at `https://<label>.<domain>`, on a registrable domain
+  other than Mend's. The packaged edge cannot issue a wildcard certificate, so you supply one for
+  `*.<domain>` and its key, issued elsewhere over DNS-01. Each run checks that the certificate names
+  `*.<domain>`, that the key is its own and that the edge's own container loads them, then copies
+  both into the install; to serve a renewed certificate, replace the files and run
+  `mend server setup --yes`. Setup refuses a domain that is Mend's host, sits above or below it, or
+  shares its registrable domain, and says whether the preview gateway answered and where a name
+  under the domain resolves. The gateway's port is published on 127.0.0.1 only. The edge logs no
+  path, query or `Referer` for preview hosts, because the sign-in exchange carries a ticket in its
+  query. `mend operator exposure` lists the new `preview-gateway` item; state what you checked from
+  another network with `--declare preview-gateway`, which a public install needs before setup turns
+  previews on. `--no-preview-domain` turns previews off.
+- 5c4709b: `mend server setup --preview-tailnet` serves live previews on your tailnet, with no edge
+  and no domain: each at `https://mend-preview.<tailnet>.ts.net:<port>`, a port each from
+  `--preview-tailnet-ports` (default `20001-20016`), given when a preview is first opened, under one
+  Tailscale Service, `svc:mend-preview`. Setup reads the name from `tailscale status` on the machine
+  that runs Mend, and refuses when Tailscale is not running there, when MagicDNS is off, or when the
+  Docker engine is on another machine. Mend's own URL must be https first: serve its web port with
+  `tailscale serve --bg --https=443 http://127.0.0.1:3105` and add
+  `--url https://<this machine's MagicDNS name>`; setup now accepts that one https `--url` on a
+  loopback `--bind`, this machine's own `ts.net` name. The gateway's port is published on 127.0.0.1
+  only. A port goes to another preview once its own has had no open connection for 24 hours, and the
+  new preview's first open asks the browser to clear what the earlier one stored there. A server
+  image from before these previews is refused before anything is activated: upgrade the server
+  first. Mend's container cannot reach `tailscaled`, so setup prints the `tailscale serve` command
+  for each port and never runs it: on the run that turns previews on, with the Service's endpoints
+  and the six things to turn on in Tailscale; on later runs, only the ports to add or take off,
+  against what `tailscale serve status` showed when it could be read, else against the ports saved
+  last time. Setup says when it observes Funnel on for one of these ports. Refused with
+  `--exposure public`. `--preview-tailnet` replaces a preview domain and `--preview-domain` replaces
+  the tailnet; `--no-preview-tailnet` turns previews off and prints the commands that take their
+  ports off. `mend operator exposure` lists `preview-gateway` as open until you check from a device
+  on the tailnet and one outside it, then `--declare preview-gateway`.
+- 7eb0846: Project secrets refuse the names of provider logins, in any case: `ANTHROPIC_API_KEY`,
+  `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` for Claude, `OPENAI_API_KEY` and
+  `CODEX_API_KEY` for Codex. A new secret, a rename to one of these names and a `.env` entry are
+  refused with words that point to Settings → Connected accounts, and `mend env load` and the web
+  app's Add variables load the rest of the file. A secret stored under one of these names before is
+  kept and still reaches sessions as it did. Its row in the web app and in `mend env show` asks you
+  to rename or remove it, and it cannot take a new value.
+- 897cb1d: Stop previews after 30 minutes without admitted application requests and show why they
+  stopped. Opening an idle preview shares one start across visitors, runs recipe setup and
+  dependencies as the last starter, and holds the request until ready. Configure the idle duration
+  with MEND_PREVIEW_IDLE. A person's Stop stays in force. Co-located workspaces wake without an
+  agent. When a capture-backed workspace has ended, the preview page asks you to resume the session
+  in Mend.
+- 70e9091: A recipe Service gets each of its `depends` as `MEND_SERVICE_<NAME>_HOST` and
+  `MEND_SERVICE_<NAME>_PORT`: where that dependency answers inside the workspace, `127.0.0.1` or,
+  for an `address = "docker"` one, the host Mend reaches it on. `<NAME>` is the recipe name
+  upper-cased, each character outside `A-Z0-9` an `_`; two dependencies that give the same names
+  refuse the recipe, and a recipe's `env` cannot set them. The attempt records which dependencies it
+  started with, never their addresses: a restart binds the same ones at their addresses then,
+  whatever `mend.toml` says.
+- 2fecc3b: A recipe now has a digest: a hash of its command, `cwd`, `env`, each dependency's own
+  digest and the `[setup]` it runs, never its port, `ready`, `host`, `address` or `browserScheme`.
+  `GET /sessions/:id/declarations` shows each recipe's digest. An executor replacement starts each
+  recipe again as the person who last started it.
+- 279de2c: `mend.toml` recipes take `cwd`, `env`, `ready`, `host`, `address` and `depends`, and the
+  file takes a `[preview]` table. Mend 0.37 is the first server that reads them; an older server
+  ignores them and runs the `command` at the repository root. A recipe runs in
+  `/workspace/repo/<cwd>` with its `env`, then `PORT`, then `MEND_PREVIEW_URL` when its preview has
+  an address. `ready = { http = "/", timeout = "2m" }` waits for any HTTP answer, over TLS for an
+  `https` Service, and the background probe keeps that rule. `host = "preserve"` keeps the preview's
+  host on its requests. `address = "docker"` marks a port Docker publishes, which Mend dials
+  port-scoped. `depends` starts the recipes it names first, and waits for one already running to
+  answer. A start runs to its end on the server whatever happens to its request;
+  `mend service run <name> --wait` follows it dependency by dependency
+  (`GET /sessions/:id/services/starts/:startId`). A bad key refuses that recipe alone and names the
+  key, and the file's other recipes still run; a key Mend does not read is ignored and listed.
+  `GET /sessions/:id/declarations` answers the file read whole. A restart replays the attempt's
+  command, directory and environment rather than the file. `mend service init` proposes
+  `browserScheme`, `cwd`, `address` and `[preview]`.
+- 70e9091: `mend.toml` takes a `[setup]` table: `run`, shell commands a recipe start runs first, in
+  order, at the repository root, and `inputs`, files whose contents decide when they run again.
+  Setup runs before `depends` and the Service, as the person the Service runs as and with the same
+  identity, once per worktree (or per workspace in a captured one) and fingerprint: a done stamp
+  skips it, and a changed step, input or workspace image runs it again;
+  `mend service run <name> --setup` runs it anyway. One start at a time runs it in one place, and a
+  run whose claim lapsed is stopped before another starts there. An input is read only as a regular
+  file inside the repository, as the person in a captured workspace, and only its hash is kept. A
+  failing step, or one past 30 minutes, stops the start with the step and the end of its output;
+  your next start runs it again, a start Mend makes on its own does not. A Stop during setup ends
+  it, `mend service stop <name>` included before the Service exists. A bad `[setup]` refuses no
+  recipe: a person's start goes on without it and says so, an automatic one is refused. A restored
+  workspace runs setup at its first start; nothing is shared across workspaces yet.
+  `mend service run --wait` shows setup's steps, and `mend service init` writes a `[setup]` from the
+  root's lockfile. Mend 0.37 is the first server that reads `[setup]`.
+- 9f1efa9: Removing a worktree or a project follows one rule set, and every client reads one
+  refusal. A refusal is a 409 `RemovalRefused` that lists every blocker at once: a session live or
+  starting, in the worktree or holding or linking it, a process or Service still running, a Service
+  setup that has not ended, a workspace still saving, a change not on origin, repositories nested in
+  the worktree, declared resources, or another removal under way. Only the change's owner, the
+  person whose session started the worktree, removes it; anyone else, an organization owner
+  included, gets a 403 `RemovalForbidden` that names the owner. A worktree from before this release
+  whose first owner Mend cannot prove keeps the earlier rule in the web and the CLI, and T3 Code
+  refuses it. Force lifts only work that is not on origin, never running or unsaved work. In a
+  project with no origin, work past the base is refused as on no remote. A change Mend cannot read
+  is one more blocker, never a failure that hides the others.
+
+  Removing a project no longer stops its sessions and Services. It is refused while any worktree,
+  whoever started it, has a session live, a workspace saving or a change not on origin, and the
+  refusal names each worktree and whose work it is. There is no force for a project. The web app
+  shows a refused project removal instead of dropping it.
+
+  The worktree stores its change owner (migration 0166), recorded once by its first session, so
+  deleting that session no longer hands the change, and the right to land it, to whoever owns the
+  next one. Existing worktrees keep the owner landing has used until now. While a removal checks or
+  deletes, nothing new starts there: no session, shell, Service, forward, added repository, standby
+  or resource declaration, and every route that can start work answers `RemovalInProgress`. A
+  deletion runs to its end even when the request goes away.
+
+  T3 Code can now delete a thread's worktree and remove a project, behind its own confirm dialogs,
+  and Mend's refusals apply. The gateway never passes T3 Code's force on.
+
+- 94b8aba: A resource a member adds is the project's, with no proposal or approval.
+  `mend resource add` adds a preset or an image and prints the image pinned to the digest its
+  registry serves. `mend resource add <name> --from-file --worktree <w>` adds that worktree's
+  `[resource.<name>]` table from `mend.toml`. The person who added a definition, the project's
+  creator or an organization owner replaces or removes it. `mend resource approve`,
+  `mend resource remove --proposal` and the `proposed by`, `waiting for approval` and `approved by`
+  status words are gone; a definition reads
+  `@db · postgres 17 · project · added by Maria · not started`. Migration
+  `0173_drop_resource_approvals` keeps each definition's pinned image on its own row and drops the
+  `resource_approvals` and `resource_proposals` tables, open proposals with them. A definition that
+  no manager approved, which never ran, is removed; add it again.
+- c12d825: Mend reads what each runtime supports from Sealant, and adapts to where an organization's
+  sessions run (SLNT-795).
+  - **The environment pickers show what can run.** In an organization whose sessions run on Boat,
+    the organization, project and instance environment pickers show Arch, Fedora and custom images
+    as unavailable, with Sealant's reason. Saving one is refused with the same reason, from the web
+    app, the CLI or the API. An organization on this server's Docker sees no change.
+  - **An environment saved earlier is kept.** An Arch environment in an organization that moved to
+    Boat is shown as not runnable there, with what to pick instead. Mend never changes it.
+  - **A Service on a port the runtime holds is refused.** Declaring a project Service on port 8080
+    in an organization on Boat is refused when it is saved, and so is running or adopting one on
+    that port in a Boat session from the web app or the CLI, instead of failing once it starts.
+  - **Server folders and hot sessions say what Boat does.** A project's server folders say that its
+    Boat sessions start without them, and its ready workspaces setting says that Boat bills an idle
+    VM.
+  - **New projects follow the report.** A new project starts on the environment its organization
+    inherits, or on the first family the runtime runs when that one cannot run there.
+  - **`GET /api/organization/runtime`** answers, for the caller's organization, where its new
+    sessions run and what Sealant says that runtime supports, or that Sealant could not be read.
+
+- 374094f: Before an owner changes where an organization's new sessions run, Mend lists what the new
+  runtime would not run, from Sealant's report: the organization's environment, projects whose
+  environment it cannot start, Services on a port it holds, and server folders it cannot bind. Other
+  members' private projects are counted, never named. The owner can move the environments to one the
+  runtime runs in the same step, or switch without moving anything; the list then stays on Settings
+  · Organization · Defaults with the same move. Each move is in the audit log. Clients read the list
+  at `GET /api/organization/settings/session-runtime/impact` and move with `moves` on
+  `PUT /api/organization/settings/session-runtime`; a request without `moves` works as before.
+- e5ad70b: Create private projects without a source using `POST /api/projects/new` and reuse one
+  private scratch project per person using `POST /api/projects/scratch`. Both start with a README
+  commit on `main` under the creator's Git author, its name written as git stores it (the email's
+  local part, then `person`, when git keeps none of it). T3 Code now offers New project and No
+  project, publishes created projects before answering (when a window cannot show one within five
+  seconds, the error says Mend created it and that it appears when the window refreshes), and starts
+  each new scratch thread in a separate worktree. Client paths remain unavailable as repository
+  sources.
+- 7c0a892: A session's screen now runs for as long as the session does. In a project whose
+  Environment has a screen, it starts beside the agent on every launch, so the display is up before
+  the agent's first look. It no longer stops after 15 idle minutes, and it stops with the session
+  and starts again when the session resumes or Mend restarts. The screen starts no browser: the
+  agent opens Chromium when it needs one. A screen that fails to start leaves the agent running, and
+  the session's Screen tab offers Retry.
+- ca77d85: `mend server setup` now sets up Boat sessions itself. Give it the Boat deployment with
+  `--boat-deployment-id <id>`, pipe the Boat API key with `--boat-api-key-stdin`, and pass the two
+  public addresses Boat VMs dial (`--session-endpoint-url`, `--blob-store-public-url`). Setup keeps
+  the key in `server.env` only. It derives the IDs Boat needs from the install, preloads the
+  resource gateway that lets Boat sessions reach `@db`, and keeps all of it across reruns and
+  upgrades. At the end it says whether each public address answered from the server.
+  `--no-boat-resources` runs Boat without project resources, and `--no-boat` forgets Boat. Setup
+  refuses `--session-runtime boat` without these settings and names what is missing, so a server no
+  longer needs a hand-written Compose override to run Boat. A coding agent can follow the new
+  [Run sessions on Boat](https://docs.mend.run/operate/boat/) page from start to finish.
+- 4b7c3f6: Settling a thread in T3 Code can now stop its Mend session too. Turn on **Settings →
+  Sessions → T3 Code → Settling a thread stops its session**; it is off by default and kept per
+  person. The session stops as Stop does, with its work saved, so an idle session no longer waits
+  for the idle stop once you have put its thread away. A settle is still refused while the agent is
+  working.
+
+### Patch Changes
+
+- 4b58b0d: An access key never acts as the operator, even when its account is the operator's. Every
+  operator route answers it `403 AccessKeyRefused` ("An access key cannot perform operator
+  actions"), and the machine's settings, host-path mounts and other operator-only endpoints answer
+  it `404`, as they answer anyone who is not the operator. Before, an operator's key could create
+  and rename organizations and grant ownership.
+- 211a430: An access key never changes who owns an organization. An owner's key that tries to make a
+  member an owner, change an owner's role or remove an owner gets `403 AccessKeyRefused` ("An access
+  key cannot change who owns this organization"), and nothing changes. Before, an owner's key could
+  promote a member to owner, and the promotion stayed after the key was revoked. Signed in, an owner
+  still makes these changes, and a key can still remove a member.
+- a0c5b18: Keep starting and running agent turns moving when background reads exhaust a person's
+  normal sealant request allowance. Protocol input, output and live record reads use interactive
+  allowance until the turn completes or stops. Idle sessions and background work keep normal
+  priority.
+- 9c6b28e: `mend server setup` no longer asks for a Boat deployment ID. Boat has no such thing to
+  look up: the value is only the name Mend labels the server's Boat VMs with, so setup now derives
+  one from the install. Setting up Boat needs just the API key (`--boat-api-key-stdin`) and the two
+  public addresses. `--boat-deployment-id <name>` still picks the name yourself, and a server that
+  already has one keeps it.
+- b648a32: New projects on Boat start with Docker inside the workspace turned on, as on Docker. A
+  Boat session runs `docker run`, `docker build` and `docker compose` in its VM, with images from
+  Docker Hub directly. Mend no longer turns a Boat Docker refusal into "Boat does not support it". A
+  refusal from Sealant reads `launch refused · Docker · …` on every runtime. Existing projects keep
+  their environments. This needs the Sealant release with Docker on Boat (sealant-sh/sealant Boat
+  stack).
+- 13fe131: The Boat operating guide (docs.mend.run/operate/boat) is one guide again, for the person
+  who runs the server and for an organization's owner. It covers turning Boat on, which Boat key a
+  session uses (its owner's own, else the organization's, else the server's) and how the session
+  says so, a person's own key, creating a key with the permissions Mend needs, what each kind of key
+  bills, checking a key and the full check, where each organization's sessions run and what Boat
+  cannot run, hot sessions, the idle stop, images and saved snapshot slots, removing or replacing a
+  key, and troubleshooting. The server environment reference lists every Boat setting in
+  `server.env`, and the CLI reference no longer suggests reading a Boat key from a file. A test
+  checks every `mend` command and flag the guide names against the help catalog.
+- 5cf7b29: Mend's helper runs in Boat sessions. A Boat workspace is an Ubuntu VM whose `/run` is
+  mounted noexec, so the helper Mend wrote to `/run/mend/bin` could not run: Claude reported the
+  mend MCP server failing with `EACCES`, and Claude's hooks, Codex's hooks, `mend service`, screens
+  and git's transport over Mend failed the same way. A workspace that mounts nothing now gets the
+  helper written to `/usr/local/lib/mend/bin`, with `/run/mend/bin` linking to it, so every path
+  that names `/run/mend/bin` keeps working.
+- 3f2026a: Sessions on Boat start on a host that refuses unprivileged user namespaces (Ubuntu
+  24.04's default). Mend checked the host's kernel before every launch and refused with
+  `the server's host refuses user namespaces · no workspace can start`, but a Boat session runs in a
+  Boat VM whose image carries its own Docker engine; the host's Docker only builds images and runs
+  resources, which need no user namespaces. A session whose worktree runs on Boat now skips that
+  check, and Docker sessions keep it. `mend server setup` no longer asks "Allow them now?" or says
+  sessions cannot start when this install's sessions run on Boat; when Boat is set up and the guide
+  can still move sessions to it, the question waits until the answers say where sessions run. The
+  machine view, `mend doctor`'s workspaces line and `mend server status --json` say nothing of the
+  host's user namespaces while new sessions run on Boat.
+- 76e6b01: A person can connect a Boat key of their own, in Settings, Account, or with
+  `mend boat connect --mine`. The Boat sessions they start in their active organization then run in,
+  and are billed to, their own Boat account. A Boat session uses its owner's own key, else the
+  organization's, else the server's, and records which one decided when its workspace was created:
+  the session details in the web app ("Runs on") and `mend sessions` show it, and steering by
+  someone else never moves it. Only the person reads, checks, replaces or removes their own key
+  (`GET|PUT|DELETE /api/me/boat-key`, `POST /api/me/boat-key/check`; an access key cannot connect or
+  remove one). Owners see which members have their own key on the organization's Boat page and in
+  `mend boat status` (`peopleWithOwnKeys`), never its details. Mend keeps no standby workspace on a
+  person's own key. Removing it drains any standby there first and is refused with a count while a
+  session's VM holds the account, as removing the organization's key is. The create-key command for
+  a personal account now names `--org personal`, so Boat makes a personal key even when the Boat
+  CLI's active wallet is an organization.
+- 289b75a: Removing an organization's Boat key no longer waits on the standby workspaces Mend keeps
+  for hot sessions. `mend boat disconnect` and `DELETE /api/organization/boat-key` first stop the
+  standbys Mend started in that Boat account, keep new ones out of it, and then ask Sealant to
+  remove it. The answer says how many standbys were stopped (`removal.standbysDrained`, also in the
+  audit log entry), and the standbys warm again where the organization's sessions run now. A removal
+  is refused only while a session's VM or an image build still holds the account, with that count;
+  nothing changes then, and the standbys warm again in the account. Two removals at once are done
+  once: the second reports no removal of its own.
+- fa09307: A Boat session in one shared home starts when its owner has dotfiles turned on. Mend sent
+  the dotfiles with the workspace create as archives, which Boat refuses, so the session failed to
+  start. Mend now sends none on Boat when the session shares one home: it starts without them, and
+  the session reads `dotfiles · repo not applied` or `dotfiles · snapshot not applied` with the
+  reason. Sessions that run each person as their own user, the default, still apply them on Boat,
+  and Docker sessions are unchanged.
+- 289b75a: A standby workspace on Boat now ends when Mend stops it. Mend used to stop a standby the
+  way it stops a session, asking Sealant to save its last changes first, but a standby holds no
+  worktree, so Mend never accepts anything from it, and Sealant kept its VM running and billed with
+  no end. This happened whenever the pool shrank: hot sessions set lower, a project's environment
+  changed, or the organization's Boat key removed. Mend now tells Sealant there is nothing to keep,
+  but only for a standby still in the pool: once a launch has claimed it, it is stopped as a session
+  is and its work is kept. A standby left in this state by an older Mend is ended on the next
+  hot-session check. A standby whose end Sealant has not confirmed now counts toward the project's
+  hot-session count, so no new one starts beside it.
+- 5218dc3: On Boat, terminal sessions stop after 15 idle minutes, as agent sessions already do. Each
+  Boat session is a paid VM, and a shell left open kept its VM running. A terminal session is idle
+  when no client is attached to it, nobody typed into it and it printed nothing new for
+  `MEND_PROTOCOL_IDLE_STOP_MINUTES` (15 by default; 0 turns it off). Containers and background
+  processes in the workspace do not count. It stops the way Stop does and saves its work first. It
+  reads `idle · stopped after 15 min · resume to continue` for an agent, and names `mend resume` for
+  a shell or `mend resume --with shell` for a `mend run` command. On Boat, a shell tab left open in
+  a conversation session no longer keeps it up by itself: it holds the session only while it is in
+  use the same way. Sessions on Docker are unchanged.
+- 10982a5: Preview images, documents and media from captured worktrees and checkpoints. Captured
+  previews show the files' bytes as the agent wrote them, before line-ending and LFS filters. Mend
+  prepares files up to 2 GiB in an 8 GiB disk cache, then serves later opens and seeks without Git
+  or capture restoration. The limits are per API process; a default install runs one, so the cache
+  uses at most 8 GiB. Preparation that takes longer than ten seconds continues in the background;
+  reopen the preview once it finishes. Captured asset URLs keep their original observation when a
+  newer capture arrives. Every request still checks project access.
+- 4d35fa7: A person whose default Claude login is an API key can start their first session on a
+  newly built image. Until Mend has checked whether an image runs per-person users, a launch ran
+  with everyone's logins in one shared home; sealant never places a key there, so the launch was
+  refused with
+  `Your Claude login is an API key. This workspace keeps everyone's logins in one shared home…`, and
+  the check that would have answered for the image runs only in a workspace that exists, so every
+  retry was refused the same way until someone else started a session on that image. While an
+  image's answer is unknown, a Claude session whose launcher's default login is a key now launches
+  per person, with the key in their own home, and that launch answers for the image. Only an image
+  that cannot run per-person users falls back to one shared home, where the refusal and its words
+  still apply. Other launches are unchanged.
+- 9e57087: A Codex conversation keeps going when Codex reports an error inside a turn. Before, the
+  first reconnect Codex announced ended the conversation and cancelled its turns, and a turn that
+  could not connect at all read "The turn was withdrawn". Now a reconnect is a warning, and a turn
+  that fails reads as failed, in Codex's own words. An error outside any turn still ends the
+  conversation, now with Codex's words instead of "Codex app-server reported an error."
+- 2ffab67: Update the bundled sealant SDK and images to 0.40.0-next.868.
+  - **Boat project resources work after an upgrade.** The bundle now carries Boat's resource gateway
+    image, so `mend server setup --boat-resources` works on a `-next` install without building that
+    image by hand.
+  - **Nix workspace images build again.** sealant created no `/usr/local/bin` before installing
+    Doppler, and `nixos/nix` doesn't ship one, so every Nix build stopped at that step.
+  - **Boat ledger tables are dropped.** A new install no longer creates Boat's three old ledger
+    tables (`boat_allocations`, `boat_executions` and `boat_observations`). An existing server drops
+    them on upgrade, which deletes their old rows for good: a database backup from before the
+    upgrade is the only copy. Boat runs have lived in one row per run since 0.40.0-next.863, so no
+    Boat run or session is affected.
+  - **sealant can hold a Boat key per organization.** sealant stores more than one Boat key, and
+    each Boat run stays on the account it was created under. Mend doesn't use this yet: every
+    session still runs on the install's own key.
+
+- f22a96d: Update the bundled sealant SDK and images to 0.40.0-next.870.
+  - **sealant says what each runtime supports.** sealant can now list the runtimes it launches
+    workspaces on and what each one can run. Mend does not read the list yet.
+  - **Some refusals arrive sooner.** A workspace Boat cannot start from (a cloned repository, or
+    dotfiles sent with the create) is now refused when the workspace is created, not after the
+    worker has picked it up. Mend already starts Boat workspaces from a capture, so no session
+    changes.
+  - **Some refusal sentences changed.** Boat's sentence for Arch and Fedora now capitalizes the
+    family name, and sealant's Docker and Kubernetes refusals no longer name operator settings. Mend
+    shows them as before.
+
+- 8764aef: Update the bundled sealant SDK and images to 0.40.0-next.872.
+  - **A Boat launch Boat refuses ends sooner.** When Boat refuses to start a session's VM for a
+    reason no retry can change (the Boat key, its permissions, the account, billing, a plan limit),
+    sealant no longer retries the create for two minutes first. Rate limits, a busy Boat and no
+    answer are still retried.
+  - **Image builds keep Boat's reason.** An image build Boat refuses now ends with Boat's reason
+    instead of a generic one, and is rebuilt on a later launch only when a later try can pass.
+  - **A Boat key without every permission Mend needs is refused when it is connected.** Mend says
+    which permissions are missing and points to the command on the Boat page that creates a key with
+    all of them. Nothing is stored.
+  - **Whitespace around a pasted Boat key is trimmed by Sealant too.**
+
+- 426301b: Update the bundled sealant SDK and images to 0.40.0-next.874.
+  - **An organization's own Boat key is enough for Boat.** Sealant no longer needs a Boat key in the
+    server's environment to keep, check or launch in a key an owner connected. The server's own key
+    becomes optional.
+  - **A Boat session no Boat worker could start is refused when it is asked for.** It no longer
+    waits and fails later. In the five minutes after the server starts, it is still accepted and
+    waits.
+  - **Sealant keeps the name of this server's Boat VMs and the owner of its Boat images.** Mend's
+    setup still hands them over, so a server that already runs Boat keeps recognising its VMs and
+    images.
+  - **Boat keys are checked again every day.** What the Boat page shows is at most a day old.
+  - **An image build Boat refused for a reason a person can fix is built again once that reason
+    clears,** when the key is replaced or a check shows the cause gone.
+
+- a463a0e: Pin sealant and its public SDK to 0.40.0-next.787 so each owner has 6,000 requests per
+  minute, including the existing 20% interactive reserve. Bundle the matching sealant images and
+  setup assets.
+- 5449663: Update the bundled sealant SDK and images to 0.40.0-next.851. Boat sessions now run in
+  the VM itself on sealant's guest agent, with a root Docker daemon, instead of in a box inside the
+  VM. Boat needs no inbound ports: the resource tunnel is carried over HTTPS, so set
+  `SEALANT_BOAT_GATEWAY_RELAY_HOST` to the address where Mend's worker reaches the Docker host. A
+  Boat session's recorder attaches through Boat's hosted control relay. Public names resolve inside
+  a Boat VM, and a project's resource names still resolve through the gateway. Docker now starts
+  containers in a Boat session: the VM's agent runs the bundle's own containerd, and a session is
+  ready only after a real container has run. A launch no longer fails when a credential script
+  finishes before its input is closed, which every Boat launch hit. A Boat launch now waits for the
+  VM to become ready for as long as its two-minute budget allows, where a slow VM used to fail it
+  after about 45 seconds. A stopped Boat session is drained and deleted, never parked as a snapshot:
+  `SEALANT_BOAT_AUTOMATIC_PARKING` and `SEALANT_BOAT_PARKING_DELAY_SECONDS` are retired and ignored.
+  sealant's API now opens a Boat session's control connection itself, with the Boat key the bundle
+  already gives it. When sealantd exits during a Boat session's readiness, the launch diagnostic now
+  carries the end of its output. The SDK and the bundled sealant agree on the new Boat image
+  publication, whose runtime names `sealantctl` where it named `socat` and the relay before.
+- 18e8ab7: Update the bundled sealant SDK and images to include automatic boat parking, and ship the
+  worker's boat guest assets beside its bundle. Boat stays off by default, with no new setting or
+  UI.
+- d5e51df: Update the bundled sealant SDK and images to 0.40.0-next.863. A Boat session now stops on
+  the same stop and recover path as every other runtime, and its VM is deleted as soon as Boat
+  reports it gone, about a second after the final capture where it could take 40 seconds. A stop
+  interrupted by a server restart, a kept VM, or a slow deletion is finished within a tick or two,
+  however long the server's history is. A "discard unsaved and stop" that meets another stop reads
+  `discarded`, never `stopped`.
+
+  This release runs a forward-only sealant migration: Boat's three per-run ledgers become one row
+  per Boat run, existing runs are carried over, and the old tables are frozen until a later release
+  drops them. A server that never ran a Boat session is unaffected. An older sealant cannot write
+  Boat state against a migrated database, so rolling the server back past this release needs a
+  database restore.
+
+- 3a381e8: Update the bundled sealant SDK and images to 0.40.0-next.859. A Boat session whose
+  worktree uses no project resources now starts with no resource gateway, so a Boat server can run
+  with no gateway host at all: `SEALANT_BOAT_GATEWAY_HOST_ID`, `SEALANT_BOAT_GATEWAY_RELAY_HOST` and
+  `SEALANT_BOAT_GATEWAY_IMAGE` are optional together, and with a gateway the relay host is required.
+  Resources reach a new Boat session as soon as it is linked, and come back at once after a server
+  restart. One gateway host carries up to 512 Boat sessions with resources at the same time. A
+  server with the Boat key serves Boat to everyone who can start sessions.
+  `SEALANT_BOAT_ADMISSION_OWNER_IDS` and `SEALANT_BOAT_GATEWAY_ENDPOINT` are retired and ignored.
+- f8369a4: Connect the API keys the Anthropic Console creates today. The Console now issues keys
+  linked to your account and lists older keys as legacy; Mend refused every new key as "not an
+  Anthropic API key". Both kinds connect in Settings and with `mend connect claude --api-key`, and
+  an Admin key is still refused. Update the bundled sealant SDK and images to 0.40.0-next.821.
+- 366a7b2: Update the bundled sealant SDK and images to 0.40.0-next.815, which runs Mend's own reads
+  on a person's API key, keeps a key's endpoint sealed with it, and sends that key's requests to its
+  endpoint alone.
+- 9d3cea3: Ubuntu projects can now have a session screen on amd64. Chromium is the official
+  chromium-browser-snapshots build pinned to revision 1735811, with no automatic security updates
+  until the pin is bumped, tracked as SLNT-536. On arm64 Ubuntu, sealant refuses Chromium at image
+  planning.
+
+  The bundle also carries sealant's boat groundwork with boat off. There is nothing new to choose.
+
+- 534f1e0: Read resource definitions from a live workspace immediately when starting or comparing
+  resources, so editing .mend/mend.toml no longer requires waiting for the next capture.
+- 0c77750: Serve current co-located worktree images, HTML, PDF, video and audio in t3code through
+  device-bound asset URLs. Stream contained file descriptors with byte ranges, recheck project
+  access and device revocation, and apply the same expiring grant policy to chat images. A page of
+  images waits its turn instead of failing, and a stalled reader frees its slot after 30 seconds.
+  Two new budgets bound open raw reads (`MEND_BUDGET_ACCOUNT_RAW_READS`, `MEND_BUDGET_RAW_READS`).
+  The edge Caddy that `mend server setup` writes keeps asset URLs and raw read paths out of its
+  logs. Captured and checkpoint raw reads remain unavailable.
+- bd6442b: The edge that `mend server setup --edge` writes keeps a request's path in its log on
+  Mend's origin and nothing else of its URL, and logs no URL at all for the t3code gateway's origin
+  (`--t3-gateway-origin`). Before, it replaced only the values of `ticket`, `token` and `code` in a
+  line's URL. Other query values reached its access lines, a T3 Code image URL's token and file name
+  reached every line about the request, and the port-80 redirect's `Location` header carried the
+  whole URL. Now Mend's site has a log of its own, the only one that keeps a path. From the first
+  `?` or `#` the URL reads `REDACTED`, as does the userinfo of an absolute-form, opaque or `CONNECT`
+  target, in the URL and in a `Location` header, on the access line and on Caddy's error lines.
+  Every other line holds no URL and no `Location`: the gateway's, a request whose `Host` is spelled
+  in another case or with a trailing dot, the port-80 redirect for one, and Caddy's line for a
+  response cut short. The cost: access lines on Mend's origin show `?REDACTED` where an ordinary
+  query was, and the lines of a request with such a `Host` hold no path. `mend server setup` and
+  `mend server upgrade` from this version rewrite the edge's files.
+- 496caee: When the server's events connection to the database drops, the web app, the VS Code
+  extension, T3 Code and the server's own listeners re-read what they show twice: once when it
+  drops, as before, and again once it listens again. A change made while it was down no longer stays
+  unseen until the next change.
+- 7dd98ab: The links Mend hands to a person now carry their secret after a `#`: an invitation is
+  `/join#<token>`, a password reset `/reset#<token>`, and the Slack link button opens
+  `/slack/link#<code>`. A browser never sends what follows the `#`, so the secret no longer reaches
+  an edge's or a proxy's access log, Mend's request log, or a `Referer`. Settings and `mend org`
+  show the new links. Expiry and single use are unchanged.
+
+  Links issued before this version keep working until 0.39, which removes the old forms.
+  `/join/<token>`, `/reset/<token>` and `/slack/link/<code>` open the same page, which moves the
+  secret after the `#` before it fetches anything. An edge in front of Mend still sees such a link's
+  path once, when it is opened. These pages, in both forms, answer `Referrer-Policy: no-referrer`
+  and `Cache-Control: no-store`.
+
+  Two more places kept a secret in a URL:
+  - The web app's reads (tRPC queries) are now POSTs, so their input travels in the body. Before,
+    the invitation preview put the token in `?input=`.
+  - Signing in from a Slack link returns through `/login#next=…` and `/welcome#next=…`. Before, the
+    code rode `?next=`. A `?next=` that Mend's API sends, such as the preview sign-in, still works.
+
+  The edge that `mend server setup --edge` writes no longer logs the `X-Mend-Invitation` header, in
+  which a sign-up from an invitation carries its token. `mend server setup` and
+  `mend server upgrade` from this version rewrite the edge's files.
+
+  Better Auth's `GET /api/auth/reset-password/<token>`, which no Mend client sends, now answers 404
+  and stays out of Mend's request log and traces. `POST /api/auth/reset-password` is unchanged.
+
+  Roll out the web tier before the API, which issues the new invitation and reset links and posts
+  the new Slack links: a web tier older than this version opens a new link on a page that does not
+  exist. A `mend server` install runs both in one container, so `mend server upgrade` updates them
+  together. The Helm chart rolls its `web` and `api` Deployments out at once: a link issued during
+  the rollout opens once the web pods are replaced.
+
+- 2284acf: An idle-stopped session keeps its summary, such as
+  `idle · stopped after 15 min · mend resume --with shell reopens it`. Its process could exit while
+  the stop was still saving its work. The settle for that exit then replaced the summary with none,
+  so the session read only `stopped`. The words a stop asks for now outlast every settle until the
+  session runs again.
+- 0f753dc: Capture Codex MCP-app documents and keep their model context between turns. Authorized
+  app callbacks use the same live app-server and login as the session that created the app. This is
+  the server portion of MCP-app support; inline T3 frames and gateway RPC mappings follow
+  separately.
+- 748fd40: An npm project with no lockfile installs with `npm install --no-package-lock`, so a
+  session's first turn no longer shows a `package-lock.json` the agent never touched, and a landing
+  no longer pushes one. The npm mirror still serves that install.
+- 5adff58: Mend's server and the t3code gateway now log and trace each request by its route's
+  template, never by the URL a client sent. A request's log line reads
+  `"http.route":"/api/sessions/:id"` with its method, status (or `aborted`) and duration, and a
+  request no route answered reads `unrouted`. Before, the line held the request's path, so a CLI
+  sign-in's user code (`/api/me/cli-auth/<code>`) reached the log, and a span held the path and
+  query, so the t3code gateway's `?wsTicket=` reached it. A span now records no URL and no header,
+  and fails only for a 5xx or an aborted request.
+
+  The cost: a log line names the route, not the session or project it was for.
+
+  The web tier's log about a failed call to Mend's server names the call
+  (`userDevices.cliAuthRequest`) instead of the server URL it used.
+
+  The edge that `mend server setup --edge` writes keeps paths in Mend's log, and now redacts the
+  segment after `/join/`, `/reset/` and `/slack/link/` (links issued before this version),
+  `/api/me/cli-auth/`, `/api/devices/` and `/api/auth/reset-password/`, in any case and with
+  repeated slashes: an old invitation link is logged as `/join/REDACTED`. A path with a dot segment,
+  a `;` or a backslash is logged as `/REDACTED`, and one with a leading `//` as `//REDACTED`.
+  `mend server upgrade` from this version writes the new edge files. Lines written before the
+  upgrade keep what they hold.
+
+  A 5xx's log line carries its cause with the request's URL replaced by the route's template. Better
+  Auth's console lines no longer hold the URL a sign-in rejected.
+
+- 17bf41c: A paired phone opens a session's preview (ADR 0017 delivery step 10c).
+  `POST /previews/:id/open` answers `{ url }`, the preview's `/__mend/auth` address with a
+  single-use, thirty-second ticket minted for the calling sign-in or device, under the same rules as
+  `/preview-auth`: the caller sees the project, the gateway is on, and the previews read gives the
+  preview an Open. It refuses, with words, a token that is neither a sign-in nor a paired device,
+  previews off, and previews served at `*.localhost`, which only the Mend machine reaches. Revoking
+  the device ends the preview sign-in it opened. `GET /worktrees/:id/previews` now also says how the
+  gateway routes previews (`routing`). The phone app's session screen shows a `Preview` action that
+  opens the preview in its in-app browser, and each preview's status line under the header.
+- 9392fb0: A protocol session's preview starts after a turn that changed the worktree, in a project
+  whose `mend.toml` names a `[preview]`, unless something already runs it (ADR 0017 delivery step
+  10a). It runs setup when its fingerprint changed, then the recipes the Service depends on, then
+  the Service, from the file as the turn left it and as the turn's sender. A question starts
+  nothing, a changed turn followed by a question still starts it once, a person's Stop holds (during
+  setup too), a running preview is left alone unless the turn changed its command, `cwd`, `env` or
+  `depends`, which starts it again, and one automatic start of a preview runs at a time across
+  sessions and API processes. `GET /worktrees/:id/previews` now returns each preview's status lines,
+  such as `preview · web · answered HTTP 200 · observed 4 s ago` or
+  `preview not prepared · web · setup failed`, and the worktree's own line when a turn's change was
+  not captured. A session that ended before its turn was prepared is not started. Migration
+  `0165_preview_preparations` marks every turn that already ended as decided, so nothing old starts
+  after the upgrade.
+- d7577c8: The pages the preview gateway answers itself (a preview a person stopped, one that did
+  not start, a refused or restarted preview, no such preview, not signed in) are now small pages in
+  Mend's look, light or dark with the browser, with no external assets or script. They keep their
+  words and status codes. A stopped, refused or did-not-start page links to the preview's project in
+  Mend, where Start is.
+- 9a7f8eb: A session's Preview tab shows the running app inside the tab, where previews are on the
+  same site as Mend over https (`previews.example.com` beside `mend.example.com`). Elsewhere the tab
+  shows the Service's status and "Open in a new tab", and says why: a browser does not keep a
+  preview signed in inside another site's page. Every answer from the preview gateway now says that
+  only the preview itself and Mend's own origins may frame it, and it replaces the app's own
+  `X-Frame-Options` and `frame-ancestors`. The web tier reads `MEND_PREVIEW_DOMAIN`,
+  `MEND_PREVIEW_PUBLIC_PORT` and `MEND_PREVIEW_TAILNET_HOSTNAME` as the API does; the bundle already
+  gives them to both, and the Helm chart now sets the preview domain on the web container too.
+- fd22b31: Clarify that running previews rely on hot reload for code changes, and tell agents how to
+  restart apps without it.
+- 22b5f5a: A phone's push token now belongs to the paired device that registered it. Revoking that
+  phone in Settings, or removing its person from the organization, drops the token in the same step,
+  so Mend stops sending that phone notifications. Before, a revoked phone kept receiving them. Only
+  a paired device's own token can register a push token: a browser sign-in or the machine token gets
+  403, and the phone says to pair it from Settings → Devices. When a phone unpairs, it asks Mend to
+  forget it with `DELETE /api/devices`, which carries no token, so the token no longer appears in
+  Mend's request log or in an edge's access log. Server spans also redact the `token`, `ticket` and
+  `code` query parameters.
+
+  After the upgrade, phones get no notifications until they register again, because no existing
+  token records which phone registered it. A phone with this version of the Mend app registers again
+  the next time the app opens or comes back to the foreground. With an older app, tap **Enable
+  notifications** in Settings again. An older app still unpairs with `DELETE /api/devices/<token>`:
+  Mend ignores the token, forgets the calling phone, and keeps every `/api/devices/` URL out of its
+  request log and traces, though an edge in front of Mend may still log that URL. This version of
+  the app, paired to a machine older than this release, forgets nothing when it unpairs: revoke the
+  phone in Settings → Devices on the machine instead. 0.37 ships the server and the app together.
+  Downgrading the machine below this release stops notifications, and phones cannot register again
+  until it runs this release or later.
+
+- 3208b44: Show preview startup progress immediately in the browser, with Snake to play while
+  waiting. Keep games running when the preview becomes ready, and preserve the requested path and
+  query when opening it.
+- 0dd4b4b: Messages that named the Sealant control plane "Core" now call it "sealant", for example
+  the session line `Remote-SSH: root, sealant can't bind your person` and
+  `changes not read · sealant gave no reason`.
+- 80b8a28: Review tours stop showing "Writing…" indefinitely when inference stalls, defects, or is
+  interrupted. Review passes now time out after five minutes and record a plain failure. Opening
+  review also expires abandoned running passes from older builds, so they can be requested again.
+  Recording tools preserve sealant's monotonic timestamps instead of treating them as dates. NUL
+  bytes are escaped in inference audit and tour text, and late writes for deleted changes are
+  discarded.
+- ee497b4: A screen whose start reply was lost now waits for its whole process group to end before
+  reading as ended. A desktop session child that survives TERM is killed, and a later Stop can still
+  find the group after Xvnc removes its lock file.
+- f87de3c: On a busy server, an agent's first look at a session's screen no longer comes back with
+  no frame. The two-second limit on decoding a screen frame now starts once the decoder thread is
+  running, not while it is still starting.
+- 235654a: Update the bundled sealant SDK and images to 0.40.0-next.880.
+  - **A personal Boat key now bills one wallet, fixed when it is connected.** sealant pins a
+    personal key to the wallet it bills at that moment, and every request names that wallet from
+    then on, so switching your active wallet in Boat no longer moves Mend's bill. Every VM and image
+    sealant makes in Boat is recorded with the wallet it was made in. A key connected before this
+    upgrade is pinned to the wallet it bills within about a minute; until then it starts no new Boat
+    session, and sessions already running on it carry on.
+  - **Boat keys need the `account.read` permission.** The command on the Boat page always asked for
+    it; sealant now requires it. A key made without it keeps its running sessions but starts no new
+    one, and the Boat page and `mend boat status` say so. Boat never adds a permission to an
+    existing key: replace it with one made with the command on the page.
+  - **Boat images nothing uses any more are removed.** Once an hour sealant deletes the saved Boat
+    images it built that no session can start from any more: none used in the last day, and none a
+    session stopped in the last 14 days would start from. An image goes at the first hourly pass
+    after nothing can start from it and a day has passed since it was last used, so the saved
+    snapshot count drops as each old image reaches that point, not all at the first pass. Each Boat
+    account's saved snapshot slots fill up much more slowly.
+  - **Nix sessions on Boat start with the shell their environment declares.** This changes a file in
+    every Boat image, so each Boat environment's image is built once more, at its next session
+    start.
+
+- ebabb08: Update the bundled sealant SDK and images to 0.40.0-next.892.
+  - **Boat images made before the wallet upgrade are removed again.** On a server whose Boat key can
+    bill more than one wallet, sealant 0.40.0-next.880 kept every saved image it had made before the
+    upgrade, for good, and listed images as ones it could not reach that Boat had already deleted.
+    sealant now records each such image in the wallet the key bills, and removes it at the first
+    hourly pass after nothing can start from it and a day has passed since it was last used
+    (`SEALANT_BOAT_IMAGE_MIN_AGE_HOURS`, counted from the last use, not from when it was made). The
+    list of what sealant cannot reach clears by itself of everything Boat no longer holds, and what
+    stays on it is mostly the work of a key without `account.read`. The Boat page,
+    `mend boat status`, `mend doctor` and the instance page now say that, and say that replacing the
+    key with one made with `account.read` is what clears the list.
+  - **A full check's leftover VM is found in any wallet.** sealant looks for it in every wallet the
+    key can bill, not only the active one, and deletes it.
+  - **Stopping a session as its first Boat VM is created no longer leaves a VM billing.** A stop in
+    the second the first VM was being created could leave a VM that sealant forgot and Boat kept
+    billing.
+  - **Two commands that overlap in one session each get their own output.** One of them could be
+    handed sealant's own reading of the working tree instead. In Mend this showed up as a session
+    start that failed with "the home's record does not unseal".
+
+- 412d615: Mend runs Sealant 0.40.0-next.786. Workspaces on Kubernetes run each person as their own
+  Linux user under runc, with a working `sudo` and ACLs on the shared worktree; gVisor (`runsc`)
+  still takes one person (sealant#406). nix images run per person too: they carry the person layout,
+  a setuid `sudo` and a nix daemon each person builds through, and a nix image build no longer fails
+  on the pi install (sealant#408). Managed images make `/etc/shadow` readable by its owner, so a
+  person's `sudo` works on hosts whose AppArmor confines PAM's helper; every managed per-person
+  image rebuilds once (sealant#410). A launch sealant refuses over its owner map keeps the refusal's
+  own code, `owner-map-unsupported` or `owner-map-unverified` (sealant#407), and a workspace forward
+  can be bounded to one connection (sealant#411, sealant#412). The workspace package catalog knows
+  what a screen needs, `tigervnc`, `xauth`, `xdpyinfo`, `openbox`, `chromium` and `fonts-dejavu`,
+  and refuses `chromium` on Ubuntu 24.04 with its reason (sealant#419), and the XFCE desktop, its
+  session bus and `ffmpeg` per family: `xfce`, `dbus` and `ffmpeg` (sealant#427).
+
+  Opening a session in the web while its laptop terminal is attached keeps both terminals live. Each
+  terminal replays and follows output independently, so joining or leaving on one device no longer
+  freezes another. sealant pins sealantd 0.21.0-next.180 for this fix (sealant#430, sealantd#208).
+
+  Sealant runs a project's resources: a container per instance with retained named volumes, CPU and
+  memory limits, a reach network per linked workspace and an idle stop (sealant#431, sealant#432,
+  sealant#433, sealant#435, sealant#436). Every workspace image carries `psql`, `pg_dump`,
+  `pg_restore` and `redis-cli` from the package catalog (sealant#443).
+
+  A workspace link can name the level each resource is reached at, so a worktree's own `@mail` and
+  the project's `@mail` can both run without both answering to `mail`, and a worktree that turned a
+  project resource off cannot reach it (sealant#444).
+
+  Each person has a separate request allowance, so one person's background reads do not refuse
+  another person's send. Send, steer, interrupt and Stop retain interactive capacity through their
+  prerequisite reads. Long-lived streams and maintenance stay normal priority. The whole service key
+  still has a fixed backstop, and refused requests identify their bucket and say that they were
+  refused before work began.
+
+- b01fe23: In a session's Slack thread, **Open preview** is the message's main (green) button while
+  the preview answers or starts, and it is gone after a person stops the preview: a person's Stop is
+  never woken, so the button would only lead to the stopped page. The line still says who stopped
+  it.
+- 496caee: A session's Slack thread shows its worktree's previews. Under the status line, each
+  preview has a line, such as `preview · web · starting · setup`,
+  `preview · web · answered HTTP 200 · observed`, `preview · web · stopped by Maria` or
+  `preview not prepared · web · <reason>`, and an **Open preview** button when Mend can open it. The
+  button opens Mend's sign-in for the preview at `APP_URL`, which checks that the person can see the
+  project. The link holds no credential and no preview host. The message moves as a preview
+  prepares, starts, fails or stops, whichever session of the worktree runs it. A readiness check
+  that repeats the same answer does not edit it. The end-of-session reply carries the previews as
+  they read when it was posted. A Slack Connect channel shows previews only when the owner turned on
+  external channels. A private project's channel thread shows none, and making a project private now
+  edits its threads at once. With the preview gateway off, Slack shows no preview.
+
+  The status message has one writer after launch, and Mend compares it whole, so a button that
+  appears or goes reaches Slack. An edit Slack refuses waits for Slack's `Retry-After`, or backs
+  off, on every worker, and Mend stops editing a message that was deleted or whose channel is gone.
+  A thread whose previews cannot be read for a moment keeps the ones it shows, and its replies still
+  post. The Slack reporter now shares the server's events connection, so a server pins four LISTEN
+  connections instead of five, and the reporter looks at every active session again when that
+  connection drops and once it is back, so a change made in between reaches Slack.
+
+- 6b7c6f1: Add Open preview to the latest Slack turn reply with Push and open pull request when the
+  preview becomes available, including follow-up turns.
+- 226ba0f: A session that starts on a warm standby workspace keeps that workspace. Before this fix,
+  one rare ordering could remove it without saving about a second after the session started: Mend
+  drained the standby while a launch claimed it, and the ten-minute hot pool sweep marked the claim
+  failed in between. Mend now checks for the session again once the standby is out of the pool, and
+  stops a workspace that has a session as a session's workspace, which saves its work. Standbys that
+  nobody claimed are still discarded, so their VMs end on Boat.
+- f05efcf: Find in a T3 Code thread no longer risks taking the gateway down on a message nested
+  thousands of levels deep, such as a pasted run of `>` quotes. A message whose lines nest more than
+  100 quotes or list markers is searched as written instead of being parsed.
+- 677d5da: T3 Code's Merge back saves a fork's selected context for its direct parent's next
+  message. A newer merge-back from the same fork replaces its pending context. The action starts no
+  turn, performs no Git merge and copies no files. Saved context survives Stop, Resume and deleting
+  the fork; the parent's next message uses its sender's usual login.
+- aa9db3a: When the T3 Code gateway's find worker exits while it waits for the next search, the
+  gateway now starts a new one and frees the old worker's slot. Before, the next find in a thread
+  could wait forever on the exited worker and keep one of the four worker slots that find and
+  highlighting share. A worker that exits as it starts, or just after it answers, no longer stalls a
+  search either.
+- fc4cf72: The T3 Code gateway speaks t3code v0.1.2. Pair a t3code v0.1.2 client with Mend. "Send
+  now" on a queued message sends it when the thread is stopped, and is refused while a turn runs, as
+  t3code's own server refuses it. Settle and snooze follow v0.1.2's rules: a turn that completes no
+  longer wakes a snoozed thread, settling ends a snooze, and a settle, snooze, pin or order sent
+  again gets the answer it first got and is never applied twice, even after other commands or a
+  restart. A terminal that was closed or stopped stays that way when a client reconnects. A missing
+  `t3.json` reads as absent, not as a failed read.
+- a07afb4: Show captured Codex MCP apps inline in T3 Code, with authenticated sandboxed HTML and
+  live tool, resource and model-context callbacks. App context belongs to the conversation on
+  screen, including forks, and is supplied to its next Codex turn. Claude MCP apps remain
+  unsupported, matching T3 Code v0.1.2.
+- e227e4b: Add repositories by Git URL or the GitHub picker in T3 Code, and rename adopted projects
+  without moving their stores or sessions. GitHub lookup uses the person's connected login. Private
+  picker selections use SSH with their configured Mend key or bridge, matching Mend's own adoption
+  flow.
+- 46aced6: A link that wraps over several rows of a web terminal opens whole. Before, Ctrl-click
+  (⌘-click on a Mac) on a long sign-in URL, such as the one `claude mcp login` prints for an MCP
+  server, opened only the part on its first row, which the server refused. Hovering any row of a
+  wrapped link now underlines the whole link, and the click opens all of it.
+- b801226: Web: Projects, a project, Skills and Settings get a one-row header like a session's.
+  Enter starts a new session from the composer and Shift+Enter makes a new line. Your pointer stays
+  visible over a session's screen when the screen falls back to noVNC.
+- 28e3106: Web: a session's composer keeps the same centred width on every tab.
+- 4e9c535: Web and mobile: dark mode moves to a slate palette with stronger borders, clearer panel
+  edges and brighter secondary text.
+- 94802b7: The web Services card's Open goes to the worktree's preview of that Service when the
+  preview gateway serves it (ADR 0017 delivery step 10b): a link to `/preview-auth`, which signs you
+  in to the preview's own address. An https Service and an adopted one keep their own address, and
+  Open waits until the card has read the worktree's previews. The preview's status line shows under
+  the Service's row and keeps its age current, the worktree's own line (such as
+  `preview not prepared · change not captured`) shows below the rows, and a preview that a sibling
+  session of the worktree runs gets a row of its own that says so. The card re-reads on each step of
+  a preview's preparation. `GET /worktrees/:id/previews` now also says, per preview, where it opens
+  (`open`), which Service and session it binds (`boundTo`) and its status as facts (`facts`), and
+  whether a start is under way (`starting`). With the gateway off, Open is the Service's own
+  address, as before.
+- 98612a4: In the web app, a session's conversation and composer sit in a centred column on a wide
+  screen. Resume moves out of the session header into the middle of the stopped screen on the Screen
+  tab, so no button appears when you switch tabs. The header and tab line of Projects, a project,
+  Settings and Skills stay put while the content below them scrolls.
+- 76b0f13: On a session's page in the web app, sending a message no longer pushes the conversation
+  up: while you are at the bottom it stays there as your message and the agent's reply arrive, and
+  if you scrolled up to read it stays where you are and offers the way back to the latest. The
+  Terminal tab of a conversation opens a shell by itself for the person who types there. The side
+  panel shows the screen live instead of its size, and the tab line no longer shows a stray
+  scrollbar.
+- bfe84b3: The agent's workspace note now explains previews: what `[preview]` in `mend.toml` is,
+  with an example; that the agent writes `mend.toml` itself (a person can scaffold one on their
+  machine with `mend service init`); that Mend prepares the preview after a changed turn; and that
+  people open it from Mend (Open preview on the Slack status message, Open on the web's Services
+  card, Preview on the phone), since its address is not visible from the workspace. An agent asked
+  for the preview now says where it is.
+
 ## 0.36.0
 
 ### Minor Changes
