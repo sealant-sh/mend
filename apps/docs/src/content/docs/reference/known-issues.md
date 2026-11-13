@@ -215,9 +215,6 @@ keeps out of what the session saves, when Mend starts opencode:
 - In a workspace that shares one home, people joined on it share that file. One person's opencode
   uses MCP sign-ins the other made there. In a per-person workspace the file is in each person's own
   home.
-- An opencode you start by hand in a session's shell writes that file into saved state until the
-  platform leaves it out too (sealantd#136). The next session in the worktree then removes it unread
-  before it starts, but the earlier saved states still hold it.
 - A session saved before this change may hold MCP sign-ins; every later session in the worktree
   removes them unread before it starts, and removes a link left at that file's place that leads
   anywhere else.

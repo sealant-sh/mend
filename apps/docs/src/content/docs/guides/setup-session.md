@@ -395,17 +395,8 @@ of project or worktree level, as the resource guide describes.
 
 Later sessions use these files to find the relevant user flow, prepare a signed-in test user and
 choose [proof artifacts](/guides/proof-artifacts/). Mend uploads the selected screenshots and video
-into the session's Slack thread and shows them inline in T3 Code. Planned landing delivery will
-embed them in the PR body; the planned review page and phone will show them beside the change. Once
-posted, copies live under Slack's, T3 Code's or GitHub's access rules. Media on a public repository
-is visible to anyone.
+into the session's Slack thread and shows them inline in T3 Code. Landing embeds them in the PR
+body, and the review page and the phone show them beside the change. Once posted, copies live under
+Slack's, T3 Code's or GitHub's access rules. Media on a public repository is visible to anyone.
 
-## Build order
-
-1. Screenshots and a short video of the app with the change.
-2. Delivery to Slack and inline display in T3 Code.
-3. The setup session, including auth preparation.
-4. Embedded media in the PR body.
-5. The review page and phone presentation.
-
-Withdrawing a capture is deferred to later work.
+Withdrawing a capture is not built yet.
