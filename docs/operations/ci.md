@@ -3,26 +3,15 @@
 `.github/workflows/ci.yml` is Mend's CI. Its one required check is the `checks` job. It runs on:
 
 - `pull_request`;
-- `merge_group: checks_requested`, for the merge queue, which is off (below);
+- `push` to `main`;
 - `workflow_dispatch`, with a `runner` input (`ubuntu-24.04` by default, or `box`);
 - `schedule`, the nightly run at 02:23 UTC.
 
-There is no `push` trigger. With the merge queue off, a merge to `main` runs no CI of its own:
-`main` is tested by each pull request's run before it merges and by the nightly run after.
-
-## The merge queue is off
-
-The merge queue was turned on on 2026-10-15 and has been off since 2026-10-18. Ruleset `20201151`
-(`protect-main`) has no merge-queue rule, and the last `merge_group` run was on 2026-10-18. Pull
-requests merge directly once `checks` passes.
-
-The workflow code for the queue is still present: the `merge_group` trigger, the merge-group scope
-in `scripts/ci-scope.mjs --merge-group`, and the merge-group branches of `scripts/ci-turbo.mjs`.
-Whether to turn the queue back on or remove that code is an owner decision still pending. While the
-queue was on, a merge group ran only what its pull requests affected, and ran the full graph when
-any changed path lay outside a workspace package under `apps/`, `packages/` or `tooling/` (a
-changeset and root `docs/` excepted), or was a `turbo.json`. An invalid SHA, a failed diff or a base
-the runner could not resolve also ran the full graph.
+There is no merge queue: pull requests merge directly once `checks` passes. A pull request runs only
+what its change affects (Turbo `--affected` against the pull request's base, with the extra jobs
+picked by `scripts/ci-scope.mjs`), and never writes the remote cache. A push to `main` runs the full
+CI on exactly the commit that landed, and is the trusted cache writer. The nightly run repeats it
+with `--force`, reading no cache.
 
 ## Runners
 
@@ -44,7 +33,7 @@ literal `false` path-selection output lets an optional job be skipped.
 
 | Job               | What it runs                                                                                                                                                                                   |
 | ----------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `changes`         | The path classifier (`scripts/ci-scope.mjs`): which optional jobs run, and whether a merge group could run affected tasks.                                                                     |
+| `changes`         | The path classifier (`scripts/ci-scope.mjs`): which optional jobs a pull request runs.                                                                                                         |
 | `static`          | Frozen install, CI regression tests, shard inventory, lockfile policy, build, typecheck, lint, formatting and Helm lint.                                                                       |
 | `test-engines`    | PostgreSQL 17, the zsh fixture, sessions, API, database, jobs, store and the other backend packages. Sessions has its own lane so shorter tasks cannot delay its start.                        |
 | `test-clients-a`  | The first CLI shard and one lane of client packages; locked Chromium for desktop, marketing's installer copy; the AWS shell checks and the Garage and MinIO contracts.                         |
@@ -62,8 +51,9 @@ the package's own script.
 ## Concurrency
 
 A pull request and a dispatched branch keep only their newest run: the concurrency group is the pull
-request number, or the ref for a `workflow_dispatch`, and both cancel a run in progress. Merge
-groups and the nightly run are grouped by run id and never cancelled.
+request number, or the ref for a `workflow_dispatch`, and both cancel a run in progress. Pushes to
+`main` and the nightly run are grouped by run id and never cancelled, so every landed commit keeps
+its own result.
 
 The Version Packages pull request is authored by `github-actions[bot]`, so its `pull_request` runs
 stop at the repository's contributor approval policy before any job starts. The release dispatches
@@ -75,8 +65,9 @@ The nightly run passes `--force` and tests the full graph from scratch. The nigh
 probe (`build-input-probe.yml`) proves the hashes affected selection relies on. A red or missing
 nightly reaches no pull request, so `nightly-watch.yml`, on a GitHub-hosted runner so a box outage
 cannot silence it, keeps one open `nightly-failure` issue. It comments on that issue, or opens it,
-when a scheduled run of either workflow does not succeed, and when either has had no successful
-scheduled run on `main` for 30 hours. GitHub can start a schedule hours late.
+when a scheduled run of either workflow does not succeed, when CI fails on a push to `main`, and
+when either has had no successful scheduled run on `main` for 30 hours. GitHub can start a schedule
+hours late.
 
 ## Task selection and cache
 
