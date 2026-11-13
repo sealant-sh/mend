@@ -266,6 +266,19 @@ export const memoryHotPool = () => {
     setReady: (id, stamps) => update(id, { ...stamps, status: "ready", error: null }),
     setBaseSha: (id, baseSha) => update(id, { baseSha }),
     setFailed: (id, error) => update(id, { status: "failed", error }),
+    retire: (id, error) =>
+      Effect.sync(() => {
+        const index = entries.findIndex((entry) => entry.id === id);
+        const current = entries[index];
+        if (current === undefined || current.status === "claimed") return false;
+        entries[index] = new HotWorkspace({
+          ...current,
+          status: "failed",
+          error,
+          updatedAt: now(),
+        });
+        return true;
+      }),
     claim: (projectId, fingerprint, ownerUserId) =>
       Effect.sync(() => {
         const index = entries.findIndex(

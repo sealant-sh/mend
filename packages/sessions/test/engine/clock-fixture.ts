@@ -196,6 +196,7 @@ export const signallingPool = (
       ...inner,
       setReady: (id, state) => signal(queue)(inner.setReady(id, state)),
       setFailed: (id, error) => signal(queue)(inner.setFailed(id, error)),
+      retire: (id, error) => signal(queue)(inner.retire(id, error)),
       remove: (id) => signal(queue)(inner.remove(id)),
     })),
   ).pipe(Layer.provide(pool.layer));
