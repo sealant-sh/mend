@@ -283,6 +283,7 @@ describe("sealant's Boat accounts, through the SDK", () => {
         createdAt: new Date("2026-11-13T10:00:00.000Z"),
         keyRotatedAt: null,
         report: null,
+        lastProof: null,
       });
       expect(JSON.stringify(result.success)).not.toContain(KEY);
     }
@@ -373,5 +374,99 @@ describe("sealant's Boat accounts, through the SDK", () => {
       body: { _tag: "BoatAccountInternalServerError", message: "boom" },
     });
     expect(failure).toMatchObject({ _tag: "SealantPlatformError" });
+  });
+
+  it("runs a full check through sealant's prove, and reads it in Mend's shape", async () => {
+    next = {
+      status: 200,
+      body: {
+        proofId: "proof-1",
+        startedAt: "2026-11-13T14:00:00.000Z",
+        finishedAt: "2026-11-13T14:01:04.000Z",
+        outcome: "refused",
+        steps: [
+          { step: "start-vm", outcome: "passed" },
+          { step: "run-command", outcome: "passed" },
+          {
+            step: "publish-port",
+            outcome: "refused",
+            boat: {
+              kind: "permission-missing",
+              retryable: false,
+              status: 403,
+              code: "api_key_action_forbidden",
+              permission: "host",
+            },
+          },
+          { step: "save-snapshot", outcome: "not-reached" },
+          { step: "delete-snapshot", outcome: "not-reached" },
+          { step: "delete-vm", outcome: "passed" },
+        ],
+        starts: 1,
+        leftBehind: { vm: null, snapshot: null, removalConfirmed: true },
+      },
+    };
+    const result = await run((clients) => clients.proveBoatAccount(ACCOUNT));
+    expect(requests.at(-1)).toMatchObject({
+      method: "POST",
+      path: `/v1/boat-accounts/${ACCOUNT}/prove`,
+    });
+    if (result._tag !== "Success") throw new Error("expected a proof");
+    expect(result.success.startedAt).toEqual(new Date("2026-11-13T14:00:00.000Z"));
+    expect(result.success.steps[2]).toEqual({
+      step: "publish-port",
+      outcome: "refused",
+      boat: expect.objectContaining({
+        kind: "permission-missing",
+        permission: "host",
+        operation: null,
+      }),
+    });
+    expect(result.success.steps[0]?.boat).toBeNull();
+  });
+
+  it("reads a full check still running, or still cleaning up, as proof-running with sealant's words", async () => {
+    const failure = await failureOf({
+      status: 409,
+      body: {
+        _tag: "BoatAccountConflictError",
+        message: "A full check of this key left VM bx_abc123 that Boat may still hold.",
+        code: "boat-proof-running",
+      },
+    });
+    expect(failure).toMatchObject({
+      _tag: "BoatAccountRefusal",
+      reason: "proof-running",
+      message: expect.stringContaining("bx_abc123"),
+    });
+  });
+
+  it("reads the last full check from sealant's list, and none from a sealant without them", async () => {
+    next = {
+      status: 200,
+      body: {
+        items: [
+          {
+            ...wireAccount(),
+            lastProof: {
+              proofId: "proof-2",
+              startedAt: "2026-11-13T14:00:00.000Z",
+              finishedAt: "2026-11-13T14:01:00.000Z",
+              outcome: "passed",
+              steps: [],
+              starts: 1,
+              leftBehind: { vm: null, snapshot: null, removalConfirmed: true },
+            },
+          },
+          { ...wireAccount(), boatAccountId: "1b0a7c1e-4f3d-4a51-9d2e-1c8f6b7a9e30" },
+        ],
+      },
+    };
+    const result = await run((clients) => clients.listBoatAccounts());
+    if (result._tag !== "Success") throw new Error("expected accounts");
+    expect(result.success.map((account) => account.lastProof?.outcome ?? null)).toEqual([
+      "passed",
+      null,
+    ]);
   });
 });

@@ -1,6 +1,11 @@
 import type { BoatFailure } from "./boat-failure.ts";
 import { BOAT_KEY_COMMAND_PERMISSIONS, BOAT_KEY_REQUIRED_PERMISSIONS } from "./boat-key.ts";
-import type { BoatKeyNotObserved, BoatKeyReport } from "./boat-key.ts";
+import type {
+  BoatKeyNotObserved,
+  BoatKeyProof,
+  BoatKeyProofStep,
+  BoatKeyReport,
+} from "./boat-key.ts";
 
 /**
  * Boat key reports shaped as sealant 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
@@ -89,3 +94,73 @@ export const organizationKeyReportFixture = (now: Date = new Date()): BoatKeyRep
     },
     now,
   );
+
+const passed = (step: BoatKeyProofStep["step"]): BoatKeyProofStep => ({
+  step,
+  outcome: "passed",
+  boat: null,
+});
+const notReached = (step: BoatKeyProofStep["step"]): BoatKeyProofStep => ({
+  step,
+  outcome: "not-reached",
+  boat: null,
+});
+
+/**
+ * A full check shaped as sealant 0.40.0-next.874 answers it (sealant#638's fake Boat): `passed`, refused
+ * at publishing a port for a missing `host` permission, or interrupted and swept. Never a real VM.
+ */
+export const boatKeyProofFixture = (
+  outcome: BoatKeyProof["outcome"],
+  finishedAt: Date = new Date(),
+  leftBehind: BoatKeyProof["leftBehind"] = { vm: null, snapshot: null, removalConfirmed: true },
+): BoatKeyProof => {
+  const startedAt = new Date(finishedAt.getTime() - 64_000);
+  const steps: BoatKeyProof["steps"] =
+    outcome === "passed"
+      ? [
+          passed("start-vm"),
+          passed("run-command"),
+          passed("publish-port"),
+          passed("save-snapshot"),
+          passed("delete-snapshot"),
+          passed("delete-vm"),
+        ]
+      : outcome === "refused"
+        ? [
+            passed("start-vm"),
+            passed("run-command"),
+            {
+              step: "publish-port",
+              outcome: "refused",
+              boat: {
+                ...KEY_LIST_FORBIDDEN,
+                kind: "permission-missing",
+                operation: "publishPort",
+                code: "api_key_action_forbidden",
+                message: "This API key is not allowed to perform host.",
+                permission: "host",
+              },
+            },
+            notReached("save-snapshot"),
+            notReached("delete-snapshot"),
+            passed("delete-vm"),
+          ]
+        : [
+            passed("start-vm"),
+            { step: "run-command", outcome: "no-answer", boat: null },
+            notReached("publish-port"),
+            notReached("save-snapshot"),
+            passed("delete-snapshot"),
+            passed("delete-vm"),
+          ];
+  return {
+    proofId: `proof-${outcome}`,
+    startedAt,
+    finishedAt,
+    outcome,
+    steps,
+    starts: 1,
+    leftBehind,
+  };
+};

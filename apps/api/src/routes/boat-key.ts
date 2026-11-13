@@ -2,6 +2,7 @@ import {
   BoatKeyCheck,
   BoatKeyConflict,
   BoatKeyDetails,
+  BoatKeyFullCheck,
   BoatKeyOwnersOnly,
   BoatKeyPerson,
   BoatKeyRefused,
@@ -41,6 +42,7 @@ import { type BoatAccountStandbys, SessionEngine, type StandbyDrain } from "@men
 import { Clock, Context, DateTime, Duration, Effect, Redacted, Result } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { BoatKeyFullChecks } from "../boat-key-full-checks.ts";
 import { organizationSessionRuntime } from "./organization-settings.ts";
 import { membership } from "./organization.ts";
 
@@ -81,6 +83,8 @@ interface KeyWords {
   readonly holder: BoatKeyHolder;
   /** Where the key is connected, replaced and checked. */
   readonly page: string;
+  /** That there is no key, as a sentence's start. */
+  readonly none: string;
 }
 
 const ORGANIZATION_WORDS: KeyWords = {
@@ -92,6 +96,7 @@ const ORGANIZATION_WORDS: KeyWords = {
   fallback: "the server's key",
   holder: "organization",
   page: "Mend's Boat page (Settings, Organization, Boat)",
+  none: "this organization has no Boat key connected",
 };
 
 const PERSON_WORDS: KeyWords = {
@@ -103,6 +108,7 @@ const PERSON_WORDS: KeyWords = {
   fallback: "the organization's key, or the server's",
   holder: "person",
   page: "the Boat key card in Settings, Account",
+  none: "you have no Boat key of your own connected here",
 };
 
 const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
@@ -184,6 +190,13 @@ export const boatKeyFailure = (
       return conflict(
         "changed",
         `Sealant no longer has the Boat account Mend recorded for ${words.key}. Remove the key in Mend, then connect it again.`,
+      );
+    case "proof-running":
+      // sealant's sentence names what Boat may still hold and when Sealant takes over an
+      // interrupted check: the owner needs it to decide whether to wait or delete it in Boat.
+      return conflict(
+        "proof-running",
+        `A full check of this key has not finished removing what it made in Boat, so nothing changed: the key that made them is the one that can delete them. Sealant says: ${error.message}`,
       );
     case "unavailable":
       return new BoatUnavailable({
@@ -330,16 +343,17 @@ export const checkBoatKeyAccount = (
 const detailsOf = (key: BoatKey, account?: PlatformBoatAccount | null) =>
   Effect.gen(function* () {
     const connectedBy = yield* (yield* UsersRepo).byId(key.connectedByUserId);
-    const report =
-      (account === undefined ? yield* lastBoatKeyAccount(key.sealantBoatAccountId) : account)
-        ?.report ?? null;
+    const known =
+      account === undefined ? yield* lastBoatKeyAccount(key.sealantBoatAccountId) : account;
+    const runningSince = yield* (yield* BoatKeyFullChecks).runningSince(key.sealantBoatAccountId);
     return new BoatKeyDetails({
       sealantBoatAccountId: key.sealantBoatAccountId,
       connectedByUserId: key.connectedByUserId,
       connectedByName: connectedBy?.name ?? null,
       connectedAt: key.connectedAt,
       keyReplacedAt: key.keyReplacedAt,
-      report,
+      report: known?.report ?? null,
+      fullCheck: new BoatKeyFullCheck({ last: known?.lastProof ?? null, runningSince }),
     });
   });
 
@@ -694,6 +708,46 @@ const removeKey = (holder: KeyHolder) =>
     );
   });
 
+/** The server's running full checks, given to a handler's effects: one set for both groups. */
+const withFullChecks =
+  (fullChecks: BoatKeyFullChecks["Service"]) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    effect.pipe(Effect.provideService(BoatKeyFullChecks, fullChecks));
+
+/**
+ * A full check of the holder's key (SLNT-784): Sealant starts a throwaway VM in its Boat account,
+ * uses it as a session would and deletes it. Answers when it is done, or since when it runs.
+ */
+const fullCheckKey = (holder: KeyHolder) =>
+  Effect.gen(function* () {
+    const key = yield* (yield* BoatKeysRepo).byOwner(holder.owner);
+    if (key === null)
+      return yield* new BoatKeyConflict({
+        reason: "none",
+        message: `${capital(holder.words.none)}, so there is nothing to check. Connect one first.`,
+        liveRuns: null,
+        buildsInFlight: null,
+        unseen: null,
+      });
+    const run = yield* (yield* BoatKeyFullChecks).run(key.sealantBoatAccountId).pipe(
+      Effect.tapError(logBoatRefusal),
+      Effect.mapError((error) =>
+        error._tag === "BoatAccountRefusal" && error.reason === "proof-running"
+          ? new BoatKeyConflict({
+              reason: "proof-running",
+              message: `A full check of this key is running, or Sealant is still removing what the last one made in Boat, so no other was started. Sealant says: ${error.message}`,
+              liveRuns: null,
+              buildsInFlight: null,
+              unseen: null,
+            })
+          : boatKeyFailure(error, holder.words),
+      ),
+    );
+    return run._tag === "finished"
+      ? new BoatKeyFullCheck({ last: run.proof, runningSince: null })
+      : new BoatKeyFullCheck({ last: null, runningSince: run.since });
+  });
+
 /**
  * The organization's Boat key (SLNT-790). Members read whether there is one; owners connect,
  * replace, check and remove it, and see which members have their own. The key goes to sealant in the
@@ -701,37 +755,56 @@ const removeKey = (holder: KeyHolder) =>
  * hold it.
  */
 export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handlers) =>
-  handlers
-    .handle("status", () =>
-      Effect.gen(function* () {
-        const found = yield* membership;
-        return yield* statusOf(
-          found,
-          yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found)),
-        );
-      }),
-    )
-    .handle("connect", ({ payload }) =>
-      Effect.gen(function* () {
-        const found = yield* ownership;
-        const connected = yield* connectKey(organizationHolder(found), payload.key);
-        return yield* statusOf(found, connected.key, connected.account);
-      }),
-    )
-    .handle("check", () =>
-      Effect.gen(function* () {
-        const found = yield* ownership;
-        return yield* checkKey(organizationHolder(found));
-      }),
-    )
-    .handle("disconnect", () =>
-      Effect.gen(function* () {
-        const found = yield* ownership;
-        const removal = yield* removeKey(organizationHolder(found));
-        const status = yield* statusOf(found, null);
-        return removal === null ? status : new BoatKeyStatus({ ...status, removal });
-      }),
-    ),
+  Effect.gen(function* () {
+    const checks = withFullChecks(yield* BoatKeyFullChecks);
+    return handlers
+      .handle("status", () =>
+        checks(
+          Effect.gen(function* () {
+            const found = yield* membership;
+            return yield* statusOf(
+              found,
+              yield* (yield* BoatKeysRepo).byOwner(organizationOwner(found)),
+            );
+          }),
+        ),
+      )
+      .handle("connect", ({ payload }) =>
+        checks(
+          Effect.gen(function* () {
+            const found = yield* ownership;
+            const connected = yield* connectKey(organizationHolder(found), payload.key);
+            return yield* statusOf(found, connected.key, connected.account);
+          }),
+        ),
+      )
+      .handle("check", () =>
+        checks(
+          Effect.gen(function* () {
+            const found = yield* ownership;
+            return yield* checkKey(organizationHolder(found));
+          }),
+        ),
+      )
+      .handle("disconnect", () =>
+        checks(
+          Effect.gen(function* () {
+            const found = yield* ownership;
+            const removal = yield* removeKey(organizationHolder(found));
+            const status = yield* statusOf(found, null);
+            return removal === null ? status : new BoatKeyStatus({ ...status, removal });
+          }),
+        ),
+      )
+      .handle("fullCheck", () =>
+        checks(
+          Effect.gen(function* () {
+            const found = yield* ownership;
+            return yield* fullCheckKey(organizationHolder(found));
+          }),
+        ),
+      );
+  }),
 );
 
 /**
@@ -739,27 +812,37 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
  * caller's own row and no one else's: no route here names another person.
  */
 export const PersonBoatKeyGroupLive = HttpApiBuilder.group(MendApi, "personBoatKey", (handlers) =>
-  handlers
-    .handle("status", () =>
-      Effect.gen(function* () {
-        const { found, owner } = yield* personOwner;
-        return yield* personStatusOf(found, yield* (yield* BoatKeysRepo).byOwner(owner));
-      }),
-    )
-    .handle("connect", ({ payload }) =>
-      Effect.gen(function* () {
-        const holder = yield* personHolder;
-        const connected = yield* connectKey(holder, payload.key);
-        return yield* personStatusOf(holder.found, connected.key, connected.account);
-      }),
-    )
-    .handle("check", () => personHolder.pipe(Effect.flatMap(checkKey)))
-    .handle("disconnect", () =>
-      Effect.gen(function* () {
-        const holder = yield* personHolder;
-        const removal = yield* removeKey(holder);
-        const status = yield* personStatusOf(holder.found, null);
-        return removal === null ? status : new PersonBoatKeyStatus({ ...status, removal });
-      }),
-    ),
+  Effect.gen(function* () {
+    const checks = withFullChecks(yield* BoatKeyFullChecks);
+    return handlers
+      .handle("status", () =>
+        checks(
+          Effect.gen(function* () {
+            const { found, owner } = yield* personOwner;
+            return yield* personStatusOf(found, yield* (yield* BoatKeysRepo).byOwner(owner));
+          }),
+        ),
+      )
+      .handle("connect", ({ payload }) =>
+        checks(
+          Effect.gen(function* () {
+            const holder = yield* personHolder;
+            const connected = yield* connectKey(holder, payload.key);
+            return yield* personStatusOf(holder.found, connected.key, connected.account);
+          }),
+        ),
+      )
+      .handle("check", () => checks(personHolder.pipe(Effect.flatMap(checkKey))))
+      .handle("disconnect", () =>
+        checks(
+          Effect.gen(function* () {
+            const holder = yield* personHolder;
+            const removal = yield* removeKey(holder);
+            const status = yield* personStatusOf(holder.found, null);
+            return removal === null ? status : new PersonBoatKeyStatus({ ...status, removal });
+          }),
+        ),
+      )
+      .handle("fullCheck", () => checks(personHolder.pipe(Effect.flatMap(fullCheckKey))));
+  }),
 );

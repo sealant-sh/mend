@@ -1,10 +1,21 @@
-import { BoatKeyCheck, BoatKeyStatus, PersonBoatKeyStatus } from "@mend/api-contracts";
 import {
+  BoatKeyCheck,
+  BoatKeyFullCheck,
+  BoatKeyStatus,
+  PersonBoatKeyStatus,
+} from "@mend/api-contracts";
+import {
+  type BoatKeyProof,
   type BoatKeyReport,
   boatKeyCreateCommand,
   boatKeyFacts,
   boatKeyShapeProblem,
   boatKeyWarnings,
+  FULL_CHECK_COST,
+  INTERRUPTED_WORDS,
+  proofLeftoverWords,
+  proofOutcomeWords,
+  proofStepWords,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -28,10 +39,15 @@ const MINE = "/me/boat-key";
 const StatusWire = Schema.toCodecJson(BoatKeyStatus);
 const PersonStatusWire = Schema.toCodecJson(PersonBoatKeyStatus);
 const CheckWire = Schema.toCodecJson(BoatKeyCheck);
+const FullCheckWire = Schema.toCodecJson(BoatKeyFullCheck);
+
+/** How often `check --full` reads the status while a full check runs, and for how long at most. */
+const FULL_CHECK_POLL_MS = 3_000;
+const FULL_CHECK_WAIT_MS = 5 * 60_000;
 
 type BoatVerb = "Status" | "Connect" | "Check" | "Disconnect";
 type BoatRequest =
-  | { readonly _tag: BoatVerb; readonly mine: boolean }
+  | { readonly _tag: BoatVerb; readonly mine: boolean; readonly full: boolean }
   | { readonly _tag: "Invalid"; readonly message: string };
 
 const KEY_NOT_AN_ARGUMENT =
@@ -46,15 +62,21 @@ const VERBS: Record<string, { readonly verb: BoatVerb; readonly extra: string }>
 
 const requestOf = (args: ReadonlyArray<string>): BoatRequest => {
   const words = args.filter((arg) => !isFlag(arg));
-  const unknownFlag = args.find((arg) => isFlag(arg) && arg !== "--json" && arg !== "--mine");
   const [word = "status", ...extra] = words;
+  const unknownFlag = args.find(
+    (arg) =>
+      isFlag(arg) &&
+      arg !== "--json" &&
+      arg !== "--mine" &&
+      !(arg === "--full" && word === "check"),
+  );
   if (unknownFlag !== undefined)
     return { _tag: "Invalid", message: `unknown flag ${unknownFlag} · mend help boat` };
   const known = Object.hasOwn(VERBS, word) ? VERBS[word] : undefined;
   if (known === undefined)
     return { _tag: "Invalid", message: `unknown subcommand ${word} · mend help boat` };
   return extra.length === 0
-    ? { _tag: known.verb, mine: args.includes("--mine") }
+    ? { _tag: known.verb, mine: args.includes("--mine"), full: args.includes("--full") }
     : { _tag: "Invalid", message: known.extra };
 };
 
@@ -97,6 +119,38 @@ export const renderReport = (
   ];
 };
 
+/** A full check as the Boat page shows it: the outcome, each step, and what it left in Boat. */
+export const renderProof = (proof: BoatKeyProof, mine = false): ReadonlyArray<string> => {
+  const steps = proof.steps.map((step) => proofStepWords(step, mine ? "person" : "organization"));
+  const width = Math.max(...steps.map((step) => step.label.length));
+  return [
+    `Full check · ${proofOutcomeWords(proof)} · finished ${at(proof.finishedAt)}`,
+    ...steps.flatMap((step) => [
+      `  ${step.label.padEnd(width)}  ${step.word}`,
+      ...(step.reason === null ? [] : [`    ! ${step.reason}`]),
+    ]),
+    ...(proof.outcome === "interrupted" ? [INTERRUPTED_WORDS] : []),
+    `${proof.leftBehind.removalConfirmed ? "" : "! "}${proofLeftoverWords(proof)}`,
+  ];
+};
+
+const runningLine = (since: Date): string =>
+  `A full check is running · started ${at(since)} · it takes about a minute.`;
+
+export const renderFullCheck = (
+  fullCheck: BoatKeyFullCheck,
+  mine = false,
+): ReadonlyArray<string> => [
+  ...(fullCheck.runningSince === null ? [] : [runningLine(fullCheck.runningSince)]),
+  ...(fullCheck.last === null
+    ? fullCheck.runningSince === null
+      ? [
+          `No full check has run on this key. mend boat check --full${mine ? " --mine" : ""} runs one.`,
+        ]
+      : []
+    : renderProof(fullCheck.last, mine)),
+];
+
 /** Who in the organization runs their Boat sessions on their own key: owners only. */
 const peopleNote = (status: BoatKeyStatus): ReadonlyArray<string> => {
   const people = status.peopleWithOwnKeys;
@@ -110,7 +164,7 @@ const peopleNote = (status: BoatKeyStatus): ReadonlyArray<string> => {
 export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {
   if (!status.connected) {
     return [
-      "This organization has no Boat key · new Boat sessions use the server's.",
+      "This organization has no Boat key · new Boat sessions use the server's own, if it has one; otherwise they are refused.",
       "An owner connects one with mend boat connect.",
       ...runtimeNote(status),
       ...peopleNote(status),
@@ -129,6 +183,9 @@ export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {
     `New Boat sessions run in, and are billed to, its Boat account (Sealant account ${details.sealantBoatAccountId}). Running sessions stay where they started.`,
     ...runtimeNote(status),
     ...renderReport(details.report),
+    ...(details.fullCheck.last === null && details.fullCheck.runningSince === null
+      ? []
+      : renderFullCheck(details.fullCheck)),
     ...peopleNote(status),
   ];
 };
@@ -158,6 +215,9 @@ export const renderPersonStatus = (status: PersonBoatKeyStatus): ReadonlyArray<s
     `The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account ${details.sealantBoatAccountId}). Mend keeps no standby workspace on it.`,
     ...runtime,
     ...renderReport(details.report, new Date(), true),
+    ...(details.fullCheck.last === null && details.fullCheck.runningSince === null
+      ? []
+      : renderFullCheck(details.fullCheck, true)),
   ];
 };
 
@@ -228,6 +288,8 @@ export interface BoatBoundary {
   /** Reads a line without echoing it; null when the person cancelled. */
   readonly askHidden: (label: string) => Promise<string | null>;
   readonly readStdin: () => Promise<string>;
+  /** Waits between reads of a running full check; a test passes one that returns at once. */
+  readonly sleep?: (ms: number) => Promise<void>;
 }
 
 /** `mend boat [status|connect|check|disconnect] [--json]`. Exit 1 on any failure. */
@@ -270,7 +332,7 @@ export const boatCommand = async (
       : { ok: decoded.success };
   };
   /** The key a request acts on: the organization's, or with `--mine` the caller's own. */
-  interface Target<S extends Pick<BoatKeyStatus, "connected" | "removal">> {
+  interface Target<S extends Pick<BoatKeyStatus, "connected" | "removal" | "details">> {
     readonly route: string;
     readonly wire: Schema.Codec<S, unknown>;
     readonly render: (status: S) => ReadonlyArray<string>;
@@ -278,9 +340,49 @@ export const boatCommand = async (
     readonly key: string;
     readonly none: string;
   }
-  const act = async <S extends Pick<BoatKeyStatus, "connected" | "removal">>(
+  /**
+   * A full check of the target's key: Sealant answers when it is done, or since when it runs, and
+   * the status then says when it finished.
+   */
+  const fullCheck = async <S extends Pick<BoatKeyStatus, "connected" | "removal" | "details">>(
+    target: Target<S>,
+    mine: boolean,
+  ): Promise<0 | 1> => {
+    if (!json) print([FULL_CHECK_COST]);
+    const started = await call(FullCheckWire, "POST", undefined, `${target.route}/full-check`);
+    if ("failed" in started) return started.failed;
+    let result = started.ok;
+    const sleep =
+      boundary.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+    const deadline = Date.now() + FULL_CHECK_WAIT_MS;
+    while (result.runningSince !== null && Date.now() < deadline) {
+      if (!json) print([runningLine(result.runningSince)]);
+      await sleep(FULL_CHECK_POLL_MS);
+      const status = await call(target.wire, "GET", undefined, target.route);
+      if ("failed" in status) return status.failed;
+      if (status.ok.details === null)
+        return fail("BoatKeyChanged", `${target.key} was removed meanwhile`);
+      result = status.ok.details.fullCheck;
+    }
+    if (json)
+      boundary.stdout(
+        `${jsonWithoutCredentials({ version: 1, fullCheck: Schema.encodeSync(FullCheckWire)(result) })}\n`,
+      );
+    else
+      print(
+        result.runningSince === null
+          ? renderFullCheck(result, mine)
+          : [
+              runningLine(result.runningSince),
+              `It is still running. mend boat status${mine ? " --mine" : ""} shows its result when it finishes.`,
+            ],
+      );
+    return 0;
+  };
+  const act = async <S extends Pick<BoatKeyStatus, "connected" | "removal" | "details">>(
     verb: Exclude<BoatVerb, "Status">,
     target: Target<S>,
+    full = false,
   ): Promise<0 | 1> => {
     const printStatus = (status: S, lead: ReadonlyArray<string> = []) => {
       if (json)
@@ -316,6 +418,7 @@ export const boatCommand = async (
         return 0;
       }
       case "Check": {
+        if (full) return fullCheck(target, mine);
         const answer = await call(CheckWire, "POST", undefined, `${target.route}/check`);
         if ("failed" in answer) return answer.failed;
         if (json)
@@ -354,7 +457,9 @@ export const boatCommand = async (
     none: "You have no Boat key of your own here",
   };
   if (asked._tag !== "Status") {
-    return asked.mine ? act(asked._tag, own) : act(asked._tag, organization);
+    return asked.mine
+      ? act(asked._tag, own, asked.full)
+      : act(asked._tag, organization, asked.full);
   }
   if (asked.mine) {
     const answer = await call(PersonStatusWire, "GET", undefined, MINE);

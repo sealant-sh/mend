@@ -985,6 +985,7 @@ and how it is saved.
 | `mend boat [status] [--mine]`                                         | Whether the organization has its own Boat key, then your own; owners also see who connected it, when, and who has their own |
 | `mend boat connect [--mine]`                                          | Owners only, or anyone with `--mine` for their own. Connect or replace a Boat key, read from a hidden prompt or stdin       |
 | `mend boat check [--mine]`                                            | Owners only, or anyone with `--mine`. Ask Boat about the key now, and print what it said and when                           |
+| `mend boat check --full [--mine]`                                     | Owners only, or anyone with `--mine`. Prove the key with a throwaway VM, about a minute; print each step and what it left   |
 | `mend boat disconnect [--mine]`                                       | Stop its standbys, then remove the key; sessions use the next key that decides. Refused while a session's VM still runs     |
 
 Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no

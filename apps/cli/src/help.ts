@@ -2016,11 +2016,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "boat check",
     section: "organization",
     summary: "ask Boat about a Boat key now",
-    synopsis: ["[--mine] [--json]"],
+    synopsis: ["[--full] [--mine] [--json]"],
     description: [
       "Owners only for the organization's key; with --mine, your own. Asks Boat about the key now, read-only, and prints what it said and when: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires, then what needs doing. When Boat does not answer, it says so and prints the last report. mend boat status prints the last report without asking Boat.",
+      "With --full, Sealant proves the key instead: it starts the smallest VM in the key's Boat account, runs a command, publishes a port and saves a snapshot, then deletes the snapshot and the VM. It uses one VM start, takes about a minute, and holds one saved snapshot slot for that minute. Boat does not show every key its own permissions (a Boat organization's key cannot read them), and this is how such a key is shown to work. It prints each step as passed, refused with Boat's reason, or not reached, and whether everything it made was confirmed removed. Sealant keeps the result: mend boat status shows the last one.",
     ],
     options: [
+      { flag: "--full", text: "prove the key with a throwaway VM, about a minute" },
       { flag: "--mine", text: "act on your own Boat key in your active organization instead" },
       { flag: "--json", text: "print the versioned check or error as JSON" },
     ],

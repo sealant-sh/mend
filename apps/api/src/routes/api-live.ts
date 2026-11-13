@@ -62,6 +62,7 @@ import { HttpServerRequest } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
+import { BoatKeyFullChecksLive } from "../boat-key-full-checks.ts";
 import { ExposureConfig } from "../exposure.ts";
 import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
@@ -766,8 +767,10 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       InvitationsGroupLive,
       AccountOrganizationsGroupLive,
       SlackGroupLive,
-      BoatKeyGroupLive,
-      PersonBoatKeyGroupLive,
+      // One set of running full checks for the organization's keys and people's own (SLNT-784).
+      Layer.merge(BoatKeyGroupLive, PersonBoatKeyGroupLive).pipe(
+        Layer.provide(BoatKeyFullChecksLive),
+      ),
       FoldersGroupLive,
       OperatorGroupLive,
     ),

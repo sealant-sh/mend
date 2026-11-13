@@ -258,6 +258,27 @@ Boat does not show a Boat organization's key its own permissions or expiry, so f
 those two facts are always not observed. Run `boat --org <organization> api-key list`, or open the
 API Keys tab in Boat's dashboard, to see them.
 
+## Run a full check
+
+The key report cannot say whether every key can do what a session needs: Boat does not show a Boat
+organization's key its own permissions. A full check shows it by doing what a session does, once. An
+owner runs it with **Run a full check** on the Boat page, or with `mend boat check --full`. Sealant
+starts the smallest VM in the key's Boat account, runs a command in it, publishes a port and saves a
+snapshot, then deletes the snapshot and the VM. It uses one VM start, takes about a minute, and
+holds one saved snapshot slot for that minute. The page says so before it runs.
+
+The result lists each step as passed, refused with Boat's reason in the words of the table below, no
+answer, or not reached, with when the check finished and whether Sealant saw Boat delete everything
+it made. Sealant keeps the last result on the account, so it survives a closed tab or a proxy that
+stopped waiting: the page and `mend boat status` show it afterwards. While a check runs, the page
+says since when and offers no second one. Mend asks Sealant once and waits for its answer on the
+server, not in the browser.
+
+If the check stops before it finishes, Sealant takes over removing what it made and reports the
+check as interrupted. Until Sealant has seen Boat delete everything, replacing or removing the key
+is refused with a sentence naming the VM or snapshot Boat may still hold, because only the key that
+made them can delete them. Wait, or delete them in Boat yourself.
+
 ## When a Boat session does not start
 
 When Boat refuses to start a session's VM, or does not answer, the session ends with

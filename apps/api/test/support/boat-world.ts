@@ -1,7 +1,13 @@
 import type { BoatKey, NewBoatKey } from "@mend/db";
 import { BoatKeyTakenError } from "@mend/db";
 import type { OrganizationId, ProjectId } from "@mend/domain";
-import type { AuditData, BoatFailure, BoatKeyOwner, BoatKeyReport } from "@mend/domain/workbench";
+import type {
+  AuditData,
+  BoatFailure,
+  BoatKeyOwner,
+  BoatKeyProof,
+  BoatKeyReport,
+} from "@mend/domain/workbench";
 import {
   BoatAccountRefusal,
   type BoatAccountRefusalReason,
@@ -18,7 +24,7 @@ type Implement = NonNullable<NonNullable<Parameters<typeof createTenancyApi>[1]>
 
 /** What sealant is asked, with the key unwrapped only here, to prove it went to sealant and nowhere else. */
 export interface CoreCall {
-  readonly call: "create" | "list" | "rotate" | "remove" | "check";
+  readonly call: "create" | "list" | "rotate" | "remove" | "check" | "prove";
   readonly label?: string;
   readonly key?: string;
   readonly boatAccountId?: string;
@@ -78,6 +84,9 @@ export const makeBoatWorld = () => {
   const changes = Semaphore.makeUnsafe(1);
   /** What sealant's check of a key observes, the next time it checks one (create, rotate, check). */
   let observed: BoatKeyReport | null = null;
+  /** What sealant's next full check answers, and, when set, what it waits for before answering. */
+  let proof: BoatKeyProof | null = null;
+  let proofGate: Deferred.Deferred<void> | null = null;
   const answer = <A>(value: () => A) =>
     Effect.suspend(() => {
       const refused = refusals.shift();
@@ -134,6 +143,7 @@ export const makeBoatWorld = () => {
             createdAt: new Date("2026-11-13T12:00:00.000Z"),
             keyRotatedAt: null,
             report: observed,
+            lastProof: null,
           };
           accounts.set(boatAccountId, account);
           return account;
@@ -185,6 +195,22 @@ export const makeBoatWorld = () => {
           accounts.set(boatAccountId, checked);
           return checked;
         }),
+      proveBoatAccount: (boatAccountId) =>
+        answer(() => {
+          core.push({ call: "prove", boatAccountId });
+          if (proof === null) throw new Error("the test set no full check");
+          return proof;
+        }).pipe(
+          Effect.tap(() => (proofGate === null ? Effect.void : Deferred.await(proofGate))),
+          // sealant keeps the result on the account, where its list reads it back.
+          Effect.tap((done) =>
+            Effect.sync(() => {
+              const account = accounts.get(boatAccountId);
+              if (account !== undefined)
+                accounts.set(boatAccountId, { ...account, lastProof: done });
+            }),
+          ),
+        ),
       listBoatAccounts: () =>
         answer(() => {
           core.push({ call: "list" });
@@ -251,6 +277,18 @@ export const makeBoatWorld = () => {
     refuseNext: (...errors: ReadonlyArray<BoatAccountRefusal | SealantPlatformError>) => {
       refusals.push(...errors);
     },
+    /** What sealant's full checks answer from now on; with `held`, each waits for the gate. */
+    proves: (next: BoatKeyProof, held = false) =>
+      Effect.runSync(
+        Effect.gen(function* () {
+          proof = next;
+          proofGate = held ? yield* Deferred.make<void>() : null;
+        }),
+      ),
+    /** Lets a held full check answer. */
+    releaseProof: () => {
+      if (proofGate !== null) Effect.runSync(Deferred.succeed(proofGate, undefined));
+    },
     /** What sealant's checks observe from now on. */
     observe: (report: BoatKeyReport | null) => {
       observed = report;
@@ -269,6 +307,8 @@ export const makeBoatWorld = () => {
       gate.next = null;
       lose.next = false;
       observed = null;
+      proof = null;
+      proofGate = null;
     },
   };
 };

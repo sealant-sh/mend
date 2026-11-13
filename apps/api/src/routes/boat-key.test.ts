@@ -1,4 +1,4 @@
-import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import { boatKeyProofFixture, boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { Deferred, Duration, Effect, Predicate, Schema } from "effect";
@@ -15,6 +15,33 @@ const detailsBody = Schema.decodeUnknownSync(
 
 /** A refusal's words, as a test reads them. */
 const messageBody = Schema.decodeUnknownSync(Schema.Struct({ message: Schema.String }));
+
+/** A full check's answer as a test reads it: each step's Boat reason is compared, not decoded. */
+const fullCheckBody = Schema.decodeUnknownSync(
+  Schema.Struct({
+    last: Schema.NullOr(
+      Schema.Struct({
+        outcome: Schema.String,
+        steps: Schema.Array(
+          Schema.Struct({ step: Schema.String, outcome: Schema.String, boat: Schema.Unknown }),
+        ),
+      }),
+    ),
+    runningSince: Schema.NullOr(Schema.String),
+  }),
+);
+
+/** A status's full check: the last result is compared whole, not decoded. */
+const statusFullCheck = Schema.decodeUnknownSync(
+  Schema.Struct({
+    details: Schema.Struct({
+      fullCheck: Schema.Struct({
+        last: Schema.Unknown,
+        runningSince: Schema.NullOr(Schema.String),
+      }),
+    }),
+  }),
+);
 
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
@@ -592,6 +619,112 @@ describe("an organization's Boat key", () => {
     });
   });
 
+  describe("a full check", () => {
+    const FINISHED = new Date("2026-11-13T14:01:04.000Z");
+    const fullCheck = (user: "alice" | "carol") =>
+      api.request(user, "POST", "/api/organization/boat-key/full-check");
+    const lastFullCheck = async () =>
+      statusFullCheck(
+        await (await api.request("alice", "GET", "/api/organization/boat-key")).json(),
+      ).details.fullCheck;
+
+    for (const outcome of ["passed", "refused", "interrupted"] as const) {
+      it(`answers a ${outcome} check with each step, and the status reads it back from sealant's account`, async () => {
+        await connect("alice");
+        boat.proves(boatKeyProofFixture(outcome, FINISHED));
+        core.length = 0;
+        const response = await fullCheck("alice");
+        expect(response.status).toBe(200);
+        const body = fullCheckBody(await response.json());
+        expect(body.runningSince).toBeNull();
+        expect(body.last?.outcome).toBe(outcome);
+        expect(body.last?.steps.map((step) => step.step)).toEqual([
+          "start-vm",
+          "run-command",
+          "publish-port",
+          "save-snapshot",
+          "delete-snapshot",
+          "delete-vm",
+        ]);
+        expect(core).toEqual([{ call: "prove", boatAccountId: "core-boat-1" }]);
+        // sealant keeps the result; the next status reads it from sealant's list, not from Mend.
+        expect(await lastFullCheck()).toMatchObject({
+          last: { outcome, finishedAt: FINISHED.toISOString() },
+          runningSince: null,
+        });
+      });
+    }
+
+    it("names the refused step's Boat reason in the answer", async () => {
+      await connect("alice");
+      boat.proves(boatKeyProofFixture("refused", FINISHED));
+      const body = fullCheckBody(await (await fullCheck("alice")).json());
+      expect(body.last?.steps[2]).toMatchObject({
+        step: "publish-port",
+        outcome: "refused",
+        boat: { permission: "host" },
+      });
+    });
+
+    it("says a check is running when sealant says one is, with sealant's words about what is left", async () => {
+      await connect("alice");
+      boat.refuseNext(refusal("proof-running"));
+      const response = await fullCheck("alice");
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        _tag: "BoatKeyConflict",
+        reason: "proof-running",
+        message: expect.stringMatching(
+          /^A full check of this key is running.*Sealant says: sealant says proof-running$/,
+        ),
+      });
+    });
+
+    it("refuses a replacement while the check's leftovers are not removed, saying what is left", async () => {
+      await connect("alice");
+      boat.refuseNext(refusal("proof-running"));
+      const response = await connect("alice", REPLACEMENT);
+      expect(response.status).toBe(409);
+      expect(await response.json()).toMatchObject({
+        reason: "proof-running",
+        message: expect.stringContaining(
+          "has not finished removing what it made in Boat, so nothing changed",
+        ),
+      });
+    });
+
+    it("is for owners only, and needs a key", async () => {
+      expect((await fullCheck("alice")).status).toBe(409);
+      await connect("alice");
+      boat.proves(boatKeyProofFixture("passed", FINISHED));
+      const member = await fullCheck("carol");
+      expect(member.status).toBe(403);
+      expect(await member.json()).toMatchObject({ _tag: "BoatKeyOwnersOnly" });
+      expect(core.some((call) => call.call === "prove")).toBe(false);
+    });
+
+    it(
+      "keeps a slow check running past the request: running since, no second check, then sealant's answer",
+      { timeout: 20_000 },
+      async () => {
+        await connect("alice");
+        boat.proves(boatKeyProofFixture("passed", FINISHED), true);
+        core.length = 0;
+        const first = fullCheckBody(await (await fullCheck("alice")).json());
+        expect(first.last).toBeNull();
+        expect(first.runningSince).not.toBeNull();
+        expect((await lastFullCheck()).runningSince).toBe(first.runningSince);
+        // Asked again while it runs: answered as running, and sealant is not asked twice.
+        const second = fullCheckBody(await (await fullCheck("alice")).json());
+        expect(second.runningSince).toBe(first.runningSince);
+        expect(core.filter((call) => call.call === "prove")).toHaveLength(1);
+        boat.releaseProof();
+        await expect.poll(async () => (await lastFullCheck()).runningSince).toBeNull();
+        expect((await lastFullCheck()).last).toMatchObject({ outcome: "passed" });
+      },
+    );
+  });
+
   it("never writes the key to a response, an error, the audit log or a log line", async () => {
     const bodies: Array<string> = [];
     bodies.push(await (await connect("alice")).text());
@@ -739,6 +872,30 @@ describe("a person's own Boat key (SLNT-797)", () => {
     expect(messageBody(await lacking.json()).message).toContain(
       "Create a key with the command on the Boat key card in Settings, Account, which grants",
     );
+  });
+
+  it("runs a full check of the caller's own key only, and keeps its result on their status", async () => {
+    const FINISHED = new Date("2026-11-13T14:05:00.000Z");
+    const none = await api.request("carol", "POST", `${ROUTE}/full-check`);
+    expect(none.status).toBe(409);
+    expect(await none.json()).toMatchObject({
+      reason: "none",
+      message:
+        "You have no Boat key of your own connected here, so there is nothing to check. Connect one first.",
+    });
+    await connectOwn("carol");
+    core.length = 0;
+    boat.proves(boatKeyProofFixture("passed", FINISHED));
+    const ran = await api.request("carol", "POST", `${ROUTE}/full-check`);
+    expect(ran.status).toBe(200);
+    expect(await ran.json()).toMatchObject({ last: { outcome: "passed" }, runningSince: null });
+    expect(core).toEqual([{ call: "prove", boatAccountId: "core-boat-1" }]);
+    const status = statusFullCheck(await (await api.request("carol", "GET", ROUTE)).json());
+    expect(status.details.fullCheck.last).toMatchObject({ outcome: "passed" });
+    // Another member with no key of their own proves nothing of hers.
+    core.length = 0;
+    expect((await api.request("alice", "POST", `${ROUTE}/full-check`)).status).toBe(409);
+    expect(core.some((call) => call.call === "prove")).toBe(false);
   });
 
   it("shows an owner that a member has their own key, and none of its details", async () => {

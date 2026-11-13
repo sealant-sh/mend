@@ -14,6 +14,7 @@ export const boatKeyRouter = router({
     .input(input(ConnectBoatKeyRequest))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.boatKey.connect({ payload }))),
   check: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.check())),
+  fullCheck: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.fullCheck())),
   disconnect: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.disconnect())),
 });
 
@@ -29,5 +30,6 @@ export const personBoatKeyRouter = router({
       run(ctx, (api) => api.personBoatKey.connect({ payload })),
     ),
   check: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.check())),
+  fullCheck: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.fullCheck())),
   disconnect: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.disconnect())),
 });
