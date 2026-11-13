@@ -1,14 +1,16 @@
 import type { BoatKey, NewBoatKey } from "@mend/db";
 import { BoatKeyTakenError } from "@mend/db";
-import type { ProjectId } from "@mend/domain";
+import type { OrganizationId, ProjectId } from "@mend/domain";
 import type { AuditData, BoatFailure, BoatKeyOwner, BoatKeyReport } from "@mend/domain/workbench";
 import {
   BoatAccountRefusal,
   type BoatAccountRefusalReason,
   type PlatformBoatAccount,
-  type SealantPlatformError,
+  SealantPlatformError,
 } from "@mend/sealant";
-import { Effect, Redacted } from "effect";
+import type { BoatAccountStandbys } from "@mend/sessions";
+import { Deferred, Effect, Redacted } from "effect";
+import * as Semaphore from "effect/Semaphore";
 
 import type { createTenancyApi } from "./tenancy-api.ts";
 
@@ -56,15 +58,29 @@ export const makeBoatWorld = () => {
   const core: Array<CoreCall> = [];
   const audited: Array<{ action: string; subjectId: string; data: AuditData; actor: string }> = [];
   const reconciled: Array<ProjectId> = [];
-  /** The refusal Core answers the next call with, if any. */
-  let refuseNext: BoatAccountRefusal | SealantPlatformError | null = null;
+  /**
+   * The standbys Mend keeps in each Core Boat account (SLNT-803), what a key change drains, and
+   * how many of them a drain still reports stopping.
+   */
+  const standbys = new Map<string, number>();
+  const stopping = { count: 0 };
+  /** What a removal did, in order: `drain <account>`, Core's `remove <account>`, `rewarm`. */
+  const steps: Array<string> = [];
+  /** The refusals Core answers the next calls with, in order. */
+  const refusals: Array<BoatAccountRefusal | SealantPlatformError> = [];
+  /** Core's answer to a removal while this is set, every time. */
+  const holds: { refusal: BoatAccountRefusal | null } = { refusal: null };
+  /** Holds Core's next removal until settled, for two at once. */
+  const gate: { next: Deferred.Deferred<void> | null } = { next: null };
+  /** Core does the next removal, then its answer never reaches Mend. */
+  const lose = { next: false };
+  const changes = Semaphore.makeUnsafe(1);
   /** What Core's check of a key observes, the next time it checks one (create, rotate, check). */
   let observed: BoatKeyReport | null = null;
   const answer = <A>(value: () => A) =>
     Effect.suspend(() => {
-      const refused = refuseNext;
-      refuseNext = null;
-      return refused === null ? Effect.sync(value) : Effect.fail(refused);
+      const refused = refusals.shift();
+      return refused === undefined ? Effect.sync(value) : Effect.fail(refused);
     });
   const implement = {
     boatKeys: {
@@ -127,12 +143,29 @@ export const makeBoatWorld = () => {
           return rotated;
         }),
       removeBoatAccount: (boatAccountId) =>
-        answer(() => {
-          core.push({ call: "remove", boatAccountId });
-          const account = accounts.get(boatAccountId);
-          if (account === undefined) throw new Error("removed an unknown account");
-          accounts.delete(boatAccountId);
-          return { ...account, state: "removing" as const };
+        Effect.gen(function* () {
+          steps.push(`remove ${boatAccountId}`);
+          const waitFor = gate.next;
+          gate.next = null;
+          if (waitFor !== null) yield* Deferred.await(waitFor);
+          if (holds.refusal !== null) return yield* holds.refusal;
+          const removed = yield* answer(() => {
+            core.push({ call: "remove", boatAccountId });
+            const account = accounts.get(boatAccountId);
+            if (account === undefined) throw new Error("removed an unknown account");
+            accounts.delete(boatAccountId);
+            return { ...account, state: "removing" as const };
+          });
+          if (lose.next) {
+            lose.next = false;
+            return yield* new SealantPlatformError({
+              code: "HttpClientError",
+              status: null,
+              message: "socket hang up",
+              cause: null,
+            });
+          }
+          return removed;
         }),
       checkBoatAccount: (boatAccountId) =>
         answer(() => {
@@ -163,6 +196,34 @@ export const makeBoatWorld = () => {
     engine: {
       launchUnderWay: () => false,
       reconcileHotSessions: (projectId) => Effect.sync(() => void reconciled.push(projectId)),
+      // The engine's contract (SLNT-803): one change per organization at a time; a drained
+      // account rewarms once the change ends, however it ends.
+      changingBoatKey: <A, E, R>(
+        _organizationId: OrganizationId,
+        use: (standbys: BoatAccountStandbys) => Effect.Effect<A, E, R>,
+      ) =>
+        changes.withPermit(
+          Effect.suspend(() => {
+            let drained = 0;
+            let held = false;
+            return use({
+              drain: (boatAccountId) =>
+                Effect.sync(() => {
+                  steps.push(`drain ${boatAccountId}`);
+                  held = true;
+                  drained += standbys.get(boatAccountId) ?? 0;
+                  standbys.delete(boatAccountId);
+                  return { drained, stopping: stopping.count };
+                }),
+            }).pipe(
+              Effect.ensuring(
+                Effect.sync(() => {
+                  if (held) steps.push("rewarm");
+                }),
+              ),
+            );
+          }),
+        ),
     },
   } satisfies Implement;
   return {
@@ -171,9 +232,15 @@ export const makeBoatWorld = () => {
     core,
     audited,
     reconciled,
+    standbys,
+    stopping,
+    steps,
+    holds,
+    gate,
+    lose,
     implement,
-    refuseNext: (error: BoatAccountRefusal | SealantPlatformError) => {
-      refuseNext = error;
+    refuseNext: (...errors: ReadonlyArray<BoatAccountRefusal | SealantPlatformError>) => {
+      refusals.push(...errors);
     },
     /** What Core's checks observe from now on. */
     observe: (report: BoatKeyReport | null) => {
@@ -185,7 +252,13 @@ export const makeBoatWorld = () => {
       core.length = 0;
       audited.length = 0;
       reconciled.length = 0;
-      refuseNext = null;
+      standbys.clear();
+      stopping.count = 0;
+      steps.length = 0;
+      refusals.length = 0;
+      holds.refusal = null;
+      gate.next = null;
+      lose.next = false;
       observed = null;
     },
   };

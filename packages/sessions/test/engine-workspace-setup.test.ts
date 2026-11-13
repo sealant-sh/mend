@@ -725,6 +725,7 @@ describe("SessionEngine hot sessions", () => {
       setReady: () => Effect.void,
       setBaseSha: () => Effect.void,
       setFailed: () => Effect.void,
+      retire: () => Effect.succeed(false),
       claim: (projectId) =>
         Effect.sync(() => {
           const index = pool.entries.findIndex(
