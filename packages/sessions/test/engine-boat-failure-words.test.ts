@@ -16,7 +16,7 @@ import { withEngineEffect } from "./engine/fixture.ts";
  * conversion keeps every kind (`boat-failure-conversion.test.ts`).
  */
 
-/** What Core 872's `workspace.ready()` rejects with when Boat refused the launch's VM. */
+/** What sealant 872's `workspace.ready()` rejects with when Boat refused the launch's VM. */
 const boatRefusal = (kind: BoatFailure["kind"], extra: Record<string, unknown> = {}) =>
   new SealantBoatError(
     'Workspace ws-boat reached terminal status "failed" before becoming ready: {"provider":"boat","code":"api_key_expired","requestId":"req_engine1"}',

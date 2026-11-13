@@ -1,9 +1,9 @@
 # The verify stack
 
-A full Mend stack built from source inside one Mend session: sealantd, Sealant Core (API, worker,
-SSH gateway) and Mend, each at a ref you name, installed with the product's own `mend server setup`.
-It exists so a verifier (an agent running the `verify` skill, or you) can drive a change that spans
-the three repositories as one stack, keep the evidence and tear it down. Everything runs in the
+A full Mend stack built from source inside one Mend session: sealantd, sealant (API, worker, SSH
+gateway) and Mend, each at a ref you name, installed with the product's own `mend server setup`. It
+exists so a verifier (an agent running the `verify` skill, or you) can drive a change that spans the
+three repositories as one stack, keep the evidence and tear it down. Everything runs in the
 session's own Docker service, so the stack is gone with the session's workspace.
 
 The script is `scripts/verify-stack/stack.mjs`; `mend.toml` declares it as the `stack` Service.
@@ -70,8 +70,8 @@ a hang-up, then SIGKILL two seconds later), killed, or failed.
     Sealant makes with `docker run`, never Compose. Its executor is a `sealant-…` container with no
     Compose project that mounts the server's `mend-control` volume. Its Docker sidecar is
     `<executor>-docker`, labelled `sealant.workspace=<executor>`. Its network is
-    `<executor>-network`, with no Compose project. The person's own Core dev stack (Compose project
-    `sealant`, from `docker compose up` in `/workspace/repos/sealant`) is none of these.
+    `<executor>-network`, with no Compose project. The person's own sealant dev stack (Compose
+    project `sealant`, from `docker compose up` in `/workspace/repos/sealant`) is none of these.
 
   A teardown, the watchdog's, a failed start's and `down`'s alike, removes what passes both, plus
   the stack's own infrastructure (its label and its `verify-stack-` prefix, both), and prints each
@@ -112,12 +112,12 @@ node scripts/verify-stack/stack.mjs mend invite --role owner --days 1
 
 Each repository takes one of:
 
-| Spec                 | Builds                                                                                    |
-| -------------------- | ----------------------------------------------------------------------------------------- |
-| a path (`.`, `/…`)   | that working tree as it is: tracked files, plus untracked ones `git` does not ignore      |
-| `#123` or `pr:123`   | the pull request's head on GitHub                                                         |
-| a branch, tag or sha | that commit on GitHub                                                                     |
-| `pinned`             | nothing: Core and sealantd as this Mend commit pins them (`--sealant`, `--sealantd` only) |
+| Spec                 | Builds                                                                                       |
+| -------------------- | -------------------------------------------------------------------------------------------- |
+| a path (`.`, `/…`)   | that working tree as it is: tracked files, plus untracked ones `git` does not ignore         |
+| `#123` or `pr:123`   | the pull request's head on GitHub                                                            |
+| a branch, tag or sha | that commit on GitHub                                                                        |
+| `pinned`             | nothing: sealant and sealantd as this Mend commit pins them (`--sealant`, `--sealantd` only) |
 
 The defaults are this checkout for Mend, and `/workspace/repos/sealant` and
 `/workspace/repos/sealantd` when `mend repo add` brought them into the session (ADR 0011), else
@@ -130,9 +130,9 @@ are not touched.
 
 ## Packages from source
 
-A change that spans the repositories often spans their npm packages too: Core's `@sealant/sdk` and
-`@sealant/api-contracts`, which Mend installs, and sealantd's `@sealant/runtime-client` and
-`@sealant/runtime-protocol`, which Core installs. A preview build takes them from npm at the
+A change that spans the repositories often spans their npm packages too: sealant's `@sealant/sdk`
+and `@sealant/api-contracts`, which Mend installs, and sealantd's `@sealant/runtime-client` and
+`@sealant/runtime-protocol`, which sealant installs. A preview build takes them from npm at the
 versions each repository pins ([Preview builds](preview-builds.md), "Limits"); the stack, by default
 (`--packages source`), takes them from the sources it builds:
 
@@ -140,9 +140,10 @@ versions each repository pins ([Preview builds](preview-builds.md), "Limits"); t
 - it copies the consumer's context, puts the tarballs under `.verify-stack/packages/`, adds pnpm
   overrides for them to `pnpm-workspace.yaml`, and makes a lockfile for that, so the consumer's own
   Dockerfile (`--frozen-lockfile` included) builds unchanged;
-- Mend takes Core's two packages everywhere it uses them; Core takes sealantd's only in the packages
-  that track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`, today `@sealant/workspaces`),
-  so `apps/ssh-gateway`, pinned to `^0.6.0`, keeps what Core ships it with.
+- Mend takes sealant's two packages everywhere it uses them; sealant takes sealantd's only in the
+  packages that track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`, today
+  `@sealant/workspaces`), so `apps/ssh-gateway`, pinned to `^0.6.0`, keeps what sealant ships it
+  with.
 
 The consumer's lockfile is made against the registry as it is when the stack starts: a dependency
 the packed packages bring in that the consumer's lockfile lacks resolves to the newest version its
@@ -155,9 +156,9 @@ pinned source links nothing.
 
 1. Resolves each source to a commit and a tree, and writes each tree out once as a build context.
 2. Packs the npm packages from source (above), then builds the images, each as soon as what it needs
-   exists: `docker/Dockerfile` of sealantd; `apps/{api,worker,ssh-gateway}` of Core; Mend's root
+   exists: `docker/Dockerfile` of sealantd; `apps/{api,worker,ssh-gateway}` of sealant; Mend's root
    `Dockerfile` with the build arguments `preview.yml` passes (`SEALANT_*_IMAGE`,
-   `MEND_PREVIEW_SEALANTD_IMAGE`) once Core's three exist; and the inner CLI, the `@sealant/mend`
+   `MEND_PREVIEW_SEALANTD_IMAGE`) once sealant's three exist; and the inner CLI, the `@sealant/mend`
    package packed from the same Mend source and installed with npm. An image whose tree this daemon
    built before is reused. Mend's version is its CLI version marked `-verify.t<digest>`, which no
    release carries.
@@ -223,14 +224,14 @@ service and home, so it goes with the session's workspace.
 
 **On the box** (alpha.mend.run, Mend 0.36.0-next.658, 12 vCPUs and 40 GB shared with the server):
 one `st-verify-` session of the test account, per-person layout (uid 40001, home 0700), Mend #610,
-Core #347 and sealantd #129 with their packages from source:
+sealant #347 and sealantd #129 with their packages from source:
 
 | Measure                                          | Run 1 (2026-10-10 02:34) | Run 2 (02:52)           |
 | ------------------------------------------------ | ------------------------ | ----------------------- |
 | cold start to ready (no image, no build cache)   | 4 min 13 s               | 3 min 16 s              |
 | sealantd (cargo, the critical path)              | 2 min 49 s               | 2 min 59 s              |
-| Core's three images, in parallel                 | 1 min 34 s – 1 min 45 s  | 1 min 28 s – 1 min 39 s |
-| Mend bundle, after Core                          | 44 s                     | 45 s                    |
+| sealant's three images, in parallel              | 1 min 34 s – 1 min 45 s  | 1 min 28 s – 1 min 39 s |
+| Mend bundle, after sealant                       | 44 s                     | 45 s                    |
 | `mend server setup`                              | 20 s                     | 14 s                    |
 | the check (`mend run -- true`, builds its image) | 37 s, completed          | 35 s, completed         |
 | start again, every image reused                  | 25 s                     |                         |
@@ -238,14 +239,14 @@ Core #347 and sealantd #129 with their packages from source:
 | peak while building (PSS, sampled every 5 s)     |                          | 6.32 GiB                |
 
 **Locally**, in a session of the same Mend in Docker-in-Docker, per-person layout, the session's
-Docker service capped at 12 CPUs; Core and sealantd at main, Mend at this branch:
+Docker service capped at 12 CPUs; sealant and sealantd at main, Mend at this branch:
 
 | Phase                                    | Time                                       |
 | ---------------------------------------- | ------------------------------------------ |
 | cold start to ready (empty Docker cache) | 3 min 3 s                                  |
 | sealantd (cargo, the critical path)      | 1 min 25 s – 1 min 40 s                    |
-| Core's three images, in parallel         | 50–54 s                                    |
-| Mend bundle, after Core                  | 21–35 s                                    |
+| sealant's three images, in parallel      | 50–54 s                                    |
+| Mend bundle, after sealant               | 21–35 s                                    |
 | `mend server setup`                      | 13–19 s                                    |
 | start again, every image reused          | 20 s                                       |
 | the check, first / later                 | 23–30 s (builds the workspace image) / 8 s |

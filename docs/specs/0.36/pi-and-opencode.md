@@ -12,7 +12,7 @@
   refresher; copies cannot refresh), 0010 (secret files; joins), 0013 (terminal sessions: only the
   owner types).
 - **Written:** 2026-10-05, against mend main `c9b645b0b`, sealant main `bc9ec42`, sealantd main
-  `07ada50`. Mend main pins sealantd `0.20.0-next.142` through Core `0.39.0-next.683`, which is
+  `07ada50`. Mend main pins sealantd `0.20.0-next.142` through sealant `0.39.0-next.683`, which is
   sealantd `07ada50` (#136 included).
 
 ## Why it exists
@@ -118,8 +118,8 @@ What went wrong on the box after the first cut (preview 11, 2026-10-04, fixed by
 
 ### Images and platform shape
 
-1. Core bakes every harness into every workspace image
-   (`Core packages/workspaces/src/harness/integrations.ts:89`, `bakedHarnessIds`). opencode is
+1. sealant bakes every harness into every workspace image
+   (`sealant packages/workspaces/src/harness/integrations.ts:89`, `bakedHarnessIds`). opencode is
    `npm install -g --allow-scripts=opencode-ai opencode-ai@latest`; pi is the latest GitHub release
    binary, checked against its `SHA256SUMS`, unpacked to `/opt/pi` (`PI_INSTALL_COMMAND`, line 23).
    Both float to the latest at image build.

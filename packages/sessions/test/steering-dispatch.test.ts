@@ -368,7 +368,7 @@ const steeredWorld = (harness: "claude" | "codex") => {
   };
   /**
    * What the engine does between the old process's stop and the next one's attach: stage the
-   * home, two Core calls, open the pipe. About a second on the box, by which time the old
+   * home, two sealant calls, open the pipe. About a second on the box, by which time the old
    * process's output has ended.
    */
   const nextStart: { after: Effect.Effect<void> } = { after: Effect.void };

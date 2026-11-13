@@ -25,7 +25,7 @@ export const loginChoiceOf = <A extends ProviderAccount>(
 };
 
 /**
- * Whether an account is its person's chosen default, as a Mend server or Core that predates the
+ * Whether an account is its person's chosen default, as a Mend server or sealant that predates the
  * flag reports it: without `isDefault`, the default is the account named `default`.
  */
 export const isChosenDefault = (account: {

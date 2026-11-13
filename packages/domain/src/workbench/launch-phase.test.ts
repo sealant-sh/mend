@@ -65,7 +65,7 @@ describe("launch phase words", () => {
   });
 });
 
-describe("Core's launch phase on the line (sealant#342)", () => {
+describe("sealant's launch phase on the line (sealant#342)", () => {
   it("says the build's step when the builder reports one", () => {
     expect(launchBuildingWords({ step: 3, steps: 12 })).toBe(
       "building the workspace image · step 3/12",

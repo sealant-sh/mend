@@ -1,8 +1,7 @@
 # Per-user Sealant identity
 
-Status: decided 2026-08-22. Shipped in Sealant Core (sealant-sh/sealant#189) and Mend (#105).
-Supersedes the `SEALANT_OWNER_USER_ID` hand-off in `DEVELOPMENT.md` and the 2026-08-18 entry in
-`docs/BUGS.md`.
+Status: decided 2026-08-22. Shipped in sealant (sealant-sh/sealant#189) and Mend (#105). Supersedes
+the `SEALANT_OWNER_USER_ID` hand-off in `DEVELOPMENT.md` and the 2026-08-18 entry in `docs/BUGS.md`.
 
 ## Problem
 
@@ -32,7 +31,7 @@ Sealant under the user's own Sealant id and never stores it.
 `github`). Sealant has no compute-provider concept — the worker always drives the host Docker daemon
 — and this change does not introduce one.
 
-### Sealant Core
+### sealant
 
 1. **Service principals.** `SEALANT_SERVICE_KEYS` (comma-separated secrets, `slt_svc_…`). When set,
    the API rejects every `/v1/*` request that does not present one of them as a bearer, except: the

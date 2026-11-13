@@ -70,7 +70,7 @@ export const sessionIdOfArgv = (argv) => {
 };
 
 // A session's launch reads the claude account named `default` (the one `mend connect` writes).
-// Core stores a fresh setup token `active` without asking Anthropic, and marks it `invalid` the
+// sealant stores a fresh setup token `active` without asking Anthropic, and marks it `invalid` the
 // first time inference is refused on it, so the fake reads `active` only until a pass spends it.
 // An archived row can sit beside a live one under the same name, so a live status wins.
 export const claudeLoginOf = (accounts) => {

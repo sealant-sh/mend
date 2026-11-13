@@ -6,8 +6,8 @@ import { SealantClients } from "./client.ts";
 import type { SealantPlatformError } from "./errors.ts";
 
 /**
- * What Core says each runtime it launches supports, as Mend last read it. Every page, save and
- * launch that needs a runtime fact reads it here. Never fails: when Core does not answer, the
+ * What sealant says each runtime it launches supports, as Mend last read it. Every page, save and
+ * launch that needs a runtime fact reads it here. Never fails: when sealant does not answer, the
  * reading is `unread` with the reason, and nothing is assumed supported.
  */
 export class WorkspaceRuntimesReport extends Context.Service<
@@ -15,15 +15,15 @@ export class WorkspaceRuntimesReport extends Context.Service<
   { readonly read: () => Effect.Effect<WorkspaceRuntimesReading> }
 >()("@mend/sealant/WorkspaceRuntimesReport") {}
 
-/** An answer is kept this long: what a runtime supports changes only when Core's install does. */
+/** An answer is kept this long: what a runtime supports changes only when sealant's install does. */
 export const RUNTIMES_KEPT = Duration.minutes(1);
-/** A failed read is kept this long, so a page that reads it often waits on Core at most once. */
+/** A failed read is kept this long, so a page that reads it often waits on sealant at most once. */
 export const RUNTIMES_UNREAD_KEPT = Duration.seconds(15);
-/** How long a read waits for Core. */
+/** How long a read waits for sealant. */
 export const RUNTIMES_READ_TIMEOUT = Duration.seconds(5);
 
 /**
- * Why the report is unread, in words any member may read: Core's own text can name internal hosts
+ * Why the report is unread, in words any member may read: sealant's own text can name internal hosts
  * and paths, so it goes to the log and never into the reading.
  */
 const unreadReason = (cause: SealantPlatformError | TimedOut): string =>
@@ -85,7 +85,7 @@ export const WorkspaceRuntimesReportLive: Layer.Layer<
   }),
 );
 
-/** A report that always answers `reading`: for tests, and for a Mend that runs without Core. */
+/** A report that always answers `reading`: for tests, and for a Mend that runs without sealant. */
 export const workspaceRuntimesReportOf = (
   reading: WorkspaceRuntimesReading,
 ): Layer.Layer<WorkspaceRuntimesReport> =>

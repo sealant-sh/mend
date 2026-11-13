@@ -243,7 +243,7 @@ describe("SessionEngine", () => {
       ]);
     });
 
-    it("a stale login never stops a shared launch: Core's refusal names it, and no later try names it again", async () => {
+    it("a stale login never stops a shared launch: sealant's refusal names it, and no later try names it again", async () => {
       const other = await launchOnce("claude", {
         reject: (credentials) =>
           credentials?.codex === undefined ? false : invalidAccount("codex"),

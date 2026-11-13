@@ -17,8 +17,8 @@ account deletion and active revocation before treating a team invitation as acce
 selected projects.
 
 The [public exposure findings](public-exposure-findings.md) cover problems inherited from released
-Mend and Core. Adding team checks alone does not fix instance-global signers, notifications,
-operator settings, resource limits or Core's administrative delegation model.
+Mend and sealant. Adding team checks alone does not fix instance-global signers, notifications,
+operator settings, resource limits or sealant's administrative delegation model.
 
 ## Snapshot and evidence
 

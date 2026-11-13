@@ -53,7 +53,7 @@ for (const [provider, selectedModel] of [
   ["codex", "gpt-6-astra"],
   ["claude", "claude-future"],
 ] as const) {
-  it(`falls back on the same ${provider} login when ${selectedModel} Core rejects the selected writer model`, async () => {
+  it(`falls back on the same ${provider} login when ${selectedModel} sealant rejects the selected writer model`, async () => {
     const exchanges: Array<{ principal: unknown; options: unknown }> = [];
     const layer = sealantProviderLayer.pipe(
       Layer.provide(

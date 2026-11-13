@@ -126,7 +126,7 @@ describe.skipIf(postgres.skip)("per-person harness homes, in Postgres", () => {
             .filter((identity) => ["account-0", "account-3"].includes(identity.accountId))
             .toSorted((a, b) => a.uid - b.uid),
         );
-        // By login name, as a home Core lists names its person.
+        // By login name, as a home sealant lists names its person.
         const named = yield* repo.identitiesNamed([linuxLoginNameOf("account-5"), "mnobody23"]);
         expect(named.map((identity) => identity.accountId)).toEqual(["account-5"]);
       }),

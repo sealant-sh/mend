@@ -116,12 +116,12 @@ let
     };
   # Boat sessions, as `mend server setup --session-runtime boat` turns them on (apps/cli/src/server-boat.ts):
   # no key, since each organization's owner connects its own; the two public addresses its VMs dial,
-  # published on loopback for the operator's TLS forwarding; Core's build journal in a volume. Core
+  # published on loopback for the operator's TLS forwarding; sealant's build journal in a volume. sealant
   # names the install's VMs and owns its images itself unless deploymentId says otherwise.
   boat = cfg.boat;
   boatStateDirectory = "/var/lib/sealant/boat";
   boatStateVolume = "mend-boat-state";
-  # A stable UUID for the resource gateway's host, from the install's URL: Core needs one, and a
+  # A stable UUID for the resource gateway's host, from the install's URL: sealant needs one, and a
   # stable value keeps the gateways it started findable across restarts.
   boatGatewayHostId =
     let

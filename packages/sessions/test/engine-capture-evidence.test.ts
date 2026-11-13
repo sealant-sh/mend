@@ -599,7 +599,7 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
   );
 
   it(
-    "a create Core fenced before it made anything, found by the reaper, settles `stopped · launch cancelled · nothing was created` — never `starting` with no executor",
+    "a create sealant fenced before it made anything, found by the reaper, settles `stopped · launch cancelled · nothing was created` — never `starting` with no executor",
     { timeout: 20_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -677,7 +677,7 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
   );
 
   // e2e8 (i), L: Mend SIGKILLed 0.12 s after asking the create. Its executor started, exited, and
-  // Core's recovery destroyed it; Mend came back, found it by the key, drained it and released the
+  // sealant's recovery destroyed it; Mend came back, found it by the key, drained it and released the
   // worktree — and the session read `starting`, summary null, with nothing running, until a resume.
   it.effect(
     "a lost create whose executor the reaper finds and drains to its end settles `stopped · launch interrupted · …` — never `starting` with no executor",
@@ -727,7 +727,7 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
               {
                 loseCreateAnswer: () => true,
                 findByKey: () => ({ kind: "found", workspaceId: "workspace-lost" }),
-                // Core's recovery already destroyed it: the platform says it is gone.
+                // sealant's recovery already destroyed it: the platform says it is gone.
                 status: () => "stopped",
               },
             ),
@@ -810,7 +810,7 @@ describe("SessionEngine a failed launch's words follow its executor (e2e run 6 #
 
 describe("SessionEngine a recovered executor's accepted seal is the session's word (e2e run 6 #7)", () => {
   it.effect(
-    "`executor not answering · … · not confirmed`, then Core ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
+    "`executor not answering · … · not confirmed`, then sealant ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -844,7 +844,7 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
               yield* clock.executorLooks(() => !settled());
               yield* clock.untilChanged(settled, "the session's settle");
               expect(world.sessions.get(session.id)?.summary).toMatch(/not confirmed$/);
-              // Core recovered it: it drained, sealed, and ended on its runtime (kept by Core).
+              // sealant recovered it: it drained, sealed, and ended on its runtime (kept by sealant).
               const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
               const built = yield* shipHarnessCapture(
                 tmp,
@@ -906,7 +906,7 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
                 stopOptions,
                 resourceId: () => "container-7f3a",
                 captureStatus: clock.captureStatus,
-                // Ended on its runtime and kept by Core until the stop: then stopped.
+                // Ended on its runtime and kept by sealant until the stop: then stopped.
                 status: (stopAsked) => (!ended ? "ready" : stopAsked ? "stopped" : "failed"),
                 stopAnswer: () => "stopped",
                 flush: () =>

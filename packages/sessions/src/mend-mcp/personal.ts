@@ -2,7 +2,7 @@
  * A person's own MCP servers at launch (docs/adr/0024): whose a process carries, and what each
  * harness is given. Pure; the engine reads, unseals and writes (`personalMcpFor`).
  *
- * No value ever rides argv, which Core keeps for good and other users can read: Claude gets a file
+ * No value ever rides argv, which sealant keeps for good and other users can read: Claude gets a file
  * path, Codex a path or a URL, and every value is in a file written 0600 as the process's user.
  */
 import {
@@ -161,12 +161,12 @@ type CodexServer =
   | { readonly skipped: string };
 
 /**
- * Codex is given its URL on argv, which Core keeps and other users can read, so a server whose URL
+ * Codex is given its URL on argv, which sealant keeps and other users can read, so a server whose URL
  * may carry a key (`mcpUrlMayCarryKey`) is left out of Codex rather than guessed at.
  */
 const codexServer = (dir: string, server: UnsealedMcpServer): CodexServer => {
   const { name, transport, secrets } = server;
-  // One attached word a server: Core takes at most 64 words a command.
+  // One attached word a server: sealant takes at most 64 words a command.
   const flag = (table: string) => `--config=mcp_servers.${name}={${table}}`;
   if (transport._tag === "sse") return { skipped: "SSE" };
   if (transport._tag === "stdio") {

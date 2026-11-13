@@ -9,8 +9,8 @@
   1414–1621). Background: decisions 19, 20, 25–27, 31, 35, 37 and 47 of the same ADR (write-once,
   negotiated answers, write authority, read-back).
 - **Written:** 2026-10-05, against mend main `c9b645b0b`, sealant main `bc9ec42`, sealantd main
-  `07ada50`. Mend main pins `@sealant/sdk` 0.39.0-next.683; Core main pins sealantd 0.20.0-next.142
-  (sealant#321), which carries sealantd#128, #130, #132 and #135.
+  `07ada50`. Mend main pins `@sealant/sdk` 0.39.0-next.683; sealant main pins sealantd
+  0.20.0-next.142 (sealant#321), which carries sealantd#128, #130, #132 and #135.
 
 ## Why it exists
 
@@ -30,7 +30,7 @@ waited for its save far longer than the work it saved:
   harvest) before the final one (decision 50).
 - 28 s of a Codex Stop went on reading 33 memory files out of the head capture, each one fetching
   the same 64 MiB pack again (mend#476).
-- 4.3 s of every Docker Stop went on `docker rm -f -v` of an already-exited container before Core
+- 4.3 s of every Docker Stop went on `docker rm -f -v` of an already-exited container before sealant
   reported `stopped` (sealant#312).
 
 Who hits it: everyone on a self-hosted install (the owner's box, `alpha.mend.run`), on every Stop,
@@ -85,7 +85,7 @@ Settings that still matter:
 - One final flush per Stop, with the checkpoint and harvest deferred to it.
 - One read pass per harvest and per agent-memory read-back.
 - sealantd: unthrottled, multi-core final flush; four large uploads at once; bound PUTs.
-- Core: Docker stop in two phases (`end`, record `stopped`, then `remove`) and a remains sweep.
+- sealant: Docker stop in two phases (`end`, record `stopped`, then `remove`) and a remains sweep.
 
 **Out of scope.**
 
@@ -276,7 +276,7 @@ packages/sessions/src/engine.ts.
    - only when the queue is empty and closed is the executor terminated.
 5. Gone (the executor went): the queue runs on the last reading with no limit (`limit=null`), then
    `tidyAfterGone`.
-6. Kept by the platform: the queue runs before Core's stop.
+6. Kept by the platform: the queue runs before sealant's stop.
 7. Every lease release under a workspace first runs `owedBeforeRelease` (:3771).
 8. A harvest and an agent-memory read-back from a capture run in one read pass (`inOneReadPass`,
    :6832; call sites :6604, :7226, :10004, :10724). Each section's dir packs, indexes and packs are
@@ -284,9 +284,9 @@ packages/sessions/src/engine.ts.
 9. The deferred-work limit is `CaptureDrainPolicy.deferredWorkLimit` (2 minutes,
    packages/sessions/src/capture-runtime.ts:143).
 
-### 9. Core terminates the executor
+### 9. sealant terminates the executor
 
-sealant#312, Core.
+sealant#312, sealant.
 
 - `RuntimeAdapter.keepsRemains` (packages/workspaces/src/runtime/runtime-adapter.ts:401) is true for
   Docker (docker-runtime-adapter.ts:772).
@@ -313,8 +313,8 @@ sealant#312, Core.
     user-mark checkpoint and change-head refresh are lost (decision 50 "Known gap");
   - executor answers survive (0100); bound index bindings survive (0099);
   - the startup window is waived only when `spokenFor` holds.
-- Core worker lost between `end` and `remove`: the container has exited, its row is `stopped`, and
-  the remains sweep removes the rest after 5 minutes.
+- sealant worker lost between `end` and `remove`: the container has exited, its row is `stopped`,
+  and the remains sweep removes the rest after 5 minutes.
 - sealantd restart: a new boot plans again and lists its answers again.
 
 ## Happy path
@@ -366,7 +366,7 @@ has its `node_modules` saved in the background already.
    workspace (`owedBeforeRelease`).
 9. No executor is terminated by a drain before its deferred queue ran to empty and closed.
 10. A deferred piece is never interrupted once started.
-11. Core never records `stopped` over a running container. A failed `end` fails the stop.
+11. sealant never records `stopped` over a running container. A failed `end` fails the stop.
 12. The remains sweep never removes the disk of a retained executor, or of a capture-sourced one
     whose deletion the ledger has not recorded final.
 13. No loss of work product: no step of this feature deletes captured bytes, a seal or an executor
@@ -419,14 +419,14 @@ has its `node_modules` saved in the background already.
   decision 50 "Known gap".
 - **Discard unsaved and stop during a Stop.** Admission is sealed per session (`discardSealed`,
   counted). The discard waits for every Stop tail of that session, waits for the running drain, runs
-  the deferred queue with no limit, and only then asks Core for a stop that does not drain.
+  the deferred queue with no limit, and only then asks sealant for a stop that does not drain.
   Overlapping discards of one workspace by two sessions are not coalesced (see Divergences).
 - **The executor goes during the drain.** The deferred queue runs on the last reading with no limit.
   A FINAL that registered before it went leaves a readable head; otherwise the checkpoint is taken
   unflushed and there is no harvest.
-- **Core: a daemon refuses `docker kill`.** `removalRefused`, the stop fails, and observations
+- **sealant: a daemon refuses `docker kill`.** `removalRefused`, the stop fails, and observations
   resume. A lost reply is unknown and the removal stays issued.
-- **Core: `remove` fails after `end`.** `stopped` is recorded, the ledger's deletion is final,
+- **sealant: `remove` fails after `end`.** `stopped` is recorded, the ledger's deletion is final,
   `removed_at` stays null, and the sweep retries after 5 minutes. The exited container's writable
   layer uses disk until then.
 - **Older data.**
@@ -458,7 +458,7 @@ has its `node_modules` saved in the background already.
 - What remains per Stop after sealant#312 (owner's note):
   - 4.8 s sealantd bulk re-walk with nothing changed;
   - ~1.4 s seal;
-  - ~2 s of Core's stop path besides `rm`.
+  - ~2 s of sealant's stop path besides `rm`.
 - Mend's single-process assumption is load-bearing for the in-memory `minted` map, the deferred
   queue and the proofs (`contentVerified`, `gitPackVerified`). Helm pins `replicaCount: 1`.
 
@@ -487,10 +487,10 @@ has its `node_modules` saved in the background already.
   - :8324–8336 (deferred final registration before harvest);
   - :7848 (HOME relocation harvests the final flush);
   - :15343 (a deferred checkpoint that runs out of time keeps the executor).
-- Core `packages/workspaces/src/runtime/docker-runtime-adapter.test.ts`,
+- sealant `packages/workspaces/src/runtime/docker-runtime-adapter.test.ts`,
   `worker/process-workspace-stop.test.ts`, `worker/reconcile-runtime-exits.test.ts`. The db-backed
   suites need `SEALANT_TEST_DATABASE_URL`; `listStoppedWithRemains` was typechecked, not executed,
-  in the PR. Core CI has no unit-test job.
+  in the PR. sealant CI has no unit-test job.
 - sealantd `crates/sealant-capture/tests/bound_put.rs` (a local checksum-enforcing server; real
   Garage behind `MEND_TEST_BOUND_URLS`), `ship_multipart.rs`, and `registrar.rs`
   `a_declared_sha256_travels_with_the_mint_of_its_key`.
@@ -532,7 +532,7 @@ Delete test worktrees afterwards (`mend worktrees rm`, or `DELETE /api/worktrees
   - `… a bound upload URL names other bytes for a pack index … withheld`;
   - `work deferred to the final flush did not finish in time · left running · executor kept`.
 - sealantd: `final capture complete … took_ms`, `capture staged … elapsed_ms`.
-- Core: `Workspace stop: run … ended and was recorded stopped; removing its remains failed`, and
+- sealant: `Workspace stop: run … ended and was recorded stopped; removing its remains failed`, and
   `Runtime exit reconciler: removed the remains of …`.
 - Session line: `saving · … left`, then `stopped`, `saved at … · capture n`. Anything else
   (`final seal not confirmed`) is the wait.
@@ -564,8 +564,8 @@ Delete test worktrees afterwards (`mend worktrees rm`, or `DELETE /api/worktrees
    Pass 14's other two P1s are in ADR decision 50's "Known gap": a discard waits only for its own
    session's Stops, and an ordinary drain ignores another session's inline harvest.
 6. ROADMAP.md (and open PR #530) lists the saves work as Mend PRs only. sealant#312 and sealantd#132
-   are part of the measured 15–19 s but only appear in the Core and sealantd lines. #530's "observed
-   15–19 s" predates preview 10's 10–14 s. Wording only.
+   are part of the measured 15–19 s but only appear in the sealant and sealantd lines. #530's
+   "observed 15–19 s" predates preview 10's 10–14 s. Wording only.
 7. ADR 0002 decision 48 (line 1446) still describes the in-memory `bound-index-digests.ts` registry
    and the 256 MiB ceiling. Both are superseded by decision 49 (0099, 5 GiB). The text says
    "Superseded the same day" for the restart window only, not for the registry file, which no longer

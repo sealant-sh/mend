@@ -32,7 +32,7 @@ All are ready for review (none is a draft), and each repo's PRs are one register
 
 CI green when last checked.
 
-### Core (sealant-sh/sealant, stack #256, bottom to top)
+### sealant (sealant-sh/sealant, stack #256, bottom to top)
 
 | PR   | Finding | Purpose                                                                                                                                                    |
 | ---- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -64,7 +64,7 @@ CI passed on all seven (the `checks` job), including after the `private` default
   `pnpm exec turbo lint --force` (44 of 44 tasks each), `oxfmt --check`. At the top:
   `turbo test --force` 20 of 20; `packages/db` 70 tests against a throwaway Postgres, none skipped;
   `node --test scripts/*.test.mjs` 141 passing, none skipped (Docker and Helm were present).
-- **Core**, forced, on every layer: typecheck, lint and test, 53 of 53. One `@sealant/marketing`
+- **sealant**, forced, on every layer: typecheck, lint and test, 53 of 53. One `@sealant/marketing`
   test failed once on one layer and passed on re-run; that package is untouched.
 - **sealantd**: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
   `cargo test --workspace`. The known local failures (four `sealant-process` `runtime::tests::*`,
@@ -89,7 +89,7 @@ layer they belong to.
   plaintext exception.
 - IP-literal URLs handled; test servers read the body and close cleanly; doc wording.
 
-### Core
+### sealant
 
 - A regression: `POST /v1/github/webhooks` answered 401 once every route needed a credential. It is
   admitted at the gate again (it authenticates by signature).
@@ -169,7 +169,7 @@ Edge and reporting (#290, #291):
 - An additive CA: a configured bundle replaces the public roots, it does not add to them.
 - An egress proxy for the daemon: proxy variables are ignored by design.
 
-### Core
+### sealant
 
 - A separate, less privileged database role for the worker.
 - Executor egress isolation on the Docker adapter (the chart's NetworkPolicy and the MicroVM
@@ -190,8 +190,8 @@ Edge and reporting (#290, #291):
   run on the default, `private`, which is right for a tailnet or LAN install and a slightly loud
   report for a laptop one (`mend doctor` stays quiet there because `APP_URL` is on loopback). Only
   the report is affected; nothing refuses. A `--exposure` flag belongs with the `--edge` flag.
-- **Mend does not yet send `source.transport`** (plaintext / CA bundles) or the owner scope to Core:
-  that needs a Sealant release carrying Core #253 / #254 and a pin bump. Until then
+- **Mend does not yet send `source.transport`** (plaintext / CA bundles) or the owner scope to
+  sealant: that needs a Sealant release carrying sealant #253 / #254 and a pin bump. Until then
   `MEND_EXECUTOR_NETWORK=private` is a statement in Mend's report only.
 - Request windows are per API process, in memory.
 - `ws` buffers a frame up to 100 MiB before Mend sees it (needs a `maxPayload` option upstream in
@@ -225,7 +225,7 @@ All are in the ADR's decision log or open questions, each with the default taken
 
 ## Exact next steps
 
-Merge order is **sealantd → Core → Mend**, because each bakes the one below. No PR depends on an
+Merge order is **sealantd → sealant → Mend**, because each bakes the one below. No PR depends on an
 unmerged PR in another repo, so the Mend stack can also merge first without breaking anything; it
 just will not enforce the executor-side half until step 4.
 
@@ -233,8 +233,8 @@ just will not enforce the executor-side half until step 4.
 2. **sealantd:** review and merge #86. Cut the sealantd train: a minor (0.17.0), since boot now
    refuses a plain-HTTP channel that was not declared private. The changeset names both runtime
    packages.
-3. **Core:** review stack #256 and merge it with `gh stack merge --yes` (not `gh pr merge`). Bake
-   the new sealantd. Cut the Core train (a minor). Upgrade notes that must go in the release:
+3. **sealant:** review stack #256 and merge it with `gh stack merge --yes` (not `gh pr merge`). Bake
+   the new sealantd. Cut the sealant train (a minor). Upgrade notes that must go in the release:
    - `SEALANT_SERVICE_KEYS` is now required: the API exits 78 without it.
    - `install.sh` generates `SEALANT_WEB_SERVICE_KEY`; an existing install needs one added.
    - The chart (0.3.0) requires both secret keys.
@@ -243,7 +243,7 @@ just will not enforce the executor-side half until step 4.
    - Budgets apply to hot pools too: check the defaults against the pool size before rolling.
    - A launcher on a private plain-HTTP channel must send `transport: { plaintext: true }`, or
      workspaces refuse to boot with the new daemon. **Mend does not send it yet (step 4), so do not
-     roll the new Core under the cluster's Mend until step 4 has shipped.**
+     roll the new sealant under the cluster's Mend until step 4 has shipped.**
 4. **Mend pin bump** (a new PR, not written): bump `@sealant/sdk` and the Sealant image digests,
    send `source.transport` from `MEND_EXECUTOR_NETWORK` and the session channel's TLS settings, and
    send the owner scope. Re-pin digests from source, never from memory.

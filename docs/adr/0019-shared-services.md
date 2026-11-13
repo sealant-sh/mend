@@ -236,9 +236,10 @@ targets and their data stay in place.
 
 ### Sealant runs the instances
 
-Core gains a resource instance under a project's resource domain (Core #420). It is a container from
-an image pinned by digest, with named volumes, a CPU and memory limit, and no harness, worktree or
-TTL. The SDK exposes instance and workspace operations on `sealant.scopes.actAs(scopeId)`:
+sealant gains a resource instance under a project's resource domain (sealant #420). It is a
+container from an image pinned by digest, with named volumes, a CPU and memory limit, and no
+harness, worktree or TTL. The SDK exposes instance and workspace operations on
+`sealant.scopes.actAs(scopeId)`:
 
 ```ts
 scope.instances.up(key, spec, { cause: "use" | "person" }); // explicit start, or wake an idle-stopped instance
@@ -251,10 +252,10 @@ scope.archive(); // every instance archived, every workspace unlinked
 ```
 
 - **The spec cannot ask for what is refused.** It has no field for privileged mode, capabilities,
-  host network, host paths, devices, the Docker socket or shared namespaces, and Core's decoder
+  host network, host paths, devices, the Docker socket or shared namespaces, and sealant's decoder
   names each one it is sent. Volumes are named Docker volumes only. Every `VOLUME` the image
   declares gets a named volume too, so no data lands in an anonymous volume that a removal deletes.
-  Core never runs `docker rm -v`, `docker volume rm` or a prune on them.
+  sealant never runs `docker rm -v`, `docker volume rm` or a prune on them.
 - **Reach.** Each workspace executor that is linked to a scope gets an internal Docker network of
   its own. Every instance the workspace may reach joins it under its alias, so `db` answers on it. A
   project instance joins the linked executors' networks where that worktree uses it and has no
@@ -263,7 +264,7 @@ scope.archive(); // every instance archived, every workspace unlinked
   reach each other on them, and a worktree's instance is unreachable from another worktree. Mend's
   selections and visibility determine what a workspace may reach. Sealant reconciles those
   attachments on launch, executor end and its existing tick. An executor replacement gets a new
-  network. Core allocates each network's subnet from its own pool, so the Docker daemon's default
+  network. sealant allocates each network's subnet from its own pool, so the Docker daemon's default
   pools do not run out.
 - **Egress.** Each instance also joins an egress network of its own, so it can reach what Mend's
   server can (a staging database for a pull) and no other instance. The cloud-metadata route is

@@ -54,7 +54,7 @@ server entry and the worker entry).
 workspaces by design (`runs.get()` exists exactly for this) and `record.timeline({ from })` /
 `stream({ from })` give stable, resumable sequence addressing.
 
-Core tables (illustrative, not a migration):
+sealant tables (illustrative, not a migration):
 
 - `issues` — tracker identity, source, title/body, stage (`triage → … → merged`), queue `position`.
 - `changes` — one per issue: branch, base/head shas, PR ref, freshness (`current · stale`).

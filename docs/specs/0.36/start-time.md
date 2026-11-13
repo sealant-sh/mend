@@ -18,8 +18,8 @@
   previous executor" (line 338), "A launch answers promptly" (line 353), "Replacement and pickup"
   (line 321) and decision 39. No ADR of its own.
 - **Written:** 2026-10-05, against mend main `c9b645b0b`, sealant main `bc9ec42`, sealantd main
-  `07ada50`. Mend main pins `@sealant/sdk` 0.39.0-next.683, which carries sealant#313 and #314. Core
-  main pins sealantd 0.20.0-next.142, which carries sealantd#135.
+  `07ada50`. Mend main pins `@sealant/sdk` 0.39.0-next.683, which carries sealant#313 and #314.
+  sealant main pins sealantd 0.20.0-next.142, which carries sealantd#135.
 
 ## Why it exists
 
@@ -37,12 +37,12 @@ Measured breakdown of the baseline:
 | Agent memory written: 11 execs                                               | 6.4 s (6.4–8.1 s) | ~6 s             |
 | Dependency install (`pnpm install`)                                          | ~14 s             |                  |
 | sealantd restore of the head (127,000 files, 2.48 GB, mostly `node_modules`) |                   | 32.8 s (31–40 s) |
-| Waiting in Core's build queue behind another launch's restore                |                   | up to 33 s       |
+| Waiting in sealant's build queue behind another launch's restore             |                   | up to 33 s       |
 
 Where the 0.53 s per exec went:
 
 - the SDK waited 500 ms before it first read an exec's run (sealant#314);
-- Core rehashed the whole worktree (~330 ms for 1,800 files) at the end of every exec, because a
+- sealant rehashed the whole worktree (~330 ms for 1,800 files) at the end of every exec, because a
   restored index's stat data matches no file (sealant#313).
 
 Two incidents ride along:
@@ -53,8 +53,8 @@ Two incidents ride along:
   memory note "mend-box-vm").
 - **2026-10-03, alpha session 8fe91d79.** Four replacement executors in a row each booted into
   sealantd's `plan.get` wait ("another launch holds the worktree's lease") and were retained at
-  Core's 120 s readiness budget (`launch-retained`). Mend had read the session's own earlier lease
-  as free (mend#516).
+  sealant's 120 s readiness budget (`launch-retained`). Mend had read the session's own earlier
+  lease as free (mend#516).
 
 The baseline cost every person every session start, on every client.
 
@@ -80,9 +80,9 @@ The baseline cost every person every session start, on every client.
 Defaults and settings:
 
 - `WORKSPACE_BUILD_QUEUE_PREFETCH`: the bundled (Docker `mend server setup`) worker gets `4` unless
-  the operator set it. Core's own default stays `1`. The same setting governs workspace stops (the
-  lifecycle queue).
-- `RUN_EXEC_QUEUE_CONCURRENCY`: Core's default `4`, unchanged.
+  the operator set it. sealant's own default stays `1`. The same setting governs workspace stops
+  (the lifecycle queue).
+- `RUN_EXEC_QUEUE_CONCURRENCY`: sealant's default `4`, unchanged.
 - `MEND_LAUNCH_LEASE_WAIT_SECONDS`: how long a launch waits for the worktree's previous executor,
   default 30 minutes (`CaptureDrainPolicy.leaseWait`).
 - No switch turns the faster paths off. The index cache and the parallel restore are always on.
@@ -94,7 +94,7 @@ Defaults and settings:
 - Launch file delivery in a few execs (skills, agent memory, pi profile, carried Codex
   conversations, pasted images).
 - SDK exec and `ready()` polling backoff.
-- Core's working-tree reading from a kept, refreshed index copy, and the `available` /
+- sealant's working-tree reading from a kept, refreshed index copy, and the `available` /
   `unavailableReason` fields on a run's changes.
 - sealantd restore writes on up to 16 threads.
 - Bundled worker queue concurrency 4.
@@ -168,11 +168,11 @@ The bundle supervisor waits up to 240 s for `http://127.0.0.1:3101/api/health`
    - A lapsed lease is decided only by `judgeLapsedLease(holder, lease, asking)` (:3282):
      - `dead` when there is no holder row, or `resolveLeaseExecutor` (:3224) answers `none`, or the
        resolved workspace's `workspaceState` is `dead` with no unanswered create;
-     - `resolveLeaseExecutor` asks Core `findWorkspaceByKey(launchId)`, then
+     - `resolveLeaseExecutor` asks sealant `findWorkspaceByKey(launchId)`, then
        `fenceWorkspaceCreate(launchId)` (a launch id is the create's idempotency key, `standby:<id>`
        included). It answers `unknown` while the lease is live, a create of the holder's is in
        flight here (`creatingExecutors`), another gated launch of the holder is under way, the
-       holder's row has an unanswered create key, or Core does not answer.
+       holder's row has an unanswered create key, or sealant does not answer.
    - The judge is the only decider at five sites:
      - `flushLeaseHolder` (:2845);
      - `launchUnresolved` (:3160);
@@ -188,11 +188,11 @@ The bundle supervisor waits up to 240 s for `http://127.0.0.1:3101/api/health`
 2. **Create and ready.** `sealant.createWorkspace`, then the SDK's `ready()`.
    - **sealant#314.** `ready()` polls at 100 ms, doubling to 1 s
      (packages/sdk/src/facade/workspace.ts:92–93, :404–445). It was a fixed 2 s.
-   - **mend#515.** Core's build queue consumer runs `WORKSPACE_BUILD_QUEUE_PREFETCH` jobs at once
-     (Core apps/worker/src/workers/workspaces.ts:332). The lifecycle (stop) consumer reads the same
-     value (:387). The bundle sets it to `4` unless the operator set it (`workerQueueEnvironment`,
-     scripts/bundle-supervisor.mjs:135, used :182). A launch holds its job until its executor is
-     ready, restore included.
+   - **mend#515.** sealant's build queue consumer runs `WORKSPACE_BUILD_QUEUE_PREFETCH` jobs at once
+     (sealant apps/worker/src/workers/workspaces.ts:332). The lifecycle (stop) consumer reads the
+     same value (:387). The bundle sets it to `4` unless the operator set it
+     (`workerQueueEnvironment`, scripts/bundle-supervisor.mjs:135, used :182). A launch holds its
+     job until its executor is ready, restore included.
 3. **Restore (sealantd boot).**
    - **sealantd#135.** The materializer's walk makes directories and collects files. `write_files`
      (crates/sealant-capture/src/materialize.rs:1357) writes them on
@@ -226,7 +226,7 @@ The bundle supervisor waits up to 240 s for `http://127.0.0.1:3101/api/health`
      - the run is first read 25 ms after it is registered, then at doubling waits up to 500 ms
        (`FIRST_POLL_MS`, `MAX_POLL_MS`);
      - stdout, stderr and changes are read together once it ends.
-5. **Every exec ends with Core's working-tree reading (sealant#313).** `captureChanges` (Core
+5. **Every exec ends with sealant's working-tree reading (sealant#313).** `captureChanges` (sealant
    apps/worker/src/workers/process-run-exec-job.ts:224) runs `workingTreeChangesScript`
    (packages/workspaces/src/git/working-tree-changes.ts):
    - Snapshots the repository's index with `cp -p` and keys a kept copy by the checksums of the
@@ -238,7 +238,7 @@ The bundle supervisor waits up to 240 s for `http://127.0.0.1:3101/api/health`
    - Runs `git add -A`, `diff --cached` and `--name-status` against the throwaway index, each
      `|| exit 1`.
    - Never writes the repository's own index.
-   - A nonzero exit records `changes_read_failed_at` (Core migration
+   - A nonzero exit records `changes_read_failed_at` (sealant migration
      `20261004135141_run_changes_read_failed`). The SSH gateway's recorder does the same
      (apps/ssh-gateway/src/run-recorder.ts:150–165).
    - `GET /v1/runs/:id/changes` (apps/api/src/routes/runs/runs.module.ts:304) answers
@@ -264,9 +264,9 @@ helper in apps/cli/src/shared.ts from #470).
   - a cold launch's claim made before `provisionWorkspace` and cut short before its create leaves a
     lease bound to a key no row names;
   - after the claim's 5-minute TTL the lease is lapsed. The next resume, sibling launch, removal,
-    landing flush or reaper tick asks Core: `findWorkspaceByKey`, then `fenceWorkspaceCreate`. A
+    landing flush or reaper tick asks sealant: `findWorkspaceByKey`, then `fenceWorkspaceCreate`. A
     fenced key reads `dead` and is released;
-  - while Core does not answer, the lease is held.
+  - while sealant does not answer, the lease is held.
 - An ungated launch (`finishPlannedLaunch` in the reaper, `replaceExecutor` → `resumeSession`)
   slower than the 5-minute claim TTL between claim and create can have its key fenced by another
   judge. Its create then fails cleanly; nothing is lost. Accepted in review rounds 4 and 5.
@@ -281,11 +281,11 @@ Alice and Bob use Mend on the box. Project `mend` has its dependencies saved in 
    The session reads `starting · booting` for a few seconds.
 2. sealantd's boot log shows `capture head materialized { elapsed_ms: ≈5000–10000, files: ≈127000 }`
    (target; the baseline was 31–40 s).
-3. Mend writes Alice's 33 skills and her memory for `mend` in two or three execs. Core's run list
+3. Mend writes Alice's 33 skills and her memory for `mend` in two or three execs. sealant's run list
    for the workspace shows `mend-write` execs, not 103.
 4. Codex prints its first output at about 10:00:25 (target).
 5. Meanwhile Bob resumes yesterday's session in another worktree (`mend resume 9c1e0a77`). His
-   launch does not queue behind Alice's restore: Core's `workspace_attempts` shows his attempt
+   launch does not queue behind Alice's restore: sealant's `workspace_attempts` shows his attempt
    started within a second of being queued.
 6. Bob runs `mend resume 9c1e0a77` again by mistake while the first resume is still saving the old
    executor. The second launch reads
@@ -311,8 +311,8 @@ Alice and Bob use Mend on the box. Project `mend` has its dependencies saved in 
    `ending`).
 6. `releaseLeaseOfWorkspace` never frees a lease bound to a launch other than the one the row names
    with that workspace.
-7. When Core does not answer, the lease is held and removal is refused. Not knowing is never read as
-   ended.
+7. When sealant does not answer, the lease is held and removal is refused. Not knowing is never read
+   as ended.
 8. A file Mend writes through exec is either absent or complete at its path. A reader never sees a
    partial file: content goes through a `.mend-part-*` sibling and a rename.
 9. Paths written through exec are chosen by Mend and ride as positional parameters. Nothing is
@@ -336,14 +336,15 @@ Alice and Bob use Mend on the box. Project `mend` has its dependencies saved in 
   the row inline and forks `sweepWorkspace` as the owner. HTTP comes up at once, and the drain
   finishes in the background.
 - **Mend restarts between a launch's claim and its create.** After 5 minutes the lapsed claim is
-  judged. Core fences the key and the lease is released. The next resume goes on. A landing is not
-  blocked (test "a relaunch's claim cut short by a restart does not hold up a landing"). A removal
-  goes once the platform fences (test "removing a session whose first launch was cut short…").
-- **Core does not answer `findWorkspaceByKey` or `fenceWorkspaceCreate`.** `unknown`: the launch
+  judged. sealant fences the key and the lease is released. The next resume goes on. A landing is
+  not blocked (test "a relaunch's claim cut short by a restart does not hold up a landing"). A
+  removal goes once the platform fences (test "removing a session whose first launch was cut
+  short…").
+- **sealant does not answer `findWorkspaceByKey` or `fenceWorkspaceCreate`.** `unknown`: the launch
   waits until `leaseWait` (30 min), then fails with the lease-wait words. Removal is refused.
   Nothing is released.
 - **Another session's lease bound to a launch its row no longer names.** It is a hold: no launch, no
-  release, no removal, until Core resolves the key.
+  release, no removal, until sealant resolves the key.
 - **A claimed standby found dead or half-stamped.** Its own `(S, standby:<entry>)` claim is released
   at once and the launch goes cold, with no 5-minute wait.
 - **An exec in a multi-exec staging fails midway.** The `.mend-stage-*` file (base64 text, under the
@@ -369,8 +370,8 @@ Alice and Bob use Mend on the box. Project `mend` has its dependencies saved in 
 - **Four concurrent launches on a small host.** Each restore uses up to 16 threads, and four run at
   once. CPU and disk contention can slow each one; nothing is lost.
 - **An operator set `WORKSPACE_BUILD_QUEUE_PREFETCH`.** Their value wins, including `1`.
-- **Older SDK against a newer Core.** The extra fields are ignored. Newer SDK against an older Core:
-  `available` defaults to `true`.
+- **Older SDK against a newer sealant.** The extra fields are ignored. Newer SDK against an older
+  sealant: `available` defaults to `true`.
 - **Permissions.**
   - Resume and relaunch are the owner's, or a steerer's under shared control. The lease logic is per
     session and independent of who asked.
@@ -394,9 +395,10 @@ Alice and Bob use Mend on the box. Project `mend` has its dependencies saved in 
 - Leftover `.mend-stage-*` / `.mend-part-*` files from an interrupted write stay in the harness home
   and travel with its captures.
 - File contents (skills, memory, pi profile, carried conversations, pasted images) ride exec argv,
-  gzip+base64, and are recorded in Core's exec run record under the session owner, as before #513.
-- Core's own default `WORKSPACE_BUILD_QUEUE_PREFETCH` is still 1 (open question in #515). Helm and
-  MicroVM deployments do not get 4.
+  gzip+base64, and are recorded in sealant's exec run record under the session owner, as before
+  #513.
+- sealant's own default `WORKSPACE_BUILD_QUEUE_PREFETCH` is still 1 (open question in #515). Helm
+  and MicroVM deployments do not get 4.
 
 ## How to verify
 
@@ -425,19 +427,19 @@ Alice and Bob use Mend on the box. Project `mend` has its dependencies saved in 
 - Mend `apps/cli/src/main.test.ts` (#514: resume by id without `--with`) and
   `scripts/bundle-packaging.test.mjs` (#515: the worker env defaults to 4; an operator's value
   wins).
-- Core `packages/workspaces/src/git/working-tree-changes.test.ts`:
+- sealant `packages/workspaces/src/git/working-tree-changes.test.ts`:
   - stale stat data;
   - same-second edit;
   - unreadable file;
   - force-added file;
   - two repositories in one TMPDIR;
   - non-numeric `cksum`.
-- Core `apps/api/src/routes/runs/runs.owner-scope.test.ts`,
+- sealant `apps/api/src/routes/runs/runs.owner-scope.test.ts`,
   `apps/ssh-gateway/src/run-recorder.test.ts`,
   `apps/worker/src/workers/process-run-exec-job.test.ts`.
-- Core `packages/sdk/src/exec-lifecycle.test.ts` (an exec that ends at once resolves under 250 ms;
-  doubling to 500 ms) and `packages/sdk/src/workspace-lifetime.test.ts` (`ready()` under a second).
-  Core CI has no unit-test job: these run locally only.
+- sealant `packages/sdk/src/exec-lifecycle.test.ts` (an exec that ends at once resolves under 250
+  ms; doubling to 500 ms) and `packages/sdk/src/workspace-lifetime.test.ts` (`ready()` under a
+  second). sealant CI has no unit-test job: these run locally only.
 - sealantd `cargo test -p sealant-capture`, including the materialize suites; `examples/bench`
   (`materialize (All)`).
 - Not covered by tests:
@@ -457,8 +459,8 @@ mend stop <id>; time mend resume <id>
 ssh -J root@100.94.101.28 root@10.0.0.40 \
   'docker logs $(docker ps --format "{{.Names}}" | grep ^sealant- | grep -v docker | head -1) 2>&1 \
    | grep "capture head materialized"'
-# execs per launch (Core): count runs on the workspace with framing exec
-# queue wait (Core workspace_attempts): queued_at vs started_at
+# execs per launch (sealant): count runs on the workspace with framing exec
+# queue wait (sealant workspace_attempts): queued_at vs started_at
 # boot: deploy over live sessions, then
 ssh … 'docker logs --since 5m mend-mend-1 2>&1 | grep -E "mend api starting|re-attached|listening"'
 ```
@@ -490,7 +492,7 @@ ssh … 'docker logs --since 5m mend-mend-1 2>&1 | grep -E "mend api starting|re
   - `skills were not delivered to the workspace`;
   - `the boot sweep of a folded session's workspace failed`.
 - sealantd: `capture head materialized { elapsed_ms, files, bytes }`.
-- Core:
+- sealant:
   `Run <id>: reading its changes failed (the working-tree reading exited N); recorded as failed.`
 - Session line: `starting · booting`,
   `starting · waiting · the previous session in this worktree is saving`.
@@ -507,16 +509,16 @@ ssh … 'docker logs --since 5m mend-mend-1 2>&1 | grep -E "mend api starting|re
    `unavailableReason`. A reading that failed, or a run with no reading (every workspace-session
    run), reads to Mend's inference as an empty change. That reports "no changes" for something never
    observed. sealant#313 made the distinction available; Mend does not use it.
-3. Core packages/sdk/src/facade/workspace.ts:87, :522: `READY_POLL_INTERVAL_MS = 2_000` remains in
-   `workspace.events()`, the poll-backed lifecycle stream. Only `ready()` got the backoff. Mend does
-   not call `events()` (it calls `ready()`, packages/sealant/src/client.ts:842, :986), so Mend's
-   start time is unaffected. Another SDK consumer waiting on `events()` for `status.ready` still
-   learns of it up to 2 s late. Intent unclear.
+3. sealant packages/sdk/src/facade/workspace.ts:87, :522: `READY_POLL_INTERVAL_MS = 2_000` remains
+   in `workspace.events()`, the poll-backed lifecycle stream. Only `ready()` got the backoff. Mend
+   does not call `events()` (it calls `ready()`, packages/sealant/src/client.ts:842, :986), so
+   Mend's start time is unaffected. Another SDK consumer waiting on `events()` for `status.ready`
+   still learns of it up to 2 s late. Intent unclear.
 4. scripts/bundle-supervisor.mjs:135 sets `WORKSPACE_BUILD_QUEUE_PREFETCH=4` for the bundle only.
    deploy/helm and the docs' server-environment reference do not mention it, so Kubernetes installs
    keep 1. The #515 body says "Nothing else changes". The same value also raises concurrent stops to
-   4 (Core apps/worker/src/workers/workspaces.ts:387), which neither the changeset title nor ROADMAP
-   (#530: "launches four workspaces at once") mentions.
+   4 (sealant apps/worker/src/workers/workspaces.ts:387), which neither the changeset title nor
+   ROADMAP (#530: "launches four workspaces at once") mentions.
 5. packages/sessions/src/workspace-files.ts:56–74: the writer sets every written file's directory to
    0755 (`fs.chmodSync(d, 0o755)`), including a directory that already existed with another mode.
    The #513 body says directories were 0755 before, so this is not new. Still, any existing

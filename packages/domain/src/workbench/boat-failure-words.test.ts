@@ -174,7 +174,7 @@ describe("the words for every Boat failure", () => {
   });
 });
 
-describe("the words for Core's refusals before anything ran", () => {
+describe("the words for sealant's refusals before anything ran", () => {
   for (const kind of BOAT_LAUNCH_REFUSAL_CODES) {
     for (const holder of HOLDERS) {
       it(`${kind} · ${holder}'s key`, () => {

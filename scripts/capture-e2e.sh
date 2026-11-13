@@ -18,7 +18,7 @@
 #
 # What it needs on this machine:
 #   - a Sealant control plane at SEALANT_BASE_URL that launches the `capture` workspace source
-#     (Core PR sealant#231) with a workspace image carrying the sealantd capture build (sealantd
+#     (sealant PR sealant#231) with a workspace image carrying the sealantd capture build (sealantd
 #     PR #71); the executor container must be able to reach the two URLs below
 #   - the Mend API in capture mode. Either it is already up on $MEND_API_URL (this script reuses
 #     it) or the script starts the API process alone — never `pnpm dev`: the web dev server is
@@ -62,7 +62,7 @@ in_capture_mode() {
   curl -sf "$API/api/health" 2>/dev/null | jq -e '.sessionChannel.mode == "network"' >/dev/null 2>&1
 }
 executor_of() {
-  # Core names the container after its own launch attempt, not the workspace id; the one fact
+  # sealant names the container after its own launch attempt, not the workspace id; the one fact
   # both sides share is the session id Mend puts in the workspace env (`MEND_SESSION_ID`).
   local c
   for c in $(docker ps --format '{{.Names}}' | grep '^sealant-' | grep -v -- '-docker$'); do
