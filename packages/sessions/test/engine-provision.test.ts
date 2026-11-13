@@ -808,7 +808,7 @@ describe("SessionEngine", () => {
           expect(liveAgent?.argv.slice(0, 3)).toEqual(["codex", "resume", rolloutId]);
           expect(liveAgent?.providerSessionId).toBe(rolloutId);
           // The live state became a committed capture for the crashed process.
-          const manifest = JSON.parse(
+          const manifest: unknown = JSON.parse(
             fs.readFileSync(
               path.join(
                 processStatePathOf(project.storePath, session.id, processId),
@@ -816,8 +816,8 @@ describe("SessionEngine", () => {
               ),
               "utf8",
             ),
-          ) as { readonly providerSessionId: string | null };
-          expect(manifest.providerSessionId).toBe(rolloutId);
+          );
+          expect(manifest).toMatchObject({ providerSessionId: rolloutId });
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );

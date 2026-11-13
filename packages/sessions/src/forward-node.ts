@@ -251,7 +251,7 @@ const unfinishedDial = (exit: Exit.Exit<void>): Error =>
 export const forwardSockets: Effect.Effect<ForwardSocketConnect, never, ForwardAdapter> =
   Effect.gen(function* () {
     const adapter = yield* ForwardAdapter;
-    const context = yield* Effect.context<never>();
+    const context = yield* Effect.context();
     const fork = Effect.runForkWith(context);
     return (target, options) => {
       const socket = new ForwardSocket(options.observe);

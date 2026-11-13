@@ -108,7 +108,7 @@ export interface Hand {
 
 export interface HandOptions {
   readonly bytes: ForwardBytes;
-  readonly password: Redacted.Redacted<string>;
+  readonly password: Redacted.Redacted;
   readonly currentEpoch: Effect.Effect<number>;
 }
 

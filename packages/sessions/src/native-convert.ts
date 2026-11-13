@@ -20,6 +20,7 @@
  */
 
 import { TOOL_INPUT_ENVELOPE, toolNameWithNamespace } from "@mend/agent-protocol";
+import { Predicate } from "effect";
 
 export interface CanonicalSession {
   readonly version: 1;
@@ -51,18 +52,29 @@ export interface ConvertedNativeSession {
   readonly files: ReadonlyArray<{ readonly path: string; readonly content: string }>;
 }
 
+/** A field of a transcript line when it is text; any other value reads as absent. */
+const textField = (
+  record: Readonly<Record<PropertyKey, unknown>>,
+  key: string,
+): string | undefined => {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+};
+
 const asText = (content: unknown): string => {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content
       .map((part) => {
-        const p = part as { readonly type?: string; readonly text?: string };
-        return typeof p.text === "string" &&
-          (p.type === "text" ||
-            p.type === "input_text" ||
-            p.type === "output_text" ||
-            p.type === "summary_text")
-          ? p.text
+        if (!Predicate.isObject(part)) return "";
+        const type = part["type"];
+        const text = textField(part, "text");
+        return text !== undefined &&
+          (type === "text" ||
+            type === "input_text" ||
+            type === "output_text" ||
+            type === "summary_text")
+          ? text
           : "";
       })
       .filter((text) => text !== "")
@@ -112,67 +124,59 @@ const ingestClaude = (jsonl: string): CanonicalEvent[] => {
   const pending = new Map<string, PendingTool>();
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
-    let entry: {
-      readonly type?: string;
-      readonly isMeta?: boolean;
-      readonly message?: { readonly content?: unknown };
-    };
+    let entry: unknown;
     try {
-      entry = JSON.parse(line) as typeof entry;
+      entry = JSON.parse(line);
     } catch {
       continue;
     }
-    if (entry.isMeta === true) continue;
-    const content = entry.message?.content;
-    if (entry.type === "assistant" && Array.isArray(content)) {
-      for (const part of content) {
-        const p = part as {
-          readonly type?: string;
-          readonly text?: string;
-          readonly thinking?: string;
-          readonly id?: string;
-          readonly name?: string;
-          readonly input?: unknown;
-        };
-        if (p.type === "text" && typeof p.text === "string" && p.text !== "") {
-          events.push({ kind: "assistant", text: p.text });
+    if (!Predicate.isObject(entry) || entry["isMeta"] === true) continue;
+    const message = entry["message"];
+    const content = Predicate.isObject(message) ? message["content"] : undefined;
+    if (entry["type"] === "assistant" && Array.isArray(content)) {
+      for (const p of content) {
+        if (!Predicate.isObject(p)) continue;
+        const text = textField(p, "text");
+        if (p["type"] === "text" && text !== undefined && text !== "") {
+          events.push({ kind: "assistant", text });
         }
-        if (p.type === "thinking" && typeof p.thinking === "string" && p.thinking.trim() !== "") {
-          events.push({ kind: "reasoning", text: p.thinking });
+        const thinking = textField(p, "thinking");
+        if (p["type"] === "thinking" && thinking !== undefined && thinking.trim() !== "") {
+          events.push({ kind: "reasoning", text: thinking });
         }
-        if (p.type === "tool_use" && typeof p.id === "string") {
-          const input = p.input as { readonly command?: string } | undefined;
-          const shell = p.name === "Bash" && typeof input?.command === "string";
-          pending.set(p.id, {
-            name: shell ? "shell" : (p.name ?? "tool"),
+        const id = textField(p, "id");
+        if (p["type"] === "tool_use" && id !== undefined) {
+          const name = textField(p, "name");
+          const input = p["input"];
+          const command = Predicate.isObject(input) ? textField(input, "command") : undefined;
+          const shell = name === "Bash" && command !== undefined;
+          pending.set(id, {
+            name: shell ? "shell" : (name ?? "tool"),
             // Shell canonicalizes to `command`; args carry nothing extra.
-            ...(shell ? { args: "", argsFormat: "json" } : canonicalToolArgs(p.input)),
-            command: shell ? (input?.command ?? null) : null,
+            ...(shell ? { args: "", argsFormat: "json" } : canonicalToolArgs(input)),
+            command: shell ? (command ?? null) : null,
           });
         }
       }
     }
-    if (entry.type === "user") {
+    if (entry["type"] === "user") {
       if (typeof content === "string") {
         if (content !== "") events.push({ kind: "user", text: content });
         continue;
       }
       if (!Array.isArray(content)) continue;
-      for (const part of content) {
-        const p = part as {
-          readonly type?: string;
-          readonly text?: string;
-          readonly tool_use_id?: string;
-          readonly content?: unknown;
-        };
-        if (p.type === "text" && typeof p.text === "string" && p.text !== "") {
-          events.push({ kind: "user", text: p.text });
+      for (const p of content) {
+        if (!Predicate.isObject(p)) continue;
+        const text = textField(p, "text");
+        if (p["type"] === "text" && text !== undefined && text !== "") {
+          events.push({ kind: "user", text });
         }
-        if (p.type === "tool_result" && typeof p.tool_use_id === "string") {
-          const call = pending.get(p.tool_use_id);
+        const toolUseId = textField(p, "tool_use_id");
+        if (p["type"] === "tool_result" && toolUseId !== undefined) {
+          const call = pending.get(toolUseId);
           if (call !== undefined) {
-            pending.delete(p.tool_use_id);
-            events.push({ kind: "tool", ...call, output: asText(p.content) });
+            pending.delete(toolUseId);
+            events.push({ kind: "tool", ...call, output: asText(p["content"]) });
           }
         }
       }
@@ -200,115 +204,90 @@ const ingestCodex = (jsonl: string): CanonicalEvent[] => {
     } catch {
       return [];
     }
-    if (
-      typeof entry !== "object" ||
-      entry === null ||
-      !("type" in entry) ||
-      typeof entry.type !== "string" ||
-      !("payload" in entry) ||
-      typeof entry.payload !== "object" ||
-      entry.payload === null ||
-      Array.isArray(entry.payload)
-    )
-      return [];
-    return [{ type: entry.type, payload: entry.payload }];
+    if (!Predicate.isObject(entry)) return [];
+    const type = entry["type"];
+    const payload = entry["payload"];
+    if (typeof type !== "string" || !Predicate.isObject(payload)) return [];
+    return [{ type, payload }];
   });
   // A user_message records actual input, even when it quotes a context-shaped block.
   // Codex and our emitter may put this event before or after its response_item.
   const userInputs = new Set(
-    entries.flatMap(({ type, payload }) =>
-      type === "event_msg" &&
-      "type" in payload &&
-      payload.type === "user_message" &&
-      "message" in payload &&
-      typeof payload.message === "string"
-        ? [payload.message]
-        : [],
-    ),
+    entries.flatMap(({ type, payload }) => {
+      const message = textField(payload, "message");
+      return type === "event_msg" && payload["type"] === "user_message" && message !== undefined
+        ? [message]
+        : [];
+    }),
   );
   for (const entry of entries) {
     if (entry.type !== "response_item") continue;
-    const p = entry.payload as {
-      readonly type?: string;
-      readonly role?: string;
-      readonly content?: unknown;
-      readonly summary?: unknown;
-      readonly name?: string;
-      readonly namespace?: string;
-      readonly arguments?: string;
-      readonly input?: string;
-      readonly call_id?: string;
-      readonly output?: unknown;
-    };
-    if (p.type === "message" && (p.role === "user" || p.role === "assistant")) {
-      const text = asText(p.content);
+    const p = entry.payload;
+    const type = textField(p, "type");
+    const role = p["role"];
+    const toolName = textField(p, "name");
+    const callId = textField(p, "call_id");
+    if (type === "message" && (role === "user" || role === "assistant")) {
+      const text = asText(p["content"]);
       // Legacy rollouts lack content classifications. Recognize only the complete known
       // environment wrapper in user context; arbitrary XML and assistant output are text.
       const environment =
-        p.role === "user" && !userInputs.has(text) && isCodexEnvironmentContext(text);
-      if (text !== "" && !environment) events.push({ kind: p.role, text });
+        role === "user" && !userInputs.has(text) && isCodexEnvironmentContext(text);
+      if (text !== "" && !environment) events.push({ kind: role, text });
     }
-    if (p.type === "reasoning") {
-      const text = asText(p.summary).trim();
+    if (type === "reasoning") {
+      const text = asText(p["summary"]).trim();
       if (text !== "") events.push({ kind: "reasoning", text });
     }
-    if (
-      (p.type === "function_call" || p.type === "custom_tool_call") &&
-      typeof p.call_id === "string"
-    ) {
-      const rawArgs = p.arguments ?? p.input ?? "{}";
+    if ((type === "function_call" || type === "custom_tool_call") && callId !== undefined) {
+      const rawArgs = textField(p, "arguments") ?? textField(p, "input") ?? "{}";
       let command: string | null = null;
-      if (p.type === "function_call" && (p.name === "exec_command" || p.name === "shell")) {
+      if (type === "function_call" && (toolName === "exec_command" || toolName === "shell")) {
         try {
-          const parsed = JSON.parse(rawArgs) as {
-            readonly cmd?: string;
-            readonly command?: ReadonlyArray<string> | string;
-          };
+          const parsed: unknown = JSON.parse(rawArgs);
+          const fields = Predicate.isObject(parsed) ? parsed : {};
+          const cmd = fields["cmd"];
+          const named = fields["command"];
           command =
-            typeof parsed.cmd === "string"
-              ? parsed.cmd
-              : Array.isArray(parsed.command)
-                ? parsed.command.join(" ")
-                : typeof parsed.command === "string"
-                  ? parsed.command
+            typeof cmd === "string"
+              ? cmd
+              : Array.isArray(named)
+                ? named.join(" ")
+                : typeof named === "string"
+                  ? named
                   : null;
         } catch {
           command = null;
         }
       }
-      const raw = p.name ?? "tool";
+      const raw = toolName ?? "tool";
       // The namespace names the tool's MCP server, so the name keeps it once the call is canonical.
       const name =
         command !== null
           ? "shell"
           : toolNameWithNamespace(
               raw.startsWith(IMPORT_PREFIX) ? raw.slice(IMPORT_PREFIX.length) : raw,
-              p.namespace ?? null,
+              textField(p, "namespace") ?? null,
             );
-      pending.set(p.call_id, {
+      pending.set(callId, {
         name,
         args: command !== null ? "" : rawArgs,
-        argsFormat: p.type === "custom_tool_call" ? "text" : "json",
+        argsFormat: type === "custom_tool_call" ? "text" : "json",
         command,
       });
     }
     if (
-      (p.type === "function_call_output" || p.type === "custom_tool_call_output") &&
-      typeof p.call_id === "string"
+      (type === "function_call_output" || type === "custom_tool_call_output") &&
+      callId !== undefined
     ) {
-      const call = pending.get(p.call_id);
+      const call = pending.get(callId);
       if (call !== undefined) {
-        pending.delete(p.call_id);
-        const output =
-          typeof p.output === "string"
-            ? p.output
-            : typeof p.output === "object" &&
-                p.output !== null &&
-                "content" in p.output &&
-                typeof p.output.content === "string"
-              ? p.output.content
-              : JSON.stringify(p.output ?? "");
-        events.push({ kind: "tool", ...call, output });
+        pending.delete(callId);
+        const output = p["output"];
+        const outputContent = Predicate.isObject(output) ? textField(output, "content") : undefined;
+        const outputText =
+          typeof output === "string" ? output : (outputContent ?? JSON.stringify(output ?? ""));
+        events.push({ kind: "tool", ...call, output: outputText });
       }
     }
   }

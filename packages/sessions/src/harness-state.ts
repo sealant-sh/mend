@@ -30,7 +30,7 @@ import { constants as fsConstants } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 import { OPENCODE_DATABASE, readOpencodeHome } from "./opencode-state.ts";
 import { PI_PROFILE_HOME_DIR, PI_PROFILE_KEPT_DIR, PI_PROFILE_SECRET_FILE } from "./pi-profile.ts";
@@ -1027,8 +1027,9 @@ const textOfContent = (content: unknown): string => {
   if (Array.isArray(content)) {
     return content
       .map((part) => {
-        const p = part as { readonly type?: string; readonly text?: string };
-        return p.type === "text" && typeof p.text === "string" ? p.text : "";
+        if (!Predicate.isObject(part)) return "";
+        const text = part["text"];
+        return part["type"] === "text" && typeof text === "string" ? text : "";
       })
       .filter((text) => text !== "")
       .join("\n");
@@ -1041,21 +1042,19 @@ const parseClaudeTranscript = (jsonl: string): ReadonlyArray<TranscriptTurn> => 
   const turns: TranscriptTurn[] = [];
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
-    let entry: {
-      readonly type?: string;
-      readonly message?: { readonly role?: string; readonly content?: unknown };
-      readonly isMeta?: boolean;
-    };
+    let entry: unknown;
     try {
-      entry = JSON.parse(line) as typeof entry;
+      entry = JSON.parse(line);
     } catch {
       continue;
     }
-    if (entry.isMeta === true) continue;
-    if (entry.type !== "user" && entry.type !== "assistant") continue;
-    const text = textOfContent(entry.message?.content).trim();
+    if (!Predicate.isObject(entry) || entry["isMeta"] === true) continue;
+    const role = entry["type"];
+    if (role !== "user" && role !== "assistant") continue;
+    const message = entry["message"];
+    const text = textOfContent(Predicate.isObject(message) ? message["content"] : undefined).trim();
     if (text === "") continue;
-    turns.push({ role: entry.type, text });
+    turns.push({ role, text });
   }
   return turns;
 };
@@ -1065,23 +1064,18 @@ const parseCodexTranscript = (jsonl: string): ReadonlyArray<TranscriptTurn> => {
   const turns: TranscriptTurn[] = [];
   for (const line of jsonl.split("\n")) {
     if (line.trim() === "") continue;
-    let entry: {
-      readonly type?: string;
-      readonly payload?: {
-        readonly type?: string;
-        readonly role?: string;
-        readonly content?: unknown;
-      };
-    };
+    let entry: unknown;
     try {
-      entry = JSON.parse(line) as typeof entry;
+      entry = JSON.parse(line);
     } catch {
       continue;
     }
-    if (entry.type !== "response_item" || entry.payload?.type !== "message") continue;
-    const role = entry.payload.role;
+    if (!Predicate.isObject(entry) || entry["type"] !== "response_item") continue;
+    const payload = entry["payload"];
+    if (!Predicate.isObject(payload) || payload["type"] !== "message") continue;
+    const role = payload["role"];
     if (role !== "user" && role !== "assistant") continue;
-    const text = textOfContent(entry.payload.content).trim();
+    const text = textOfContent(payload["content"]).trim();
     if (text === "") continue;
     turns.push({ role, text });
   }

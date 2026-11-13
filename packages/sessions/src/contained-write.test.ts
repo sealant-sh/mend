@@ -48,11 +48,12 @@ const containedPut: (
   fileMode: number,
   target: string,
   bytes: Uint8Array,
-) => string | null = new Function(
-  "fs",
-  "require",
-  `${SCRIPT_CONTAINED_PUT_FUNCTION}; return containedPut;`,
-)(nodeFs, require);
+) => string | null =
+  // oxlint-disable-next-line typescript/no-implied-eval -- runs the exact script text a workspace runs
+  new Function("fs", "require", `${SCRIPT_CONTAINED_PUT_FUNCTION}; return containedPut;`)(
+    nodeFs,
+    require,
+  );
 
 const BYTES = new Uint8Array(Buffer.from("pasted image bytes"));
 const modeOf = (at: string) => fs.lstatSync(at).mode & 0o7777;

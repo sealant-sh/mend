@@ -30,6 +30,8 @@ const workOf = (pages: ReadonlyArray<string>): number => {
   let work = 0;
   const strings = String.prototype;
   const regexps = RegExp.prototype;
+  // The real methods, each called with .call(this) from inside the counting one that replaces it.
+  /* oxlint-disable typescript/unbound-method */
   const kept = {
     charAt: strings.charAt,
     charCodeAt: strings.charCodeAt,
@@ -38,6 +40,7 @@ const workOf = (pages: ReadonlyArray<string>): number => {
     exec: regexps.exec,
     matchAll: regexps[Symbol.matchAll],
   };
+  /* oxlint-enable typescript/unbound-method */
   strings.charAt = function (this: string, position: number) {
     work += 1;
     return kept.charAt.call(this, position);
