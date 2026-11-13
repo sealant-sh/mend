@@ -152,6 +152,23 @@ export const renderCheck = (check: BoatKeyCheck): ReadonlyArray<string> => {
   }
 };
 
+/** What a removal did (SLNT-803); an answer without `removal` means another request did it. */
+export const removalLines = (status: BoatKeyStatus): ReadonlyArray<string> => {
+  if (status.removal === undefined)
+    return [
+      "The organization's Boat key was already removed, by another request · nothing more to do",
+    ];
+  const drained = status.removal.standbysDrained;
+  return [
+    "✓ removed the organization's Boat key · Sealant deletes the images it built in that Boat account",
+    ...(drained === 0
+      ? []
+      : [
+          `Mend stopped ${drained} standby workspace${drained === 1 ? "" : "s"} there first. Projects with hot sessions warm new ones where sessions run now.`,
+        ]),
+  ];
+};
+
 const tagOf = (error: unknown): string => {
   if (!(error instanceof MendRequestError)) return "BoatKeyUnreadable";
   if (error.refused?.tag) return error.refused.tag;
@@ -268,9 +285,7 @@ export const boatCommand = async (
       }
       const answer = await call(StatusWire, "DELETE");
       if ("failed" in answer) return answer.failed;
-      printStatus(answer.ok, [
-        "✓ removed the organization's Boat key · Sealant deletes the images it built in that Boat account",
-      ]);
+      printStatus(answer.ok, removalLines(answer.ok));
       return 0;
     }
   }

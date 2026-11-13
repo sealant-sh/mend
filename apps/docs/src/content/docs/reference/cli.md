@@ -970,22 +970,22 @@ and how it is saved.
 
 ## Organization commands
 
-| Command                                                               | Purpose                                                                                                |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `mend org`                                                            | Print the organization this sign-in acts in, your role, and one row per organization you belong to     |
-| `mend org switch <name\|id>`                                          | Move this CLI's sign-in to another of your organizations; the web and other devices stay put           |
-| `mend org leave <name\|id> [--yes]`                                   | Leave one of your organizations; asks first, refused for its last owner or your only organization      |
-| `mend members`                                                        | Print the organization's name and one row per member: name, email, role and the day they joined        |
-| `mend invite [--role member\|owner] [--email <address>] [--days <n>]` | Owners only. Print a single-use invitation link; default role `member`, default 7 days, at most 30     |
-| `mend folder list`                                                    | List the organization's folders                                                                        |
-| `mend folder create <name>`                                           | Owners only. Create a folder; names use lowercase letters, digits, dots, underscores and dashes        |
-| `mend folder push <name> <dir> [--replace]`                           | Owners only. Upload a local directory into a folder; `--replace` empties the folder first              |
-| `mend folder rm <name>`                                               | Owners only. Remove a folder; refused while a project still selects it                                 |
-| `mend session share <session> on\|off [--yes]`                        | Turn shared control on or off for a session; turning it on asks first, `--yes` answers for a script    |
-| `mend boat [status]`                                                  | Whether the organization has its own Boat key; owners also see who connected it and when               |
-| `mend boat connect`                                                   | Owners only. Connect or replace the organization's Boat key, read from a hidden prompt or stdin        |
-| `mend boat check`                                                     | Owners only. Ask Sealant what it holds for the key, and when that was observed                         |
-| `mend boat disconnect`                                                | Owners only. Remove the key; new Boat sessions use the server's own, if any. Refused while its VMs run |
+| Command                                                               | Purpose                                                                                                                                |
+| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `mend org`                                                            | Print the organization this sign-in acts in, your role, and one row per organization you belong to                                     |
+| `mend org switch <name\|id>`                                          | Move this CLI's sign-in to another of your organizations; the web and other devices stay put                                           |
+| `mend org leave <name\|id> [--yes]`                                   | Leave one of your organizations; asks first, refused for its last owner or your only organization                                      |
+| `mend members`                                                        | Print the organization's name and one row per member: name, email, role and the day they joined                                        |
+| `mend invite [--role member\|owner] [--email <address>] [--days <n>]` | Owners only. Print a single-use invitation link; default role `member`, default 7 days, at most 30                                     |
+| `mend folder list`                                                    | List the organization's folders                                                                                                        |
+| `mend folder create <name>`                                           | Owners only. Create a folder; names use lowercase letters, digits, dots, underscores and dashes                                        |
+| `mend folder push <name> <dir> [--replace]`                           | Owners only. Upload a local directory into a folder; `--replace` empties the folder first                                              |
+| `mend folder rm <name>`                                               | Owners only. Remove a folder; refused while a project still selects it                                                                 |
+| `mend session share <session> on\|off [--yes]`                        | Turn shared control on or off for a session; turning it on asks first, `--yes` answers for a script                                    |
+| `mend boat [status]`                                                  | Whether the organization has its own Boat key; owners also see who connected it and when                                               |
+| `mend boat connect`                                                   | Owners only. Connect or replace the organization's Boat key, read from a hidden prompt or stdin                                        |
+| `mend boat check`                                                     | Owners only. Ask Sealant what it holds for the key, and when that was observed                                                         |
+| `mend boat disconnect`                                                | Owners only. Stop its standbys, then remove the key; new Boat sessions use the server's own, if any. Refused while a session's VM runs |
 
 Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no
 email: you share the invitation link yourself. With `--email`, only an account with that address can
