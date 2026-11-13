@@ -658,8 +658,8 @@ describe("pi's settings through a person's link (decision 2)", () => {
 const words = (code: string, message = "the daemon's words") =>
   dotfilesRefusalWords({ code, message });
 
-describe("a person's dotfiles Core refused, as the session says it (decisions 11 and 13)", () => {
-  it("says what was observed for each of Core's codes, and Core's own words for any other", () => {
+describe("a person's dotfiles sealant refused, as the session says it (decisions 11 and 13)", () => {
+  it("says what was observed for each of sealant's codes, and sealant's own words for any other", () => {
     for (const code of [
       "dotfiles-user-unsupported",
       "user-unknown",
@@ -679,7 +679,7 @@ describe("a person's dotfiles Core refused, as the session says it (decisions 11
     expect(words("dotfiles_apply_timeout", "dotfiles were not applied within 120 s")).toBe(
       "dotfiles were not applied within 120 s",
     );
-    // Core refuses root before staging, with no code (a 400): its own words, never Mend's.
+    // sealant refuses root before staging, with no code (a 400): its own words, never Mend's.
     expect(words("WorkspaceBadRequestError", "root is not a person")).toBe("root is not a person");
   });
 });

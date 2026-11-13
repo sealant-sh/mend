@@ -9,7 +9,7 @@ import { SealantClients, toWorkspaceRuntimes } from "./client.ts";
 import { SealantPlatformError } from "./errors.ts";
 import { WorkspaceRuntimesReport, WorkspaceRuntimesReportLive } from "./workspace-runtimes.ts";
 
-/** Core's wire answer, as the SDK hands it over: plain objects, not Mend's classes. */
+/** sealant's wire answer, as the SDK hands it over: plain objects, not Mend's classes. */
 const sdkReport: SdkWorkspaceRuntimes = JSON.parse(
   JSON.stringify({ default: "docker", runtimes: [DOCKER_SUPPORT, BOAT_SUPPORT] }),
 );
@@ -47,13 +47,13 @@ const reportOver = (answers: Array<"answer" | "fail">) => {
 };
 
 describe("WorkspaceRuntimesReport", () => {
-  it("maps Core's answer to Mend's own type, field for field", () => {
+  it("maps sealant's answer to Mend's own type, field for field", () => {
     const mapped = toWorkspaceRuntimes(sdkReport);
     expect(mapped.default).toBe("docker");
     expect(mapped.runtimes).toEqual([DOCKER_SUPPORT, BOAT_SUPPORT]);
   });
 
-  it.effect("keeps an answer a minute, then asks Core again", () => {
+  it.effect("keeps an answer a minute, then asks sealant again", () => {
     const { asked, layer } = reportOver(["answer", "answer"]);
     return Effect.gen(function* () {
       const report = yield* WorkspaceRuntimesReport;
@@ -69,12 +69,12 @@ describe("WorkspaceRuntimesReport", () => {
   });
 
   it.effect(
-    "reads as unread with the reason when Core does not answer, and asks again soon",
+    "reads as unread with the reason when sealant does not answer, and asks again soon",
     () => {
       const { asked, layer } = reportOver(["fail", "answer"]);
       return Effect.gen(function* () {
         const report = yield* WorkspaceRuntimesReport;
-        // Core's own text can name internal hosts; the reading says only what any member may read.
+        // sealant's own text can name internal hosts; the reading says only what any member may read.
         expect(yield* report.read()).toEqual({
           state: "unread",
           reason: "Sealant could not be reached",

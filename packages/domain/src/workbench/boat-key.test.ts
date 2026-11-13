@@ -31,7 +31,7 @@ describe("the Boat key's permissions", () => {
 });
 
 describe("a missing permission", () => {
-  it("is judged by Core's list as well as Mend's, never by less than the command asks for", () => {
+  it("is judged by sealant's list as well as Mend's, never by less than the command asks for", () => {
     expect(missingBoatKeyPermissions([...BOAT_KEY_REQUIRED_PERMISSIONS], ["sandbox.fork"])).toEqual(
       ["sandbox.fork"],
     );

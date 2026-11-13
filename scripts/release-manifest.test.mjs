@@ -1368,11 +1368,11 @@ const SKIPPED_TOGETHER = new Map([
     "publish-vscode.yml github-release",
     "publish is skipped only on a pull request, where this is too",
   ],
-  // A preview without a sealantd or Core ref builds neither the image nor its source.
+  // A preview without a sealantd or sealant ref builds neither the image nor its source.
   ["preview.yml sealantd", "plan skips only on a fork"],
   ["preview.yml sealantd-image", "skipped exactly when there is no sealantd ref to preview"],
   ["preview.yml core", "plan skips only on a fork"],
-  ["preview.yml core-images", "skipped exactly when there is no Core ref to preview"],
+  ["preview.yml core-images", "skipped exactly when there is no sealant ref to preview"],
 ]);
 
 test("no workflow job is skipped behind a job its own path expected to skip, unless reviewed", () => {

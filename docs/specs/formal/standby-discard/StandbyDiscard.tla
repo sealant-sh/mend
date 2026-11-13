@@ -235,7 +235,7 @@ DStop(d) ==
   /\ UNCHANGED <<db, adopted, holdsWork, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dMatch, dDiscard>>
 
-\* Core did not confirm the end (kept, still draining, refused, not
+\* sealant did not confirm the end (kept, still draining, refused, not
 \* observed): HotWorkspacesRepo.setFailed, an UPDATE … WHERE id = ? with no
 \* status condition, and the drain returns false.
 DNotEnded(d) ==
@@ -247,7 +247,7 @@ DNotEnded(d) ==
   /\ EndDrain(d)
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, launches>>
 
-\* Core confirmed the end, or the row had no workspace: tokens and socket go,
+\* sealant confirmed the end, or the row had no workspace: tokens and socket go,
 \* then HotWorkspacesRepo.remove (DELETE … WHERE id = ?), and it returns true.
 DEnded(d) ==
   /\ dpc[d] \in {"answered", "end"}

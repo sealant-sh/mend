@@ -2,7 +2,7 @@
  * Files Mend places into a live workspace that mounts nothing (capture mode, ADR-0002): a pasted
  * image, the owner's skills, their agent memory, carried conversations, the pi profile. The SDK's
  * `exec` takes argv only (no stdin, no file write; PLATFORM-FEEDBACK.md, "A file into a
- * workspace"), and Core stores every exec's argv in plaintext for good. So the engine writes them
+ * workspace"), and sealant stores every exec's argv in plaintext for good. So the engine writes them
  * with `writeFilesPickupExec`: one exec carrying a pickup ticket and the paths, whose `node`
  * redeems the bytes over the session channel (`pickup-tickets.ts`). Every launch already runs
  * `node` there (the helper install, the skills plan).

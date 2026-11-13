@@ -10,8 +10,8 @@ import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
  * Boat keys. The organization's (SLNT-790): new Boat sessions in the organization run in, and are
  * billed to, the Boat account of the key an owner connected. A person's own (SLNT-797): the Boat
  * sessions they start in the organization run in their own Boat account instead. A launch takes
- * the person's key, else the organization's, else the server's. Sealant Core holds each key
- * sealed; Mend keeps which Core Boat account is whose, and no answer, error or audit entry here
+ * the person's key, else the organization's, else the server's. sealant holds each key
+ * sealed; Mend keeps which sealant Boat account is whose, and no answer, error or audit entry here
  * ever carries a key. Members read whether the organization has one; only owners read its
  * details, connect, replace, check or remove it. Only the person reads or changes their own; an
  * owner sees that a member has one, never its details.
@@ -32,7 +32,7 @@ export class BoatKeyRefused extends Schema.TaggedError<BoatKeyRefused>()(
 ) {}
 
 /**
- * Core refused the change because of what the Boat account holds now. The counts are Core's:
+ * sealant refused the change because of what the Boat account holds now. The counts are sealant's:
  * `liveRuns` VMs Boat may still hold, `buildsInFlight` image builds, `unseen` VMs or saved images
  * the new key cannot see.
  */
@@ -66,7 +66,7 @@ export { BoatKeyNotObserved, BoatKeyReport } from "@mend/domain/workbench";
 
 /** Who connected the key and when, and when it was last replaced. Owners only. */
 export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails")({
-  /** Core's id for the Boat account that holds the key: what a launch names. */
+  /** sealant's id for the Boat account that holds the key: what a launch names. */
   sealantBoatAccountId: Schema.String,
   connectedByUserId: Schema.String,
   /** The connecting account's name, null when it is gone. */
@@ -82,7 +82,7 @@ export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails
 
 /** What the removal this request made did first (SLNT-803). */
 export class BoatKeyRemoval extends Schema.Class<BoatKeyRemoval>("BoatKeyRemoval")({
-  /** Standby workspaces Mend stopped in the organization's Boat account before Core removed it. */
+  /** Standby workspaces Mend stopped in the organization's Boat account before sealant removed it. */
   standbysDrained: Schema.Number,
 }) {}
 
@@ -97,7 +97,7 @@ export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")(
   connected: Schema.Boolean,
   /**
    * Where this organization's new sessions run: the key is used only for Boat sessions. Null:
-   * Core picks.
+   * sealant picks.
    */
   sessionRuntime: Schema.NullOr(SessionRuntime),
   /** Null for members, and when no key is connected. */
@@ -134,11 +134,11 @@ export class PersonBoatKeyStatus extends Schema.Class<PersonBoatKeyStatus>("Pers
   removal: Schema.optionalKey(BoatKeyRemoval),
 }) {}
 
-/** What Core said of the organization's Boat account when it was asked, and when. */
+/** What sealant said of the organization's Boat account when it was asked, and when. */
 export class BoatKeyCheck extends Schema.Class<BoatKeyCheck>("BoatKeyCheck")({
   /**
-   * `active`: Core holds the key and sessions may run in its account. `removing`: its removal was
-   * asked. `missing`: Core no longer lists the account Mend recorded. `none`: no key is connected.
+   * `active`: sealant holds the key and sessions may run in its account. `removing`: its removal was
+   * asked. `missing`: sealant no longer lists the account Mend recorded. `none`: no key is connected.
    */
   state: Schema.Literals(["active", "removing", "missing", "none"]),
   observedAt: Schema.Date,
@@ -159,7 +159,7 @@ export class BoatKeyCheck extends Schema.Class<BoatKeyCheck>("BoatKeyCheck")({
 }) {}
 
 export const ConnectBoatKeyRequest = Schema.Struct({
-  /** The Boat key, exactly as Boat showed it. Checked by Boat before Core keeps it. */
+  /** The Boat key, exactly as Boat showed it. Checked by Boat before sealant keeps it. */
   key: Schema.String,
 });
 

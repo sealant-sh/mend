@@ -168,7 +168,7 @@ export const defaultGatewayAddress = (routes) => {
 
 /**
  * Boat's resource gateway, for the worker, when `mend server setup` turned it on (it sets
- * SEALANT_BOAT_GATEWAY_HOST_ID; compose.boat.yaml). Core needs two more settings, which are this
+ * SEALANT_BOAT_GATEWAY_HOST_ID; compose.boat.yaml). sealant needs two more settings, which are this
  * image's and this container's own, never the operator's: the gateway image, which the image pins
  * by digest (MEND_BOAT_GATEWAY_IMAGE, the Dockerfile's, which setup preloaded), and the address the
  * worker reaches the Docker host at, where each gateway's port is published: the container's

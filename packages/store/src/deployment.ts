@@ -69,7 +69,7 @@ export class DeploymentConfig extends Context.Service<
     readonly mode: DeploymentMode;
     /**
      * Where this server lets sessions run (`sessionRuntimeOfferOf` reads it): what an organization
-     * may choose and what it gets until it does. Null preserves Core selection on Kubernetes.
+     * may choose and what it gets until it does. Null preserves sealant selection on Kubernetes.
      */
     readonly sessionRuntimes?: SessionRuntimeOffer | null;
     /** Present when the network session channel is configured (required in kubernetes mode). */

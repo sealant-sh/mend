@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // A full Mend stack built from source inside one Docker daemon, normally a Mend session's own:
-// sealantd, Sealant Core (API, worker, SSH gateway) and Mend, each at a ref, installed with the
+// sealantd, sealant (API, worker, SSH gateway) and Mend, each at a ref, installed with the
 // product's own `mend server setup`, so a verifier can drive a change that spans the three
 // repositories. docs/operations/verify-stack.md says how to use it; mend.toml declares it as the
 // `stack` Service.
@@ -14,7 +14,7 @@
 //   node scripts/verify-stack/stack.mjs down [--purge]                  remove the stack
 //
 // Sources: --mend, --sealant, --sealantd, each a path (a working tree as it is), #<pr>, a branch,
-// tag or commit on GitHub, or `pinned` (Core and sealantd: the release Mend pins, no build).
+// tag or commit on GitHub, or `pinned` (sealant and sealantd: the release Mend pins, no build).
 // Defaults: this checkout for Mend; /workspace/repos/<name> when `mend repo add` brought it into
 // the session, else main.
 //
@@ -504,7 +504,7 @@ RUN npm install --global corepack && corepack enable`;
 
 /**
  * The npm packages one repository publishes and another installs, packed from source: sealantd's
- * `@sealant/runtime-*` (Core installs them) and Core's `@sealant/api-contracts` and `@sealant/sdk`
+ * `@sealant/runtime-*` (sealant installs them) and sealant's `@sealant/api-contracts` and `@sealant/sdk`
  * (Mend installs them). Packed with `pnpm pack`, as the release workflows publish them, so
  * `publishConfig` applies.
  */
@@ -956,8 +956,8 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   const { socket, rootless } = await daemonSocket();
 
   // Every build starts as soon as what it needs exists. sealantd's cargo build needs nothing. With
-  // `--packages source`, Core's images wait for sealantd's packages packed from source and Mend's
-  // for Core's (the context each installs them from is derived first). The bundle copies Core's
+  // `--packages source`, sealant's images wait for sealantd's packages packed from source and Mend's
+  // for sealant's (the context each installs them from is derived first). The bundle copies sealant's
   // three images in, so it waits for them; it only names the sealantd image (the bundled worker
   // bakes it into workspace images when an inner session first launches), so the cargo build runs
   // on beside the bundle and the install, and the stack is ready once it is done too.
@@ -1062,7 +1062,7 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   );
   await Promise.all([coreBuilt, pulls]);
   const bundleContext = await mendContext;
-  // sealantd by its tree (its tag), Core by the image ids the bundle copies.
+  // sealantd by its tree (its tag), sealant by the image ids the bundle copies.
   const coreTags = imageNames(resolved, { cliVersion, upstreamIds: [] });
   const upstreamIds = [
     fromSource("sealantd") ? buildKey(resolved.sealantd) : "pinned",
@@ -1091,8 +1091,8 @@ async function upClaimed(flags, specs, { started, phases, logs }) {
   say(`  network guard image · ${guardImage ?? "none named (a Mend from before the guard)"}`);
   const packages = {
     runtime: linking.runtime
-      ? `@sealant/runtime-* from sealantd@${resolved.sealantd.commit.slice(0, 12)} (Core's lockfile ${resolved.sealant.lock.slice(0, 12)})`
-      : "@sealant/runtime-* from npm, as Core pins them",
+      ? `@sealant/runtime-* from sealantd@${resolved.sealantd.commit.slice(0, 12)} (sealant's lockfile ${resolved.sealant.lock.slice(0, 12)})`
+      : "@sealant/runtime-* from npm, as sealant pins them",
     sdk: linking.sdk
       ? `@sealant/sdk and @sealant/api-contracts from sealant@${resolved.sealant.commit.slice(0, 12)} (Mend's lockfile ${resolved.mend.lock.slice(0, 12)})`
       : "@sealant/sdk and @sealant/api-contracts from npm, as Mend pins them",
@@ -2283,7 +2283,7 @@ const HELP = `usage: node scripts/verify-stack/stack.mjs <command>
   report [--json]                          sources, timings, memory, isolation
   down [--purge] [--force]                 remove the stack (--purge: images, build cache, caches)
 
-sources: --mend|--sealant|--sealantd <path|#pr|ref|pinned> (pinned: Core and sealantd only)
+sources: --mend|--sealant|--sealantd <path|#pr|ref|pinned> (pinned: sealant and sealantd only)
 --packages source|npm: install @sealant/sdk, api-contracts and runtime-* from the sources (default)
 docs/operations/verify-stack.md has the rest.`;
 

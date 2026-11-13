@@ -179,7 +179,7 @@ export const claudeSignInsFileOf = (input: {
 };
 
 /**
- * The put-back, run as the process's user just before Claude, after any seed and after Core has
+ * The put-back, run as the process's user just before Claude, after any seed and after sealant has
  * placed the login. An entry is written when its key is missing or holds an older `expiresAt`; a
  * forgotten server's entries are removed. Nothing else in the file changes, `claudeAiOauth`
  * included. Only a regular file is written, through a new 0600 file renamed over it; an absent

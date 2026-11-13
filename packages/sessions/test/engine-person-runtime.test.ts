@@ -938,7 +938,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   );
 
   it.effect(
-    "pi in a person executor starts behind no ChatGPT copy of Mend's: Core writes pi's login, in each person's one call (sealant#336)",
+    "pi in a person executor starts behind no ChatGPT copy of Mend's: sealant writes pi's login, in each person's one call (sealant#336)",
     () =>
       Effect.gen(function* () {
         const posts: Array<{ readonly onBehalfOf: string; readonly logins: HomeLogins }> = [];
@@ -964,7 +964,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         const piStarts = run.spawned.filter((argv) => argv.includes("pi"));
         expect(piStarts).toHaveLength(2);
         for (const argv of piStarts) expect(argv[2]).toBe(PI_PERSON_SEED);
-        // The launcher's create wrote the rest; each person's pi asks Core once, pi's login named.
+        // The launcher's create wrote the rest; each person's pi asks sealant once, pi's login named.
         expect(posts.map((post) => [post.onBehalfOf, post.logins.pi])).toEqual([
           ["user-fixture", true],
           [MARIA, true],
@@ -1035,7 +1035,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   );
 
   it.effect(
-    "a joiner's dotfiles Core refuses are recorded not applied in Mend's words, and their agent starts (sealant#334)",
+    "a joiner's dotfiles sealant refuses are recorded not applied in Mend's words, and their agent starts (sealant#334)",
     () =>
       Effect.gen(function* () {
         let recorded: SessionDotfiles | null = null;
@@ -1143,7 +1143,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   it.effect("a join that fails after its logins were written releases them and its token", () =>
     Effect.gen(function* () {
       let refused: string | null = null;
-      /** Every release Core was asked for. */
+      /** Every release sealant was asked for. */
       const releases = yield* Queue.make<void>();
       const run = yield* launchAndJoinEffect({
         join: "pi",
@@ -1162,7 +1162,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
                   .pipe(Effect.tap(() => Queue.offer(releases, undefined))),
             })),
           ).pipe(Layer.provide(personPlatform(calls, { person: true }))),
-        // Maria's pi profile cannot be set up: her start fails after her one Core call.
+        // Maria's pi profile cannot be set up: her start fails after her one sealant call.
         exec: (argv) =>
           named(argv, "mend-pi-profile") && commandOf(argv)[4] === `/home/${JOINER}`
             ? { exitCode: 1, stdout: "", stderr: "a disk that is full" }
@@ -1170,10 +1170,10 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         joinWith: (engine, _world, joined, seen) =>
           Effect.gen(function* () {
             refused = (yield* engine.launch(joined, ["pi"]).pipe(Effect.flip)).message;
-            // The release runs off the refusal's path: Core's delete is what it left to wait for.
+            // The release runs off the refusal's path: sealant's delete is what it left to wait for.
             yield* signalled(releases)(
               () => seen.calls.includes(`delete:/home/${JOINER}`),
-              "what Core wrote for her released",
+              "what sealant wrote for her released",
             );
           }),
       });
@@ -1185,16 +1185,16 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   );
 
   it.effect(
-    "a join whose delivery fails while its login write is still in flight releases what Core wrote",
+    "a join whose delivery fails while its login write is still in flight releases what sealant wrote",
     () =>
       Effect.gen(function* () {
         let refused: string | null = null;
-        /** Every release Core was asked for. */
+        /** Every release sealant was asked for. */
         const releases = yield* Queue.make<void>();
         const run = yield* launchAndJoinEffect({
           join: "pi",
           layers: people,
-          // Core takes Maria's login write and answers late; her pi profile fails at once.
+          // sealant takes Maria's login write and answers late; her pi profile fails at once.
           platform: (calls) =>
             Layer.effect(
               PersonLayoutPlatform,
@@ -1225,10 +1225,10 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           joinWith: (engine, _world, joined, seen) =>
             Effect.gen(function* () {
               refused = (yield* engine.launch(joined, ["pi"]).pipe(Effect.flip)).message;
-              // The release runs off the refusal's path: Core's delete is what it left to wait for.
+              // The release runs off the refusal's path: sealant's delete is what it left to wait for.
               yield* signalled(releases)(
                 () => seen.calls.includes(`delete:/home/${JOINER}`),
-                "what Core wrote for her released",
+                "what sealant wrote for her released",
               );
             }),
           settle: Effect.void,
@@ -1450,7 +1450,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
           joinWith: (engine, _world, joined) =>
             Effect.gen(function* () {
               const joining = yield* Effect.forkChild(engine.launch(joined, ["claude"]));
-              yield* signalled(asked)(() => applies.includes(JOINER), "her apply asked of Core");
+              yield* signalled(asked)(() => applies.includes(JOINER), "her apply asked of sealant");
               // Her start waits its bound (200 ms) for the apply, then goes on without it.
               yield* Queue.take(bounds);
               yield* TestClock.adjust(199);
@@ -1463,7 +1463,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
             Effect.gen(function* () {
               const joined = ids.joined;
               if (joined === null) throw new Error("no join");
-              // Her agent started beside the apply, which Core still runs.
+              // Her agent started beside the apply, which sealant still runs.
               expect(seen.opened.filter((options) => options.user?.name === JOINER)).toHaveLength(
                 1,
               );
@@ -1473,7 +1473,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
                 summary: world.sessions.get(joined)?.summary ?? "",
                 record: world.sessions.get(joined)?.dotfiles ?? null,
               };
-              // Core's apply lands 700 ms after it was asked, 200 of them the start's wait; the watch
+              // sealant's apply lands 700 ms after it was asked, 200 of them the start's wait; the watch
               // sees it through off the start's path, and its writes to her row are the signal.
               yield* TestClock.adjust(499);
               expect(world.sessions.get(joined)?.summary ?? "").toContain(
@@ -1508,18 +1508,18 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         expect(seenAfter.summary).toContain(DOTFILES_LANDED_LATE_WORDS);
         expect(seenAfter.summary).not.toContain(DOTFILES_STILL_APPLYING_WORDS);
         expect(seenAfter.record?.notApplied).toEqual([]);
-        // Core was asked once for her.
+        // sealant was asked once for her.
         expect(applies.filter((user) => user === JOINER)).toHaveLength(1);
       }),
   );
 
   it.effect(
-    "a start refused while its apply runs leaves it to be seen through, and the next start never asks Core again (review of mend#569, P3-1)",
+    "a start refused while its apply runs leaves it to be seen through, and the next start never asks sealant again (review of mend#569, P3-1)",
     () =>
       Effect.gen(function* () {
         const applies: Array<string> = [];
         const asked = yield* Queue.make<void>();
-        /** Each start's wait for the apply armed on the clock, and Core's late answer armed. */
+        /** Each start's wait for the apply armed on the clock, and sealant's late answer armed. */
         const bounds = yield* Queue.make<void>();
         const answering = yield* Queue.make<void>();
         let posts = 0;
@@ -1562,7 +1562,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
               const first = yield* Effect.forkChild(
                 engine.launch(joined, ["claude"]).pipe(Effect.flip),
               );
-              yield* signalled(asked)(() => applies.includes(JOINER), "her apply asked of Core");
+              yield* signalled(asked)(() => applies.includes(JOINER), "her apply asked of sealant");
               yield* Queue.take(bounds);
               // Her first write answers 150 ms on, Claude left out: that start is refused mid-apply.
               yield* Queue.take(answering);
@@ -1571,12 +1571,12 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
               yield* TestClock.adjust(1);
               const refused = yield* Fiber.join(first);
               expect(refused.message).toContain("Connect Claude");
-              // Her next start comes while Core still runs the first one's apply: it joins it,
+              // Her next start comes while sealant still runs the first one's apply: it joins it,
               // its own wait on it armed. The first start armed more than one wait before it was
               // refused; what it left queued is dropped, so the take below is the second start's
               // own wait, and the apply lands only once that start is waiting on it (under load
               // the start's git work can outlast the adjusts, and a start that arrives after the
-              // apply was seen through asks Core again: a different scenario).
+              // apply was seen through asks sealant again: a different scenario).
               yield* TestClock.adjust("200 millis");
               yield* Queue.takeAll(bounds);
               const second = yield* Effect.forkChild(engine.launch(joined, ["claude"]));
@@ -1656,7 +1656,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
   );
 
   it.effect(
-    "says on the line when Core left a joiner's pi ChatGPT login out (review of mend#569, P3-5)",
+    "says on the line when sealant left a joiner's pi ChatGPT login out (review of mend#569, P3-5)",
     () =>
       Effect.gen(function* () {
         let summary = "";

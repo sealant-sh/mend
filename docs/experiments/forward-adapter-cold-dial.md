@@ -7,16 +7,17 @@ verified live.
 A dial here is one `ForwardAdapter` dial: one workspace lookup (`getWorkspace`, a control-plane
 GET), the loopback open, and a Docker sidecar open only after a loopback connection refusal.
 `openMs` is the SDK's `workspace.forward(port, { flow: "bounded" })`: the WebSocket handshake to
-Core, Core's authentication and daemon lookup, the runtime connection, the TCP connect inside the
-workspace (plus the `/proc` check when bound), and the `ready` frame. Mend cannot split it.
+sealant, sealant's authentication and daemon lookup, the runtime connection, the TCP connect inside
+the workspace (plus the `/proc` check when bound), and the `ready` frame. Mend cannot split it.
 
 ## Setup
 
 - Machine: Linux 6.18.57, 32 cores, Docker 29.9.1. Node 26.1.0 ran the driver; the repository pins
   26.4.0.
-- Core 0.40.0-next.763 from Core's `compose.selfhost.yaml` (Postgres, migrate, API, worker), all on
-  127.0.0.1: `sealant-api-next@sha256:2ed5ef53c86e…`, `sealant-worker-next@sha256:e516f51450ea…`.
-  The workspace runs `sealantd-next:0.21.0-next.177@sha256:078b65210d4d…`.
+- sealant 0.40.0-next.763 from sealant's `compose.selfhost.yaml` (Postgres, migrate, API, worker),
+  all on 127.0.0.1: `sealant-api-next@sha256:2ed5ef53c86e…`,
+  `sealant-worker-next@sha256:e516f51450ea…`. The workspace runs
+  `sealantd-next:0.21.0-next.177@sha256:078b65210d4d…`.
 - Transport: the host unix socket. The workspace's recorded endpoint is `unix:///…/control.sock`,
   and the API container has no Docker socket or `socat`. The Docker exec/socat transport was not
   selected and is not measured here.
@@ -156,5 +157,5 @@ The project, its worktree and its session were removed afterwards.
 ## Raw results
 
 The JSON lines and the box series' curl timings are kept on the machine that ran them, outside the
-repository, in the step's audit directory (`.audit/step5/bench-results/`). The Core stack and its
+repository, in the step's audit directory (`.audit/step5/bench-results/`). The sealant stack and its
 workspace were removed after the run.

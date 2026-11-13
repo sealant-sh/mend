@@ -1,9 +1,9 @@
 # Doppler account check
 
-Use the Mend build from this stack. It pins Core `0.40.0-next.775`, containing Core #428 and its
-Doppler CLI catalog package. An older workspace image without Doppler should still receive the home
-file, and `mend doppler status` should report the missing CLI. These are manual checks for Yiannis's
-account. The implementation tests use fake tokens only.
+Use the Mend build from this stack. It pins sealant `0.40.0-next.775`, containing sealant #428 and
+its Doppler CLI catalog package. An older workspace image without Doppler should still receive the
+home file, and `mend doppler status` should report the missing CLI. These are manual checks for
+Yiannis's account. The implementation tests use fake tokens only.
 
 ## On the laptop
 

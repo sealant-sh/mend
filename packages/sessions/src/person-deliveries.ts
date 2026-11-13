@@ -346,7 +346,7 @@ export const opencodeScrubFailedWords = (reason: string): string =>
 // ─── install.sh (decision 11) ────────────────────────────────────────────────
 
 /**
- * How long a start waits for a person's `dotfiles.apply` before the agent starts beside it. Core's
+ * How long a start waits for a person's `dotfiles.apply` before the agent starts beside it. sealant's
  * run goes on past it, and Mend sees it through when it lands (review of mend#569, P2-1).
  */
 export const DOTFILES_APPLY_BOUND_MS = 120_000;
@@ -390,10 +390,10 @@ export const BOOTSTRAP_STILL_RUNNING_WORDS =
  * worktree that already runs per person starts without them rather than apply them as anyone else.
  */
 export const DOTFILES_NOT_PER_PERSON =
-  "this Mend's platform cannot apply dotfiles as each person yet (sealantd's dotfiles.apply through Core), so they were not applied";
+  "this Mend's platform cannot apply dotfiles as each person yet (sealantd's dotfiles.apply through sealant), so they were not applied";
 
 /**
- * A Boat launch in one shared home, said on the session line: Core's Boat runtime refuses dotfiles
+ * A Boat launch in one shared home, said on the session line: sealant's Boat runtime refuses dotfiles
  * sent with the create, and its `dotfiles.apply` writes only into a person's own home, never
  * root's, so the launch starts without them rather than fail.
  */
@@ -402,7 +402,7 @@ export const DOTFILES_NOT_ON_BOAT_SHARED =
 
 /**
  * Decision 1's fallback to `/root` (a person prediction prepare found wrong on a fresh worktree),
- * said on the session line: Core applies dotfiles only as a person, never as root (sealant#334),
+ * said on the session line: sealant applies dotfiles only as a person, never as root (sealant#334),
  * and the create, made for a person launch, applied none at boot. Every later session in this
  * worktree joins the same executor without them; a workspace started next on the image runs as
  * one person from its create, and applies them at boot.
@@ -412,8 +412,8 @@ export const DOTFILES_NOT_TO_ROOT =
 
 /**
  * What the session line says for a person's dotfiles that `dotfiles.apply` refused or could not
- * finish (docs/adr/0016, decisions 11 and 13), by Core's stable code: what was observed, then that
- * they were not applied. A code Mend does not know says Core's own words.
+ * finish (docs/adr/0016, decisions 11 and 13), by sealant's stable code: what was observed, then that
+ * they were not applied. A code Mend does not know says sealant's own words.
  */
 export const dotfilesRefusalWords = (error: {
   readonly code: string;

@@ -36,7 +36,7 @@ export interface ServerFiles {
   readonly remoteEndpoints?: string;
   /** Caddyfile.remote-endpoints: the edge's site for both endpoints, when the edge serves them. */
   readonly remoteEndpointsCaddyfile?: string;
-  /** compose.boat.yaml: Boat sessions' settings and Core's Boat build journal volume. */
+  /** compose.boat.yaml: Boat sessions' settings and sealant's Boat build journal volume. */
   readonly boat?: string;
   /** compose.edge.yaml: the TLS edge overlay, the repository's byte for byte. */
   readonly edge?: string;

@@ -2,8 +2,8 @@ import type { BoatFailure, BoatFailureKind } from "./boat-failure.ts";
 
 /**
  * Every way a Boat launch or a Boat key check can go wrong, in words a person can act on
- * (SLNT-793): what happened, then who can fix it and what to do. One table, keyed by Core's
- * closed set of Boat failure kinds plus the refusals Core answers before anything is attempted.
+ * (SLNT-793): what happened, then who can fix it and what to do. One table, keyed by sealant's
+ * closed set of Boat failure kinds plus the refusals sealant answers before anything is attempted.
  * Boat's own code and request id never appear here: they are for the server log.
  */
 
@@ -24,8 +24,8 @@ export interface BoatWordsContext {
 }
 
 /**
- * Core's refusals of a Boat workspace before anything was attempted in Boat (no VM, no build):
- * they read `launch refused`, not `launch failed`. Core's message is part of the words.
+ * sealant's refusals of a Boat workspace before anything was attempted in Boat (no VM, no build):
+ * they read `launch refused`, not `launch failed`. sealant's message is part of the words.
  */
 export const BOAT_LAUNCH_REFUSAL_CODES = [
   "unsupported-runtime",
@@ -139,7 +139,7 @@ type Failure = (failure: BoatFailure, context: BoatWordsContext) => BoatProblemW
 type Refusal = (coreMessage: string, context: BoatWordsContext) => BoatProblemWords;
 
 /**
- * The table. A Core pin that adds a failure kind fails to compile here until it has words.
+ * The table. A sealant pin that adds a failure kind fails to compile here until it has words.
  */
 const FAILURE_WORDS: { readonly [K in BoatFailureKind]: Failure } = {
   "key-expired": (failure, context) => ({
@@ -210,7 +210,7 @@ const FAILURE_WORDS: { readonly [K in BoatFailureKind]: Failure } = {
   }),
 };
 
-/** Core's sentence as a clause, so Mend's own can follow it. */
+/** sealant's sentence as a clause, so Mend's own can follow it. */
 const clause = (words: string): string => words.trim().replace(/[.\s]+$/, "");
 
 /** No Boat key can run the session: the organization connected none, and the server has none. */

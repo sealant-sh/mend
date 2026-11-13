@@ -5,8 +5,8 @@ Status: accepted 2026-09-12; amended 2026-09-13 by decisions 2, 6, 8 and 9 (mark
 shared cache fed only by Mend-controlled installs, credential files (decision 6, corrected
 2026-09-18: the daemon excludes them). Cross-repo: sealantd ADR-0015 (capture engine, pack kinds,
 cadence — being amended in parallel; this ADR references it and does not restate the format),
-Sealant Core (`capture` workspace source, `microvm` adapter, bridge `stop()`), Mend (everything
-below). Supersedes the co-located store invariant of `docs/DEPLOYMENT-STRATEGIES.md` and
+sealant (`capture` workspace source, `microvm` adapter, bridge `stop()`), Mend (everything below).
+Supersedes the co-located store invariant of `docs/DEPLOYMENT-STRATEGIES.md` and
 `docs/KUBERNETES.md` for every remote deployment. Evidence and arithmetic: the 2026-09-12
 remote-session-storage decision record (§2.3 components and SQL, §2.4 latency, §2.6 cost, §2.7 lease
 settlement); figures below are marked as it marks them: measured, cited, or estimate.
@@ -193,8 +193,8 @@ services, `POST /session/stop`, and the `CONNECT /git/transport` tunnel L167–1
 plus `MEND_SESSION_ID`, hash-verified before the session is resolved (L291–332), the unix socket's
 mount boundary in `local` mode (`session-socket.ts`). sealantd's names for the same material are
 `SEALANT_CAPTURE_ENDPOINT` (= `MEND_SESSION_ENDPOINT`) and secret `SEALANT_CAPTURE_TOKEN` (=
-`MEND_SESSION_TOKEN`); Core delivers both through the secret env channel beside `MEND_SESSION_ID`,
-and `SEALANT_WORKSPACE_SOURCE=capture` selects the source. One token, two names;
+`MEND_SESSION_TOKEN`); sealant delivers both through the secret env channel beside
+`MEND_SESSION_ID`, and `SEALANT_WORKSPACE_SOURCE=capture` selects the source. One token, two names;
 `session_channel_tokens` stays the only store of its hash. The epoch is a request field on every
 call, never part of the token. Per route:
 
@@ -276,8 +276,8 @@ Same port, `packages/sessions/src/session-repository-captured.ts`, selected at t
 Engine changes, by function (`engine.ts` at `ade9996`):
 
 - `provisionWorkspace` (L2428–2660): `source: { kind: "capture" }` instead of `standby` (L2626),
-  which Core lowers to `SEALANT_WORKSPACE_SOURCE=capture`; no `workspaceMounts` for the store, the
-  socket dir or the harness home (L2491–2500); `SEALANT_CAPTURE_ENDPOINT` rides `env` and
+  which sealant lowers to `SEALANT_WORKSPACE_SOURCE=capture`; no `workspaceMounts` for the store,
+  the socket dir or the harness home (L2491–2500); `SEALANT_CAPTURE_ENDPOINT` rides `env` and
   `SEALANT_CAPTURE_TOKEN` rides `secretEnv` (L2650) beside `MEND_SESSION_TOKEN`.
 - `launchInternal` (L3045–3140): no `bindWorkspace` (L3128) and no linked-project bind in capture
   mode; sealantd materialises the head capture, claims the lease, then the harness starts.
@@ -440,9 +440,9 @@ cadence window.
   Both are refused while a drain runs, a drain kept its workspace, an executor was not observed to
   end, or a lease is held; `force` overrides unlanded work, never unsaved work. The session that
   owns an executor stays while another session works in it.
-- **Dead means dead.** An executor is dead only on a terminal status or a missing workspace. A Core
-  error is `unknown`: no pickup, no fence, look again. An executor that answers with its lease
-  expired is paused: a resume waits for it and stops nothing.
+- **Dead means dead.** An executor is dead only on a terminal status or a missing workspace. A
+  sealant error is `unknown`: no pickup, no fence, look again. An executor that answers with its
+  lease expired is paused: a resume waits for it and stops nothing.
 - **Mode switches** read the head once the small captures are in; bulk still uploading holds only a
   stop (once sealantd reports `pending_bulk`).
 - **Landing** checkpoints only once the executor's captures caught up (a flush that registered what
@@ -455,7 +455,7 @@ cadence window.
 
 What waits on the platform (PLATFORM-FEEDBACK.md 2026-09-27): the runtime deadline, a final flush
 that snapshots bulk with a deadline and no 10 s clamp, `pending_bytes` / `pending_bulk` / `refused`
-on the status, and Core's reapers draining before they terminate.
+on the status, and sealant's reapers draining before they terminate.
 
 ### Review
 
@@ -497,7 +497,7 @@ credentials (the Mend key or the bridge), never from an executor.
 
 | Tier                                                                             | Bucket                                                                                                                                                            | Executor disk                      | Runner                                                                      | Notes                                                                                                                                                                                             |
 | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Single machine, Docker bundle (`compose.yaml` → `deploy/docker/compose.v2.yaml`) | Garage on a Docker volume beside `mend-store` (`mend-garage`, ≈ 7.5 MiB idle, measured 2026-09-13); `FsLive` under `~/.config/mend` for `pnpm dev` without Docker | the container's own disk           | the API process; the cache is the store                                     | the only store (decision 8); setup lays Garage out once; executors need the Compose network (Core follow-up)                                                                                      |
+| Single machine, Docker bundle (`compose.yaml` → `deploy/docker/compose.v2.yaml`) | Garage on a Docker volume beside `mend-store` (`mend-garage`, ≈ 7.5 MiB idle, measured 2026-09-13); `FsLive` under `~/.config/mend` for `pnpm dev` without Docker | the container's own disk           | the API process; the cache is the store                                     | the only store (decision 8); setup lays Garage out once; executors need the Compose network (sealant follow-up)                                                                                   |
 | Dev stack (`compose.dev.yaml`, Postgres only today)                              | a `garage` service (single-node mode, bucket `mend`, S3 on 3900)                                                                                                  | Docker                             | API process                                                                 | proves everything with no cloud account                                                                                                                                                           |
 | Kubernetes / Talos                                                               | Rook `CephObjectStore` RGW if present, else Garage                                                                                                                | `emptyDir` on node NVMe            | the API Pod with a local-path cache PVC                                     | the RWX `mend-store` claim and `SEALANT_K8S_VOLUME_MAPPINGS` for the store are retired                                                                                                            |
 | Cloudflare                                                                       | R2, presigned by the Worker                                                                                                                                       | sandbox disk (`standard-3`, 16 GB) | the `cf` git cell in ops-only mode (`docs/CLOUDFLARE-HOSTED.md` "Git cell") | `SessionObject` hosts the channel and lease alarms; summaries re-key from `changes/<session>/<n>/` to `changes/<worktree>/<n>/`; `keepAlive` while live, SIGTERM flush, `destroy()` only to fence |
@@ -517,7 +517,7 @@ URLs name keys the live epoch never reads, and an overwrite inside its own live 
 caught by sha256 at read. Amended 2026-09-13 (decision 6), **corrected 2026-09-18**: decision 6 said
 credential files the harness writes into its home (`.claude/.credentials.json`, `.codex/auth.json`)
 are captured with the harness-home class, that nothing excludes them on either side, and that a
-pickup therefore resumes a logged-in harness without Core re-injecting anything.
+pickup therefore resumes a logged-in harness without sealant re-injecting anything.
 
 That is not what the daemon does. sealantd names those two paths in
 `crates/sealant-capture/src/index.rs` (`CREDENTIAL_FILES`, citing its own ADR-0015 open question 2),
@@ -528,7 +528,7 @@ at-rest encryption and client-side encryption describes a risk this store does n
 
 What follows from the correction, rather than from the decision: because a capture carries no
 credential, a pickup depends on the platform injecting the credential into the new workspace again.
-Core does inject it at launch (`connected_accounts` → a 0600 file at
+sealant does inject it at launch (`connected_accounts` → a 0600 file at
 `$HOME/.claude/.credentials.json`), but that every pickup path re-injects before the harness reads
 it is **unverified** — it needs a forced-kill pickup with an expired access token to prove. Until
 then, treat a resumed harness's login as something to observe, not something the chain guarantees.
@@ -837,24 +837,24 @@ Mend-side details the decision record left open, decided in this ADR:
 32. (2026-09-28) One launch per executor, keys never reused, a seal only over what restores (review
     2026-09-28 (3); cross-repo decisions 5, 6 and 9).
     - **The launch is the executor.** The session id and the epoch did not name one executor: a
-      claimed standby whose replan answer was lost was drained without regard to Core's answer, and
-      the cold executor after it inherited its epoch and its seal. Every create is now asked under a
-      key minted before it, and that key is the executor's launch identity: its channel token is
-      issued for it (migration 0083: one row per token, a new launch never rotates another's),
-      `plan.get` answers `executor: <launch>`, register records `final_seal` only when it names that
-      launch (the lease must still name its session), and a stop attests the seal only with the
-      runtime recorded for that very launch, never whichever runtime the workspace answers for now.
-      A claimed standby is the session's executor, under its own launch, before its replan; a replan
-      that fails drains it like any executor, a kept standby refuses the launch, and only an end the
-      platform confirmed lets a cold executor start, under a fresh epoch. The launch's tokens are
-      revoked when its end is observed, never before.
+      claimed standby whose replan answer was lost was drained without regard to sealant's answer,
+      and the cold executor after it inherited its epoch and its seal. Every create is now asked
+      under a key minted before it, and that key is the executor's launch identity: its channel
+      token is issued for it (migration 0083: one row per token, a new launch never rotates
+      another's), `plan.get` answers `executor: <launch>`, register records `final_seal` only when
+      it names that launch (the lease must still name its session), and a stop attests the seal only
+      with the runtime recorded for that very launch, never whichever runtime the workspace answers
+      for now. A claimed standby is the session's executor, under its own launch, before its replan;
+      a replan that fails drains it like any executor, a kept standby refuses the launch, and only
+      an end the platform confirmed lets a cold executor start, under a fresh epoch. The launch's
+      tokens are revoked when its end is observed, never before.
     - **A lost create answer holds its session too.** A create whose answer is not on the row holds
-      every relaunch, the owning session's included: its key is reconciled first (Core's
+      every relaunch, the owning session's included: its key is reconciled first (sealant's
       `createState`, else `findByIdempotencyKey`). Found, the executor drains as any before anything
-      new starts; nothing on record is not proof — Core's `cancelCreate` must say `cancelled` before
-      the key clears and the lease is released. Without it the key stays reserved and the session's
-      next launch asks the same create again under it (same launch, same token, the claim it still
-      holds). An answer Mend does not read is unknown, never none.
+      new starts; nothing on record is not proof — sealant's `cancelCreate` must say `cancelled`
+      before the key clears and the lease is released. Without it the key stays reserved and the
+      session's next launch asks the same create again under it (same launch, same token, the claim
+      it still holds). An answer Mend does not read is unknown, never none.
     - **A condemned key is never registered again.** Tombstones are permanent: register refuses a
       key retention condemned, deleted or not (422 `missing-objects` naming it), because a pass that
       stalled past its claim can still delete whatever is at that key. sealantd uploads the content
@@ -880,14 +880,14 @@ Mend-side details the decision record left open, decided in this ADR:
       the disk changed after a final flush; it is not saved, and a drain asks the final flush again.
       A completed answer is never reused for another round: the drain asks again.
     - **A kept executor is not dead (e2e run 5).** Capture mode reads any terminal status but
-      `stopped` (`failed`, `cancelled`) as kept: Core retains a capture executor that ended without
-      a completed final flush and may boot it again to save it. Its lease and its channel token
-      stay; the drain asks Core's stop what it is and reads
-      `not saved · executor kept for recovery`; the owner's discard is asked of Core. Only an end
-      Core confirms (`stopped`, or no such workspace) takes the executor's channel, revokes its
+      `stopped` (`failed`, `cancelled`) as kept: sealant retains a capture executor that ended
+      without a completed final flush and may boot it again to save it. Its lease and its channel
+      token stay; the drain asks sealant's stop what it is and reads
+      `not saved · executor kept for recovery`; the owner's discard is asked of sealant. Only an end
+      sealant confirms (`stopped`, or no such workspace) takes the executor's channel, revokes its
       token and releases the lease — `docker kill` had lost the last edits and a 1 GiB file three
-      times of three when Mend read `failed` as dead and cut off Core's recovery boot. A runtime not
-      ready yet (a launch whose worker died after it started) is kept on the kept backoff, never
+      times of three when Mend read `failed` as dead and cut off sealant's recovery boot. A runtime
+      not ready yet (a launch whose worker died after it started) is kept on the kept backoff, never
       flushed every poll. An executor running a final flush Mend did not ask for (a `docker stop`)
       stops the session: `stopping · saving`. `upload.urls` is metered per launch, re-mints of keys
       already handed out are free, and an executor under a drain is not metered at all.
@@ -978,7 +978,7 @@ Mend-side details the decision record left open, decided in this ADR:
       bytes for the byte quota; the register of a `final` capture is exempt in any scope. Bytes are
       still priced. The ledger is per physical launch: a new executor starts its own, the 512 most
       recently asked about are kept, and a reservation that mints nothing is refunded. The quota
-      bounds new work only. Open: a FINAL sealantd runs while Mend has no drain under way (a Core
+      bounds new work only. Open: a FINAL sealantd runs while Mend has no drain under way (a sealant
       deadline) is exempt at register by its kind, but its `upload.urls` calls say nothing of it and
       stay metered until sealantd names the flush on them.
     - **Saved is one decision.** A drain's direct FINAL answer reads `saved` only when the
@@ -1023,8 +1023,8 @@ Mend-side details the decision record left open, decided in this ADR:
     - **A capture step past its bound (F1, sealantd's `overdue`).** Mend reads
       `CaptureStatusReport.overdue` from any status or flush answer, records it on the session
       (migration 0093) and says `capture step overdue · <step> · running 17 min · bound 2 min`; such
-      an answer never reads saved, caught up or idle. Core's contract and SDK 0.37.2 drop the field
-      today (PLATFORM-FEEDBACK.md).
+      an answer never reads saved, caught up or idle. sealant's contract and SDK 0.37.2 drop the
+      field today (PLATFORM-FEEDBACK.md).
     - **SHA-256 projects (F4).** Capture 0 and a standby's base plan name the store repository's
       object format when it is not `sha1`.
     - **Status lines say what was observed.** `sealing` reads `final seal not confirmed` (it read
@@ -1036,7 +1036,7 @@ Mend-side details the decision record left open, decided in this ADR:
       Node ended the API.
     - Open: F7 (a claimed standby whose replan failed keeps its pre-claim staging pending under its
       placeholder worktree, which never ships, so the drain stalls and the launch fails after ~12
-      minutes until the owner discards) needs sealantd and Core to agree that a placeholder's
+      minutes until the owner discards) needs sealantd and sealant to agree that a placeholder's
       staging holds nothing of the session.
 37. (2026-09-28) The eleventh review and the eighth end-to-end run, taken pragmatically (owner:
     common workflows exact and tested; rare layouts refused early or documented on the docs site's
@@ -1071,8 +1071,8 @@ Mend-side details the decision record left open, decided in this ADR:
       it clears `launch …`; `executor lost …` stays for `picked up · executor replaced`.
     - **A claimed standby that held nothing (e2e8 F7).** sealantd answers the FINAL of a claimed
       standby whose replan failed, and on which no writer was ever admitted, at once: `complete`,
-      nothing pending, under its placeholder worktree, epoch and launch; it then exits 76 and Core
-      releases it as nothing to save. Mend needs no change: that answer is never read as the
+      nothing pending, under its placeholder worktree, epoch and launch; it then exits 76 and
+      sealant releases it as nothing to save. Mend needs no change: that answer is never read as the
       session's save (its epoch is not the session's lease, and nothing is attested for it), the
       drain reads the workspace gone, and the launch goes on cold under the session's own launch.
     - **Carried format-1 trees are read back at their top level (review 11 #5).** A seal's read-back
@@ -1087,8 +1087,9 @@ Mend-side details the decision record left open, decided in this ADR:
       minutes after a small final flush, up to 20 after a large batch, and until 15 minutes after a
       Mend restart. A runtime that ends an executor at a deadline must begin its final flush at
       least that long, plus the flush's own time, before the deadline, or the executor ends unsealed
-      (Core's retention keeps it; nothing is deleted). Core's lead is 15 minutes; the only
-      time-limited executors are AWS MicroVMs, which use S3 (no wait). Documented; Core unchanged.
+      (sealant's retention keeps it; nothing is deleted). sealant's lead is 15 minutes; the only
+      time-limited executors are AWS MicroVMs, which use S3 (no wait). Documented; sealant
+      unchanged.
 38. (2026-09-28) The twelfth review's Mend items.
     - **A seal check that could not finish concludes nothing (review 12 #4).** A seal's checks read
       the bucket through a store that notes every read it failed (`BlobStoreError`: a 503, a
@@ -1196,16 +1197,16 @@ Mend-side details the decision record left open, decided in this ADR:
       custom image's setup commands and the `mend` helper / git transport install
       (`prepareExecutor`) run at claim, after the replan succeeds, and the workspace note is written
       by the claim path as for every launch. Before a claim Mend only rebinds the standby's socket
-      on the host, reads its status, and asks Core's stop; none of these admits a writer. A cold
+      on the host, reads its status, and asks sealant's stop; none of these admits a writer. A cold
       launch and a non-capture standby are unchanged.
     - **A `failed` executor whose drain ended is gone (F-A).** Decision 32's "any terminal status
-      but `stopped` is kept" is narrowed for `failed` and `cancelled`: `lookupWorkspace` asks Core's
-      `workspace.captureDrain()` (read-only), and a drain that ended (`stopped`, `saved`, `gone`,
-      `discarded`) with nothing retained reads `gone`, so a `docker stop` outside Mend that saved
-      settles `stopped outside Mend · saved at … · capture n` instead of `stopping` for good. Status
-      `retained`, a drain still `draining`, `kept` or `stop-failed`, a `retained` record, or an SDK
-      without the method stays kept. For Core: an executor that exits 0 after a complete FINAL is
-      recorded `failed`; `stopped` would describe it.
+      but `stopped` is kept" is narrowed for `failed` and `cancelled`: `lookupWorkspace` asks
+      sealant's `workspace.captureDrain()` (read-only), and a drain that ended (`stopped`, `saved`,
+      `gone`, `discarded`) with nothing retained reads `gone`, so a `docker stop` outside Mend that
+      saved settles `stopped outside Mend · saved at … · capture n` instead of `stopping` for good.
+      Status `retained`, a drain still `draining`, `kept` or `stop-failed`, a `retained` record, or
+      an SDK without the method stays kept. For sealant: an executor that exits 0 after a complete
+      FINAL is recorded `failed`; `stopped` would describe it.
 42. (2026-09-28) The fifteenth review's Mend item (#1) and two status lines from end-to-end run 9.
     - **Setup commands run only on a worktree laid down fresh (#1).** `prepareExecutor` ran the
       custom image's `setupCommands` after every create, but sealantd materializes the saved
@@ -1225,11 +1226,11 @@ Mend-side details the decision record left open, decided in this ADR:
       Extra packages or the image. The co-located store is unchanged: setup runs on every launch
       there. A worktree whose capture 0 was backfilled from an older directory (decision 8's attach)
       still runs setup over it.
-    - **A seal that lands while Core ends a kept executor is the session's word (run 9 RD).**
+    - **A seal that lands while sealant ends a kept executor is the session's word (run 9 RD).**
       `terminateWorkspace` reported `saved` only for a seal Mend attested on the stop. An executor
-      whose worker died before `ready` had no seal when Mend's stop went out; Core's recovery boot
-      sealed while it ended it, and the session kept `failed · launch failed: … retained …` alone.
-      Once the end is confirmed and nothing was attested, the executor's own standing seal
+      whose worker died before `ready` had no seal when Mend's stop went out; sealant's recovery
+      boot sealed while it ended it, and the session kept `failed · launch failed: … retained …`
+      alone. Once the end is confirmed and nothing was attested, the executor's own standing seal
       (`executorSealOf`, read while the lease still names it) counts, and the session reads
       `failed · launch failed: … · saved at … · capture n`.
     - **A stop that follows the executor's own FINAL reads as that end (run 9 D9).** When a status
@@ -1334,9 +1335,9 @@ Mend-side details the decision record left open, decided in this ADR:
 46. (2026-09-28) The nineteenth review's Mend items, and the rest of its recheck of decision 45.
     - **Relocation merges only what is missing (#1).** The relocation merged each fresh `$HOME`
       harness directory into the restored root with `cp -an source/. root/`. No-clobber kept the
-      files, but archive mode copied the source directory's mode and time over the destination. Core
-      writes the connected-account credential under `umask 077`, so a restored `.claude` saved at
-      0750 read 0700 with the new executor's time after every cold resume. The merge
+      files, but archive mode copied the source directory's mode and time over the destination.
+      sealant writes the connected-account credential under `umask 077`, so a restored `.claude`
+      saved at 0750 read 0700 with the new executor's time after every cold resume. The merge
       (`merge_missing` in `relocateHarnessHomeScript`) now walks the source and copies only the
       entries the root lacks, each with `cp -a`, so a new entry such as the injected credential
       keeps its own modes. It descends where both sides hold a real directory and never writes over
@@ -1347,7 +1348,7 @@ Mend-side details the decision record left open, decided in this ADR:
       and busybox `sh`. If a time cannot be read or put back, the relocation fails, and in capture
       mode the launch fails with it.
     - **A lost create's executor reads ended only once its end is observed (#2).** After a saved
-      final flush, `terminateWorkspace` can answer `ended: false`: Core took the stop and still
+      final flush, `terminateWorkspace` can answer `ended: false`: sealant took the stop and still
       reports the executor after Mend's wait. `runDrain` returned `terminated` for that as well, and
       the lost-create reaper settled the session
       `launch interrupted · the create's answer was lost · its executor ended`. `runDrain` now
@@ -1356,7 +1357,7 @@ Mend-side details the decision record left open, decided in this ADR:
       session `stopping` with
       `launch interrupted · the create's answer was lost · stop requested · end not observed yet`.
       The row and the lease stay, and the status fold does not settle it. The reaper's pass over
-      `stopping` sessions settles it `stopped · … · its executor ended` once Core reports the
+      `stopping` sessions settles it `stopped · … · its executor ended` once sealant reports the
       executor gone. The words are written before the status, so a restart between the two writes
       leaves `starting` saying what was observed.
     - **A replaced or retired skill is never deleted (decision 45, recheck).** Decision 45's
@@ -1568,7 +1569,7 @@ Mend-side details the decision record left open, decided in this ADR:
       drain, flushing for itself as before, so a drain that follows waits for it. An executor that
       went runs it on the drain's last reading of it, every piece waited for: a FINAL that
       registered the head before it went leaves a readable head. A platform-kept executor runs it
-      before Core's stop, which may confirm an end and release the lease.
+      before sealant's stop, which may confirm an end and release the lease.
     - **What runs past its time is owed, not dropped, and never interrupted.** Each piece has
       `deferredWorkLimit` (two minutes) once the flush is saved. A piece past it (a checkpoint
       writer held, a store not answering) runs on: a harvest's writes do not stop with its fiber,

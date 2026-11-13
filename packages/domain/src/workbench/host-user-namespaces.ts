@@ -1,7 +1,7 @@
 /**
  * Whether a Docker host's kernel lets an unprivileged process create a user namespace.
  *
- * Every workspace's Docker service is a rootless Docker daemon (Core's `docker:*-dind-rootless`),
+ * Every workspace's Docker service is a rootless Docker daemon (sealant's `docker:*-dind-rootless`),
  * and rootlesskit starts it as an unprivileged user that creates a user namespace. Two kernel
  * settings refuse that, and the daemon then exits with "fork/exec /proc/self/exe: operation not
  * permitted" before the workspace can start:

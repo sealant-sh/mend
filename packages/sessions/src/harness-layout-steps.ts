@@ -5,7 +5,7 @@ import { randomBytes } from "node:crypto";
  * `MEND_HARNESS_LAYOUT`: the layout decided before create, what prepare runs and what it found,
  * the people an executor holds, the user each of their processes starts as, and the logins in
  * each person's home (decision 5). With `MEND_HARNESS_LAYOUT=shared` (the operator's opt-out) and
- * nothing recorded, nothing here reads the store, execs or calls Core.
+ * nothing recorded, nothing here reads the store, execs or calls sealant.
  */
 import { HarnessLayoutsRepo, type OrganizationsRepo } from "@mend/db";
 import { imageHasScreen, type OrganizationId, type WorkspaceImage, WorktreeId } from "@mend/domain";
@@ -104,12 +104,12 @@ export const SSH_RESET_DELAYS: ReadonlyArray<Duration.Duration> = [1, 2, 4, 8, 1
 );
 
 /**
- * The session line when Core runs SSH sessions as a user but the launcher's person could not be
- * bound there (a refused or unanswered binding, a Core without the route): Remote-SSH stays root.
+ * The session line when sealant runs SSH sessions as a user but the launcher's person could not be
+ * bound there (a refused or unanswered binding, a sealant without the route): Remote-SSH stays root.
  */
-export const REMOTE_SSH_ROOT_WORDS = "Remote-SSH: root, Core can't bind your person";
+export const REMOTE_SSH_ROOT_WORDS = "Remote-SSH: root, sealant can't bind your person";
 
-/** The session line when Core runs no SSH session as a user (an older Core or SDK). */
+/** The session line when sealant runs no SSH session as a user (an older sealant or SDK). */
 export const REMOTE_SSH_ROOT_UNSUPPORTED_WORDS = "Remote-SSH: root, this Sealant runs it as root";
 
 /** What a person launch's line says when its Remote-SSH runs as root (docs/adr/0016). */
@@ -207,7 +207,7 @@ export type PrepareOutcome =
       readonly fallback: string | null;
       /**
        * Why the launcher's dotfiles were not applied, when decision 1's fallback to `/root` had
-       * some: Core's `dotfiles.apply` runs only as a person, never as root (sealant#334), and the
+       * some: sealant's `dotfiles.apply` runs only as a person, never as root (sealant#334), and the
        * create, made for a person launch, applied none at boot. Null otherwise.
        */
       readonly dotfilesNotApplied?: string | null;
@@ -223,7 +223,7 @@ export type PrepareOutcome =
  * chose "Give my sessions only the selected agent's login" (`selectedOnly`, amendment of
  * 2026-10-10). A shell, a Service, pi and opencode are open workbenches (the create's own ladder
  * for them names every provider), so nothing is required of them, and the setting does not narrow
- * them. pi and opencode also take the ChatGPT login Core makes for each from the person's Codex
+ * them. pi and opencode also take the ChatGPT login sealant makes for each from the person's Codex
  * account (sealant#336), in place of the copy Mend's seed made. Whose logins they are is never a
  * question here: every write names the person whose process it is (`onBehalfOf`).
  */
@@ -263,7 +263,7 @@ const PROVIDER_NAMES: Readonly<Record<LoginProvider, string>> = {
   opencode: "opencode's ChatGPT",
 };
 
-/** Why Core refused or left out a provider's login (`SealantApiError.reason`, sealant#335/#337). */
+/** Why sealant refused or left out a provider's login (`SealantApiError.reason`, sealant#335/#337). */
 export type LoginRefusalReason = LoginSkip["reason"];
 
 /**
@@ -304,7 +304,7 @@ const CHATGPT_SKIP_WORDS: Readonly<Record<LoginRefusalReason, string>> = {
 };
 
 /**
- * The session line when Core left pi's or opencode's ChatGPT login out of a person's put
+ * The session line when sealant left pi's or opencode's ChatGPT login out of a person's put
  * (sealant#336/#337): what was observed, never a verdict, and, when the Codex login it would be
  * made from is a key, which key (docs/adr/0018, decision 5). Null for any other provider, whose
  * absence an open workbench does not need said.
@@ -346,9 +346,9 @@ const refusalReasonOf = (code: string): LoginRefusalReason | null => {
 };
 
 /**
- * The account a whole POST was refused for, by Core's stable code (`SealantApiError.reason`:
+ * The account a whole POST was refused for, by sealant's stable code (`SealantApiError.reason`:
  * `connected-account-missing`, `-invalid` or `-unsupported`) and its `provider` (sealant#335).
- * Null for any other failure. Nothing was written: Core resolves every account before it writes
+ * Null for any other failure. Nothing was written: sealant resolves every account before it writes
  * any.
  */
 export const refusedAccountOf = (
@@ -380,7 +380,7 @@ export const loginsOfCreate = (
 
 /**
  * A person launch's create ladder (decision 5): only the attempts that name every provider its
- * harness needs. The ladder steps down past a provider Core refused, and for a person launch it
+ * harness needs. The ladder steps down past a provider sealant refused, and for a person launch it
  * stops at the harness's own: below it the agent would start signed out, so the create's refusal
  * of that account is the launch's (`createLoginRefusal`), as a join's POST refusal is.
  */
@@ -395,11 +395,11 @@ export const personCreateAttempts = (
 };
 
 /**
- * The rungs a create asks next after Core refused one, or null when it stops. A refusal Core names
+ * The rungs a create asks next after sealant refused one, or null when it stops. A refusal sealant names
  * (sealant#335: missing, needs reconnecting, unsupported) of a provider the launch needs stops the
  * ladder: asking again with that login refuses again, and the refusal is the launch's
  * (`createLoginRefusal`). One of a provider it does not need drops every rung that names it, as a
- * join's partial write leaves it out. A refusal without Core's code that still says a connected
+ * join's partial write leaves it out. A refusal without sealant's code that still says a connected
  * account was refused steps down one rung, as before.
  */
 export const nextCreateAttempts = (
@@ -422,7 +422,7 @@ export const nextCreateAttempts = (
 
 /**
  * What a person launch's create refused for the account its harness needs: the words a join's
- * refusal uses (`loginRefusal`). Core names the account (sealant#335); a refusal without its code
+ * refusal uses (`loginRefusal`). sealant names the account (sealant#335); a refusal without its code
  * that still says a connected account was refused is the harness's own, since the ladder asked
  * for it on every attempt. Null for any other failure, and for a harness that needs no login.
  */
@@ -444,8 +444,8 @@ export const createLoginRefusal = (
 };
 
 /**
- * A person launch's create ladder without a login Core refused as one no launch carries: a Claude
- * API key, which Core places only by a put into a person's own home (docs/adr/0018, decision 4).
+ * A person launch's create ladder without a login sealant refused as one no launch carries: a Claude
+ * API key, which sealant places only by a put into a person's own home (docs/adr/0018, decision 4).
  * Every rung from the refused one on loses that provider, and the person's first process puts it
  * into their home. Null for any other refusal.
  */
@@ -472,12 +472,12 @@ export const withoutLaunchRefusedLogin = (
 
 /**
  * The refusal of a Claude API key where everyone's logins share one home (`/root` in the shared
- * layout): Core never places a key there, since a join or a shared-control turn would spend it for
+ * layout): sealant never places a key there, since a join or a shared-control turn would spend it for
  * someone else (docs/adr/0018, decision 4).
  */
 export const SHARED_HOME_CLAUDE_KEY_REFUSAL = `Your Claude login is an API key. This workspace keeps everyone's logins in one shared home, where a key is never placed, so nothing was started. Make a Claude subscription your default login to start here. ${connectWay("claude")}`;
 
-/** Whether Core refused a Claude account for holding an API key (`connected-account-unsupported`). */
+/** Whether sealant refused a Claude account for holding an API key (`connected-account-unsupported`). */
 export const isClaudeKeyRefusal = (refused: {
   readonly provider: LoginProvider;
   readonly reason: LoginRefusalReason;
@@ -529,7 +529,7 @@ export interface HarnessLayoutSteps {
     readonly organizationId: OrganizationId;
     /** The image the create will ask for (read only when the flag or the worktree asks). */
     readonly image: Effect.Effect<WorkspaceImage>;
-    /** The harness the create will ask for: part of the image Core reports on. */
+    /** The harness the create will ask for: part of the image sealant reports on. */
     readonly harness: Harness;
     /** Whether the worktree's head capture holds `harness/people/` (read only when needed). */
     readonly headHasPeople: Effect.Effect<boolean>;
@@ -639,7 +639,7 @@ export interface HarnessLayoutSteps {
       readonly credentials: WorkspaceCredentialsOptions | undefined;
       /**
        * What the create's ladder asked for first (`credentialAttempts[0]`): a provider asked for
-       * and not in `credentials` was refused by Core, absent until the home is released.
+       * and not in `credentials` was refused by sealant, absent until the home is released.
        */
       readonly asked?: WorkspaceCredentialsOptions | undefined;
       /**
@@ -661,16 +661,16 @@ export interface HarnessLayoutSteps {
     };
     /**
      * Told when a fallback's reset of the workspace's SSH user to root (decision 10) has not
-     * reached Core (`false`: Remote-SSH is unavailable there), and again once it has (`true`).
+     * reached sealant (`false`: Remote-SSH is unavailable there), and again once it has (`true`).
      * The reset is tried off the launch path, with backoff, and again at the next process start
      * in the executor; nothing waits on it.
      */
     readonly onSshReset?: (resolved: boolean) => Effect.Effect<void>;
   }) => Effect.Effect<PrepareOutcome, SealantPlatformError>;
   /**
-   * A person launch's create, refused for its owner map (decision 13's words): Core's
+   * A person launch's create, refused for its owner map (decision 13's words): sealant's
    * `owner-map-unsupported` (the image's sealantd does not restore files per person) or
-   * `owner-map-unverified` (Core could not check the image, recorded only over an unconfirmed
+   * `owner-map-unverified` (sealant could not check the image, recorded only over an unconfirmed
    * answer). What it found is recorded against the image, so the next launch of a fresh worktree
    * decides shared before create; a worktree already person stays person and is refused. Null for
    * any other failure.
@@ -685,10 +685,10 @@ export interface HarnessLayoutSteps {
   /**
    * The user a person's process starts as in a person-layout executor, made there first when it
    * is their first process (one exec), with their own logins written into their home before it
-   * starts (one Core call, once that exec confirmed the user and home), and the worktree repair
+   * starts (one sealant call, once that exec confirmed the user and home), and the worktree repair
    * started when the person differs from the last one whose process started there (one exec,
    * never awaited). A write that fails without refusing a login is asked once more, after the
-   * user and home are ensured again; failing again, the start is refused. Refused when Core left
+   * user and home are ensured again; failing again, the start is refused. Refused when sealant left
    * the harness's own provider out of that call (not connected, needs reconnecting, or its file
    * unusable), what it did write recorded for the release that follows, and when the launch is
    * unknown in a worktree that runs per person (never run as root there). Never another
@@ -725,7 +725,7 @@ export interface HarnessLayoutSteps {
       readonly env: Readonly<Record<string, string>>;
       /** The session line's words for an optional login this start's put left out. */
       readonly loginsLeftOut: ReadonlyArray<string>;
-      /** What each login in the person's home spends, as Core last answered (docs/adr/0018). */
+      /** What each login in the person's home spends, as sealant last answered (docs/adr/0018). */
       readonly logins: PlacedLogins;
     } | null,
     SealantPlatformError
@@ -780,7 +780,7 @@ export interface HarnessLayoutSteps {
   }) => Effect.Effect<void>;
   /**
    * Writes a person's logins into their home once more after their harness was refused for its
-   * login (decision 5): one Core call, at most once a minute per person and executor. Never
+   * login (decision 5): one sealant call, at most once a minute per person and executor. Never
    * fails.
    */
   readonly relogin: (input: {
@@ -792,7 +792,7 @@ export interface HarnessLayoutSteps {
     readonly live: Effect.Effect<ReadonlySet<string>>;
   }) => Effect.Effect<void>;
   /**
-   * At startup (decision 5, reconciliation against `GET`): what Core keeps in a live person
+   * At startup (decision 5, reconciliation against `GET`): what sealant keeps in a live person
    * executor's homes becomes what Mend knows it holds, and a home whose person has no live process
    * there is released, the launcher's create-time home excepted. Never fails.
    */
@@ -800,10 +800,10 @@ export interface HarnessLayoutSteps {
     readonly workspace: Workspace;
     readonly launchId: string;
     readonly launcher: string;
-    /** Who has a live process there, read after Core's homes are listed. */
+    /** Who has a live process there, read after sealant's homes are listed. */
     readonly live: Effect.Effect<ReadonlySet<string>>;
     /**
-     * A conversation home Core lists (`/run/mend/conv/<session id>`, decision 6): kept for the
+     * A conversation home sealant lists (`/run/mend/conv/<session id>`, decision 6): kept for the
      * conversation's live process, or released, by the caller.
      */
     readonly conversationHome?: (held: HeldHome) => Effect.Effect<void>;
@@ -862,7 +862,7 @@ const bounded = <K, V>() => {
 };
 
 /**
- * What a create refused for its owner map lacks, by Core's code, or null when the failure is not
+ * What a create refused for its owner map lacks, by sealant's code, or null when the failure is not
  * about the owner map.
  */
 export const ownerMapRefusalOf = (error: SealantPlatformError): string | null =>
@@ -882,19 +882,19 @@ const homeLoginsOf = (credentials: WorkspaceCredentialsOptions | undefined): Hom
   return logins;
 };
 
-/** A person's home in an executor, and what Core keeps there for them (decision 5). */
+/** A person's home in an executor, and what sealant keeps there for them (decision 5). */
 interface HeldLogins {
   readonly identity: LinuxIdentity;
-  /** Providers whose login Core writes there. */
+  /** Providers whose login sealant writes there. */
   readonly held: ReadonlySet<LoginProvider>;
   /** Optional providers the person had not connected when Mend last asked. */
   readonly absent: ReadonlySet<LoginProvider>;
   /**
-   * Optional providers whose login file in the home Core could not write (`login-file-unusable`):
+   * Optional providers whose login file in the home sealant could not write (`login-file-unusable`):
    * not named again while the home is held, since only the person can change the file.
    */
   readonly unusable: ReadonlySet<LoginProvider>;
-  /** What each login Core placed there spends, as its last answer said (docs/adr/0018). */
+  /** What each login sealant placed there spends, as its last answer said (docs/adr/0018). */
   readonly placed: PlacedLogins;
 }
 
@@ -909,8 +909,8 @@ const covers = (holding: HeldLogins | undefined, need: LoginNeed): boolean =>
 
 /**
  * What a home holds once a partial POST answered (sealant#337): a provider named `true` and not
- * left out is held; one named `null`, or left out for its account, is absent (Core removed its
- * login); one left out for its file is unusable. What each spends is Core's answer for the whole
+ * left out is held; one named `null`, or left out for its account, is absent (sealant removed its
+ * login); one left out for its file is unusable. What each spends is sealant's answer for the whole
  * home.
  */
 const heldAfter = (
@@ -937,7 +937,7 @@ const heldAfter = (
 
 /**
  * The key of one person's home in one executor: what their starts, releases, re-POSTs and the
- * startup reconciliation are serialised on. By home, so a home Core lists is locked before Mend
+ * startup reconciliation are serialised on. By home, so a home sealant lists is locked before Mend
  * knows whose it is.
  */
 const homeKey = (workspaceId: string, home: string) => `${workspaceId}\u0000${home}`;
@@ -1080,8 +1080,8 @@ export const makeHarnessLayoutSteps = (deps: {
   });
 
   /**
-   * Mend's record of what a prepare found for this image: under Core's digest, else, while Core
-   * says nothing of that digest, under the image as Mend asks for it. Core reports a digest only
+   * Mend's record of what a prepare found for this image: under sealant's digest, else, while sealant
+   * says nothing of that digest, under the image as Mend asks for it. sealant reports a digest only
    * once the image is built, and only to the account that built it, so the first launch on a new
    * image records under the spec, and every launch after the build would otherwise find nothing
    * and run shared to learn it again.
@@ -1126,8 +1126,8 @@ export const makeHarnessLayoutSteps = (deps: {
       report.person !== null
         ? { person: report.person, missing: report.missing, source: "core" }
         : UNKNOWN_CAPABILITY;
-    // Mend's record of what a prepare found wins over Core's report for the same image, but for
-    // a shared probe's unconfirmed "yes" against Core's explicit "no".
+    // Mend's record of what a prepare found wins over sealant's report for the same image, but for
+    // a shared probe's unconfirmed "yes" against sealant's explicit "no".
     const recorded = yield* recordedCapabilityOf(image, report, runtime);
     if (recorded === null || (recorded.person && !recorded.confirmed && report.person === false)) {
       return { capability: core, imageKey, runtime, replaces: null };
@@ -1141,7 +1141,7 @@ export const makeHarnessLayoutSteps = (deps: {
       };
       return { capability, imageKey, runtime, replaces: null };
     }
-    // A "no" a shared launch may check again (review 2 of mend#582, N1): never against Core's
+    // A "no" a shared launch may check again (review 2 of mend#582, N1): never against sealant's
     // explicit "no", and never over what only a per-person executor sees.
     const now = yield* Clock.currentTimeMillis;
     const recheck =
@@ -1158,7 +1158,7 @@ export const makeHarnessLayoutSteps = (deps: {
 
   /**
    * Whether the launcher's own Claude login is a key (`decideHarnessLayout`'s `claudeKey`), asked
-   * of Core only where it can change the layout: the flag on, a worktree with no layout yet, a
+   * of sealant only where it can change the layout: the flag on, a worktree with no layout yet, a
    * Claude launch, and an image whose answer is unknown.
    */
   const launcherClaudeKey = (
@@ -1348,8 +1348,8 @@ export const makeHarnessLayoutSteps = (deps: {
     const worktree = yield* repo.worktreeLayout(input.worktreeId);
     if (worktree.requested === "shared") return false;
     const { person, capability } = yield* predictPerson(worktree, input);
-    // Retired only on an answer a per-person executor gave (its prepare, or Core's create): a
-    // shared probe's yes, or Core's build report, is a prediction, and replacing a live
+    // Retired only on an answer a per-person executor gave (its prepare, or sealant's create): a
+    // shared probe's yes, or sealant's build report, is a prediction, and replacing a live
     // executor on one could replace it into a refusal (review of mend#582, finding 1).
     // A worktree already person (or asked for per person) runs person next as a fact, not a
     // prediction (decision 14; review 2 of mend#582, N2).
@@ -1371,7 +1371,7 @@ export const makeHarnessLayoutSteps = (deps: {
     }
     if (!predicted.capability.missing.includes(CONTROL_PLANE_UNREADABLE)) return SHARED_STANDBY;
     // A passing failure to ask the control plane says nothing of the image, but what is known of
-    // it still stands (review of mend#596, N2): a runtime ruled out, Core's own "no", or Mend's
+    // it still stands (review of mend#596, N2): a runtime ruled out, sealant's own "no", or Mend's
     // record of a "no" keep fresh launches shared, so shared standbys still serve them.
     const image = yield* input.image;
     const report = yield* platform.imageReport({
@@ -1405,8 +1405,8 @@ export const makeHarnessLayoutSteps = (deps: {
   });
 
   /**
-   * Executors whose SSH user a fallback set back to root (decision 10) and Core has not confirmed:
-   * by workspace, with who to tell. Re-asserted by `resetSshUser` until Core takes it or the
+   * Executors whose SSH user a fallback set back to root (decision 10) and sealant has not confirmed:
+   * by workspace, with who to tell. Re-asserted by `resetSshUser` until sealant takes it or the
    * executor is forgotten.
    */
   const sshResets = new Map<
@@ -1421,7 +1421,7 @@ export const makeHarnessLayoutSteps = (deps: {
 
   /**
    * Sets the workspace's SSH user back to root, retried with backoff (`SSH_RESET_DELAYS`); each
-   * attempt is bounded by the platform. Told `false` while it has not reached Core, `true` once it
+   * attempt is bounded by the platform. Told `false` while it has not reached sealant, `true` once it
    * has. Still pending after the last attempt, it is tried again at the next process start in the
    * executor (`processAs`).
    */
@@ -1451,8 +1451,8 @@ export const makeHarnessLayoutSteps = (deps: {
 
   /**
    * Launches whose fallback this process read from the store rather than settled itself (after a
-   * restart): their executor's SSH reset may never have reached Core, so the first process start
-   * there makes it pending again (`processAs`). Idempotent at Core: one call per executor.
+   * restart): their executor's SSH reset may never have reached sealant, so the first process start
+   * there makes it pending again (`processAs`). Idempotent at sealant: one call per executor.
    */
   const fallbacksFromStore = new Set<string>();
 
@@ -1538,7 +1538,7 @@ export const makeHarnessLayoutSteps = (deps: {
         ),
       );
       lastIn.set(input.workspace.id, layout.launcher.accountId);
-      // The create wrote the launcher's logins into their home (`credentialsHome`): Core holds it
+      // The create wrote the launcher's logins into their home (`credentialsHome`): sealant holds it
       // for them while the executor lives, so it is never released (decision 5).
       const executor = executorOf(input.workspace.id, input.launchId);
       executor.launcher = layout.launcher.accountId;
@@ -1553,7 +1553,7 @@ export const makeHarnessLayoutSteps = (deps: {
           ),
         ),
         unusable: new Set(),
-        // A create writes no Claude key (Core refuses one), so nothing here needs a helper.
+        // A create writes no Claude key (sealant refuses one), so nothing here needs a helper.
         placed: {},
       });
       const opencode = new Set(report.opencode);
@@ -1588,14 +1588,14 @@ export const makeHarnessLayoutSteps = (deps: {
     }
     // A wrong prediction never leaves an agent without a login: the create-time home is released
     // and the launcher's logins are written to `/root`, before anything starts. Either failing
-    // fails the launch. Their dotfiles have no way to `/root`: Core's `dotfiles.apply` runs only as
+    // fails the launch. Their dotfiles have no way to `/root`: sealant's `dotfiles.apply` runs only as
     // a person (sealant#334) and the create applied none at boot, so the session says they were
     // not applied. The image's answer is recorded below, so the next launch on it decides shared
     // before create and its dotfiles apply at boot, as before.
     const home = linuxHomeOf(layout.launcher);
     // The launcher's SSH sessions go back to root with the rest of the executor (decision 10):
     // the create named their user, which this prepare may not have made. Off the launch path:
-    // nothing here waits on it, and until Core takes it the session says Remote-SSH is down.
+    // nothing here waits on it, and until sealant takes it the session says Remote-SSH is down.
     sshResets.set(input.workspace.id, {
       workspace: input.workspace,
       notify: input.onSshReset ?? (() => Effect.void),
@@ -1707,7 +1707,7 @@ export const makeHarnessLayoutSteps = (deps: {
     return layout;
   });
 
-  /** A home recorded as held although Mend cannot say what Core wrote: a release reaches it. */
+  /** A home recorded as held although Mend cannot say what sealant wrote: a release reaches it. */
   const keepHeldFor = (workspaceId: string, launchId: string | null, identity: LinuxIdentity) => {
     const people = executorOf(workspaceId, launchId).people;
     const holding = people.get(identity.accountId);
@@ -1723,11 +1723,11 @@ export const makeHarnessLayoutSteps = (deps: {
   /**
    * A person's logins written into their home in this executor (decision 5): one partial POST
    * (sealant#337) naming the providers the process needs that the home does not hold yet, so a
-   * join is exactly one Core call. Core writes what the person has connected and answers what it
+   * join is exactly one sealant call. sealant writes what the person has connected and answers what it
    * left out: an optional provider left out is not asked for again; a required one refuses the
-   * process with Core's reason, and what the POST did write is recorded held, so the release
-   * that follows a refused start reaches it. One Core answered `home-busy` is asked again
-   * shortly. Any other failure leaves the home recorded as held (Core may have written it), so a
+   * process with sealant's reason, and what the POST did write is recorded held, so the release
+   * that follows a refused start reaches it. One sealant answered `home-busy` is asked again
+   * shortly. Any other failure leaves the home recorded as held (sealant may have written it), so a
    * release still reaches it, and is `person_login_not_written`. Run under the home's lock, once
    * the person's user and home exist (`processAs`).
    */
@@ -1784,7 +1784,7 @@ export const makeHarnessLayoutSteps = (deps: {
         continue;
       }
       keepHeldFor(input.workspace.id, input.launchId, identity);
-      // A put Core refused whole for an account (never a partial one's, sealant#337): its words.
+      // A put sealant refused whole for an account (never a partial one's, sealant#337): its words.
       const refusedWhole = refusedAccountOf(error);
       if (refusedWhole !== null) {
         return yield* loginRefused(loginRefusal(refusedWhole.provider, refusedWhole.reason));
@@ -1800,7 +1800,7 @@ export const makeHarnessLayoutSteps = (deps: {
     return yield* new SealantPlatformError({
       code: "person_login_not_written",
       status: null,
-      message: `${identity.name}'s logins could not be written into this workspace: Core kept refusing`,
+      message: `${identity.name}'s logins could not be written into this workspace: sealant kept refusing`,
       cause: null,
     });
   });
@@ -1865,7 +1865,7 @@ export const makeHarnessLayoutSteps = (deps: {
 
   const processAs: HarnessLayoutSteps["processAs"] = Effect.fn("HarnessLayoutSteps.processAs")(
     function* (input) {
-      // A fallback's SSH reset Core has not taken yet: tried again, never awaited.
+      // A fallback's SSH reset sealant has not taken yet: tried again, never awaited.
       yield* forkSshReset(input.workspace.id);
       if (input.launchId === null) {
         // A launch Mend cannot name: in a worktree that runs per person every executor is a
@@ -1966,8 +1966,8 @@ export const makeHarnessLayoutSteps = (deps: {
             madeIn.set(workspaceId, made);
             yield* tellHomeReady(true);
           });
-          // Their own logins (decision 5), one Core call, only once the exec above confirmed their
-          // user and home: Core's write and the making of the home never touch it at once (the
+          // Their own logins (decision 5), one sealant call, only once the exec above confirmed their
+          // user and home: sealant's write and the making of the home never touch it at once (the
           // box, 2026-10-09: a first steer's write raced `useradd` and the skeleton copy, and
           // exited 1). A write that failed without refusing a login (unconfirmed, a home not
           // usable) is asked once more, after their user and home are ensured again without
@@ -2017,7 +2017,7 @@ export const makeHarnessLayoutSteps = (deps: {
           return yield* makeHome.pipe(
             Effect.andThen(writeThem),
             Effect.tapError(() => undoMinted),
-            // Interrupted mid-write (a client that went away): Core may have written, so the home
+            // Interrupted mid-write (a client that went away): sealant may have written, so the home
             // is recorded held for a release to reach, and the token minted for it goes.
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
@@ -2076,8 +2076,8 @@ export const makeHarnessLayoutSteps = (deps: {
   };
 
   /**
-   * One person's home released: Core's files and record (pi's and opencode's ChatGPT logins among
-   * them, which Core writes and removes, sealant#336), and their token.
+   * One person's home released: sealant's files and record (pi's and opencode's ChatGPT logins among
+   * them, which sealant writes and removes, sealant#336), and their token.
    */
   const releaseHome = Effect.fn("HarnessLayoutSteps.releaseHome")(function* (input: {
     readonly workspace: Workspace;
@@ -2128,7 +2128,7 @@ export const makeHarnessLayoutSteps = (deps: {
       const live = yield* input.live;
       const idle = candidates.filter((accountId) => !live.has(accountId));
       if (idle.length === 0) return;
-      // The handle first, outside every lock: a start never waits on a Core lookup.
+      // The handle first, outside every lock: a start never waits on a sealant lookup.
       const workspace = yield* input.workspace;
       let recheck = false;
       for (const accountId of idle) {
@@ -2203,7 +2203,7 @@ export const makeHarnessLayoutSteps = (deps: {
             choices.set(provider, true);
             logins[provider] = true;
           }
-          // Recorded before the write: whatever Core does with it, a release reaches it.
+          // Recorded before the write: whatever sealant does with it, a release reaches it.
           people.set(input.accountId, {
             identity,
             held: providers,
@@ -2241,7 +2241,7 @@ export const makeHarnessLayoutSteps = (deps: {
       const executor = executorOf(workspaceId, input.launchId);
       // The launcher's create-time home is theirs for the executor's life, whoever started first.
       executor.launcher = input.launcher;
-      // Core's homes first, then who is live: a person whose first process starts in between is
+      // sealant's homes first, then who is live: a person whose first process starts in between is
       // live by then, or inside the grace below (review of mend#564, P2-2).
       const listed = yield* platform.listCredentials(input.workspace);
       // A conversation home is its conversation's, whoever's login it holds: the caller decides.
@@ -2281,7 +2281,7 @@ export const makeHarnessLayoutSteps = (deps: {
             const running =
               identity !== null &&
               (identity.accountId === input.launcher || live.has(identity.accountId));
-            // Whose Core says it is must be the person the home belongs to: a login of anyone
+            // Whose sealant says it is must be the person the home belongs to: a login of anyone
             // else in it is released, never adopted (review of mend#564, P3-2).
             const owned =
               identity !== null &&

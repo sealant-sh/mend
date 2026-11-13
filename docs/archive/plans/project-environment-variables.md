@@ -10,14 +10,14 @@
 
 ## Audit addendum (2026-08-17)
 
-All core claims verified; line numbers cited below have drifted after the dotfiles commits (Core
+All core claims verified; line numbers cited below have drifted after the dotfiles commits (sealant
 #165/#166/#169/#172) but every mechanism exists. Corrections and decisions:
 
 - **Reserved policy mirrors the Sealantd filter exactly (decided).** Sealantd's `passthrough_env`
   (`Sealantd/crates/sealantd/src/boot/config.rs:789-817`) silently drops any boot-env name
   containing `TOKEN`/`SECRET`/`PASSWORD`/`PASSWD`/`CREDENTIAL`/`APIKEY` as a **substring** (so
   `TOKENIZER_PATH` too), ending in `_KEY`, or **exactly `KEY`**, plus consumed `SEALANT_*` keys.
-  Core's policy must be a strict superset so no accepted name can silently vanish: add the
+  sealant's policy must be a strict superset so no accepted name can silently vanish: add the
   bare-`KEY` exact match and substring semantics to the reserved rules in this plan. We do not use
   the `SEALANT_HARNESS_ENV_KEYS` exemption knob.
 - **Legacy `runtime.env` is more permissive than stated**: in docker argv it currently overrides
@@ -31,9 +31,9 @@ All core claims verified; line numbers cited below have drifted after the dotfil
   `runtime:` spread would clobber archives.
 - **API echo**: `userEnv` round-trips out via `WorkspaceDetails.spec` _and_
   `WorkspaceAttemptSummary.spec` (`workspaces.module.ts:~921, ~1072`); document both.
-- **No Core proxy layer exists**; proxy protection lives in the daemon (`extra_env` applied last).
-  `TERM` is force-set on the PTY path; `HOME`/`USER`/`LOGNAME` forced by `harness_child_env`. All
-  already reserved.
+- **No sealant proxy layer exists**; proxy protection lives in the daemon (`extra_env` applied
+  last). `TERM` is force-set on the PTY path; `HOME`/`USER`/`LOGNAME` forced by `harness_child_env`.
+  All already reserved.
 - **k8s/k3s runtime adapters ignore env entirely** — capability is Docker-only in practice;
   document.
 - **Plan-hash**: `runtime.env` deliberately excluded from the Containerfile hash; env-only changes
@@ -61,17 +61,17 @@ teams use to start dev servers**, and a real `.env` is majority secret-shaped. Y
   summary so a fingerprint in logs never covers env values. Malformed/missing file = loud boot
   failure (parity with dotfiles archives). The daemon documents that the launcher removes the file
   after readiness; values then live only in daemon memory and child environments.
-- **Core** — `CreateOptions.secretEnv`, validated by `parseWorkspaceSecretEnv` (same grammar/bounds
-  as `env`; reserved = every platform class **except** secret-marker; account-lookup names such as
-  `GITHUB_TOKEN` stay reserved — connected accounts own them). Never enters the blueprint, the
-  attempt/user spec snapshot, `WorkspaceDetails`, or `WorkspaceAttemptSummary`. Transport to the
-  worker: encrypted at rest with the existing credential cipher in a column on the build job,
-  decrypted just before launch, written as a `0600` JSON file into the staging root (the dotfiles
-  archive staging pattern), bind-mounted read-only at `/run/sealant/secrets`, passed as
+- **sealant** — `CreateOptions.secretEnv`, validated by `parseWorkspaceSecretEnv` (same
+  grammar/bounds as `env`; reserved = every platform class **except** secret-marker; account-lookup
+  names such as `GITHUB_TOKEN` stay reserved — connected accounts own them). Never enters the
+  blueprint, the attempt/user spec snapshot, `WorkspaceDetails`, or `WorkspaceAttemptSummary`.
+  Transport to the worker: encrypted at rest with the existing credential cipher in a column on the
+  build job, decrypted just before launch, written as a `0600` JSON file into the staging root (the
+  dotfiles archive staging pattern), bind-mounted read-only at `/run/sealant/secrets`, passed as
   `SEALANT_SECRET_ENV_FILE`; the staging file is removed once the control socket is ready and the
   ciphertext column is cleared after the launch phase (success or failure). Platform-side restarts
   therefore run **without** secret env (Mend always launches fresh; documented). Requires a sealantd
-  release + Core image-pin bump; e2e proves inheritance + redaction against the new image.
+  release + sealant image-pin bump; e2e proves inheritance + redaction against the new image.
 - **Mend** — a separate **Secrets** set per project: `project_secrets` (name, ciphertext, integer
   revision, unique `(project_id, name)`), encrypted at rest with a machine-local key file under
   `~/.config/mend/keys/` (0600, generated on first use, private half never leaves the host); the API
@@ -113,11 +113,11 @@ types, failures are typed, and diagnostics never contain values.
   (`packages/sealant/src/client.ts:90-94,243-246`).
 - Sealant exposes only PTY-local `SessionOptions.env`; `CreateOptions`, `RunOptions`, and
   `WorkspaceExecOptions` have no environment field
-  (`Core/packages/sdk/src/types.ts:209-271, 365-388`). PTY-only injection therefore cannot meet the
-  process-coverage requirement.
+  (`sealant/packages/sdk/src/types.ts:209-271, 365-388`). PTY-only injection therefore cannot meet
+  the process-coverage requirement.
 - The platform already has launch-time blueprint environment, persists it in build jobs/attempt
   snapshots, restarts from that snapshot, and lowers it to workspace-container environment
-  (`Core/packages/validators/src/workspaces/workspace-blueprint.ts:232-248`;
+  (`sealant/packages/validators/src/workspaces/workspace-blueprint.ts:232-248`;
   `packages/workspaces/src/runtime/docker-runtime-adapter.ts:264-315,945-1009`). A small public SDK
   option can therefore cover every descendant process without a new daemon protocol.
 - The existing `runtime.env` field is an unrestricted legacy/internal map. It is emitted after
@@ -138,9 +138,9 @@ types, failures are typed, and diagnostics never contain values.
   (`Sealantd/crates/sealantd/src/runtime.rs:31-46`;
   `crates/sealant-runtime-core/src/redact.rs:43-81`;
   `crates/sealant-process/src/runtime.rs:237-254`).
-- Mend is pinned to `@sealant/sdk` 0.18.0 while Core is 0.18.1 (`Mend/pnpm-workspace.yaml`;
-  `Core/packages/sdk/package.json`). The SDK and API-contract packages are a fixed Changesets
-  release group (`Core/.changeset/config.json`).
+- Mend is pinned to `@sealant/sdk` 0.18.0 while sealant is 0.18.1 (`Mend/pnpm-workspace.yaml`;
+  `sealant/packages/sdk/package.json`). The SDK and API-contract packages are a fixed Changesets
+  release group (`sealant/.changeset/config.json`).
 
 ## Approach
 
@@ -192,8 +192,8 @@ Invariants:
   3. Sealant-owned boot/runtime values (`SEALANT_*`, workspace paths, Docker routing);
   4. connected-account credential injection;
   5. process-owned terminal details such as `TERM` and protected proxy values.
-- Reserved-key rejection is the primary collision policy. Core orders platform values after the new
-  public `runtime.userEnv` as defense in depth. Legacy/internal `runtime.env` retains its old
+- Reserved-key rejection is the primary collision policy. sealant orders platform values after the
+  new public `runtime.userEnv` as defense in depth. Legacy/internal `runtime.env` retains its old
   behavior solely for stored-spec compatibility and is never emitted by Mend/the fluent SDK. Mend
   does not use `SessionOptions.env`, so no hidden PTY-specific override layer exists.
 - Empty string is a valid value and means “set this variable to empty”; absence means unset. Mend
@@ -274,7 +274,7 @@ must not ship as a partial feature presented as workspace-wide.
 
 ### Candidate 2 — non-secret public workspace environment (recommended)
 
-Mend persists explicitly ordinary project values in plaintext, while Core adds validated public
+Mend persists explicitly ordinary project values in plaintext, while sealant adds validated public
 `CreateOptions.env` and lowers it to the existing blueprint. Mend stores only a safe launch manifest
 on `SessionRun`: project environment revision and ordered variable names, not values or hashes.
 Exact non-secret values are already durable in Sealant's workspace build/attempt spec for the life
@@ -296,11 +296,11 @@ Costs:
 
 ### Candidate 3 — secret-capable project environment (defer)
 
-A secure design cannot send raw values through `CreateOptions.env`: Core persists blueprint values,
-returns specs through APIs, and currently places credential environment in Docker argv; Sealantd's
-redactor does not learn per-session overlays, live exec attachment forwards raw bytes before
-telemetry redaction, commands remain raw, configuration fingerprints hash secret-bearing child
-environment, and chunk-split output can evade redaction.
+A secure design cannot send raw values through `CreateOptions.env`: sealant persists blueprint
+values, returns specs through APIs, and currently places credential environment in Docker argv;
+Sealantd's redactor does not learn per-session overlays, live exec attachment forwards raw bytes
+before telemetry redaction, commands remain raw, configuration fingerprints hash secret-bearing
+child environment, and chunk-split output can evade redaction.
 
 A future secret-capable stack would require all of the following:
 
@@ -319,7 +319,7 @@ A future secret-capable stack would require all of the following:
 6. APIs list only name/reference/provider/update metadata; create/replace never returns the value;
    rename preserves the reference and delete revokes it.
 
-This is materially larger, spans Mend/Core/Sealantd, and cannot truthfully fit behind a password
+This is materially larger, spans Mend/sealant/Sealantd, and cannot truthfully fit behind a password
 input over project JSONB. Recommend Candidate 2 now and a separate security design/ADR only when
 generic secret bindings become a committed product requirement.
 
@@ -327,7 +327,7 @@ generic secret bindings become a committed product requirement.
 
 Define the generic policy once in the public `@sealant/api-contracts` package as a pure parser plus
 constants/structured failures; re-export it from `@sealant/sdk`. `CreateOptions.env` is parsed and
-lowered into a new additive, strict `runtime.userEnv` blueprint field. Core's create, worker, and
+lowered into a new additive, strict `runtime.userEnv` blueprint field. sealant's create, worker, and
 restart reads all parse that field with the same policy; pre-feature specs have no field and decode
 to an empty map. Keep legacy/internal `runtime.env` parsing and precedence unchanged so stored specs
 and existing internal consumers remain compatible; do not expose it through the fluent SDK.
@@ -357,7 +357,7 @@ reconfiguring Sealant control, connected-account lookup, loaders, shells, or glo
 and reduces accidental credential exposure. Legitimate uses of a blocked process-control variable
 must be expressed in an explicit command/workspace-image configuration where the effect is visible.
 
-Reject in the generic Core policy:
+Reject in the generic sealant policy:
 
 - prefix `SEALANT_`;
 - identity/process roots: `HOME`, `PATH`, `USER`, `LOGNAME`, `SHELL`, `PWD`, `OLDPWD`, `SHLVL`,
@@ -384,7 +384,7 @@ public surface. Do not scan values for “secret patterns”: that would create 
 instead states that all accepted values are stored and sent as plaintext.
 
 A JavaScript/JSON record cannot represent or reliably diagnose duplicate object keys after parsing;
-Core therefore validates the resulting map, not duplicates. Mend's resource model and database
+sealant therefore validates the resulting map, not duplicates. Mend's resource model and database
 unique constraint own duplicate-name detection.
 
 ## Create, edit, delete, and rename
@@ -475,7 +475,7 @@ Accurate Docker copy:
   only; values never appear.
 - Mend events carry pointers only. Process records retain argv as today but environment values must
   never be copied into argv or metadata by this feature.
-- Core workspace build jobs and attempt snapshots contain accepted non-secret values because the
+- sealant workspace build jobs and attempt snapshots contain accepted non-secret values because the
   blueprint is the durable restart source; workspace-details API can return that spec to authorized
   platform clients. SDK docs must state this explicitly.
 - Sealant execution records do not add environment events. If a process prints a value, it is
@@ -494,18 +494,18 @@ Accurate Docker copy:
 - UI layout/design: `apps/web/src/routes/settings.tsx`, workspace-image form helpers in
   `apps/web/src/lib/workspace-environment.ts`, and clipboard fallback in
   `apps/web/src/lib/workbench-menus.ts::copyText`.
-- Core public lowering: `packages/sdk/src/internal/blueprint.ts::buildCreateWorkspaceRequest`.
-- Core compatible blueprint parsing plus the new strict additive field:
+- sealant public lowering: `packages/sdk/src/internal/blueprint.ts::buildCreateWorkspaceRequest`.
+- sealant compatible blueprint parsing plus the new strict additive field:
   `packages/validators/src/workspaces/workspace-blueprint.ts`.
-- Core runtime inheritance: `packages/workspaces/src/runtime/docker-runtime-adapter.ts` and existing
-  real-Sealantd proofs under `packages/workspaces/src/sealantd/*.e2e.ts`.
+- sealant runtime inheritance: `packages/workspaces/src/runtime/docker-runtime-adapter.ts` and
+  existing real-Sealantd proofs under `packages/workspaces/src/sealantd/*.e2e.ts`.
 
 ## Files to modify
 
 Exact filenames may shift during implementation, but these are the critical owners discovered.
 Generated output must be regenerated by its owner, never hand-edited.
 
-### Sealant/Core
+### sealant
 
 - New `packages/api-contracts/src/workspace-environment.ts` plus
   `packages/api-contracts/src/index.ts` — public policy constants, pure parser, and structured
@@ -560,22 +560,22 @@ already accepts a parsed blueprint, and clients derive from the Effect HTTP API.
 
 ### Sealantd
 
-No source change is required for the recommended non-secret design: Core already launches Sealantd
-with workspace-container environment, and managed descendants inherit the daemon's parsed child
-base. Sealantd is a required compatibility/e2e test target, not a PR stack. Core currently bakes
-`ghcr.io/sealant-sh/sealantd:0.9.0`
+No source change is required for the recommended non-secret design: sealant already launches
+Sealantd with workspace-container environment, and managed descendants inherit the daemon's parsed
+child base. Sealantd is a required compatibility/e2e test target, not a PR stack. sealant currently
+bakes `ghcr.io/sealant-sh/sealantd:0.9.0`
 (`packages/workspaces/src/buildkit/buildkit-builder.ts:319-323`); run the inheritance matrix against
-that exact image. If the proof exposes a daemon mismatch, stop the Core release and add a separate
-Sealantd fix/release plus Core image-pin gate rather than papering over it in Mend. The
+that exact image. If the proof exposes a daemon mismatch, stop the sealant release and add a
+separate Sealantd fix/release plus sealant image-pin gate rather than papering over it in Mend. The
 secret-capable alternative would require changes in `crates/sealant-runtime-core/src/redact.rs`,
 `crates/sealant-process/src/runtime.rs`, `crates/sealant-pty/src/session.rs`, spawn wrappers, and
 protocol/record projections.
 
 ## Pull-request stacks and release gates
 
-### PR 1 — Core: public validated workspace environment
+### PR 1 — sealant: public validated workspace environment
 
-**Repository:** Sealant/Core  
+**Repository:** sealant  
 **Depends on:** none.
 
 - Add non-secret `CreateOptions.env`, a public reusable parser/policy, and lowering into additive
@@ -604,18 +604,18 @@ protocol/record projections.
 - Build-job parse, runtime adapter, workspace restart, and reacquired handle preserve the caller
   map.
 - A release-gating job requires the Sealantd image instead of using the existing skip-if-absent
-  behavior. Real Core runtime tests cover exec/PTY; a full-stack public SDK smoke test separately
+  behavior. Real sealant runtime tests cover exec/PTY; a full-stack public SDK smoke test separately
   covers a harness run and a handle reacquired through `workspaces.get()`.
 - Precedence tests prove public project values override image defaults but cannot override platform,
   Docker-routing, proxy, or connected-account keys; separate compatibility fixtures pin the legacy
   field's previous behavior.
 - No environment value is added to run telemetry/command metadata.
 
-**Release gate:** merge and publish/deploy the Core release before Mend consumes it. Because the SDK
-and API contracts are fixed, both publish together; expect the next minor from 0.18.x (exact version
-is Changesets-owned). The deployed control plane/worker must match the validating release, not only
-the npm SDK. The e2e proof must pass against pinned Sealantd 0.9.0; otherwise a Sealantd release and
-Core image-pin update become prerequisites.
+**Release gate:** merge and publish/deploy the sealant release before Mend consumes it. Because the
+SDK and API contracts are fixed, both publish together; expect the next minor from 0.18.x (exact
+version is Changesets-owned). The deployed control plane/worker must match the validating release,
+not only the npm SDK. The e2e proof must pass against pinned Sealantd 0.9.0; otherwise a Sealantd
+release and sealant image-pin update become prerequisites.
 
 ### PR 2 — Mend: project environment domain, persistence, and API
 
@@ -661,14 +661,15 @@ SDK.
 - New session and settled-session resume see latest values and create distinct run manifests.
 - Mend process restart/reattach does not change the workspace snapshot.
 - Launch failure before PTY creates no fake run and leaks no value in summary/error/logs.
-- A released-stack e2e (real Core plus pinned Sealantd) proves primary harness, shell, Service
+- A released-stack e2e (real sealant plus pinned Sealantd) proves primary harness, shell, Service
   start/restart, setup, and deterministic exec/check inheritance across live edits/resume.
 - With `services.docker` explicitly enabled, Docker Compose interpolation sees the workspace value;
   a nested test container does not receive it unless Compose/`docker run -e` explicitly passes it.
 
-**Version gate:** update only Mend's catalog package pin after the Core package is published; follow
-`Mend/AGENTS.md` and do not modify `pnpm-lock.yaml`. CI must run against a control plane/worker with
-the matching validation semantics (`--lockfile=false` is the repository's deliberate install mode).
+**Version gate:** update only Mend's catalog package pin after the sealant package is published;
+follow `Mend/AGENTS.md` and do not modify `pnpm-lock.yaml`. CI must run against a control
+plane/worker with the matching validation semantics (`--lockfile=false` is the repository's
+deliberate install mode).
 
 ### PR 4 — Mend: project Environment UX
 
@@ -699,9 +700,9 @@ belongs to the deferred secret-capable work.
 
 ## Steps
 
-- [ ] Land Core public capability, shared new-input validation, stored-spec compatibility, docs,
+- [ ] Land sealant public capability, shared new-input validation, stored-spec compatibility, docs,
       tests, and Changeset.
-- [ ] Publish/deploy the compatible Core package/control-plane/worker release.
+- [ ] Publish/deploy the compatible sealant package/control-plane/worker release.
 - [ ] Land Mend domain/persistence/API resources and safe SessionRun manifest.
 - [ ] Upgrade Mend's public SDK pin and wire launch-time workspace inheritance.
 - [ ] Land the Project environment UX and end-to-end lifecycle copy/tests.
@@ -710,7 +711,7 @@ belongs to the deferred secret-capable work.
 
 For every implementation PR, run that repository's required format, typecheck, lint, and focused
 test commands from its `AGENTS.md`. Before feature completion, run one cross-repository environment
-matrix against the released Core stack and its pinned Sealantd image:
+matrix against the released sealant stack and its pinned Sealantd image:
 
 1. accepted, rejected, empty, multiline, max-size, and concurrent mutation cases;
 2. initial launch, live attach, new shell, Service start/restart, setup, check, Mend restart,
@@ -733,7 +734,7 @@ matrix against the released Core stack and its pinned Sealantd image:
   `packages/db/src/repos/{projects,settings, session-runs}.ts`.
 - Mend launch/processes: `packages/sessions/src/engine.ts`, `packages/sealant/src/client.ts`,
   `packages/jobs/src/run-starter.ts`, `apps/cli/src/main.ts`.
-- Core public/lowering: `packages/api-contracts/src`, `packages/sdk/src/{index,types}.ts`,
+- sealant public/lowering: `packages/api-contracts/src`, `packages/sdk/src/{index,types}.ts`,
   `packages/sdk/src/internal/blueprint.ts`,
   `packages/validators/src/workspaces/workspace-blueprint.ts`,
   `packages/workspaces/src/{worker/process-workspace-build-job,runtime/docker-runtime-adapter}.ts`.

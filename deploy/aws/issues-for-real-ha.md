@@ -24,7 +24,7 @@ See the [deployment overview](README.md), the [cost review](poc-cost-plans.md), 
 - Two of the blockers are small and provider-specific. Two are engine changes that apply to every
   provider, including a later Cloudflare deployment. The engine change is smaller than it first
   looks, because the live data planes already avoid engine memory.
-- Ownership of Mend, Sealant Core and sealantd is not a constraint. Items are sorted by what they
+- Ownership of Mend, sealant and sealantd is not a constraint. Items are sorted by what they
   technically block, not by which repository they land in.
 
 ## What runs where
@@ -40,8 +40,8 @@ See the [deployment overview](README.md), the [cost review](poc-cost-plans.md), 
 Already safe to serve from any pod, and worth not breaking:
 
 - The terminal route on the Mend API authenticates from Postgres, reads the process row and dials
-  Sealant Core. Core's attach handler dials the VM's authenticated ingress endpoint per attach. No
-  pod on that path holds a VM-initiated connection. The same is true of the service tunnel route.
+  sealant. sealant's attach handler dials the VM's authenticated ingress endpoint per attach. No pod
+  on that path holds a VM-initiated connection. The same is true of the service tunnel route.
 - Per-worktree executor leases and epochs live in Postgres and are held by sealantd through its
   heartbeat, not by a Mend process. A Mend pod dying does not end a VM.
 - Hot pool claims use `FOR UPDATE SKIP LOCKED` in one statement. Concurrent claimers cannot
@@ -155,9 +155,9 @@ A1 first. It is small and removes the 409 on its own, which lets two Mend pods c
 sessions. A2 and A3 together, since they are one feature. Then A4. A5 last. A6 before any per-person
 executor runs with more than one Mend pod.
 
-## B. Sealant Core API in-process state
+## B. sealant API in-process state
 
-Core's API keeps interface-side inference sessions and their pending provider calls in a
+sealant's API keeps interface-side inference sessions and their pending provider calls in a
 module-level map, on purpose per its header comment. Same treatment as A2 in miniature: persist what
 is durable, route or queue what is live. The workspace websocket handler is not affected; it opens
 one daemon connection per attach for the socket's lifetime and holds nothing between attaches.
@@ -172,7 +172,7 @@ orphaned-resource reconciler and exit reconciler are process timers and would ru
 Move them to pg-boss singleton scheduled jobs, or make each tick idempotent. About a day of work.
 
 Replacing pg-boss with an AWS queue does not help here. The timers are the problem, not the queue,
-and Core also runs on the Hetzner cluster and in docker compose.
+and sealant also runs on the Hetzner cluster and in docker compose.
 
 ## D. The Mend project store volume
 
@@ -207,12 +207,12 @@ and uploads, remains the right shape for Cloudflare. It is not needed to reach H
 
 ## E. The Zot registry volume
 
-The second single-attach disk, with the same pinning effect. Core's in-cluster BuildKit builder has
-no credential path for ECR, so the worker's IAM role does not get BuildKit authenticated; the
+The second single-attach disk, with the same pinning effect. sealant's in-cluster BuildKit builder
+has no credential path for ECR, so the worker's IAM role does not get BuildKit authenticated; the
 [Kubernetes README](kubernetes/README.md) records this. Two ways out:
 
 - Teach the BuildKit path to authenticate to ECR with a refreshed token. Adapter-level change in
-  Core.
+  sealant.
 - For the MicroVM adapter, skip the in-cluster build and publish workspace images to ECR out of
   band, since AWS builds the MicroVM image from ECR anyway.
 
@@ -256,8 +256,8 @@ Monthly cost added on top of the fixed bill in the cost review, Frankfurt list p
 
 ## Verification status
 
-The findings come from reading Mend `packages/sessions`, `apps/api/src/routes`, `packages/db`, Core
-`apps/api/src/routes/workspaces` and `packages/workspaces/src/runtime/microvm`, and the AWS
+The findings come from reading Mend `packages/sessions`, `apps/api/src/routes`, `packages/db`,
+sealant `apps/api/src/routes/workspaces` and `packages/workspaces/src/runtime/microvm`, and the AWS
 manifests in this directory, all on 2026-09-16. No multi-replica deployment has been run. Before
 relying on any item above, reproduce the 409 from A1 with two Mend pods and confirm the terminal
 route serves a session launched by the other pod.
