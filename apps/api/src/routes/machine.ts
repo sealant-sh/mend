@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { hostname, networkInterfaces, platform } from "node:os";
 
-import { CurrentUser, MachineView, MendApi, type AddressKind } from "@mend/api-contracts";
+import { MachineView, MendApi, type AddressKind } from "@mend/api-contracts";
 import {
   HOST_USER_NAMESPACE_FILES,
   type HostUserNamespaces,
@@ -161,7 +161,9 @@ export const readMachine = (
     exposure,
     ...(userNamespaces === undefined ? {} : { userNamespaces }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
-    ...(sessions.sessionRuntimes === undefined ? {} : { sessionRuntimes: sessions.sessionRuntimes }),
+    ...(sessions.sessionRuntimes === undefined
+      ? {}
+      : { sessionRuntimes: sessions.sessionRuntimes }),
     ...(sessions.boat === undefined ? {} : { boat: sessions.boat }),
   });
 };
@@ -179,11 +181,14 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
         trusted,
       );
       const offer = sessionRuntimeOfferOf(yield* DeploymentConfig);
-      // The server's own Boat facts are its operator's (docs/adr/0003): nobody else reads them.
-      const caller = yield* CurrentUser;
+      // The server's own Boat facts are its operator's (docs/adr/0003), signed in rather than
+      // through an access key, as every operator route: nobody else reads them.
+      const operator = yield* (yield* ProjectAccess).requireOperator("machine").pipe(
+        Effect.as(true),
+        Effect.orElseSucceed(() => false),
+      );
       const boat =
-        offer?.offered.includes("boat") === true &&
-        (yield* (yield* ProjectAccess).isOperator(caller.user.id))
+        offer?.offered.includes("boat") === true && operator
           ? yield* (yield* MachineBoatReport).read()
           : undefined;
       return readMachine(
@@ -201,7 +206,9 @@ export const MachineGroupLive = HttpApiBuilder.group(MendApi, "machine", (handle
         offer?.offered.includes("docker") ?? true,
         observedUserNamespaces,
         {
-          ...(offer === null ? {} : { sessionRuntimes: { offered: offer.offered, default: offer.default } }),
+          ...(offer === null
+            ? {}
+            : { sessionRuntimes: { offered: offer.offered, default: offer.default } }),
           ...(boat === undefined ? {} : { boat }),
         },
       );

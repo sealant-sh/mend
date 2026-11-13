@@ -241,7 +241,9 @@ describe("Core's Boat accounts, through the SDK", () => {
   it("reads the install's own key's last report, never the key", async () => {
     next = { status: 200, body: { label: "This install's Boat key", report: wireReport } };
     const result = await run((clients) => clients.boatInstallKey());
-    expect(requests).toEqual([{ method: "GET", path: "/v1/boat-accounts/install-key", body: null }]);
+    expect(requests).toEqual([
+      { method: "GET", path: "/v1/boat-accounts/install-key", body: null },
+    ]);
     expect(result._tag === "Success" ? result.success?.report?.snapshots : "failed").toEqual({
       observed: true,
       used: 10,

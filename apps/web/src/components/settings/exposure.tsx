@@ -6,13 +6,13 @@ import { ErrorNote, StatusWord, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import { useTRPC } from "#/lib/trpc";
 
-import { SessionsAndBoat } from "./exposure-sessions";
 import {
   DECLARED_WORDS,
   establishedTone,
   exposureCounts,
   refusesPublicStart,
 } from "./exposure-model";
+import { SessionsAndBoat } from "./exposure-sessions";
 
 const time = (at: number) =>
   new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });

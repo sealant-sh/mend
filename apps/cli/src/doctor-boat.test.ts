@@ -89,7 +89,11 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
     const checks = await doctorAgainst({
       sessionRuntimes: BOTH,
       boat: serverBoatFactsFixture({}, now),
-      organizationKey: new BoatKeyStatus({ connected: false, sessionRuntime: "boat", details: null }),
+      organizationKey: new BoatKeyStatus({
+        connected: false,
+        sessionRuntime: "boat",
+        details: null,
+      }),
     });
     expect(checks.map((check) => [check.label, check.state])).toEqual([
       ["sessions", "info"],
@@ -100,7 +104,9 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
       ["boat gateway", "ok"],
       ["org boat key", "todo"],
     ]);
-    expect(labelled(checks, "boat key").detail).toMatch(/· observed \d{4}-\d\d-\d\d \d\d:\d\d UTC$/);
+    expect(labelled(checks, "boat key").detail).toMatch(
+      /· observed \d{4}-\d\d-\d\d \d\d:\d\d UTC$/,
+    );
   });
 
   it("warns of a server key that expires within fourteen days", async () => {

@@ -1,13 +1,13 @@
-import { SessionRuntimeOffer } from "@mend/domain";
-import { refusedKeyReportFixture, serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
 import * as http from "node:http";
 import type { AddressInfo } from "node:net";
 
+import { SessionRuntimeOffer } from "@mend/domain";
+import { refusedKeyReportFixture, serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { askAddress, boatLaunchOf } from "../machine-boat.ts";
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
+import { askAddress, boatLaunchOf } from "../machine-boat.ts";
 
 const NOW = new Date("2026-11-13T14:02:00.000Z");
 
@@ -114,7 +114,11 @@ describe("asking a public address from the server", () => {
     const url = `http://127.0.0.1:${address.port}`;
     try {
       const answered = await Effect.runPromise(askAddress("sessions", url));
-      expect(answered).toMatchObject({ purpose: "sessions", url, answer: { answered: true, status: 404 } });
+      expect(answered).toMatchObject({
+        purpose: "sessions",
+        url,
+        answer: { answered: true, status: 404 },
+      });
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }

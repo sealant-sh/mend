@@ -79,21 +79,21 @@ const blocked = (failure: BoatFailure, context: BoatWordsContext): string =>
   context.place === "status"
     ? "so new Boat sessions cannot start with it"
     : context.place === "key-check"
-    ? "so nothing changed"
-    : context.place === "full-check"
-      ? "so the full check stopped there"
-      : failure.operation !== null && SNAPSHOT_OPERATIONS.has(failure.operation)
-        ? "so this session's image could not be saved"
-        : "so this session's VM did not start";
+      ? "so nothing changed"
+      : context.place === "full-check"
+        ? "so the full check stopped there"
+        : failure.operation !== null && SNAPSHOT_OPERATIONS.has(failure.operation)
+          ? "so this session's image could not be saved"
+          : "so this session's VM did not start";
 
 const again = (context: BoatWordsContext): string =>
   context.place === "status"
     ? "start a Boat session again"
     : context.place === "key-check"
-    ? "try again"
-    : context.place === "full-check"
-      ? "run the full check again"
-      : "start the session again";
+      ? "try again"
+      : context.place === "full-check"
+        ? "run the full check again"
+        : "start the session again";
 
 const thenAgain = (context: BoatWordsContext): string => `Then ${again(context)}`;
 

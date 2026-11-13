@@ -93,8 +93,8 @@ import {
   SessionRuntimeOffer,
   type WorkspaceRuntimesReading,
 } from "@mend/domain";
-import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import { serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
+import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import {
   AuditEvent,
   canRemoveProject,

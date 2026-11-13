@@ -1,9 +1,4 @@
-import {
-  BoatKeyCheck,
-  BoatKeyDetails,
-  BoatKeyFullCheck,
-  BoatKeyStatus,
-} from "@mend/api-contracts";
+import { BoatKeyCheck, BoatKeyDetails, BoatKeyFullCheck, BoatKeyStatus } from "@mend/api-contracts";
 import {
   type BoatKeyProof,
   type BoatKeyReport,

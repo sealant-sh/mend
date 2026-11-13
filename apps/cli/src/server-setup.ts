@@ -5594,7 +5594,10 @@ const operatorReader = (
   try {
     loginOrigin = new URL(login.url).origin;
   } catch {
-    return { _tag: "unread", why: `the saved sign-in's URL "${login.url}" is not a URL · not read` };
+    return {
+      _tag: "unread",
+      why: `the saved sign-in's URL "${login.url}" is not a URL · not read`,
+    };
   }
   if (loginOrigin !== installation.config.appUrl) {
     return {

@@ -296,7 +296,6 @@ import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
 import { FetchHttpClient, HttpRouter, HttpServerResponse } from "effect/http";
 
 import { ProjectAccessLive } from "./access.ts";
-import { MachineBoatReportLive } from "./machine-boat.ts";
 import { AdoptionsLive } from "./adoptions.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
 import { Budgets, BudgetsLive } from "./budgets.ts";
@@ -308,6 +307,7 @@ import { GithubIdentityLive } from "./github-identity.ts";
 import { HandoffStartLive } from "./handoff-start.ts";
 import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
+import { MachineBoatReportLive } from "./machine-boat.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
 import { PageViewTokensLive } from "./page-view-tokens.ts";

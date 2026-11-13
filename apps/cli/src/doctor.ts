@@ -20,7 +20,6 @@ import {
 import { Schema } from "effect";
 
 import { organizationBoatKeyLine, PersonBoatKeyWire, personBoatKeyLine } from "./boat.ts";
-
 import { readinessResult, requestFailure, writeCommandResult } from "./command-result.ts";
 import {
   dockerStopCheck,

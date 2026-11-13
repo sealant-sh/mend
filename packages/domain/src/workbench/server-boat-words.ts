@@ -1,14 +1,9 @@
 import type { SessionRuntime } from "../settings.ts";
-import type { BoatFailure, BoatFailureKind } from "./boat-failure.ts";
 import { type BoatKeyHolder, boatProblemWords } from "./boat-failure-words.ts";
-import type { BoatKeyReport } from "./boat-key.ts";
+import type { BoatFailure, BoatFailureKind } from "./boat-failure.ts";
 import { boatKeyFacts, boatKeyWarnings } from "./boat-key-words.ts";
-import type {
-  BoatAddress,
-  BoatLaunch,
-  ServerBoatFacts,
-  ServerBoatKey,
-} from "./server-boat.ts";
+import type { BoatKeyReport } from "./boat-key.ts";
+import type { BoatAddress, BoatLaunch, ServerBoatFacts, ServerBoatKey } from "./server-boat.ts";
 
 /**
  * Where sessions run and how Boat is doing, as status lines (SLNT-799): `mend server status`,
@@ -107,7 +102,12 @@ export const boatLaunchLine = (
             fix: NO_WORKER_FIX,
           };
     case "unread":
-      return { label: "boat launch", state: "info", detail: `not read · ${launch.reason}`, fix: null };
+      return {
+        label: "boat launch",
+        state: "info",
+        detail: `not read · ${launch.reason}`,
+        fix: null,
+      };
   }
 };
 
@@ -231,7 +231,8 @@ export const boatKeyLine = (input: {
   };
 };
 
-const REPLACE_SERVER_KEY = "Give this server a new key with mend server setup --boat-api-key-stdin.";
+const REPLACE_SERVER_KEY =
+  "Give this server a new key with mend server setup --boat-api-key-stdin.";
 
 /** The server's own Boat key, which only its operator reads. */
 export const serverBoatKeyLine = (key: ServerBoatKey, now: Date): StatusLine => {

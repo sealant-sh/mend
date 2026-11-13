@@ -38,10 +38,7 @@ const noAnswerDetail = (cause: unknown): string => {
 };
 
 /** Asks one address from this server. Any HTTP status is an answer: the forwarding reached something. */
-export const askAddress = (
-  purpose: BoatAddressPurpose,
-  url: string,
-): Effect.Effect<BoatAddress> =>
+export const askAddress = (purpose: BoatAddressPurpose, url: string): Effect.Effect<BoatAddress> =>
   Effect.gen(function* () {
     const answer = yield* Effect.promise(() =>
       fetch(`${url.replace(/\/+$/, "")}/`, {
@@ -122,9 +119,10 @@ export const MachineBoatReportLive: Layer.Layer<
       },
       { concurrency: "unbounded" },
     );
-    const kept = yield* Ref.make<{ readonly until: number; readonly facts: ServerBoatFacts } | null>(
-      null,
-    );
+    const kept = yield* Ref.make<{
+      readonly until: number;
+      readonly facts: ServerBoatFacts;
+    } | null>(null);
     const read = Effect.fn("MachineBoatReport.read")(function* () {
       const now = yield* Clock.currentTimeMillis;
       const known = yield* Ref.get(kept);

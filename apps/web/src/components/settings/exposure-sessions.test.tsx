@@ -29,7 +29,9 @@ const machine = (fields: Partial<MachineView> = {}) =>
 const render = async (view: MachineView): Promise<string> => {
   // The web tier flattens the contract's classes before superjson, as `run` does.
   root = await renderWithTrpc(<SessionsAndBoat now={NOW} />, (path) =>
-    path === "platform.machine" ? { data: structuredClone(view) } : { refuse: `unexpected ${path}` },
+    path === "platform.machine"
+      ? { data: structuredClone(view) }
+      : { refuse: `unexpected ${path}` },
   );
   return document.body.textContent ?? "";
 };
