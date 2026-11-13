@@ -1,20 +1,22 @@
 # Access without a private network: Mend as its own authenticated front door
 
-Status: proposed 2026-09-17. Commits Mend to the work that makes a private network layer a choice
-and not a prerequisite. It closes the Mend findings the organizations stack left open in
-[public exposure findings](../archive/reviews/public-exposure-findings.md) (MEND-05, MEND-08,
-MEND-11, the event-stream lifecycle, and the edge), names the platform halves (CORE-01, -03, -04,
--05, -08 and the executor channel's transport), and defines the **public exposure gate**.
+Status: accepted 2026-09-18 (#285); built in #286 to #291. It still does not authorize public
+exposure: gate G7 waits on an independent reassessment. Commits Mend to the work that makes a
+private network layer a choice and not a prerequisite. It closes the Mend findings the organizations
+stack left open in public exposure findings
+(`0dd4b4bf:docs/archive/reviews/public-exposure-findings.md`) (MEND-05, MEND-08, MEND-11, the
+event-stream lifecycle, and the edge), names the platform halves (CORE-01, -03, -04, -05, -08 and
+the executor channel's transport), and defines the **public exposure gate**.
 
-**This ADR does not authorize public exposure.** Public Mend is gate **G7** of the
-[access plan](../operations/aws-access-plan.md), and G7 needs an independent reassessment of the
+**This ADR does not authorize public exposure.** Public Mend is gate **G7** of the access plan
+(`0dd4b4bf:docs/operations/aws-access-plan.md`), and G7 needs an independent reassessment of the
 exact release. Nothing here, and no green test, stands in for that.
 
 ## Context
 
-[Plan §7.5](../../MEND-AGENT-WORKBENCH-PLAN.md) was written with a tailnet assumed: bind to loopback
-and private interfaces, show the machine's tailnet address, require no public inbound port. The
-network was the perimeter, and the application was allowed to lean on it.
+Plan §7.5 (`0dd4b4bf:MEND-AGENT-WORKBENCH-PLAN.md`) was written with a tailnet assumed: bind to
+loopback and private interfaces, show the machine's tailnet address, require no public inbound port.
+The network was the perimeter, and the application was allowed to lean on it.
 
 The organizations stack ([ADR 0003](0003-organizations-and-tenancy.md), #263 to #280, #282) removed
 most of that leaning: registration is closed and by invitation, an operator role exists, every route
@@ -551,24 +553,8 @@ builds one Sealant client per user (#105), so sealant's `SEALANT_REQUIRE_OWNER_S
 
 ## Delivery
 
-One ready-for-review PR per step, stacked:
-
-1. This ADR.
-2. Budgets: body limits before decode, frame limits, the request limiter and the single client
-   address resolver, per-account and per-organization ceilings, the connection budget in
-   `ConnectionRegistry`.
-3. Upgrade tickets, header authentication on every native client, `MEND_URL_BEARERS`, query
-   redaction.
-4. The error boundary and the browser header policy, with the terminal-embed test.
-5. The event stream lifecycle test and the per-account stream bound.
-6. The edge: `MEND_EXPOSURE`, explicit cookie attributes, the public exposure gate,
-   `GET /operator/exposure`, the chart's Ingress and the packaged install's Caddy edge.
-7. Reporting and docs: `machine.ts`, the shell, `mend doctor`, plan §7.5, `AGENTS.md`, the
-   self-hosting and remote-access guides.
-
-Follows the Sealant release that carries the platform halves: the Sealant pin bump, `transport` on
-the capture source from `MEND_EXECUTOR_NETWORK` and the channel's TLS settings, and gate item 10
-reading the real value.
+Built in #286 to #291 after this ADR (#285), one pull request per step; the platform halves followed
+with Sealant 0.34.0 and the transport statement on every capture launch (#293).
 
 ## Decision log
 
@@ -686,8 +672,8 @@ Decisions that are the owner's. Work proceeds on the default stated with each.
 
 1. **Does `private` also refuse to start on open items, or only report?** Default: only report, so
    existing tailnet and LAN installs upgrade without a new start-up failure.
-2. **Budget defaults.** The numbers in PR 2 are sized from the author's own use. Default: ship them,
-   all configurable.
+2. **Budget defaults.** The budgets' numbers (#286) are sized from the author's own use. Default:
+   ship them, all configurable.
 3. **Who may record a reassessment?** Default: an environment variable, so it is an operator act
    that leaves a trace in deployment configuration. An audit-logged `mend operator` command is the
    alternative.

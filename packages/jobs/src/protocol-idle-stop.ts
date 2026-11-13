@@ -28,7 +28,7 @@ import * as Context from "effect/Context";
 import { makeTerminalOutput } from "./terminal-output.ts";
 
 /**
- * The idle stop (docs/SELF-HOSTING.md, "Idle agents"). A protocol agent (a Slack-started session,
+ * The idle stop (docs: "When Boat VMs stop"). A protocol agent (a Slack-started session,
  * a conversation on the web or the phone) stays up between turns, waiting for the next one, and
  * keeps its workspace up with it; only the platform's cap on a workspace ever ended one. Every
  * minute this pass stops each protocol agent that has sat idle past

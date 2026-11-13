@@ -131,7 +131,7 @@ export class ProjectSecretMutationResult extends Schema.Class<ProjectSecretMutat
 }) {}
 
 /**
- * Project SECRETS (`docs/archive/plans/project-environment-variables.md`, "Scope expansion"): the encrypted,
+ * Project SECRETS (the project-environment plan in git history, "Scope expansion"): the encrypted,
  * write-only half of the project env store. Responses carry names and revisions only — a value
  * that has been written can never be read back through this API. At launch the current set goes
  * to Sealant's transient secret channel, which keeps it out of the blueprint, container env, and
@@ -368,7 +368,7 @@ export class SessionControlView extends Schema.Class<SessionControlView>("Sessio
 }) {}
 
 /**
- * A repository the session holds beside its own worktree (docs/adr/0010), with what the review
+ * A repository the session holds beside its own worktree (docs/adr/0011), with what the review
  * can say about it: the project's name, its change, and how far its own chain has moved.
  */
 export class SessionRepositoryView extends Schema.Class<SessionRepositoryView>(
@@ -405,7 +405,7 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
   /** The WORKTREE's chain and change, denormalized here for pre-worktree clients. */
   checkpoints: Schema.Array(Checkpoint),
   change: Schema.NullOr(SessionChange),
-  /** The repositories the session holds beside its own worktree (docs/adr/0010). Older servers omit it. */
+  /** The repositories the session holds beside its own worktree (docs/adr/0011). Older servers omit it. */
   repositories: Schema.Array(SessionRepositoryView).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed([])),
   ),

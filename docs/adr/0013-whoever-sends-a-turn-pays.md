@@ -1,9 +1,10 @@
 # Whoever sends a turn pays: the workspace's login follows the turn's sender
 
-Status: proposed 2026-10-03. Amends [ADR 0008](0008-one-refresher-for-provider-logins.md) ("Whose
-login pays") and [ADR 0003](0003-organizations-and-tenancy.md) ("Sessions and shared control"):
-under shared control a steerer's turn no longer spends the owner's login. Read against Mend at
-`6abd2ab9` and sealant `origin/main` at `6d624c1` (SDK 0.38.1).
+Status: accepted 2026-10-04 (#517); built in #518 and #519, with the switch per sender in #570 and
+#571 (ADR 0016). Amended by ADR 0018. Amends [ADR 0008](0008-one-refresher-for-provider-logins.md)
+("Whose login pays") and [ADR 0003](0003-organizations-and-tenancy.md) ("Sessions and shared
+control"): under shared control a steerer's turn no longer spends the owner's login. Read against
+Mend at `6abd2ab9` and sealant `origin/main` at `6d624c1` (SDK 0.38.1).
 
 Amended 2026-10-05 and 2026-10-06 by [ADR 0016](0016-per-person-harness-homes.md): ships in 0.36, no
 longer held until the SDK. The mechanism changes: each person has their own Linux user, and a turn
@@ -20,9 +21,9 @@ organization pays. The payer line names it.
 
 Shared control lets other members steer a session. Today every turn runs on the owner's login (ADR
 0008), so one person's subscription pays for several people's prompts. A login is one person's, and
-lending it to others is the sharing that provider terms forbid. ROADMAP 0.38 already plans the fix:
-"the session's credentials are passed with each turn, on the fly, instead of being fixed when the
-session starts." This ADR records the design.
+lending it to others is the sharing that provider terms forbid. The roadmap's 0.38
+(`0dd4b4bf:ROADMAP.md`) already planned the fix: "the session's credentials are passed with each
+turn, on the fly, instead of being fixed when the session starts." This ADR records the design.
 
 It is also the base for a later feature: switching one person between their own named accounts when
 a usage limit is reached. That is the same switch with the same person on both sides.
@@ -172,21 +173,9 @@ Maria's `work` · observed".
 
 ## Delivery
 
-Mend, one stack:
-
-1. This ADR, the platform feedback entry and the roadmap.
-2. Terminal sessions: only the owner types, starts the agent in a terminal, opens a shell or runs a
-   command; the control view's `terminalInput` flag; clients draw the terminal read-only and say
-   why.
-3. Every turn records its payer, and the conversation shows it.
-4. After the SDK ships the endpoint: the switch in `dispatchNext`, the switch back, the Codex
-   restart, the refusal at submit, and the payer filled from sealant's answer. Amended 2026-10-06:
-   in 0.36, as a process per sender (ADR 0016 decision 6, Delivery 17 and 18).
-
-sealant (`sealant-sh/sealant`), its own stack:
-
-1. `POST /v1/workspaces/:id/credentials` and the SDK method.
-2. Claude setup tokens injected as a file.
+Built in #518 and #519 after this ADR (#517); the switch per sender came with ADR 0016 (decision 6,
+Deliveries 17 and 18, #570 and #571). sealant added `POST /v1/workspaces/:id/credentials` and the
+SDK method in its own stack.
 
 ## Decision log
 

@@ -64,6 +64,9 @@ hand instead, such as one from **Mint a token by hand** in the web app.
   `Claude Code`, `Codex`, `OpenCode`, and any other by its id, such as `pi` or `shell`.
 - **Projects** starts a `claude` or `codex` conversation in an adopted project, with a worktree
   name, model, thinking effort and base. The first turn goes through the composer.
+- **Projects** → `Adopt` adopts a repository into the server's central store. Pick one from a GitHub
+  search the server runs with its own GitHub CLI, or type an HTTP(S), SSH or SCP-style Git URL, then
+  name the project. Once it is adopted, the phone offers a [setup session](/guides/setup-session/).
 - A session opens as its conversation. Send a turn in `Message the session…`, stop the open turn,
   answer approvals (`Allow once`, `Allow for session`, `Decline`) and questions, and attach images.
   Header actions include `Resume`, `Deliver follow-up`, `Review the change` and `Diff`; the rest sit

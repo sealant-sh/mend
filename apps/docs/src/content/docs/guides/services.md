@@ -96,8 +96,6 @@ Recipes live in `.mend/mend.toml`, one table per Service. Root `mend.toml` is st
 existing repositories. When both exist, `.mend/mend.toml` wins; Mend does not combine them. `.mend/`
 holds Mend's repository files, including files a future setup session may write.
 
-The file location and resource behavior below follow the design agreed on November 1, 2026. They
-replace the October 31 build's resource behavior; this documentation change does not implement them.
 See [Resources](/guides/resources/) for definitions, explicit starts and env.
 
 For example:

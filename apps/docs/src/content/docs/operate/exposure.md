@@ -421,29 +421,33 @@ for a request window, `Retry-After`. The refusal reads like
 budget never stops a running session, never closes a connection that is already open and never drops
 a capture.
 
-| Variable                                       | Default    | What it bounds                                                                                                               |
-| ---------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_BUDGET_BODY_BYTES`                       | `1048576`  | One request body. A declared length over it is refused unread; an undeclared one is cut at it.                               |
-| `MEND_BUDGET_UPLOAD_BODY_BYTES`                | `25165824` | The same, for routes that take a file: pasted images, skills, folder uploads, dotfiles, the workspace image.                 |
-| `MEND_BUDGET_FRAME_BYTES`                      | `1048576`  | One WebSocket frame from a client on a terminal, a service tunnel or the key bridge. Over it, the socket closes 1009.        |
-| `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`      | `1200`     | Requests from one client address, counted before authentication.                                                             |
-| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`   | `1200`     | Requests presenting one credential (Mend's session cookie by its exact name, or a bearer), valid or not.                     |
-| `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`      | `20`       | Sign-in, sign-up, password reset and invitation attempts from one address.                                                   |
-| `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`            | `24`       | Unsettled sessions one account holds.                                                                                        |
-| `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`       | `120`      | Unsettled sessions one organization holds.                                                                                   |
-| `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`       | `4`        | Launches one account has starting at once.                                                                                   |
-| `MEND_BUDGET_BUNDLE_BYTES`                     | `67108864` | One git bundle: a `mend pull` answer, refused with its size, or a `mend handoff` body, refused unread.                       |
-| `MEND_BUDGET_HANDOFF_FILE_BYTES`               | `8388608`  | One file `mend handoff` carries. The CLI names a larger file and leaves it in the checkout; the server refuses one it finds. |
-| `MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT`       | `2`        | Handoffs one account has admitted at once. Each holds its bundle in memory while git verifies it.                            |
-| `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE` | `30`       | Fetches of origin's branch one account asks for ("Check origin").                                                            |
-| `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`            | `12`       | Open event streams for one account (one per browser tab or client).                                                          |
-| `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       | Open terminal sockets for one account.                                                                                       |
-| `MEND_BUDGET_ACCOUNT_TUNNELS`                  | `24`       | Open service tunnels for one account.                                                                                        |
-| `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        | Open key bridges (ssh-agent shares) for one account.                                                                         |
-| `MEND_BUDGET_ACCOUNT_SCREEN_VIEWERS`           | `8`        | Open viewers of session screens for one account.                                                                             |
-| `MEND_BUDGET_SCREEN_VIEWERS`                   | `16`       | Open viewers of one session's screen.                                                                                        |
-| `MEND_BUDGET_ACCOUNT_RAW_READS`                | `128`      | Raw file reads one account has open at once (the t3code gateway's previews and media).                                       |
-| `MEND_BUDGET_RAW_READS`                        | `512`      | Raw file reads open at once on the instance, whoever reads.                                                                  |
+| Variable                                          | Default    | What it bounds                                                                                                                                                                                     |
+| ------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_BUDGET_BODY_BYTES`                          | `1048576`  | One request body. A declared length over it is refused unread; an undeclared one is cut at it.                                                                                                     |
+| `MEND_BUDGET_UPLOAD_BODY_BYTES`                   | `25165824` | The same, for routes that take a file: pasted images, skills, folder uploads, dotfiles, the workspace image.                                                                                       |
+| `MEND_BUDGET_FRAME_BYTES`                         | `1048576`  | One WebSocket frame from a client on a terminal, a service tunnel or the key bridge. Over it, the socket closes 1009.                                                                              |
+| `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`         | `1200`     | Requests from one client address, counted before authentication.                                                                                                                                   |
+| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`      | `1200`     | Requests presenting one credential (Mend's session cookie by its exact name, or a bearer), valid or not.                                                                                           |
+| `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`         | `20`       | Sign-in, sign-up, password reset and invitation attempts from one address.                                                                                                                         |
+| `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`               | `24`       | Unsettled sessions one account holds.                                                                                                                                                              |
+| `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`          | `120`      | Unsettled sessions one organization holds.                                                                                                                                                         |
+| `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`          | `4`        | Launches one account has starting at once.                                                                                                                                                         |
+| `MEND_BUDGET_BUNDLE_BYTES`                        | `67108864` | One git bundle: a `mend pull` answer, refused with its size, or a `mend handoff` body, refused unread.                                                                                             |
+| `MEND_BUDGET_HANDOFF_FILE_BYTES`                  | `8388608`  | One file `mend handoff` carries. The CLI names a larger file and leaves it in the checkout; the server refuses one it finds.                                                                       |
+| `MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT`          | `2`        | Handoffs one account has admitted at once. Each holds its bundle in memory while git verifies it.                                                                                                  |
+| `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE`    | `30`       | Fetches of origin's branch one account asks for ("Check origin").                                                                                                                                  |
+| `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`               | `12`       | Open event streams for one account (one per browser tab or client).                                                                                                                                |
+| `MEND_BUDGET_ACCOUNT_TERMINALS`                   | `24`       | Open terminal sockets for one account.                                                                                                                                                             |
+| `MEND_BUDGET_ACCOUNT_TUNNELS`                     | `24`       | Open service tunnels for one account.                                                                                                                                                              |
+| `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`                 | `4`        | Open key bridges (ssh-agent shares) for one account.                                                                                                                                               |
+| `MEND_BUDGET_ACCOUNT_SCREEN_VIEWERS`              | `8`        | Open viewers of session screens for one account.                                                                                                                                                   |
+| `MEND_BUDGET_SCREEN_VIEWERS`                      | `16`       | Open viewers of one session's screen.                                                                                                                                                              |
+| `MEND_BUDGET_ACCOUNT_RAW_READS`                   | `128`      | Raw file reads one account has open at once (the t3code gateway's previews and media).                                                                                                             |
+| `MEND_BUDGET_RAW_READS`                           | `512`      | Raw file reads open at once on the instance, whoever reads.                                                                                                                                        |
+| `MEND_BUDGET_ADDRESS_PREVIEW_REQUESTS_PER_MINUTE` | `12000`    | Requests from one client address to the preview gateway, counted before the grant is read. One dev-server page asks for hundreds of modules, so this window is its own.                            |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`         | `48`       | Long-lived requests one account holds open on the preview gateway: waiting for its preview to start, holding a forward to the dev server, or upgraded. A request waiting for a forward is not one. |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT`    | `4`        | Preview starts one account's requests have running at once. Only a request that launches a process counts; requests that wait for a start do not.                                                  |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE`   | `4`        | Preview starts one account's requests may launch per minute, so a Service that exits as it starts is not relaunched by every reload.                                                               |
 
 `0` turns one budget off. The API logs at start which are off, and the `budgets` gate item is open
 while any is.
@@ -458,6 +462,10 @@ A few facts about how they count:
 - Session ceilings are counted from the database, so two requests that arrive together can both
   pass: a ceiling can be overshot by the number in flight, never by more.
 - Resuming a session or opening a shell takes no launch slot.
+- Mend's own hot-pool and job provisions are not counted against a session ceiling.
+- A raw read whose reader takes nothing for 30 seconds (a paused video, a sleeping laptop) has its
+  connection reset, which frees its descriptor and its slot. A reader that resumes asks again for
+  the bytes it still needs.
 - A WebSocket frame is buffered by the server up to 100 MiB before Mend can refuse it. The frame
   budget and the connection budgets together bound the total; they do not bound that single frame.
 

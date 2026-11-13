@@ -1,11 +1,12 @@
 # Repositories in a session: any project of the store, ad hoc, from inside the workspace
 
-Status: proposed 2026-10-03. Cross-repo: sealantd (one capture engine per repository root, the
-`repositories` field of `plan.get`; a design PR accompanies this one), Mend (everything below).
-Builds on ADR 0001 (linked projects) and ADR 0002 (the capture store). Owner decisions of
-2026-10-03, not re-opened here: a CLI inside the workspace makes any project of the store available
-ad hoc; each repository keeps its own change; it works in capture mode on the box; the in-workspace
-command uses the session's own channel credential and no other.
+Status: accepted 2026-10-03; the interim (nested capture) is built in #480 (0.36). The target (a
+capture engine per repository, its own review and landing) is not built. Cross-repo: sealantd (one
+capture engine per repository root, the `repositories` field of `plan.get`; a design PR accompanies
+this one), Mend (everything below). Builds on ADR 0001 (linked projects) and ADR 0002 (the capture
+store). Owner decisions of 2026-10-03, not re-opened here: a CLI inside the workspace makes any
+project of the store available ad hoc; each repository keeps its own change; it works in capture
+mode on the box; the in-workspace command uses the session's own channel credential and no other.
 
 ## Context
 

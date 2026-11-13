@@ -31,7 +31,7 @@ export type Sha = typeof Sha.Type;
 export const BriefCommentId = Schema.String.pipe(Schema.brand("BriefCommentId"));
 export type BriefCommentId = typeof BriefCommentId.Type;
 
-// ── Workbench ids (MEND-AGENT-WORKBENCH-PLAN.md §5) ──────────────────────────
+// ── Workbench ids (the product model in apps/docs concepts/product-model.md) ──────────────────────────
 
 export const ProjectId = Schema.String.pipe(Schema.brand("ProjectId"));
 export type ProjectId = typeof ProjectId.Type;
@@ -112,7 +112,7 @@ export type ProjectMountId = typeof ProjectMountId.Type;
 export const ProjectLinkId = Schema.String.pipe(Schema.brand("ProjectLinkId"));
 export type ProjectLinkId = typeof ProjectLinkId.Type;
 
-/** A repository a session holds beside its own worktree (docs/adr/0010). */
+/** A repository a session holds beside its own worktree (docs/adr/0011). */
 export const SessionRepositoryId = Schema.String.pipe(Schema.brand("SessionRepositoryId"));
 export type SessionRepositoryId = typeof SessionRepositoryId.Type;
 

@@ -60,7 +60,7 @@ export interface InferenceRequest {
 }
 
 /**
- * The inference seam (ARCHITECTURE.md §6). The shipped default is Sealant, on
+ * The inference seam (docs/archive/ARCHITECTURE.md §6). The shipped default is Sealant, on
  * the user's connected subscriptions — Mend ships no model keys. Until the SDK
  * grows that surface (PLATFORM-FEEDBACK.md, "Inference on connected
  * accounts"), the dev-only direct layer stands in behind this same contract.

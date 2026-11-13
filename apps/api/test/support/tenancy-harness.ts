@@ -194,7 +194,7 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "sessions.countUnsettledForOrganization",
   "sessions.listUnsettledForOwner",
   // Worktree removal by a non-manager needs every member session's owner: the conversations in
-  // it, and the sessions holding it as a repository beside their own (docs/adr/0010).
+  // it, and the sessions holding it as a repository beside their own (docs/adr/0011).
   "sessions.listForWorktree",
   "sessionRepositories.listForWorktree",
   // ...and those of projects linking it (`removal_fence_sessions_in`).

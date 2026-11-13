@@ -15,7 +15,7 @@ const MAX_TOOL_TURNS = 12;
  * DEV ONLY — calls a model provider directly on an operator-supplied API key.
  * This is never the shipped default: the product rule is "Mend hosts no
  * inference; every model call runs on the user's Sealant-connected
- * subscriptions" (PRODUCT.md). It exists so the brief pipeline is buildable
+ * subscriptions" (docs/archive/PRODUCT.md). It exists so the brief pipeline is buildable
  * before the SDK's inference surface ships (see ./sealant-provider.ts).
  *
  * Requires ANTHROPIC_API_KEY; model via MEND_DEV_INFERENCE_MODEL.

@@ -88,7 +88,7 @@ const routedVerificationPrompt = (instruction: string) =>
 ${instruction}`;
 
 /**
- * One supervised fiber per active run (ARCHITECTURE.md §5): stream the record,
+ * One supervised fiber per active run (docs/archive/ARCHITECTURE.md §5): stream the record,
  * persist the last-seen sequence, settle the card when the run does. Fibers
  * are forked into the layer's scope so they live as long as the process —
  * crash/restart re-attaches from the stored sequence instead of re-running.
@@ -432,7 +432,7 @@ export const runStarterLayer = Layer.effect(
     });
 
     /**
-     * A routed run on the change's existing branch (PRODUCT.md, Iteration):
+     * A routed run on the change's existing branch (docs/archive/PRODUCT.md, Iteration):
      * same workspace as the recordings behind the change, supervised like any
      * run. The card stays in review — the review is the conversation.
      */

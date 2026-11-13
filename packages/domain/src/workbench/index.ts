@@ -1,6 +1,6 @@
 /**
  * @mend/domain/workbench — the agent-workbench object model
- * (MEND-AGENT-WORKBENCH-PLAN.md §5).
+ * (the product model in apps/docs concepts/product-model.md).
  *
  * ```
  * machine      1 ── 1..n organizations the tenant (docs/adr/0003)
@@ -18,7 +18,7 @@
  * ```
  *
  * Lives on a subpath while the queue-era model retires; promotes to the root
- * barrel when `issue.ts` and friends go (docs/archive/M0-INVENTORY.md).
+ * barrel when `issue.ts` and friends go (the M0 inventory, in git history).
  */
 export * from "./audit.ts";
 export * from "./boat-failure.ts";

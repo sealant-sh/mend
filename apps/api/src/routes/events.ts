@@ -80,13 +80,13 @@ const VIEW_REFRESH = "25 seconds";
 const REVOKED_GRACE = "1 second";
 
 /**
- * Live updates over SSE (ARCHITECTURE.md §4): pointer events from the shared event bus, filtered
- * to what the caller can see (docs/adr/0003). The caller's view is re-read when a `project` event
- * concerns their organization, when an `organization` event concerns them (including joining
- * one), after a `resync`, and on every heartbeat, so a pointer the sliding bus buffer dropped
- * cannot keep a project visible for long. A `project` event is delivered when the project was
- * visible before or after the refresh, so a client also learns that something left its view.
- * Clients re-read state through the API on receipt; the comment heartbeat keeps proxies from
+ * Live updates over SSE (docs/archive/ARCHITECTURE.md §4): pointer events from the shared event
+ * bus, filtered to what the caller can see (docs/adr/0003). The caller's view is re-read when a
+ * `project` event concerns their organization, when an `organization` event concerns them
+ * (including joining one), after a `resync`, and on every heartbeat, so a pointer the sliding bus
+ * buffer dropped cannot keep a project visible for long. A `project` event is delivered when the
+ * project was visible before or after the refresh, so a client also learns that something left its
+ * view. Clients re-read state through the API on receipt; the comment heartbeat keeps proxies from
  * closing the idle connection.
  */
 export const EventsRoutes = HttpRouter.use((router) =>

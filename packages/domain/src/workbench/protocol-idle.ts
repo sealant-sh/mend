@@ -3,7 +3,7 @@ import { currentAgentProcess, isLiveProcess } from "./session-fold.ts";
 import { isWakeShell, type SessionProcess } from "./session-process.ts";
 
 /**
- * The idle stop (docs/SELF-HOSTING.md, "Idle agents"): a protocol agent stays up
+ * The idle stop (docs: "When Boat VMs stop"): a protocol agent stays up
  * between turns, waiting for the next one, and its workspace with it. Mend stops one that has sat
  * idle this many minutes, the way the Stop button does; the next message resumes it. 0 turns the
  * stop off. MEND_PROTOCOL_IDLE_STOP_MINUTES overrides it.

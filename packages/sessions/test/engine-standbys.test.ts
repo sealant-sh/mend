@@ -5,6 +5,7 @@ import {
   CaptureStoreRepo,
   HotWorkspacesRepo,
   SessionGitOpsRepo,
+  type SessionsRepo,
   type SessionGitOpRow,
   UserDotfilesRepo,
   linuxLoginNameOf,
@@ -285,6 +286,7 @@ describe("SessionEngine capture mode", () => {
       readonly captureOps?: Parameters<typeof sealantLaunchLayer>[11];
       readonly drainPolicy?: { readonly terminationWait: Duration.Duration };
       readonly wrapPool?: (layer: Layer.Layer<HotWorkspacesRepo>) => Layer.Layer<HotWorkspacesRepo>;
+      readonly wrapSessions?: (inner: SessionsRepo["Service"]) => SessionsRepo["Service"];
     },
     body: (input: {
       readonly engine: SessionEngine["Service"];
@@ -293,6 +295,7 @@ describe("SessionEngine capture mode", () => {
       readonly created: Array<CreateOptions>;
       readonly accounts: Map<string, string>;
       readonly projectId: Project["id"];
+      readonly world: World;
     }) => Effect.Effect<void>,
   ) =>
     Effect.gen(function* () {
@@ -312,7 +315,7 @@ describe("SessionEngine capture mode", () => {
               () => pool.entries.some((entry) => entry.status === "ready"),
               "a standby",
             );
-            yield* body({ engine, pool, clock, created, accounts, projectId: project.id });
+            yield* body({ engine, pool, clock, created, accounts, projectId: project.id, world });
           }),
         {
           captured: makeMemoryCaptureStore(),
@@ -324,6 +327,7 @@ describe("SessionEngine capture mode", () => {
           hotWorkspacesLayer: knobs.wrapPool?.(clock.poolLayer) ?? clock.poolLayer,
           wrapCaptureChannel: clock.wrapCaptureChannel,
           ...(knobs.drainPolicy === undefined ? {} : { drainPolicy: knobs.drainPolicy }),
+          ...(knobs.wrapSessions === undefined ? {} : { wrapSessions: knobs.wrapSessions }),
           sessionRuntime: runtime,
           workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } },
           boatAccounts: accounts,
@@ -539,6 +543,120 @@ describe("SessionEngine capture mode", () => {
             );
           }),
       );
+    },
+  );
+
+  it.effect(
+    "never discards a standby a launch is adopting, when the sweep turned its claim failed between the pass's session read and its retire (SLNT-823)",
+    () => {
+      const core = boatCore();
+      /** The first call once armed tells `reached`, waits for `release`, then tells `done`. */
+      const holdOnce = Effect.gen(function* () {
+        const reached = yield* Deferred.make<void>();
+        const released = yield* Deferred.make<void>();
+        const finished = yield* Deferred.make<void>();
+        const state = { armed: false };
+        return {
+          arm: () => {
+            state.armed = true;
+          },
+          hold: <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+            Effect.suspend(() => {
+              if (!state.armed) return effect;
+              state.armed = false;
+              return Deferred.succeed(reached, undefined).pipe(
+                Effect.andThen(Deferred.await(released)),
+                Effect.andThen(effect),
+                Effect.tap(() => Deferred.succeed(finished, undefined)),
+              );
+            }),
+          reached: Deferred.await(reached),
+          release: Deferred.succeed(released, undefined),
+          done: Deferred.await(finished),
+        };
+      });
+      return Effect.gen(function* () {
+        const passRetire = yield* holdOnce;
+        const sweepSetFailed = yield* holdOnce;
+        const launchRead = yield* holdOnce;
+        const sessionCreate = yield* holdOnce;
+        const holding = (layer: Layer.Layer<HotWorkspacesRepo>): Layer.Layer<HotWorkspacesRepo> =>
+          Layer.effect(
+            HotWorkspacesRepo,
+            Effect.map(HotWorkspacesRepo, (inner) => ({
+              ...inner,
+              retire: (id, error) => passRetire.hold(inner.retire(id, error)),
+              setFailed: (id, error) => sweepSetFailed.hold(inner.setFailed(id, error)),
+              byId: (id) => inner.byId(id).pipe(Effect.tap(() => launchRead.hold(Effect.void))),
+            })),
+          ).pipe(Layer.provide(layer));
+        yield* withOneStandby(
+          "boat",
+          {
+            captureOps: core.captureOps,
+            drainPolicy: noWait,
+            wrapPool: holding,
+            wrapSessions: (inner) => ({
+              ...inner,
+              create: (input) => sessionCreate.hold(inner.create(input)),
+            }),
+          },
+          ({ engine, pool, clock, projectId }) =>
+            Effect.gen(function* () {
+              const standby = pool.entries[0];
+              if (standby === undefined) throw new Error("no standby");
+              // The organization's Boat key is being removed: a pass drains the standby, reads no
+              // session under its id, and stops short of its retire.
+              passRetire.arm();
+              const change = yield* engine
+                .changingBoatKey(ORG_TEST, (standbys) =>
+                  standbys.drain("core-boat-acme", Duration.minutes(5)),
+                )
+                .pipe(Effect.forkChild);
+              yield* passRetire.reached;
+              // A launch claims the standby and stops short of creating its session.
+              sessionCreate.arm();
+              const provision = yield* clock
+                .claim(
+                  engine.provision({
+                    projectId,
+                    harness: "codex",
+                    label: null,
+                    name: null,
+                    ownerUserId: "user-fixture",
+                    start: { kind: "base", base: null },
+                  }),
+                )
+                .pipe(Effect.orDie, Effect.forkChild);
+              yield* sessionCreate.reached;
+              expect(pool.entries.find((entry) => entry.id === standby.id)?.status).toBe("claimed");
+              // The ten-minute sweep finds the claim with no session yet and drains it: an
+              // ordinary stop sealant keeps, so it writes failed over claimed, held until the
+              // launch has read the row as claimed.
+              sweepSetFailed.arm();
+              yield* TestClock.adjust(Duration.minutes(10));
+              yield* sweepSetFailed.reached;
+              yield* sessionCreate.release;
+              yield* sessionCreate.done;
+              // The launch reads the row as claimed, so it will adopt the standby's workspace.
+              launchRead.arm();
+              const launch = yield* engine
+                .launch(SessionId.make(standby.id), ["codex"])
+                .pipe(Effect.orDie, Effect.forkChild);
+              yield* launchRead.reached;
+              yield* sweepSetFailed.release;
+              yield* sweepSetFailed.done;
+              expect(pool.entries.find((entry) => entry.id === standby.id)?.status).toBe("failed");
+              // The pass's retire takes the failed row. The session under its id is the launch's:
+              // the pass stops the workspace as a session's, never discards it.
+              yield* passRetire.release;
+              yield* passRetire.done;
+              yield* clock.untilStopped(() => core.stops.length >= 2, "the pass's stop");
+              expect(core.stops).toEqual(["drain", "drain"]);
+              yield* Fiber.interruptAll([launch, provision, change]);
+            }),
+        );
+      });
     },
   );
 

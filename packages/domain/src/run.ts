@@ -16,7 +16,7 @@ export const RunOutcome = Schema.Literals(["completed", "failed"]);
 export type RunOutcome = typeof RunOutcome.Type;
 
 /**
- * The failure mini-brief (PRODUCT.md §6): what was tried, what was observed,
+ * The failure mini-brief (docs/archive/PRODUCT.md §6): what was tried, what was observed,
  * reproduction status — summed from the recording of a failed run. No PR, no
  * brief; failures are evidence too, kept and reported, never hidden. Rendered
  * in-app on the issue (M2); posted to the tracker with M3.
@@ -43,7 +43,7 @@ export class Run extends Schema.Class<Run>("Run")({
   status: RunStatus,
   outcome: Schema.NullOr(RunOutcome),
   summary: Schema.NullOr(Schema.String),
-  /** Present only on failed runs whose recording was summed (PRODUCT.md §6). */
+  /** Present only on failed runs whose recording was summed (docs/archive/PRODUCT.md §6). */
   failureBrief: Schema.NullOr(FailureBrief),
   /** Last record sequence the supervisor persisted — crash-resume re-attaches from here. */
   lastSeenSequence: SequenceNumber,

@@ -1232,7 +1232,7 @@ export const projectMounts = pgTable(
 
 /**
  * Project-owned, explicitly NON-SECRET environment variables
- * (`docs/archive/plans/project-environment-variables.md`): plaintext by design, read as one snapshot at each
+ * (the project-environment plan in git history): plaintext by design, read as one snapshot at each
  * fresh workspace launch, inherited by every process the platform starts in that workspace. Stable
  * IDs make rename an atomic update; the integer row revision drives stale-write checks.
  */
@@ -1256,7 +1256,7 @@ export const projectEnvironmentVariables = pgTable(
 );
 
 /**
- * Project-owned SECRET environment variables (`docs/archive/plans/project-environment-variables.md`, "Scope
+ * Project-owned SECRET environment variables (the project-environment plan in git history, "Scope
  * expansion"): the value is sealed at rest with the machine's secrets key (`@mend/store`
  * SecretCipher) and never returned by any API; launch decrypts once and hands the set to Sealant's
  * transient secret channel. Same stable-ID / integer-revision discipline as the plaintext set.
@@ -2653,7 +2653,7 @@ export const worktreeChanges = pgTable("worktree_changes", {
 });
 
 /**
- * The repositories a session holds beside its own worktree (docs/adr/0010): each a worktree of
+ * The repositories a session holds beside its own worktree (docs/adr/0011): each a worktree of
  * another project at `/workspace/repos/<name>`, with the state of its arrival and how it is saved.
  */
 export const sessionRepositories = pgTable(

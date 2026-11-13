@@ -343,12 +343,12 @@ Setup options:
 
 Setup holds an exclusive lock through startup and health checks, keeps private configuration in
 immutable generations, and never deletes Docker volumes. A changed `--version` on a rerun is
-refused; use `mend server upgrade`. Read [Install Mend](/getting-started/install/) and the
-[self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) for offline
-assets, locks, and upgrade recovery, and [Exposure and budgets](/operate/exposure/) for how the
-server is reached. `--edge` runs the TLS edge and `--exposure` and `--tenancy` declare the posture;
-all three are written into the generation and kept by every rerun and upgrade. Without them a server
-it installs runs as `private` and `single`.
+refused; use `mend server upgrade`. Read [Install Mend](/getting-started/install/) and
+[Backup and recovery](/operate/backup-and-recovery/) for offline assets, locks, and upgrade
+recovery, and [Exposure and budgets](/operate/exposure/) for how the server is reached. `--edge`
+runs the TLS edge and `--exposure` and `--tenancy` declare the posture; all three are written into
+the generation and kept by every rerun and upgrade. Without them a server it installs runs as
+`private` and `single`.
 
 ## Project commands
 

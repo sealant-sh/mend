@@ -1,172 +1,81 @@
 # Developing Mend
 
-Run `pnpm run test:s3-contract` for the live blob-store contracts. CI runs this mandatory lane with
-disposable local Garage and MinIO instances, synthetic credentials, and owned data volumes. It
-requires local Docker and downloads pinned public fixture artifacts. It never uses the ambient S3
-endpoint, bucket or AWS credentials. Missing fixtures and skipped live cases fail the command.
+How to get a checkout running and tested. `AGENTS.md` holds the rules and the checks before a PR.
+For an installed server, see [Install Mend](apps/docs/src/content/docs/getting-started/install.md)
+and the [operator pages](apps/docs/src/content/docs/operate/) of the public docs.
 
-Garage uses the image declared in `deploy/docker/compose.v2.yaml` and exercises the full prefix
-listing contract plus checksum-bound PUT URLs. The strict conditional-write lane runs the
-checksum-verified official MinIO `RELEASE.2025-09-07T16-13-09Z` binary in pinned Alpine. MinIO
-deliberately lists multipart uploads by **exact key only**, so this lane checks signed HTTP,
-conditional writes, multipart completion and ranges. It does not prove production retention's prefix
-orphan sweep or complete MinIO backend compatibility. The directory and Garage prefix listing
-assertions remain unchanged. The existing explicit `MEND_TEST_S3_URL` suite remains available for
-other test buckets.
-
-Product decisions live in `MEND-AGENT-WORKBENCH-PLAN.md`. This guide covers running source code; for
-an installed server, use [`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md).
-
-## Prerequisites
-
-- Node.js and pnpm at the versions in `.node-version` and `package.json`. Nix/direnv supplies them.
-- Docker for the development Postgres, unless you provide `DATABASE_URL`.
-- A separately configured Sealant control plane for source development. Mend uses only its public
-  SDK. The packaged application instead includes its pinned Sealant runtime.
-
-## Source development
+## First run
 
 ```sh
-direnv allow
-pnpm install
+direnv allow     # Node and pnpm at the pinned versions; or match .node-version and packageManager
+pnpm install     # first, in every fresh worktree
+pnpm build       # once: generates the gitignored route trees that typecheck needs
 cp .env.example .env
-# Set SEALANT_BASE_URL and, when required, SEALANT_SERVICE_KEY in .env.
-pnpm --filter @mend/web dev
+pnpm dev
 ```
 
-The development command loads the root `.env`, preserving explicit shell overrides. It starts the
-Postgres from `compose.dev.yaml` when using the default database, then Vite on **3105** and the API
-on **3101**. Nitro forwards `/api` HTTP requests to the API; Vite forwards WebSocket upgrades. The
-production web entrypoint uses its own proxy instead. Open `http://localhost:3105`.
-
-Database migrations run at API startup. Without a working Sealant connection, the web app can start
-but session launches cannot. For host-side source development, the Sealant worker must be configured
-to mount the store paths that this API uses; the production bundle's Docker-volume layout does not
-configure an unrelated development control plane.
-
-Mend-run Executor requires Mend's API in a container that sealant can attach to its private caller
-network. The host-side development server refuses that choice. For a source-built container, use
-`deploy/dev/executor.compose.yaml` over the packaged Compose file on a dedicated Docker context. Its
-comment gives the command. First run `mend server setup` with a fresh `XDG_CONFIG_HOME` on that
-context to create the development installation's private environment and owned volumes. Use that
-generation's `.env` for the override. sealant's API and worker receive the caller mapping for
-`mend-dev-caller`, including callback port 4401; the callback port is never published to the host.
-
-With dev running, check the auth proxy without creating accounts or sessions:
-
-```sh
-node --test apps/web/scripts/dev-auth.integration.mjs
-```
-
-The check sends empty signup/signin bodies and reads the anonymous session. Set `MEND_DEV_TEST_URL`
-to test a different web origin. This catches HTML 404 responses from the app when requests should
-reach the auth server.
+`pnpm dev` starts Postgres (port 5434) and Garage (3900) from `compose.dev.yaml`, the web app on
+**3105** and the API on **3101**, then runs migrations. Open `http://localhost:3105`.
 
 ## Environment
 
-| Variable               | Default                                    | Purpose                                                                                   |
-| ---------------------- | ------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `DATABASE_URL`         | `postgres://mend:mend@localhost:5434/mend` | Mend development database                                                                 |
-| `SEALANT_BASE_URL`     | SDK default, `http://localhost:8080`       | Set to your development control plane; a local Sealant stack commonly publishes port 4000 |
-| `SEALANT_SERVICE_KEY`  | unset                                      | Service principal on that control plane                                                   |
-| `APP_URL`              | `http://localhost:3105`                    | Primary public origin, shared by API and web                                              |
-| `MEND_ALLOWED_ORIGINS` | `[]`                                       | JSON array of additional exact HTTP(S) origins                                            |
-| `BETTER_AUTH_SECRET`   | development constant                       | Supply a persistent random secret outside development                                     |
-| `MEND_MODE`            | `all`                                      | API process mode: `all`, `api`, or `worker`                                               |
-| `PORT`                 | `3101` for API                             | Internal API listener; not the public web URL                                             |
-| `MEND_TENANCY`         | `single`                                   | `single` or `multi`; `multi` is refused while the multi mode gate has open items          |
-| `MEND_EXPOSURE`        | `private`                                  | Declared exposure: `loopback`, `private`, or `public`; see ADR 0004                       |
+`.env.example` is a working set for a Linux Docker host. `pnpm dev` loads `.env`; a variable set in
+the shell wins. Three things need care:
 
-The capture store (`docs/adr/0002-session-capture-store.md`) is the session store, in development as
-everywhere else since decision 8 (2026-09-13): the executor works on its own disk and ships captures
-to a bucket; Mend reads the chain head and stamps every read "observed · capture n". The values
-below are required; `.env.example` carries a working set for a Linux Docker host.
+- **Sealant.** Mend reaches the platform only through the SDK, at `SEALANT_BASE_URL`. A local
+  sealant stack serves port 4000; the SDK's default, 8080, fails. Without a working sealant the web
+  app starts but no session launches. Set `SEALANT_SERVICE_KEY` when that control plane has service
+  keys, and configure sealant's worker to mount the store paths this API uses.
+- **Executor reachability.** `MEND_SESSION_ENDPOINT_URL` and `MEND_BLOB_STORE_PUBLIC_URL` are read
+  from inside the executor container, not from your shell. On Linux, name the docker0 bridge IP
+  (`172.17.0.1`) and trust the bridge in the host firewall (NixOS:
+  `networking.firewall.trustedInterfaces = [ "docker0" ];`), or run the relay that
+  `scripts/capture-e2e.sh` describes and name its IP. On Docker Desktop, use `host.docker.internal`.
+  The engine refuses to start without the session endpoint.
+- **Origins.** `APP_URL` is the one public origin. Add others to `MEND_ALLOWED_ORIGINS` as exact
+  `scheme://host:port` values. Nothing else grants trust: leave `BETTER_AUTH_TRUSTED_ORIGINS` unset.
 
-| Variable                                      | Default                          | Purpose                                                                                                                                                                                                                                                      |
-| --------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `MEND_SESSION_STORE`                          | `captured`                       | `colocated` opts back into the deprecated bind-mounted worktree store (a startup warning names it); it ignores every other row here                                                                                                                          |
-| `MEND_SESSION_ENDPOINT_LISTEN`                | unset (required)                 | `host:port` the network session channel listens on, e.g. `0.0.0.0:3106`; sealantd calls the capture routes here                                                                                                                                              |
-| `MEND_SESSION_ENDPOINT_URL`                   | unset (required)                 | The address executors resolve for that listener, e.g. `http://172.17.0.1:3106`                                                                                                                                                                               |
-| `MEND_BLOB_STORE`                             | `dir://<MEND_STORE_ROOT>/_blobs` | `dir:///abs/path` or `s3://mend?endpoint=http://localhost:3900&region=garage` (the dev Garage)                                                                                                                                                               |
-| `MEND_BLOB_STORE_PUBLIC_URL`                  | unset                            | The S3 endpoint executors resolve; presigned URLs name it, e.g. `http://172.17.0.1:3900`                                                                                                                                                                     |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | unset                            | Bucket credentials; the dev Garage key is `GK00000000000000000000000d` / `000…000d` (`deploy/dev/garage-init.sh`)                                                                                                                                            |
-| `MEND_CAPTURE_MULTIPART_THRESHOLD`            | `16777216` (16 MiB)              | Keys at or above this many bytes are planned as multipart uploads (`upload.urls` with sizes)                                                                                                                                                                 |
-| `MEND_CAPTURE_MULTIPART_PART_SIZE`            | `16777216` (16 MiB)              | Part size for those uploads; S3 and R2 refuse parts under 5 MiB                                                                                                                                                                                              |
-| `MEND_CAPTURE_BYTE_QUOTA_FLOOR`               | `8589934592` (8 GiB)             | Floor of a session's byte quota (`max(floor, 4× the project's compressed footprint)`); `upload.urls` refuses a batch past it with 413 `byte-quota` before minting a URL                                                                                      |
-| `MEND_CAPTURE_MANIFEST_FORMAT`                | `2`                              | The `manifest_format` `plan.get` answers, capped at what the executor says it reads: `2` lets executors pack dir objects into dir packs, `1` rolls them back to one object per directory. Mend reads both either way; rollback steps in ADR 0002 decision 30 |
+Every other variable has a working default. Mend-run Executor needs the API in a container, so the
+host-side dev server refuses it; the comment in `deploy/dev/executor.compose.yaml` gives the setup.
 
-`compose.dev.yaml` runs Garage in single-node mode on port 3900 with bucket `mend`; `pnpm dev` runs
-`deploy/dev/garage-init.sh`, which lays the node out and creates the key once. A `dir://` bucket
-needs no Docker and serves an executor on this machine only (its presigned URLs are `file://`); a
-Docker executor needs the S3 bucket. The engine refuses to start without the session endpoint: a
-session's executor reaches Mend only over that channel.
+## Tests
 
-The two `_URL` values must be reachable from inside the executor container, and the host named in a
-presigned URL must resolve there: the executor PUTs and GETs bucket objects with the URL exactly as
-minted, so `MEND_BLOB_STORE_PUBLIC_URL` is what the container sees, not what this shell sees. On
-Linux, `host.docker.internal` resolves only with `--add-host`, which the Sealant Docker runtime does
-not pass, and a host firewall (NixOS's default) drops traffic from the bridge to the host — so the
-bridge IP (`172.17.0.1`) can be unreachable too. Two ways out: trust the bridge on the host (NixOS:
-`networking.firewall.trustedInterfaces = [ "docker0" ];`) and name the bridge IP in both `_URL`
-values, or run the relay `scripts/capture-e2e.sh` documents — a container on the default bridge that
-forwards both ports to the host over Unix sockets — and name the relay's IP.
+- Postgres tests use the dev Postgres (`postgres://mend:mend@localhost:5434/mend`, started by
+  `pnpm dev` or `docker compose -f compose.dev.yaml up -d`), or `MEND_TEST_DATABASE_URL`. For a
+  partial local run without Postgres, set `MEND_SKIP_POSTGRES_TESTS=1`; CI refuses it.
+- `pnpm run test:s3-contract` runs the blob-store contracts against throwaway Garage and MinIO. It
+  needs Docker.
+- The `scripts/*.test.mjs` suites run in CI's static job (`.github/workflows/ci.yml`). Run the one
+  for any script you change with `node --test`.
+- With `pnpm dev` running, `node --test apps/web/scripts/dev-auth.integration.mjs` checks that auth
+  requests reach the auth server rather than the app.
 
-Origins must include the correct scheme, hostname, and port, without a path. Interface discovery,
-wildcards, and incoming forwarding headers do not grant trust. Do not configure a second allowlist
-through `BETTER_AUTH_TRUSTED_ORIGINS`.
-
-These are source-development inputs. The installed CLI generates and preserves its own server
-configuration; shell environment overrides do not change a saved installation.
-
-Credential files the harness writes into its home (`.claude/.credentials.json`, `.codex/auth.json`)
-are **not** captured. sealantd excludes both paths from the capture listing and from the watcher
-(`CREDENTIAL_FILES` in `crates/sealant-capture/src/index.rs`, used by `roots.rs` and `watch.rs`,
-with a test), so the bucket holds no provider login. ADR 0002 decision 6 said the opposite until
-2026-09-18; the daemon was right and the document was wrong.
-
-One consequence is worth knowing while you work: a pickup therefore needs the platform to inject the
-credential into the new workspace again. It does that at launch, but that every pickup path
-re-injects before the harness reads it is unverified — if a resumed session meets a logged-out
-harness, that is the thing to check first.
-
-## Work through a session
-
-1. Create an account and inspect the Sealant connection in Settings.
-2. Connect your own harness and Git credentials with `mend connect codex`, `mend connect claude`, or
-   `mend connect github`. Mend does not supply model credentials.
-3. Adopt a cloneable Git repository URL. Local folder and `file://` adoption are not supported.
-4. Start a session, inspect its record and accumulated change, and send a follow-up to that session.
-   A commit or pull request is optional publication, not the identity of the work.
-
-## Build and verify
+The default suite runs no performance benchmark. Three measurements have their own commands. Run
+each on an otherwise idle machine, and keep the JSON report, the workload and the machine with the
+result, failures included:
 
 ```sh
-pnpm build                        # generates route trees needed by clean-checkout typechecks
-pnpm exec turbo typecheck --force # TypeScript 7 tsc
-pnpm exec turbo lint --force
-pnpm exec turbo test --force
-pnpm format:fix
-node --test scripts/bundle-packaging.test.mjs scripts/process-supervisor.test.mjs \
-  scripts/check-packaged-server.test.mjs scripts/release-publication.test.mjs \
-  scripts/packaged-ssh-acceptance.test.mjs scripts/packaged-git-access-acceptance.test.mjs \
-  scripts/packaged-dotfiles-acceptance.test.mjs scripts/helm-chart.test.mjs \
-  scripts/edge-overlay.test.mjs scripts/aws-compose.test.mjs scripts/aws-tofu.test.mjs \
-  scripts/release-manifest.test.mjs scripts/ghcr-staging-cleanup.test.mjs \
-  scripts/upgrade-window.test.mjs
+# Session list and view reads, on a disposable Postgres: each enriched read must stay within +5% or
+# +20 ms of its plain read, median and p90, in each of three rounds.
+MEND_TEST_DATABASE_URL=postgres://mend:mend@localhost:5434/mend pnpm --filter @mend/db bench:session-live-people
+
+# Verifying a capture of 126,000 files against local blobs, twice. A measurement with no budget.
+MEND_VERIFY_BENCH_REPORT=/tmp/mend-capture-verification.json pnpm --filter @mend/store bench:capture-verification
+
+# Worktree routes (diff, file, search, a 400,000-file listing) through the real request handler,
+# against their p90 budgets. Needs no database. The Worktree reads performance workflow runs it too.
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+MEND_WORKTREE_PERF_CONTEXT=local-serial \
+MEND_WORKTREE_PERF_REPORT=/tmp/mend-worktree-reads.json \
+pnpm --filter @mend/api-server bench:worktree-reads
 ```
 
-The publisher's inline tarball check and `normalize-npm-tarball.mjs --check` must agree; CI's static
-job runs their parity test on every pull request:
-`node --test scripts/republish.test.mjs scripts/normalize-npm-tarball.test.mjs`. The same step runs
-the rest of the publish block's tests: `scripts/republish.registry.test.mjs`,
-`scripts/republish.floor.test.mjs` and `scripts/republish.overrides.test.mjs`.
+A running checkout is not verification. To see a change working on a real stack, use the `verify`
+skill in `.agents/skills/verify/`.
 
-This is the list CI runs. The bundle-contract test needs the Docker Compose plugin, not a running
-daemon. `edge-overlay` and `aws-compose` skip without `docker compose` on PATH, and `helm-chart`
-skips without `helm`. `aws-tofu` reads the OpenTofu configuration as text and needs no OpenTofu.
-Live bundle and installed-CLI acceptance additionally need a Docker daemon; see
-`docs/MACOS-VALIDATION.md` for the separate physical-device gates.
+## When something fails
 
-`pnpm-lock.yaml` is generated by pnpm, never hand-edited. Commit it with the manifest/catalog change
-that produced it. Platform gaps belong in `PLATFORM-FEEDBACK.md`; never import Sealant internals.
-Read `DESIGN.md` before non-trivial UI work.
+- **A resumed session meets a logged-out harness.** Captures never carry login files, so every
+  pickup must inject the credential again. Check that the pickup path did.
+- **Executors cannot reach Mend or the bucket.** See executor reachability above: the URLs must
+  resolve inside the container.

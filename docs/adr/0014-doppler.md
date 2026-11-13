@@ -1,6 +1,7 @@
 # Doppler: a person's token and project selections in their own workspace home
 
-Accepted by Yiannis, 2026-10-31, for Mend 0.37. This replaces the heavier proposal on
+Status: accepted 2026-10-31, for 0.37; built in #1289 and #1291. Device login is not built (#1288).
+Yiannis accepted it. This replaces the heavier proposal on
 [the original ADR branch, #501](https://github.com/sealant-sh/mend/pull/501). That PR is left
 untouched. The decisions here follow [secret files, ADR 0010](0010-secret-files.md) and
 [per-person homes, ADR 0016](0016-per-person-harness-homes.md).
@@ -99,7 +100,7 @@ disconnect preserves that file. The sealed secret-file delivery record still lim
 cleanup to a path Mend previously delivered. A laptop disconnect preserves the laptop's Doppler
 login.
 
-No device-login flow is required for this PR. Optional device login is tracked in
+Device login, which is not built, is tracked in
 [#1288](https://github.com/sealant-sh/mend/issues/1288).
 
 ## Workspace images
@@ -107,7 +108,6 @@ No device-login flow is required for this PR. Optional device login is tracked i
 Every workspace image request appends catalog package `doppler`, alongside its existing packages.
 The same `packages: ["doppler"]` spelling works for managed image families and custom bases through
 sealant's `customRelease` catalog support.
-[sealant #428](https://github.com/sealant-sh/sealant/pull/428) pins the CLI to 3.77.1. This PR also
-updates Mend's SDK and sealant image pins to the published sealant `0.40.0-next.775` release
-containing that change. Kubernetes cross-node Remote I/O behavior reproduces on sealant main and is
-outside this Doppler change.
+[sealant #428](https://github.com/sealant-sh/sealant/pull/428) pins the CLI to 3.77.1, and Mend pins
+the sealant `0.40.0-next.775` release that contains it, or a later one. Kubernetes cross-node Remote
+I/O behavior reproduces on sealant main and is outside this Doppler change.

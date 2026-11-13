@@ -210,6 +210,6 @@ store, session workspaces, project setup, Services, review, landing, organizatio
 remote attachment paths exist in the repository. The desktop app is source only and not part of the
 0.36 release, and the native mobile client is not published.
 
-The [feature status](/reference/feature-status/) page separates current code from planned work. The
-[canonical product plan](https://github.com/sealant-sh/mend/blob/main/MEND-AGENT-WORKBENCH-PLAN.md)
-records the product model and unfinished work. Treat milestones as direction, not release status.
+The [feature status](/reference/feature-status/) page separates current code from planned work.
+[`PRODUCT.md`](https://github.com/sealant-sh/mend/blob/main/PRODUCT.md) records Mend's principles
+and the work still planned. Treat planned work as direction, not release status.

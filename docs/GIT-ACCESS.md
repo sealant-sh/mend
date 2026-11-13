@@ -1,9 +1,10 @@
 # Git Access — SSH, custom servers, and the workspace shim
 
-Design notes from the 2026-08-13/14 discussion. Decisions here govern the git story for alpha; the
-delivery prompt lives with the session that builds it.
+The design record for how Mend reaches git remotes: the decisions, the risks they leave, and the
+rules behind them. The public guide (`apps/docs/src/content/docs/guides/git-access.md`) says how to
+use it.
 
-## Where git runs today (updated 2026-09-26)
+## Where git runs
 
 - Mend's clone/fetch happen **on the Mend server** (`git clone --bare` into the store,
   `GIT_TERMINAL_PROMPT=0`), signed with the account's git access below.
@@ -20,7 +21,8 @@ delivery prompt lives with the session that builds it.
 
 ## Decisions
 
-1. **Three auth modes per project, host-side only; a per-user default.**
+1. **Two auth modes per project, host-side only; a per-user default.** There were three until 0.36
+   removed ambient.
    - _Mend key_ (the default, per user since 2026-09-02): Mend generates an ed25519 keypair for each
      user on the server machine (`<keys root>/users/<userId>/id_ed25519`; the keys root is
      `MEND_KEYS_ROOT`, else `~/.config/mend/keys`; 0600; the private key never leaves the host,
@@ -30,8 +32,9 @@ delivery prompt lives with the session that builds it.
      keys, so every repository they can reach works from detached sessions, the phone, and the hot
      pool alike; a deploy key on one repository is the scoped alternative. Git ops run with
      `GIT_SSH_COMMAND="ssh -i <key> -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"` and
-     the credential is the session owner's (the shim resolves session → owner; an unowned op on a
-     single-user install uses the only key, and refuses to guess between two).
+     the credential is the session owner's (the shim resolves session → owner). An op with no owner
+     uses the only key on a single-user install and refuses to guess between two; under the bridge
+     it is refused outright, as no signer can be chosen.
    - _Ambient_ (removed in 0.36): the login user's git/ssh setup on the server host. On every
      packaged server that is an empty container, so it reached only public HTTPS remotes, which both
      remaining modes reach without a signer. Migration 0129 moved its projects to their creator's
@@ -56,14 +59,14 @@ delivery prompt lives with the session that builds it.
    private network (one outbound WebSocket, agent-protocol frames relayed verbatim inside; nothing
    secret ever transits — challenges and signatures only, serialized one at a time). While
    connected, the server exposes a real agent socket under `~/.config/mend/keys/_bridge/` and
-   projects in the third auth mode, `bridge`, sign through it — host-side ops and the workspace shim
-   alike; the key blinks on the laptop, and the share CLI prints what each signature is for
-   ("signature requested by mend (project shimtest → localhost)") with an honest waiting line and a
-   60s touch window. Disconnected → those ops fail fast with "no signer connected — run
-   `mend keys share` on the machine that holds your key", and the deploy key still covers everything
-   routine. The web card reports presence as an observation ("signer connected · laptop"), never a
-   judgment. Browser-based signing stays impossible by design (WebAuthn cannot produce SSH
-   signatures), and nothing about an agent response is ever persisted.
+   projects in the `bridge` mode sign through it — host-side ops and the workspace shim alike; the
+   key blinks on the laptop, and the share CLI prints what each signature is for ("signature
+   requested by mend (project shimtest → localhost)") with an honest waiting line and a 60s touch
+   window. Disconnected → those ops fail fast with "no signer connected — run `mend keys share` on
+   the machine that holds your key", while projects on a Mend key (a per-user key on the person's
+   git account) keep working. The web card reports presence as an observation ("signer connected ·
+   laptop"), never a judgment. Browser-based signing stays impossible by design (WebAuthn cannot
+   produce SSH signatures), and nothing about an agent response is ever persisted.
 
 3. **Remotes never enter the workspace; plain `git push` still works — the shim.** The container
    gets no key, no agent socket, no token. Instead Mend sets `core.sshCommand` in the workspace's
@@ -77,6 +80,11 @@ delivery prompt lives with the session that builds it.
      owner's Mend key (per user since 2026-09-02) or the connected agent bridge — this is what makes
      multi-tenant identity possible at all (a baked-in container key decides too early and produces
      a copyable secret).
+   - In a per-person workspace (`docs/adr/0016`, decision 4) the shim signs as the person whose
+     process runs `git`, with their Mend key or their own bridge, so a joiner's push is the
+     joiner's. Git over HTTPS to GitHub there uses `mend-git-credential`, a credential helper that
+     answers with the GitHub login in that person's own home
+     (`packages/sessions/src/git-credential.ts`).
    - The seam is also the policy point: log every remote op; optionally auto-allow `mend shell`
      pushes and require confirmation for agent-initiated ones. Whether the gate is on is product
      policy; the shim makes it possible.
@@ -187,14 +195,14 @@ CLI's `--json`) is redacted one string at a time.
 - **Known limits.** The gate reads the store's own config. Global and system git config and
   `GIT_CONFIG_*` in the server's environment are the operator's configuration of their own server,
   not input from a person, and are outside it. Neither does it judge `http.<url>.extraHeader` or
-  `credential.helper` in a store's config: those predate this rule and are not URL credentials; a
-  policy for them is a 0.37 roadmap item.
+  `credential.helper` in a store's config: those predate this rule and are not URL credentials, and
+  no policy covers them yet.
 
 Why refuse rather than keep the token sealed beside the URL: Mend holds no HTTPS credential of an
 account's, and a token in a project's URL is the adopter's credential spent by everyone who works in
 the project, including fetches and landings by other members. That is the cross-person spend the
 per-person rules forbid. The supported ways are each person's own: their Mend key or their bridge. A
-per-account HTTPS token, sealed like other credentials, is the planned follow-up (above), and would
+per-account HTTPS token, if Mend ever holds one, would be sealed like other credentials and would
 not live in the URL either. A project whose store still holds the token is refused after the upgrade
 until it is adopted again from its SSH URL, or the operator strips it. The owner's box had none (0
 of 6 projects, 0 references; no store with a credential, a token in an insteadOf base or an
@@ -205,9 +213,10 @@ include).
 Since organizations (`docs/adr/0003-organizations-and-tenancy.md`), every signer belongs to one
 account. `mend keys share` serves the bridge of the account it signed in as, at its own socket under
 `_bridge/`; a session signs with its owner's Mend key or its owner's bridge, and never falls back to
-another account's. A hot workspace is warmed as the owner it serves, and a session with no owner has
-no signer at all. Reference repositories belong to an organization and are fetched with the git
-access of the owner who adds or refreshes them, never the host's ambient identity.
+another account's. A hot workspace is warmed as the owner it serves. A session with no owner has no
+bridge signer, and uses a Mend key only on a server that holds exactly one (decision 1). Reference
+repositories belong to an organization and are fetched with the git access of the owner who adds or
+refreshes them, never the host's ambient identity.
 
 The dotfiles repository is cloned at every launch as the session's owner, and when it is saved as
 the account saving it. An SSH URL signs with that account's git access (its Mend key, or its bridge
@@ -222,8 +231,7 @@ own setup, the same rule as the host's `gh` login below (`packages/sessions/src/
 
 Calls to the GitHub API from the Mend server (repository discovery, pull request lists) have no
 per-account credential yet. On a single-organization install the operator may use the host's `gh`
-login; everyone else sees "no identity" with the reason. A per-account GitHub token, sealed like
-other credentials, is the planned follow-up.
+login; everyone else sees "no identity" with the reason.
 
 Landing (`docs/adr/0007-landing.md`) does not use that path. The push signs with the change owner's
 git access, like any host-side operation. Since 2026-11-08, an HTTPS `github.com` origin on the

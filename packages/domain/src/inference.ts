@@ -31,7 +31,7 @@ export const InferenceContext = Schema.Literals([
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 
-/** The closed first-party tool set from PRODUCT.md. Enforced by omission. */
+/** The closed first-party tool set from docs/archive/PRODUCT.md. Enforced by omission. */
 export const InferenceToolName = Schema.Literals([
   "read_recording",
   "read_issue",

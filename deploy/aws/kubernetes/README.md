@@ -7,16 +7,10 @@ or shared storage classes, create Secret values, build the MicroVM image, or app
 The contract comes from sealant tag `v0.33.0` (`17a23ff`), especially its environment reference,
 Kubernetes BuildKit builder, MicroVM adapter, and published Helm chart. The control images are
 pinned to `ghcr.io/sealant-sh/sealant-api:0.33.0` and `sealant-worker:0.33.0`. Zot and BuildKit
-match that release's chart pins. The private AWS deployment now runs 0.33.0 with digest-pinned
-application images and the separate Docker image enabled; see the
-[Docker service runbook](../../../docs/operations/aws-docker-service.md) for observed results and
-remaining acceptance.
-
-Docker requires the same separate image ARN/version and base image configuration on both API and
-worker. This renderer does not configure that pair. Preserve the live deployment's explicit pair and
-digest pins when preparing any later apply; renderer output alone does not reproduce them. Both
-application IAM policies must also authorize the exact separate image ARN. The parent OpenTofu
-configuration includes the retained POC Docker image alongside the ordinary image.
+match that release's chart pins. The deployment these manifests served is gone; see the
+[AWS README](../README.md) before using them again, and update the pins to a current Sealant
+release. Docker inside a session ships on every image family since Sealant 0.36.1, so no separate
+Docker image pair is needed.
 
 ## Runtime shape
 

@@ -122,7 +122,7 @@ test("static checks, all test shards and packaging can start without another exe
     assert.equal(jobs[name]["runs-on"], CI_RUNNER);
   }
   assert.deepEqual(new Set(jobs.checks.needs), new Set(Object.keys(completed())));
-  // Seconds of work each, on GitHub's free arm64 runners (merge-queue.md).
+  // Seconds of work each, on GitHub's free arm64 runners.
   for (const name of ["changes", "checks"]) assert.equal(jobs[name]["runs-on"], "ubuntu-24.04-arm");
   assert.ok(
     !jobs.checks.steps.some((step) => step.uses),
@@ -448,18 +448,15 @@ test("the test report reaches Turbo tasks without entering hashes, outputs or gi
   assert.ok(readFileSync(new URL(".gitignore", root), "utf8").split("\n").includes(".ci-reports/"));
 });
 
-test("PRs and merge groups have exact history; manual and nightly events retain the full CI graph", () => {
-  assert.ok(!Object.hasOwn(workflow.on, "push"), "main is reached only through the merge queue");
+test("PRs have exact history; pushes to main, manual and nightly events retain the full CI graph", () => {
+  assert.deepEqual(workflow.on.push, { branches: ["main"] }, "every commit that lands is tested");
   assert.ok(Object.hasOwn(workflow.on, "pull_request"));
-  assert.deepEqual(workflow.on.merge_group.types, ["checks_requested"]);
+  assert.ok(!Object.hasOwn(workflow.on, "merge_group"), "Mend has no merge queue");
   assert.ok(Object.hasOwn(workflow.on, "workflow_dispatch"));
   assert.deepEqual(workflow.on.schedule, [{ cron: "23 2 * * *" }]);
   assert.equal(jobs.checks.name, undefined, "the required check context must remain checks");
-  assert.equal(
-    workflow.env.TURBO_SCM_BASE,
-    "${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}",
-  );
-  assert.equal(jobs.changes.outputs.graph, "${{ steps.scope.outputs.graph }}");
+  assert.equal(workflow.env.TURBO_SCM_BASE, "${{ github.event.pull_request.base.sha }}");
+  assert.equal(jobs.changes.outputs.graph, undefined);
   for (const name of ["static", "test-engines", "test-clients-a", "test-clients-b"]) {
     assert.equal(
       jobs[name].steps.find((step) => step.uses?.startsWith("actions/checkout@")).with[
@@ -468,16 +465,15 @@ test("PRs and merge groups have exact history; manual and nightly events retain 
       0,
     );
     assert.ok(commands(name).includes('node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"'));
-    assert.equal(jobs[name].env.CI_GRAPH, "${{ needs.changes.outputs.graph }}", name);
+    assert.equal(jobs[name].env.CI_GRAPH, undefined, name);
   }
   const scope = jobs.changes.steps.find((step) => step.id === "scope");
   assert.match(
     scope.run,
-    /merge_group \]; then\s+node scripts\/ci-scope.mjs --merge-group "\$QUEUE_BASE_SHA" "\$QUEUE_HEAD_SHA"/,
+    /pull_request \]; then\s+node scripts\/ci-scope.mjs "\$BASE_SHA" "\$HEAD_SHA"/,
   );
-  assert.equal(scope.env.QUEUE_BASE_SHA, "${{ github.event.merge_group.base_sha }}");
-  assert.equal(scope.env.QUEUE_HEAD_SHA, "${{ github.event.merge_group.head_sha }}");
   assert.match(scope.run, /else\s+node scripts\/ci-scope.mjs --all/);
+  assert.doesNotMatch(scope.run, /merge.group/i);
   for (const name of ["web", "marketing", "desktop"]) {
     const config = JSON.parse(
       readFileSync(new URL(`../apps/${name}/turbo.json`, import.meta.url), "utf8"),
@@ -489,7 +485,7 @@ test("PRs and merge groups have exact history; manual and nightly events retain 
   }
 });
 
-test("a newer pull request or dispatched head cancels its stale run; main, queue and nightly runs never do", () => {
+test("a newer pull request or dispatched head cancels its stale run; main pushes and nightly runs never do", () => {
   const { group, "cancel-in-progress": cancel } = workflow.concurrency;
   assert.equal(
     group,
@@ -499,6 +495,28 @@ test("a newer pull request or dispatched head cancels its stale run; main, queue
     cancel,
     "${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}",
   );
+  // Interpolates every ${{ }} the way GitHub does for a string field.
+  const resolve = (value, github) => {
+    const whole = expressionOf(value.trim());
+    if (whole && !whole.includes("}}")) return evaluate(whole, { github });
+    return value.replace(/\$\{\{(.+?)\}\}/gs, (_, inner) => String(evaluate(inner, { github })));
+  };
+  const context = (event_name, extra = {}) => ({
+    workflow: "CI",
+    event_name,
+    ref: "refs/heads/main",
+    run_id: event_name === "push" ? 101 : 102,
+    event: {},
+    ...extra,
+  });
+  // Two pushes to main land in two groups, and neither cancels the other.
+  for (const github of [context("push"), context("push", { run_id: 103 }), context("schedule")]) {
+    assert.equal(resolve(group, github), `CI-${github.run_id}`, github.event_name);
+    assert.equal(resolve(cancel, github), false, github.event_name);
+  }
+  const pr = context("pull_request", { event: { pull_request: { number: 7 } } });
+  assert.equal(resolve(group, pr), "CI-7");
+  assert.equal(resolve(cancel, pr), true);
 });
 
 test("the Version workflow dispatches nothing: the release runs CI and acceptance on its head", () => {
@@ -620,7 +638,7 @@ test("measurement steps do not leak cache policy into the real shard-supervision
   }
 });
 
-test("a failed or missing nightly opens or updates one issue, with nothing but issue writes", () => {
+test("a failed nightly or main push, or a missing nightly, opens or updates one issue, with nothing but issue writes", () => {
   const watch = parse(
     readFileSync(new URL("../.github/workflows/nightly-watch.yml", import.meta.url), "utf8"),
   );
@@ -639,6 +657,7 @@ test("a failed or missing nightly opens or updates one issue, with nothing but i
     "the job that can write issues never checks out repository code",
   );
   assert.match(job.if, /github\.event\.workflow_run\.event == 'schedule'/);
+  assert.match(job.if, /github\.event\.workflow_run\.event == 'push'/);
   assert.match(job.if, /github\.event\.workflow_run\.conclusion != 'success'/);
   const run = job.steps.map((step) => step.run ?? "").join("\n");
   assert.match(run, /for workflow in ci\.yml build-input-probe\.yml; do/);
@@ -689,6 +708,7 @@ esac
       EVENT_NAME: "workflow_run",
       RUN_ID: "1",
       RUN_NAME: "Build input probe",
+      RUN_EVENT: "schedule",
       RUN_URL: "u",
       RUN_CONCLUSION: "failure",
       RUN_SHA: "s",
@@ -700,6 +720,10 @@ esac
       /^issue comment 42 --body The nightly Build input probe run .*test-engines \(failure\)/m,
     );
     assert.doesNotMatch(comment, /issue create/);
+    assert.match(
+      run({ ...failed, RUN_NAME: "CI", RUN_EVENT: "push", FAKE_OPEN_ISSUE: "42" }),
+      /^issue comment 42 --body The CI run for a push to main ended \*\*failure\*\*/m,
+    );
     const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
     assert.doesNotMatch(run({ EVENT_NAME: "schedule", FAKE_LAST_SUCCESS: hoursAgo(1) }), /issue/);
     assert.match(
@@ -992,7 +1016,7 @@ const runnerProblems = (all) =>
 
 test("only a dispatch with runner: box selects the box, and nothing selects Blacksmith", () => {
   const all = resolutions();
-  for (const event of ["pull_request", "merge_group", "schedule", "workflow_dispatch"]) {
+  for (const event of ["pull_request", "push", "schedule", "workflow_dispatch"]) {
     assert.ok(
       all.some((run) => run.event === event && run.file.endsWith("/ci.yml")),
       event,
@@ -1029,7 +1053,7 @@ test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatc
         JSON.stringify(run.inputs) === JSON.stringify(inputs),
     )?.labels;
   for (const job of lanes) {
-    for (const event of ["pull_request", "merge_group", "schedule"]) {
+    for (const event of ["pull_request", "push", "schedule"]) {
       assert.deepEqual(on(event, job), ["ubuntu-24.04"], `${job} on ${event}`);
     }
     assert.deepEqual(on("workflow_dispatch", job, { runner: "ubuntu-24.04" }), ["ubuntu-24.04"]);

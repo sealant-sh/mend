@@ -7,7 +7,7 @@ export const CommentAuthorKind = Schema.Literals(["reviewer", "mend"]);
 export type CommentAuthorKind = typeof CommentAuthorKind.Type;
 
 /**
- * What Mend decided a reviewer comment asks for (PRODUCT.md, Iteration):
+ * What Mend decided a reviewer comment asks for (docs/archive/PRODUCT.md, Iteration):
  * a follow-up run on the same branch, a question back, or a verification pass.
  * Recorded on the comment itself, so the routing is visible evidence.
  */

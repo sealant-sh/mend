@@ -1491,7 +1491,7 @@ export class Store extends Context.Service<
         });
 
       /**
-       * Root-uid defense (docs/BUGS.md 2026-08-30): workspace containers run git as ROOT
+       * Root-uid defense (a 2026-08-30 bug): workspace containers run git as ROOT
        * against this very gitdir (the worktree's real state lives here, so the pod mounts it),
        * and a root-side `git gc --auto` used to leave `packed-refs` and `refs/heads/mend/`
        * root-owned — after which this process (uid 1000) could not create a session ref and

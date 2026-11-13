@@ -1,11 +1,13 @@
 # Claude credentials: a grant of Mend's own
 
-Status: proposed 2026-09-18. Its "Refresh stays where the credential lives" section is replaced by
-[ADR 0008](0008-one-refresher-for-provider-logins.md): the platform is the only refresher, and
-copies cannot rotate. Commits Mend to connecting Claude through a **dedicated grant** — a Claude
-login that belongs to Mend and not to the person's laptop — and to sending only the Claude
-credential, never the third-party tokens that sit beside it. It closes the over-share this work
-found, states who refreshes what, and names the two platform halves it cannot do alone.
+Status: accepted 2026-09-19 (#294); built in #295 to #299 (0.35). Refresh is replaced by ADR 0008;
+amended by ADR 0018. The terms question stays open.
+[ADR 0008](0008-one-refresher-for-provider-logins.md) replaces the section "Refresh stays where the
+credential lives": the platform is the only refresher, and copies cannot rotate. Commits Mend to
+connecting Claude through a **dedicated grant** — a Claude login that belongs to Mend and not to the
+person's laptop — and to sending only the Claude credential, never the third-party tokens that sit
+beside it. It closes the over-share this work found, states who refreshes what, and names the two
+platform halves it cannot do alone.
 
 Amended 2026-10-25 by [ADR 0018](0018-api-key-logins-and-organization-keys.md): an API key is a
 login a person chooses beside the grant, not only the fallback the open questions name.
@@ -132,27 +134,16 @@ it observes about expiry; it does not mint.
 - The person's own Claude login is untouched, and this ADR is what makes that true rather than
   hopeful.
 - A person who never runs a session for 28 days must connect again. Mend says so before it matters.
+- The web app reports nothing about grant freshness, because a connected account carries no expiry
+  over the API; `mend doctor` reads the copy on the machine that connected the grant, which no other
+  client has, and says which machine it read.
+- A launch does not refuse a session whose grant is dead, for the same reason: Mend's API cannot see
+  what the platform's sweeper already knows, and marking an account when a session fails to
+  authenticate needs that typed state too. Both wait on the platform half, not on more Mend code.
 
 ## Delivery
 
-| PR  | What it delivers                                                                             |
-| --- | -------------------------------------------------------------------------------------------- |
-| 1   | This ADR, and the platform feedback for the two sealant halves.                              |
-| 2   | `claudeAiOauth` only, in `@mend/domain`, used by the CLI and the API.                        |
-| 3   | The harness-home credential stays 0600.                                                      |
-| 4   | ADR 0002 and `DEVELOPMENT.md` corrected to what sealantd does.                               |
-| 5   | The dedicated grant in `mend connect claude`, with the same-grant refusal.                   |
-| 6   | The four states, the `claude auth status` probe, and the grant's freshness in `mend doctor`. |
-
-PRs 2 to 4 stand on their own and depend on nothing below. PR 5 depends on the first open question.
-
-PR 6 stops short of two things this ADR first listed for it, and both wait on the platform half
-rather than on more Mend code. The **web app** reports nothing about grant freshness, because a
-connected account carries no expiry over the API; `mend doctor` reads the copy on the machine that
-connected the grant, which no other client has. A **launch does not refuse** a session whose grant
-is dead, for the same reason: Mend's API cannot see what the platform's sweeper already knows, and
-marking an account when a session fails to authenticate needs that typed state too. Until it exists,
-doctor on the connecting machine is the honest report, and it says which machine it read.
+Built in #295 to #299 after this ADR (#294), one pull request per step.
 
 ## Decision log
 
@@ -185,8 +176,8 @@ doctor on the connecting machine is the honest report, and it says which machine
 
 1. **Can one Claude account hold two live grants?** If a new login invalidates the previous session,
    the dedicated grant is impossible and Mend must use `claude setup-token` or an API key instead.
-   This decides PR 5. Settle it with a login into a scratch config directory, then
-   `claude auth status` against both.
+   This decides the dedicated grant in `mend connect claude`. Settle it with a login into a scratch
+   config directory, then `claude auth status` against both.
 2. **Does Anthropic's server allow a reuse window for a rotated refresh token?** The client clearly
    rotates; whether the old token dies immediately is not visible from the client. It decides how
    sharp the race is for anyone who declines a dedicated grant.

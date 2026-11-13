@@ -1,5 +1,9 @@
 # Setup sessions and recorded proof artifacts
 
+Status: agreed 2026-11-01, amended 2026-11-01 (no before captures); built in #1328 to #1361. Yiannis
+supplied the setup and capture stories on 2026-11-01 and decided delivery, authentication,
+withdrawal and build order. Those decisions replaced the earlier open questions in this ADR.
+
 ## Amendment
 
 2026-11-01: before captures dropped by Yiannis, since a base copy may not boot.
@@ -9,14 +13,8 @@ withdrawn. Screenshots and the short video use the checkpoint Mend takes when ca
 `source unknown` with a reason. Labels read
 `Completed task on board · checkpoint #2 · observed 17:58 UTC`, with capture state when needed.
 Agents use `.mend/features.md` and `.mend/verify.md` when present and record `proof_missing` with a
-reason when capture is unavailable. Captures, Slack file uploads and inline display in T3 Code are
-built; setup, PR body embeds, Review and phone remain planned. Historical sections below retain the
-original decision and are marked where superseded.
-
-Original status, superseded by the amendment: agreed design for 0.37, not yet built. Yiannis
-supplied the setup and capture stories on 2026-11-01 and has decided delivery, authentication,
-withdrawal and build order. Those decisions replace the earlier open questions in this ADR. This
-document changes no runtime behavior.
+reason when capture is unavailable. Historical sections below retain the original decision and are
+marked where superseded.
 
 ## What people get
 
@@ -277,8 +275,8 @@ including after access is revoked; knowing a blob key grants no access. Artifact
 change even if the source session has different visibility. The operator gets no default read access
 to organization content.
 
-The paired-image presentation below is superseded by the 2026-11-01 amendment; planned Review and
-phone show selected screenshots and video.
+The paired-image presentation below is superseded by the 2026-11-01 amendment; Review and phone show
+selected screenshots and video.
 
 Review shows paired images and a video player beside the diff, with labels visible before opening
 media. The phone offers the same captures in its review. These designs remain unchanged.
@@ -321,8 +319,8 @@ the GitHub media. These external copies are separate from Mend's change-lifetime
 
 ### Embedded media in the PR body
 
-The paired-file example here is superseded by the 2026-11-01 amendment; planned embeds contain only
-captures of the app with the change.
+The paired-file example here is superseded by the 2026-11-01 amendment; embeds contain only captures
+of the app with the change.
 
 Landing uploads the selected media as GitHub-native attachments in the same repository as the PR.
 Use the existing landing workspace and the change owner's GitHub login, with a `gh` version that
@@ -381,40 +379,3 @@ bounded to about 60 seconds.
 | D13. PR media, decided design       | Use GitHub-native uploads through `gh --attach`, embedding screenshots and a video player in the PR body. GitHub documents repository-reader access for private uploads.                                                                                                | A custom Git ref alone has no verified private inline-serving path; link-only bodies do not meet the request.                               |
 | D14. Withdrawal, decided            | Withdrawing a capture is deferred to later work.                                                                                                                                                                                                                        | An owner withdrawal action and placeholder add work outside this build.                                                                     |
 | D15. Priority, decided              | Build capture, Slack and T3 Code delivery, setup including auth, PR embedding, then Review and phone, in that order.                                                                                                                                                    | Building Review first delays the two clients Yiannis prioritizes.                                                                           |
-
-## Build order
-
-Step 1 is superseded by the 2026-11-01 amendment; capture screenshots and a short video of the app
-with the change.
-
-1. Capture before and after screenshots and the after video, with the base side copy.
-2. Deliver files to Slack and show the captures inline in T3 Code.
-3. Build the setup session, including auth preparation and its `.mend/` instructions and scripts.
-4. Embed media in the PR body.
-5. Add the review page and phone presentation.
-
-Capture and early delivery can use a project's existing recipes and explicit auth instructions until
-the setup session writes them. This order does not make setup an automatic prerequisite for a
-capture.
-
-## Implementation boundary and checks for the later build
-
-The side-copy requirements and base-capture checks here are superseded by the 2026-11-01 amendment;
-check captures of the app with the change.
-
-This PR is documentation only. Mend continues to use the public `@sealant/sdk`; missing support for
-side copies, media capture or blob transfer belongs in platform feedback before implementation, not
-an import of Sealant internals. This design does not introduce a second agent or depend on a new
-platform recording product.
-
-The later feature check must exercise the stories as a person on the box: decline setup, start it
-later with the starter's login, review the proposed files, and observe that no resources or Services
-started. Then use an authenticated web app, capture base and after without disturbing its change,
-ask for another capture, and inspect the files in Slack, inline media in T3 Code, Review, phone and
-a landed PR. Check an unavailable base and a missing test account, a screen restart requiring
-sign-in, retention beyond ordinary frame expiry, a later checkpoint, and a reader who loses change
-access. Check external-provider session creation and password-account provisioning, a private GitHub
-PR viewed by a repository reader without Mend access, refusal for someone without private-repo
-access, and public PR images and video while signed out. Confirm that Mend revocation leaves already
-delivered external copies under their destination's rules. The observations belong on the
-implementation PRs under AGENTS.md, not on this unbuilt design.

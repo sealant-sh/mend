@@ -48,7 +48,12 @@ turns on multi tenancy, which refuses to start until its gate passes. See
 
 A project is a Git repository adopted into Mend's central store. Mend treats a previous checkout as
 a Git peer, not as an execution target. A project belongs to an organization and is `private` (its
-creator only, the default) or `shared` (its whole organization).
+creator only, the default) or `shared` (its whole organization). Its name is unique within its
+organization.
+
+A project can also start without a source repository. Created by name, it is private, holds one
+README commit on `main` by its creator, and has no origin. Each person also has one such scratch
+project, made on first use. Today [t3code](/integrations/t3code/) is the client that creates them.
 
 A project also owns the setup used by future workspaces: image, variables, secrets, references,
 folders, Services, dotfile policy, hot-session count, Git access, and automation switches. A value
@@ -87,6 +92,27 @@ started from: Mend itself (the CLI, web, VS Code or phone) or Slack.
 
 A session can contain several agent processes over its life. Supporting shells and Services belong
 to the same session because they can read or change its worktree.
+
+A session's agent runs in one of two modes. A terminal session runs the unmodified harness in a
+recorded terminal; it is what `mend claude`, `mend codex` and the other CLI commands start, and any
+agent command works this way. A conversation session drives Claude Code or Codex through its
+structured protocol, so turns, approvals and questions arrive as separate items; Slack, the phone
+and the web composer start these, and the HTTP API does when asked. For Claude Code and Codex, a
+mode switch moves a session's agent from one mode to the other and keeps the same provider
+conversation.
+
+A session's status follows its live processes, not any single one:
+
+- `waiting` when a live agent has a request for you: an approval or a question;
+- `running` when a live agent is working;
+- `idle` when every live agent has finished its turn, or only shells and Services are live;
+- `completed`, `failed` or `stopped` once nothing is live, from how the last agent ended.
+
+`starting` and `stopping` cover a launch or a stop in progress.
+
+Mend's record begins when Mend launches a process or observes one in the session's workspace. Work
+done before that, such as the commits a [handoff](/guides/hand-off-local-work/) brings, appears in
+the change with no record behind it.
 
 ### Process
 
@@ -134,6 +160,10 @@ belongs to the worktree: one ordered sequence across every conversation in it, a
 checkpoints define a reviewable slice, even when different sessions took them. Git supplies the
 comparison, and the record positions bound what Mend had observed.
 
+Mend takes a checkpoint when a session starts, at each turn boundary, when a review opens, when a
+proof artifact is captured, and when you choose `Mark checkpoint`. The first one, the worktree's
+base state, anchors the chain.
+
 ### Landing
 
 A landing is one push of a change to origin, plus its pull request when origin is on GitHub,
@@ -152,8 +182,10 @@ session. It retains its process-attempt history and endpoint while individual at
 Reviewing a change happens beside the session that made it. The review shows the worktree against
 its base, or any slice between two checkpoints. You write comments on lines and send them back to
 the same session as its next turn. Mend reads the change and writes a description, a tour through
-the diff, and suggestions: draft comments and proposed checks, each linked to the record or shipped
-with a runnable check, never a verdict. See [Review a change](/guides/review-a-change/).
+the diff, findings and suggested fixes. Findings are draft comments that cite the record events they
+rest on, never a verdict, and a tour stop with no record event behind it says `inferred reading`.
+These passes run on the connected account of the person who asked; Mend ships no model of its own
+and no model keys. See [Review a change](/guides/review-a-change/).
 
 Landing is the optional publication step after review. The owner lands from the web or with
 `mend land`, or turns on automatic landing, which lands after a completed turn whose request asked
