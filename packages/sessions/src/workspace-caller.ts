@@ -12,7 +12,7 @@ import * as Context from "effect/Context";
 
 /**
  * WHOSE PLATFORM IDENTITY A SEALANT CALL RUNS AS. One rule, applied here and nowhere else, so it
- * cannot drift (alpha 2026-10-06, 9e486cfc). Core scopes a workspace, its processes and its runs
+ * cannot drift (alpha 2026-10-06, 9e486cfc). sealant scopes a workspace, its processes and its runs
  * to the Sealant user that created it, and answers anyone else 404; the creator is the owner of
  * the session whose own launch made the executor (`SessionsRepo.executorSessionOf`).
  *
@@ -27,7 +27,7 @@ import * as Context from "effect/Context";
  *   pipe, a forward, a bind, a replan, a TTL renewal, a git read. The asker must still be a member
  *   of the project's organization who can see the project (`canSeeProject`), and the creator must
  *   still be a member of it, both read in one query (`SessionsRepo.executorAccessOf`). Otherwise
- *   the act is refused here (403), never handed to Core as the asker: a handle the creator
+ *   the act is refused here (403), never handed to sealant as the asker: a handle the creator
  *   fetched would run it anyway. A creator who is no longer a member lends nothing: their
  *   executor is retired (`SessionEngine.windDownPerson`, `reconcileAccess`), and joiners start
  *   their own. A creator who is still a member keeps their executor whatever they can see: a

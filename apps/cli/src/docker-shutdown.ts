@@ -22,7 +22,7 @@ import type { Check } from "./doctor.ts";
  */
 
 /**
- * The stop timeout Sealant gives a workspace container (Core
+ * The stop timeout Sealant gives a workspace container (sealant
  * `SEALANT_DOCKER_CONTAINER_STOP_TIMEOUT_SECONDS`, default 60): what a workspace setup starts gets.
  */
 export const WORKSPACE_STOP_TIMEOUT_SECONDS = 60;

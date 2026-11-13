@@ -96,9 +96,9 @@ const failureOf = async (answer: Answer) => {
 };
 
 /**
- * Core 0.40.0-next.872's `BOAT_REQUIRED_PERMISSIONS`: the values of `BOAT_OPERATION_PERMISSIONS`
- * in `packages/workspaces/src/runtime/boat/api.ts` at sealant 2af5257ecf. Core does not export the
- * list; it reaches Mend only inside each report. On a Core pin, copy it again from that file.
+ * sealant 0.40.0-next.872's `BOAT_REQUIRED_PERMISSIONS`: the values of `BOAT_OPERATION_PERMISSIONS`
+ * in `packages/workspaces/src/runtime/boat/api.ts` at sealant 2af5257ecf. sealant does not export the
+ * list; it reaches Mend only inside each report. On a sealant pin, copy it again from that file.
  */
 const CORE_REQUIRED_PERMISSIONS = [
   "sandbox.create",
@@ -113,7 +113,7 @@ const CORE_REQUIRED_PERMISSIONS = [
   "snapshot.read",
 ];
 
-/** A report as Core 872 sends it: ISO dates, absent optional facts. */
+/** A report as sealant 872 sends it: ISO dates, absent optional facts. */
 const wireReport = {
   observedAt: "2026-11-13T14:02:00.000Z",
   organization: "acme-boat",
@@ -145,27 +145,27 @@ const wireReport = {
 };
 
 describe("Mend's list of Boat permissions", () => {
-  it("is the list Core 872 needs, so the page's command never asks for less", () => {
+  it("is the list sealant 872 needs, so the page's command never asks for less", () => {
     expect([...BOAT_KEY_REQUIRED_PERMISSIONS].toSorted()).toEqual(
       [...CORE_REQUIRED_PERMISSIONS].toSorted(),
     );
     expect(permissionsTheCommandLacks(CORE_REQUIRED_PERMISSIONS)).toEqual([]);
   });
 
-  it("judges a key by Core's list as well as Mend's", () => {
+  it("judges a key by sealant's list as well as Mend's", () => {
     expect(missingBoatKeyPermissions([...BOAT_KEY_REQUIRED_PERMISSIONS], ["sandbox.fork"])).toEqual(
       ["sandbox.fork"],
     );
     expect(permissionsTheCommandLacks(["sandbox.fork"])).toEqual(["sandbox.fork"]);
   });
 
-  it("knows Core's failure kinds", () => {
+  it("knows sealant's failure kinds", () => {
     expect(BOAT_FAILURE_KINDS).toContain("key-expired");
   });
 });
 
-describe("Core's Boat accounts, through the SDK", () => {
-  it("reads Core's report on a key in Mend's shape: dates, nulls, Boat's reason", async () => {
+describe("sealant's Boat accounts, through the SDK", () => {
+  it("reads sealant's report on a key in Mend's shape: dates, nulls, Boat's reason", async () => {
     next = { status: 200, body: { items: [{ ...wireAccount(), report: wireReport }] } };
     const result = await run((clients) => clients.listBoatAccounts());
     if (result._tag !== "Success") throw new Error("expected the list");
@@ -219,13 +219,13 @@ describe("Core's Boat accounts, through the SDK", () => {
     });
   });
 
-  it("reads an account from a Core without reports as having none", async () => {
+  it("reads an account from a sealant without reports as having none", async () => {
     next = { status: 200, body: { items: [wireAccount()] } };
     const result = await run((clients) => clients.listBoatAccounts());
     expect(result._tag === "Success" ? result.success[0]?.report : "failed").toBeNull();
   });
 
-  it("checks a key again through Core's check, and answers the new report", async () => {
+  it("checks a key again through sealant's check, and answers the new report", async () => {
     next = { status: 200, body: { ...wireAccount(), report: wireReport } };
     const result = await run((clients) => clients.checkBoatAccount(ACCOUNT));
     expect(requests).toEqual([
@@ -262,7 +262,7 @@ describe("Core's Boat accounts, through the SDK", () => {
     });
   });
 
-  it("sends the key to Core once, in the body, and answers the account without it", async () => {
+  it("sends the key to sealant once, in the body, and answers the account without it", async () => {
     next = { status: 201, body: wireAccount() };
     const result = await run((clients) =>
       clients.createBoatAccount("Mend organization Acme", Redacted.make(KEY)),
@@ -339,12 +339,12 @@ describe("Core's Boat accounts, through the SDK", () => {
     });
   }
 
-  it("reads a key without every permission Core needs as missing-permissions, naming them", async () => {
+  it("reads a key without every permission sealant needs as missing-permissions, naming them", async () => {
     const failure = await failureOf({
       status: 422,
       body: {
         _tag: "BoatAccountKeyRefusedError",
-        message: "The key lacks Boat permissions Core needs: sandbox.delete; nothing changed.",
+        message: "The key lacks Boat permissions sealant needs: sandbox.delete; nothing changed.",
         code: "boat-key-missing-permissions",
         missingPermissions: ["sandbox.delete"],
       },

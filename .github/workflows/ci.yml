@@ -47,7 +47,7 @@ concurrency:
 jobs:
   # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
   # repository, so neither waits for an x86 slot. On the box, merge group 38746126993's 10-second
-  # `checks` waited 13.4 minutes behind Core and sealantd runs (docs/operations/merge-queue.md).
+  # `checks` waited 13.4 minutes behind sealant and sealantd runs (docs/operations/merge-queue.md).
   changes:
     runs-on: ubuntu-24.04-arm
     env:

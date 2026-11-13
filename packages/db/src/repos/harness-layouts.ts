@@ -108,7 +108,7 @@ export interface ImageLayoutCapabilityRecord {
   /** What it lacked, each in a word the refusal line names (`sudo`, `uid 40001 is taken`, …). */
   readonly missing: ReadonlyArray<string>;
   /**
-   * Observed in a per-person executor (its prepare, or Core's create refusing the owner map). A
+   * Observed in a per-person executor (its prepare, or sealant's create refusing the owner map). A
    * shared launch's probe records an unconfirmed answer, which never replaces one already
    * recorded: it cannot see what only a per-person executor meets (Delivery 21).
    */
@@ -285,7 +285,7 @@ export class HarnessLayoutsRepo extends Context.Service<
       accountIds: ReadonlyArray<string>,
     ) => Effect.Effect<ReadonlyArray<LinuxIdentity>>;
     /**
-     * The identities with these login names (a home is `/home/<name>`): whose a home Core lists
+     * The identities with these login names (a home is `/home/<name>`): whose a home sealant lists
      * is, when its person runs nothing Mend could name them by.
      */
     readonly identitiesNamed: (
@@ -591,7 +591,7 @@ export const HarnessLayoutsRepoLive: Layer.Layer<HarnessLayoutsRepo, never, PgCl
         record: CapabilityWrite,
       ) {
         // An unconfirmed answer (a shared launch's probe) is a first guess only: it never
-        // replaces a recorded answer, Core's "no" made into a record included.
+        // replaces a recorded answer, sealant's "no" made into a record included.
         yield* (
           record.confirmed
             ? sql`

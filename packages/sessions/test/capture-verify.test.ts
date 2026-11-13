@@ -825,7 +825,7 @@ describe("review 13 #1: a git step the Mend host could not finish concludes noth
         expect(replan.head?.n).toBe(2);
         expect(replan.epoch).toBe(at.epoch);
         expect(at.notices.at(-1)).toEqual({ kind: "planned", launchId: "launch-1" });
-        // The lease lapses (the executor crashed); Core boots the kept disk in recovery mode,
+        // The lease lapses (the executor crashed); sealant boots the kept disk in recovery mode,
         // as the launch it was, asking from zero.
         const realNow = world.memory.clock.now;
         world.memory.clock.now = () => realNow() + 10 * 60 * 1000;

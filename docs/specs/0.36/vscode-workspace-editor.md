@@ -205,7 +205,7 @@ a person home when all four `Uid:` fields are equal and within `PERSON_UIDS`, HO
 when it is unset) is inside HOME. Everything else is `shared`. To flip the rule, edit that function
 and its test table.
 
-D5 proves only that the home is a person's. That it is _this_ person's comes from Core's gateway,
+D5 proves only that the home is a person's. That it is _this_ person's comes from sealant's gateway,
 which admits only the person who launched the workspace and runs the server as that person's user.
 
 There is one more guard, outside the predicate. If Mend itself is running in the remote host

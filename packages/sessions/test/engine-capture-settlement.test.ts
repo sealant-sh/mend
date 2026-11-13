@@ -1920,10 +1920,10 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
   );
 
   /**
-   * e2e9 F-A: a `docker stop` outside Mend whose FINAL saved (the seal stood). Core then reports
+   * e2e9 F-A: a `docker stop` outside Mend whose FINAL saved (the seal stood). sealant then reports
    * the workspace `failed` ("exited on its own (exitCode: 0)"), its container removed, its drain
    * `stopped` — and Mend read every non-live status but `stopped` as kept, so the session read
-   * `stopping` for good. `drain`: what Core's `captureDrain()` answers once the executor ended.
+   * `stopping` for good. `drain`: what sealant's `captureDrain()` answers once the executor ended.
    */
   // oxlint-disable-next-line unicorn/consistent-function-scoping -- Keep this scenario helper beside the assertions that use it.
   const dockerStopReportedFailed = (
@@ -2022,7 +2022,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
     });
 
   it.effect(
-    "e2e9 F-A: a `docker stop` that saved, which Core reports `failed` with its drain `stopped` and nothing retained, settles `stopped outside Mend · saved at …` — never `stopping` for good",
+    "e2e9 F-A: a `docker stop` that saved, which sealant reports `failed` with its drain `stopped` and nothing retained, settles `stopped outside Mend · saved at …` — never `stopping` for good",
     () =>
       Effect.gen(function* () {
         // Gone on the first look: the end is read at once.
@@ -2041,7 +2041,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
   );
 
   it.effect(
-    "e2e9 F-A: an executor Core reports `failed` but retains for recovery still reads kept, never stopped",
+    "e2e9 F-A: an executor sealant reports `failed` but retains for recovery still reads kept, never stopped",
     () =>
       Effect.gen(function* () {
         // Kept, so no look answers: the end is read after the five further looks, 10 ms apart.
@@ -2064,7 +2064,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
   );
 
   it.effect(
-    "#13 a stop whose final flush answer was lost terminates on the store's seal, and the stop tells Core the completion it sealed",
+    "#13 a stop whose final flush answer was lost terminates on the store's seal, and the stop tells sealant the completion it sealed",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -2096,7 +2096,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               });
               yield* engine.stop(session.id);
               yield* stopOptions.untilChanged(() => stopOptions.items.length > 0, "the stop");
-              // Core names the executor by its runtime identity, recorded at launch.
+              // sealant names the executor by its runtime identity, recorded at launch.
               expect(stopOptions.items[0]?.completion).toEqual({
                 captureN: built.manifest.n,
                 epoch,
@@ -2123,7 +2123,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
   );
 
   it.effect(
-    "#13 a seal with no runtime identity to name sends no completion: Core keeps what it cannot bind",
+    "#13 a seal with no runtime identity to name sends no completion: sealant keeps what it cannot bind",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -2214,7 +2214,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
   );
 
   it.effect(
-    "#13 without a seal, a stop never attests a completion Core did not observe",
+    "#13 without a seal, a stop never attests a completion sealant did not observe",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -2436,7 +2436,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
     },
   );
   it.effect(
-    "#7 a custom setup that fails after the create leaves the executor on the row: it holds removal, keeps its lease and drains; Core keeping it keeps everything",
+    "#7 a custom setup that fails after the create leaves the executor on the row: it holds removal, keeps its lease and drains; sealant keeping it keeps everything",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];
@@ -2455,7 +2455,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               // Addressable from the moment the platform accepted it, before the setup ran.
               expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
               expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
-              // Drained (a final flush), never stopped outright; Core keeps it.
+              // Drained (a final flush), never stopped outright; sealant keeps it.
               yield* stops.untilChanged(() => stops.items.length > 0, "the drain's stop");
               expect(kinds).toContain("final");
               expect(stops.items).toEqual(["drain"]);

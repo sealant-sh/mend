@@ -16,7 +16,7 @@ export class SealantPlatformError extends Schema.TaggedError<SealantPlatformErro
     message: Schema.String,
     /**
      * The connected account's provider a refused account names (`SealantApiError.provider`:
-     * `connected-account-missing`, `-invalid` or `-unsupported`), when Core gave one.
+     * `connected-account-missing`, `-invalid` or `-unsupported`), when sealant gave one.
      */
     provider: Schema.optionalKey(Schema.String),
     /**

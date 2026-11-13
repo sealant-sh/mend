@@ -15,9 +15,9 @@ import { formsOf } from "./secrets.mjs";
 export const FAKES = Object.freeze({
   // GitHub's classic token shape: ghp_ and 36 letters and digits.
   github: "ghp_mendVerifyFake0000000000000000000000",
-  // Core takes a Claude setup token by its prefix (sk-ant-oat01-).
+  // sealant takes a Claude setup token by its prefix (sk-ant-oat01-).
   claude: "sk-ant-oat01-mendVerifyFake-claude-setup-token-000000000000",
-  // Core takes a Codex auth.json with tokens.refresh_token; account_id is what Mend shows.
+  // sealant takes a Codex auth.json with tokens.refresh_token; account_id is what Mend shows.
   codexAuth: JSON.stringify(
     {
       auth_mode: "chatgpt",

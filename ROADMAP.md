@@ -1,6 +1,6 @@
 # Roadmap
 
-What each Mend release contains, across `sealant-sh/mend`, `sealant-sh/sealant` (Core) and
+What each Mend release contains, across `sealant-sh/mend`, `sealant-sh/sealant` and
 `sealant-sh/sealantd`. Written 2026-10-01, after 0.35.1; the 0.36 section rewritten 2026-10-06.
 Update it as items land; a release's section goes when it ships.
 
@@ -8,26 +8,26 @@ Update it as items land; a release's section goes when it ships.
 
 - **A release has a scope, written here.** Pull requests merge to `main` in all three repositories
   when they are ready. Tags wait until the release's scope is done.
-- **Main publishes prereleases** ([ADR 0015](docs/adr/0015-next-channel.md)). Every merge to Core or
-  sealantd main publishes `B-next.N` under separate names: `-next` images and the `@sealant/*-next`
-  npm packages, which are the only packages that workflow can publish. N is the commit's whole
-  history and B never falls below a base already published, so each build is higher than the last.
-  Mend pins those exact versions on main through aliases
-  (`"@sealant/sdk": npm:@sealant/sdk-next@…`), so a Mend change that needs a new Core API waits for
-  Core main's CI, not for a Core release. The stable packages and their `latest` move only on a
-  stable tag.
+- **Main publishes prereleases** ([ADR 0015](docs/adr/0015-next-channel.md)). Every merge to sealant
+  or sealantd main publishes `B-next.N` under separate names: `-next` images and the
+  `@sealant/*-next` npm packages, which are the only packages that workflow can publish. N is the
+  commit's whole history and B never falls below a base already published, so each build is higher
+  than the last. Mend pins those exact versions on main through aliases
+  (`"@sealant/sdk": npm:@sealant/sdk-next@…`), so a Mend change that needs a new sealant API waits
+  for sealant main's CI, not for a sealant release. The stable packages and their `latest` move only
+  on a stable tag.
 - **Mend `next` builds are chosen.** An admin tags `vX.Y.Z-next.N` on main (the version comes from
   `node scripts/next-version.mjs --package apps/cli origin/main`); the release workflow publishes it
   to npm `next` and as a GitHub prerelease, after the owner's approval. That is what goes on the box
   and what people install with `npm install --global @sealant/mend@next`.
 - **A stable release is a promotion,** one of each repository per Mend release, in one order
   (`docs/operations/next-channel.md`): sealantd merges its Version Packages pull request and freezes
-  main; Core pins that build; sealantd tags it; Core pins the release, merges its own Version
-  Packages pull request and freezes main; Core tags after Mend has run that build; Mend pins Core's
-  release, cuts a next build and runs it on the box; then Mend tags. The releases refuse a tag that
-  leaves out one of its own next builds (a merge during a freeze), Core refuses a prerelease
-  sealantd, and Mend refuses a prerelease pin anywhere and any change since its newest published
-  next build beyond the Version Packages pull request, notes and docs.
+  main; sealant pins that build; sealantd tags it; sealant pins the release, merges its own Version
+  Packages pull request and freezes main; sealant tags after Mend has run that build; Mend pins
+  sealant's release, cuts a next build and runs it on the box; then Mend tags. The releases refuse a
+  tag that leaves out one of its own next builds (a merge during a freeze), sealant refuses a
+  prerelease sealantd, and Mend refuses a prerelease pin anywhere and any change since its newest
+  published next build beyond the Version Packages pull request, notes and docs.
 - **Patch releases (0.36.1 and on) are for what is broken** on the box or on alpha: a session that
   cannot start, attach, stop or save. Nothing else gets its own tag. While only patch changesets are
   pending, next builds are `0.36.1-next.N`, so the box proves the patch as the version it ships as.
@@ -57,11 +57,11 @@ Merged since 0.35.1.
   box on `0.36.0-next.601`, a new session takes about 27 s (was about 90 s) and a resume about 35 s
   (was 62 s).
 - **The move onto the box:** CI deploys it (#497, #499, #500), only code on main (#541). Preview
-  builds of Mend, Core and sealantd branches for one box (#463). Every Mend workflow runs on
+  builds of Mend, sealant and sealantd branches for one box (#463). Every Mend workflow runs on
   Blacksmith (#468).
 - **The `next` prerelease channel** ([ADR 0015](docs/adr/0015-next-channel.md)): mend#521, #522,
   #523, #524, #531, #532, #533; sealant#318, #319, #321, #322, #323; sealantd#137, #140, #141. Live:
-  Core publishes `@sealant/sdk-next@0.39.0-next.683`, sealantd `0.20.0-next.142`, and
+  sealant publishes `@sealant/sdk-next@0.39.0-next.683`, sealantd `0.20.0-next.142`, and
   `@sealant/mend@next` is `0.36.0-next.602`.
 - **Models:** one model picker, and the server owns the list (#454, #479). opencode's models in the
   catalog, with no default (#505, migration 0109).
@@ -90,7 +90,7 @@ Merged since 0.35.1.
   review.
 - **Fixes from the specs:**
   - #537: a pi profile restored without its `mcp.json` is still the one delivered.
-  - #538: a change Core could not read is not shown as empty.
+  - #538: a change sealant could not read is not shown as empty.
   - #539: only standby workspaces read the shared dependency cache (docs).
   - #540: removing a worktree refuses while its sessions hold added repositories.
   - #541: the box deploys only code on main, and refuses what it cannot check.
@@ -114,7 +114,7 @@ Merged since 0.35.1.
   - #471: a mode handoff starts its successor in the workspace it already has.
   - sealantd#138: socat comes over HTTPS and is checked against a pinned checksum.
 - **Tests and docs:** #459, #477, #498, #535 (three flaky CI tests); #453, #482, #484, #485, #547.
-- **Core** (since 0.38.1): sealant#306, #307, #309 (pi in every image), #311, #312 (a stop is
+- **sealant** (since 0.38.1): sealant#306, #307, #309 (pi in every image), #311, #312 (a stop is
   recorded once the executor has ended), #313, #314 (an exec is read back soon after it ends), #318,
   #319, #321, #322, #323.
 - **sealantd** (since 0.19.0): sealantd#127, #128 (upload URLs bound to their bytes), #130, #131,
@@ -132,9 +132,9 @@ Merged since 0.35.1.
   - no person ever uses anyone else's login.
 
   The steering login switch (ADR 0013) ships in 0.36 as part of it, on sealant#315 (reshaped into
-  per-home injection) and sealant#316. #534 plans 21 pull requests across Mend, Core and sealantd;
-  the rest are not open yet. #526 (one table of harness credential paths, held equal to sealantd's
-  by a test) is on hold and folds into that plan.
+  per-home injection) and sealant#316. #534 plans 21 pull requests across Mend, sealant and
+  sealantd; the rest are not open yet. #526 (one table of harness credential paths, held equal to
+  sealantd's by a test) is on hold and folds into that plan.
 
 - **Found on the box, no fix on main:** a Codex join shows Codex's sign-in screen. A joiner on their
   own login, under per-person homes, covers it.
@@ -143,11 +143,11 @@ Merged since 0.35.1.
 ### Decisions open (owner)
 
 - The opencode in-app login exception (ADR 0016 decision 8a, #534).
-- Planned stops on AWS: Mend's replacement before a runtime's deadline loses to Core's planned stop,
-  which fires first.
+- Planned stops on AWS: Mend's replacement before a runtime's deadline loses to sealant's planned
+  stop, which fires first.
 - Doppler (ADR 0014, #501): proposed, nine decisions, for 0.37.
 - #392, the marketing header on iPhone: merge or close.
-- Code-owner review on Core and sealantd main, the next channel's last hardening step.
+- Code-owner review on sealant and sealantd main, the next channel's last hardening step.
 
 ### Moved to 0.37
 
@@ -155,16 +155,16 @@ Merged since 0.35.1.
   it.
 - Doppler (ADR 0014, #501).
 - T3 Code gateway, phases 2–4.
-- Mend's words for Core's planned stop before a runtime's deadline (spec in
+- Mend's words for sealant's planned stop before a runtime's deadline (spec in
   `docs/specs/0.36/planned-stop-wording.md`, no pull request). Out of 0.36: only AWS MicroVMs hit
   it, the box runs Docker, and alpha has been torn down since 2026-10-03, so no deployment reads
   "stopped outside Mend" for it today.
 
 ### Release chain
 
-A stable release promotes the next builds the box ran: sealantd 0.20.0, then Core 0.39.0, then Mend
-0.36.0. Their Version Packages pull requests (sealantd#129, sealant#310, mend#455) merge at release
-time, in that order. Steps in `docs/operations/next-channel.md`.
+A stable release promotes the next builds the box ran: sealantd 0.20.0, then sealant 0.39.0, then
+Mend 0.36.0. Their Version Packages pull requests (sealantd#129, sealant#310, mend#455) merge at
+release time, in that order. Steps in `docs/operations/next-channel.md`.
 
 ### Exit criteria
 
@@ -188,8 +188,9 @@ ADR first, and six open decisions: the domain, public links, the shared database
 cache, idle defaults, and the gateway on a private instance.
 
 Also in 0.37, moved from 0.36: the memory view in the web app and on the phone, Doppler, T3 Code
-gateway phases 2–4, and Mend's words for Core's planned stop. Follow-ups from #531: "changes not
-read" in place of an empty diff, from Core's `available` field, and pi on the SDK's native harness.
+gateway phases 2–4, and Mend's words for sealant's planned stop. Follow-ups from #531: "changes not
+read" in place of an empty diff, from sealant's `available` field, and pi on the SDK's native
+harness.
 
 ## 0.38: Context packs
 
@@ -202,8 +203,8 @@ per-person harness homes.
 - **Isolated sessions on our own hardware** (one small VM per session) before people outside the
   team use the box. Docker sessions run privileged, so a shared box is for trusted users only.
 - **Flaky tests:** Mend `doctor.test` (spawns the CLI, `docker info` on CI), the `engine.test`
-  resume and shell race, Core marketing and docs sharing inspector port 9229, sealantd cadence and
-  capture.
+  resume and shell race, sealant marketing and docs sharing inspector port 9229, sealantd cadence
+  and capture.
 - **S3 seal proofs at register time,** so a stop's seal on AWS is instant.
 - **Alpha boot time,** about 137 s, up from 100 s.
 - **A bigger box,** after a week of measured use on this one.

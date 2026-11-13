@@ -326,7 +326,7 @@ export const sessionPagesLayerOf = (
 
 /** No pool in these worlds — claims miss and the boot sweep sees nothing. */
 /**
- * Each organization's Core Boat account (SLNT-790), and each person's own, keyed
+ * Each organization's sealant Boat account (SLNT-790), and each person's own, keyed
  * `organization/person` (SLNT-797); none unless a test names one. Read at each call, so a test may
  * change either map between launches.
  */
@@ -422,7 +422,7 @@ export const freeLaunchSlot: LaunchSlot = {
 
 export const sealantLaunchLayer = (
   created: Array<CreateOptions>,
-  /** A create refused for its accounts: `true` with the old words, or Core's own refusal. */
+  /** A create refused for its accounts: `true` with the old words, or sealant's own refusal. */
   rejectCredentials: (
     credentials: CreateOptions["credentials"],
   ) => boolean | SealantPlatformError = () => false,
@@ -459,7 +459,7 @@ export const sealantLaunchLayer = (
     readonly stopOptions?: Array<WorkspaceStopOptions | undefined>;
     /** What the platform answers a stop, given whether it discards; `requested` by default. */
     readonly stopAnswer?: (discard: boolean) => "stopped" | "draining" | "kept" | "requested";
-    /** Holds the platform's answer to a stop until it completes (a Core slow to stop the executor). */
+    /** Holds the platform's answer to a stop until it completes (a sealant slow to stop the executor). */
     readonly aroundStop?: () => Effect.Effect<void>;
     /** Every flush's kind, in order (`suspend` · `final`). */
     readonly flushKinds?: CaptureFlushKind[];
@@ -475,7 +475,7 @@ export const sealantLaunchLayer = (
       executorRoot: string;
       readonly observed?: string[];
     };
-    /** A faithful workspace hook: Core has created the executor but no process has started yet. */
+    /** A faithful workspace hook: sealant has created the executor but no process has started yet. */
     readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void, SealantPlatformError>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
@@ -488,11 +488,11 @@ export const sealantLaunchLayer = (
       options: SessionOptions | PersonSessionOptions | undefined,
     ) => Effect.Effect<void, SealantPlatformError>;
     /**
-     * `workspaces.findByIdempotencyKey` (Core's next SDK); absent answers `unsupported`, as the
+     * `workspaces.findByIdempotencyKey` (sealant's next SDK); absent answers `unsupported`, as the
      * 0.37.2 seam does.
      */
     readonly findByKey?: (key: string) => WorkspaceByKey;
-    /** What Core's create fence answers for a key (`fenceWorkspaceCreate`); unsupported unless said. */
+    /** What sealant's create fence answers for a key (`fenceWorkspaceCreate`); unsupported unless said. */
     readonly fenceCreate?: (key: string) => WorkspaceCreateFence;
     /** Every create's idempotency key, as Mend sent it (`undefined`: none). */
     readonly createKeys?: Array<string | undefined>;
@@ -502,25 +502,25 @@ export const sealantLaunchLayer = (
     readonly createHomes?: Array<string | undefined>;
     /**
      * Every create's SSH user (docs/adr/0016, decision 10): with `sshAsOwner`, the home whose
-     * owner's uid Core runs the sessions as (`credentialsHome`'s path); `undefined`: root.
+     * owner's uid sealant runs the sessions as (`credentialsHome`'s path); `undefined`: root.
      */
     readonly createSshUsers?: Array<string | undefined>;
     /** Every exec's user (docs/adr/0016): the login name it ran as, null for root. */
     readonly execUsers?: Array<string | null>;
     /** While true, a create's answer is lost (503) as if the control plane never answered. */
     readonly loseCreateAnswer?: () => boolean;
-    /** `launch.runtime.resourceId` / `runtime()` (Core's next SDK); absent answers null, as on 0.37.2. */
+    /** `launch.runtime.resourceId` / `runtime()` (sealant's next SDK); absent answers null, as on 0.37.2. */
     readonly resourceId?: () => string | null;
     /** Whether an executor ever ran (`launchedRuntime`); absent answers `unknown`, as on 0.37.2. */
     readonly launchedRuntime?: () => LaunchedRuntime;
-    /** Core keeps the executor for recovery (`drain.retained` on the stop's answer). */
+    /** sealant keeps the executor for recovery (`drain.retained` on the stop's answer). */
     readonly retained?: () => {
       readonly reason: string | null;
       readonly recoverable: boolean | null;
     } | null;
-    /** What Core says of a completion attestation; `accepted` by default. */
+    /** What sealant says of a completion attestation; `accepted` by default. */
     readonly completionOutcome?: "accepted" | "ignored";
-    /** `workspace.runtimeDeadline()` (Core's next SDK); absent answers null, as 0.37.2's seam does. */
+    /** `workspace.runtimeDeadline()` (sealant's next SDK); absent answers null, as 0.37.2's seam does. */
     readonly runtimeDeadline?: () => Date | null;
     /** While true for its `argv`, opening a PTY fails the way the platform refuses one. */
     readonly openFails?: (argv: ReadonlyArray<string>) => boolean;
@@ -535,7 +535,7 @@ export const sealantLaunchLayer = (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
     /**
-     * Stands in for `capture.status()` (Core's next SDK); absent answers null, as SDK 0.37.2's
+     * Stands in for `capture.status()` (sealant's next SDK); absent answers null, as SDK 0.37.2's
      * seam does.
      */
     readonly captureStatus?: (
@@ -547,12 +547,12 @@ export const sealantLaunchLayer = (
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
     /** The image digest the workspace booted; absent: the platform cannot say. */
     readonly bootedImage?: () => string | null;
-    /** While true, every workspace lookup fails the way an unreachable Core does (503). */
+    /** While true, every workspace lookup fails the way an unreachable sealant does (503). */
     readonly unreachablePlatform?: () => boolean;
     /** What the platform reports of the workspace, given whether a stop was asked of it. */
     readonly status?: (stopAsked: boolean) => WorkspaceStatus | undefined;
     /**
-     * `workspace.captureDrain()` (SDK 0.38.0): what Core last observed of the drain. Absent, Core
+     * `workspace.captureDrain()` (SDK 0.38.0): what sealant last observed of the drain. Absent, sealant
      * recorded none (the engine reads that as it read a 0.37.2 handle without the method: kept).
      */
     readonly captureDrain?: () => WorkspaceCaptureDrain | null;
@@ -589,7 +589,7 @@ export const sealantLaunchLayer = (
     readonly record?: () => Stream.Stream<TimelineEntry, SealantPlatformError>;
     /** The run as the platform settles it once its record ends. */
     readonly waitRun?: () => Effect.Effect<Run, SealantPlatformError>;
-    /** Core's launch phase while the create gets ready (sealant#342); null: none reported. */
+    /** sealant's launch phase while the create gets ready (sealant#342); null: none reported. */
     readonly phase?: () => WorkspacePhase | null;
     /**
      * A run's full timeline (`recordTimeline`), by run id: what sealantd recorded, its
@@ -758,7 +758,7 @@ export const sealantLaunchLayer = (
         return [];
       }),
     // A rejected lookup is the platform positively saying the workspace is gone (404): what a
-    // dead executor reads as. A Core that does not answer at all is `unreachablePlatform` below.
+    // dead executor reads as. A sealant that does not answer at all is `unreachablePlatform` below.
     getWorkspace: (id) =>
       captureOps?.getWorkspaceEffect?.(id) ??
       (rejectWorkspaceLookup()
@@ -1279,7 +1279,7 @@ export const agentLoginsLayerOf = (selectedOnly: ReadonlySet<string> = new Set()
     set: (_userId, setting) => Effect.succeed(setting),
   });
 
-/** Core's refusal of a named account that needs reconnecting (`connected-account-invalid`). */
+/** sealant's refusal of a named account that needs reconnecting (`connected-account-invalid`). */
 export const invalidAccount = (provider: "claude" | "codex") =>
   new SealantPlatformError({
     code: "connected-account-invalid",
@@ -3958,7 +3958,7 @@ interface EngineOptions {
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
   readonly messageSettings?: Map<string, MessageSettings>;
   readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
-  /** Organizations with a Boat key, by id, to the Core Boat account that holds it. */
+  /** Organizations with a Boat key, by id, to the sealant Boat account that holds it. */
   readonly boatAccounts?: ReadonlyMap<string, string>;
   /** People's own Boat accounts, keyed `organization/person` (`boatKeysLayer`). */
   readonly personBoatAccounts?: ReadonlyMap<string, string>;

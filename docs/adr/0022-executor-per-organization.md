@@ -220,19 +220,19 @@ longer works.
 ### 9. Sealant runs one Executor per organization through the SDK
 
 Mend's API asks Sealant's public SDK for an organization-owned scope and a caller-only retained
-instance. Mend never starts containers directly or imports Sealant internals. Core's caller-owned
+instance. Mend never starts containers directly or imports Sealant internals. sealant's caller-owned
 scope contract shipped in sealant-sh/sealant#451. The deployment configures the caller and its
 private callback port, rather than declaring an Executor:
 
-- **Packaged install**: Core's configured `mend` caller names the container running Mend and Core.
-  Core creates each instance's private networks and retained volume. Only that caller reaches
-  Executor, and Executor reaches only Mend's private callback port among private addresses, plus
-  public internet integration endpoints. No Executor port is published.
+- **Packaged install**: sealant's configured `mend` caller names the container running Mend and
+  sealant. sealant creates each instance's private networks and retained volume. Only that caller
+  reaches Executor, and Executor reaches only Mend's private callback port among private addresses,
+  plus public internet integration endpoints. No Executor port is published.
 - **Kubernetes**: the chart configures Mend's caller pods, private callback Service and ingress
-  policy. Core's Kubernetes implementation is manifest-tested only (SLNT-544). Mend refuses "Mend
+  policy. sealant's Kubernetes implementation is manifest-tested only (SLNT-544). Mend refuses "Mend
   runs Executor" there until live runtime support is accepted.
-- **Local development**: Mend's server runs in a container named by Core's caller configuration. A
-  bare-host Mend server is refused; containers on this machine cannot reach a host listener.
+- **Local development**: Mend's server runs in a container named by sealant's caller configuration.
+  A bare-host Mend server is refused; containers on this machine cannot reach a host listener.
 
 In every shape: an image digest pinned by each Mend release (Executor v2 is a nightly beta with no
 data-compatibility promise, so the pin moves deliberately); one volume at `/app/data`, one replica;
@@ -257,7 +257,7 @@ confirms deletion of the organization's service logins, stops and purges the ins
 SDK, then deletes Mend's saved upgrade backups, sealed state and grants. The observed instance id is
 sealed before stopping and passed as `expectedInstanceId` to purge on every retry, so a replacement
 cannot be removed accidentally. Archive alone is never Remove: retained volumes contain service
-logins. Remove requires Core's explicit purge contract.
+logins. Remove requires sealant's explicit purge contract.
 
 ## What was observed
 

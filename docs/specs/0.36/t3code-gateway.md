@@ -10,7 +10,7 @@
   phone-parity list), docs/adr/0004-access-without-a-private-network.md (exposure) and
   docs/adr/0013-whoever-sends-a-turn-pays.md (proposed; whose login a turn spends).
 - **Written:** 2026-10-05, against mend main `c9b645b0b`, sealant main `bc9ec42`, sealantd main
-  `07ada50`. The gateway does not touch Core or sealantd.
+  `07ada50`. The gateway does not touch sealant or sealantd.
 
 ## Why it exists
 

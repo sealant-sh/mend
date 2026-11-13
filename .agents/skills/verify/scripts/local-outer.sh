@@ -82,7 +82,7 @@ cache=st-verify-hub-cache
 # Compose images (the mirrors' ones too, for a version that runs them), the workspace Docker
 # service's image, and the arch workspace image's bases (its build also fetches the frontend
 # docker/dockerfile:1.7, which this machine lacks). A session's Docker service, for stack.mjs: its
-# fixture base and Docker CLI, the Compose images, and the Dockerfiles' bases (Mend's, Core's,
+# fixture base and Docker CLI, the Compose images, and the Dockerfiles' bases (Mend's, sealant's,
 # sealantd's). Not the network guard's image: stack.mjs names it by digest, which a loaded image
 # does not carry, so it pulls it all the same.
 OUTER_IMAGES='node:26-bookworm postgres:17-alpine dxflrs/garage:v2.4.1 nginx:1.29-alpine registry:3.1

@@ -478,7 +478,7 @@ function ConnectedKey({
           />
         </div>
       )}
-      {/* SLNT-784: the full check (Core's `boatAccounts.prove`, which starts a throwaway VM) goes
+      {/* SLNT-784: the full check (sealant's `boatAccounts.prove`, which starts a throwaway VM) goes
           beside Check now. It is the one way to prove an organization key's permissions. */}
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" disabled={check.isPending} onClick={() => check.mutate()}>

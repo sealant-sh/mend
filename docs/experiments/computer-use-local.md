@@ -24,8 +24,8 @@ docker build --platform linux/amd64 -f deploy/desktop/Dockerfile -t mend-desktop
 ```
 
 The image must exist on the Docker executor that provisions the workspace. Rebuilding a tag already
-compiled by Core does not invalidate its custom-base cache. Use a new immutable revision and update
-the project image when changing image contents. The v4 preset runs a syntax check of
+compiled by sealant does not invalidate its custom-base cache. Use a new immutable revision and
+update the project image when changing image contents. The v4 preset runs a syntax check of
 `pilot-home.mjs`; a setup command is not an image-cache invalidation mechanism.
 
 The host `~/.local/bin/mend` points to this checkout's `apps/cli/dist/main.js`. Its executable bit
@@ -67,8 +67,8 @@ and display, not lazy startup from the primary coding agent's MCP client.
 ## Real session acceptance
 
 Use a Mend instance with connected Claude/Codex accounts, captured session storage, a reachable
-session channel, and the matching public Sealant SDK/Core. The observed pair was `0.39.0-next.696`.
-Keep the normal application origin, auth, socket and capture configuration. See
+session channel, and the matching public Sealant SDK and sealant. The observed pair was
+`0.39.0-next.696`. Keep the normal application origin, auth, socket and capture configuration. See
 [server setup](../../apps/docs/src/content/docs/getting-started/install.md) for the supported
 installation entry point; the custom private fixture below is historical test setup.
 
@@ -99,19 +99,19 @@ Private fixture root: `~/.local/share/mend/desktop-pilot`. Store root:
 local Postgres listener at port 5434. It has its own local account and auth secret; existing
 accounts and the main database were not changed.
 
-| Component                               | Observed local address or file                             |
-| --------------------------------------- | ---------------------------------------------------------- |
-| Built Mend API                          | `http://127.0.0.1:3101`, `api.pid`, `api-built.log`        |
-| Built web front                         | `http://127.0.0.1:3105`, `web.pid`, `web-built.log`        |
-| Web's internal Nitro server             | `127.0.0.1:3210`                                           |
-| Session channel in private Core network | `http://channel:3106`                                      |
-| Private Core API                        | `http://localhost:4000`                                    |
-| Development Garage blob store           | host port 3900; workspace-visible `http://172.17.0.1:3900` |
-| Host channel relay                      | `channel.pid`, `channel.log`, `channel.sock`               |
-| Core compose configuration              | `core/compose.json`                                        |
-| Local sign-in details                   | `local-account.json`, mode 0600                            |
-| Runtime environment                     | `runtime-env.json`, mode 0600                              |
-| Core secrets                            | `core/secrets.json`, mode 0600                             |
+| Component                                  | Observed local address or file                             |
+| ------------------------------------------ | ---------------------------------------------------------- |
+| Built Mend API                             | `http://127.0.0.1:3101`, `api.pid`, `api-built.log`        |
+| Built web front                            | `http://127.0.0.1:3105`, `web.pid`, `web-built.log`        |
+| Web's internal Nitro server                | `127.0.0.1:3210`                                           |
+| Session channel in private sealant network | `http://channel:3106`                                      |
+| Private sealant API                        | `http://localhost:4000`                                    |
+| Development Garage blob store              | host port 3900; workspace-visible `http://172.17.0.1:3900` |
+| Host channel relay                         | `channel.pid`, `channel.log`, `channel.sock`               |
+| sealant compose configuration              | `core/compose.json`                                        |
+| Local sign-in details                      | `local-account.json`, mode 0600                            |
+| Runtime environment                        | `runtime-env.json`, mode 0600                              |
+| sealant secrets                            | `core/secrets.json`, mode 0600                             |
 
 The private JSON files contain credentials and are deliberately outside git. Read them locally only
 when needed; do not paste them into reports. If they disappear, provision fresh test credentials
@@ -121,30 +121,30 @@ Non-secret runtime choices were `MEND_SESSION_STORE=captured`, `MEND_EXPOSURE=lo
 `APP_URL=http://127.0.0.1:3105`, `SEALANT_BASE_URL=http://localhost:4000`,
 `MEND_SESSION_ENDPOINT_LISTEN=0.0.0.0:3106`, `MEND_SESSION_ENDPOINT_URL=http://channel:3106`, and
 `MEND_EXECUTOR_NETWORK=private`. `MEND_DESKTOP_PREVIEW_URL=http://127.0.0.1:6090` enabled only the
-development fixture route. Database, blob-store, Core and auth secrets come from the private runtime
-file.
+development fixture route. Database, blob-store, sealant and auth secrets come from the private
+runtime file.
 
-Core uses a private Compose project, `mend-desktop-core`, with network `mend-desktop-core_default`,
-a Postgres 17 container, and API/worker images pinned to `0.39.0-next.696`. Its daemon control
-directory is `/tmp/mdpctl`; a longer home-directory path failed Linux Unix-socket pathname limits.
-The worker needs its configured Docker/control sockets.
+sealant uses a private Compose project, `mend-desktop-core`, with network
+`mend-desktop-core_default`, a Postgres 17 container, and API/worker images pinned to
+`0.39.0-next.696`. Its daemon control directory is `/tmp/mdpctl`; a longer home-directory path
+failed Linux Unix-socket pathname limits. The worker needs its configured Docker/control sockets.
 
 The host firewall blocked container-to-host TCP port 3106. The test workaround has two parts:
 
 - `host-channel.mjs` accepts a private Unix socket and forwards to host `127.0.0.1:3106`.
-- `container-channel.mjs` in the Core network listens on TCP 3106 and forwards through the mounted
-  `/relay/channel.sock`. It has no published host TCP port.
+- `container-channel.mjs` in the sealant network listens on TCP 3106 and forwards through the
+  mounted `/relay/channel.sock`. It has no published host TCP port.
 
 The relay is test infrastructure, not a proposed product transport. On a new machine, configure
 normal executor-to-Mend reachability first; use platform feedback for missing SDK capabilities.
-Start dependencies before Mend: database/blob storage, private Core and its migrations, channel
+Start dependencies before Mend: database/blob storage, private sealant and its migrations, channel
 relay, API, then web. Check the corresponding component logs if the session cannot connect.
 
 ## Restarting the existing built API or web
 
 Inspect the saved PID and `/proc/<pid>/cmdline` before stopping a process. Stop only a process whose
 command names this experiment checkout. Restart after rebuilding; a live process keeps its old code.
-Keep Core and the channel relay running unless they are the part being repaired.
+Keep sealant and the channel relay running unless they are the part being repaired.
 
 The following snippet starts either built app with the existing private environment, writes its own
 PID/log, and refuses to overwrite a live PID. Set `app` to `api` or `web`. Run it from the
@@ -186,7 +186,7 @@ Open the built app at <http://127.0.0.1:3105>, and sign in with the private loca
 Production asset/CSP/proxy behavior was verified here, not only through Vite development mode.
 
 When shutting the fixture down, finish/stop its sessions through Mend and allow completed files to
-be captured. Stop the verified web/API/relay PIDs and then the private Core Compose project. Keep
+be captured. Stop the verified web/API/relay PIDs and then the private sealant Compose project. Keep
 its volumes and store if replay is still needed. Avoid machine-wide process/container cleanup.
 
 ## Retained sessions and verification commands

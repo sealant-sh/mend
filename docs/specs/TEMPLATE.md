@@ -30,7 +30,7 @@ bug.
 ## How it works
 
 The mechanism, end to end, in the order things happen. Name the components (Mend API, session
-engine, CLI, web, mobile, Core worker or API, sealantd), the data they write (tables and columns,
+engine, CLI, web, mobile, sealant worker or API, sealantd), the data they write (tables and columns,
 files and paths, capture classes) and the calls between them. Give code pointers as `path:line`
 against the commits above, and enough for a reviewer to find every place the behaviour lives. Note
 concurrency, ordering and what happens on restart.
