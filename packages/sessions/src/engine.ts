@@ -97,6 +97,7 @@ import {
   type ProjectId,
   imageHasScreen,
   sessionRuntimeFor,
+  workspaceOnThisServersDocker,
   type WorkspaceImage,
   workspaceImagePackages,
   WorktreeId,
@@ -13407,20 +13408,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly resources?: "none";
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
-        // The project inherits its organization's environment; only new Boat projects get Ubuntu.
+        // The project inherits its organization's environment. What a runtime can run is Core's to
+        // say: it refuses a create it cannot run, before anything is reserved (sealant#633).
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
-        const image = project.workspaceImage ?? settings.workspaceImage;
-        if (input.runtime === "boat" && image.mode === "family" && image.os === "arch") {
-          const error = new SealantPlatformError({
-            code: "boat_arch_unsupported",
-            status: 422,
-            cause: null,
-            message:
-              "This project uses Arch. Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
-          });
-          yield* input.onFailure(error.message, error);
-          return yield* error;
-        }
         // The Boat account this workspace runs in and is billed to, for its whole life (SLNT-790):
         // the project's organization's key when it has one, else none (the server's). A standby
         // asks as its owner, the person whose launch claims it.
@@ -13839,8 +13829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 status: error.status,
                 cause: error.cause,
                 ...(error.provider === undefined ? {} : { provider: error.provider }),
-                message:
-                  "Boat runs Ubuntu and Nix environments. Switch the project's environment to Ubuntu or Nix, then start the session again.",
+                message: `${error.message} Switch the project's environment to one Boat runs, then start the session again.`,
               });
             }
             if (error.code === "runtime-env-references-unsupported") {
@@ -19361,12 +19350,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Docker service, after minutes of image build and a workspace created for nothing: the
         // launch fails here instead, before anything is built or created or any earlier workspace
         // is replaced, in doctor's words and with the fix. Read now, so a host the operator just
-        // fixed launches without a restart. A Boat worktree's workspace is a Boat VM whose image
-        // carries its own Docker engine: the host's user namespaces are not its business.
-        const runsOnBoat =
-          (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie)).sessionRuntime ===
-          "boat";
-        const userNamespaces = runsOnBoat ? null : yield* hostUserNamespaces.observe();
+        // fixed launches without a restart. Only a workspace on this server's Docker runs on this
+        // host's kernel; one elsewhere (a Boat VM) brings its own.
+        const onThisHost = workspaceOnThisServersDocker(
+          (yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie)).sessionRuntime,
+        );
+        const userNamespaces = onThisHost ? yield* hostUserNamespaces.observe() : null;
         if (userNamespaces !== null && !userNamespaces.allowed) {
           const error = new SealantPlatformError({
             code: "host_user_namespaces_refused",
