@@ -30,6 +30,7 @@ import {
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectLinksRepo,
+  OrganizationSettingsRepo,
   OrganizationsRepo,
   AuditEventsRepo,
   type ExecutorAccess,
@@ -95,6 +96,7 @@ import {
   Sha,
   type ProjectId,
   imageHasScreen,
+  sessionRuntimeFor,
   type WorkspaceImage,
   workspaceImagePackages,
   WorktreeId,
@@ -364,6 +366,7 @@ import {
   BlobStore,
   makeFsBlobStore,
   DeploymentConfig,
+  sessionRuntimeOfferOf,
   SourcePolicy,
 } from "@mend/store";
 import type {
@@ -3684,6 +3687,7 @@ type SessionEngineRequirements =
   | ProjectMountsRepo
   | ProjectLinksRepo
   | SessionRepositoriesRepo
+  | OrganizationSettingsRepo
   | OrganizationsRepo
   | FoldersRepo
   | ProjectClusterBindingsRepo
@@ -3824,12 +3828,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const messageSettings = yield* MessageSettingsRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
       const deployment = yield* DeploymentConfig;
-      const newWorktreeRuntime =
-        deployment.sessionRuntime === undefined
-          ? deployment.mode === "kubernetes"
-            ? null
-            : "docker"
-          : deployment.sessionRuntime;
+      const runtimeOffer = sessionRuntimeOfferOf(deployment);
+      const organizationSettings = yield* OrganizationSettingsRepo;
+      /**
+       * Where a new worktree in the organization runs: the organization's choice of what the
+       * server offers, else the server's default (SLNT-794). The worktree keeps it from then on.
+       */
+      const newWorktreeRuntime = (organizationId: OrganizationId) =>
+        organizationSettings
+          .sessionRuntime(organizationId)
+          .pipe(Effect.map((choice) => sessionRuntimeFor(runtimeOffer, choice)));
       if (deployment.mode === "kubernetes" && deployment.sessionEndpoint === undefined) {
         return yield* Effect.die(
           "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
@@ -9852,7 +9860,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           baseSha: created.baseSha,
           baseRef: created.baseRef,
           handoff: created.handoff,
-          sessionRuntime: newWorktreeRuntime,
+          sessionRuntime: yield* newWorktreeRuntime(project.organizationId),
         });
         yield* completeWorktreeCreation(project, row);
         return row;
@@ -10247,7 +10255,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   baseSha: created.baseSha,
                   baseRef: created.baseRef,
                   handoff: null,
-                  sessionRuntime: newWorktreeRuntime,
+                  sessionRuntime: yield* newWorktreeRuntime(project.organizationId),
                 });
               }
               if (capture !== null) {
@@ -29480,10 +29488,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const resolvedSkills = mergeSkillLibraries(skillLibraries, {
           inheritUserSkills: project.inheritUserSkills,
         });
+        const runtime = yield* newWorktreeRuntime(project.organizationId);
         const inputs: HotFingerprintInputs = {
-          runtime: newWorktreeRuntime,
+          runtime,
           boatAccountId:
-            newWorktreeRuntime === "boat"
+            runtime === "boat"
               ? yield* boatKeys.accountForLaunch(project.organizationId, ownerUserId)
               : null,
           workspaceImage,
@@ -29676,10 +29685,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const socketDir = yield* socketHost
           .start(sessionId, socketApiFor(sessionId))
           .pipe(withSealantRequestPriority("normal"));
+        const runtime = yield* newWorktreeRuntime(project.organizationId);
         const provisionAttempt = Effect.gen(function* () {
           const provisioned = yield* provisionWorkspace({
             project,
-            runtime: newWorktreeRuntime,
+            runtime,
             sessionId,
             socketDir,
             // The unified image carries EVERY baked agent CLI and the shell shape's credential
