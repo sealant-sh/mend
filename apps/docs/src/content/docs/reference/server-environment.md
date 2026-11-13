@@ -269,24 +269,41 @@ shows a choice the organization's runtime cannot run as unavailable, refuses sav
 new project on an environment that runtime can run. Existing projects keep their environments. See
 [Boat's limits](/operate/boat/#limits) for what Sealant reports for Boat.
 
-Boat sessions bypass the server's npm and Docker mirrors. Local Docker sessions keep using them.
-Setup takes Boat's settings itself: naming Boat with `--session-runtime` or `--session-runtimes`
-turns it on, with the two public endpoints described above, and no Boat key. Each organization's
-owner connects the organization's own key in **Settings · Organization · Boat** or with
-`mend boat connect`, and that Boat account pays for the organization's Boat sessions. Setup names
-this install's Boat VMs itself (`SEALANT_BOAT_DEPLOYMENT_ID`), unless `--boat-deployment-id <name>`
-picks the name, and refuses Boat without the endpoints. It keeps all of it across reruns and
-upgrades. A Boat session is never silently started on Docker instead.
+### Boat
 
-The server can also have a Boat key of its own (`SEALANT_BOAT_API_KEY`), given on standard input
-with `--boat-api-key-stdin` and kept in `server.env` only. It is optional: organizations with no key
-connected then run their Boat sessions in that key's Boat account, which pays for them.
-`--boat-organization` names the Boat organization it bills (`SEALANT_BOAT_ORGANIZATION`).
-`--no-boat-api-key` drops it. When the server's default runtime is Boat, the server's default
-environment is Ubuntu until its operator saves another. [Run sessions on Boat](/operate/boat/) walks
-through the whole setup.
+Naming Boat with `--session-runtime` or `--session-runtimes` turns it on, with the two public
+addresses described in [Remote workspace endpoints](#remote-workspace-endpoints) and no Boat key.
+Setup refuses Boat without the addresses, and a Boat session never starts on Docker instead. Each
+organization's owner connects the organization's own Boat key in **Settings · Organization · Boat**,
+or with `mend boat connect`; Sealant keeps those keys sealed, not `server.env`.
+[Run sessions on Boat](/operate/boat/) walks through the whole setup. Boat sessions bypass the
+server's npm and Docker mirrors; local Docker sessions keep using them. When new organizations get
+Boat, the server's default environment is Ubuntu until its operator saves another.
 
-A Boat session reaches the project's resources, such as `@db`, through Core's resource gateway on
+These are the Boat settings of a Docker install. Setup writes each one; a hand edit of `server.env`
+is refused.
+
+| Setting                           | Where it comes from                                                          | What it is                                                                                                                                                                  |
+| --------------------------------- | ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_SESSION_ENDPOINT_URL`       | `server.env`, from `--session-endpoint-url`                                  | The public address Boat VMs dial for session traffic.                                                                                                                       |
+| `MEND_BLOB_STORE_PUBLIC_URL`      | `server.env`, from `--blob-store-public-url`                                 | The public address Boat VMs dial for saved work.                                                                                                                            |
+| `SEALANT_BOAT_API_KEY`            | `server.env`, only when given with `--boat-api-key-stdin`                    | The server's own Boat key. Optional: organizations with no key connected run their Boat sessions in its Boat account. `--no-boat-api-key` drops it.                         |
+| `SEALANT_BOAT_ORGANIZATION`       | `server.env`, from `--boat-organization`                                     | The Boat organization the server's own key bills, named on every request it makes. Only with the server's own key.                                                          |
+| `SEALANT_BOAT_DEPLOYMENT_ID`      | `server.env`, derived from the install's identity, or `--boat-deployment-id` | The label of this install's Boat VMs, which keeps installs that share a Boat account apart. Sealant keeps it after its first start with it.                                 |
+| `SEALANT_BOAT_BUILDER_OWNER`      | `server.env`, derived from the install's identity                            | Who owns this install's Boat images. Sealant keeps it after its first start with it.                                                                                        |
+| `SEALANT_BOAT_GATEWAY_HOST_ID`    | `server.env`, derived, while the resource gateway is on                      | The stable id of the Docker host the resource gateway runs on.                                                                                                              |
+| `SEALANT_BOAT_STATE_DIRECTORY`    | `compose.boat.yaml`: `/var/lib/sealant/boat`                                 | Where Sealant's worker keeps its Boat build journal, on the volume `mend_mend-boat-state`. With it set, the worker launches Boat VMs, with or without the server's own key. |
+| `SEALANT_BOAT_GATEWAY_IMAGE`      | Mend's container: the gateway image this Mend version pins                   | The resource gateway's image, by digest. Setup preloads it.                                                                                                                 |
+| `SEALANT_BOAT_GATEWAY_RELAY_HOST` | Mend's container: the Docker host's address as the container sees it         | Where the worker reaches the gateway. Not `127.0.0.1`, and `0.0.0.0` is refused.                                                                                            |
+| `SEALANT_CREDENTIALS_KEY`         | `server.env`, generated at the first setup                                   | Seals every stored Boat key and every Boat run's bearer. Boat refuses to start without it.                                                                                  |
+
+Sealant also reads `SEALANT_BOAT_API_KEY_FILE`, a path to a file holding the server's own key, for
+deployments that do not run `mend server setup`. Set it or `SEALANT_BOAT_API_KEY`, never both. Mend
+reads the server's own key back only as Sealant's last report of it: `mend server status`,
+`mend doctor` and **Settings · Instance · Exposure** show who it is, the wallet it bills, whether it
+can start a VM and when it expires, to the operator.
+
+A Boat session reaches the project's resources, such as `@db`, through Sealant's resource gateway on
 the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment
 its workspace is created, Mend creates the workspace without resources and Boat builds it no
 gateway, so a Boat server with no gateway runs that session. A session whose worktree binds a
@@ -294,19 +311,10 @@ resource needs the gateway. On a server without one, that session is refused wit
 says the server's Boat setup has no resource gateway.
 
 On a Docker install, setup runs the gateway with Boat by default; `--no-boat-resources` turns it
-off. It sets the host ID, the bundle hands the worker the image this Mend version pins and the
-Docker host's address, and setup preloads the image. A deployment run without `mend server setup`
-sets all three of these in Mend's environment, or none of them. Core refuses to start its worker
-when only some are set.
-
-- `SEALANT_BOAT_GATEWAY_HOST_ID`: a stable UUID you choose for the Docker host, shared by every
-  deployment on that host.
-- `SEALANT_BOAT_GATEWAY_IMAGE`: the gateway image, by its `sha256` digest, available locally.
-- `SEALANT_BOAT_GATEWAY_RELAY_HOST`: the IPv4 address at which Mend's bundled Sealant worker reaches
-  the Docker host. Because Mend's worker runs inside Mend's container, that is the host's address as
-  the container sees it, not `127.0.0.1`, and `0.0.0.0` is refused.
-
-The worker carries each resource tunnel over Boat's HTTPS, so the host needs no inbound ports and no
+off. A deployment run without `mend server setup` sets all three gateway settings
+(`SEALANT_BOAT_GATEWAY_HOST_ID`, `SEALANT_BOAT_GATEWAY_IMAGE`, `SEALANT_BOAT_GATEWAY_RELAY_HOST`) in
+Mend's environment, or none of them; Sealant refuses to start its worker when only some are set. The
+worker carries each resource tunnel over Boat's HTTPS, so the host needs no inbound ports and no
 firewall rule. One gateway host carries up to 512 Boat sessions with resources at the same time.
 Change these settings only while no Boat session is running.
 
@@ -314,7 +322,7 @@ A Boat session created while its worktree bound no resource does not reach a res
 gains later. Mend says so when the resource is started or chosen, and the session reaches it once it
 is stopped and started again.
 
-Core no longer reads `SEALANT_BOAT_ADMISSION_OWNER_IDS`, `SEALANT_BOAT_GATEWAY_ENDPOINT`,
+Sealant no longer reads `SEALANT_BOAT_ADMISSION_OWNER_IDS`, `SEALANT_BOAT_GATEWAY_ENDPOINT`,
 `SEALANT_BOAT_AUTOMATIC_PARKING` or `SEALANT_BOAT_PARKING_DELAY_SECONDS`. A server that still sets
 them starts and ignores them.
 
