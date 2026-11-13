@@ -13,7 +13,7 @@ const decodeProviderDiagnostic = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Struct({ error: Schema.Struct({ message: Schema.String }) })),
 );
 
-// Core redacts its public error message. Unwrap a native JSON diagnostic for display only;
+// sealant redacts its public error message. Unwrap a native JSON diagnostic for display only;
 // retry policy uses the SDK's typed failure code or HTTP status, never provider text.
 const failureDetail = (error: InferenceError) => {
   const text = (platformFailure(error)?.message ?? error.message).replace(
@@ -52,7 +52,7 @@ const generationRefused = (
   });
 };
 
-/** Try the selected writer, then its ordinary model on a Core engine failure, as the sender. */
+/** Try the selected writer, then its ordinary model on a sealant engine failure, as the sender. */
 export const generateWorktreeCommitMessage = (
   provider: InferenceProvider["Service"],
   actor: string,
@@ -83,13 +83,13 @@ export const generateWorktreeCommitMessage = (
           Effect.gen(function* () {
             const failure = platformFailure(error);
             // The Effect SDK exposes the contract tag with status null. Its Promise facade
-            // supplies status 500 instead. Both represent Core's same engine failure.
+            // supplies status 500 instead. Both represent sealant's same engine failure.
             if (
               selectedModel === undefined ||
               (failure?.code !== "InferenceInternalServerError" && failure?.status !== 500)
             )
               return yield* generationRefused(subscription, selectedModel, error);
-            // Same mechanical models and configuration as session naming. Core's older native
+            // Same mechanical models and configuration as session naming. sealant's older native
             // inference CLI may reject a model the workspace's newer agent supports.
             const ordinaryModel = yield* Config.String(
               subscription === "codex"

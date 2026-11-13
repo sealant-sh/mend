@@ -64,7 +64,7 @@ const wireAccount = (
   ...(isDefault === undefined ? {} : { isDefault }),
 });
 
-/** What Core answers for each call the person layout makes. */
+/** What sealant answers for each call the person layout makes. */
 const answer = (request: Received): { readonly status: number; readonly body: unknown } => {
   const { method, path } = request;
   if (method === "GET" && path === "/v1/connected-accounts") {
@@ -255,7 +255,7 @@ const IMAGES: ReadonlyArray<readonly [string, WorkspaceImage]> = [
 
 describe("the image question at decide time, through the real SDK (box, 0.36.0-next.645)", () => {
   for (const [what, image] of IMAGES) {
-    it(`asks Core about ${what} with options the SDK accepts, keyed as the create is`, async () => {
+    it(`asks sealant about ${what} with options the SDK accepts, keyed as the create is`, async () => {
       const report = await withPlatform((platform) =>
         platform.imageReport({ ownerUserId: "alice", image, harness: claudeCode() }),
       );
@@ -290,7 +290,7 @@ describe("the image question at decide time, through the real SDK (box, 0.36.0-n
     });
   }
 
-  it("keys another harness apart, and asks Core once per key", async () => {
+  it("keys another harness apart, and asks sealant once per key", async () => {
     await withPlatform((platform) =>
       Effect.gen(function* () {
         const input = { ownerUserId: "alice", image: defaultWorkspaceImage };
@@ -339,7 +339,7 @@ describe("the person create's owner map, through the real SDK's create builder",
 });
 
 describe("a person's logins, through the real SDK's workspace handle", () => {
-  it("writes, releases and lists them with payloads the SDK encodes and Core reads", async () => {
+  it("writes, releases and lists them with payloads the SDK encodes and sealant reads", async () => {
     const workspace = await sdk().workspaces.get("ws-1");
     received.length = 0;
     const homes = await withPlatform((platform) =>
@@ -379,7 +379,7 @@ describe("a person's logins, through the real SDK's workspace handle", () => {
   });
 });
 
-describe("a person's login for a provider, as Core lists their accounts", () => {
+describe("a person's login for a provider, as sealant lists their accounts", () => {
   const loginOf = (provider: "claude" | "codex") =>
     withPlatform((platform) => platform.loginOf("maria", provider));
 
@@ -400,7 +400,7 @@ describe("a person's login for a provider, as Core lists their accounts", () => 
     expect(await loginOf("codex")).toEqual({ _tag: "unchosen", count: 2 });
   });
 
-  it("takes the account named default from a Core that reports no default", async () => {
+  it("takes the account named default from a sealant that reports no default", async () => {
     connectedAccounts = [
       wireAccount("claude", "backup", "invalid"),
       wireAccount("claude", "default", "active"),
@@ -412,7 +412,7 @@ describe("a person's login for a provider, as Core lists their accounts", () => 
     expect(await loginOf("claude")).toEqual({ _tag: "missing" });
   });
 
-  it("says whether the chosen default is an API key, from Core's login class", async () => {
+  it("says whether the chosen default is an API key, from sealant's login class", async () => {
     const loginIsKey = () => withPlatform((platform) => platform.loginIsKey("maria", "claude"));
     const key = { kind: "api-key", suffix: "a1b2" } as const;
     connectedAccounts = [
@@ -425,7 +425,7 @@ describe("a person's login for a provider, as Core lists their accounts", () => 
       { ...wireAccount("claude", "work", "active", false), login: key },
     ];
     expect(await loginIsKey()).toBe(false);
-    // A Core that reports no login class, or no chosen default: not known to be a key.
+    // A sealant that reports no login class, or no chosen default: not known to be a key.
     connectedAccounts = [wireAccount("claude", "default", "active", true)];
     expect(await loginIsKey()).toBe(false);
     connectedAccounts = [{ ...wireAccount("claude", "work", "active", false), login: key }];

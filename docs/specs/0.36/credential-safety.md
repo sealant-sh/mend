@@ -2,7 +2,7 @@
 
 - **Release:** 0.36
 - **Status:** sealantd side on main (sealantd#136 merged as `07ada506a`; pinned into Mend main
-  through Core `0.39.0-next.683`, which bakes `sealantd-next:0.20.0-next.142`, mend#532). Codex
+  through sealant `0.39.0-next.683`, which bakes `sealantd-next:0.20.0-next.142`, mend#532). Codex
   daemon off on main (mend#527). Mend's mirror of the tables, the sibling-aware mode keeper and the
   Codex shell-snapshot flag are in review (mend#526, open, on hold; to be trimmed per ADR 0016
   Delivery 6). Per-person homes, under which the tables become a second layer, are designed
@@ -80,7 +80,7 @@ anyone else's login.
   needs it. Documented in Known issues; ADR 0016 makes it per person, still saved.
 - Live exposure inside one executor: everyone in it runs as root and can read every file, the
   holder's injected login included (ADR 0016 §10).
-- A joiner spending the holder's login (Core injects one login per workspace at create): a login
+- A joiner spending the holder's login (sealant injects one login per workspace at create): a login
   question, covered by ADR 0013/0016 and the steering spec.
 - pi profile carry-over between people (`PI_PROFILE_IN_USE`, mend#526): being replaced by per-person
   homes; not specified here.
@@ -90,7 +90,7 @@ anyone else's login.
 
 ### Where logins come from
 
-- Core plans injections (`Core packages/credentials/src/injection.ts:34-82`): Claude OAuth →
+- sealant plans injections (`sealant packages/credentials/src/injection.ts:34-82`): Claude OAuth →
   `$HOME/.claude/.credentials.json` mode 600, a copy without the refresh token; Claude setup token →
   env `CLAUDE_CODE_OAUTH_TOKEN` (sealant#316, open, moves it to a file); Codex →
   `$HOME/.codex/auth.json` mode 600, placeholder refresh token; GitHub → env `GITHUB_TOKEN` and
@@ -190,7 +190,7 @@ link replaced by a plain file, is still never saved. Mend keeps its copy of the 
 
 Anna and Maria, project `api`, capture mode, sealantd `0.20.0-next.142`.
 
-1. Anna starts `mend codex --name oauth`. Core writes `~/.codex/auth.json` (placeholder refresh);
+1. Anna starts `mend codex --name oauth`. sealant writes `~/.codex/auth.json` (placeholder refresh);
    relocation moves it into `/workspace/harness-home/.codex/auth.json`. The argv is
    `codex -c features.daemon_auto_start=false -c features.memories=true …`. `ls ~/.codex/packages`
    in a shell of hers: no such directory.
@@ -202,8 +202,8 @@ Anna and Maria, project `api`, capture mode, sealantd `0.20.0-next.142`.
 4. Anna's executor is killed (SIGKILL). The snapshot file is left on disk; it was never captured.
 5. Maria starts a session in `oauth`. Her executor restores the head:
    `ls /workspace/harness-home/.codex` shows `sessions`, `config.toml`, no `auth.json` other than
-   the one Core injected for Maria, no `.credentials.json`, no `shell_snapshots`. Her Codex asks to
-   sign in to the MCP server again.
+   the one sealant injected for Maria, no `.credentials.json`, no `shell_snapshots`. Her Codex asks
+   to sign in to the MCP server again.
 
 ## Invariants
 
@@ -214,7 +214,7 @@ Anna and Maria, project `api`, capture mode, sealantd `0.20.0-next.142`.
    holds, and no sweep removes a login the platform injected into the live home.
 3. Every login the platform or Mend writes into a workspace is a copy that cannot refresh: no
    refresh token (Claude), the placeholder (Codex, pi, opencode copies).
-4. Mend never holds the bytes of a platform login; it names a person and an account, Core writes.
+4. Mend never holds the bytes of a platform login; it names a person and an account, sealant writes.
 5. The co-located harvest archive contains no file named in `HARNESS_HOME_CREDENTIALS`; the mode
    keeper leaves each of them `go-rwx` after every pass.
 6. In capture mode, no Mend-started process in an executor sees a plain opencode `mcp-auth.json`
@@ -270,9 +270,9 @@ Anna and Maria, project `api`, capture mode, sealantd `0.20.0-next.142`.
 - Captures made before sealantd#136 still hold `.codex/.credentials.json`, Claude `backups/`,
   opencode `mcp-auth.json`, `.codex/packages/` and others: never restored. They stay in the bucket
   until the captures are collected.
-- A Mend main pinned to a sealantd without #136 (older Core pins): only the five old paths are left
-  out. Mend main today pins `0.20.0-next.142`, which includes #136; Mend 0.36 needs Core 0.39.0
-  stable with sealantd 0.20.0 (release chain, ROADMAP).
+- A Mend main pinned to a sealantd without #136 (older sealant pins): only the five old paths are
+  left out. Mend main today pins `0.20.0-next.142`, which includes #136; Mend 0.36 needs sealant
+  0.39.0 stable with sealantd 0.20.0 (release chain, ROADMAP).
 - pi profiles restored without `root/mcp.json` on main (see Divergences).
 
 **Permissions**
@@ -331,7 +331,7 @@ exit                                       # close the shell, or it keeps the ex
 mend stop <s1>                             # wait until the executor has ended
 mend codex --worktree cred-check -d        # <s2>, a fresh executor restoring the head
 mend shell <s2>
-ls -la /workspace/harness-home/.codex      # neither file is back; auth.json is the one Core injected
+ls -la /workspace/harness-home/.codex      # neither file is back; auth.json is the one sealant injected
 ```
 
 Check the argv on the session's process row or with `ps -ef | grep codex` inside the executor:
@@ -373,4 +373,4 @@ Check the argv on the session's process row or with `ps -ef | grep codex` inside
    state too (cred-audit round 2 nit).
 8. Not a code divergence but the standing rule: on main a joiner's agent, shell and terminal in
    another person's executor run on that person's injected login, and `GITHUB_TOKEN`/`GH_TOKEN` are
-   container-wide (Core `injection.ts:74-80`). ADR 0016 §3-4 is the fix; not built.
+   container-wide (sealant `injection.ts:74-80`). ADR 0016 §3-4 is the fix; not built.

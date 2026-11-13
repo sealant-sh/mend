@@ -30,16 +30,16 @@ import { shellQuote } from "./workspace-files.ts";
 
 /**
  * What is known, before create, of whether an executor of this image can run the person layout
- * (decision 1). `person` null: nobody knows yet (no record for the image, and Core reports
+ * (decision 1). `person` null: nobody knows yet (no record for the image, and sealant reports
  * nothing). `missing`: what it lacks, each in the words the refusal line names.
  */
 export interface LayoutCapability {
   readonly person: boolean | null;
   readonly missing: ReadonlyArray<string>;
-  /** Who said so: Mend's record of a prepare, Core's report, or what Mend knows statically. */
+  /** Who said so: Mend's record of a prepare, sealant's report, or what Mend knows statically. */
   readonly source: "mend" | "core" | "static" | null;
   /**
-   * Mend's record, observed in a per-person executor: its prepare, or Core's create refusing the
+   * Mend's record, observed in a per-person executor: its prepare, or sealant's create refusing the
    * owner map. A shared launch's probe is a prediction, and nothing is retired on one.
    */
   readonly confirmed?: boolean;
@@ -67,7 +67,7 @@ export interface LayoutDecisionInput {
   readonly screen?: boolean;
   /**
    * The launch's harness needs Claude and the launcher's default Claude login is an API key,
-   * which Core places only in a person's own home (docs/adr/0018, decision 4): a shared launch
+   * which sealant places only in a person's own home (docs/adr/0018, decision 4): a shared launch
    * would be refused before anything starts.
    */
   readonly claudeKey?: boolean;
@@ -136,7 +136,7 @@ export const ownerMapRefusal = (found: string): string =>
 export const identityRefusal = (failed: ReadonlyArray<string>): string =>
   `This workspace could not give each person their Mend identity (${failed.join("; ")}). Nothing was started; the next launch tries again.`;
 
-/** A person launch Core refused because it could not check the image (`owner-map-unverified`). */
+/** A person launch sealant refused because it could not check the image (`owner-map-unverified`). */
 export const UNCHECKED_IMAGE_REFUSAL =
   "Sealant could not check whether this workspace's image runs per-person users, so nothing was started; the next launch tries again.";
 
@@ -205,7 +205,7 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
   if (capability.person === false) {
     // Probed over only where a shared executor can see every reason (`recheckOf`): it cannot
     // see what only a per-person one meets (no-new-privileges, the owner map), so its "yes"
-    // there would undo Core's or a person prepare's answer, and launches would alternate
+    // there would undo sealant's or a person prepare's answer, and launches would alternate
     // (review of mend#582, finding 1).
     return {
       kind: "launch",
@@ -243,11 +243,11 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
 export const STANDBY_REASON =
   "a standby workspace serves this session, and a standby takes one person";
 
-/** Why no Cloudflare sandbox runs per person: Core runs no process as a user there. */
+/** Why no Cloudflare sandbox runs per person: sealant runs no process as a user there. */
 export const CLOUDFLARE_LAYOUT_OBSTACLE = "Cloudflare sandboxes cannot run per-person users";
 
 /**
- * Core's workspace runtimes where per-person homes cannot run, whatever the image (Core's
+ * sealant's workspace runtimes where per-person homes cannot run, whatever the image (sealant's
  * no-process-user runtimes): ruled out before any launch, so no launch is refused at create to
  * learn it (review 2 of mend#582, N3).
  */
@@ -287,7 +287,7 @@ export const PASSING_NO_KEPT_MS = 24 * 60 * 60 * 1000;
  * Whether a recorded "no" may be checked again by a shared launch (review 2 of mend#582, N1):
  * every reason is one a shared probe sees (it is checked again at once), or every reason is one
  * of those or a passing failure and the answer is a day old. Never over what only a per-person
- * executor or Core sees: no-new-privileges, an owner map refused, a runtime ruled out, the
+ * executor or sealant sees: no-new-privileges, an owner map refused, a runtime ruled out, the
  * workspace's own refusal to run processes as a user.
  */
 export const recheckOf = (missing: ReadonlyArray<string>, ageMs: number): boolean => {
@@ -303,8 +303,8 @@ export const DOTFILES_BLOCK_REASON =
   "dotfiles cannot be applied as each person on this platform yet, so this workspace takes one person and applies them at boot";
 
 /**
- * The key Mend records an image's capability under: Core's digest when it reports one, else the
- * image as Mend asks for it, which builds the same image until Core's images or pins change (and
+ * The key Mend records an image's capability under: sealant's digest when it reports one, else the
+ * image as Mend asks for it, which builds the same image until sealant's images or pins change (and
  * each prepare records again, so a stale answer lasts one launch).
  */
 export const imageLayoutKeyOf = (image: WorkspaceImage, digest: string | null): string => {
@@ -395,7 +395,7 @@ export const REPAIR_MARKER = "/run/mend/repair";
 
 /**
  * The user a process starts as: what the SDK's `user` option on sessions and exec carries
- * (Core Delivery 8, sealantd Delivery 5). sealantd sets uid, gid and groups, `HOME`, `USER`,
+ * (sealant Delivery 8, sealantd Delivery 5). sealantd sets uid, gid and groups, `HOME`, `USER`,
  * `LOGNAME` and `SHELL` from the passwd entry, umask `0002`, and the private `TMPDIR` and
  * `XDG_RUNTIME_DIR`; Mend names the user and the ids it allocated.
  */
@@ -445,7 +445,7 @@ export const personProcessEnv = (
   XDG_RUNTIME_DIR: privateRuntimeOf(identity.uid),
   MEND_SESSION_ID: sessionId,
   MEND_SESSION_TOKEN_FILE: sessionTokenFileOf(identity),
-  // Never another person's login through the container's environment (decision 5): until Core
+  // Never another person's login through the container's environment (decision 5): until sealant
   // stops putting the launcher's tokens there (Deliveries 7–8), a person's process sees none.
   GH_TOKEN: "",
   GITHUB_TOKEN: "",
@@ -746,7 +746,7 @@ const personHomeAsPerson = (): string => {
     `chmod 0700 "$H/.mend"`,
     // opencode keeps its logins (`auth.json`) in its data directory, which is saved (`P`): there
     // it is a link to `~/.mend/opencode/auth.json` in the home, so a login written there in place
-    // (opencode's own, and Core's ChatGPT login, sealant#336) never lands in saved state. A
+    // (opencode's own, and sealant's ChatGPT login, sealant#336) never lands in saved state. A
     // regular file found there (from before this layout) moves into the home, never over one.
     `mkdir -p "$H/${OPENCODE_LOGIN_DIR}"`,
     `chmod 0700 "$H/${OPENCODE_LOGIN_DIR}"`,
@@ -766,12 +766,12 @@ const personHomeAsPerson = (): string => {
  * name with another uid fails the script. As a non-root caller (the tests) it makes the same
  * directories and links and skips what only root does.
  *
- * A home that exists before its user does is the launcher's: Core writes their logins into
+ * A home that exists before its user does is the launcher's: sealant writes their logins into
  * `credentialsHome` at create, before prepare's first exec, as root, because the user it would
  * write them as does not exist yet. `useradd -m` then keeps the directory, copies nothing from
  * `/etc/skel` and changes no owner, so the script copies the skeleton in itself, never over a
  * file already there, and gives the user everything in the home. From then on the home belongs
- * to the user, and Core writes every later login there as the home's owner.
+ * to the user, and sealant writes every later login there as the home's owner.
  */
 export const personHomeScript = (
   person: LinuxIdentity,
@@ -820,7 +820,7 @@ export const personHomeFunction = (options: PersonHomeOptions): string => {
       `grep -q '^${MEND_GROUP.name}:' /etc/group || groupadd -g ${group} ${MEND_GROUP.name}; ` +
       `sh_=$(awk -F: '$1=="root" { print $7 }' /etc/passwd); [ -n "$sh_" ] || sh_=/bin/sh; ` +
       `extra=; grep -q '^docker:' /etc/group && extra="-G docker"; ` +
-      // The home is made before the user, already theirs by number, so Core's POST of their
+      // The home is made before the user, already theirs by number, so sealant's POST of their
       // logins (decision 5), which may run beside this script and make the home itself when it
       // gets there first, always finds a home owned by them, and useradd never races it to the
       // mkdir.
@@ -828,7 +828,7 @@ export const personHomeFunction = (options: PersonHomeOptions): string => {
       `if [ ! -d "$p_h" ]; then mkdir -m 0700 "$p_h" 2>/dev/null || [ -d "$p_h" ] || fail "the home of $p_n could not be made"; ` +
       `chown "$p_o" "$p_h"; fi; ` +
       `useradd -u "$p_u" -g ${MEND_GROUP.name} $extra -m -k ${skel} -d "$p_h" -s "$sh_" "$p_n"; ` +
-      // useradd copied no skeleton into a home that was already there, and what Core wrote
+      // useradd copied no skeleton into a home that was already there, and what sealant wrote
       // before the user existed may be root's: both become the user's, nothing already there
       // replaced. The home is new, so the walk is short.
       // `|| true`: a coreutils whose `-n` exits 1 when it skips (upstream 9.2) must not fail the
@@ -922,7 +922,7 @@ export const personHomeEnsureScript = (
 
 /**
  * Each person's Mend session token and git author, written into their home without either
- * reaching an exec's arguments (decision 4; Core keeps every exec's argv, review of mend#552/#553
+ * reaching an exec's arguments (decision 4; sealant keeps every exec's argv, review of mend#552/#553
  * P1-1). The exec carries one pickup ticket per person (`pickup-tickets.ts`, purpose
  * `session-token`), and node, inside the same exec, redeems each over the session channel and
  * writes the token through a pinned directory (`pinnedPut`) to `~/.mend/session-token`, 0600, then

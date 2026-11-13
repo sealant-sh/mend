@@ -1654,7 +1654,7 @@ describe("mend server setup", () => {
 
   it("warns, before starting, when a Docker stop would outlast docker.service's stop timeout, and says nothing when it fits", async () => {
     const info = JSON.stringify({ OperatingSystem: "Ubuntu 24.04.1 LTS", SecurityOptions: [] });
-    // A workspace from before Core bounded its stop timeout, still running on a re-run.
+    // A workspace from before sealant bounded its stop timeout, still running on a re-run.
     const old = makeRuntime({ operatingSystem: info });
     expect(
       await serverCommand(["setup", "--yes"], {

@@ -533,7 +533,7 @@ describe("harness home", () => {
    * Review 2026-09-28 (19) #1: the relocation merged each fresh `$HOME` harness directory into the
    * restored root with `cp -an source/. destination/`. No-clobber kept the files, but archive mode
    * copied the source directory's mode and mtime over the destination: a restored `.claude` saved
-   * at 0750 read 0700 (Core writes the injected credential's parent under `umask 077`) with the
+   * at 0750 read 0700 (sealant writes the injected credential's parent under `umask 077`) with the
    * executor's own time. Now only missing entries are copied, and every existing destination
    * directory keeps its mode and exact time, descendants and the root included.
    */
@@ -568,7 +568,7 @@ describe("harness home", () => {
       const home = path.join(root, "home");
       const captured = path.join(root, "harness");
       fs.mkdirSync(home);
-      // The executor's fresh home: Core's credential write (`umask 077`, file 0600), what the
+      // The executor's fresh home: sealant's credential write (`umask 077`, file 0600), what the
       // image baked, and a file that collides with a restored one.
       const injected = spawnSync(
         "sh",

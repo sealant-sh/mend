@@ -27,7 +27,7 @@ const selectedModels = [
   },
 ];
 
-// Replay Core's public HTTP contract through the installed SDK's Effect operation, the
+// Replay sealant's public HTTP contract through the installed SDK's Effect operation, the
 // dispatching person client and the shipped inference provider. No pretranslated error fake.
 const withCore = async (
   reply: (attempt: number) => { status: number; body: unknown },
@@ -102,7 +102,7 @@ const engineRefusal = (reason: string) => ({
   },
 });
 
-it("retains Core's typed engine failure without the Promise facade's numeric HTTP status", async () => {
+it("retains sealant's typed engine failure without the Promise facade's numeric HTTP status", async () => {
   await withCore(
     () => engineRefusal("Selected model rejected."),
     async (layer, requests) => {
@@ -123,7 +123,7 @@ it("retains Core's typed engine failure without the Promise facade's numeric HTT
 });
 
 for (const { model, reason } of selectedModels) {
-  it(`generates after Core's real selected-model refusal for ${model}`, async () => {
+  it(`generates after sealant's real selected-model refusal for ${model}`, async () => {
     await withCore(
       (attempt) =>
         attempt === 1

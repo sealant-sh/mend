@@ -169,7 +169,7 @@ const snapshotsRow = (report: BoatKeyReport): BoatKeyFact => {
   );
 };
 
-/** What the key lacks: what Core judged missing, and what it lacks of Core's and Mend's lists. */
+/** What the key lacks: what sealant judged missing, and what it lacks of sealant's and Mend's lists. */
 const missingOf = (
   report: BoatKeyReport,
   permissions: Observed<BoatKeyReport["permissions"]>,

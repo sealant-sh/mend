@@ -141,7 +141,7 @@ interface World {
   disconnect: Answer;
   /** What `boatKey.check` answers. */
   check: BoatKeyCheckDto;
-  /** What `boatKey.fullCheck` answers; a finished one becomes the status's last, as Core keeps it. */
+  /** What `boatKey.fullCheck` answers; a finished one becomes the status's last, as sealant keeps it. */
   fullCheck: Answer;
 }
 

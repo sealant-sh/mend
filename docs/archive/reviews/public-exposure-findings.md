@@ -8,11 +8,11 @@ Review date: 2026-09-16.
 
 ## Decision
 
-**Do not expose the reviewed Mend or Sealant Core releases directly to the public Internet.**
+**Do not expose the reviewed Mend or sealant releases directly to the public Internet.**
 
-Mend can eventually be the public, authenticated entry point. Core should remain a private backend
-called by Mend, even if Mend later becomes Internet-facing. A domain, TLS certificate or reverse
-proxy does not supply the missing application authorization.
+Mend can eventually be the public, authenticated entry point. sealant should remain a private
+backend called by Mend, even if Mend later becomes Internet-facing. A domain, TLS certificate or
+reverse proxy does not supply the missing application authorization.
 
 For the next deployment step, prefer owner-only Tailscale HTTPS access to the Mend web tier. Treat
 this as a proposed rollout, not an installed or fully tested configuration. Do not extend access to
@@ -20,7 +20,7 @@ less-trusted teammates until the [team authorization blockers](team-support-find
 
 ## Scope and confidence
 
-The source review covered Mend API/web 0.27.5 and Mend commit `6a2c50ec4`, plus Core 0.32.0 at
+The source review covered Mend API/web 0.27.5 and Mend commit `6a2c50ec4`, plus sealant 0.32.0 at
 `abe4d6c`. Daemon behavior was checked against `sealantd` 0.15.2. Findings describe those versions,
 not an assurance about every subsequent release.
 
@@ -41,7 +41,7 @@ security assessment**. No cross-user mutation probes were sent to production.
 Recorded AWS deployment evidence shows:
 
 - No public application or database ingress. The Kubernetes API admits the operator's address.
-- Mend web and API use private Services. Core is a private `ClusterIP` service.
+- Mend web and API use private Services. sealant is a private `ClusterIP` service.
 - The executor session channel uses an internal NLB restricted to the MicroVM connector network. Its
   transport is private-VPC HTTP, not TLS.
 - PlanetScale uses PrivateLink and verified TLS. A valid-credential public connection was rejected.
@@ -101,15 +101,15 @@ listen connection; this is **not one database connection per browser**. Per-stre
 unsubscribe the shared channel and interrupt other consumers. Cross-user event filtering and
 connection budgets remain separate problems.
 
-## Core findings
+## sealant findings
 
-### Core is a trusted control plane, not an end-user authorization server
+### sealant is a trusted control plane, not an end-user authorization server
 
-**Observed.** A Core service-key holder can delegate operations to a caller-specified `ownerUserId`.
-Several reads and mutations also accept absent owner scope. This assumes a trusted server caller,
-not an untrusted browser or ordinary team member.
+**Observed.** A sealant service-key holder can delegate operations to a caller-specified
+`ownerUserId`. Several reads and mutations also accept absent owner scope. This assumes a trusted
+server caller, not an untrusted browser or ordinary team member.
 
-Keep Core, its registry and its execution/control endpoints private. Never distribute its service
+Keep sealant, its registry and its execution/control endpoints private. Never distribute its service
 key to a browser or use that key as a substitute for Mend project permissions.
 
 | ID      | Priority              | Evidence                                                   | Finding and required correction                                                                                                                                                                                                                 |
@@ -133,7 +133,7 @@ failure, and does not itself justify Internet exposure.
 
 Observed controls include exact browser-origin checks, Better Auth sessions, hashed pairing and
 executor-channel tokens, encrypted project and connected-account credentials, constrained capture
-object keys, scoped Core session tokens, private deployment defaults and an owner check on Mend's
+object keys, scoped sealant session tokens, private deployment defaults and an owner check on Mend's
 current service tunnel.
 
 Do not overstate proxy-header handling: web retains/appends an address-forwarding chain. Verify the
@@ -149,8 +149,8 @@ Proposed first rollout:
 3. Laptop and phone connect Tailscale, open the same HTTPS bookmark and authenticate separately to
    Mend. CLI uses the same origin through `MEND_URL`.
 4. Web proxies API, SSE and WSS traffic on that origin. No daily kubectl or SSH tunnel is needed.
-5. Core, Kubernetes, database, registry, executor agents and raw service ports remain inaccessible
-   to ordinary tailnet users. Coding executors do not join the administrative tailnet.
+5. sealant, Kubernetes, database, registry, executor agents and raw service ports remain
+   inaccessible to ordinary tailnet users. Coding executors do not join the administrative tailnet.
 
 Before rollout, verify enrollment controls, proxy trust, exact origins, TLS/cookies, WSS/SSE
 endurance, cellular access, device revocation, forbidden-service reachability and rollback. This
@@ -184,7 +184,7 @@ Recorded local verification:
 
 - Mend audit: 92 passing tests with 9 skipped, plus 14 additional passing tests and synthetic
   signup, signing-header and Git-helper checks. Not a full two-user integration suite.
-- Core audit: 29 agent/adapter tests plus synthetic credential-destination, registry-path and
+- sealant audit: 29 agent/adapter tests plus synthetic credential-destination, registry-path and
   early-exit checks. No live cloud attack or provider-backed acceptance test.
 - Origin fix: 10 chart, 14 network and 12 tRPC tests; both Helm fixtures; independent review; forced
   typecheck and lint with 22 tasks each and no cache hits. tRPC emitted a shutdown warning after
@@ -200,5 +200,5 @@ Before reconsidering public Mend, require:
 - Reviewed TLS/proxy/header behavior, retention/deletion policies and an independent reassessment of
   the exact release to deploy.
 
-Reassess public Core separately only if its trust model changes. Fixing Mend does not turn Core's
-administrative service credential into an end-user identity.
+Reassess public sealant separately only if its trust model changes. Fixing Mend does not turn
+sealant's administrative service credential into an end-user identity.

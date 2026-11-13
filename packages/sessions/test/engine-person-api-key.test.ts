@@ -1,4 +1,4 @@
-// Claude on a person's own API key (docs/adr/0018, decisions 1 and 4): the key Core placed in a
+// Claude on a person's own API key (docs/adr/0018, decisions 1 and 4): the key sealant placed in a
 // person's home is read through `apiKeyHelper` in every Claude launch, and never reaches argv,
 // the environment or a record.
 
@@ -34,7 +34,7 @@ const keyLoginIn = (accountId: string): PlacedLogin => ({
   keyPath: keyPathOf(accountId),
 });
 
-/** The person platform, with Core answering that `keyHolders`' Claude logins it placed are keys. */
+/** The person platform, with sealant answering that `keyHolders`' Claude logins it placed are keys. */
 const placingKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<string>) =>
   Layer.effect(
     PersonLayoutPlatform,
@@ -54,7 +54,7 @@ const placingKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<string>) =
   ).pipe(Layer.provide(personPlatform(calls, { person: true })));
 
 /**
- * The person platform on an image neither Core nor Mend has an answer for yet, where Core says
+ * The person platform on an image neither sealant nor Mend has an answer for yet, where sealant says
  * `keyHolders`' default Claude logins are keys and places them in their homes as keys.
  */
 const unprobedImageWithKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<string>) =>
@@ -70,7 +70,7 @@ const unprobedImageWithKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<
       postCredentials: (workspace: Workspace, input: Parameters<typeof inner.postCredentials>[1]) =>
         inner.postCredentials(workspace, input).pipe(
           Effect.as({
-            // Core never places a key in a shared home: `/root` leaves the key holder's Claude out.
+            // sealant never places a key in a shared home: `/root` leaves the key holder's Claude out.
             skipped:
               input.home === "/root" &&
               keyHolders.has(input.onBehalfOf) &&
@@ -94,7 +94,7 @@ const unprobedImageWithKeysFor = (calls: Array<string>, keyHolders: ReadonlySet<
     })),
   ).pipe(Layer.provide(personPlatform(calls, {})));
 
-/** Core's refusal of a create naming a Claude account that holds an API key. */
+/** sealant's refusal of a create naming a Claude account that holds an API key. */
 const claudeKeyAtCreate = (credentials: CreateOptions["credentials"]) =>
   credentials?.claude === undefined
     ? false
@@ -243,7 +243,7 @@ describe("Claude on a person's placed API key (docs/adr/0018, decision 1)", () =
         },
       },
     );
-    // Core refused the create's Claude key; the same create without Claude kept the rest.
+    // sealant refused the create's Claude key; the same create without Claude kept the rest.
     expect(created.map((options) => options.credentials)).toEqual([
       { claude: true, codex: true, github: true },
       { codex: true, github: true },
@@ -330,7 +330,7 @@ const launchFresh = (world: Parameters<typeof setup>[1], tmp: string, times: num
 
 /**
  * Seen on a Boat install (0.37.0-next.1401): the first session on an image Mend had not checked
- * ran in a shared home, Core refused its Claude key at create, and the check that would have
+ * ran in a shared home, sealant refused its Claude key at create, and the check that would have
  * answered for the image runs only in an executor that exists, so every retry was refused the
  * same way until someone else's session checked the image.
  */
@@ -339,7 +339,7 @@ describe("a Claude key on an image whose per-person answer is not known yet", ()
     created: Array<CreateOptions>,
     spawned: Array<ReadonlyArray<string>>,
     exec: string,
-    /** Whether Core refuses a create that names the Claude login (a key). */
+    /** Whether sealant refuses a create that names the Claude login (a key). */
     keyAtCreate = true,
   ) =>
     sealantLaunchLayer(
@@ -373,7 +373,7 @@ describe("a Claude key on an image whose per-person answer is not known yet", ()
     });
     expect(outcomes).toEqual([null]);
     expect(calls).toContain("key?:user-fixture:claude");
-    // Core refused the key in the create; the same create without Claude kept the rest, and the
+    // sealant refused the key in the create; the same create without Claude kept the rest, and the
     // key went into the launcher's own home.
     expect(created.map((options) => options.credentials)).toEqual([
       { claude: true, codex: true, github: true },

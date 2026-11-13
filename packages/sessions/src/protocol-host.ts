@@ -367,7 +367,7 @@ const released = (entry: HostedProcess, harness: HarnessTurn | null, turn: Agent
 
 /**
  * The login a conversation's workspace launches with: Mend creates it with `{ claude: true }` or
- * `{ codex: true }`, the launching person's chosen default. Core reports neither that account's id
+ * `{ codex: true }`, the launching person's chosen default. sealant reports neither that account's id
  * nor its name at create, so both stay unknown.
  */
 const launchLogin = (userId: string | null): TurnPayer => ({
@@ -378,7 +378,7 @@ const launchLogin = (userId: string | null): TurnPayer => ({
 
 /**
  * Make the workspace hold the login the next turn runs on, and say whose it is (docs/adr/0013,
- * "The switch sits in dispatch"). Until Core can write another login into a live workspace, every
+ * "The switch sits in dispatch"). Until sealant can write another login into a live workspace, every
  * turn runs on the one the workspace holds; the switch replaces this with the turn's sender's.
  */
 const loginForTurn = (entry: HostedProcess): Effect.Effect<TurnPayer> =>

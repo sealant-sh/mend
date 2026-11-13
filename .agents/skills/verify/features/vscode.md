@@ -258,7 +258,7 @@ The flows. Each story is one recipe; a `<label>` is a session row's visible labe
 label or `<harness> · <id8>` when it has none (the as-built recipe reads it with `api`). In the
 world a session started on a prompt keeps `<harness> · <id8>`: the launch queues the `name-session`
 job, whose inference runs on the session owner's connected Claude, then Codex, login, and the fake
-logins are refused (Core answers `/v1/inference/respond` with 409 for Claude, then 404 or
+logins are refused (sealant answers `/v1/inference/respond` with 409 for Claude, then 404 or
 `The Codex login did not authenticate`; the job fails, retries, and dead-letters). With a real login
 the row takes the job's name.
 

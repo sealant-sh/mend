@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 import { toPlatformError } from "./client.ts";
 
 /**
- * A Boat launch Core failed reaches the session engine with Boat's reason intact, for every kind
- * Core names (SLNT-793): the engine hands the kind to the Boat failure table unchanged, so this and
+ * A Boat launch sealant failed reaches the session engine with Boat's reason intact, for every kind
+ * sealant names (SLNT-793): the engine hands the kind to the Boat failure table unchanged, so this and
  * the table's own tests cover every kind without a launch each.
  */
 describe("Boat's reason on a failed Boat launch", () => {

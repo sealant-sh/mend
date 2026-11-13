@@ -55,7 +55,7 @@ export class ResourceStatusReads extends Context.Service<
     ) => Effect.Effect<(each: DefinitionWithChoice) => Shown>;
     /**
      * Trusted read of already-authorized session rows, grouped by project. `files: false` is a
-     * list's read: Mend's rows and one Core observation, never a worktree's `mend.toml` (a
+     * list's read: Mend's rows and one sealant observation, never a worktree's `mend.toml` (a
      * capture restore, or an exec into a live workspace, per worktree). A resource declared there
      * and never started then has no line; the session's own view reads the file.
      */
@@ -138,7 +138,7 @@ export const resourceViewOf = (input: {
   };
 };
 
-/** Reads rows and Core without creating or starting an instance. */
+/** Reads rows and sealant without creating or starting an instance. */
 export const ResourceStatusReadsLive: Layer.Layer<
   ResourceStatusReads,
   never,

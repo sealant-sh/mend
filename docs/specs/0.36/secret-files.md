@@ -71,7 +71,7 @@ files, 1 MB in all, paths up to 512 characters. Session line on refusal:
 **Out of scope.**
 
 - Project-level secret files (a later change, ADR 0010 "Considered").
-- A platform launch-time file injection; bytes ride exec argv until Core offers one
+- A platform launch-time file injection; bytes ride exec argv until sealant offers one
   (PLATFORM-FEEDBACK 2026-10-03).
 - Keeping anything running in the workspace from copying the file elsewhere: the agent, a dependency
   install or a setup recipe can read it and write it into the worktree, which is captured.

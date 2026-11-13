@@ -10,13 +10,13 @@ import { ServerSetupError, setupError } from "./server-setup-error.ts";
  */
 export interface ServerBoat {
   /**
-   * The name Core labels this install's Boat VMs with (`sealant-deployment`), so installs that share
+   * The name sealant labels this install's Boat VMs with (`sealant-deployment`), so installs that share
    * one Boat account each find only their own. It is not a Boat object: the operator may pick it,
    * and without one setup derives it from the install's identity (`boatEnvLines`).
    */
   readonly deploymentId?: string | undefined;
   /**
-   * Whether Boat sessions reach project resources (`@db`) through Core's resource gateway on this
+   * Whether Boat sessions reach project resources (`@db`) through sealant's resource gateway on this
    * server's Docker host. The worker carries each tunnel over Boat's HTTPS, so the host takes no
    * inbound connection. Off, only sessions in projects without resources run on Boat.
    */
@@ -36,20 +36,20 @@ export interface ServerBoatKey {
 
 /** The overlay that hands the Boat settings to the `mend` container. */
 export const BOAT_COMPOSE_FILE = "compose.boat.yaml";
-/** Core's native build journal: it must outlive the container, so it has a volume of its own. */
+/** sealant's native build journal: it must outlive the container, so it has a volume of its own. */
 export const BOAT_STATE_VOLUME = "mend-boat-state";
 export const BOAT_STATE_DIRECTORY = "/var/lib/sealant/boat";
 /**
- * The Mend image's label naming Core's Boat resource gateway image, by digest (Dockerfile). Setup
+ * The Mend image's label naming sealant's Boat resource gateway image, by digest (Dockerfile). Setup
  * preloads it, and the bundle hands the same reference to the worker (scripts/bundle-supervisor.mjs).
  */
 export const BOAT_GATEWAY_IMAGE_LABEL = "dev.sealant.mend.boat-gateway-image";
 
-/** What Core takes as a Boat deployment ID (`SEALANT_BOAT_DEPLOYMENT_ID`). */
+/** What sealant takes as a Boat deployment ID (`SEALANT_BOAT_DEPLOYMENT_ID`). */
 const DEPLOYMENT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/;
-/** What Core takes as a Boat key (`BoatSecret`). */
+/** What sealant takes as a Boat key (`BoatSecret`). */
 const API_KEY = /^[A-Za-z0-9._~-]{16,4096}$/;
-/** What Core takes as the Boat organization the server's own key bills (its id or name). */
+/** What sealant takes as the Boat organization the server's own key bills (its id or name). */
 const ORGANIZATION = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,127}$/;
 
 export const isBoatDeploymentId = (value: string): boolean => DEPLOYMENT_ID.test(value);
@@ -95,7 +95,7 @@ export const sameBoat = (left: ServerBoat | undefined, right: ServerBoat | undef
 /**
  * A stable UUID for this install, derived from its identity like Garage's values: the same install
  * always renders the same one, so it survives reruns, upgrades and restarts without being stored.
- * Version 4 and RFC 9562's variant, which Core's settings require.
+ * Version 4 and RFC 9562's variant, which sealant's settings require.
  */
 const derivedUuid = (identitySecret: string, label: string): string => {
   const hex = createHmac("sha256", Buffer.from(identitySecret, "hex")).update(label).digest("hex");
@@ -114,9 +114,9 @@ export const boatDeploymentIdOf = (boat: ServerBoat, identitySecret: string): st
   boat.deploymentId ?? `mend-${derivedUuid(identitySecret, "mend-boat-deployment")}`;
 
 /**
- * The Boat lines of `server.env`. The deployment name, Core's builder owner (who owns this
+ * The Boat lines of `server.env`. The deployment name, sealant's builder owner (who owns this
  * install's Boat images) and, with resources, its gateway host are derived from the identity.
- * Core keeps the first two itself since 0.40.0-next.874, adopting what it was given on its first
+ * sealant keeps the first two itself since 0.40.0-next.874, adopting what it was given on its first
  * start, so a server that ran Boat before keeps them and so recognises its VMs and images. The
  * server's own key and its organization are the operator's, and only when there is one.
  */
@@ -143,8 +143,8 @@ export const boatEnvLines = (
 
 /**
  * `compose.boat.yaml`: the Boat settings for the `mend` container, read from `server.env`, and
- * the volume Core keeps its native build journal in. A setting `server.env` does not carry (the
- * server's own key, say) reaches Core empty, which Core reads as unset. The gateway's image and
+ * the volume sealant keeps its native build journal in. A setting `server.env` does not carry (the
+ * server's own key, say) reaches sealant empty, which sealant reads as unset. The gateway's image and
  * the address the worker reaches it at are the image's and the container's own
  * (scripts/bundle-supervisor.mjs).
  */

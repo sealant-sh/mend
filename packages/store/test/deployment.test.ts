@@ -37,7 +37,7 @@ describe("resolveDeploymentConfig", () => {
       resolveDeploymentConfig({ MEND_SESSION_RUNTIMES: "docker", MEND_SESSION_RUNTIME: "boat" }),
     ).toThrow(/does not offer/);
   });
-  it("keeps Core selection on unconfigured Kubernetes and respects explicit choices", () => {
+  it("keeps sealant selection on unconfigured Kubernetes and respects explicit choices", () => {
     for (const runtime of [undefined, "", "  "]) {
       expect(
         resolveDeploymentConfig({

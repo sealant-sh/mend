@@ -18,7 +18,7 @@ const DETAILS = {
   updatedAt: now,
 };
 
-/** A current sealantd's flush answer, as Core relays it: an empty queue, one path carried. */
+/** A current sealantd's flush answer, as sealant relays it: an empty queue, one path carried. */
 const CARRIED = {
   epoch: 2,
   worktreeId: "wt",

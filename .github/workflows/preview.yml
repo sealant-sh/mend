@@ -1,7 +1,7 @@
 name: Preview
 
 # One Mend preview build for a self-hosted box: the Mend ref this workflow is dispatched on, plus an
-# optional Sealant Core ref and an optional sealantd ref. It builds the images those refs need,
+# optional sealant ref and an optional sealantd ref. It builds the images those refs need,
 # pushes ghcr.io/sealant-sh/mend:<version>, and prints the command that deploys it with
 # scripts/preview-deploy.sh. See docs/operations/preview-builds.md.
 #
@@ -12,12 +12,13 @@ on:
     inputs:
       sealant_ref:
         description:
-          "sealant-sh/sealant branch, tag or commit. Empty: the Core this Mend commit pins"
+          "sealant-sh/sealant branch, tag or commit. Empty: the sealant this Mend commit pins"
         required: false
         type: string
         default: ""
       sealantd_ref:
-        description: "sealant-sh/sealantd branch, tag or commit. Empty: the sealantd Core pins"
+        description:
+          "sealant-sh/sealantd branch, tag or commit. Empty: the sealantd that sealant pins"
         required: false
         type: string
         default: ""
@@ -63,7 +64,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
-      - name: Verify pinned Core digests match the bundle version
+      - name: Verify pinned sealant digests match the bundle version
         if: inputs.sealant_ref == ''
         # Pin checks only, without release history requirements or publishing anything.
         run:
@@ -122,7 +123,7 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Mend $version: sealant ${sealant_sha:-pinned}, sealantd ${sealantd_sha:-pinned}, $PLATFORMS"
 
-  # sealantd needs no Core rebuild: the bundled Sealant worker bakes whatever image
+  # sealantd needs no sealant rebuild: the bundled Sealant worker bakes whatever image
   # SEALANT_SEALANTD_IMAGE names into workspace images (scripts/bundle-supervisor.mjs).
   sealantd:
     permissions:
@@ -242,7 +243,7 @@ jobs:
       - id: build
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
-          # Boat's resource gateway builds from its own directory, as Core's next.yml builds it.
+          # Boat's resource gateway builds from its own directory, as sealant's next.yml builds it.
           context: ${{ matrix.image == 'boat-gateway' && 'packages/workspaces/boat-tunnel' || '.' }}
           file:
             ${{ matrix.image == 'boat-gateway' && 'packages/workspaces/boat-tunnel/Dockerfile' ||
@@ -347,8 +348,8 @@ jobs:
           SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
         run: |
           set -euo pipefail
-          # Without a Core ref the Dockerfile's pinned Core digests stay; without a sealantd ref
-          # MEND_PREVIEW_SEALANTD_IMAGE stays empty and the worker keeps the sealantd Core pins.
+          # Without a sealant ref the Dockerfile's pinned sealant digests stay; without a sealantd ref
+          # MEND_PREVIEW_SEALANTD_IMAGE stays empty and the worker keeps the sealantd that sealant pins.
           {
             echo "build_args<<ARGS"
             echo "MEND_VERSION=$VERSION"
@@ -453,12 +454,12 @@ jobs:
             if [[ -n $SEALANT_SHA ]]; then
               echo "| sealant-sh/sealant | \`$SEALANT_REF\` | \`$SEALANT_SHA\` | \`$API_IMAGE\`<br>\`$WORKER_IMAGE\`<br>\`$SSH_GATEWAY_IMAGE\` |"
             else
-              echo "| sealant-sh/sealant | pinned by this Mend commit | | the Dockerfile's Core digests |"
+              echo "| sealant-sh/sealant | pinned by this Mend commit | | the Dockerfile's sealant digests |"
             fi
             if [[ -n $SEALANTD_SHA ]]; then
               echo "| sealant-sh/sealantd | \`$SEALANTD_REF\` | \`$SEALANTD_SHA\` | \`$SEALANTD_IMAGE\` |"
             else
-              echo "| sealant-sh/sealantd | pinned by Core | | the worker's default |"
+              echo "| sealant-sh/sealantd | pinned by sealant | | the worker's default |"
             fi
             echo
             echo "Platforms: \`$PLATFORMS\`. No packaged acceptance ran for this preview."

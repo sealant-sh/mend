@@ -9,7 +9,7 @@ import type {
 import type { ServerBoatFacts } from "./server-boat.ts";
 
 /**
- * Boat key reports shaped as Core 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
+ * Boat key reports shaped as sealant 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
  * API, web and CLI tests. Never a real account.
  */
 
@@ -163,7 +163,7 @@ const notReached = (step: BoatKeyProofStep["step"]): BoatKeyProofStep => ({
 });
 
 /**
- * A full check shaped as Core 0.40.0-next.874 answers it (sealant#638's fake Boat): `passed`, refused
+ * A full check shaped as sealant 0.40.0-next.874 answers it (sealant#638's fake Boat): `passed`, refused
  * at publishing a port for a missing `host` permission, or interrupted and swept. Never a real VM.
  */
 export const boatKeyProofFixture = (

@@ -65,7 +65,7 @@ each open item with its fix; `/health` reports whether the gate passes and the o
 
 Not required to open a private beta, and tracked as later work: per-organization and per-user
 budgets (concurrent live sessions, captured bytes, hot pool size, inference spend, request rate,
-open streams) and Core's per-principal limits and owner scoping (CORE-03, CORE-04). When budgets
+open streams) and sealant's per-principal limits and owner scoping (CORE-03, CORE-04). When budgets
 land, hitting one refuses new work with a stated reason and never kills a running session.
 
 Rejected: shipping `multi` with a warning banner (anyone can run an unhardened "multi-tenant"
@@ -256,9 +256,9 @@ account, matching today's fallback.
 - The product language gains nouns: `organization`, `operator`, `owner`, `member`, `invitation`,
   private and shared `project` visibility, `shared control` and `folder`. `AGENTS.md` and
   `MEND-AGENT-WORKBENCH-PLAN.md` §5 need amending to match.
-- Mend still calls Core with its service key and a derived `ownerUserId`. Core keeps trusting Mend
-  as a server caller. Isolation is enforced in Mend; Core's own owner scoping (CORE-03) is later
-  hardening, not a precondition for the beta.
+- Mend still calls sealant with its service key and a derived `ownerUserId`. sealant keeps trusting
+  Mend as a server caller. Isolation is enforced in Mend; sealant's own owner scoping (CORE-03) is
+  later hardening, not a precondition for the beta.
 - Every internal job resolves authority from durable resource relationships (session owner, project
   organization) and never takes a browser's current user or a raw path or object key.
 - Migrations and ADR numbers from the team branch are not reused. The branch's migration test that

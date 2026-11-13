@@ -1412,7 +1412,7 @@ const seedConversation = async (ctx, session, harness, container) => {
  *
  * The ADR's row (docs/adr/0016, "Budgets"):
  *
- *   | Steering hand-over (send to first output, nothing in the background; both Core calls and
+ *   | Steering hand-over (send to first output, nothing in the background; both sealant calls and
  *   | Codex re-index included; a conversation of realistic size) | under 5 s more than the same
  *   | turn sent by the process's own person |
  *
