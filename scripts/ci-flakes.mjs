@@ -18,6 +18,7 @@ const usage = `Usage: node scripts/ci-flakes.mjs [--runs <n> | --since <date>] [
   --cache <dir>    where downloaded records are kept (default: ~/.cache/mend-ci-flakes)`;
 
 const PAGE = 100;
+const plural = (count, word) => `${count} ${word}${count === 1 ? "" : "s"}`;
 const REPORT = /^test-report-(.+?)(-retried)?$/;
 
 const fail = (message) => {
@@ -230,11 +231,13 @@ if (options.json) {
   console.log(JSON.stringify(ledger, null, 2));
 } else {
   const window =
-    runLimit === undefined ? `created since ${ledger.window.since}` : `the ${runLimit} most recent`;
+    runLimit === undefined
+      ? `completed CI runs created since ${ledger.window.since}`
+      : `the ${runLimit === 1 ? "most recent completed CI run" : `${runLimit} most recent completed CI runs`}`;
   const lines = [
-    `Flaky tests in ${repo}: completed CI runs ${window}${options.branch ? ` on ${options.branch}` : ""}.`,
-    `Covered ${ledger.runsWithReport} of ${ledger.runs} runs; ${ledger.runsWithoutReport} had no test report (stopped before tests, or the report expired after 14 days).`,
-    `${ledger.reportsWithRetries} job reports had retried tests${ledger.expiredReports ? `, ${ledger.expiredReports} of them expired` : ""}. API calls: ${ledger.apiCalls.total} (${calls.runPages} run list, ${calls.artifactPages} artifact list, ${calls.downloads} downloads; ${calls.cached} reports read from ${cacheDir}).`,
+    `Flaky tests in ${repo}: ${window}${options.branch ? ` on ${options.branch}` : ""}.`,
+    `Covered ${ledger.runsWithReport} of ${plural(ledger.runs, "run")}; ${ledger.runsWithoutReport} had no test report (stopped before tests, or the report expired after 14 days).`,
+    `${plural(ledger.reportsWithRetries, "job report")} had retried tests${ledger.expiredReports ? `, ${ledger.expiredReports} of them expired` : ""}. API calls: ${ledger.apiCalls.total} (${calls.runPages} run list, ${calls.artifactPages} artifact list, ${plural(calls.downloads, "download")}; ${plural(calls.cached, "report")} read from ${cacheDir}).`,
     "",
   ];
   if (ranked.length === 0) lines.push("No test needed its retry in these runs.");
