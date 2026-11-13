@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { bodyText, urlText } from "#/test-fixtures/fake-fetch";
+
 import { EmbedTicketRefused, makeEmbedExchange } from "./terminal.tsx";
 
 describe("the embed page's ticket chain", () => {
@@ -8,7 +10,7 @@ describe("the embed page's ticket chain", () => {
     let round = 0;
     const send: typeof fetch = async (input, init) => {
       round += 1;
-      sent.push({ url: String(input), body: JSON.parse(String(init?.body)) });
+      sent.push({ url: urlText(input), body: JSON.parse(bodyText(init)) });
       return Response.json({
         ticket: `mut_socket_${round}`,
         renew: `mut_renew_${round}`,
@@ -28,7 +30,7 @@ describe("the embed page's ticket chain", () => {
     let refuse = true;
     const bodies: Array<unknown> = [];
     const send: typeof fetch = async (_input, init) => {
-      bodies.push(JSON.parse(String(init?.body)));
+      bodies.push(JSON.parse(bodyText(init)));
       if (refuse) return new Response(null, { status: 401 });
       return Response.json({ ticket: "mut_socket", renew: "mut_renew", expiresInSeconds: 30 });
     };

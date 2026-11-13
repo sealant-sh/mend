@@ -611,7 +611,7 @@ export const shellWord = (word: string): string =>
 export const paint =
   (code: string) =>
   (text: string): string =>
-    process.stdout.isTTY === true ? `\u001b[${code}m${text}\u001b[0m` : text;
+    process.stdout.isTTY ? `\u001b[${code}m${text}\u001b[0m` : text;
 
 // eslint-disable-next-line no-control-regex -- matching control characters is the point
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/g;

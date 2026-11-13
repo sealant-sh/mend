@@ -20,7 +20,7 @@ describe("repositories in a session (docs/adr/0010)", () => {
     expect(isRepositoryName("../etc")).toBe(false);
     expect(isRepositoryName("a/b")).toBe(false);
     expect(isRepositoryName("")).toBe(false);
-    expect(isRepositoryName(`${"x".repeat(65)}`)).toBe(false);
+    expect(isRepositoryName("x".repeat(65))).toBe(false);
   });
 
   it("says how a repository is saved in the words every surface prints", () => {

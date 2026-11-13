@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as net from "node:net";
 import * as path from "node:path";
 
-import { Clock, Effect, Layer } from "effect";
+import { Clock, Effect, Layer, Predicate } from "effect";
 import * as Context from "effect/Context";
 
 import { MendKeysConfig } from "./git-auth.ts";
@@ -61,13 +61,6 @@ export const NO_SIGNER_MESSAGE =
  *   server → client  {"t":"req","id":1,"context":"adopt x → ssh://…","payload":"<b64>"}
  *   client → server  {"t":"res","id":1,"payload":"<b64>"} | {"t":"err","id":1,"message":"…"}
  */
-interface ShareFrame {
-  readonly t?: string;
-  readonly id?: number;
-  readonly payload?: string;
-  readonly message?: string;
-}
-
 /** SSH_AGENT_FAILURE, framed — the honest answer when the bridge cannot ask. */
 const AGENT_FAILURE = Buffer.from([0, 0, 0, 1, 5]);
 
@@ -248,17 +241,19 @@ const makeUserBridge = (socketPath: string, clock: Clock.Clock) => {
     since = new Date(clock.currentTimeMillisUnsafe());
     return {
       feed: (frame: string) => {
-        let parsed: ShareFrame;
+        let parsed: unknown;
         try {
-          parsed = JSON.parse(frame) as ShareFrame;
+          parsed = JSON.parse(frame);
         } catch {
           return;
         }
-        if (typeof parsed.id !== "number") return;
-        if (parsed.t === "res" && typeof parsed.payload === "string") {
-          settle(parsed.id, Buffer.from(parsed.payload, "base64"));
-        } else if (parsed.t === "err") {
-          settle(parsed.id, null);
+        if (!Predicate.isObject(parsed)) return;
+        const { t, id, payload } = parsed;
+        if (typeof id !== "number") return;
+        if (t === "res" && typeof payload === "string") {
+          settle(id, Buffer.from(payload, "base64"));
+        } else if (t === "err") {
+          settle(id, null);
         }
       },
       detach: () => {

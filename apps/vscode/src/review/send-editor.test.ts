@@ -62,6 +62,8 @@ const ui = vi.hoisted(() => ({
   documents: new Array<OpenDocument>(),
   untitled: new Array<UntitledDocument>(),
   edits: new Array<(event: { readonly document: OpenDocument }) => void>(),
+  /** `window.tabGroups.close`: closing a tab never reverts it. */
+  closeTabs: vi.fn(async (..._: ReadonlyArray<unknown>) => true),
   providerOfThisWindow(): vscode.FileSystemProvider | undefined {
     return this.providers.at(-1);
   },
@@ -160,7 +162,7 @@ vi.mock("vscode", async () => {
             { tabs: ui.documents.map((document) => ({ input: new TabInputText(document.uri) })) },
           ];
         },
-        close: vi.fn(async (..._: ReadonlyArray<unknown>) => true),
+        close: ui.closeTabs,
       },
     },
     workspace: {
@@ -262,7 +264,7 @@ const mendWithOpen = (): FakeMend => {
 beforeEach(() => {
   vi.mocked(vscode.window.showWarningMessage).mockClear();
   vi.mocked(vscode.commands.executeCommand).mockClear();
-  vi.mocked(vscode.window.tabGroups.close).mockClear();
+  ui.closeTabs.mockClear();
   vi.mocked(vscode.window.showTextDocument).mockClear();
   ui.commands.clear();
   ui.providers.length = 0;
@@ -297,7 +299,7 @@ describe("Send to session", () => {
     const window = await windowOn(memoryFiles(), mendWithOpen());
     const opened = await sendReview();
     await ui.commands.get("mend.change.sendToSession")?.(opened.uri);
-    expect(vscode.window.tabGroups.close).toHaveBeenCalledWith([
+    expect(ui.closeTabs).toHaveBeenCalledWith([
       expect.objectContaining({ input: expect.objectContaining({ uri: opened.uri }) }),
     ]);
     expect(vscode.commands.executeCommand).not.toHaveBeenCalledWith(
@@ -309,7 +311,7 @@ describe("Send to session", () => {
   it("never discards words she types while VS Code closes the editor", async () => {
     const window = await windowOn(memoryFiles(), mendWithOpen());
     const opened = await sendReview();
-    vi.mocked(vscode.window.tabGroups.close).mockImplementationOnce(async () => {
+    ui.closeTabs.mockImplementationOnce(async () => {
       opened.text = `${opened.text}\nTyped as it closed.`;
       opened.version += 1;
       opened.isDirty = true;
@@ -826,7 +828,7 @@ describe("a save of a review Mend no longer keeps", () => {
       },
     });
     const opened = await sendReview();
-    vi.mocked(vscode.window.tabGroups.close).mockImplementationOnce(async () => {
+    ui.closeTabs.mockImplementationOnce(async () => {
       typeInto(opened, `${opened.text}\nADDED WHILE SENDING\n`);
       return false;
     });

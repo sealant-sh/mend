@@ -122,6 +122,8 @@ test("real Turbo restores build artifacts and misses for shared inputs and hashe
       "consumer#typecheck",
     ],
     ["packages/library/src/input.ts", "export const value = 2;\n", "consumer#test"],
+    // Type-aware lint reads a dependency's types, so a change to its source lints the dependent again.
+    ["packages/library/src/input.ts", "export const value = 2;\n", "consumer#lint"],
   ];
   for (const [file, contents, taskId] of cases) {
     const original = readFileSync(join(f.root, file));

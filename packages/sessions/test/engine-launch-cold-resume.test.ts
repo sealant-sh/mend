@@ -946,7 +946,7 @@ describe("secret files under a directory sessions now save (review 2026-10-04)",
               start: { kind: "base", base: null },
             });
             const refusal = yield* engine.launch(session.id, ["opencode"]).pipe(Effect.flip);
-            expect(String(refusal.message), answer).toContain(
+            expect(refusal.message, answer).toContain(
               "a secret file under a directory sessions now save could not be taken out of it",
             );
             // Nothing moved the harness home, and no agent started.

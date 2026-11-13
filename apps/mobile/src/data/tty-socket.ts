@@ -14,6 +14,7 @@
 //   - a settled session ({"t":"end"}) is terminal state, not a failure:
 //     no retry.
 
+import { Predicate } from "effect";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AppState } from "react-native";
 
@@ -188,8 +189,8 @@ export function useTtySocket({
         if (disposed || socket !== ws) return;
         if (typeof event.data === "string") {
           try {
-            const frame = JSON.parse(event.data) as { readonly t?: string };
-            if (frame.t === "end") {
+            const frame: unknown = JSON.parse(event.data);
+            if (Predicate.isObject(frame) && frame["t"] === "end") {
               ended = true;
               setPhase("ended");
               onEndRef.current?.();
@@ -199,7 +200,8 @@ export function useTtySocket({
           }
           return;
         }
-        onBinaryRef.current?.(event.data as ArrayBuffer, generation);
+        // binaryType is "arraybuffer", so every binary frame arrives as one.
+        if (event.data instanceof ArrayBuffer) onBinaryRef.current?.(event.data, generation);
       });
       socket.addEventListener("close", (event) => {
         if (disposed || socket !== ws) return;

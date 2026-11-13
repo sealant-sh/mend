@@ -16,7 +16,7 @@ const plainTest = (name: string, body: string): string =>
   `import { it } from "vitest";\nit(${JSON.stringify(name)}, async () => { ${body} });`;
 
 const runner = "vitest";
-test(`${runner}: fails the runner on file execution budget even with a JSON reporter override`, async () => {
+void test(`${runner}: fails the runner on file execution budget even with a JSON reporter override`, async () => {
   const result = await runGuard({
     runner,
     budgetMs: 40,
@@ -28,7 +28,7 @@ test(`${runner}: fails the runner on file execution budget even with a JSON repo
   assert.equal(numPassedTests(result.json), 1);
 });
 
-test(`${runner}: fails the runner on a Clock warning and identifies its package, file and test`, async () => {
+void test(`${runner}: fails the runner on a Clock warning and identifies its package, file and test`, async () => {
   const result = await runGuard({
     runner,
     source: plainTest(
@@ -47,7 +47,7 @@ test(`${runner}: fails the runner on a Clock warning and identifies its package,
   );
 });
 
-test(`${runner}: passes a below-budget file with an unrelated warning and retains JSON output`, async () => {
+void test(`${runner}: passes a below-budget file with an unrelated warning and retains JSON output`, async () => {
   const result = await runGuard({
     runner,
     source: plainTest("ordinary warning", 'console.warn("ordinary fixture warning");'),
@@ -55,7 +55,7 @@ test(`${runner}: passes a below-budget file with an unrelated warning and retain
   assertPassed(result);
 });
 
-test(`${runner}: retains the default reporter for a passing file`, async () => {
+void test(`${runner}: retains the default reporter for a passing file`, async () => {
   const result = await runGuard({
     runner,
     json: false,
@@ -66,7 +66,7 @@ test(`${runner}: retains the default reporter for a passing file`, async () => {
   assert.match(stripVTControlCharacters(result.output), /Test Files\s+1 passed/);
 });
 
-test("retains virtual boundaries, scoped cancellation and the live-clock escape", async () => {
+void test("retains virtual boundaries, scoped cancellation and the live-clock escape", async () => {
   const result = await runGuard({
     source:
       preamble +
@@ -95,7 +95,7 @@ test("retains virtual boundaries, scoped cancellation and the live-clock escape"
   assertPassed(result);
 });
 
-test("preserves the live Clock in a shared layer that excludes test services", async () => {
+void test("preserves the live Clock in a shared layer that excludes test services", async () => {
   const result = await runGuard({
     source: `${preamble}effectIt.layer(Layer.empty, { excludeTestServices: true })("live shared", it => {
       it.effect("prototype clock methods", () => Effect.gen(function* () {

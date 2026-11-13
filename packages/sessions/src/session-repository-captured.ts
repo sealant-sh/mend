@@ -10,7 +10,7 @@ import {
   WorktreesRepo,
   type CaptureRow,
 } from "@mend/db";
-import { type ProjectId, Sha, type WorktreeId } from "@mend/domain";
+import { type ProjectId, Sha, WorktreeId } from "@mend/domain";
 import {
   HexSha,
   type TurnBoundary,
@@ -731,8 +731,8 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const checkpoint: SessionRepository["Service"]["checkpoint"] = (input) =>
       Effect.gen(function* () {
         const project = yield* projects.byId(input.projectId);
-        const worktreeId = input.scope;
-        const chain = yield* repo.headOf(worktreeId as WorktreeId);
+        const worktreeId = WorktreeId.make(input.scope);
+        const chain = yield* repo.headOf(worktreeId);
         if (chain?.head === null || chain?.head === undefined) {
           return yield* gitFailure(project.storePath, "checkpoint", "no capture registered yet");
         }
@@ -749,11 +749,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         // 2. Wait briefly for one to land (the turn boundary the executor snaps at) — only
         //    while an executor holds the worktree and the engine could not flush it first; a
         //    flushed head is already the disk as of now, and a dead lease has nobody to wait for.
-        const lease = yield* repo.leaseOf(worktreeId as WorktreeId);
+        const lease = yield* repo.leaseOf(worktreeId);
         const landed =
           lease !== null && lease.live && input.flushed !== true
             ? yield* channel.awaitRegister(
-                worktreeId as WorktreeId,
+                worktreeId,
                 (row) => row.kind === "checkpoint" && row.n > (chain.head?.n ?? -1),
                 CHECKPOINT_WAIT,
               )
@@ -780,7 +780,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           const sha =
             input.index === 0
               ? base
-              : yield* worktrees.byId(worktreeId as WorktreeId).pipe(
+              : yield* worktrees.byId(worktreeId).pipe(
                   Effect.map((row) =>
                     row.handoff === null ? base : Sha.make(row.handoff.checkpoint),
                   ),
@@ -804,7 +804,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           return { ref, sha, captureId: chain.head.id, gitHead: observedHead(fromHead) };
         }
         // 4. Derive on the runner from the head capture's worktree tree — observed, never live.
-        const ready = yield* prepared(input.projectId, worktreeId as WorktreeId).pipe(
+        const ready = yield* prepared(input.projectId, worktreeId).pipe(
           Effect.catchTag("WorktreeNotCapturedError", (error) =>
             Effect.fail(gitFailure(project.storePath, "checkpoint", error.message)),
           ),
@@ -832,7 +832,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             key,
             class: "git",
             bytes: derived.pack.byteLength,
-            worktreeId: worktreeId as WorktreeId,
+            worktreeId: worktreeId,
             epoch: null,
             platform: null,
           },

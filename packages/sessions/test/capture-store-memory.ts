@@ -13,7 +13,7 @@ import {
   type SealedCompletion,
   captureScopesOf,
 } from "@mend/db";
-import type { WorktreeId } from "@mend/domain";
+import { WorktreeId } from "@mend/domain";
 import { keysOfSections, treePrefixesOfSections } from "@mend/store";
 import { Clock, Effect, Layer, Option } from "effect";
 
@@ -615,7 +615,7 @@ export const makeMemoryCaptureStore = (
     listChains: () =>
       Effect.sync(() =>
         [...chains.entries()].map(([worktreeId, chain]) => ({
-          worktreeId: worktreeId as WorktreeId,
+          worktreeId: WorktreeId.make(worktreeId),
           headCapture: chain.headCapture,
           headN: chain.headN,
           guard: chain.guard ?? 0,

@@ -586,8 +586,9 @@ const EditorPanel = ({
   );
 };
 
+// Every failure here is an Error; anything else that is not text has no words to show.
 const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : error === null ? "" : String(error);
+  error instanceof Error ? error.message : typeof error === "string" ? error : "";
 
 export function ReviewScreen({
   ctx,

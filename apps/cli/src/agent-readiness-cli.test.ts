@@ -170,7 +170,9 @@ describe("agent lists and local commands", spawning, () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-agent-logout-"));
     const config = path.join(home, "mend", "cli.json");
     fs.mkdirSync(path.dirname(config), { recursive: true });
-    const fake = await startFakeMend((_request, response) => response.writeHead(503).end());
+    const fake = await startFakeMend((_request, response) => {
+      response.writeHead(503).end();
+    });
     fs.writeFileSync(
       config,
       JSON.stringify({ url: fake.url, token: "fake-private-token", deviceId: "fake-device" }),

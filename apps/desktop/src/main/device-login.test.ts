@@ -43,7 +43,7 @@ const scripted = (answers: ReadonlyArray<ScriptedAnswer>) => {
     fetch: async (input, init) => {
       const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
       sent.push({
-        url: String(input),
+        url: input instanceof Request ? input.url : input.toString(),
         method: init?.method ?? "GET",
         headers: Object.fromEntries(new Headers(init?.headers)),
         body,

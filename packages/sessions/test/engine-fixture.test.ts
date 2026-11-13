@@ -66,6 +66,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const thieves: Array<net.Server> = [];
+      // oxlint-disable-next-line typescript/unbound-method -- the real close, called with .call(this) from inside its own spy
       const close = net.Server.prototype.close;
       yield* Effect.acquireRelease(
         Effect.sync(() =>

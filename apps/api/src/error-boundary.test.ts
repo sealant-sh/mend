@@ -116,7 +116,7 @@ const serve = (mode: "redacted" | "verbose", logs: string[] = []) => {
   const app = Layer.mergeAll(routes, errorBoundary({ mode })).pipe(
     Layer.provide(HttpServer.layerServices),
     Layer.provideMerge(
-      Logger.layer([Logger.make((entry) => logs.push(String(Logger.formatJson.log(entry))))]),
+      Logger.layer([Logger.make((entry) => logs.push(Logger.formatJson.log(entry)))]),
     ),
   );
   const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true });

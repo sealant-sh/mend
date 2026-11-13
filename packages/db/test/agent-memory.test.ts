@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { PgClient } from "@effect/sql-pg";
-import { type ProjectId, WorktreeId } from "@mend/domain";
+import { ProjectId, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
 import * as FastCheck from "fast-check";
@@ -648,7 +648,7 @@ const gitUnion: MergeText = ({ base, ours, theirs }) =>
     }
   });
 
-const project = "project-1" as ProjectId;
+const project = ProjectId.make("project-1");
 
 const nothing = {
   added: [],

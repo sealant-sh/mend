@@ -9278,7 +9278,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // Stop, Restart, Run, and watcher cleanup ordered without holding a database transaction
       // across that I/O; compare-and-set persistence below protects stale cleanup after crashes.
       const serviceLifecycle = Semaphore.makeUnsafe(1);
-      const withServiceLifecycle = serviceLifecycle.withPermit;
+      const withServiceLifecycle = Semaphore.withPermit(serviceLifecycle);
       const withWorktreeGit = makeWorktreeGitGate();
 
       const previewOfServiceAllocatingFirst = Effect.fn(
@@ -28466,7 +28466,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
         recipes: () =>
           listServiceRecipes(sessionId).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         listServices: () =>
@@ -28512,7 +28512,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             return yield* stopService(service.id, WORKSPACE_STOP);
           }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         restartService: (serviceReference) =>
@@ -28523,12 +28523,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             return yield* restartService(service.id, { kind: "workspace", runsAs: actor });
           }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         stopSession: () =>
           stop(sessionId).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
@@ -28614,17 +28614,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // reaches the helper as its message.
         listRepositories: () =>
           listRepositories(sessionId).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         addableProjects: () =>
           addableProjects(sessionId).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         addRepository: (input) =>
           addRepository(sessionId, input).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         // The credential seam (docs/GIT-ACCESS.md): session → project → auth
@@ -28727,7 +28727,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ...(env === undefined ? {} : { env }),
             };
           }).pipe(
-            Effect.mapError((error) => new Error(String(error.message))),
+            Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
         gitTransportDone: (opId, exitCode, refUpdates) =>

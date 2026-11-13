@@ -133,7 +133,7 @@ export const fakeForward = (
     {
       pull: async (controller) => {
         const next = await reader.read();
-        if (next.done === true) controller.close();
+        if (next.done) controller.close();
         else controller.enqueue(next.value);
       },
       cancel: () => {

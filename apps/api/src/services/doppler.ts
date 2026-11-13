@@ -8,16 +8,16 @@ export class DopplerApi extends Context.Service<
   DopplerApi,
   {
     readonly projects: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
     ) => Effect.Effect<typeof DopplerProjects.Type, DopplerUnavailable>;
     readonly configs: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
       project: string,
     ) => Effect.Effect<typeof DopplerConfigs.Type, DopplerUnavailable>;
   }
 >()("@mend/api/DopplerApi") {}
 
-const get = (token: Redacted.Redacted<string>, path: string) =>
+const get = (token: Redacted.Redacted, path: string) =>
   Effect.tryPromise({
     try: async (): Promise<unknown> => {
       const response = await fetch(`https://api.doppler.com/v3/${path}`, {

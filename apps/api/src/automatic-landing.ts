@@ -33,7 +33,6 @@ import {
   pullRequestUrlsOpenedIn,
   recordedIntent,
   type HeldBack,
-  type SkippedWhy,
   withTheChange,
 } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
@@ -92,7 +91,8 @@ const attempted = (landingId: ChangeLandingId): Decided => ({
   why: "landed",
 });
 
-const skippedFor = (why: SkippedWhy | string): Decided => ({
+// A skip's words: the domain's own (`SkippedWhy`) or a refusal's message.
+const skippedFor = (why: string): Decided => ({
   landing: "skipped",
   landingId: null,
   why,

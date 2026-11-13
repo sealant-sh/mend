@@ -2074,7 +2074,7 @@ export const App = ({
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
-    const verb = verbForKey(strokeName(key), key.shift === true);
+    const verb = verbForKey(strokeName(key), key.shift);
     // A game with the keyboard reads its own keys first: the arrows and h j k l steer, space or
     // p pauses, enter starts again, esc or q hands the keyboard back. No dashboard verb acts
     // behind it (gameSwallows); a key bound to nothing falls through to nothing.
@@ -2148,7 +2148,7 @@ export const App = ({
       // active field (the mirrored name, the highlighted branch), shift+tab
       // steps back, and from the harness it wraps around to the name.
       if (key.name === "tab" || key.name === "backtab") {
-        const backward = key.name === "backtab" || key.shift === true;
+        const backward = key.name === "backtab" || key.shift;
         setCreating((current) => {
           if (current === null) return current;
           if (backward) {
@@ -2165,9 +2165,9 @@ export const App = ({
         return;
       }
       const delta =
-        key.name === "down" || (key.ctrl === true && key.name === "n")
+        key.name === "down" || (key.ctrl && key.name === "n")
           ? 1
-          : key.name === "up" || (key.ctrl === true && key.name === "p")
+          : key.name === "up" || (key.ctrl && key.name === "p")
             ? -1
             : 0;
       if (delta !== 0) {
@@ -2255,7 +2255,7 @@ export const App = ({
       return setSnakeFocus({ returnTo: focus, start: null });
     }
     // Ctrl-combinations belong to the terminal, never to a bare verb.
-    if (key.ctrl === true) return;
+    if (key.ctrl) return;
     // Project focus never acts on an implicitly selected child session.
     if (
       focus === "projects" &&

@@ -27,6 +27,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { TRPCProvider } from "#/lib/trpc";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import type { AppRouter } from "#/server/routers/index";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 import { ChangeProofArtifacts } from "./change-proof-artifacts";
 
@@ -93,7 +94,7 @@ async function show() {
         url: "https://mend.test/trpc",
         transformer: superjson,
         fetch: async (input) => {
-          requests.push(new URL(String(input)));
+          requests.push(new URL(urlText(input)));
           return refused
             ? Response.json(
                 {
@@ -219,13 +220,13 @@ it("renders nothing when empty and lets the reader retry a failed list", async (
 it("refreshes after a capture arrives and updates an open recording when it settles", async () => {
   await show();
   listed = [artifact("Flow", { _tag: "Recording", screenId, fromSeq: 12 })];
-  act(() =>
+  act(() => {
     sources.at(-1)?.dispatchEvent(
       new MessageEvent("message", {
         data: JSON.stringify({ type: "session-change", changeId: "change-1" }),
       }),
-    ),
-  );
+    );
+  });
   await settle();
   const recording = listed[0];
   if (recording === undefined) throw new Error("No recording");
@@ -233,13 +234,13 @@ it("refreshes after a capture arrives and updates an open recording when it sett
   await settle();
   expect(dialog().textContent).toContain("Recording…");
   listed = [artifact("Flow", video)];
-  act(() =>
+  act(() => {
     sources.at(-1)?.dispatchEvent(
       new MessageEvent("message", {
         data: JSON.stringify({ type: "session-change", changeId: "change-1" }),
       }),
-    ),
-  );
+    );
+  });
   await settle();
   expect(dialog().querySelector("video")?.controls).toBe(true);
   expect(dialog().textContent).not.toContain("Recording…");

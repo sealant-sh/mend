@@ -3199,7 +3199,11 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         );
         expect(launched).toBe("Success");
         expect(own).not.toBe(planId(JSON.parse(ANOTHER_PLAN)));
-        expect(plans.trail.slice(-3)).toEqual([`read:${own}`, "swap:moved", "read:another"]);
+        expect(plans.trail.slice(-3)).toEqual([
+          `read:${String(own)}`,
+          "swap:moved",
+          "read:another",
+        ]);
       }),
     { timeout: 20_000 },
   );

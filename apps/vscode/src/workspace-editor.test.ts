@@ -121,7 +121,7 @@ beforeEach(() => {
   fake.focus(false);
 });
 
-const { readFile } = workspace.fs;
+const readFile = workspace.fs.readFile.bind(workspace.fs);
 afterEach(() => {
   editor?.dispose();
   editor = null;

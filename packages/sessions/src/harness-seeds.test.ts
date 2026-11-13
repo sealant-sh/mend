@@ -56,7 +56,7 @@ const makeHome = () => {
 
 /** Run a seed the way a launch does, `sh -c <seed> sh <argv…>`, with a harmless argv. */
 const runSeed = (seed: string, home: string, token: string | null = "tok-123") => {
-  const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+  const env: Record<string, string> = { ...process.env, HOME: home };
   if (token === null) delete env["CLAUDE_CODE_OAUTH_TOKEN"];
   else env["CLAUDE_CODE_OAUTH_TOKEN"] = token;
   const result = spawnSync("sh", ["-c", seed, "sh", "sh", "-c", 'echo "ran $IS_SANDBOX"'], {
@@ -295,7 +295,7 @@ describe("claude onboarding seed, temporary names", () => {
       HOME: home,
       NODE_OPTIONS: `--require ${preload}`,
       CLAUDE_CODE_OAUTH_TOKEN: "tok-123",
-    } as Record<string, string>;
+    };
     const result = spawnSync("sh", ["-c", CLAUDE_ONBOARDING_SEED, "sh", "true"], {
       encoding: "utf8",
       env,
@@ -941,7 +941,7 @@ const codexCopy = (home: string, exp: number, account = "acct-1") => {
 
 /** Run pi's or opencode's seed with no XDG or pi overrides, so each reads its default paths. */
 const runToolSeed = (seed: string, home: string) => {
-  const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+  const env: Record<string, string> = { ...process.env, HOME: home };
   for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
   const result = spawnSync("sh", ["-c", seed, "sh", "sh", "-c", "echo ran"], {
     encoding: "utf8",
@@ -1302,7 +1302,7 @@ describe("opencode's seed: MCP logins stay out of saved state", () => {
 
   it("two launches into one executor at once both start, on the same link", () => {
     const home = makeHome();
-    const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+    const env: Record<string, string> = { ...process.env, HOME: home };
     for (const name of ["XDG_DATA_HOME", "XDG_STATE_HOME"]) delete env[name];
     for (let round = 0; round < 5; round++) {
       fs.rmSync(path.join(home, ".local"), { recursive: true, force: true });

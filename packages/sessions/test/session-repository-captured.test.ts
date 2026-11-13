@@ -26,7 +26,7 @@ import {
   materialize,
 } from "@mend/store";
 import { buildManifest, uploadObjects } from "@mend/store/testing";
-import { Effect, Exit, Fiber, Layer, Scope } from "effect";
+import { Effect, Exit, Fiber, Layer, Schema, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -283,12 +283,19 @@ describe("SessionRepositoryCapturedLive", () => {
         fs.writeFileSync(path.join(dir, "new.txt"), "untracked but captured\n");
         fs.rmSync(path.join(dir, "keep.md"));
       });
-      const basePack = JSON.parse(
-        fs.readFileSync(
-          path.join(world.blobRoot, world.memory.captures.get(cap0)?.manifestKey ?? ""),
-          "utf8",
+      const [basePack] = Schema.decodeUnknownSync(
+        Schema.Struct({
+          sections: Schema.Struct({ git: Schema.Struct({ packs: Schema.Array(Schema.String) }) }),
+        }),
+      )(
+        JSON.parse(
+          fs.readFileSync(
+            path.join(world.blobRoot, world.memory.captures.get(cap0)?.manifestKey ?? ""),
+            "utf8",
+          ),
         ),
-      ).sections.git.packs[0] as string;
+      ).sections.git.packs;
+      if (basePack === undefined) throw new Error("capture 0 lists no git pack");
       const cap1 = buildManifest({
         worktreeId,
         n: 1,
