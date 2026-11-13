@@ -84,7 +84,7 @@ export const makeBoatWorld = () => {
   const changes = Semaphore.makeUnsafe(1);
   /** What sealant's check of a key observes, the next time it checks one (create, rotate, check). */
   let observed: BoatKeyReport | null = null;
-  /** What Core's next full check answers, and, when set, what it waits for before answering. */
+  /** What sealant's next full check answers, and, when set, what it waits for before answering. */
   let proof: BoatKeyProof | null = null;
   let proofGate: Deferred.Deferred<void> | null = null;
   const answer = <A>(value: () => A) =>
@@ -202,7 +202,7 @@ export const makeBoatWorld = () => {
           return proof;
         }).pipe(
           Effect.tap(() => (proofGate === null ? Effect.void : Deferred.await(proofGate))),
-          // Core keeps the result on the account, where its list reads it back.
+          // sealant keeps the result on the account, where its list reads it back.
           Effect.tap((done) =>
             Effect.sync(() => {
               const account = accounts.get(boatAccountId);

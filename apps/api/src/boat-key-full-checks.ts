@@ -3,12 +3,12 @@ import { type BoatAccountRefusal, SealantClients, type SealantPlatformError } fr
 import { Context, DateTime, Duration, Effect, Exit, Fiber, FiberMap, Layer, Option } from "effect";
 
 /**
- * Full checks of Boat keys (SLNT-784). Core's `prove` answers when the check is done, about a
+ * Full checks of Boat keys (SLNT-784). sealant's `prove` answers when the check is done, about a
  * minute against Boat, so the call runs in a fiber of this service, not of the request: a browser
- * tab closed or a proxy that gives up on the request does not interrupt it, and Core keeps the
+ * tab closed or a proxy that gives up on the request does not interrupt it, and sealant keeps the
  * result on the account (`lastProof`), which the key's status reads back. A request waits a few
  * seconds for the answer; a check still running then is answered as running, and its status says
- * since when until Core's answer replaces it.
+ * since when until sealant's answer replaces it.
  */
 export type BoatFullCheckRun =
   | { readonly _tag: "finished"; readonly proof: BoatKeyProof }
@@ -18,9 +18,9 @@ export class BoatKeyFullChecks extends Context.Service<
   BoatKeyFullChecks,
   {
     /**
-     * Starts a full check of the Core Boat account, unless one this server started is running,
-     * and waits a few seconds for its answer. Core's refusals (a check of the account still
-     * running or cleaning up, the account gone) fail as Core gave them.
+     * Starts a full check of the sealant Boat account, unless one this server started is running,
+     * and waits a few seconds for its answer. sealant's refusals (a check of the account still
+     * running or cleaning up, the account gone) fail as sealant gave them.
      */
     readonly run: (
       sealantBoatAccountId: string,

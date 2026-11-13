@@ -192,7 +192,7 @@ export const boatKeyFailure = (
         `Sealant no longer has the Boat account Mend recorded for ${words.key}. Remove the key in Mend, then connect it again.`,
       );
     case "proof-running":
-      // Core's sentence names what Boat may still hold and when Sealant takes over an
+      // sealant's sentence names what Boat may still hold and when Sealant takes over an
       // interrupted check: the owner needs it to decide whether to wait or delete it in Boat.
       return conflict(
         "proof-running",

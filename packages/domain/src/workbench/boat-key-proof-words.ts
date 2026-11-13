@@ -95,6 +95,6 @@ export const proofLeftoverWords = (proof: BoatKeyProof): string => {
   return `${starts} Sealant has not yet seen Boat delete ${left}. It keeps deleting what is left, and the key cannot be replaced or removed until it has.`;
 };
 
-/** What a full check says for an interrupted one: Core's sweep finished it. */
+/** What a full check says for an interrupted one: sealant's sweep finished it. */
 export const INTERRUPTED_WORDS =
   "The full check stopped before it finished, and Sealant took over removing what it had made. Run it again.";

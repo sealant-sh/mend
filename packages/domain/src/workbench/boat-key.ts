@@ -201,19 +201,19 @@ export const BoatKeyReport = Schema.Struct({
 });
 export type BoatKeyReport = typeof BoatKeyReport.Type;
 
-/** The steps of a full check of a Boat key, in the order Core takes them. */
+/** The steps of a full check of a Boat key, in the order sealant takes them. */
 export { BOAT_KEY_PROOF_STEPS };
 
 /**
- * A full check of a Boat key (SLNT-784, Core's `boatAccounts.prove`): Core started the smallest VM
+ * A full check of a Boat key (SLNT-784, sealant's `boatAccounts.prove`): sealant started the smallest VM
  * in the key's Boat account, ran a command, published a port and saved a snapshot, then deleted the
- * snapshot and the VM, and says how far it got. Core keeps the last one on the account.
+ * snapshot and the VM, and says how far it got. sealant keeps the last one on the account.
  */
 export const BoatKeyProofStep = Schema.Struct({
   step: Schema.Literals(BOAT_KEY_PROOF_STEPS),
   /** `no-answer`: Boat did not answer, so the step may have happened. */
   outcome: Schema.Literals(["passed", "refused", "no-answer", "not-reached"]),
-  /** Why Boat refused the step, or did not answer it, when Core said. */
+  /** Why Boat refused the step, or did not answer it, when sealant said. */
   boat: Schema.NullOr(BoatFailure),
 });
 export type BoatKeyProofStep = typeof BoatKeyProofStep.Type;
@@ -222,13 +222,13 @@ export const BoatKeyProof = Schema.Struct({
   proofId: Schema.String,
   startedAt: Schema.Date,
   finishedAt: Schema.Date,
-  /** `interrupted`: the check stopped before it finished, and Core's sweep removed what it made. */
+  /** `interrupted`: the check stopped before it finished, and sealant's sweep removed what it made. */
   outcome: Schema.Literals(["passed", "refused", "interrupted"]),
   steps: Schema.Array(BoatKeyProofStep),
   /** VM starts it asked Boat for: 0 or 1. */
   starts: Schema.Number,
   /**
-   * What Boat may still hold of it. `removalConfirmed` false: Core's sweep keeps deleting `vm` (an
+   * What Boat may still hold of it. `removalConfirmed` false: sealant's sweep keeps deleting `vm` (an
    * id; null when Boat never answered one) and `snapshot`, and the key is neither replaced nor
    * removed until it is done.
    */

@@ -590,7 +590,7 @@ describe("an organization's Boat key", () => {
       ).details.fullCheck;
 
     for (const outcome of ["passed", "refused", "interrupted"] as const) {
-      it(`answers a ${outcome} check with each step, and the status reads it back from Core's account`, async () => {
+      it(`answers a ${outcome} check with each step, and the status reads it back from sealant's account`, async () => {
         await connect("alice");
         boat.proves(boatKeyProofFixture(outcome, FINISHED));
         core.length = 0;
@@ -611,7 +611,7 @@ describe("an organization's Boat key", () => {
           "delete-vm",
         ]);
         expect(core).toEqual([{ call: "prove", boatAccountId: "core-boat-1" }]);
-        // Core keeps the result; the next status reads it from Core's list, not from Mend.
+        // sealant keeps the result; the next status reads it from sealant's list, not from Mend.
         expect(await lastFullCheck()).toMatchObject({
           last: { outcome, finishedAt: FINISHED.toISOString() },
           runningSince: null,
@@ -634,7 +634,7 @@ describe("an organization's Boat key", () => {
       });
     });
 
-    it("says a check is running when Core says one is, with Core's words about what is left", async () => {
+    it("says a check is running when sealant says one is, with sealant's words about what is left", async () => {
       await connect("alice");
       boat.refuseNext(refusal("proof-running"));
       const response = await fullCheck("alice");
@@ -643,7 +643,7 @@ describe("an organization's Boat key", () => {
         _tag: "BoatKeyConflict",
         reason: "proof-running",
         message: expect.stringMatching(
-          /^A full check of this key is running.*Sealant says: Core says proof-running$/,
+          /^A full check of this key is running.*Sealant says: sealant says proof-running$/,
         ),
       });
     });
@@ -672,7 +672,7 @@ describe("an organization's Boat key", () => {
     });
 
     it(
-      "keeps a slow check running past the request: running since, no second check, then Core's answer",
+      "keeps a slow check running past the request: running since, no second check, then sealant's answer",
       { timeout: 20_000 },
       async () => {
         await connect("alice");
@@ -685,7 +685,7 @@ describe("an organization's Boat key", () => {
         expect(first.last).toBeNull();
         expect(first.runningSince).not.toBeNull();
         expect((await lastFullCheck()).runningSince).toBe(first.runningSince);
-        // Asked again while it runs: answered as running, and Core is not asked twice.
+        // Asked again while it runs: answered as running, and sealant is not asked twice.
         const second = (await (await fullCheck("alice")).json()) as { runningSince: string };
         expect(second.runningSince).toBe(first.runningSince);
         expect(core.filter((call) => call.call === "prove")).toHaveLength(1);

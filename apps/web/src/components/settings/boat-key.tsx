@@ -108,7 +108,7 @@ export const useOrganizationBoatKey = (): BoatKeyBinding & {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
-  // Read again every few seconds while a full check runs, until Core's result replaces it.
+  // Read again every few seconds while a full check runs, until sealant's result replaces it.
   const status = useSuspenseQuery(
     trpc.boatKey.status.queryOptions(undefined, {
       refetchInterval: (query) =>

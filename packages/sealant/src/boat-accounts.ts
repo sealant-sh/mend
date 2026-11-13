@@ -54,7 +54,7 @@ export const BoatAccountRefusalReason = Schema.Literals([
   "changed",
   /**
    * A full check of the account is running, or what it made is not yet removed: a second one, a
-   * replacement and a removal wait. Core's message names what Boat may still hold.
+   * replacement and a removal wait. sealant's message names what Boat may still hold.
    */
   "proof-running",
   "not-found",
@@ -112,8 +112,8 @@ export interface BoatAccountsApi {
     boatAccountId: string,
   ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
   /**
-   * A full check of the account's key: Core starts a throwaway VM, uses it as a session would and
-   * deletes it, synchronously (about a minute against Boat). Core keeps the result as the
+   * A full check of the account's key: sealant starts a throwaway VM, uses it as a session would and
+   * deletes it, synchronously (about a minute against Boat). sealant keeps the result as the
    * account's `lastProof`.
    */
   readonly prove: (
@@ -248,7 +248,7 @@ export const boatKeyReportOf = (report: CoreBoatKeyReport): BoatKeyReport => {
   };
 };
 
-/** Core's full check in Mend's shape: dates, and nulls for what Boat did not say. */
+/** sealant's full check in Mend's shape: dates, and nulls for what Boat did not say. */
 export const boatKeyProofOf = (proof: CoreBoatKeyProof): BoatKeyProof => ({
   proofId: proof.proofId,
   startedAt: dateOf(proof.startedAt),

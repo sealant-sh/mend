@@ -376,7 +376,7 @@ describe("sealant's Boat accounts, through the SDK", () => {
     expect(failure).toMatchObject({ _tag: "SealantPlatformError" });
   });
 
-  it("runs a full check through Core's prove, and reads it in Mend's shape", async () => {
+  it("runs a full check through sealant's prove, and reads it in Mend's shape", async () => {
     next = {
       status: 200,
       body: {
@@ -425,7 +425,7 @@ describe("sealant's Boat accounts, through the SDK", () => {
     expect(result.success.steps[0]?.boat).toBeNull();
   });
 
-  it("reads a full check still running, or still cleaning up, as proof-running with Core's words", async () => {
+  it("reads a full check still running, or still cleaning up, as proof-running with sealant's words", async () => {
     const failure = await failureOf({
       status: 409,
       body: {
@@ -441,7 +441,7 @@ describe("sealant's Boat accounts, through the SDK", () => {
     });
   });
 
-  it("reads the last full check from Core's list, and none from a Core without them", async () => {
+  it("reads the last full check from sealant's list, and none from a sealant without them", async () => {
     next = {
       status: 200,
       body: {
