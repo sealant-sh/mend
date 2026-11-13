@@ -153,6 +153,12 @@ export class BoatKeyDetails extends Schema.Class<BoatKeyDetails>("BoatKeyDetails
   report: Schema.NullOr(BoatKeyReport).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
+/** What the removal this request made did first (SLNT-803). */
+export class BoatKeyRemoval extends Schema.Class<BoatKeyRemoval>("BoatKeyRemoval")({
+  /** Standby workspaces Mend stopped in the organization's Boat account before Core removed it. */
+  standbysDrained: Schema.Number,
+}) {}
+
 export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")({
   connected: Schema.Boolean,
   /**
@@ -162,6 +168,11 @@ export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")(
   sessionRuntime: Schema.NullOr(SessionRuntime),
   /** Null for members, and when no key is connected. */
   details: Schema.NullOr(BoatKeyDetails),
+  /**
+   * Only on the answer to a removal this request made. Absent when there was no key to remove,
+   * including when another request removed it at the same moment.
+   */
+  removal: Schema.optionalKey(BoatKeyRemoval),
 }) {}
 
 /** What Core said of the organization's Boat account when it was asked, and when. */
@@ -208,7 +219,8 @@ export const boatKeyGroup = HttpApiGroup.make("boatKey")
     }),
   )
   .add(
-    // New Boat sessions go back to the server's key. Refused while the account still holds VMs.
+    // New Boat sessions go back to the server's key. Mend first drains the standbys it started in
+    // the account; refused while the account still holds a session's VM or an image build.
     HttpApiEndpoint.delete("disconnect", "/organization/boat-key", {
       success: BoatKeyStatus,
       error: [NotFound, BoatKeyOwnersOnly, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
