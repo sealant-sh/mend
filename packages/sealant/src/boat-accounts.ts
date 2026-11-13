@@ -1,14 +1,19 @@
 import {
   BoatFailure,
+  type BoatKeyBilling,
   type BoatKeyNotObserved,
   type BoatKeyProof,
   BoatKeyReport,
+  type BoatUnreachable,
+  type BoatWallet,
 } from "@mend/domain/workbench";
 import type {
   BoatFailure as CoreBoatFailure,
+  BoatKeyBilling as CoreBoatKeyBilling,
   BoatKeyNotObserved as CoreBoatKeyNotObserved,
   BoatKeyProof as CoreBoatKeyProof,
   BoatKeyReport as CoreBoatKeyReport,
+  BoatWallet as CoreBoatWallet,
   Sealant,
 } from "@sealant/sdk";
 import { SealantApiError } from "@sealant/sdk";
@@ -18,6 +23,8 @@ import type { SealantPlatformError } from "./errors.ts";
 
 /** The SDK's `BoatAccount`, which its index does not export. */
 type BoatAccount = Awaited<ReturnType<Sealant["boatAccounts"]["create"]>>;
+/** The SDK's `BoatUnreachable`, which its index does not export either. */
+type CoreBoatUnreachable = NonNullable<BoatAccount["unreachable"]>;
 
 /**
  * A Boat account sealant keeps beside its default one (`sealant.boatAccounts`), as sealant reports it:
@@ -34,6 +41,21 @@ export interface PlatformBoatAccount {
   readonly report: BoatKeyReport | null;
   /** The last full check of the key (SLNT-784); only `list` reads it, the other calls answer null. */
   readonly lastProof: BoatKeyProof | null;
+  /**
+   * The wallet every request of the account names (sealant#641): a Boat organization's id, or
+   * `personal`. Null: a Boat organization's key, which has one wallet, or a key sealant has not
+   * pinned yet.
+   */
+  readonly organization: string | null;
+  /** What the account made in Boat that sealant cannot reach in any wallet the key can bill. */
+  readonly unreachable: BoatUnreachable | null;
+}
+
+/** The server's own Boat key as sealant reports it: never the key. */
+export interface BoatInstallKeyReading {
+  readonly report: BoatKeyReport | null;
+  /** What the key made in Boat that sealant cannot reach in any wallet it can bill. */
+  readonly unreachable: BoatUnreachable | null;
 }
 
 /** Why sealant refused a Boat account call, from its typed error. */
@@ -61,6 +83,12 @@ export const BoatAccountRefusalReason = Schema.Literals([
   /** sealant serves no Boat, or keeps no credentials. */
   "unavailable",
   "bad-request",
+  /** A wallet was chosen for a Boat organization's key, which bills that organization only. */
+  "key-organization",
+  /** The server's own key, which is set in its environment, not through sealant's API. */
+  "environment",
+  /** A key sealant has not pinned to a wallet yet: nothing new starts with it until it has. */
+  "wallet-unresolved",
 ]);
 export type BoatAccountRefusalReason = typeof BoatAccountRefusalReason.Type;
 
@@ -124,7 +152,7 @@ export interface BoatAccountsApi {
    * has none, which sealant answers as unavailable. Never the key.
    */
   readonly installKey: () => Effect.Effect<
-    { readonly report: BoatKeyReport | null } | null,
+    BoatInstallKeyReading | null,
     BoatAccountRefusal | SealantPlatformError
   >;
 }
@@ -144,6 +172,9 @@ const REASONS_BY_CODE: Readonly<Record<string, BoatAccountRefusalReason>> = {
   "boat-account-removing": "removing",
   "boat-account-changed": "changed",
   "boat-proof-running": "proof-running",
+  "boat-key-organization": "key-organization",
+  "boat-account-environment": "environment",
+  "boat-account-wallet-unresolved": "wallet-unresolved",
 };
 
 /** The SDK keeps sealant's decoded error as the `SealantApiError`'s cause: its counts are there. */
@@ -197,9 +228,50 @@ const notObserved = (fact: CoreBoatKeyNotObserved): BoatKeyNotObserved => ({
   boat: fact.boat === undefined ? null : boatFailureOf(fact.boat),
 });
 
+const walletOf = (wallet: CoreBoatWallet): BoatWallet => ({
+  kind: wallet.kind,
+  organizationId: wallet.organizationId ?? null,
+  organizationName: wallet.organizationName ?? null,
+  role: wallet.role ?? null,
+});
+
+const billingOf = (billing: CoreBoatKeyBilling): BoatKeyBilling => {
+  switch (billing.mode) {
+    case "pinned":
+      return { mode: "pinned", organization: billing.organization };
+    case "key-organization":
+      return { mode: "key-organization" };
+    case "active-wallet":
+      return {
+        mode: "active-wallet",
+        walletChanged:
+          billing.walletChanged === undefined
+            ? null
+            : {
+                from: walletOf(billing.walletChanged.from),
+                observedAt: dateOf(billing.walletChanged.observedAt),
+              },
+      };
+  }
+};
+
+/** What sealant cannot reach, or null when it names nothing. */
+export const boatUnreachableOf = (
+  unreachable: CoreBoatUnreachable | null | undefined,
+): BoatUnreachable | null => {
+  if (unreachable === null || unreachable === undefined) return null;
+  const known: BoatUnreachable = {
+    savedImages: [...unreachable.savedImages],
+    runs: [...(unreachable.runs ?? [])],
+    builds: [...(unreachable.builds ?? [])],
+  };
+  return known.savedImages.length + known.runs.length + known.builds.length === 0 ? null : known;
+};
+
 /** sealant's report on a key in Mend's shape (`BoatKeyReport`): dates, and nulls for absent facts. */
 export const boatKeyReportOf = (report: CoreBoatKeyReport): BoatKeyReport => {
-  const { identity, keyKind, wallet, permissions, expiry, start, snapshots } = report;
+  const { identity, keyKind, wallet, wallets, billing, permissions, expiry, start, snapshots } =
+    report;
   return {
     observedAt: dateOf(report.observedAt),
     organization: report.organization,
@@ -214,15 +286,24 @@ export const boatKeyReportOf = (report: CoreBoatKeyReport): BoatKeyReport => {
         }
       : notObserved(identity),
     keyKind: keyKind.observed ? { observed: true, kind: keyKind.kind } : notObserved(keyKind),
-    wallet: wallet.observed
-      ? {
-          observed: true,
-          kind: wallet.kind,
-          organizationId: wallet.organizationId ?? null,
-          organizationName: wallet.organizationName ?? null,
-          role: wallet.role ?? null,
-        }
-      : notObserved(wallet),
+    wallet: wallet.observed ? { observed: true, ...walletOf(wallet) } : notObserved(wallet),
+    // A report from before sealant#641 has neither.
+    wallets:
+      wallets === undefined
+        ? null
+        : wallets.observed
+          ? {
+              observed: true,
+              choices: wallets.choices.map((choice) => ({
+                id: choice.id,
+                kind: choice.kind,
+                name: choice.name ?? null,
+                role: choice.role ?? null,
+                active: choice.active,
+              })),
+            }
+          : notObserved(wallets),
+    billing: billing === undefined ? null : billingOf(billing),
     requiredPermissions: report.requiredPermissions,
     permissions: permissions.observed
       ? {
@@ -291,6 +372,9 @@ const toPlatformBoatAccount = (account: BoatAccount): PlatformBoatAccount => ({
     account.lastProof === null || account.lastProof === undefined
       ? null
       : boatKeyProofOf(account.lastProof),
+  organization: account.organization,
+  // A control plane from before wallets were recorded (sealant#641) answers without it.
+  unreachable: boatUnreachableOf(account.unreachable),
 });
 
 export const makeBoatAccountsApi = (
@@ -325,9 +409,12 @@ export const makeBoatAccountsApi = (
     // sealant answers 503 both without a key of its own and without Boat at all: either way, none.
     installKey: () =>
       call(() => admin.boatAccounts.installKey()).pipe(
-        Effect.map((key) => ({
-          report: key.report === null ? null : boatKeyReportOf(key.report),
-        })),
+        Effect.map(
+          (key): BoatInstallKeyReading => ({
+            report: key.report === null ? null : boatKeyReportOf(key.report),
+            unreachable: boatUnreachableOf(key.unreachable),
+          }),
+        ),
         Effect.catchIf(
           (error) => error._tag === "BoatAccountRefusal" && error.reason === "unavailable",
           () => Effect.succeed(null),

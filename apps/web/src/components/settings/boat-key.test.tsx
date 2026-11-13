@@ -6,7 +6,7 @@ import {
   KEY_LIST_FORBIDDEN,
   organizationKeyReportFixture,
 } from "@mend/domain/boat-key-fixtures";
-import { BOAT_KEY_COMMAND_PERMISSIONS } from "@mend/domain/workbench";
+import { BOAT_KEY_REQUIRED_PERMISSIONS } from "@mend/domain/workbench";
 import { Organization, type OrganizationRole } from "@mend/domain/workbench";
 import { QueryClient } from "@tanstack/react-query";
 import { act, Suspense } from "react";
@@ -78,10 +78,12 @@ const fullReport = (overrides: Partial<BoatKeyReportDto> = {}): BoatKeyReportDto
     organizationName: "acme-boat",
     role: "admin",
   },
+  wallets: null,
+  billing: { mode: "key-organization" },
   requiredPermissions: [],
   permissions: {
     observed: true,
-    held: [...BOAT_KEY_COMMAND_PERMISSIONS],
+    held: [...BOAT_KEY_REQUIRED_PERMISSIONS],
     missing: [],
     limitedToSandboxes: false,
   },
@@ -238,8 +240,8 @@ describe("the Boat page, not connected", () => {
     expect(text()).toContain("billed to, the Boat account of its own key");
     const commands = [...document.querySelectorAll("code")].map((code) => code.textContent ?? "");
     expect(commands).toEqual([
-      `boat --org <your-boat-organization> api-key create mend --ttl 365d --actions ${BOAT_KEY_COMMAND_PERMISSIONS.join(",")}`,
-      `boat --org personal api-key create mend --ttl 365d --actions ${BOAT_KEY_COMMAND_PERMISSIONS.join(",")}`,
+      `boat --org <your-boat-organization> api-key create mend --ttl 365d --actions ${BOAT_KEY_REQUIRED_PERMISSIONS.join(",")}`,
+      `boat --org personal api-key create mend --ttl 365d --actions ${BOAT_KEY_REQUIRED_PERMISSIONS.join(",")}`,
     ]);
     expect(keyInput().type).toBe("password");
     expect(text()).toContain("waits a few minutes while Sealant builds its image");
@@ -386,7 +388,7 @@ describe("the Boat page, connected", () => {
   });
 
   it("names the permissions the key lacks, from the same list the command shows", async () => {
-    const held = BOAT_KEY_COMMAND_PERMISSIONS.filter(
+    const held = BOAT_KEY_REQUIRED_PERMISSIONS.filter(
       (permission) => permission !== "host" && permission !== "sandbox.delete",
     );
     await open({
@@ -405,6 +407,26 @@ describe("the Boat page, connected", () => {
     expect(rows()).toContainEqual(expect.stringContaining("missing host, sandbox.delete"));
     expect(alerts()).toContainEqual(
       expect.stringContaining("This key lacks host and sandbox.delete, which Mend needs"),
+    );
+  });
+
+  it("says a key made without account.read starts nothing new, keeps its sessions, and must be replaced", async () => {
+    const held = BOAT_KEY_REQUIRED_PERMISSIONS.filter(
+      (permission) => permission !== "account.read",
+    );
+    await open({
+      status: connected(
+        fullReport({
+          permissions: { observed: true, held, missing: [], limitedToSandboxes: false },
+        }),
+      ),
+      role: "owner",
+    });
+    expect(rows()).toContainEqual(expect.stringContaining("missing account.read"));
+    expect(alerts()).toContainEqual(
+      expect.stringContaining(
+        "This key lacks account.read, so sealant cannot see which Boat wallet it bills: no new Boat session starts with it, and the ones running keep running. Boat adds no permission to an existing key.",
+      ),
     );
   });
 

@@ -680,6 +680,23 @@ describe("an organization's Boat key", () => {
       });
     });
 
+    it("refuses a check of a key sealant has not pinned to a wallet yet in the table's words, then sealant's own", async () => {
+      await connect("alice");
+      // sealant answers `boat-account-in-use` with no count of launches (sealant#641).
+      boat.refuseNext(refusal("in-use"));
+      const response = await fullCheck("alice");
+      expect(response.status).toBe(409);
+      const body: unknown = await response.json();
+      expect(body).toMatchObject({
+        _tag: "BoatKeyConflict",
+        reason: "in-use",
+        message: expect.stringMatching(
+          /^No full check of this key was started, so nothing was made in Boat\. sealant says: sealant says in-use\. A key connected before sealant pinned each key/,
+        ),
+      });
+      expect(body).not.toMatchObject({ message: expect.stringContaining("is starting right now") });
+    });
+
     it("refuses a replacement while the check's leftovers are not removed, saying what is left", async () => {
       await connect("alice");
       boat.refuseNext(refusal("proof-running"));

@@ -203,14 +203,20 @@ boat --org personal api-key create mend --ttl 365d --actions exec,file.write,hos
 
 Boat shows the key once. Paste it straight into Mend, as the next section shows.
 
-- **Permissions.** The command grants every permission Sealant needs to run sessions, plus
-  `account.read`, so Mend can show who the key is, the wallet it bills and the key's own expiry.
-  Boat's `ci` preset is not enough: its `sandbox.delete-own` does not count as `sandbox.delete`.
-  Sealant refuses a key it can see lacks a permission, and names the ones missing.
+- **Permissions.** The command grants every permission sealant needs to run sessions. One of them is
+  `account.read`: with it sealant reads which wallet the key bills, the wallets its Boat account can
+  bill, and the key's own permissions and expiry. Boat's `ci` preset is not enough: its
+  `sandbox.delete-own` does not count as `sandbox.delete`. sealant refuses a key it can see lacks a
+  permission, and names the ones missing. A key connected before sealant needed `account.read`, and
+  made without it, keeps its running sessions but starts no new one, and its Boat page says so. Boat
+  never adds a permission to an existing key: replace it with one made with the command above.
 - **What it bills.** A Boat organization's key bills that organization's wallet, and only that one.
-  A personal key bills your active Boat wallet: the one `boat org switch` chose last, which can be
-  an organization's. Mend does not pin it to a wallet, so check the **Bills** line Mend shows after
-  you connect it, and after any `boat org switch`.
+  A personal key can bill your personal Boat account or any Boat organization you belong to. When
+  you connect one, sealant pins it to the wallet it bills at that moment (your active Boat wallet,
+  the one `boat org switch` chose last), and every request names that wallet from then on, so a
+  later `boat org switch` does not move Mend's bill. A key connected before sealant pinned keys is
+  pinned by sealant to the wallet it bills, within about a minute of the upgrade; until then it
+  starts no new session.
 - **Expiry.** Every Boat key expires: after 90 days unless made to last longer, and after a year
   with the command above. From fourteen days before, the Boat page, `mend boat status` and
   `mend doctor` warn, and `mend server status` does the same for the server's own key. An expired
@@ -422,9 +428,24 @@ VM by itself after 15 minutes.
 
 Each image holds one of the account's saved snapshot slots. The key report shows how many are used
 of how many Boat includes; Boat charges for slots beyond those. When every slot is used and the
-wallet cannot pay for another, the session that needed a new image says so. With Sealant
-0.40.0-next.874, Sealant removes the images it built only when the key's Boat account is removed
-from Mend. An image no session uses any more stays saved until then.
+wallet cannot pay for another, the session that needed a new image says so. Once an hour sealant
+removes the images it built that no session can start from any more: it keeps every image used in
+the last day, and the image each session stopped in the last 14 days would start from. It also
+deletes the images it built in a Boat account when that account's key is removed from Mend.
+
+### After upgrading to sealant 0.40.0-next.880
+
+Three things change once the server runs this sealant:
+
+- **Each key is pinned to a wallet.** A personal key connected before the upgrade is pinned by
+  sealant to the wallet it bills, within about a minute. Until then it starts no new Boat session,
+  and its sessions already running carry on. A key made without `account.read` is never pinned:
+  replace it with one made with the command on the Boat page.
+- **Unused images go.** The first hourly pass removes the images sealant built that nothing can
+  start from any more, so the saved snapshot count on the Boat page drops.
+- **Every Boat image is built once more.** Nix sessions on Boat now start with the shell their
+  environment declares, which changes a file inside every Boat image. Each environment's next Boat
+  session waits for its image to be built again, once.
 
 ## Remove or replace a key
 
@@ -536,8 +557,15 @@ What a session in an organization with its own key reads, for each reason Boat g
   a minute. If it keeps happening, the person who runs this Mend server can read what Boat answered
   in the server log.
 - **refused**: Boat refused for a reason Mend does not recognise, so this session's VM did not
-start. The person who runs this Mend server can read Boat's own reason and request id in the server
-log, to fix it or to give Boat's support.
+  start. The person who runs this Mend server can read Boat's own reason and request id in the
+  server log, to fix it or to give Boat's support.
+- **wallet not known yet**: The Boat wallet the organization's Boat key bills is not known to
+sealant yet, so nothing was started. sealant looks at a key connected before this server's upgrade
+within about a minute of it; sessions already running on the key are not affected. Start the session
+again in a minute. If it is refused again, the key lacks Boat's account.read permission, which Boat
+never adds to an existing key: an owner of this organization creates a key with every permission
+Mend needs using the command in Settings, Organization, Boat and replaces the key there. Then start
+the session again.
 <!-- boat-failure-words:end -->
 
 ## Reference

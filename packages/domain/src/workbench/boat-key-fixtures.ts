@@ -1,5 +1,5 @@
 import type { BoatFailure } from "./boat-failure.ts";
-import { BOAT_KEY_COMMAND_PERMISSIONS, BOAT_KEY_REQUIRED_PERMISSIONS } from "./boat-key.ts";
+import { BOAT_KEY_REQUIRED_PERMISSIONS } from "./boat-key.ts";
 import type {
   BoatKeyNotObserved,
   BoatKeyProof,
@@ -9,7 +9,7 @@ import type {
 import type { ServerBoatFacts } from "./server-boat.ts";
 
 /**
- * Boat key reports shaped as sealant 0.40.0-next.872 answers them (sealant#635's fake Boat), for the
+ * Boat key reports shaped as sealant answers them since sealant#641 (its fake Boat), for the
  * API, web and CLI tests. Never a real account.
  */
 
@@ -38,10 +38,18 @@ export const boatKeyReportFixture = (
     organizationName: "acme-boat",
     role: "admin",
   },
+  wallets: {
+    observed: true,
+    choices: [
+      { id: "personal", kind: "personal", name: null, role: null, active: false },
+      { id: "org_9", kind: "organization", name: "acme-boat", role: "admin", active: true },
+    ],
+  },
+  billing: { mode: "pinned", organization: "org_9" },
   requiredPermissions: [...BOAT_KEY_REQUIRED_PERMISSIONS],
   permissions: {
     observed: true,
-    held: [...BOAT_KEY_COMMAND_PERMISSIONS],
+    held: [...BOAT_KEY_REQUIRED_PERMISSIONS],
     missing: [],
     limitedToSandboxes: false,
   },

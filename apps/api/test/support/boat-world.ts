@@ -144,6 +144,10 @@ export const makeBoatWorld = () => {
             keyRotatedAt: null,
             report: observed,
             lastProof: null,
+            // sealant pins a personal key to the wallet it bills at connect (sealant#641).
+            organization:
+              observed?.billing?.mode === "pinned" ? observed.billing.organization : null,
+            unreachable: null,
           };
           accounts.set(boatAccountId, account);
           return account;

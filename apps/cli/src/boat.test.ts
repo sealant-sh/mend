@@ -3,6 +3,7 @@ import {
   boatKeyReportFixture,
   organizationKeyReportFixture,
 } from "@mend/domain/boat-key-fixtures";
+import { BOAT_KEY_REQUIRED_PERMISSIONS } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import { boatCommand } from "./boat.ts";
@@ -112,6 +113,25 @@ describe("mend boat status", () => {
       expect.stringMatching(/^ {2}Expires {10}.* · in \d+ days$/),
     ]);
     expect(stdout).not.toContain("! ");
+  });
+
+  it("says a key made without account.read lacks it, starts nothing new, and must be replaced", async () => {
+    const report = boatKeyReportFixture({
+      permissions: {
+        observed: true,
+        held: BOAT_KEY_REQUIRED_PERMISSIONS.filter((permission) => permission !== "account.read"),
+        missing: [],
+        limitedToSandboxes: false,
+      },
+    });
+    const { stdout } = await run([], () => ({
+      ...ownerView,
+      details: { ...ownerView.details, report },
+    }));
+    expect(stdout).toContain("  Permissions      10 permissions · missing account.read");
+    expect(stdout).toContain(
+      "! This key lacks account.read, so sealant cannot see which Boat wallet it bills: no new Boat session starts with it, and the ones running keep running. Boat adds no permission to an existing key. Create a new key with boat --org <your-boat-organization> api-key create mend",
+    );
   });
 
   it("says an organization key's permissions and expiry cannot be read from it, and where to see them", async () => {
