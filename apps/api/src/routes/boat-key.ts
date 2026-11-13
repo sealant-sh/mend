@@ -18,9 +18,12 @@ import {
   UsersRepo,
 } from "@mend/db";
 import {
+  type BoatFailure,
+  boatFailureLogLine,
   type BoatKeyOwner,
   type BoatKeyReport,
   boatKeyShapeProblem,
+  boatProblemText,
   permissionsTheCommandLacks,
 } from "@mend/domain/workbench";
 import {
@@ -43,6 +46,19 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 
 /** What a Core refusal means for the person who asked, by the call that was refused. */
 type BoatKeyCall = "connect" | "replace" | "remove" | "check";
+
+/** Boat's own code and request id for a refused key, in the server log: never in a sentence. */
+const logBoatRefusal = (error: BoatAccountRefusal | SealantPlatformError) =>
+  error._tag === "BoatAccountRefusal" && error.boat !== null
+    ? Effect.logInfo(`boat key: ${error.reason} · ${boatFailureLogLine(error.boat)}`)
+    : Effect.void;
+
+/** Boat's reason for refusing a key check, in the Boat failure table's words (SLNT-793). */
+const keyCheckWords = (failure: BoatFailure): string =>
+  boatProblemText(
+    { kind: failure.kind, failure },
+    { holder: "organization", place: "key-check" },
+  ).replace("\n", " ");
 
 const UNREACHABLE =
   "Mend could not reach this server's Sealant, so nothing changed. Try again in a minute.";
@@ -70,13 +86,17 @@ export const boatKeyFailure =
         return new BoatKeyRefused({
           reason: "refused",
           message:
-            "Boat refused this key, so nothing changed. Check that you copied the whole key and that it has not expired or been revoked in Boat.",
+            error.boat === null
+              ? "Boat refused this key, so nothing changed. Check that you copied the whole key and that it has not expired or been revoked in Boat."
+              : keyCheckWords(error.boat),
         });
       case "key-unverified":
         return new BoatKeyRefused({
           reason: "unverified",
           message:
-            "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute.",
+            error.boat === null
+              ? "Boat did not answer when Sealant checked the key, so nothing changed. Try again in a minute."
+              : keyCheckWords(error.boat),
         });
       case "missing-permissions": {
         const missing = error.missingPermissions ?? [];
@@ -241,14 +261,17 @@ export const checkBoatKeyAccount = (key: {
     ) {
       const last = yield* lastBoatKeyAccount(key.sealantBoatAccountId);
       yield* Effect.logInfo(
-        `boat key: Boat did not answer a check of Sealant account ${key.sealantBoatAccountId} · ${error.reason}${error.boat === null ? "" : ` · ${error.boat.kind} · ${error.boat.code ?? "no code"} · request ${error.boat.requestId ?? "none"}`}`,
+        `boat key: Boat did not answer a check of Sealant account ${key.sealantBoatAccountId} · ${error.reason}${error.boat === null ? "" : ` · ${boatFailureLogLine(error.boat)}`}`,
       );
       return new BoatKeyCheck({
         state: last?.state ?? "active",
         observedAt: now,
         keyReplacedAt: last?.keyRotatedAt ?? key.keyReplacedAt,
         report: error.report ?? last?.report ?? null,
-        unanswered: UNANSWERED,
+        unanswered:
+          error.boat === null
+            ? UNANSWERED
+            : `${keyCheckWords(error.boat)} The report shown is the last one Sealant observed.`,
       });
     }
     const failure = boatKeyFailure("check")(error);
@@ -348,14 +371,14 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
         if (existing !== null) {
           const rotated = yield* clients
             .rotateBoatAccountKey(existing.sealantBoatAccountId, key)
-            .pipe(Effect.mapError(boatKeyFailure("replace")));
+            .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("replace")));
           const replaced = yield* keys.markReplaced(owner);
           yield* record(found, "boat_key.replaced", existing.sealantBoatAccountId);
           return yield* statusOf(found, replaced, rotated);
         }
         const account = yield* clients
           .createBoatAccount(`Mend · ${found.organization.name}`.slice(0, LABEL_LIMIT), key)
-          .pipe(Effect.mapError(boatKeyFailure("connect")));
+          .pipe(Effect.tapError(logBoatRefusal), Effect.mapError(boatKeyFailure("connect")));
         const caller = yield* CurrentUser;
         const connected = yield* keys
           .connect({

@@ -363,6 +363,63 @@ describe("an organization's Boat key", () => {
       expect(keys.size).toBe(0);
     });
 
+    it("words a key Boat refused with Boat's reason from the shared table, and logs Boat's code", async () => {
+      boat.refuseNext(
+        refusal("key-refused", {
+          boat: {
+            kind: "key-expired",
+            retryable: false,
+            operation: "verify",
+            status: 403,
+            code: "api_key_expired",
+            message: "API key expired.",
+            requestId: "req_route1",
+            permission: null,
+            retryAfterSeconds: null,
+            retryAt: null,
+            billingUrl: null,
+          },
+        }),
+      );
+      const refused = await connect("alice");
+      expect(refused.status).toBe(422);
+      const body = (await refused.json()) as { message: string };
+      expect(body.message).toBe(
+        "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command on Mend's Boat page (Settings, Organization, Boat) and connect that one. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+      );
+      expect(body.message).not.toContain("api_key_expired");
+      expect(body.message).not.toContain("req_route1");
+      expect(logs.join("\n")).toContain("api_key_expired · request req_route1");
+    });
+
+    it("says when to try a check again when Boat asked to wait", async () => {
+      boat.observe(report);
+      await connect("alice");
+      boat.refuseNext(
+        refusal("key-unverified", {
+          boat: {
+            kind: "rate-limited",
+            retryable: true,
+            operation: "verify",
+            status: 429,
+            code: "rate_limited",
+            message: null,
+            requestId: null,
+            permission: null,
+            retryAfterSeconds: 30,
+            retryAt: null,
+            billingUrl: null,
+          },
+        }),
+      );
+      const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
+      expect(await checked.json()).toMatchObject({
+        report: { observedAt: OBSERVED.toISOString() },
+        unanswered:
+          "Boat asked Sealant to wait before asking about this Boat key again, so nothing changed. Try again in about 30 seconds, as Boat asked. Nothing needs changing. The report shown is the last one Sealant observed.",
+      });
+    });
+
     it("logs when Core needs a permission the page's command does not ask for", async () => {
       boat.observe(
         boatKeyReportFixture({

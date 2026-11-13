@@ -11,6 +11,10 @@ import {
   SessionRuntimeOffer,
 } from "@mend/domain";
 import {
+  BOAT_FAILURE_KINDS,
+  type BoatFailure,
+  type BoatKeyHolder,
+  boatProblemText,
   hostUserNamespacesRefusal,
   Project,
   type SessionDotfiles,
@@ -27,8 +31,8 @@ import {
 } from "@mend/sealant";
 import { DotfilesCloner, SessionEngine, WorkspaceHostUserNamespaces } from "@mend/sessions";
 import { DotfilesStore } from "@mend/store";
-import { type CreateOptions, SealantError } from "@sealant/sdk";
-import { ConfigProvider, Effect, Layer, Option } from "effect";
+import { type CreateOptions, SealantBoatError, SealantError } from "@sealant/sdk";
+import { ConfigProvider, Effect, Layer, Logger, Option } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { installScript } from "../src/dependency-cache.ts";
@@ -42,13 +46,29 @@ import {
   provisionIn,
   SNAPSHOT,
 } from "./engine/capture-fixture.ts";
-import { makeWorld, withEngine } from "./engine/fixture.ts";
+import { makeWorld, withEngine, withEngineEffect } from "./engine/fixture.ts";
 
 const ubuntu: FamilyWorkspaceImage = {
   ...defaultWorkspaceImage,
   os: "ubuntu",
   services: { docker: false },
 };
+
+/** What Core 872's `workspace.ready()` rejects with when Boat refused the launch's VM. */
+const boatRefusal = (kind: BoatFailure["kind"]) =>
+  new SealantBoatError(
+    'Workspace ws-boat reached terminal status "failed" before becoming ready: {"provider":"boat","code":"api_key_expired","requestId":"req_engine1"}',
+    {
+      kind,
+      retryable: kind === "rate-limited" || kind === "no-machine" || kind === "no-answer",
+      operation: "create",
+      status: 403,
+      code: "api_key_planted",
+      requestId: "req_engine1",
+      ...(kind === "permission-missing" ? { permission: "sandbox.create" } : {}),
+    },
+    { code: "workspace_not_ready" },
+  );
 
 describe("the server's session runtime choice", () => {
   for (const runtime of ["docker", "boat"] as const) {
@@ -425,21 +445,21 @@ describe("the server's session runtime choice", () => {
       _tag: "WorkspaceServiceUnavailableError",
       code: "unsupported-runtime",
       message: "No runtime adapter is registered for target.runtime.family 'boat'.",
-      copy: "This server runs sessions on Boat, but Boat is not set up on it. Ask the server operator to give the server the Boat key and deployment settings, or to switch sessions back to Docker with `mend server setup --session-runtime docker`.",
+      copy: "This server runs sessions on Boat, but Boat is not set up on it, so nothing was started.\nThe person who runs this Mend server gives it the Boat key and deployment settings with mend server setup, or switches sessions back to Docker with mend server setup --session-runtime docker.",
     },
     {
       status: 422,
       _tag: "WorkspaceRuntimeRequirementUnsupportedError",
       code: "runtime-requirement-unsupported",
       message: "This environment needs an unsupported runtime feature.",
-      copy: "Boat cannot run this project's environment. This environment needs an unsupported runtime feature. Change the project's environment or ask the server operator to change where new sessions run.",
+      copy: "Boat cannot run this project's environment: This environment needs an unsupported runtime feature.\nChange the project's environment, or ask an owner of this organization to choose another runtime in Settings, Organization, Defaults where the server offers one.",
     },
     {
       status: 422,
       _tag: "WorkspaceRuntimeRequirementUnsupportedError",
       code: "runtime-os-unsupported",
       message: "Boat supports Ubuntu and Nix; Arch is unsupported.",
-      copy: "Boat supports Ubuntu and Nix; Arch is unsupported. Switch the project's environment to one Boat runs, then start the session again.",
+      copy: "Boat supports Ubuntu and Nix; Arch is unsupported.\nSwitch the project's environment to one Boat runs, then start the session again.",
     },
   ]) {
     it(`surfaces Core's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {
@@ -510,7 +530,7 @@ describe("the server's session runtime choice", () => {
               expect(error.message).toBe(refusal.copy);
               expect(world.sessions.get(session.id)).toMatchObject({
                 status: "failed",
-                summary: `launch failed: ${refusal.copy}`,
+                summary: `launch refused · ${refusal.copy}`,
                 sealantWorkspaceId: null,
               });
               expect(requests).toEqual([
@@ -548,7 +568,7 @@ describe("the server's session runtime choice", () => {
   it("says a Boat server with no resource gateway cannot start a session whose worktree has resources", async () => {
     const created: CreateOptions[] = [];
     const copy =
-      "This server's Boat setup has no resource gateway, so sessions whose worktree uses project resources cannot start on Boat until the server operator configures one.";
+      "This server's Boat setup has no resource gateway, so a session whose worktree uses project resources cannot start on Boat.\nThe person who runs this Mend server configures one. Nothing was started.";
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -560,7 +580,7 @@ describe("the server's session runtime choice", () => {
           expect(error.message).toBe(copy);
           expect(world.sessions.get(session.id)).toMatchObject({
             status: "failed",
-            summary: `launch failed: ${copy}`,
+            summary: `launch refused · ${copy}`,
           });
         }),
       {
@@ -582,6 +602,55 @@ describe("the server's session runtime choice", () => {
       },
     );
   });
+
+  for (const holder of ["organization", "server"] satisfies ReadonlyArray<BoatKeyHolder>) {
+    for (const kind of BOAT_FAILURE_KINDS) {
+      it(`ends a Boat launch Boat refused for ${kind} on the ${holder}'s key with the table's words`, async () => {
+        const logs: Array<string> = [];
+        const captureLogs = Logger.layer([
+          Logger.make(({ message }) => {
+            logs.push(Array.isArray(message) ? message.join(" ") : String(message));
+          }),
+        ]);
+        await Effect.runPromise(
+          withEngineEffect(
+            (world, tmp) =>
+              Effect.gen(function* () {
+                const { engine, session } = yield* launchOnce(world, tmp);
+                const error = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+                if (error._tag !== "SealantPlatformError")
+                  throw new Error("launch lost its platform failure");
+                const failure = error.boat;
+                if (failure === undefined) throw new Error("launch lost Boat's reason");
+                const words = boatProblemText({ kind, failure }, { holder, place: "launch" });
+                expect(error.message).toBe(words);
+                const summary = world.sessions.get(session.id)?.summary ?? "";
+                expect(summary).toBe(`launch failed · ${words}`);
+                const [first] = summary.split("\n");
+                expect(first).toMatch(/^launch failed · .*this session's VM did not start\.$/);
+                for (const secret of ["api_key_planted", "req_engine1", "terminal status"])
+                  expect(summary).not.toContain(secret);
+              }),
+            {
+              sessionRuntime: "boat",
+              workspaceImage: ubuntu,
+              ...(holder === "organization"
+                ? { boatAccounts: new Map([["org-test", "core-boat-acme"]]) }
+                : {}),
+              sealantLayer: lifecycleLayer([], {
+                captureOps: {
+                  beforeCreate: () => Effect.fail(toPlatformError(boatRefusal(kind))),
+                },
+              }),
+            },
+          ).pipe(Effect.provide(captureLogs)),
+        );
+        expect(logs.join("\n")).toContain(
+          `boat refused · ${kind} · api_key_planted · request req_engine1 · create · 403`,
+        );
+      });
+    }
+  }
 
   it("does not send a Boat dependency install to the server's npm mirror", async () => {
     const created: CreateOptions[] = [];
