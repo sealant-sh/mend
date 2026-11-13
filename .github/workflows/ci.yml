@@ -298,7 +298,7 @@ jobs:
           docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
           fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
           full_page_writes = off" -c "SELECT pg_reload_conf()"
-      - name: Sessions tests, native shard 2/2
+      - name: API server tests and sessions native shard 2/2
         run: node scripts/ci-shards.mjs engines-b
 
       - name: Archive Turbo task hashes and cache outcomes
