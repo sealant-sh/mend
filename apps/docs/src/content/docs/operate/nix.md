@@ -305,9 +305,14 @@ null lets Sealant pick a name and keep it. `sessions.runtime = "boat"` without `
 refused when the configuration is built. Existing worktrees keep the runtime they started with.
 
 The module gives the server no Boat key of its own. To run every organization without a key in one
-shared Boat account, set `SEALANT_BOAT_API_KEY` in a Compose file in
-`services.mend.extraComposeFiles` that reads it from a file outside the store, such as a sops-nix
-secret, with `env_file`.
+shared Boat account, have your secret manager (sops-nix, agenix) provide `SEALANT_BOAT_API_KEY` to a
+Compose file in `services.mend.extraComposeFiles` through `env_file`, so the key never enters the
+Nix store. `SEALANT_BOAT_ORGANIZATION` beside it names the Boat organization a personal key bills.
+
+Once the server runs, `mend doctor` from a CLI signed in as the operator says where sessions run,
+whether the two public addresses answered from the server, what Sealant last observed of the
+server's own key, and whether a worker launches Boat. **Settings · Instance · Exposure** shows the
+same lines.
 
 To let each organization's owner choose between this server's Docker and Boat, offer both:
 

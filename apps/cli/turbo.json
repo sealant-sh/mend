@@ -10,7 +10,8 @@
         "$TURBO_ROOT$/scripts/mend-migrations.mjs",
         "$TURBO_ROOT$/packages/db/src/migrations.ts",
         "$TURBO_ROOT$/packages/db/src/executor-identity-migration.ts",
-        "$TURBO_ROOT$/packages/db/src/local-worktrees-migration.ts"
+        "$TURBO_ROOT$/packages/db/src/local-worktrees-migration.ts",
+        "$TURBO_ROOT$/apps/docs/src/content/docs/operate/boat.md"
       ]
     }
   }
