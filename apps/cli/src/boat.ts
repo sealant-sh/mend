@@ -35,7 +35,7 @@ type BoatRequest =
   | { readonly _tag: "Invalid"; readonly message: string };
 
 const KEY_NOT_AN_ARGUMENT =
-  "mend boat connect reads the key from a hidden prompt or standard input, never from the command line, so it stays out of your shell history and the process list. Run mend boat connect and paste the key, or pipe it in: mend boat connect < boat-key.txt";
+  "mend boat connect reads the key from a hidden prompt or standard input, never from the command line, so it stays out of your shell history and the process list. Run mend boat connect and paste the key at the hidden prompt.";
 
 const VERBS: Record<string, { readonly verb: BoatVerb; readonly extra: string }> = {
   status: { verb: "Status", extra: usageOf("boat status") },
@@ -69,7 +69,8 @@ const runtimeNote = (status: BoatKeyStatus): ReadonlyArray<string> =>
       ];
 
 /** Where the CLI sends a person to make a new key: the command itself. */
-const REPLACE_FROM_CLI = `Create a new key with ${boatKeyCreateCommand("<your-boat-organization>")} (or --org personal for a personal account), then run mend boat connect to replace this one.`;
+const replaceFromCli = (mine: boolean): string =>
+  `Create a new key with ${boatKeyCreateCommand("<your-boat-organization>")} (or --org personal for a personal account), then run mend boat connect${mine ? " --mine" : ""} to replace this one.`;
 
 /**
  * Boat's report about the key, as the Boat page shows it (`boatKeyFacts`, `boatKeyWarnings`): one
@@ -78,10 +79,11 @@ const REPLACE_FROM_CLI = `Create a new key with ${boatKeyCreateCommand("<your-bo
 export const renderReport = (
   report: BoatKeyReport | null,
   now: Date = new Date(),
+  mine = false,
 ): ReadonlyArray<string> => {
   if (report === null) {
     return [
-      "Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check asks Boat.",
+      `Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check${mine ? " --mine" : ""} asks Boat.`,
     ];
   }
   const facts = boatKeyFacts(report, now);
@@ -89,7 +91,7 @@ export const renderReport = (
   return [
     `What Boat said about the key · observed ${at(report.observedAt)}`,
     ...facts.map((fact) => `  ${fact.label.padEnd(width)}  ${fact.value}`),
-    ...boatKeyWarnings(report, now, REPLACE_FROM_CLI).map((warning) =>
+    ...boatKeyWarnings(report, now, replaceFromCli(mine)).map((warning) =>
       warning.tone === "note" ? warning.text : `! ${warning.text}`,
     ),
   ];
@@ -155,6 +157,7 @@ export const renderPersonStatus = (status: PersonBoatKeyStatus): ReadonlyArray<s
     `Your own Boat key in ${status.organizationName} · connected ${at(details.connectedAt)}${details.keyReplacedAt === null ? "" : ` · replaced ${at(details.keyReplacedAt)}`}`,
     `The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account ${details.sealantBoatAccountId}). Mend keeps no standby workspace on it.`,
     ...runtime,
+    ...renderReport(details.report, new Date(), true),
   ];
 };
 
@@ -173,7 +176,7 @@ export const renderCheck = (check: BoatKeyCheck, mine = false): ReadonlyArray<st
       return [
         `Sealant holds ${whose} Boat key · active · ${observed}${check.keyReplacedAt === null ? "" : ` · replaced ${at(check.keyReplacedAt)}`}`,
         ...(check.unanswered === null ? [] : [check.unanswered]),
-        ...renderReport(check.report),
+        ...renderReport(check.report, new Date(), mine),
       ];
     case "removing":
       return [
@@ -299,7 +302,7 @@ export const boatCommand = async (
             "BoatKeyMissing",
             boundary.terminal
               ? "no key was entered · nothing was sent"
-              : `no key on standard input · nothing was sent. Pipe it in: mend boat connect${mine ? " --mine" : ""} < boat-key.txt`,
+              : `no key on standard input · nothing was sent. Run mend boat connect${mine ? " --mine" : ""} in a terminal and paste the key at the hidden prompt.`,
           );
         const problem = boatKeyShapeProblem(key);
         if (problem !== null) return fail("BoatKeyRefused", problem);
@@ -365,18 +368,24 @@ export const boatCommand = async (
   }
   const answer = await call(StatusWire, "GET");
   if ("failed" in answer) return answer.failed;
-  if (json) {
-    boundary.stdout(
-      `${jsonWithoutCredentials({ version: 1, status: Schema.encodeSync(StatusWire)(answer.ok) })}\n`,
-    );
-    return 0;
-  }
   // What decides the caller's own sessions comes after the organization's: their own key, when
-  // the server has the route; an older server's refusal leaves the line out.
+  // the server has the route; an older server's refusal leaves it out.
   const yours = await server.api<unknown>("GET", MINE).then(
     (raw) => Schema.decodeUnknownResult(PersonStatusWire)(raw),
     () => null,
   );
+  if (json) {
+    boundary.stdout(
+      `${jsonWithoutCredentials({
+        version: 1,
+        status: Schema.encodeSync(StatusWire)(answer.ok),
+        ...(yours === null || yours._tag === "Failure"
+          ? {}
+          : { own: Schema.encodeSync(PersonStatusWire)(yours.success) }),
+      })}\n`,
+    );
+    return 0;
+  }
   print([
     ...renderStatus(answer.ok),
     ...(yours === null || yours._tag === "Failure"

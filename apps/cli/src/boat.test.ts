@@ -207,6 +207,7 @@ describe("mend boat with --mine (SLNT-797)", () => {
       "✓ connected your own Boat key",
       "Your own Boat key in Acme · connected 2026-11-13 12:00 UTC",
       "The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account core-boat-own). Mend keeps no standby workspace on it.",
+      "Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check --mine asks Boat.",
       "",
     ]);
     expect(stdout).not.toContain(KEY);
@@ -247,6 +248,62 @@ describe("mend boat with --mine (SLNT-797)", () => {
   it("prints the caller's own status as JSON", async () => {
     const { stdout } = await run(["status", "--mine", "--json"], () => ownConnected);
     expect(JSON.parse(stdout)).toEqual({ version: 1, status: ownConnected });
+  });
+
+  it("prints what Boat said about the caller's own key, with how to replace it", async () => {
+    const report = JSON.parse(
+      JSON.stringify(
+        boatKeyReportFixture({
+          expiry: {
+            observed: true,
+            expiresAt: new Date(Date.now() + 5 * 86_400_000),
+            expired: false,
+            expiringSoon: true,
+          },
+        }),
+      ),
+    );
+    const status = { ...ownConnected, details: { ...ownConnected.details, report } };
+    const { stdout } = await run(["status", "--mine"], () => status);
+    expect(stdout).toContain("What Boat said about the key · observed");
+    expect(stdout).toContain("Key of");
+    expect(stdout).toMatch(
+      /! This Boat key expires on .*, in 5 days\..* then run mend boat connect --mine to replace this one\./,
+    );
+    const checked = await run(["check", "--mine"], () => ({
+      state: "active",
+      observedAt: "2026-11-13T12:00:00.000Z",
+      keyReplacedAt: null,
+      report,
+      unanswered: null,
+    }));
+    expect(checked.sent.map((call) => [call.method, call.route])).toEqual([
+      ["POST", "/me/boat-key/check"],
+    ]);
+    expect(checked.stdout).toContain("Sealant holds your Boat key · active");
+    expect(checked.stdout).toContain("Bills");
+  });
+
+  it("includes the caller's own key in the organization's status as JSON", async () => {
+    const { stdout } = await run(["status", "--json"], (call) =>
+      call.route === "/me/boat-key" ? ownConnected : ownerView,
+    );
+    expect(JSON.parse(stdout)).toEqual({
+      version: 1,
+      status: { ...ownerView, peopleWithOwnKeys: null },
+      own: ownConnected,
+    });
+  });
+
+  it("leaves the caller's own key out of the JSON on a server without it", async () => {
+    const { stdout } = await run(["status", "--json"], (call) => {
+      if (call.route === "/me/boat-key") throw new Error("404");
+      return ownerView;
+    });
+    expect(JSON.parse(stdout)).toEqual({
+      version: 1,
+      status: { ...ownerView, peopleWithOwnKeys: null },
+    });
   });
 });
 

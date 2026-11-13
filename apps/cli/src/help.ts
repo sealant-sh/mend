@@ -2008,7 +2008,6 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     ],
     examples: [
       { command: "mend boat connect", text: "paste the organization's key at the hidden prompt" },
-      { command: "mend boat connect < boat-key.txt", text: "read it from a file" },
       { command: "mend boat connect --mine", text: "connect your own key" },
     ],
     see: ["boat status", "boat check"],

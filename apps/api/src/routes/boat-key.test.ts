@@ -617,6 +617,33 @@ describe("a person's own Boat key (SLNT-797)", () => {
     });
   });
 
+  it("answers what Boat says about the caller's own key, as the organization's", async () => {
+    const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
+    boat.observe(boatKeyReportFixture({}, OBSERVED));
+    const connected = (await (await connectOwn("carol")).json()) as {
+      details: { report: unknown };
+    };
+    expect(connected.details.report).toMatchObject({
+      observedAt: OBSERVED.toISOString(),
+      identity: { observed: true, login: "acme-ci" },
+    });
+    core.length = 0;
+    const status = (await (await api.request("carol", "GET", ROUTE)).json()) as {
+      details: { report: unknown };
+    };
+    expect(status.details.report).toMatchObject({ wallet: { observed: true } });
+    expect(core.map((call) => call.call)).toEqual(["list"]);
+    core.length = 0;
+    const checked = await api.request("carol", "POST", `${ROUTE}/check`);
+    expect(await checked.json()).toMatchObject({
+      state: "active",
+      observedAt: OBSERVED.toISOString(),
+      report: { identity: { observed: true, displayName: "Acme CI" } },
+      unanswered: null,
+    });
+    expect(core.map((call) => call.call)).toEqual(["check"]);
+  });
+
   it("shows an owner that a member has their own key, and none of its details", async () => {
     await connectOwn("carol");
     const owner = await api.request("alice", "GET", "/api/organization/boat-key");
