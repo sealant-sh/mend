@@ -88,17 +88,18 @@ resumes on a sealantd that reads them.
 Workspaces reach their session over a mounted Unix socket by default, or over a network channel when
 `MEND_SESSION_ENDPOINT_LISTEN` is set.
 
-| Variable                         | Default                                               | What it does                                                                                                                                                                                                           |
-| -------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_SESSION_RUNTIME`           | Docker installs: `docker`; Kubernetes: Core selection | Where new session workspaces run: `docker` or `boat`. Saved by `mend server setup --session-runtime`. Existing worktrees keep their choice. Boat requests are explicit and refused if unavailable; no Docker fallback. |
-| `MEND_DEPLOYMENT_MODE`           | `local`                                               | `local` or `kubernetes`. In `kubernetes`, the session engine refuses to start without a network channel.                                                                                                               |
-| `MEND_SESSION_ENDPOINT_LISTEN`   | unset                                                 | `host:port` the network session channel listens on.                                                                                                                                                                    |
-| `MEND_SESSION_ENDPOINT_URL`      | unset                                                 | The address workspaces use to reach the channel. Required with `MEND_SESSION_ENDPOINT_LISTEN`.                                                                                                                         |
-| `MEND_SESSION_ENDPOINT_TLS_CERT` | unset                                                 | The channel's certificate file. Set with `MEND_SESSION_ENDPOINT_TLS_KEY`, and the URL must then be `https`.                                                                                                            |
-| `MEND_SESSION_ENDPOINT_TLS_KEY`  | unset                                                 | The channel's private key file.                                                                                                                                                                                        |
-| `MEND_SESSION_ENDPOINT_CA_FILE`  | unset                                                 | PEM roots workspaces verify the channel's certificate against, when a private CA signed it.                                                                                                                            |
-| `MEND_BLOB_STORE_CA_FILE`        | unset                                                 | PEM roots workspaces verify the bucket's certificate against.                                                                                                                                                          |
-| `MEND_EXECUTOR_NETWORK`          | unset                                                 | `private` states that executors reach the channel and the bucket over a network you control, so plain HTTP may be dialled. The only accepted value.                                                                    |
+| Variable                         | Default                                               | What it does                                                                                                                                                                                                                                                     |
+| -------------------------------- | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_SESSION_RUNTIME`           | Docker installs: `docker`; Kubernetes: Core selection | Where an organization's new session workspaces run until its owner chooses: `docker` or `boat`. Saved by `mend server setup --session-runtime`. Existing worktrees keep their choice. Boat requests are explicit and refused if unavailable; no Docker fallback. |
+| `MEND_SESSION_RUNTIMES`          | unset: the one runtime `MEND_SESSION_RUNTIME` names   | The runtimes organizations may choose among, comma separated: `docker`, `boat` or `docker,boat`. `MEND_SESSION_RUNTIME` must be one of them; unset, it is the first. Saved by `mend server setup --session-runtimes`.                                            |
+| `MEND_DEPLOYMENT_MODE`           | `local`                                               | `local` or `kubernetes`. In `kubernetes`, the session engine refuses to start without a network channel.                                                                                                                                                         |
+| `MEND_SESSION_ENDPOINT_LISTEN`   | unset                                                 | `host:port` the network session channel listens on.                                                                                                                                                                                                              |
+| `MEND_SESSION_ENDPOINT_URL`      | unset                                                 | The address workspaces use to reach the channel. Required with `MEND_SESSION_ENDPOINT_LISTEN`.                                                                                                                                                                   |
+| `MEND_SESSION_ENDPOINT_TLS_CERT` | unset                                                 | The channel's certificate file. Set with `MEND_SESSION_ENDPOINT_TLS_KEY`, and the URL must then be `https`.                                                                                                                                                      |
+| `MEND_SESSION_ENDPOINT_TLS_KEY`  | unset                                                 | The channel's private key file.                                                                                                                                                                                                                                  |
+| `MEND_SESSION_ENDPOINT_CA_FILE`  | unset                                                 | PEM roots workspaces verify the channel's certificate against, when a private CA signed it.                                                                                                                                                                      |
+| `MEND_BLOB_STORE_CA_FILE`        | unset                                                 | PEM roots workspaces verify the bucket's certificate against.                                                                                                                                                                                                    |
+| `MEND_EXECUTOR_NETWORK`          | unset                                                 | `private` states that executors reach the channel and the bucket over a network you control, so plain HTTP may be dialled. The only accepted value.                                                                                                              |
 
 ## Tenancy, git and services
 
@@ -241,14 +242,26 @@ stop. This setting alone does not set up Boat.
 
 ## Where sessions run
 
-On Docker server installs, choose Docker or Boat when `mend server setup` asks where new sessions
-run. Docker is the default. Change it later through setup again, or with
-`mend server setup --yes --session-runtime boat`. The choice is saved across setup reruns, restarts
-and upgrades. Use `--session-runtime docker` to change it back.
+The operator declares where sessions may run on the server, and each organization's owner chooses
+among those places for the organization's new sessions. On Docker server installs,
+`mend server setup` asks where sessions can run: Docker, Boat, or both. Docker is the default. With
+one place, every organization's sessions run there, as before organizations could choose. With both,
+an organization's owner picks Docker or Boat in **Settings · Organization · Defaults**, and an
+organization that has not picked gets the server's default. Members see the choice and cannot change
+it.
 
-Kubernetes deployments with no `MEND_SESSION_RUNTIME` keep Core's automatic runtime selection.
-Setting it explicitly requires exactly that runtime, including on Kubernetes. Existing installs keep
-their current behavior without configuration changes.
+Declare it with flags as well. `mend server setup --yes --session-runtime boat` runs every
+organization's new sessions on Boat. `mend server setup --yes --session-runtimes docker,boat` offers
+both, and `--session-runtime` then names the default an organization gets until it chooses. The
+choices are saved across setup reruns, restarts and upgrades, and written to `server.env` as
+`MEND_SESSION_RUNTIMES` and `MEND_SESSION_RUNTIME`. An organization cannot choose a place the server
+does not offer. When the operator stops offering the place an organization chose, its new sessions
+run on the server's default.
+
+Kubernetes deployments with no `MEND_SESSION_RUNTIME` and no `MEND_SESSION_RUNTIMES` keep Core's
+automatic runtime selection. Their organizations see "Sealant picks" and have nothing to choose.
+Setting either variable explicitly requires exactly those runtimes, including on Kubernetes.
+Existing installs keep their current behavior without configuration changes.
 
 Each new worktree keeps the choice it was created with, including after stop and resume. Existing
 worktrees keep their runtime path. New projects on Boat start with Ubuntu and Docker inside the
@@ -262,8 +275,8 @@ together with the two public endpoints described above. It names this install's 
 (`SEALANT_BOAT_DEPLOYMENT_ID`), unless `--boat-deployment-id <name>` picks the name. Setup refuses
 `--session-runtime boat` without the key and the endpoints, and keeps them across reruns and
 upgrades. A Boat session is never silently started on Docker instead. A server with the Boat key
-serves Boat to everyone who can start sessions on it. [Run sessions on Boat](/operate/boat/) walks
-through the whole setup.
+serves Boat to every organization whose sessions run there. [Run sessions on Boat](/operate/boat/)
+walks through the whole setup.
 
 A Boat session reaches the project's resources, such as `@db`, through Core's resource gateway on
 the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment

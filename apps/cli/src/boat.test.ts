@@ -91,12 +91,12 @@ describe("mend boat status", () => {
     expect(stdout).toContain("Only an owner can read its details or change it.");
   });
 
-  it("says the server's key is used without one, and when sessions do not run on Boat", async () => {
+  it("says the server's key is used without one, and when the organization's sessions do not run on Boat", async () => {
     const { stdout } = await run([], () => ({ ...none, sessionRuntime: "docker" }));
     expect(stdout.split("\n")).toEqual([
       "This organization has no Boat key · new Boat sessions use the server's.",
       "An owner connects one with mend boat connect.",
-      "This server runs new sessions on Docker, so no session uses a Boat key until the server runs sessions on Boat.",
+      "This organization's new sessions run on this server's Docker, so no session uses a Boat key until they run on Boat.",
       "",
     ]);
   });

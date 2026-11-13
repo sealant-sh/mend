@@ -143,15 +143,29 @@ are then refused with a message that says so. `--boat-resources` turns them back
 
 ## Change it later
 
-| To                               | Run                                                             |
-| -------------------------------- | --------------------------------------------------------------- |
-| Replace the key                  | `mend server setup --yes --boat-api-key-stdin < ~/boat-api-key` |
-| Run new sessions in Docker again | `mend server setup --yes --session-runtime docker`              |
-| Forget Boat entirely             | `mend server setup --yes --no-boat --session-runtime docker`    |
+| To                                          | Run                                                                                    |
+| ------------------------------------------- | -------------------------------------------------------------------------------------- |
+| Replace the key                             | `mend server setup --yes --boat-api-key-stdin < ~/boat-api-key`                        |
+| Let each organization choose Docker or Boat | `mend server setup --yes --session-runtimes docker,boat`                               |
+| Run new sessions in Docker again            | `mend server setup --yes --session-runtimes docker --session-runtime docker`           |
+| Forget Boat entirely                        | `mend server setup --yes --no-boat --session-runtimes docker --session-runtime docker` |
 
+On a server set up before organizations could choose, `--session-runtime docker` alone still works.
 Each worktree keeps the runtime it was created with. Keep Boat set up while sessions on Boat still
 exist: `--no-boat` stops them from running. Change the resources choice only while no Boat session
 is running.
+
+## Docker and Boat on one server
+
+A small server may not have room for every session on its own Docker, and some organizations may
+want Boat while others keep Docker. Offer both with `--session-runtimes docker,boat`. Each
+organization's owner then picks Docker or Boat in **Settings · Organization · Defaults**, and an
+organization that has not picked gets the server's default, which `--session-runtime` sets. The
+server's Docker still runs Mend itself and the gateway for project resources either way; offering
+Docker means sessions may run there as well.
+
+An organization's choice applies to its new worktrees. Worktrees that exist keep the runtime they
+were created with, so a running Docker session never moves to Boat, or the other way round.
 
 ## An organization's own Boat key
 
@@ -216,3 +230,7 @@ the `mend_mend-boat-state` volume. Boat also stops a build VM by itself after 15
 - Custom container images and host folder mounts are refused: a Boat VM cannot use them.
 - Boat sessions download straight from npm and Docker Hub, not through the server's mirrors.
 - Inside a Boat VM, port 8080 is held by Sealant's agent. Serve your app on another port.
+- Dotfiles apply on Boat only in a session that runs each person as their own user, the default
+  layout. A session that runs everyone in one shared home (`MEND_HARNESS_LAYOUT=shared`, or an image
+  that cannot run per-person users) starts without them, and the session says
+  `dotfiles · repo not applied` or `dotfiles · snapshot not applied` with the reason.

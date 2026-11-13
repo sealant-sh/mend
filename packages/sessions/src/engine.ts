@@ -30,6 +30,7 @@ import {
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectLinksRepo,
+  OrganizationSettingsRepo,
   OrganizationsRepo,
   AuditEventsRepo,
   type ExecutorAccess,
@@ -95,6 +96,7 @@ import {
   Sha,
   type ProjectId,
   imageHasScreen,
+  sessionRuntimeFor,
   type WorkspaceImage,
   workspaceImagePackages,
   WorktreeId,
@@ -364,6 +366,7 @@ import {
   BlobStore,
   makeFsBlobStore,
   DeploymentConfig,
+  sessionRuntimeOfferOf,
   SourcePolicy,
 } from "@mend/store";
 import type {
@@ -637,6 +640,7 @@ import {
   DOTFILES_APPLY_BOUND_MS,
   BOOTSTRAP_WAIT_BOUND_MS,
   DOTFILES_LANDED_LATE_WORDS,
+  DOTFILES_NOT_ON_BOAT_SHARED,
   DOTFILES_NOT_PER_PERSON,
   DOTFILES_STILL_APPLYING,
   DOTFILES_STILL_APPLYING_WORDS,
@@ -3684,6 +3688,7 @@ type SessionEngineRequirements =
   | ProjectMountsRepo
   | ProjectLinksRepo
   | SessionRepositoriesRepo
+  | OrganizationSettingsRepo
   | OrganizationsRepo
   | FoldersRepo
   | ProjectClusterBindingsRepo
@@ -3824,12 +3829,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const messageSettings = yield* MessageSettingsRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
       const deployment = yield* DeploymentConfig;
-      const newWorktreeRuntime =
-        deployment.sessionRuntime === undefined
-          ? deployment.mode === "kubernetes"
-            ? null
-            : "docker"
-          : deployment.sessionRuntime;
+      const runtimeOffer = sessionRuntimeOfferOf(deployment);
+      const organizationSettings = yield* OrganizationSettingsRepo;
+      /**
+       * Where a new worktree in the organization runs: the organization's choice of what the
+       * server offers, else the server's default (SLNT-794). The worktree keeps it from then on.
+       */
+      const newWorktreeRuntime = (organizationId: OrganizationId) =>
+        organizationSettings
+          .sessionRuntime(organizationId)
+          .pipe(Effect.map((choice) => sessionRuntimeFor(runtimeOffer, choice)));
       if (deployment.mode === "kubernetes" && deployment.sessionEndpoint === undefined) {
         return yield* Effect.die(
           "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
@@ -9852,7 +9861,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           baseSha: created.baseSha,
           baseRef: created.baseRef,
           handoff: created.handoff,
-          sessionRuntime: newWorktreeRuntime,
+          sessionRuntime: yield* newWorktreeRuntime(project.organizationId),
         });
         yield* completeWorktreeCreation(project, row);
         return row;
@@ -10247,7 +10256,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   baseSha: created.baseSha,
                   baseRef: created.baseRef,
                   handoff: null,
-                  sessionRuntime: newWorktreeRuntime,
+                  sessionRuntime: yield* newWorktreeRuntime(project.organizationId),
                 });
               }
               if (capture !== null) {
@@ -13282,14 +13291,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * A person's dotfiles where the platform cannot apply them as that person yet
-       * (`PersonLayoutPlatform.dotfilesUser`, docs/adr/0016): nothing is resolved or applied, and
-       * every source the person keeps is named as not applied, with the reason. Two reads, no
-       * clone.
+       * (`PersonLayoutPlatform.dotfilesUser`, docs/adr/0016), or where Boat cannot apply them at
+       * all: nothing is resolved or applied, and every source the person keeps is named as not
+       * applied, with the reason. Two reads, no clone.
        */
       const dotfilesNotPerPerson = Effect.fn("SessionEngine.dotfilesNotPerPerson")(function* (
         project: Project,
         workspaceImage: WorkspaceImage,
         accountId: string | null,
+        reason: string = DOTFILES_NOT_PER_PERSON,
       ) {
         const enabled =
           project.applyDotfiles && workspaceImage.mode !== "custom" && accountId !== null;
@@ -13300,12 +13310,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? yield* dotfilesStore.current(accountId).pipe(Effect.orElseSucceed(() => null))
             : null;
         const notApplied: Array<SessionDotfilesNotApplied> = [
-          ...(repository === null
-            ? []
-            : [{ source: "repository" as const, reason: DOTFILES_NOT_PER_PERSON }]),
-          ...(snapshot === null
-            ? []
-            : [{ source: "snapshot" as const, reason: DOTFILES_NOT_PER_PERSON }]),
+          ...(repository === null ? [] : [{ source: "repository" as const, reason }]),
+          ...(snapshot === null ? [] : [{ source: "snapshot" as const, reason }]),
         ];
         return {
           repository,
@@ -13515,7 +13521,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Dotfiles are the OWNER's (`resolveDotfiles`). Custom images skip dotfiles entirely. A
         // person launch applies none at boot (docs/adr/0016, decision 11): the launcher's go
         // through `dotfiles.apply` as them once prepare has made their user, or, where the
-        // platform cannot do that yet, are not applied and the session says so.
+        // platform cannot do that yet, are not applied and the session says so. A shared launch
+        // sends them with the create, which Core's Boat runtime refuses, and `dotfiles.apply`
+        // never writes root's home: a shared Boat launch starts without them and says so.
         const personLaunch = launchLayout.layout === "person";
         const {
           repository: dotfilesRepository,
@@ -13527,7 +13535,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             NO_DOTFILES
           : personLaunch && !personPlatform.dotfilesUser
             ? yield* dotfilesNotPerPerson(project, workspaceImage, ownerUserId)
-            : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
+            : !personLaunch && input.runtime === "boat"
+              ? yield* dotfilesNotPerPerson(
+                  project,
+                  workspaceImage,
+                  ownerUserId,
+                  DOTFILES_NOT_ON_BOAT_SHARED,
+                )
+              : yield* resolveDotfiles(sessionId, project, workspaceImage, ownerUserId);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
         // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride
@@ -29480,10 +29495,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const resolvedSkills = mergeSkillLibraries(skillLibraries, {
           inheritUserSkills: project.inheritUserSkills,
         });
+        const runtime = yield* newWorktreeRuntime(project.organizationId);
         const inputs: HotFingerprintInputs = {
-          runtime: newWorktreeRuntime,
+          runtime,
           boatAccountId:
-            newWorktreeRuntime === "boat"
+            runtime === "boat"
               ? yield* boatKeys.accountForLaunch(project.organizationId, ownerUserId)
               : null,
           workspaceImage,
@@ -29676,10 +29692,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const socketDir = yield* socketHost
           .start(sessionId, socketApiFor(sessionId))
           .pipe(withSealantRequestPriority("normal"));
+        const runtime = yield* newWorktreeRuntime(project.organizationId);
         const provisionAttempt = Effect.gen(function* () {
           const provisioned = yield* provisionWorkspace({
             project,
-            runtime: newWorktreeRuntime,
+            runtime,
             sessionId,
             socketDir,
             // The unified image carries EVERY baked agent CLI and the shell shape's credential

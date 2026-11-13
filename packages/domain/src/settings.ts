@@ -16,9 +16,32 @@ const offByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.su
 export const WorkspaceImageOs = Schema.Literals(["fedora", "arch", "nix", "ubuntu"]);
 export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
 
-/** The operator's choice for new session workspaces. */
+/** Where a session's workspace runs: this server's Docker, or a Boat VM. */
 export const SessionRuntime = Schema.Literals(["docker", "boat"]);
 export type SessionRuntime = typeof SessionRuntime.Type;
+
+/**
+ * Where a server lets sessions run, as its operator declared it (`MEND_SESSION_RUNTIMES`,
+ * `MEND_SESSION_RUNTIME`): the runtimes an organization may choose, and the one an organization
+ * gets until it chooses. A server set up before organizations chose offers its one runtime.
+ */
+export class SessionRuntimeOffer extends Schema.Class<SessionRuntimeOffer>("SessionRuntimeOffer")({
+  offered: Schema.NonEmptyArray(SessionRuntime),
+  default: SessionRuntime,
+}) {}
+
+/**
+ * Where an organization's new sessions run: its own choice while the server offers it, else the
+ * server's default. Null is an install with no offer (Kubernetes without `MEND_SESSION_RUNTIME`),
+ * where Sealant picks.
+ */
+export const sessionRuntimeFor = (
+  offer: SessionRuntimeOffer | null,
+  choice: SessionRuntime | null,
+): SessionRuntime | null => {
+  if (offer === null) return null;
+  return choice !== null && offer.offered.includes(choice) ? choice : offer.default;
+};
 
 /**
  * The code default for new installs. The last five are what Mend's default shell profile
@@ -114,7 +137,7 @@ export const defaultWorkspaceImage: FamilyWorkspaceImage = {
  * New Boat projects use Ubuntu, since Boat runs Ubuntu and Nix, with Docker inside the workspace on as
  * everywhere else. Existing projects keep their environment.
  */
-export const newProjectWorkspaceImage = (runtime: SessionRuntime): WorkspaceImage | null =>
+export const newProjectWorkspaceImage = (runtime: SessionRuntime | null): WorkspaceImage | null =>
   runtime === "boat" ? { ...defaultWorkspaceImage, os: "ubuntu" } : null;
 
 /**

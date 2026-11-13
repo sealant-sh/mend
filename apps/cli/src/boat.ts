@@ -65,7 +65,7 @@ const runtimeNote = (status: BoatKeyStatus): ReadonlyArray<string> =>
   status.sessionRuntime === "boat"
     ? []
     : [
-        `This server runs new sessions on ${status.sessionRuntime === "docker" ? "Docker" : "the runtime Sealant picks"}, so no session uses a Boat key until the server runs sessions on Boat.`,
+        `This organization's new sessions run on ${status.sessionRuntime === "docker" ? "this server's Docker" : "the runtime Sealant picks"}, so no session uses a Boat key until they run on Boat.`,
       ];
 
 export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {

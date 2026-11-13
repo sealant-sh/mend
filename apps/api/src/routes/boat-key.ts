@@ -20,10 +20,10 @@ import {
 import { type BoatKeyOwner, boatKeyShapeProblem } from "@mend/domain/workbench";
 import { type BoatAccountRefusal, SealantClients, type SealantPlatformError } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
-import { DeploymentConfig } from "@mend/store";
 import { DateTime, Effect, Redacted } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
+import { organizationSessionRuntime } from "./organization-settings.ts";
 import { membership } from "./organization.ts";
 
 /** Core keeps at most 200 characters of a Boat account's label. */
@@ -147,7 +147,8 @@ const ownership = Effect.gen(function* () {
 
 const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
   Effect.gen(function* () {
-    const sessionRuntime = (yield* DeploymentConfig).sessionRuntime ?? null;
+    // Where this organization's new sessions run: its key is used only for Boat sessions.
+    const sessionRuntime = (yield* organizationSessionRuntime(found.organization.id)).effective;
     if (key === null || found.role !== "owner") {
       return new BoatKeyStatus({ connected: key !== null, sessionRuntime, details: null });
     }

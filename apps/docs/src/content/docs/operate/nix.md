@@ -294,6 +294,18 @@ Read [Where sessions run](/reference/server-environment/#where-sessions-run) and
 [Remote workspace endpoints](/reference/server-environment/#remote-workspace-endpoints) before you
 switch. Null, the default, keeps the server's default, `docker`.
 
+To let each organization's owner choose between this server's Docker and Boat, offer both:
+
+```nix
+{
+	services.mend.sessions.runtimes = [ "docker" "boat" ];
+	services.mend.sessions.runtime = "docker";
+}
+```
+
+`sessions.runtimes` sets `MEND_SESSION_RUNTIMES`, and `sessions.runtime` is then what an
+organization gets until its owner picks in **Settings · Organization · Defaults**.
+
 ## Keep the identity in your secret manager
 
 On its first start, the module writes the install's secrets to `/var/lib/mend/identity.env`. The
@@ -337,7 +349,7 @@ setting that stays manual. To change an answer, change the option and switch.
 | Keep the mirrors as they are? Run the npm mirror? Run the Docker Hub mirror?      | `mirrors.npm.enable` and `mirrors.docker.enable`.                                                                                                                                                                 |
 | its disk cap                                                                      | `mirrors.npm.maxSize` and `mirrors.docker.maxSize`.                                                                                                                                                               |
 | One organization on this server, or several?                                      | `tenancy`.                                                                                                                                                                                                        |
-| Where should new sessions run?                                                    | `sessions.runtime`.                                                                                                                                                                                               |
+| Where can sessions run?                                                           | `sessions.runtimes` and `sessions.runtime`.                                                                                                                                                                       |
 | Apply?                                                                            | Automatic. `sudo nixos-rebuild switch` applies the configuration.                                                                                                                                                 |
 | (flags only) `--docker-hub-username`, `--docker-hub-token-stdin`                  | Manual. See [What stays manual](#what-stays-manual).                                                                                                                                                              |
 

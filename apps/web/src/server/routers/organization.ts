@@ -2,6 +2,7 @@ import {
   CreateInvitationRequest,
   InvitationPreviewRequest,
   MemberRoleRequest,
+  OrganizationSessionRuntimeRequest,
   OrganizationWorkspaceEnvironmentRequest,
 } from "@mend/api-contracts";
 import { InvitationId, OrganizationSettings, ProjectId } from "@mend/domain";
@@ -64,6 +65,16 @@ export const organizationRouter = router({
       api.organization.setSettings({ payload: new OrganizationSettings({ ...i }) }),
     ),
   ),
+  // Owners only: where the organization's new sessions run, of what the server offers.
+  setSessionRuntime: procedure
+    .input(input(OrganizationSessionRuntimeRequest))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.organization.setSessionRuntime({
+          payload: new OrganizationSessionRuntimeRequest({ sessionRuntime: i.sessionRuntime }),
+        }),
+      ),
+    ),
   setWorkspaceEnvironment: procedure
     .input(input(OrganizationWorkspaceEnvironmentRequest))
     .mutation(({ ctx, input: i }) =>
