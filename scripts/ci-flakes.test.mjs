@@ -151,7 +151,7 @@ test("--runs limits the ledger to the most recent runs and says what it covered"
       "repos/sealant-sh/mend/actions/workflows/ci.yml/runs?status=completed&per_page=1&page=1&branch=main",
     );
     assert.deepEqual(result.calls.slice(2), ["repos/sealant-sh/mend/actions/artifacts/9004/zip"]);
-    assert.match(result.stdout, /^Covered 1 of 1 runs; 0 had no test report/m);
+    assert.match(result.stdout, /^Covered 1 of 1 run; 0 had no test report/m);
     assert.match(
       result.stdout,
       /^1\. packages\/engine\/src\/host\.test\.ts > protocol host > demotes and recovers from idle refusal\n {3}1 commit; passed on retry 1, failed twice 0 \(@mend\/engine\)$/m,
