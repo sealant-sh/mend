@@ -4,6 +4,7 @@ import * as NodeHttpServer from "@effect/platform-node/NodeHttpServer";
 import { SessionHistoryRepo, CaptureStoreRepo } from "@mend/db";
 import { ExecutorRepo } from "@mend/db";
 import { ProofArtifactsRepo } from "@mend/db";
+import { McpAppsRepo } from "@mend/db";
 import { DopplerRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
@@ -98,6 +99,7 @@ import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import {
   AuditEvent,
   canRemoveProject,
+  McpAppError,
   Project,
   type ServerBoatFacts,
 } from "@mend/domain/workbench";
@@ -112,7 +114,12 @@ import { Landing, LandingGit, PullRequests, PullRequestWorkspaces } from "@mend/
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { observedWebHandler, serveObserved } from "@mend/network/http-observation";
 import { SealantClient, SealantClients, workspaceRuntimesReportOf } from "@mend/sealant";
-import { OrganizationExecutor, SessionRepository } from "@mend/sessions";
+import {
+  McpAppConnections,
+  McpAppRequestsLive,
+  OrganizationExecutor,
+  SessionRepository,
+} from "@mend/sessions";
 import {
   readWorktreeTables,
   ResourceTableReads,
@@ -368,6 +375,8 @@ export const createTenancyApi = async (
       readonly settings?: Layer.PartialEffectful<SettingsRepo["Service"]>;
       readonly pullRequests?: Layer.PartialEffectful<ProjectPullRequests["Service"]>;
       readonly history?: Layer.PartialEffectful<SessionHistoryRepo["Service"]>;
+      readonly mcpAppsRepo?: Layer.PartialEffectful<McpAppsRepo["Service"]>;
+      readonly mcpAppConnections?: Layer.PartialEffectful<McpAppConnections["Service"]>;
       readonly gitAccess?: Layer.PartialEffectful<UserGitAccessRepo["Service"]>;
       readonly gitAuthor?: Layer.PartialEffectful<UserGitAuthorRepo["Service"]>;
       readonly projectPreviews?: Layer.PartialEffectful<ProjectPreviews["Service"]>;
@@ -1098,6 +1107,17 @@ export const createTenancyApi = async (
       ),
     ),
   );
+  const mcpAppDependencies = Layer.mergeAll(
+    Layer.mock(McpAppsRepo, {
+      listForSession: () => Effect.succeed([]),
+      byItem: () => Effect.succeed(null),
+      ...options.implement?.mcpAppsRepo,
+    }),
+    Layer.mock(McpAppConnections, {
+      forProcess: () => Effect.fail(new McpAppError({ reason: "session-stopped" })),
+      ...options.implement?.mcpAppConnections,
+    }),
+  );
   const dependencies = Layer.mergeAll(
     Layer.succeed(InferenceProvider, {
       respond: () =>
@@ -1108,6 +1128,8 @@ export const createTenancyApi = async (
     Layer.mock(SessionRepository, {}),
     Layer.mock(CaptureStoreRepo, {}),
     Layer.mock(GitOpsRunner, {}),
+    mcpAppDependencies,
+    McpAppRequestsLive.pipe(Layer.provide(mcpAppDependencies)),
     Layer.mock(ProofArtifactsRepo, {
       listForChange: () => Effect.succeed([]),
       byId: () => Effect.succeed(null),

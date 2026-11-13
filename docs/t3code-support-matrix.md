@@ -349,7 +349,12 @@ group may size its own slice smaller.
 - **Secret requests (M).** An agent-facing secret prompt recorded as a request kind, answered
   without the record keeping the secret. Rows: A.63, D.98, E2b.73 (3).
 - **MCP apps (L).** MCP tool calls with UI resources on Mend's items, and a proxy to the app's
-  server. Rows: A.127, A.128, A.129, A.130, E2b.46 (5).
+  server. Rows: A.127, A.128, A.129, A.130, E2b.46 (5). Slice 1 for 0.37.1 adds Codex resource
+  capture, durable app snapshots and model context in migration 0221, and session-authorized
+  callback APIs. The gateway frame projection, assets and four RPC mappings remain slice 2, so these
+  rows remain open. The public Sealant SDK's pipe session carries callbacks on the live Codex
+  app-server. Claude at pinned T3 v0.1.2 has neither MCP-app capture nor callbacks; ordinary Claude
+  MCP tools are separate and remain supported.
 - **Workflow scripts (L).** Claude workflow files kept where `getWorkflowScript` can read them.
   Rows: A.185, E2b.49.
 - **Restart continuation (M).** A turn cut by a Mend restart runs again after it. Whether the engine

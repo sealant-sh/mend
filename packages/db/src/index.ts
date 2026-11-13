@@ -104,3 +104,4 @@ export * from "./repos/pull-request-proof-uploads.ts";
 export * from "./repos/history-fence.ts";
 
 export type { RollbackWorker } from "./repos/session-history-rollback.ts";
+export * from "./repos/mcp-apps.ts";

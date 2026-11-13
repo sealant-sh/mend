@@ -9,6 +9,7 @@ import { PgClient } from "@effect/sql-pg";
 import { sealNativeHistory } from "@mend/agent-protocol";
 import {
   AgentConversationRepoLive,
+  McpAppsRepoLive,
   MendDBLive,
   migrations,
   SessionHistoryRepo,
@@ -95,7 +96,12 @@ const infrastructure = MendDBLive.pipe(
   Layer.provideMerge(PgClient.layer({ url: Redacted.make(url.toString()) })),
   Layer.orDie,
 );
-const repos = Layer.mergeAll(SessionProcessesRepoLive, SessionsRepoLive, AgentConversationRepoLive);
+const repos = Layer.mergeAll(
+  SessionProcessesRepoLive,
+  SessionsRepoLive,
+  AgentConversationRepoLive,
+  McpAppsRepoLive,
+);
 const historyLayer = SessionHistoryRepoLive.pipe(Layer.provide(infrastructure), Layer.orDie);
 const hostLayer = ProtocolHostLive.pipe(
   Layer.provide(repos),

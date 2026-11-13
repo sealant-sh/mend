@@ -10,6 +10,7 @@ import type {
   AgentRequestKind,
   AgentTurnUsage,
   UnreachableCause,
+  McpAppModelContext,
 } from "@mend/domain/workbench";
 import { Effect, Deferred, PubSub, Stream } from "effect";
 
@@ -23,6 +24,7 @@ import {
   type CodexRpcFailure,
 } from "./codex-steer.ts";
 import { withoutEndpoint } from "./endpoint-words.ts";
+import { makeCodexMcpApps } from "./mcp-apps.ts";
 import { compactMendPageCall } from "./mend-page-call.ts";
 import { compactMendProofCall } from "./mend-proof-call.ts";
 import { compactMendScreenCall } from "./mend-screen-call.ts";
@@ -747,7 +749,12 @@ export const CodexAdapter: AgentAdapter = {
         // It requires experimentalApi, also used by resume with a path, native forks and shared control.
         yield* request("initialize", {
           clientInfo: { name: "mend", version: "0.0.0" },
-          capabilities: { experimentalApi: true },
+          capabilities: {
+            experimentalApi: true,
+            extensions: {
+              "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+            },
+          },
         });
         yield* send({ method: "initialized" });
 
@@ -854,6 +861,7 @@ export const CodexAdapter: AgentAdapter = {
       const sendTurn = Effect.fn("CodexAdapter.sendTurn")(function* (
         input: string,
         selection?: TurnSelection | null,
+        context?: { readonly appContext: ReadonlyArray<McpAppModelContext> },
       ) {
         if (threadId === null) {
           return yield* turnUndelivered("not-written", "Codex thread is not ready.", null);
@@ -939,6 +947,16 @@ export const CodexAdapter: AgentAdapter = {
             mode: requested?.interactionMode ?? "default",
             settings: { model, reasoning_effort: effort, developer_instructions: null },
           },
+          ...(context === undefined || context.appContext.length === 0
+            ? {}
+            : {
+                additionalContext: Object.fromEntries(
+                  context.appContext.map((entry) => [
+                    `mcp_app_${entry.itemId.replace(/[^\w.-]/g, "_")}`,
+                    { kind: "untrusted", value: entry.text },
+                  ]),
+                ),
+              }),
         }).pipe(
           Effect.mapError(turnFailure),
           Effect.ensuring(Effect.sync(() => (sendInFlight = false))),
@@ -1113,10 +1131,7 @@ export const CodexAdapter: AgentAdapter = {
        * terminals, when it took over one another Mend process initialized (a rehydrate). A Codex
        * that refuses, or cannot be asked, does not (review 2 of mend#572, P2-1).
        */
-      let reports: boolean | null =
-        rehydrate === undefined
-          ? options.sharedControl === true || options.providerSessionPath !== undefined
-          : null;
+      let reports: boolean | null = rehydrate === undefined ? true : null;
       const reportsBackgroundWork = (): Effect.Effect<boolean> =>
         Effect.suspend(() => {
           if (reports !== null) return Effect.succeed(reports);
@@ -1176,6 +1191,7 @@ export const CodexAdapter: AgentAdapter = {
       });
 
       return {
+        mcpApps: makeCodexMcpApps(request, () => (closed ? null : threadId)),
         sendTurn,
         interrupt,
         activeSteering: { supported: true, interruptsTools: false },

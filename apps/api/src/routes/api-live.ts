@@ -79,6 +79,7 @@ import { HarnessModelsGroupLive } from "./harness-models.ts";
 import { LandingsGroupLive } from "./landing.ts";
 import { ProjectLocalWorktreesGroupLive } from "./local-worktrees.ts";
 import { MachineGroupLive } from "./machine.ts";
+import { McpAppsGroupLive } from "./mcp-apps.ts";
 import { McpServersGroupLive } from "./mcp-servers.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import {
@@ -800,7 +801,13 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(Layer.mergeAll(ProjectRecipesGroupLive, ResourcesGroupLive)),
   Layer.provide(ReferencesGroupLive),
   Layer.provide(
-    Layer.mergeAll(SessionsGroupLive, PagesGroupLive, PageViewGroupLive, ProofArtifactsGroupLive),
+    Layer.mergeAll(
+      SessionsGroupLive,
+      PagesGroupLive,
+      PageViewGroupLive,
+      ProofArtifactsGroupLive,
+      McpAppsGroupLive,
+    ),
   ),
   Layer.provide(
     Layer.mergeAll(

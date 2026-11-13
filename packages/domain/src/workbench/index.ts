@@ -129,3 +129,4 @@ export * from "./resource-switch.ts";
 export * from "./inbox.ts";
 export * from "./proposed-plan.ts";
 export * from "./executor.ts";
+export * from "./mcp-app.ts";

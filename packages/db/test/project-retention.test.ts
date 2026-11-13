@@ -489,6 +489,67 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
       }),
     ));
 
+  it("retains MCP apps and context through Remove and Restore, fences late writes, and purges both", async () =>
+    run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const fences = yield* RemovalFencesRepo;
+        const id = yield* seed("mcp-retention");
+        yield* sql`INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('w-mcp', ${id}, 'work', 'work', 'work', 'abc')`;
+        yield* sql`INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch, base_sha, owner_user_id)
+          VALUES ('s-mcp', ${id}, 'w-mcp', 'codex', 'work', 'work', 'abc', 'anna')`;
+        yield* sql`INSERT INTO session_processes (id, session_id, sealant_workspace_id, kind, harness, status)
+          VALUES ('p-mcp', 's-mcp', 'ws-mcp', 'agent-protocol', 'codex', 'running')`;
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status)
+          VALUES ('t-mcp', 's-mcp', 'p-mcp', 0, 'show app', 'completed')`;
+        for (let seq = 1; seq <= 3; seq += 1)
+          yield* sql`INSERT INTO agent_items (id, session_id, process_id, turn_id, seq, provider_item_id,
+            provider_output_process_id, provider_output_seq, provider_event_index, kind, status, text)
+            VALUES (${`i-mcp-${seq}`}, 's-mcp', 'p-mcp', 't-mcp', ${seq}, ${`native-mcp-${seq}`},
+              'p-mcp', ${seq}, 0, 'tool-call', 'completed', '')`;
+        yield* sql`INSERT INTO mcp_app_snapshots (item_id, server, tool, resource_uri, html, metadata)
+          VALUES ('i-mcp-1', 'visualizer', 'show', 'ui://app', '<p>kept</p>', '{}'),
+                 ('i-mcp-2', 'visualizer', 'show', 'ui://app', '<p>second</p>', '{}')`;
+        yield* sql`INSERT INTO mcp_app_model_contexts (session_id, item_id, text)
+          VALUES ('s-mcp', 'i-mcp-1', 'kept context')`;
+        const retained = Effect.gen(function* () {
+          return {
+            apps: yield* sql`SELECT item_id, html FROM mcp_app_snapshots WHERE item_id LIKE 'i-mcp-%' ORDER BY item_id`,
+            context:
+              yield* sql`SELECT item_id, text FROM mcp_app_model_contexts WHERE session_id = 's-mcp'`,
+          };
+        });
+        const before = yield* retained;
+        // A resource read or app callback can finish after the person removes the project.
+        yield* keep(id);
+        expect(yield* retained).toEqual(before);
+        for (const write of [
+          sql`INSERT INTO mcp_app_snapshots (item_id, server, tool, resource_uri, html, metadata)
+            VALUES ('i-mcp-3', 'visualizer', 'show', 'ui://app', '<p>late</p>', '{}')`,
+          sql`UPDATE mcp_app_snapshots SET html = '<p>changed</p>' WHERE item_id = 'i-mcp-1'`,
+          sql`DELETE FROM mcp_app_snapshots WHERE item_id = 'i-mcp-1'`,
+          sql`INSERT INTO mcp_app_model_contexts (session_id, item_id, text)
+            VALUES ('s-mcp', 'i-mcp-2', 'late context')`,
+          sql`UPDATE mcp_app_model_contexts SET text = 'changed' WHERE session_id = 's-mcp'`,
+          sql`DELETE FROM mcp_app_model_contexts WHERE session_id = 's-mcp'`,
+        ])
+          expect(yield* refusedLate(write)).toBe(true);
+        expect(yield* retained).toEqual(before);
+        expect(yield* fences.restore(id, "anna")).toBe("restored");
+        expect(yield* retained).toEqual(before);
+        yield* sql`UPDATE mcp_app_model_contexts SET text = 'restored context' WHERE session_id = 's-mcp'`;
+        expect(
+          yield* sql`SELECT text FROM mcp_app_model_contexts WHERE session_id = 's-mcp'`,
+        ).toEqual([{ text: "restored context" }]);
+        yield* keep(id);
+        const purge = yield* takePurgeAs(id, "anna");
+        if (purge._tag !== "finish") return yield* Effect.die("expected purge mark");
+        expect(yield* fences.finishPurge(id, purge.id, "anna")).toBe(true);
+        expect(yield* retained).toEqual({ apps: [], context: [] });
+      }),
+    ));
+
   it("fences every table that holds a project's content, or names why it need not", async () =>
     run(
       Effect.gen(function* () {
@@ -517,7 +578,7 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
         ]);
         // tgtype bits: 4 INSERT, 8 DELETE, 16 UPDATE. A fence that misses one lets it through.
         const rows = yield* sql<{ readonly table: string; readonly fenced: boolean }>`
-          SELECT c.table_name AS table,
+          SELECT DISTINCT c.table_name AS table,
                  EXISTS (SELECT 1 FROM pg_trigger t JOIN pg_proc f ON f.oid = t.tgfoid
                           WHERE t.tgrelid = (quote_ident(c.table_name))::regclass
                             AND f.proname = 'project_retention_admit_content'
@@ -525,7 +586,8 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
             FROM information_schema.columns c
             JOIN information_schema.tables t
               ON t.table_name = c.table_name AND t.table_schema = c.table_schema
-           WHERE c.table_schema = current_schema() AND c.column_name = 'project_id'
+           WHERE c.table_schema = current_schema()
+             AND (c.column_name = 'project_id' OR c.table_name IN ('mcp_app_snapshots', 'mcp_app_model_contexts'))
              AND t.table_type = 'BASE TABLE'
            ORDER BY c.table_name`;
         expect(

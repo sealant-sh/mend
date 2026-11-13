@@ -985,7 +985,12 @@ describe("rehydrate (restart policy v2)", () => {
           });
           expect(fake.sent[0]?.["params"]).toEqual({
             clientInfo: { name: "mend", version: "0.0.0" },
-            capabilities: { experimentalApi: true },
+            capabilities: {
+              experimentalApi: true,
+              extensions: {
+                "io.modelcontextprotocol/ui": { mimeTypes: ["text/html;profile=mcp-app"] },
+              },
+            },
           });
           expect(fake.sent[2]?.["method"]).toBe("thread/resume");
           expect(fake.sent[2]?.["params"]).toMatchObject({ threadId: GONE_THREAD, path });

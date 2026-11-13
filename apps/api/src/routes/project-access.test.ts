@@ -100,6 +100,13 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "sessions.fork",
   // Merge-back checks both sessions under one transaction, covered by session-merge-back.test.ts.
   "sessions.mergeBack",
+  // Session visibility and steering before provider callbacks: mcp-apps.test.ts.
+  "mcpApps.listForSession",
+  "mcpApps.snapshot",
+  "mcpApps.toolInfo",
+  "mcpApps.callTool",
+  "mcpApps.readResource",
+  "mcpApps.updateModelContext",
   // Current change visibility, including revocation, is exercised in proof-artifacts.test.ts.
   "proofArtifacts.listForChange",
   "proofArtifacts.byId",

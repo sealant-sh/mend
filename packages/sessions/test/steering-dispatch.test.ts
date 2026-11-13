@@ -1,5 +1,6 @@
 import {
   AgentConversationRepo,
+  McpAppsRepo,
   AgentTurnNotFoundError,
   SessionProcessesRepo,
   SessionsRepo,
@@ -380,6 +381,12 @@ const steeredWorld = (harness: "claude" | "codex") => {
   });
   const sessions = Layer.mock(SessionsRepo, { setProviderSessionId: () => Effect.void });
   const host = ProtocolHostLive.pipe(
+    Layer.provide(
+      Layer.mock(McpAppsRepo, {
+        contextForSession: () => Effect.succeed([]),
+        byItem: () => Effect.succeed(null),
+      }),
+    ),
     Layer.provide(world.layer),
     Layer.provide(processes),
     Layer.provide(sessions),
