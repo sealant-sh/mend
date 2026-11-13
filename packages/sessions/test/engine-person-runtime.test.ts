@@ -6,7 +6,7 @@ import {
   piProfileDigest,
   agentMemoryDigest,
 } from "@mend/db";
-import { SessionId } from "@mend/domain";
+import { defaultWorkspaceImage, SessionId } from "@mend/domain";
 import {
   type SessionDotfiles,
   PiProfile,
@@ -1740,6 +1740,34 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         settle: Effect.void,
       }).pipe(reportingSleeps(BOOTSTRAP_WAIT_BOUND_MS, waits));
     }),
+  );
+
+  it.effect(
+    "a person launch on Boat applies the launcher's dotfiles as them, and its create carries none",
+    () =>
+      Effect.gen(function* () {
+        let recorded: SessionDotfiles | null = null;
+        const run = yield* launchAndJoinEffect({
+          join: null,
+          platform: (calls) =>
+            personPlatform(calls, { person: true }, { bootstrapEnds: () => null }),
+          layers: {
+            sessionRuntime: "boat",
+            workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } },
+            dotfilesStoreLayer: dotfilesStoreLayer(() =>
+              Effect.succeed({ sha: SNAPSHOT.sha, data: SNAPSHOT.data }),
+            ),
+          },
+          inspect: (_engine, world, ids) =>
+            Effect.sync(() => {
+              recorded = world.sessions.get(ids.holder)?.dotfiles ?? null;
+            }),
+        });
+        expect(run.created.map((options) => options.runtime)).toEqual(["boat"]);
+        expect(run.created[0]?.dotfiles).toBeUndefined();
+        expect(run.calls).toContain(`dotfiles:${LAUNCHER}:/home/${LAUNCHER}`);
+        expect(recorded).toEqual({ repository: null, snapshotSha: SNAPSHOT.sha, notApplied: [] });
+      }),
   );
 
   it.effect(

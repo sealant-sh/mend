@@ -232,3 +232,7 @@ the `mend_mend-boat-state` volume. Boat also stops a build VM by itself after 15
 - Custom container images and host folder mounts are refused: a Boat VM cannot use them.
 - Boat sessions download straight from npm and Docker Hub, not through the server's mirrors.
 - Inside a Boat VM, port 8080 is held by Sealant's agent. Serve your app on another port.
+- Dotfiles apply on Boat only in a session that runs each person as their own user, the default
+  layout. A session that runs everyone in one shared home (`MEND_HARNESS_LAYOUT=shared`, or an image
+  that cannot run per-person users) starts without them, and the session says
+  `dotfiles · repo not applied` or `dotfiles · snapshot not applied` with the reason.

@@ -393,6 +393,14 @@ export const DOTFILES_NOT_PER_PERSON =
   "this Mend's platform cannot apply dotfiles as each person yet (sealantd's dotfiles.apply through Core), so they were not applied";
 
 /**
+ * A Boat launch in one shared home, said on the session line: Core's Boat runtime refuses dotfiles
+ * sent with the create, and its `dotfiles.apply` writes only into a person's own home, never
+ * root's, so the launch starts without them rather than fail.
+ */
+export const DOTFILES_NOT_ON_BOAT_SHARED =
+  "this session runs on Boat in one shared home, and Boat applies dotfiles only in a person's own home, so they were not applied";
+
+/**
  * Decision 1's fallback to `/root` (a person prediction prepare found wrong on a fresh worktree),
  * said on the session line: Core applies dotfiles only as a person, never as root (sealant#334),
  * and the create, made for a person launch, applied none at boot. Every later session in this

@@ -167,6 +167,10 @@ export type OrganizationSettingsViewDto = Outputs["organization"]["settings"];
 export type OrganizationSettingsDto = OrganizationSettingsViewDto["organization"];
 export type OrganizationWorkspaceEnvironmentSaveResultDto =
   Outputs["organization"]["setWorkspaceEnvironment"];
+export type BoatKeyStatusDto = Outputs["boatKey"]["status"];
+export type BoatKeyDetailsDto = NonNullable<BoatKeyStatusDto["details"]>;
+export type BoatKeyCheckDto = Outputs["boatKey"]["check"];
+export type BoatKeyReportDto = NonNullable<BoatKeyCheckDto["report"]>;
 export type SlackAppStatusDto = Outputs["slack"]["app"];
 export type SlackAppDto = NonNullable<SlackAppStatusDto["app"]>;
 export type SlackSettingsDto = SlackAppDto["settings"];
