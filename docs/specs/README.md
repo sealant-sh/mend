@@ -56,3 +56,13 @@ carries the detail. The per-person homes spec follows with ADR 0016 (mend#534).
 | File                                   | Feature                                                          | Status                                                 |
 | -------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------ |
 | [api-key-logins.md](api-key-logins.md) | API-key logins (Claude and Codex) instead of subscription logins | Building (decided 2026-10-24 and 2026-10-25; ADR 0018) |
+
+## Formal models
+
+A formal model states one promise of the code and checks it across every order of the steps that
+could break it. Each lives in `formal/<area>/` with its runner, and a project skill of the same name
+says when and how to rerun it.
+
+| Directory                                         | Promise                                                                                         | Status                                                                 |
+| ------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| [formal/standby-discard](formal/standby-discard/) | A discard is never sent for a workspace that holds, or can still come to hold, a session's work | TLA+; violated on main at `374094f416` by a rare schedule (its README) |

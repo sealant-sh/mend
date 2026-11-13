@@ -370,6 +370,8 @@ export const createTenancyApi = async (
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
+      readonly mounts?: Layer.PartialEffectful<ProjectMountsRepo["Service"]>;
+      readonly recipes?: Layer.PartialEffectful<ProjectServiceRecipesRepo["Service"]>;
       readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
       readonly githubWorkspaces?: PullRequestWorkspaces["Service"];
       readonly landing?: Layer.PartialEffectful<Landing["Service"]>;
@@ -742,9 +744,9 @@ export const createTenancyApi = async (
         },
         calls,
       ),
-      recording(ProjectMountsRepo, "mounts", {}, calls),
+      recording(ProjectMountsRepo, "mounts", options.implement?.mounts ?? {}, calls),
       recording(ProjectSecretsRepo, "secrets", options.implement?.secrets ?? {}, calls),
-      recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
+      recording(ProjectServiceRecipesRepo, "recipes", options.implement?.recipes ?? {}, calls),
       recording(
         ResourceRemoval,
         "resourceRemoval",

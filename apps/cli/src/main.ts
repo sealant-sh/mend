@@ -14,6 +14,8 @@ import {
   agentMemoryPathOf,
   agentStartingFacts,
   type AgentStartingProcess,
+  boatKeyLine,
+  type BoatKeyChoice,
   claudeGrantFacts,
   durationLine,
   isChosenDefault,
@@ -382,6 +384,10 @@ interface SessionDto extends SessionCaptureLike {
    */
   readonly model?: string | null;
   readonly effort?: string | null;
+  /** Which Boat key its workspace was created on (SLNT-797); absent on older servers. */
+  readonly boatKey?: BoatKeyChoice | null;
+  /** Who started the session; absent from an older server. */
+  readonly ownerUserId?: string | null;
   readonly label: string | null;
   readonly worktree: string;
   readonly branch: string;
@@ -5946,6 +5952,11 @@ interface SessionJson {
   readonly summary: string | null;
   readonly createdAt: string;
   readonly reviewUrl: string;
+  /**
+   * Which Boat key the session's workspace was created on: `person` (its owner's own), the
+   * organization's, or the server's; null off Boat and from older servers (SLNT-797).
+   */
+  readonly boatKey: BoatKeyChoice | null;
   readonly review: {
     readonly openComments: number;
     readonly totalComments: number;
@@ -5978,7 +5989,11 @@ const rowHold = (row: SessionRow): string | null =>
     ? null
     : servicesHoldOf(row.session, row.annotation.currentAgent, row.annotation.liveServices ?? 0));
 
-const printSessionRow = (row: SessionRow, workspaceLines: ReadonlyArray<string> = []) => {
+const printSessionRow = (
+  row: SessionRow,
+  workspaceLines: ReadonlyArray<string> = [],
+  viewerId: string | null = null,
+) => {
   const { session, annotation } = row;
   const live = ACTIVE_STATUSES.has(session.status);
   const status = session.status.padEnd(9);
@@ -5987,6 +6002,12 @@ const printSessionRow = (row: SessionRow, workspaceLines: ReadonlyArray<string> 
   const hold = rowHold(row);
   if (hold !== null) facts.push(amber(hold));
   if (row.handedOffFrom !== undefined) facts.push(`handed off from ${row.handedOffFrom}`);
+  // Which key the workspace was created on (SLNT-797); a steerer's turn never moves it. The owner
+  // reads their own key as theirs, as the web app says it.
+  if (session.boatKey !== null && session.boatKey !== undefined) {
+    const own = viewerId !== null && session.ownerUserId === viewerId;
+    facts.push(boatKeyLine(session.boatKey, own ? "your" : "its owner's"));
+  }
   if (session.label !== null) facts.push(session.label);
   if (annotation !== undefined && annotation.openComments > 0) {
     facts.push(amber(`${annotation.openComments} open`));
@@ -6129,6 +6150,7 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
         summary: session.summary,
         createdAt: session.createdAt,
         reviewUrl: `${config.url.replace(/\/$/, "")}/sessions/${session.id}`,
+        boatKey: session.boatKey ?? null,
         review:
           annotation === undefined
             ? null
@@ -6157,7 +6179,10 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
     config,
     rows.map((row) => row.session),
   );
-  for (const row of rows) printSessionRow(row, workspaceLines.get(row.session.id));
+  const viewerId = rows.some((row) => row.session.boatKey === "person")
+    ? await viewerIdOf(config)
+    : null;
+  for (const row of rows) printSessionRow(row, workspaceLines.get(row.session.id), viewerId);
 };
 
 interface WorktreeJsonSession {

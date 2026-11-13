@@ -8,10 +8,12 @@ import type { BoatFailure, BoatFailureKind } from "./boat-failure.ts";
  */
 
 /**
- * Whose Boat key the call spent, which decides who can fix a key or account problem. A person's
- * own key (mend#1612, SLNT-797) is one more case here and one more row in `keyFixer`.
+ * Whose Boat key the call spent, which decides who can fix a key or account problem: the
+ * organization's, the server's, or the session owner's own (SLNT-797, `Session.boatKey`). A
+ * session's words are one sentence every viewer reads, so a person's own key is named as its
+ * owner's: anyone sees whose key it is, and only its owner is told what to do.
  */
-export type BoatKeyHolder = "organization" | "server";
+export type BoatKeyHolder = "organization" | "server" | "person";
 
 /** Where the words are read: on a session whose launch failed, or on the Boat key page or CLI. */
 export type BoatWordsPlace = "launch" | "key-check";
@@ -49,13 +51,21 @@ export interface BoatProblemWords {
 }
 
 const PAGE = "Settings, Organization, Boat";
+/** Where a person connects, replaces and checks their own key. */
+const OWN_PAGE = "Settings, Account";
+
+/** Where the reader makes and connects a new key on the key's own page or CLI. */
+const pageOf = (context: BoatWordsContext): string =>
+  context.holder === "person" ? OWN_PAGE : PAGE;
+
+const LAUNCH_KEYS: Readonly<Record<BoatKeyHolder, string>> = {
+  organization: "the organization's Boat key",
+  server: "this server's Boat key",
+  person: "the session owner's own Boat key",
+};
 
 const keyOf = (context: BoatWordsContext): string =>
-  context.place === "key-check"
-    ? "this Boat key"
-    : context.holder === "organization"
-      ? "the organization's Boat key"
-      : "this server's Boat key";
+  context.place === "key-check" ? "this Boat key" : LAUNCH_KEYS[context.holder];
 
 const capital = (words: string): string => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 
@@ -84,8 +94,12 @@ const thenAgain = (context: BoatWordsContext): string => `Then ${again(context)}
 /** Who makes and connects a new key, and where. */
 const keyFixer = (context: BoatWordsContext, which = "a new key"): string => {
   if (context.place === "key-check")
-    return `Create ${which} using the command on Mend's Boat page (${PAGE}) and connect that one.`;
+    return context.holder === "person"
+      ? `Create ${which} using the command in ${OWN_PAGE} and connect that one there, or with mend boat connect --mine.`
+      : `Create ${which} using the command on Mend's Boat page (${pageOf(context)}) and connect that one.`;
   switch (context.holder) {
+    case "person":
+      return `The session's owner creates ${which} using the command in ${OWN_PAGE} and replaces their key there, or with mend boat connect --mine. Then they start the session again.`;
     case "organization":
       return `An owner of this organization creates ${which} using the command in ${PAGE} and replaces the key there. Then start the session again.`;
     case "server":
@@ -97,6 +111,8 @@ const keyFixer = (context: BoatWordsContext, which = "a new key"): string => {
 const accountFixer = (context: BoatWordsContext): string => {
   if (context.place === "key-check") return "Whoever manages that Boat account";
   switch (context.holder) {
+    case "person":
+      return "The session's owner, or whoever manages that Boat account,";
     case "organization":
       return "An owner of this organization, or whoever manages that Boat account,";
     case "server":
@@ -156,7 +172,10 @@ const FAILURE_WORDS: { readonly [K in BoatFailureKind]: Failure } = {
   }),
   "running-limit": (failure, context) => ({
     happened: `${capital(accountOf(context))} is running as many VMs as its Boat plan allows, ${blocked(failure, context)}.`,
-    todo: `Stop a Boat session that is no longer needed and ${again(context)}. ${accountFixer(context)} can also raise the plan's limit in Boat.`,
+    todo:
+      context.place === "launch" && context.holder === "person"
+        ? "The session's owner stops a Boat session of theirs that is no longer needed and starts this one again. They, or whoever manages that Boat account, can also raise the plan's limit in Boat."
+        : `Stop a Boat session that is no longer needed and ${again(context)}. ${accountFixer(context)} can also raise the plan's limit in Boat.`,
   }),
   "member-cap": (failure, context) => ({
     happened: `The Boat organization that ${keyOf(context)} bills has reached its member limit, ${blocked(failure, context)}.`,

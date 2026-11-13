@@ -41,6 +41,7 @@ import { MemberRemoval } from "../member-removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import {
   organizationRuntime,
+  organizationRuntimeSwitch,
   organizationSettingsView,
   saveOrganizationSessionRuntime,
   saveOrganizationSettings,
@@ -379,11 +380,27 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         return yield* saveOrganizationSettings(found, caller.user.id, payload);
       }),
     )
+    .handle("runtimeSwitch", ({ query }) =>
+      Effect.gen(function* () {
+        const found = yield* ownership(ORGANIZATION);
+        const caller = yield* CurrentUser;
+        return yield* organizationRuntimeSwitch(
+          found,
+          caller.user.id,
+          query.sessionRuntime ?? null,
+        );
+      }),
+    )
     .handle("setSessionRuntime", ({ payload }) =>
       Effect.gen(function* () {
         const found = yield* ownership(ORGANIZATION);
         const caller = yield* CurrentUser;
-        return yield* saveOrganizationSessionRuntime(found, caller.user.id, payload.sessionRuntime);
+        return yield* saveOrganizationSessionRuntime(
+          found,
+          caller.user.id,
+          payload.sessionRuntime,
+          payload.moves,
+        );
       }),
     )
     .handle("setWorkspaceEnvironment", ({ payload }) =>

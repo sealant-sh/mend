@@ -200,6 +200,23 @@ Docker means sessions may run there as well.
 An organization's choice applies to its new worktrees. Worktrees that exist keep the runtime they
 were created with, so a running Docker session never moves to Boat, or the other way round.
 
+Before the switch takes effect, Mend asks Sealant what the new runtime runs and lists what it would
+not run: the organization's own environment, each project whose environment it cannot start, each
+Service on a port it holds (Boat holds 8080), and projects with server folders it cannot bind. An
+owner sees every project they can see by name, and a count of other members' private projects. The
+owner can move the environments to one the runtime runs in the same step: Mend's default packages on
+the first OS family it runs, Ubuntu on Boat. A project's own packages are not kept, and its next
+session builds the new environment, which takes a few minutes the first time. Services and server
+folders stay as they are. The owner can also switch without moving anything; the list then stays on
+**Defaults** with the same move. When Sealant cannot be read, Mend says it could not check, and
+switching is still allowed. Each move is in the organization's audit log.
+
+Clients read the same list with
+`GET /api/organization/settings/session-runtime/impact?sessionRuntime=boat` and move environments by
+adding `moves` to `PUT /api/organization/settings/session-runtime`:
+`{ "sessionRuntime": "boat", "moves": { "organizationDefault": true, "projects": ["<id>"] } }`. A
+request without `moves` switches and moves nothing.
+
 ## Connect an organization's Boat key
 
 An owner of an organization connects its key in **Settings · Organization · Boat**, or with
@@ -319,6 +336,33 @@ What a session in an organization with its own key reads, for each reason Boat g
 start. The person who runs this Mend server can read Boat's own reason and request id in the server
 log, to fix it or to give Boat's support.
 <!-- boat-failure-words:end -->
+
+## Your own Boat key
+
+Anyone in an organization can connect a Boat key of their own, in Settings, Account, or with
+`mend boat connect --mine`. It applies in the organization they are acting in, and only there. From
+then on the Boat sessions they start in that organization run in, and are billed to, their own Boat
+account. A Boat session uses its owner's own key when they have one, otherwise the organization's,
+otherwise the server's. The web app's session details ("Runs on") and `mend sessions` say which one
+decided, recorded when the session's workspace was created. Someone steering a shared session never
+moves it and never spends their own key.
+
+Only the person sees, checks, replaces or removes their own key. An owner sees on Settings,
+Organization, Boat, and in `mend boat status`, which members have one, never its details, because
+the organization's repositories are checked out in VMs in those members' Boat accounts. The audit
+log records "connected their own Boat key".
+
+Mend keeps no standby workspace on a person's own key: a standby would be a VM in their Boat account
+that they did not start, and it would hold one of their account's running VMs. Their sessions start
+without one; colleagues without their own key keep the project's standbys. A person's key builds its
+own image in their Boat account, even when the organization's key is in the same Boat organization,
+and that image keeps one of the account's saved snapshot slots; the first session after connecting
+waits a few minutes for it.
+
+`mend boat disconnect --mine` removes it the way the organization's is removed: Mend stops any
+standby it started in that account first, it is refused with the count while a session's VM or an
+image build still holds the account, and running it again after a refusal or a lost answer is safe.
+The person's sessions then go back to the organization's key, or the server's.
 
 ## When Boat VMs shut down
 
