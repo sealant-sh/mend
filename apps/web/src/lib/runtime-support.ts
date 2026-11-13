@@ -216,6 +216,21 @@ export const pickerNotes = (
         : { tone: "muted", text: familyLine };
   return { base, os };
 };
+/**
+ * The organization's environment where it is read rather than edited: Core's sentence and what it
+ * means for the projects that follow it. Null when the runtime runs it, or nothing is known.
+ */
+export const followedEnvironmentNote = (
+  facts: RuntimeFacts,
+  image: WorkspaceImage,
+): string | null => {
+  if (facts.state !== "observed") return null;
+  const sentence = environmentRefusal(facts.support, image);
+  return sentence === null
+    ? null
+    : `${sentence} New sessions in ${facts.organization} run on ${runtimeName(facts.support.runtime)}, so no project that follows this environment can start one.`;
+};
+
 /** Hot sessions on a runtime that bills idle workspaces: Core's sentence and what it means here. */
 export const idleCostNote = (facts: RuntimeFacts): string | null => {
   const support = supportOf(facts);

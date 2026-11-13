@@ -8,7 +8,9 @@ import {
   LastOwnerError,
   OrganizationSettingsRepo,
   OrganizationsRepo,
+  ProjectMountsRepo,
   ProjectNotFoundError,
+  ProjectServiceRecipesRepo,
   ProjectsRepo,
   SettingsRepo,
   UserFacts,
@@ -314,6 +316,8 @@ const dependencies = Layer.mergeAll(
     reconcileHotSessions: (projectId) => Effect.sync(() => void reconciled.push(projectId)),
   }),
   Layer.mock(SettingsRepo, { get: () => Effect.succeed(instanceSettings) }),
+  Layer.mock(ProjectMountsRepo, {}),
+  Layer.mock(ProjectServiceRecipesRepo, {}),
   workspaceRuntimesReportOf(DOCKER_AND_BOAT),
   Layer.mock(OrganizationSettingsRepo, {
     get: (organizationId) =>

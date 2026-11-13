@@ -219,6 +219,61 @@ describe("SessionEngine capture mode", () => {
       }),
   );
 
+  it.effect(
+    "keeps no standby on a person's own Boat key, and warms one in the organization's account again once they remove it (SLNT-797)",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const pool = memoryHotPool();
+        const clock = yield* makePoolClock(pool);
+        const accounts = new Map([["org-test", "core-boat-acme"]]);
+        const personAccounts = new Map<string, string>();
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+              world.recentOwners = ["user-fixture"];
+              const engine = yield* SessionEngine;
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby on the organization's key",
+              );
+              expect(pool.entries.map((entry) => entry.boatKey)).toEqual(["organization"]);
+              // They connect their own key: the standby in the organization's account drains, and
+              // none is started in theirs.
+              personAccounts.set("org-test/user-fixture", "core-boat-own");
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(() => pool.entries.length === 0, "the standby drained");
+              yield* clock.afterPasses(engine.reconcileHotSessions(project.id));
+              expect(pool.entries).toEqual([]);
+              // They remove it: their launches name the organization's account again.
+              personAccounts.delete("org-test/user-fixture");
+              yield* engine.reconcileHotSessions(project.id);
+              yield* clock.untilReady(
+                () => pool.entries.some((entry) => entry.status === "ready"),
+                "a standby on the organization's key again",
+              );
+              expect(created.map((options) => options.boatAccountId)).toEqual([
+                "core-boat-acme",
+                "core-boat-acme",
+              ]);
+            }),
+          {
+            captured: makeMemoryCaptureStore(),
+            sealantLayer: clock.wrapSealant(sealantLaunchLayer(created)),
+            hotWorkspacesLayer: clock.poolLayer,
+            wrapCaptureChannel: clock.wrapCaptureChannel,
+            sessionRuntime: "boat",
+            workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu", services: { docker: false } },
+            boatAccounts: accounts,
+            personBoatAccounts: personAccounts,
+          },
+        );
+      }),
+  );
+
   const ORG_TEST = OrganizationId.make("org-test");
   /**
    * One standby warmed for the fixture's owner in organization `org-test`, whose key is the Boat

@@ -14,5 +14,6 @@ export * from "./issue.ts";
 export * from "./review-question.ts";
 export * from "./run.ts";
 export * from "./runtime-support.ts";
+export * from "./runtime-switch.ts";
 export * from "./settings.ts";
 export * from "./timestamp.ts";

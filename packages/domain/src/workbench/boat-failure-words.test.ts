@@ -13,7 +13,7 @@ import {
 } from "./boat-failure-words.ts";
 import { BOAT_FAILURE_KINDS, type BoatFailure, type BoatFailureKind } from "./boat-failure.ts";
 
-const HOLDERS: ReadonlyArray<BoatKeyHolder> = ["organization", "server"];
+const HOLDERS: ReadonlyArray<BoatKeyHolder> = ["organization", "server", "person"];
 const PLACES: ReadonlyArray<BoatWordsPlace> = ["launch", "key-check"];
 
 /** What Boat may send, with everything that must never reach a sentence planted in it. */
@@ -85,6 +85,30 @@ describe("the words for every Boat failure", () => {
     );
   });
 
+  it("names a person's own key as its owner's, and tells only its owner what to do", () => {
+    const expired = { kind: "key-expired" as const, failure: failureOf("key-expired") };
+    expect(boatProblemText(expired, { holder: "person", place: "launch" })).toBe(
+      [
+        "The session owner's own Boat key has expired, so Boat refused it and this session's VM did not start.",
+        "The session's owner creates a new key using the command in Settings, Account and replaces their key there, or with mend boat connect --mine. Then they start the session again. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
+      ].join("\n"),
+    );
+    expect(boatProblemText(expired, { holder: "person", place: "key-check" })).toContain(
+      "Create a new key using the command in Settings, Account and connect that one there, or with mend boat connect --mine.",
+    );
+    for (const kind of BOAT_FAILURE_KINDS) {
+      const words = boatProblemWords(
+        { kind, failure: failureOf(kind) },
+        { holder: "person", place: "launch" },
+      );
+      const text = `${words.happened} ${words.todo}`;
+      // Nobody but the session's owner is sent to change a key or an organization's settings.
+      expect(text).not.toMatch(/An owner of this organization|Settings, Organization/);
+      if (/key|account|wallet|organization that/i.test(words.happened) && kind !== "refused")
+        expect(text).toMatch(/session owner's own Boat key/);
+    }
+  });
+
   it("names the permission, Boat's billing link, and when to retry when Boat gave them", () => {
     const launch: BoatWordsContext = { holder: "organization", place: "launch" };
     expect(
@@ -142,15 +166,27 @@ describe("the words for every Boat failure", () => {
 
 describe("the words for Core's refusals before anything ran", () => {
   for (const kind of BOAT_LAUNCH_REFUSAL_CODES) {
-    it(kind, () => {
-      const words = boatProblemWords(
-        { kind, coreMessage: "Boat supports Ubuntu and Nix; Arch is unsupported." },
-        { holder: "organization", place: "launch" },
-      );
-      expect(words.happened).toMatch(/^[A-Z].*\.$/);
-      expect(words.todo).toMatch(/^[A-Z].*\.$/);
-    });
+    for (const holder of HOLDERS) {
+      it(`${kind} · ${holder}'s key`, () => {
+        const words = boatProblemWords(
+          { kind, coreMessage: "Boat supports Ubuntu and Nix; Arch is unsupported." },
+          { holder, place: "launch" },
+        );
+        expect(words.happened).toMatch(/^[A-Z].*\.$/);
+        expect(words.todo).toMatch(/^[A-Z].*\.$/);
+      });
+    }
   }
+
+  it("names the session owner's own key, not the organization's, when nothing starts Boat VMs", () => {
+    const words = boatProblemWords(
+      { kind: "unsupported-runtime", coreMessage: "no worker" },
+      { holder: "person", place: "launch" },
+    );
+    expect(words.happened).toBe(
+      "The session owner's own Boat key is connected, and Sealant says nothing on this server starts Boat VMs right now, so nothing was started.",
+    );
+  });
 });
 
 /**
