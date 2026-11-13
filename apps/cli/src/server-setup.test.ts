@@ -1908,8 +1908,8 @@ describe("mend server setup", () => {
     expect(said).not.toContain(USERNS_UNASKED_REMINDER);
   });
 
-  it.each(["boat", "docker"] as const)(
-    "on an install with Boat set up, the guide asks about the host's user namespaces only once sessions are to stay on Docker: %s",
+  it.each(["boat", "docker", "both"] as const)(
+    "on an install with Boat set up, the guide asks about the host's user namespaces only once Docker sessions are offered: %s",
     async (choice) => {
       const control = makeRuntime({ hostKernel: UBUNTU_REFUSES });
       const withKey: ServerSetupRuntime = {
@@ -1934,16 +1934,16 @@ describe("mend server setup", () => {
         ),
       ).toEqual({ _tag: "ok" });
       const transcript: Array<string> = [];
-      // change something · where sessions run · Boat or Docker · nothing else · apply · (allow?)
+      // change something · where sessions run · Docker, Boat or both · nothing else · apply · (allow?)
       const result = await serverCommand(["setup"], {
         ...control.runtime,
         prompter: scriptedPrompter(
-          ["2", "6", choice === "boat" ? "2" : "1", "n", "", "n"],
+          ["2", "6", { docker: "1", boat: "2", both: "3" }[choice], "n", "", "n"],
           transcript,
         ),
       });
       expect(result).toEqual({ _tag: "ok" });
-      expect(control.lines).toContain("Where should new sessions run?");
+      expect(control.lines).toContain("Where can sessions run?");
       const asked = transcript.findIndex((line) => line.startsWith("Allow them now?"));
       if (choice === "boat") {
         expect(asked).toBe(-1);
@@ -1952,6 +1952,12 @@ describe("mend server setup", () => {
         ).toBe("boat");
         expect(control.lines.slice(-3).join("\n")).not.toContain("No session can start");
       } else {
+        if (choice === "both")
+          expect(
+            readEnv(activeFile(control.runtime.configDir, "server.env")).get(
+              "MEND_SESSION_RUNTIMES",
+            ),
+          ).toBe("docker,boat");
         // Asked once the answers keep sessions on Docker, after the guide's questions.
         expect(asked).toBe(transcript.findIndex((line) => line.startsWith("Apply?")) + 1);
         expect(control.lines.at(-1)).toBe(USERNS_REMINDER);

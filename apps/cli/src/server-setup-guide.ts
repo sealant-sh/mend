@@ -46,7 +46,10 @@ import { shellWord } from "./shared.ts";
  * compared on the same terms.
  */
 export interface SetupSettings {
+  /** Where an organization's new sessions run until it chooses. */
   readonly sessionRuntime?: "docker" | "boat";
+  /** The runtimes organizations may choose among; absent, the server offers `sessionRuntime`. */
+  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   /** Saved HTTPS origins and loopback listeners for remote workspaces. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
   /** Boat's deployment and resources; its key is set with flags only (`--boat-api-key-stdin`). */
@@ -126,9 +129,22 @@ const samePreview = (
   }
 };
 
+/** Where the server lets sessions run: its offered list, else its one runtime. */
+const offeredOf = (settings: SetupSettings): ReadonlyArray<"docker" | "boat"> =>
+  settings.sessionRuntimes ?? [settings.sessionRuntime ?? "docker"];
+
+/** Where sessions run, as the guide says it. */
+const sessionsRunOf = (settings: SetupSettings): string => {
+  const runtime = settings.sessionRuntime === "boat" ? "Boat" : "Docker";
+  return offeredOf(settings).length < 2
+    ? runtime
+    : `Docker or Boat, each organization chooses (new organizations: ${runtime})`;
+};
+
 /** Equal as settings: the lists as sets, since their order changes nothing the server reads. */
 export const sameSettings = (left: SetupSettings, right: SetupSettings): boolean =>
   (left.sessionRuntime ?? "docker") === (right.sessionRuntime ?? "docker") &&
+  sameSet(offeredOf(left), offeredOf(right)) &&
   sameRemoteEndpoints(left.remoteEndpoints, right.remoteEndpoints) &&
   sameBoat(left.boat, right.boat) &&
   left.bind === right.bind &&
@@ -185,6 +201,8 @@ const previewFlagsFor = (
  */
 export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyArray<string> => {
   const flags: Array<string> = [];
+  if (!sameSet(offeredOf(before), offeredOf(after)))
+    flags.push("--session-runtimes", offeredOf(after).join(","));
   if ((before.sessionRuntime ?? "docker") !== (after.sessionRuntime ?? "docker"))
     flags.push("--session-runtime", after.sessionRuntime ?? "docker");
   if (!sameRemoteEndpoints(before.remoteEndpoints, after.remoteEndpoints)) {
@@ -376,7 +394,7 @@ const originsOf = (settings: SetupSettings): string =>
 /** One row per thing setup decides, as `label` and value. */
 const rowsOf = (settings: SetupSettings): ReadonlyArray<readonly [string, string]> => [
   ["reached", reachOf(settings)],
-  ["sessions run", settings.sessionRuntime === "boat" ? "Boat" : "Docker"],
+  ["sessions run", sessionsRunOf(settings)],
   ...(settings.boat === undefined
     ? []
     : [
@@ -1588,10 +1606,20 @@ const askOrigins = async (asked: Asked, settings: SetupSettings): Promise<SetupS
   }
 };
 
+/** What the guide can answer to "where can sessions run?": one runtime, or both and a default. */
+type RuntimeAnswer = "docker" | "boat" | "both-docker" | "both-boat";
+
+const answerOf = (settings: SetupSettings): RuntimeAnswer => {
+  const runtime = settings.sessionRuntime ?? "docker";
+  if (offeredOf(settings).length < 2) return runtime;
+  return runtime === "boat" ? "both-boat" : "both-docker";
+};
+
 const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
-  const runtime = await choose<"docker" | "boat">(
+  const answers: ReadonlyArray<RuntimeAnswer> = ["docker", "boat", "both-docker", "both-boat"];
+  const picked = await choose<RuntimeAnswer>(
     asked.io,
-    "Where should new sessions run?",
+    "Where can sessions run?",
     [
       { label: "Docker", detail: "on this server", value: "docker" },
       {
@@ -1599,20 +1627,44 @@ const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise
         detail: "remote VMs; needs Boat configuration and public session endpoints",
         value: "boat",
       },
+      {
+        label: "Docker or Boat",
+        detail: "each organization's owner chooses; new organizations start on Docker",
+        value: "both-docker",
+      },
+      {
+        label: "Boat or Docker",
+        detail: "each organization's owner chooses; new organizations start on Boat",
+        value: "both-boat",
+      },
     ],
-    settings.sessionRuntime === "boat" ? 1 : 0,
+    answers.indexOf(answerOf(settings)),
   );
   // The key is never typed into the guide: Boat is set up with flags, the key on standard input.
-  if (runtime === "boat" && settings.boat === undefined) {
+  if (picked !== "docker" && settings.boat === undefined) {
     asked.io.write(
-      `Boat is not set up on this server yet, so new sessions keep running ${settings.sessionRuntime === "boat" ? "where they are set to" : "in Docker"}. Set it up with: ${BOAT_SETUP_COMMAND}, with the Boat API key piped on standard input (https://docs.mend.run/operate/boat/).`,
+      `Boat is not set up on this server yet, so sessions keep running where they are set to (${sessionsRunOf(settings)}). Set it up with: ${BOAT_SETUP_COMMAND}, with the Boat API key piped on standard input (https://docs.mend.run/operate/boat/).`,
     );
     return settings;
   }
   asked.io.write(
     "Existing sessions keep where they run. Boat sessions use no local mirrors. New Boat projects start with Ubuntu; Arch projects need Ubuntu or Nix instead.",
   );
-  return { ...settings, sessionRuntime: runtime };
+  if (picked === "docker" || picked === "boat")
+    return {
+      ...settings,
+      sessionRuntime: picked,
+      // A server that never offered both keeps the setting it had; one that did offers one now.
+      ...(settings.sessionRuntimes === undefined ? {} : { sessionRuntimes: [picked] }),
+    };
+  asked.io.write(
+    "Owners choose in Organization settings · Defaults. Existing worktrees keep where they run.",
+  );
+  return {
+    ...settings,
+    sessionRuntime: picked === "both-boat" ? "boat" : "docker",
+    sessionRuntimes: ["docker", "boat"],
+  };
 };
 
 /** How Boat is set up: with flags, so its key comes on standard input, never typed here. */
@@ -1700,7 +1752,7 @@ const changeOne = async (asked: Asked, settings: SetupSettings): Promise<SetupSe
         { label: "extra browser origins", detail: originsOf(next), value: "origins" },
         {
           label: "where sessions run",
-          detail: next.sessionRuntime === "boat" ? "Boat" : "Docker",
+          detail: sessionsRunOf(next),
           value: "runtime",
         },
       ],
