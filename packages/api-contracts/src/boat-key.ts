@@ -3,14 +3,17 @@ import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, PersonCredentialOnly } from "./common.ts";
 
 /**
- * The organization's Boat key (SLNT-790): new Boat sessions in the organization run in, and are
- * billed to, the Boat account of the key an owner connected; without one they use the server's.
- * Sealant Core holds the key sealed. Mend keeps which Core Boat account is the organization's, and
- * no answer, error or audit entry here ever carries the key. Members read whether there is one;
- * only owners read the details, connect, replace, check or remove it.
+ * Boat keys. The organization's (SLNT-790): new Boat sessions in the organization run in, and are
+ * billed to, the Boat account of the key an owner connected. A person's own (SLNT-797): the Boat
+ * sessions they start in the organization run in their own Boat account instead. A launch takes
+ * the person's key, else the organization's, else the server's. Sealant Core holds each key
+ * sealed; Mend keeps which Core Boat account is whose, and no answer, error or audit entry here
+ * ever carries a key. Members read whether the organization has one; only owners read its
+ * details, connect, replace, check or remove it. Only the person reads or changes their own; an
+ * owner sees that a member has one, never its details.
  */
 
 /** The key was not sent, or Boat refused it; the message says why and what to do. */
@@ -159,6 +162,13 @@ export class BoatKeyRemoval extends Schema.Class<BoatKeyRemoval>("BoatKeyRemoval
   standbysDrained: Schema.Number,
 }) {}
 
+/** A person in the organization whose own Boat key decides their Boat sessions. */
+export class BoatKeyPerson extends Schema.Class<BoatKeyPerson>("BoatKeyPerson")({
+  userId: Schema.String,
+  /** Their name as the instance knows it; null when the account is gone. */
+  name: Schema.NullOr(Schema.String),
+}) {}
+
 export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")({
   connected: Schema.Boolean,
   /**
@@ -169,9 +179,34 @@ export class BoatKeyStatus extends Schema.Class<BoatKeyStatus>("BoatKeyStatus")(
   /** Null for members, and when no key is connected. */
   details: Schema.NullOr(BoatKeyDetails),
   /**
+   * The members whose own Boat key decides their Boat sessions here, so the organization's code
+   * runs in their Boat accounts (SLNT-797). Owners only: null for members, and from older servers.
+   */
+  peopleWithOwnKeys: Schema.NullOr(Schema.Array(BoatKeyPerson)).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+  /**
    * Only on the answer to a removal this request made. Absent when there was no key to remove,
    * including when another request removed it at the same moment.
    */
+  removal: Schema.optionalKey(BoatKeyRemoval),
+}) {}
+
+/**
+ * The caller's own Boat key in their active organization (SLNT-797). Only they read it; the
+ * details are always theirs to see.
+ */
+export class PersonBoatKeyStatus extends Schema.Class<PersonBoatKeyStatus>("PersonBoatKeyStatus")({
+  /** The organization the key applies to: the caller's active one. */
+  organizationName: Schema.String,
+  connected: Schema.Boolean,
+  /** Where the organization's new sessions run: the key is used only for Boat sessions. */
+  sessionRuntime: Schema.NullOr(SessionRuntime),
+  /** Whether the organization has its own key: what the person's sessions use without theirs. */
+  organizationKey: Schema.Boolean,
+  /** Null when no key is connected. */
+  details: Schema.NullOr(BoatKeyDetails),
+  /** As on `BoatKeyStatus`: only on the answer to a removal this request made. */
   removal: Schema.optionalKey(BoatKeyRemoval),
 }) {}
 
@@ -225,5 +260,41 @@ export const boatKeyGroup = HttpApiGroup.make("boatKey")
       success: BoatKeyStatus,
       error: [NotFound, BoatKeyOwnersOnly, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
     }),
+  )
+  .middleware(AuthMiddleware);
+
+/**
+ * The caller's own Boat key in their active organization (SLNT-797): the same reads and changes as
+ * the organization's, on the caller's row alone. Connecting and removing it are refused to an
+ * access key, which never manages credentials.
+ */
+export const personBoatKeyGroup = HttpApiGroup.make("personBoatKey")
+  .add(
+    HttpApiEndpoint.get("status", "/me/boat-key", {
+      success: PersonBoatKeyStatus,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // Connects the person's key, or replaces it when there is one.
+    HttpApiEndpoint.put("connect", "/me/boat-key", {
+      payload: ConnectBoatKeyRequest,
+      success: PersonBoatKeyStatus,
+      error: [NotFound, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
+    }).middleware(PersonCredentialOnly),
+  )
+  .add(
+    HttpApiEndpoint.post("check", "/me/boat-key/check", {
+      success: BoatKeyCheck,
+      error: [NotFound, BoatUnavailable],
+    }),
+  )
+  .add(
+    // The person's Boat sessions go back to the organization's key, or the server's. Mend first
+    // drains any standby it started in the account; refused while a session's VM holds it.
+    HttpApiEndpoint.delete("disconnect", "/me/boat-key", {
+      success: PersonBoatKeyStatus,
+      error: [NotFound, BoatKeyRefused, BoatKeyConflict, BoatUnavailable],
+    }).middleware(PersonCredentialOnly),
   )
   .middleware(AuthMiddleware);

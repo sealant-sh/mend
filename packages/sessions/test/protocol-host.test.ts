@@ -468,6 +468,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   setSealantSessionId: () => Effect.void,
   setWorkspaceImage: () => Effect.void,
   setDotfiles: () => Effect.void,
+  setBoatKey: () => Effect.void,
   setHasTranscript: () => Effect.die("not in test"),
   listSettledUnclassified: () => Effect.succeed([]),
   setProviderSessionId: () => Effect.void,

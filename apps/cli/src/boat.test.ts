@@ -73,9 +73,13 @@ const refused = (status: number, tag: string, message: string) => () => {
 
 describe("mend boat status", () => {
   it("tells an owner who connected the key and when, and what it does", async () => {
-    const { code, stdout, sent } = await run([], () => ownerView);
+    // An older server without the person's route: the organization's lines alone.
+    const { code, stdout, sent } = await run([], (call) => {
+      if (call.route === "/me/boat-key") throw new Error("404");
+      return ownerView;
+    });
     expect(code).toBe(0);
-    expect(sent).toEqual([{ method: "GET", route: "/organization/boat-key", body: undefined }]);
+    expect(sent.map((call) => call.route)).toEqual(["/organization/boat-key", "/me/boat-key"]);
     expect(stdout.split("\n")).toEqual([
       "This organization has its own Boat key · connected by Alice 2026-11-13 12:00 UTC",
       "New Boat sessions run in, and are billed to, its Boat account (Sealant account core-boat-1). Running sessions stay where they started.",
@@ -103,7 +107,114 @@ describe("mend boat status", () => {
 
   it("prints the versioned status as JSON", async () => {
     const { stdout } = await run(["--json"], () => ownerView);
-    expect(JSON.parse(stdout)).toEqual({ version: 1, status: ownerView });
+    expect(JSON.parse(stdout)).toEqual({
+      version: 1,
+      status: { ...ownerView, peopleWithOwnKeys: null },
+    });
+  });
+});
+
+const ownNone = {
+  organizationName: "Acme",
+  connected: false,
+  sessionRuntime: "boat",
+  organizationKey: true,
+  details: null,
+};
+const ownConnected = {
+  ...ownNone,
+  connected: true,
+  details: {
+    sealantBoatAccountId: "core-boat-own",
+    connectedByUserId: "carol",
+    connectedByName: "Carol",
+    connectedAt: "2026-11-13T12:00:00.000Z",
+    keyReplacedAt: null,
+    report: null,
+  },
+};
+
+describe("mend boat with --mine (SLNT-797)", () => {
+  it("says, after the organization's key, what decides the caller's own sessions", async () => {
+    const { stdout } = await run([], (call) =>
+      call.route === "/me/boat-key" ? ownNone : { ...memberView, peopleWithOwnKeys: null },
+    );
+    expect(stdout).toContain(
+      "You have no Boat key of your own in Acme · your Boat sessions use the organization's key.",
+    );
+    expect(stdout).toContain("Connect one with mend boat connect --mine.");
+  });
+
+  it("names the members with their own key to an owner, and nothing more", async () => {
+    const { stdout } = await run([], (call) =>
+      call.route === "/me/boat-key"
+        ? ownNone
+        : { ...ownerView, peopleWithOwnKeys: [{ userId: "carol", name: "Carol" }] },
+    );
+    expect(stdout).toContain(
+      "With their own Boat key: Carol · their Boat sessions here run in their own Boat accounts.",
+    );
+  });
+
+  it("connects the caller's own key on their own route, and says it is theirs", async () => {
+    let stored: unknown = ownNone;
+    const { code, sent, stdout } = await run(
+      ["connect", "--mine"],
+      (call) => {
+        if (call.method === "PUT") stored = ownConnected;
+        return stored;
+      },
+      { piped: `${KEY}\n` },
+    );
+    expect(code).toBe(0);
+    expect(sent).toEqual([
+      { method: "GET", route: "/me/boat-key", body: undefined },
+      { method: "PUT", route: "/me/boat-key", body: { key: KEY } },
+    ]);
+    expect(stdout.split("\n")).toEqual([
+      "✓ connected your own Boat key",
+      "Your own Boat key in Acme · connected 2026-11-13 12:00 UTC",
+      "The Boat sessions you start there run in, and are billed to, your Boat account (Sealant account core-boat-own). Mend keeps no standby workspace on it.",
+      "",
+    ]);
+    expect(stdout).not.toContain(KEY);
+  });
+
+  it("checks and removes only the caller's own key", async () => {
+    const checked = await run(["check", "--mine"], () => ({
+      state: "active",
+      observedAt: "2026-11-13T14:02:00.000Z",
+      keyReplacedAt: null,
+      report: null,
+    }));
+    expect(checked.sent.map((call) => [call.method, call.route])).toEqual([
+      ["POST", "/me/boat-key/check"],
+    ]);
+    expect(checked.stdout).toContain(
+      "Sealant holds your Boat key · active · observed 2026-11-13 14:02 UTC",
+    );
+    const removed = await run(["disconnect", "--mine"], (call) =>
+      call.method === "DELETE" ? { ...ownNone, removal: { standbysDrained: 0 } } : ownConnected,
+    );
+    expect(removed.sent.map((call) => [call.method, call.route])).toEqual([
+      ["GET", "/me/boat-key"],
+      ["DELETE", "/me/boat-key"],
+    ]);
+    expect(removed.stdout).toContain(
+      "✓ removed your own Boat key · Sealant deletes the images it built in that Boat account",
+    );
+    expect(removed.stdout).toContain("your Boat sessions use the organization's key.");
+  });
+
+  it("asks nothing to be removed when the caller has no key of their own", async () => {
+    const { sent, stdout } = await run(["disconnect", "--mine"], () => ownNone);
+    expect(sent.map((call) => call.method)).toEqual(["GET"]);
+    expect(stdout).toContain("You have no Boat key of your own here · nothing to remove");
+  });
+
+  it("prints the caller's own status as JSON", async () => {
+    const { stdout } = await run(["status", "--mine", "--json"], () => ownConnected);
+    expect(JSON.parse(stdout)).toEqual({ version: 1, status: ownConnected });
   });
 });
 

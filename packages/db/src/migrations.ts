@@ -5576,4 +5576,12 @@ export const migrations = {
     yield* sql`ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS session_runtime text
       CHECK (session_runtime IN ('docker', 'boat'))`;
   }),
+  // Which Boat key a session's workspace was created on, and a standby's for its claim (SLNT-797).
+  "0220_session_boat_key": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS boat_key text
+      CHECK (boat_key IN ('person', 'organization', 'server'))`;
+    yield* sql`ALTER TABLE hot_workspaces ADD COLUMN IF NOT EXISTS boat_key text
+      CHECK (boat_key IN ('person', 'organization', 'server'))`;
+  }),
 };

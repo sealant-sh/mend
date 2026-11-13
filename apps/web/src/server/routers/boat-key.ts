@@ -16,3 +16,18 @@ export const boatKeyRouter = router({
   check: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.check())),
   disconnect: procedure.mutation(({ ctx }) => run(ctx, (api) => api.boatKey.disconnect())),
 });
+
+/**
+ * The caller's own Boat key in their active organization (SLNT-797): only they read or change it.
+ * The key passes through once, in `connect`, and this tier keeps no copy.
+ */
+export const personBoatKeyRouter = router({
+  status: procedure.query(({ ctx }) => run(ctx, (api) => api.personBoatKey.status())),
+  connect: procedure
+    .input(input(ConnectBoatKeyRequest))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.personBoatKey.connect({ payload })),
+    ),
+  check: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.check())),
+  disconnect: procedure.mutation(({ ctx }) => run(ctx, (api) => api.personBoatKey.disconnect())),
+});

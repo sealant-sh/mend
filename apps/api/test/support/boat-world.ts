@@ -42,7 +42,8 @@ export const refusal = (
     message: `Core says ${reason}`,
   });
 
-const ownerKey = (owner: BoatKeyOwner) => owner.organizationId;
+const ownerKey = (owner: BoatKeyOwner) =>
+  owner.kind === "organization" ? owner.organizationId : `${owner.organizationId}/${owner.userId}`;
 
 /**
  * Boat keys in memory and Core's Boat accounts faked at `@mend/sealant`'s boundary (SLNT-790):
@@ -79,6 +80,14 @@ export const makeBoatWorld = () => {
   const implement = {
     boatKeys: {
       byOwner: (owner) => Effect.sync(() => keys.get(ownerKey(owner)) ?? null),
+      peopleWithKeys: (organizationId) =>
+        Effect.sync(() =>
+          [...keys.values()].flatMap((key) =>
+            key.owner.kind === "person" && key.owner.organizationId === organizationId
+              ? [{ userId: key.owner.userId, connectedAt: key.connectedAt }]
+              : [],
+          ),
+        ),
       connect: (key: NewBoatKey) =>
         Effect.suspend(() => {
           if (keys.has(ownerKey(key.owner))) {
