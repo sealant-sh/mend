@@ -13,6 +13,9 @@ const detailsBody = Schema.decodeUnknownSync(
   Schema.Struct({ details: Schema.NullOr(Schema.Struct({ report: Schema.Unknown })) }),
 );
 
+/** A refusal's words, as a test reads them. */
+const messageBody = Schema.decodeUnknownSync(Schema.Struct({ message: Schema.String }));
+
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
 
@@ -538,7 +541,7 @@ describe("an organization's Boat key", () => {
       );
       const refused = await connect("alice");
       expect(refused.status).toBe(422);
-      const body = (await refused.json()) as { message: string };
+      const body = messageBody(await refused.json());
       expect(body.message).toBe(
         "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command on Mend's Boat page (Settings, Organization, Boat) and connect that one. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
       );
@@ -728,12 +731,12 @@ describe("a person's own Boat key (SLNT-797)", () => {
     );
     const refused = await connectOwn("carol");
     expect(refused.status).toBe(422);
-    expect(((await refused.json()) as { message: string }).message).toBe(
+    expect(messageBody(await refused.json()).message).toBe(
       "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command in Settings, Account and connect that one there, or with mend boat connect --mine. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
     );
     boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["host"] }));
     const lacking = await connectOwn("carol");
-    expect(((await lacking.json()) as { message: string }).message).toContain(
+    expect(messageBody(await lacking.json()).message).toContain(
       "Create a key with the command on the Boat key card in Settings, Account, which grants",
     );
   });
