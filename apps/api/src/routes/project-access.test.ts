@@ -168,7 +168,14 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "boatKey.status",
   "boatKey.connect",
   "boatKey.check",
+  "boatKey.fullCheck",
   "boatKey.disconnect",
+  // The caller's own Boat key in their active organization, and nobody else's: boat-key.test.ts.
+  "personBoatKey.status",
+  "personBoatKey.connect",
+  "personBoatKey.check",
+  "personBoatKey.fullCheck",
+  "personBoatKey.disconnect",
   // The caller's organization and own links; owner/member boundaries: executor.test.ts.
   "executor.configuration",
   "executor.configure",
@@ -459,6 +466,12 @@ const CASES: ReadonlyArray<AccessCase> = [
   fixed("owner", "PUT", "/api/organization/settings/workspace-environment", "organization", {
     workspaceImage: null,
   })("organization.setWorkspaceEnvironment"),
+  fixed(
+    "owner",
+    "GET",
+    "/api/organization/settings/session-runtime/impact?sessionRuntime=docker",
+    "organization",
+  )("organization.runtimeSwitch"),
   fixed("owner", "PUT", "/api/organization/settings/session-runtime", "organization", {
     sessionRuntime: "docker",
   })("organization.setSessionRuntime"),
@@ -1017,6 +1030,23 @@ const ADMITTED: Readonly<
   "organization.setWorkspaceEnvironment": {
     status: 500,
     calls: ["organizationSettings.get", "organizationSettings.modify"],
+  },
+  // Docker runs everything: the organization's settings are read, and nothing is written.
+  "organization.runtimeSwitch": {
+    status: 200,
+    calls: ["organizationSettings.get", "settings.get"],
+    body: {
+      chosen: "docker",
+      effective: "docker",
+      impact: {
+        state: "observed",
+        observedAt: "2026-11-13T14:02:00.000Z",
+        runtime: "docker",
+        organizationDefault: null,
+        projects: [],
+        unseen: 0,
+      },
+    },
   },
   // The choice is written before anything else is read.
   "organization.setSessionRuntime": {
@@ -1587,6 +1617,8 @@ const PERSON_CREDENTIAL_ONLY = [
   "mcpServers.save",
   "organization.createInvitation",
   "organization.issuePasswordReset",
+  "personBoatKey.connect",
+  "personBoatKey.disconnect",
   "slack.confirmLink",
   "userDevices.approveCliAuth",
   "userDevices.cliAuthRequest",

@@ -308,6 +308,67 @@ describe("the server's session runtime choice", () => {
     );
   });
 
+  /**
+   * SLNT-797: a person's own key in the organization decides their Boat launches over the
+   * organization's, and the session records which key decided. A colleague's launch in the same
+   * organization still names the organization's account.
+   */
+  it("names a person's own Boat account over the organization's, records which key decided, and follows its removal", async () => {
+    const created: CreateOptions[] = [];
+    const personAccounts = new Map([["org-test/user-fixture", "core-boat-own"]]);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session, project } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(world.sessions.get(session.id)?.boatKey).toBe("person");
+          world.members.set("user-colleague", "member");
+          const colleague = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-colleague",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(colleague.id, ["codex"]);
+          expect(world.sessions.get(colleague.id)?.boatKey).toBe("organization");
+          yield* engine.stop(session.id);
+          personAccounts.delete("org-test/user-fixture");
+          yield* engine.resumeSession(session.id, "shell");
+          expect(world.sessions.get(session.id)?.boatKey).toBe("organization");
+          expect(created.map((options) => options.boatAccountId)).toEqual([
+            "core-boat-own",
+            "core-boat-acme",
+            "core-boat-acme",
+          ]);
+        }),
+      {
+        sessionRuntime: "boat",
+        workspaceImage: ubuntu,
+        sealantLayer: lifecycleLayer(created),
+        boatAccounts: new Map([["org-test", "core-boat-acme"]]),
+        personBoatAccounts: personAccounts,
+      },
+    );
+  });
+
+  it("records the server's key for a Boat launch with no key, and none for a Docker launch", async () => {
+    for (const runtime of ["boat", "docker"] as const) {
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            expect(world.sessions.get(session.id)?.boatKey).toBe(
+              runtime === "boat" ? "server" : null,
+            );
+          }),
+        { sessionRuntime: runtime, workspaceImage: ubuntu, sealantLayer: lifecycleLayer([]) },
+      );
+    }
+  });
+
   it("never names a Boat account for a Docker launch, key or not", async () => {
     const created: CreateOptions[] = [];
     await withEngine(
@@ -613,7 +674,11 @@ describe("the server's session runtime choice", () => {
     );
   });
 
-  for (const holder of ["organization", "server"] satisfies ReadonlyArray<BoatKeyHolder>) {
+  for (const holder of [
+    "organization",
+    "server",
+    "person",
+  ] satisfies ReadonlyArray<BoatKeyHolder>) {
     for (const kind of BOAT_FAILURE_KINDS) {
       it(`ends a Boat launch Boat refused for ${kind} on the ${holder}'s key with the table's words`, async () => {
         const logs: Array<string> = [];
@@ -644,8 +709,12 @@ describe("the server's session runtime choice", () => {
             {
               sessionRuntime: "boat",
               workspaceImage: ubuntu,
-              ...(holder === "organization"
-                ? { boatAccounts: new Map([["org-test", "core-boat-acme"]]) }
+              ...(holder === "server"
+                ? {}
+                : { boatAccounts: new Map([["org-test", "core-boat-acme"]]) }),
+              // The session's owner's own key decides over the organization's (SLNT-797).
+              ...(holder === "person"
+                ? { personBoatAccounts: new Map([["org-test/user-fixture", "core-boat-own"]]) }
                 : {}),
               sealantLayer: lifecycleLayer([], {
                 captureOps: {

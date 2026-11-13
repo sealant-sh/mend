@@ -24,13 +24,18 @@ import { setThemePreference, useThemePreference, type ThemePreference } from "#/
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { LoginDialog, PROVIDER_LOGINS, type LoginTarget } from "./account-login-dialog.tsx";
+import { PersonBoatKeySection } from "./boat-key.tsx";
 
-/** Settings · You · Account: how Mend looks, the person's own agent logins, and Sign out. */
+/**
+ * Settings · You · Account: how Mend looks, the person's own agent logins, their own Boat key in
+ * the active organization, and Sign out.
+ */
 export function AccountSettings() {
   return (
     <Panel>
       <AppearanceSection />
       <AgentLoginsSection />
+      <PersonBoatKeySection />
       <SignOutSection />
     </Panel>
   );

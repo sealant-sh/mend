@@ -51,6 +51,7 @@ const session = (
   workspaceTtlRenewalError: null,
   workspaceImage: null,
   dotfiles: null,
+  boatKey: null,
   ownerUserId: "anna",
   origin: "mend",
   autoLand: null,

@@ -1,4 +1,4 @@
-import { boatProblemWords } from "./boat-failure-words.ts";
+import { type BoatKeyHolder, boatProblemWords } from "./boat-failure-words.ts";
 import type { BoatKeyTone } from "./boat-key-words.ts";
 import type { BoatKeyProof, BoatKeyProofStep } from "./boat-key.ts";
 
@@ -36,7 +36,7 @@ export interface ProofStepWords {
   readonly reason: string | null;
 }
 
-const reasonOf = (step: BoatKeyProofStep): string | null => {
+const reasonOf = (step: BoatKeyProofStep, holder: BoatKeyHolder): string | null => {
   if (step.outcome !== "refused" && step.outcome !== "no-answer") return null;
   if (step.boat === null)
     return step.outcome === "no-answer"
@@ -44,12 +44,16 @@ const reasonOf = (step: BoatKeyProofStep): string | null => {
       : "Boat refused, and Sealant did not say why. The person who runs this Mend server can read Boat's reason in the server log.";
   const words = boatProblemWords(
     { kind: step.boat.kind, failure: step.boat },
-    { holder: "organization", place: "full-check" },
+    { holder, place: "full-check" },
   );
   return `${words.happened} ${words.todo}`;
 };
 
-export const proofStepWords = (step: BoatKeyProofStep): ProofStepWords => ({
+/** One step's words; `holder` is whose key was checked, which decides who is told to fix it. */
+export const proofStepWords = (
+  step: BoatKeyProofStep,
+  holder: BoatKeyHolder = "organization",
+): ProofStepWords => ({
   label: proofStepLabel(step.step),
   word: step.outcome === "no-answer" ? "no answer" : step.outcome.replace("-", " "),
   tone:
@@ -60,7 +64,7 @@ export const proofStepWords = (step: BoatKeyProofStep): ProofStepWords => ({
         : step.outcome === "no-answer"
           ? "wait"
           : "off",
-  reason: reasonOf(step),
+  reason: reasonOf(step, holder),
 });
 
 /** The step the check stopped at: the first refused or unanswered one. */

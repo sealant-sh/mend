@@ -527,6 +527,7 @@ const testLayer = (world: TestWorld) => {
     setSealantSessionId: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setDotfiles: () => Effect.die("not in test"),
+    setBoatKey: () => Effect.die("not in test"),
     setHasTranscript: () => Effect.die("not in test"),
     listSettledUnclassified: () => Effect.succeed([]),
     setProviderSessionId: () => Effect.die("not in test"),

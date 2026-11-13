@@ -81,7 +81,7 @@ import {
   InheritedHistory,
   NativeHistorySeed,
 } from "@mend/domain/workbench";
-import type { ServiceDependency, UnreachableCause } from "@mend/domain/workbench";
+import type { BoatKeyChoice, ServiceDependency, UnreachableCause } from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
   ExecutorCallOutcome,
@@ -895,6 +895,8 @@ export const hotWorkspaces = pgTable(
     sealantWorkspaceId: text().$type<SealantWorkspaceId>(),
     workspaceImage: jsonbOf(WorkspaceImage),
     dotfiles: jsonbOf(SessionDotfiles),
+    // Which Boat key the standby was created on (0220): its claim stamps it on the session.
+    boatKey: text().$type<BoatKeyChoice>(),
     environment: jsonbOf(HotWorkspaceEnvironment),
     referenceMounts: jsonb()
       .$type<ReadonlyArray<SessionReferenceMount>>()
@@ -1840,6 +1842,8 @@ export const agentSessions = pgTable(
     // The dotfiles this session actually launched with — stamped at launch, same contract as
     // workspaceImage above.
     dotfiles: jsonbOf(SessionDotfiles),
+    // Which Boat key the session's workspace was created on (0220); NULL off Boat.
+    boatKey: text().$type<BoatKeyChoice>(),
     // Who provisioned the session — whose dotfiles apply. NULL for pre-column rows.
     ownerUserId: text(),
     // Where it was started from (0062): Mend's own surfaces, or a mention in Slack.
