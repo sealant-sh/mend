@@ -1,4 +1,5 @@
-import { Project } from "@mend/domain/workbench";
+import { boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
+import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -13,7 +14,7 @@ describe("an organization's Boat key", () => {
   let api: TenancyApi;
   const logs: Array<string> = [];
   const boat = makeBoatWorld();
-  const { keys, accounts, core, audited, reconciled } = boat;
+  const { keys, core, audited, reconciled } = boat;
 
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
@@ -258,15 +259,122 @@ describe("an organization's Boat key", () => {
 
   it("checks what Core holds, and says when it was observed", async () => {
     const none = await api.request("alice", "POST", "/api/organization/boat-key/check");
-    expect(await none.json()).toMatchObject({ state: "none", report: null });
+    expect(await none.json()).toMatchObject({ state: "none", report: null, unanswered: null });
     await connect("alice");
     const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
     const body = (await checked.json()) as { state: string; observedAt: string; report: null };
-    expect(body).toMatchObject({ state: "active", report: null });
+    expect(body).toMatchObject({ state: "active", report: null, unanswered: null });
     expect(Number.isNaN(Date.parse(body.observedAt))).toBe(false);
-    accounts.clear();
+    boat.refuseNext(refusal("not-found"));
     const missing = await api.request("alice", "POST", "/api/organization/boat-key/check");
     expect(await missing.json()).toMatchObject({ state: "missing" });
+  });
+
+  describe("what Boat says about the key", () => {
+    const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
+    const report = boatKeyReportFixture({}, OBSERVED);
+    const statusOf = async (user: "alice" | "carol") =>
+      (await (await api.request(user, "GET", "/api/organization/boat-key")).json()) as {
+        details: { report: unknown } | null;
+      };
+
+    it("answers Core's report after a connect, without asking Boat again", async () => {
+      boat.observe(report);
+      const body = (await (await connect("alice")).json()) as { details: { report: unknown } };
+      expect(body.details.report).toMatchObject({
+        observedAt: OBSERVED.toISOString(),
+        identity: { observed: true, login: "acme-ci" },
+        permissions: { observed: true, missing: [] },
+        snapshots: { observed: true, used: 7, included: 10 },
+      });
+      expect(core.map((call) => call.call)).toEqual(["create"]);
+    });
+
+    it("reads the last report on status from Core's list, never a check", async () => {
+      boat.observe(report);
+      await connect("alice");
+      core.length = 0;
+      expect((await statusOf("alice")).details?.report).toMatchObject({
+        observedAt: OBSERVED.toISOString(),
+        wallet: { observed: true, organizationName: "acme-boat" },
+      });
+      expect(core.map((call) => call.call)).toEqual(["list"]);
+    });
+
+    it("gives a member no details and asks Core nothing", async () => {
+      boat.observe(report);
+      await connect("alice");
+      core.length = 0;
+      expect((await statusOf("carol")).details).toBeNull();
+      expect(core).toEqual([]);
+    });
+
+    it("answers the new key's report after a replace", async () => {
+      await connect("alice");
+      const expired = boatKeyReportFixture(
+        { expiry: { observed: true, expiresAt: OBSERVED, expired: true, expiringSoon: false } },
+        OBSERVED,
+      );
+      boat.observe(expired);
+      const body = (await (await connect("alice", REPLACEMENT)).json()) as {
+        details: { report: unknown };
+      };
+      expect(body.details.report).toMatchObject({ expiry: { observed: true, expired: true } });
+    });
+
+    it("checks the key with Boat now on Check now, and answers the fresh report", async () => {
+      await connect("alice");
+      core.length = 0;
+      boat.observe(report);
+      const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
+      expect(await checked.json()).toMatchObject({
+        state: "active",
+        observedAt: OBSERVED.toISOString(),
+        report: { identity: { observed: true, displayName: "Acme CI" } },
+        unanswered: null,
+      });
+      expect(core).toEqual([{ call: "check", boatAccountId: "core-boat-1" }]);
+    });
+
+    it("keeps the last report, and says so, when Boat does not answer a check", async () => {
+      boat.observe(report);
+      await connect("alice");
+      boat.refuseNext(refusal("key-unverified"));
+      const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
+      expect(checked.status).toBe(200);
+      expect(await checked.json()).toMatchObject({
+        state: "active",
+        report: { observedAt: OBSERVED.toISOString() },
+        unanswered: expect.stringContaining("Boat did not answer this check"),
+      });
+    });
+
+    it("names the missing permissions when Core refuses a key without them", async () => {
+      boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["sandbox.delete"] }));
+      const refused = await connect("alice");
+      expect(refused.status).toBe(422);
+      expect(await refused.json()).toMatchObject({
+        _tag: "BoatKeyRefused",
+        reason: "missing-permissions",
+        message: expect.stringContaining(
+          "This Boat key lacks a permission Mend needs: sandbox.delete.",
+        ),
+      });
+      expect(keys.size).toBe(0);
+    });
+
+    it("logs when Core needs a permission the page's command does not ask for", async () => {
+      boat.observe(
+        boatKeyReportFixture({
+          requiredPermissions: [...BOAT_KEY_REQUIRED_PERMISSIONS, "sandbox.fork"],
+        }),
+      );
+      await connect("alice");
+      await api.request("alice", "GET", "/api/organization/boat-key");
+      expect(logs.join("\n")).toContain(
+        "Sealant needs Boat permissions the create-key command does not ask for: sandbox.fork",
+      );
+    });
   });
 
   it("never writes the key to a response, an error, the audit log or a log line", async () => {

@@ -1,4 +1,10 @@
-import type { Sealant } from "@sealant/sdk";
+import { BoatFailure, type BoatKeyNotObserved, BoatKeyReport } from "@mend/domain/workbench";
+import type {
+  BoatFailure as CoreBoatFailure,
+  BoatKeyNotObserved as CoreBoatKeyNotObserved,
+  BoatKeyReport as CoreBoatKeyReport,
+  Sealant,
+} from "@sealant/sdk";
 import { SealantApiError } from "@sealant/sdk";
 import { Effect, Redacted, Schema } from "effect";
 
@@ -9,8 +15,8 @@ type BoatAccount = Awaited<ReturnType<Sealant["boatAccounts"]["create"]>>;
 
 /**
  * A Boat account Core keeps beside its default one (`sealant.boatAccounts`), as Core reports it:
- * never its key. `report` is where Boat's own answer about the key goes (who it is, the wallet it
- * bills, its permissions and expiry) once Core returns one (SLNT-781); until then it is null.
+ * never its key. `report` is Boat's own answer about the key the last time Core checked it (who it
+ * is, the wallet it bills, its permissions and expiry; SLNT-781), or null when Core has not.
  */
 export interface PlatformBoatAccount {
   readonly boatAccountId: string;
@@ -19,7 +25,7 @@ export interface PlatformBoatAccount {
   readonly state: "active" | "removing";
   readonly createdAt: Date;
   readonly keyRotatedAt: Date | null;
-  readonly report: null;
+  readonly report: BoatKeyReport | null;
 }
 
 /** Why Core refused a Boat account call, from its typed error. */
@@ -54,6 +60,10 @@ export class BoatAccountRefusal extends Schema.TaggedError<BoatAccountRefusal>()
     unseen: Schema.NullOr(Schema.Number),
     /** `missing-permissions`: the Boat permissions Core needs that the key lacks, as Core names them. */
     missingPermissions: Schema.NullOr(Schema.Array(Schema.String)),
+    /** Why Boat refused the key, or did not answer, when Core said. */
+    boat: Schema.NullOr(BoatFailure),
+    /** What Core's check observed of a key it refused for missing permissions. */
+    report: Schema.NullOr(BoatKeyReport),
     /** Core's words, which never name the key. */
     message: Schema.String,
   },
@@ -78,6 +88,14 @@ export interface BoatAccountsApi {
     key: Redacted.Redacted<string>,
   ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
   readonly remove: (
+    boatAccountId: string,
+  ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
+  /**
+   * Checks the account's key with Boat again (read-only) and answers it with the new report. A
+   * key Boat now refuses is reported, not refused; Boat not answering is `key-unverified`, and
+   * Core keeps the last report.
+   */
+  readonly check: (
     boatAccountId: string,
   ) => Effect.Effect<PlatformBoatAccount, BoatAccountRefusal | SealantPlatformError>;
 }
@@ -118,17 +136,107 @@ export const boatAccountRefusalOf = (cause: unknown): BoatAccountRefusal | null 
     buildsInFlight: countOf(cause.cause, "buildsInFlight"),
     unseen: countOf(cause.cause, "unseen"),
     missingPermissions: cause.missingPermissions ?? null,
+    boat: cause.boat === undefined ? null : boatFailureOf(cause.boat),
+    report: cause.boatKeyReport === undefined ? null : boatKeyReportOf(cause.boatKeyReport),
     message: cause.message,
   });
+};
+
+const dateOf = (iso: string): Date => new Date(iso);
+const dateOrNull = (iso: string | undefined | null): Date | null =>
+  iso === undefined || iso === null ? null : dateOf(iso);
+
+/** Core's failure in Mend's shape: nulls for what Boat did not say. */
+export const boatFailureOf = (failure: CoreBoatFailure): BoatFailure => ({
+  kind: failure.kind,
+  retryable: failure.retryable,
+  operation: failure.operation ?? null,
+  status: failure.status ?? null,
+  code: failure.code ?? null,
+  message: failure.message ?? null,
+  requestId: failure.requestId ?? null,
+  permission: failure.permission ?? null,
+  retryAfterSeconds: failure.retryAfterSeconds ?? null,
+  retryAt: dateOrNull(failure.retryAt),
+  billingUrl: failure.billingUrl ?? null,
+});
+
+const notObserved = (fact: CoreBoatKeyNotObserved): BoatKeyNotObserved => ({
+  observed: false,
+  reason: fact.reason,
+  boat: fact.boat === undefined ? null : boatFailureOf(fact.boat),
+});
+
+/** Core's report on a key in Mend's shape (`BoatKeyReport`): dates, and nulls for absent facts. */
+export const boatKeyReportOf = (report: CoreBoatKeyReport): BoatKeyReport => {
+  const { identity, keyKind, wallet, permissions, expiry, start, snapshots } = report;
+  return {
+    observedAt: dateOf(report.observedAt),
+    organization: report.organization,
+    identity: identity.observed
+      ? {
+          observed: true,
+          accountId: identity.accountId ?? null,
+          login: identity.login ?? null,
+          displayName: identity.displayName ?? null,
+          serviceAccount: identity.serviceAccount ?? null,
+          accountStatus: identity.accountStatus,
+        }
+      : notObserved(identity),
+    keyKind: keyKind.observed ? { observed: true, kind: keyKind.kind } : notObserved(keyKind),
+    wallet: wallet.observed
+      ? {
+          observed: true,
+          kind: wallet.kind,
+          organizationId: wallet.organizationId ?? null,
+          organizationName: wallet.organizationName ?? null,
+          role: wallet.role ?? null,
+        }
+      : notObserved(wallet),
+    requiredPermissions: report.requiredPermissions,
+    permissions: permissions.observed
+      ? {
+          observed: true,
+          held: permissions.held,
+          missing: permissions.missing,
+          limitedToSandboxes: permissions.limitedToSandboxes,
+        }
+      : notObserved(permissions),
+    expiry: expiry.observed
+      ? {
+          observed: true,
+          expiresAt: dateOrNull(expiry.expiresAt),
+          expired: expiry.expired,
+          expiringSoon: expiry.expiringSoon,
+        }
+      : notObserved(expiry),
+    start: start.observed
+      ? {
+          observed: true,
+          canStart: start.canStart,
+          blockedReason: start.blockedReason ?? null,
+          billingStatus: start.billingStatus ?? null,
+          runningVms: start.runningVms,
+          allowedVms: start.allowedVms,
+        }
+      : notObserved(start),
+    snapshots: snapshots.observed
+      ? { observed: true, used: snapshots.used, included: snapshots.included }
+      : notObserved(snapshots),
+  };
 };
 
 const toPlatformBoatAccount = (account: BoatAccount): PlatformBoatAccount => ({
   boatAccountId: account.boatAccountId,
   label: account.label,
   state: account.state,
-  createdAt: new Date(account.createdAt),
-  keyRotatedAt: account.keyRotatedAt === null ? null : new Date(account.keyRotatedAt),
-  report: null,
+  createdAt: dateOf(account.createdAt),
+  keyRotatedAt: dateOrNull(account.keyRotatedAt),
+  // A control plane from before the report (0.40.0-next.870) answers without it.
+  report:
+    account.report === null || account.report === undefined
+      ? null
+      : boatKeyReportOf(account.report),
 });
 
 export const makeBoatAccountsApi = (
@@ -156,5 +264,7 @@ export const makeBoatAccountsApi = (
       ),
     remove: (boatAccountId) =>
       call(() => admin.boatAccounts.remove(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
+    check: (boatAccountId) =>
+      call(() => admin.boatAccounts.check(boatAccountId)).pipe(Effect.map(toPlatformBoatAccount)),
   };
 };

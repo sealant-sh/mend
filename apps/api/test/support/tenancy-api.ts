@@ -393,7 +393,11 @@ export const createTenancyApi = async (
       readonly boatAccounts?: Partial<
         Pick<
           SealantClients["Service"],
-          "createBoatAccount" | "listBoatAccounts" | "rotateBoatAccountKey" | "removeBoatAccount"
+          | "createBoatAccount"
+          | "listBoatAccounts"
+          | "rotateBoatAccountKey"
+          | "removeBoatAccount"
+          | "checkBoatAccount"
         >
       >;
       readonly slackDefaults?: Layer.PartialEffectful<SlackDefaultsRepo["Service"]>;

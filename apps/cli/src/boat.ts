@@ -1,5 +1,11 @@
 import { BoatKeyCheck, BoatKeyStatus } from "@mend/api-contracts";
-import { boatKeyShapeProblem } from "@mend/domain/workbench";
+import {
+  type BoatKeyReport,
+  boatKeyCreateCommand,
+  boatKeyFacts,
+  boatKeyShapeProblem,
+  boatKeyWarnings,
+} from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { usageOf } from "./help.ts";
@@ -68,6 +74,33 @@ const runtimeNote = (status: BoatKeyStatus): ReadonlyArray<string> =>
         `This organization's new sessions run on ${status.sessionRuntime === "docker" ? "this server's Docker" : "the runtime Sealant picks"}, so no session uses a Boat key until they run on Boat.`,
       ];
 
+/** Where the CLI sends a person to make a new key: the command itself. */
+const REPLACE_FROM_CLI = `Create a new key with ${boatKeyCreateCommand("<your-boat-organization>")} (or --org personal for a personal account), then run mend boat connect to replace this one.`;
+
+/**
+ * Boat's report about the key, as the Boat page shows it (`boatKeyFacts`, `boatKeyWarnings`): one
+ * line per fact, then what needs a person. `!` marks a sentence that needs one.
+ */
+export const renderReport = (
+  report: BoatKeyReport | null,
+  now: Date = new Date(),
+): ReadonlyArray<string> => {
+  if (report === null) {
+    return [
+      "Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires. Sealant has not checked this key with Boat since it was connected. mend boat check asks Boat.",
+    ];
+  }
+  const facts = boatKeyFacts(report, now);
+  const width = Math.max(...facts.map((fact) => fact.label.length));
+  return [
+    `What Boat said about the key · observed ${at(report.observedAt)}`,
+    ...facts.map((fact) => `  ${fact.label.padEnd(width)}  ${fact.value}`),
+    ...boatKeyWarnings(report, now, REPLACE_FROM_CLI).map((warning) =>
+      warning.tone === "note" ? warning.text : `! ${warning.text}`,
+    ),
+  ];
+};
+
 export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {
   if (!status.connected) {
     return [
@@ -88,11 +121,9 @@ export const renderStatus = (status: BoatKeyStatus): ReadonlyArray<string> => {
     `This organization has its own Boat key · connected by ${details.connectedByName ?? details.connectedByUserId} ${at(details.connectedAt)}${details.keyReplacedAt === null ? "" : ` · replaced ${at(details.keyReplacedAt)}`}`,
     `New Boat sessions run in, and are billed to, its Boat account (Sealant account ${details.sealantBoatAccountId}). Running sessions stay where they started.`,
     ...runtimeNote(status),
+    ...renderReport(details.report),
   ];
 };
-
-const REPORT_PENDING =
-  "Boat's own report about the key (who it is, the wallet it bills, its permissions and expiry) needs a newer Sealant on this server. Mend shows it once Sealant returns one.";
 
 export const renderCheck = (check: BoatKeyCheck): ReadonlyArray<string> => {
   const observed = `observed ${at(check.observedAt)}`;
@@ -105,7 +136,8 @@ export const renderCheck = (check: BoatKeyCheck): ReadonlyArray<string> => {
     case "active":
       return [
         `Sealant holds the organization's Boat key · active · ${observed}${check.keyReplacedAt === null ? "" : ` · replaced ${at(check.keyReplacedAt)}`}`,
-        REPORT_PENDING,
+        ...(check.unanswered === null ? [] : [check.unanswered]),
+        ...renderReport(check.report),
       ];
     case "removing":
       return [

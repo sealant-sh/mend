@@ -17,8 +17,18 @@ import {
   ProjectsRepo,
   UsersRepo,
 } from "@mend/db";
-import { type BoatKeyOwner, boatKeyShapeProblem } from "@mend/domain/workbench";
-import { type BoatAccountRefusal, SealantClients, type SealantPlatformError } from "@mend/sealant";
+import {
+  type BoatKeyOwner,
+  type BoatKeyReport,
+  boatKeyShapeProblem,
+  permissionsTheCommandLacks,
+} from "@mend/domain/workbench";
+import {
+  type BoatAccountRefusal,
+  type PlatformBoatAccount,
+  SealantClients,
+  type SealantPlatformError,
+} from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DateTime, Effect, Redacted } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
@@ -152,7 +162,106 @@ const ownership = Effect.gen(function* () {
   return found;
 });
 
-const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
+/**
+ * Core needs a permission the page's create-key command does not ask for: Mend's list is behind
+ * Core's, so every key made with the command would be refused. Said once per report, in the log.
+ */
+const warnIfTheCommandLacks = (report: BoatKeyReport | null) => {
+  const lacking = report === null ? [] : permissionsTheCommandLacks(report.requiredPermissions);
+  return lacking.length === 0
+    ? Effect.void
+    : Effect.logWarning(
+        `boat key: Sealant needs Boat permissions the create-key command does not ask for: ${lacking.join(", ")}. Update BOAT_KEY_REQUIRED_PERMISSIONS.`,
+      );
+};
+
+/**
+ * Core's Boat account for a key, with the last report Core keeps on it, from Core's list: no call
+ * to Boat. Null when Core does not list the account, or could not be read (logged): the status
+ * still answers. A person's own key (`/api/me/boat-key`, SLNT-797) reads its account the same way.
+ */
+export const lastBoatKeyAccount = (sealantBoatAccountId: string) =>
+  Effect.gen(function* () {
+    const accounts = yield* (yield* SealantClients).listBoatAccounts();
+    const account =
+      accounts.find((candidate) => candidate.boatAccountId === sealantBoatAccountId) ?? null;
+    yield* warnIfTheCommandLacks(account?.report ?? null);
+    return account;
+  }).pipe(
+    Effect.catch((error) =>
+      Effect.logWarning(
+        `boat key: could not read Sealant's Boat accounts for the key's report · ${error._tag} · ${error.message}`,
+      ).pipe(Effect.as(null)),
+    ),
+  );
+
+const UNANSWERED =
+  "Boat did not answer this check, so Mend observed nothing new: the report shown is the last one. Try again in a minute.";
+
+/**
+ * Checks a key with Boat again (`boatAccounts.check`, read-only) and answers what Mend observed.
+ * Boat not answering keeps Core's last report, and `unanswered` says so. A person's own key
+ * (`/api/me/boat-key/check`, SLNT-797) checks the same way.
+ */
+export const checkBoatKeyAccount = (key: {
+  readonly sealantBoatAccountId: string;
+  readonly keyReplacedAt: Date | null;
+}) =>
+  Effect.gen(function* () {
+    const checked = yield* (yield* SealantClients)
+      .checkBoatAccount(key.sealantBoatAccountId)
+      .pipe(Effect.result);
+    const now = yield* DateTime.nowAsDate;
+    if (checked._tag === "Success") {
+      const account = checked.success;
+      yield* warnIfTheCommandLacks(account.report);
+      return new BoatKeyCheck({
+        state: account.state,
+        observedAt: account.report?.observedAt ?? now,
+        keyReplacedAt: account.keyRotatedAt ?? key.keyReplacedAt,
+        report: account.report,
+        unanswered: null,
+      });
+    }
+    const error = checked.failure;
+    if (error._tag === "BoatAccountRefusal" && error.reason === "not-found") {
+      return new BoatKeyCheck({
+        state: "missing",
+        observedAt: now,
+        keyReplacedAt: key.keyReplacedAt,
+        report: null,
+        unanswered: null,
+      });
+    }
+    if (
+      error._tag === "BoatAccountRefusal" &&
+      (error.reason === "key-unverified" ||
+        error.reason === "key-refused" ||
+        error.reason === "missing-permissions")
+    ) {
+      const last = yield* lastBoatKeyAccount(key.sealantBoatAccountId);
+      yield* Effect.logInfo(
+        `boat key: Boat did not answer a check of Sealant account ${key.sealantBoatAccountId} · ${error.reason}${error.boat === null ? "" : ` · ${error.boat.kind} · ${error.boat.code ?? "no code"} · request ${error.boat.requestId ?? "none"}`}`,
+      );
+      return new BoatKeyCheck({
+        state: last?.state ?? "active",
+        observedAt: now,
+        keyReplacedAt: last?.keyRotatedAt ?? key.keyReplacedAt,
+        report: error.report ?? last?.report ?? null,
+        unanswered: UNANSWERED,
+      });
+    }
+    const failure = boatKeyFailure("check")(error);
+    return yield* failure._tag === "BoatUnavailable"
+      ? failure
+      : new BoatUnavailable({ message: UNREACHABLE });
+  });
+
+const statusOf = (
+  found: OrganizationMembership,
+  key: BoatKey | null,
+  account?: PlatformBoatAccount | null,
+) =>
   Effect.gen(function* () {
     // Where this organization's new sessions run: its key is used only for Boat sessions.
     const sessionRuntime = (yield* organizationSessionRuntime(found.organization.id)).effective;
@@ -160,6 +269,10 @@ const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
       return new BoatKeyStatus({ connected: key !== null, sessionRuntime, details: null });
     }
     const connectedBy = yield* (yield* UsersRepo).byId(key.connectedByUserId);
+    // A connect or replace answers the account Core just checked; a status reads the last report.
+    const report =
+      (account === undefined ? yield* lastBoatKeyAccount(key.sealantBoatAccountId) : account)
+        ?.report ?? null;
     return new BoatKeyStatus({
       connected: true,
       sessionRuntime,
@@ -169,9 +282,7 @@ const statusOf = (found: OrganizationMembership, key: BoatKey | null) =>
         connectedByName: connectedBy?.name ?? null,
         connectedAt: key.connectedAt,
         keyReplacedAt: key.keyReplacedAt,
-        // SLNT-781 seam: Core's last report for the account (`boatAccounts.list()`), once the
-        // pinned SDK returns one. Until then Mend has observed nothing about the key itself.
-        report: null,
+        report,
       }),
     });
   });
@@ -235,12 +346,12 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
         const clients = yield* SealantClients;
         const existing = yield* keys.byOwner(owner);
         if (existing !== null) {
-          yield* clients
+          const rotated = yield* clients
             .rotateBoatAccountKey(existing.sealantBoatAccountId, key)
             .pipe(Effect.mapError(boatKeyFailure("replace")));
           const replaced = yield* keys.markReplaced(owner);
           yield* record(found, "boat_key.replaced", existing.sealantBoatAccountId);
-          return yield* statusOf(found, replaced);
+          return yield* statusOf(found, replaced, rotated);
         }
         const account = yield* clients
           .createBoatAccount(`Mend · ${found.organization.name}`.slice(0, LABEL_LIMIT), key)
@@ -274,7 +385,7 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
           );
         yield* record(found, "boat_key.connected", account.boatAccountId);
         yield* rewarmStandbys(found);
-        return yield* statusOf(found, connected);
+        return yield* statusOf(found, connected, account);
       }),
     )
     .handle("check", () =>
@@ -287,25 +398,10 @@ export const BoatKeyGroupLive = HttpApiBuilder.group(MendApi, "boatKey", (handle
             observedAt: yield* DateTime.nowAsDate,
             keyReplacedAt: null,
             report: null,
+            unanswered: null,
           });
         }
-        const accounts = yield* (yield* SealantClients).listBoatAccounts().pipe(
-          Effect.mapError((error) => {
-            const failure = boatKeyFailure("check")(error);
-            return failure._tag === "BoatUnavailable"
-              ? failure
-              : new BoatUnavailable({ message: UNREACHABLE });
-          }),
-        );
-        const account = accounts.find(
-          (candidate) => candidate.boatAccountId === key.sealantBoatAccountId,
-        );
-        return new BoatKeyCheck({
-          state: account?.state ?? "missing",
-          observedAt: yield* DateTime.nowAsDate,
-          keyReplacedAt: account?.keyRotatedAt ?? key.keyReplacedAt,
-          report: account?.report ?? null,
-        });
+        return yield* checkBoatKeyAccount(key);
       }),
     )
     .handle("disconnect", () =>

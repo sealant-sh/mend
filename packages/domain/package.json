@@ -11,7 +11,8 @@
     "./host-user-namespaces": "./src/workbench/host-user-namespaces.ts",
     "./default-login": "./src/workbench/default-login.ts",
     "./endpoint-url": "./src/workbench/endpoint-url.ts",
-    "./runtime-support-fixtures": "./src/runtime-support-fixtures.ts"
+    "./runtime-support-fixtures": "./src/runtime-support-fixtures.ts",
+    "./boat-key-fixtures": "./src/workbench/boat-key-fixtures.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

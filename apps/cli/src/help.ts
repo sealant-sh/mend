@@ -1983,7 +1983,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "whether your organization has its own Boat key",
     synopsis: ["[--json]"],
     description: [
-      "With a Boat key connected, new Boat sessions in the organization run in, and are billed to, that key's Boat account; without one they use the server's. Members see whether there is one; owners also see who connected it, when, and when it was last replaced.",
+      "With a Boat key connected, new Boat sessions in the organization run in, and are billed to, that key's Boat account; without one they use the server's. Members see whether there is one; owners also see who connected it, when, when it was last replaced, and what Boat said about it the last time Sealant checked.",
       "A running session stays in the Boat account it started in. Its next start uses the key the organization has then.",
     ],
     options: [{ flag: "--json", text: "print the versioned status or error as JSON" }],
@@ -2008,10 +2008,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "boat check",
     section: "organization",
-    summary: "ask Sealant what it holds for your organization's Boat key",
+    summary: "ask Boat about your organization's Boat key now",
     synopsis: ["[--json]"],
     description: [
-      "Owners only. Prints what Sealant said of the organization's Boat account and when: active, being removed, or no longer listed. Boat's own report about the key (who it is, the wallet it bills, its permissions and expiry) needs a newer Sealant on the server.",
+      "Owners only. Asks Boat about the organization's key now, read-only, and prints what it said and when: who the key is, the wallet it bills, whether it can start a VM, its saved snapshot slots, its permissions and when it expires, then what needs doing. When Boat does not answer, it says so and prints the last report. mend boat status prints the last report without asking Boat.",
     ],
     options: [{ flag: "--json", text: "print the versioned check or error as JSON" }],
     see: ["boat status", "boat connect"],

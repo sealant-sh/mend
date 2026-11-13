@@ -1,7 +1,7 @@
 import type { BoatKey, NewBoatKey } from "@mend/db";
 import { BoatKeyTakenError } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
-import type { AuditData, BoatKeyOwner } from "@mend/domain/workbench";
+import type { AuditData, BoatFailure, BoatKeyOwner, BoatKeyReport } from "@mend/domain/workbench";
 import {
   BoatAccountRefusal,
   type BoatAccountRefusalReason,
@@ -16,7 +16,7 @@ type Implement = NonNullable<NonNullable<Parameters<typeof createTenancyApi>[1]>
 
 /** What Core is asked, with the key unwrapped only here, to prove it went to Core and nowhere else. */
 export interface CoreCall {
-  readonly call: "create" | "list" | "rotate" | "remove";
+  readonly call: "create" | "list" | "rotate" | "remove" | "check";
   readonly label?: string;
   readonly key?: string;
   readonly boatAccountId?: string;
@@ -29,6 +29,8 @@ export const refusal = (
     buildsInFlight?: number;
     unseen?: number;
     missingPermissions?: ReadonlyArray<string>;
+    boat?: BoatFailure;
+    report?: BoatKeyReport;
   } = {},
 ) =>
   new BoatAccountRefusal({
@@ -37,6 +39,8 @@ export const refusal = (
     buildsInFlight: counts.buildsInFlight ?? null,
     unseen: counts.unseen ?? null,
     missingPermissions: counts.missingPermissions ?? null,
+    boat: counts.boat ?? null,
+    report: counts.report ?? null,
     message: `Core says ${reason}`,
   });
 
@@ -54,6 +58,8 @@ export const makeBoatWorld = () => {
   const reconciled: Array<ProjectId> = [];
   /** The refusal Core answers the next call with, if any. */
   let refuseNext: BoatAccountRefusal | SealantPlatformError | null = null;
+  /** What Core's check of a key observes, the next time it checks one (create, rotate, check). */
+  let observed: BoatKeyReport | null = null;
   const answer = <A>(value: () => A) =>
     Effect.suspend(() => {
       const refused = refuseNext;
@@ -102,7 +108,7 @@ export const makeBoatWorld = () => {
             state: "active",
             createdAt: new Date("2026-11-13T12:00:00.000Z"),
             keyRotatedAt: null,
-            report: null,
+            report: observed,
           };
           accounts.set(boatAccountId, account);
           return account;
@@ -112,7 +118,13 @@ export const makeBoatWorld = () => {
           core.push({ call: "rotate", boatAccountId, key: Redacted.value(key) });
           const account = accounts.get(boatAccountId);
           if (account === undefined) throw new Error("rotated an unknown account");
-          return account;
+          const rotated = {
+            ...account,
+            keyRotatedAt: new Date("2026-11-13T13:00:00.000Z"),
+            report: observed,
+          };
+          accounts.set(boatAccountId, rotated);
+          return rotated;
         }),
       removeBoatAccount: (boatAccountId) =>
         answer(() => {
@@ -121,6 +133,15 @@ export const makeBoatWorld = () => {
           if (account === undefined) throw new Error("removed an unknown account");
           accounts.delete(boatAccountId);
           return { ...account, state: "removing" as const };
+        }),
+      checkBoatAccount: (boatAccountId) =>
+        answer(() => {
+          core.push({ call: "check", boatAccountId });
+          const account = accounts.get(boatAccountId);
+          if (account === undefined) throw new Error("checked an unknown account");
+          const checked = { ...account, report: observed };
+          accounts.set(boatAccountId, checked);
+          return checked;
         }),
       listBoatAccounts: () =>
         answer(() => {
@@ -154,6 +175,10 @@ export const makeBoatWorld = () => {
     refuseNext: (error: BoatAccountRefusal | SealantPlatformError) => {
       refuseNext = error;
     },
+    /** What Core's checks observe from now on. */
+    observe: (report: BoatKeyReport | null) => {
+      observed = report;
+    },
     reset: () => {
       keys.clear();
       accounts.clear();
@@ -161,6 +186,7 @@ export const makeBoatWorld = () => {
       audited.length = 0;
       reconciled.length = 0;
       refuseNext = null;
+      observed = null;
     },
   };
 };

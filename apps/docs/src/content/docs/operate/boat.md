@@ -180,8 +180,30 @@ A session that is running stays in the Boat account it started in. Its next star
 organization has then. `mend boat connect` again replaces the key in the same Boat account, and is
 refused when the new key cannot see the VMs or saved images the account holds now.
 `mend boat disconnect` sends new sessions back to the server's key, and is refused while the account
-still has VMs Boat may be running. `mend boat status` and `mend boat check` say what was observed
-and when. Connecting, replacing and removing the key are in the organization's audit log.
+still has VMs Boat may be running. Connecting, replacing and removing the key are in the
+organization's audit log.
+
+The key needs these Boat permissions: `exec`, `file.write`, `host`, `sandbox.create`,
+`sandbox.delete`, `sandbox.read`, `sandbox.resume`, `sandbox.stop`, `snapshot.read` and
+`snapshot.write`, plus `account.read`, so Mend can read the wallet and the key itself. Boat's `ci`
+preset is not enough: its `sandbox.delete-own` does not count as `sandbox.delete`. Sealant refuses a
+key that it can see lacks one, and names the ones missing. The Boat page in **Settings ·
+Organization · Boat** shows the command that makes a suitable key, for a Boat organization
+(`boat --org <organization> api-key create …`) or for your personal account
+(`boat --org personal api-key create …`; without `--org personal`, the Boat CLI makes the key for
+whichever wallet `boat org switch` chose last).
+
+When Sealant checks the key (on connect, on replace and on **Check now** or `mend boat check`) it
+asks Boat, read-only, who the key is, which wallet it bills, whether that wallet can start a VM now,
+how many VMs run and are allowed, how many saved snapshot slots are used, and the key's permissions
+and expiry. The page and `mend boat status` show the last answer, with when it was observed, and say
+what needs doing: a key that expires within fourteen days, a missing permission, a wallet that
+cannot start, every snapshot slot used. Each fact Boat did not show is marked not observed, with
+Boat's reason. When Boat does not answer a check, Mend says so and keeps the last report.
+
+Boat does not show a Boat organization's key its own permissions or expiry, so for that kind of key
+those two facts are always not observed. Run `boat --org <organization> api-key list`, or open the
+API Keys tab in Boat's dashboard, to see them.
 
 ## When Boat VMs shut down
 

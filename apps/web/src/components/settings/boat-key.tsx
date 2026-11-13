@@ -1,3 +1,4 @@
+import { boatKeyFacts, boatKeyWarnings, dayOf } from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { Redacted } from "effect";
@@ -11,13 +12,7 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { Dot, ErrorNote, errorText, StatusWord, type Tone } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import type { BoatKeyCheckDto, BoatKeyDetailsDto, BoatKeyStatusDto } from "#/lib/api";
-import {
-  BOAT_KEY_COMMANDS,
-  boatKeyFacts,
-  boatKeyWarnings,
-  dayOf,
-  observedAt,
-} from "#/lib/boat-key";
+import { BOAT_KEY_COMMANDS, observedAt, REPLACE_ON_PAGE } from "#/lib/boat-key";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { Caption, Notice, useOrganizationView } from "./org-parts";
@@ -166,8 +161,8 @@ function CreateKeyCommands() {
   return (
     <div className="mb-4 grid gap-3">
       <p className="text-[13px] leading-relaxed text-ink-2">
-        Create a key in Boat with the permissions Sealant needs, then paste it here. It lasts a
-        year, the longest Boat allows.
+        Create a key in Boat with the permissions Mend needs, then paste it here. It lasts a year,
+        the longest Boat allows.
       </p>
       {BOAT_KEY_COMMANDS.map((form) => (
         <div key={form.key} className="grid gap-1.5">
@@ -288,7 +283,7 @@ function ConnectedKey({
   const now = new Date();
   const checked = check.data ?? null;
   const report = checked?.report ?? details.report;
-  const warnings = report === null ? [] : boatKeyWarnings(report, now);
+  const warnings = report === null ? [] : boatKeyWarnings(report, now, REPLACE_ON_PAGE);
   const checkState =
     checked === null || checked.state === "active" ? null : CHECK_STATE[checked.state];
   const observed = report?.observedAt ?? checked?.observedAt ?? null;
@@ -296,7 +291,7 @@ function ConnectedKey({
     checkState?.tone ??
     (warnings.some((warning) => warning.tone === "bad")
       ? "bad"
-      : warnings.length > 0
+      : warnings.some((warning) => warning.tone === "wait")
         ? "wait"
         : "ok");
   return (
@@ -309,6 +304,9 @@ function ConnectedKey({
         {details.keyReplacedAt === null ? "" : ` · replaced ${dayOf(details.keyReplacedAt)}`}
       </p>
       {checkState === null ? null : <Notice>{checkState.line}</Notice>}
+      {checked === null || checked.unanswered === null ? null : (
+        <Notice>{checked.unanswered}</Notice>
+      )}
       {runtime === null ? null : <Notice>{runtime}</Notice>}
       {warnings.map((warning) =>
         warning.tone === "bad" ? (
@@ -322,8 +320,8 @@ function ConnectedKey({
       {report === null ? (
         <p className="mt-3 text-[13px] leading-relaxed text-muted-foreground">
           Not observed yet: who the key is, the wallet it bills, whether it can start a VM, its
-          saved snapshot slots, its permissions and when it expires. This server's Sealant does not
-          report them yet.
+          saved snapshot slots, its permissions and when it expires. Sealant has not checked this
+          key with Boat since it was connected. Check now asks Boat.
         </p>
       ) : (
         <div className="mt-3">
@@ -356,6 +354,8 @@ function ConnectedKey({
           />
         </div>
       )}
+      {/* SLNT-784: the full check (Core's `boatAccounts.prove`, which starts a throwaway VM) goes
+          beside Check now. It is the one way to prove an organization key's permissions. */}
       <div className="mt-3 flex flex-wrap gap-2">
         <Button size="sm" disabled={check.isPending} onClick={() => check.mutate()}>
           {check.isPending ? "Checking…" : "Check now"}
