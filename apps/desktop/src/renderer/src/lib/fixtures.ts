@@ -52,6 +52,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
 });
 
 export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => ({
+  boatKey: null,
   historyRevision: 0,
   purpose: null,
   resourceStatusLines: [],

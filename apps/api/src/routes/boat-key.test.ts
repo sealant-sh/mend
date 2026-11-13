@@ -6,7 +6,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
-import { organizationIdOf } from "../../test/support/tenancy-harness.ts";
+import { accessKeyBearerOf, organizationIdOf } from "../../test/support/tenancy-harness.ts";
 
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
@@ -96,7 +96,12 @@ describe("an organization's Boat key", () => {
     }
     expect(core).toEqual([]);
     const status = await api.request("carol", "GET", "/api/organization/boat-key");
-    expect(await status.json()).toEqual({ connected: true, sessionRuntime: "boat", details: null });
+    expect(await status.json()).toEqual({
+      connected: true,
+      sessionRuntime: "boat",
+      details: null,
+      peopleWithOwnKeys: null,
+    });
   });
 
   it("keeps each organization's key to itself", async () => {
@@ -106,6 +111,7 @@ describe("an organization's Boat key", () => {
       connected: false,
       sessionRuntime: "boat",
       details: null,
+      peopleWithOwnKeys: [],
     });
     // Bob's connect makes organization B's own account and leaves A's alone.
     await connect("bob", REPLACEMENT);
@@ -141,6 +147,7 @@ describe("an organization's Boat key", () => {
       connected: false,
       sessionRuntime: "boat",
       details: null,
+      peopleWithOwnKeys: [],
       removal: { standbysDrained: 0 },
     });
     expect(keys.has(organizationIdOf("A"))).toBe(false);
@@ -526,6 +533,244 @@ describe("an organization's Boat key", () => {
       await (await api.request("alice", "POST", "/api/organization/boat-key/check")).text(),
     );
     bodies.push(await (await api.request("alice", "DELETE", "/api/organization/boat-key")).text());
+    expect(logs.length).toBeGreaterThan(0);
+    const everything = [...bodies, JSON.stringify(audited), JSON.stringify([...keys]), ...logs];
+    for (const secret of [KEY, REPLACEMENT, KEY.slice(10), REPLACEMENT.slice(10)]) {
+      expect(everything.filter((text) => text.includes(secret))).toEqual([]);
+    }
+  });
+});
+
+describe("a person's own Boat key (SLNT-797)", () => {
+  let api: TenancyApi;
+  const logs: Array<string> = [];
+  const boat = makeBoatWorld();
+  const { keys, core, audited, reconciled, standbys, steps } = boat;
+  const A = organizationIdOf("A");
+  const B = organizationIdOf("B");
+
+  beforeAll(async () => {
+    api = await createTenancyApi(undefined, {
+      logs,
+      sessionRuntime: "boat",
+      implement: boat.implement,
+      boatKeyRemovalWait: { within: Duration.millis(200), every: Duration.millis(20) },
+    });
+    const kept = [...api.world.projects.values()].find((project) => project.organizationId === A);
+    if (kept === undefined) throw new Error("organization A has no project");
+    api.world.addProject(new Project({ ...kept, hotSessions: 1 }));
+  });
+
+  afterAll(async () => {
+    await api.dispose();
+  });
+
+  beforeEach(() => {
+    boat.reset();
+    logs.length = 0;
+  });
+
+  const ROUTE = "/api/me/boat-key";
+  const connectOwn = (user: "alice" | "bob" | "carol" | "erin", key = KEY) =>
+    api.request(user, "PUT", ROUTE, { key });
+
+  it("lets a member connect their own key in their organization, kept apart from the organization's", async () => {
+    const response = await connectOwn("carol");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      organizationName: "Organization A",
+      connected: true,
+      sessionRuntime: "boat",
+      organizationKey: false,
+      details: {
+        sealantBoatAccountId: "core-boat-1",
+        connectedByUserId: "carol",
+        connectedByName: "Carol",
+        keyReplacedAt: null,
+        report: null,
+      },
+    });
+    expect(core).toEqual([{ call: "create", label: "Mend · Organization A · carol", key: KEY }]);
+    expect(keys.get(`${A}/carol`)?.owner).toEqual({
+      kind: "person",
+      organizationId: A,
+      userId: "carol",
+    });
+    expect(keys.has(A)).toBe(false);
+    expect(audited).toEqual([
+      {
+        action: "boat_key.connected",
+        subjectId: "core-boat-1",
+        data: { key: "own" },
+        actor: "carol",
+      },
+    ]);
+    // Her standbys in the organization's account drain: a person's own key keeps none.
+    expect(reconciled).toHaveLength(1);
+    // The organization's key is still not connected, and members still read only that.
+    const organization = await api.request("carol", "GET", "/api/organization/boat-key");
+    expect(await organization.json()).toEqual({
+      connected: false,
+      sessionRuntime: "boat",
+      details: null,
+      peopleWithOwnKeys: null,
+    });
+  });
+
+  it("shows an owner that a member has their own key, and none of its details", async () => {
+    await connectOwn("carol");
+    const owner = await api.request("alice", "GET", "/api/organization/boat-key");
+    const body = await owner.json();
+    expect(body).toEqual({
+      connected: false,
+      sessionRuntime: "boat",
+      details: null,
+      peopleWithOwnKeys: [{ userId: "carol", name: "Carol" }],
+    });
+    expect(JSON.stringify(body)).not.toContain("core-boat-1");
+    // Another organization's owner sees nobody from organization A.
+    const other = await api.request("bob", "GET", "/api/organization/boat-key");
+    expect(await other.json()).toMatchObject({ peopleWithOwnKeys: [] });
+  });
+
+  it("gives nobody else a way to read, check, replace or remove a person's key", async () => {
+    await connectOwn("carol");
+    core.length = 0;
+    // An owner's own requests act on the owner's own row: carol's key stays as it is.
+    const ownerStatus = await api.request("alice", "GET", ROUTE);
+    expect(await ownerStatus.json()).toMatchObject({ connected: false, details: null });
+    const ownerCheck = await api.request("alice", "POST", `${ROUTE}/check`);
+    expect(await ownerCheck.json()).toMatchObject({ state: "none" });
+    const ownerRemove = await api.request("alice", "DELETE", ROUTE);
+    expect(await ownerRemove.json()).not.toHaveProperty("removal");
+    // The organization's routes never reach it either.
+    await api.request("alice", "DELETE", "/api/organization/boat-key");
+    expect(core).toEqual([]);
+    expect(steps).toEqual([]);
+    expect(keys.get(`${A}/carol`)?.sealantBoatAccountId).toBe("core-boat-1");
+    expect(keys.get(`${A}/carol`)?.keyReplacedAt).toBeNull();
+    // A connect by the owner makes the owner's own key, beside carol's.
+    await connectOwn("alice", REPLACEMENT);
+    expect(core).toEqual([
+      { call: "create", label: "Mend · Organization A · alice", key: REPLACEMENT },
+    ]);
+    expect(keys.get(`${A}/carol`)?.sealantBoatAccountId).toBe("core-boat-1");
+    expect(keys.get(`${A}/alice`)?.sealantBoatAccountId).toBe("core-boat-2");
+  });
+
+  it("keeps a person's key to the organization it was connected in", async () => {
+    // Erin owns A and is a member of B; her active organization is A.
+    await connectOwn("erin");
+    expect(keys.get(`${A}/erin`)?.sealantBoatAccountId).toBe("core-boat-1");
+    expect(keys.has(`${B}/erin`)).toBe(false);
+    // Bob, B's owner, sees no one with their own key in B.
+    const owner = await api.request("bob", "GET", "/api/organization/boat-key");
+    expect(await owner.json()).toMatchObject({ peopleWithOwnKeys: [] });
+    // In B, bob's own key is his and nobody else's.
+    await connectOwn("bob", REPLACEMENT);
+    expect(keys.get(`${B}/bob`)?.sealantBoatAccountId).toBe("core-boat-2");
+    const erinStatus = await api.request("erin", "GET", ROUTE);
+    expect(await erinStatus.json()).toMatchObject({
+      organizationName: "Organization A",
+      details: { sealantBoatAccountId: "core-boat-1" },
+    });
+  });
+
+  it("says when the organization has its own key, which decides once theirs is gone", async () => {
+    await api.request("alice", "PUT", "/api/organization/boat-key", { key: REPLACEMENT });
+    await connectOwn("carol");
+    const status = await api.request("carol", "GET", ROUTE);
+    expect(await status.json()).toMatchObject({ connected: true, organizationKey: true });
+  });
+
+  it("replaces a person's key in the same Core account and records it as theirs", async () => {
+    await connectOwn("carol");
+    const response = await connectOwn("carol", REPLACEMENT);
+    expect(await response.json()).toMatchObject({
+      details: { sealantBoatAccountId: "core-boat-1", keyReplacedAt: "2026-11-13T13:00:00.000Z" },
+    });
+    expect(core.at(-1)).toEqual({ call: "rotate", boatAccountId: "core-boat-1", key: REPLACEMENT });
+    expect(audited.at(-1)).toMatchObject({ action: "boat_key.replaced", data: { key: "own" } });
+  });
+
+  it("refuses a replacement in the person's words, and keeps the key", async () => {
+    await connectOwn("carol");
+    boat.refuseNext(refusal("cannot-see", { unseen: 2 }));
+    const response = await connectOwn("carol", REPLACEMENT);
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { message: string }).message).toContain(
+      "This key cannot see 2 VMs or saved images your Boat account holds now",
+    );
+    expect(keys.get(`${A}/carol`)?.keyReplacedAt).toBeNull();
+  });
+
+  it("removes a person's key: their standbys drain first, and their sessions go back to the organization's key", async () => {
+    await connectOwn("carol");
+    standbys.set("core-boat-1", 1);
+    const response = await api.request("carol", "DELETE", ROUTE);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      connected: false,
+      details: null,
+      removal: { standbysDrained: 1 },
+    });
+    expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
+    expect(keys.has(`${A}/carol`)).toBe(false);
+    expect(audited.at(-1)).toEqual({
+      action: "boat_key.removed",
+      subjectId: "core-boat-1",
+      data: { key: "own", standbysDrained: 1 },
+      actor: "carol",
+    });
+    // A retry finds nothing to remove, and asks Core nothing.
+    core.length = 0;
+    steps.length = 0;
+    const again = await api.request("carol", "DELETE", ROUTE);
+    expect(again.status).toBe(200);
+    expect(await again.json()).not.toHaveProperty("removal");
+    expect(core).toEqual([]);
+    expect(steps).toEqual([]);
+  });
+
+  it("refuses a removal while a session of theirs holds the account, with the count, and keeps the key", async () => {
+    await connectOwn("carol");
+    boat.refuseNext(refusal("in-use", { liveRuns: 1 }));
+    const response = await api.request("carol", "DELETE", ROUTE);
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      _tag: "BoatKeyConflict",
+      reason: "in-use",
+      liveRuns: 1,
+      message:
+        "Your Boat account still has 1 session workspace whose VM Boat may be running, so nothing changed and the key stays. To remove it, stop your Boat sessions, then remove the key again.",
+    });
+    expect(keys.has(`${A}/carol`)).toBe(true);
+  });
+
+  it("refuses an access key connecting or removing a person's key, and sends Core nothing", async () => {
+    const headers = { authorization: `Bearer ${accessKeyBearerOf("carol")}` };
+    for (const response of [
+      await api.request(null, "PUT", ROUTE, { key: KEY }, headers),
+      await api.request(null, "DELETE", ROUTE, undefined, headers),
+    ]) {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ _tag: "AccessKeyRefused" });
+    }
+    expect(core).toEqual([]);
+    expect(keys.size).toBe(0);
+  });
+
+  it("never writes the key to a response, an error, the audit log or a log line", async () => {
+    const bodies: Array<string> = [];
+    bodies.push(await (await connectOwn("carol")).text());
+    boat.refuseNext(refusal("cannot-see", { unseen: 1 }));
+    bodies.push(await (await connectOwn("carol", REPLACEMENT)).text());
+    bodies.push(await (await connectOwn("carol", REPLACEMENT)).text());
+    bodies.push(await (await connectOwn("carol", "x")).text());
+    bodies.push(await (await api.request("carol", "GET", ROUTE)).text());
+    bodies.push(await (await api.request("alice", "GET", "/api/organization/boat-key")).text());
+    bodies.push(await (await api.request("carol", "POST", `${ROUTE}/check`)).text());
+    bodies.push(await (await api.request("carol", "DELETE", ROUTE)).text());
     expect(logs.length).toBeGreaterThan(0);
     const everything = [...bodies, JSON.stringify(audited), JSON.stringify([...keys]), ...logs];
     for (const secret of [KEY, REPLACEMENT, KEY.slice(10), REPLACEMENT.slice(10)]) {

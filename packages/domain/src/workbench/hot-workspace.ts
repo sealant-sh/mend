@@ -1,8 +1,9 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
+import { BoatKeyChoice } from "./boat-key.ts";
 import { HarnessLayout } from "./harness-layout.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
@@ -97,6 +98,8 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   workspaceImage: Schema.NullOr(WorkspaceImage),
   /** The dotfiles the workspace actually launched with — stamped onto the claiming session. */
   dotfiles: Schema.NullOr(SessionDotfiles),
+  /** Which Boat key the workspace was created on — stamped onto the claiming session. */
+  boatKey: Schema.NullOr(BoatKeyChoice).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
   /** The env manifest the workspace actually launched with — stamped onto the session run. */
   environment: Schema.NullOr(HotWorkspaceEnvironment),
   /** References mounted read-only beside the worktree, SHAs as observed at prewarm. */

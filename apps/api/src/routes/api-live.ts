@@ -67,7 +67,7 @@ import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AccessKeysGroupLive } from "./access-keys.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
-import { BoatKeyGroupLive } from "./boat-key.ts";
+import { BoatKeyGroupLive, PersonBoatKeyGroupLive } from "./boat-key.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { DopplerGroupLive } from "./doppler.ts";
 import { ExecutorGroupLive } from "./executor.ts";
@@ -767,6 +767,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       AccountOrganizationsGroupLive,
       SlackGroupLive,
       BoatKeyGroupLive,
+      PersonBoatKeyGroupLive,
       FoldersGroupLive,
       OperatorGroupLive,
     ),
