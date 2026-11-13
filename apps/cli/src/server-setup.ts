@@ -6120,7 +6120,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
         chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : Buffer.from(chunk));
       return Buffer.concat(chunks).toString("utf8");
     },
-    stdinIsTerminal: process.stdin.isTTY === true,
+    stdinIsTerminal: process.stdin.isTTY,
     askHidden: (label) => promptHidden(label, process.stdin, process.stderr),
   };
 };

@@ -92,6 +92,17 @@ const doctorAgainst = async (routes: {
   }
 };
 
+/** What `/organization/runtime` answers for an organization whose sessions run on Boat. */
+const runtimeOf = (support: unknown) => ({
+  sessionRuntime: {
+    chosen: null,
+    effective: "boat",
+    offered: ["docker", "boat"],
+    serverDefault: "boat",
+  },
+  support,
+});
+
 const labelled = (checks: ReadonlyArray<Check>, label: string): Check => {
   const check = checks.find((entry) => entry.label === label);
   if (check === undefined) throw new Error(`no ${label} line in ${JSON.stringify(checks)}`);
@@ -226,15 +237,6 @@ describe("mend doctor on where sessions run and Boat (SLNT-799)", { timeout: 30_
   });
 
   it("tells a member whether sealant lists Boat for their organization, from its runtime (SLNT-822)", async () => {
-    const runtimeOf = (support: unknown) => ({
-      sessionRuntime: {
-        chosen: null,
-        effective: "boat",
-        offered: ["docker", "boat"],
-        serverDefault: "boat",
-      },
-      support,
-    });
     const refused = labelled(
       await doctorAgainst({
         sessionRuntimes: BOTH,

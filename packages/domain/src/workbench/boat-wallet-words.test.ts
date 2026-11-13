@@ -52,6 +52,7 @@ describe("which wallet a Boat key bills (SLNT-821)", () => {
     );
     expect(boatWalletChoices(report, "own")).toEqual({
       current: "org_9",
+      pinned: true,
       options: [
         { id: "personal", label: "your personal Boat account", detail: null },
         { id: "org_9", label: "the Boat organization acme-boat", detail: "your role: admin" },
@@ -73,6 +74,8 @@ describe("which wallet a Boat key bills (SLNT-821)", () => {
       "the Boat organization acme-boat · the key's role there: admin · not fixed: it follows the active wallet of the key's Boat account",
     );
     expect(bills?.tone).toBe("bad");
+    // Choosing pins a key sealant has not pinned, even to the wallet it bills now.
+    expect(boatWalletChoices(report, "other")).toMatchObject({ current: "org_9", pinned: false });
     const [moved] = boatKeyWarnings(report, NOW, "Replace it.", "own");
     expect(moved).toEqual({
       tone: "bad",

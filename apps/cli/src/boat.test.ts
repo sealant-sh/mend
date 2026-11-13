@@ -687,8 +687,8 @@ describe("the wallet a Boat key bills (SLNT-821)", () => {
     expect(stdout.split("\n")).toEqual([
       "Wallets this key's Boat account can bill · observed 2026-11-13 14:02 UTC",
       "    the personal Boat account of @acme-ci",
-      "  * the Boat organization acme-boat · your role: admin · bills now",
-      "    the Boat organization beta-labs · your role: member · active in Boat now",
+      "  * the Boat organization acme-boat · the key's role: admin · bills now",
+      "    the Boat organization beta-labs · the key's role: member · active in Boat now",
       "mend boat wallet <wallet> bills another (a Boat organization's name or id, or personal). It applies to the Boat sessions that start next; sessions running now stay in the wallet they started in.",
       "",
     ]);

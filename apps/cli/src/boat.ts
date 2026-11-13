@@ -618,7 +618,7 @@ export const boatCommand = async (
             `${wallet} is not one of the wallets this key's Boat account can bill (${choices.options.map((option) => (option.id === "personal" ? "personal" : option.label.replace(/^the Boat organization /, ""))).join(", ")}). Nothing changed. mend boat check${mine ? " --mine" : ""} reads the list from Boat again.`,
           );
         const label = walletOptionLabel(choices, id);
-        if (id === choices.current) {
+        if (id === choices.current && choices.pinned) {
           printStatus(before.ok, [
             `${capital(target.key)} bills ${label} already · nothing changed`,
           ]);

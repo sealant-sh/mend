@@ -681,14 +681,15 @@ function WalletChoice({
   // What the person picked, until they confirm it; the wallet billed now otherwise.
   const [picked, setPicked] = useState<string | null>(null);
   const selected = picked ?? current ?? choices.options[0]?.id ?? "";
-  const changed = selected !== current;
+  // A key not pinned yet is pinned by choosing, even the wallet it bills now.
+  const changed = selected !== current || !choices.pinned;
   return (
     <div className="mt-4 grid gap-2">
       <Caption>Wallet this key bills</Caption>
       <p className="text-[13px] leading-relaxed text-muted-foreground">
-        This key&apos;s Boat account can bill more than one wallet. sealant names the one below on
-        every request, so switching wallets in Boat does not move this bill. A change applies to the
-        Boat sessions that start next; sessions running now stay in the wallet they started in.
+        {choices.pinned
+          ? "This key's Boat account can bill more than one wallet. sealant names the one below on every request, so switching wallets in Boat does not move this bill. A change applies to the Boat sessions that start next; sessions running now stay in the wallet they started in."
+          : "This key is not pinned to a wallet yet, so it bills whichever wallet is active in Boat. Choosing one pins it: sealant names it on every request from then on, for the Boat sessions that start next."}
       </p>
       <ChoiceCards
         label="Wallet this key bills"

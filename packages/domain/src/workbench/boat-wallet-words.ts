@@ -190,6 +190,11 @@ export interface BoatWalletOption {
 export interface BoatWalletChoices {
   /** The id of the wallet the key bills now; null when Boat did not show it. */
   readonly current: string | null;
+  /**
+   * Whether sealant names that wallet on every request. False for a key sealant has not pinned
+   * yet, which follows the active wallet in Boat: choosing a wallet, even the current one, pins it.
+   */
+  readonly pinned: boolean;
   readonly options: ReadonlyArray<BoatWalletOption>;
 }
 
@@ -206,9 +211,12 @@ export const boatWalletChoices = (
   const billed = billedId(report);
   return {
     current: choices.some((choice) => choice.id === billed) ? billed : null,
+    pinned: report.billing?.mode !== "active-wallet",
     options: choices.map((choice) => {
       const detail = [
-        choice.kind === "organization" && choice.role !== null ? `your role: ${choice.role}` : null,
+        choice.kind === "organization" && choice.role !== null
+          ? `${reader === "own" ? "your" : "the key's"} role: ${choice.role}`
+          : null,
         choice.active ? "active in Boat now" : null,
       ].filter((part) => part !== null);
       return {
