@@ -107,7 +107,7 @@ describe("Boat sessions: the server's own Boat key", { timeout: 120_000 }, () =>
     expect(deployment).toMatch(/^mend-/);
     expect(owner).toMatch(UUID);
 
-    // Core adopts these two into its own record the first time it starts with them set
+    // sealant adopts these two into its own record the first time it starts with them set
     // (sealant#637); an install that dropped them in that same upgrade would no longer recognise
     // its VMs and saved images. So an upgrade keeps handing both, and the key, to `mend`.
     expect(await f.upgrade()).toEqual({ _tag: "ok" });

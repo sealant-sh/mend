@@ -480,7 +480,7 @@ describe("the server's session runtime choice", () => {
       copy: "This organization's sessions run on Boat, and it has no Boat key connected, so nothing was started.\nAn owner of this organization connects the organization's Boat key in Settings, Organization, Boat, or with mend boat connect. Then start the session again. If the server has a Boat key of its own, the person who runs this Mend server checks its Boat setup with mend server setup.",
     },
     {
-      // Core 0.40.0-next.874: no key named, and no worker has the server's own key.
+      // sealant 0.40.0-next.874: no key named, and no worker has the server's own key.
       status: 503,
       _tag: "WorkspaceServiceUnavailableError",
       code: "boat-account-required",

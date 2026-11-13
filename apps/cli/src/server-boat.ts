@@ -49,7 +49,7 @@ export const BOAT_GATEWAY_IMAGE_LABEL = "dev.sealant.mend.boat-gateway-image";
 const DEPLOYMENT_ID = /^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/;
 /** What sealant takes as a Boat key (`BoatSecret`). */
 const API_KEY = /^[A-Za-z0-9._~-]{16,4096}$/;
-/** What Core takes as the Boat organization the server's own key bills (its id or name). */
+/** What sealant takes as the Boat organization the server's own key bills (its id or name). */
 const ORGANIZATION = /^[A-Za-z0-9][A-Za-z0-9 _.-]{0,127}$/;
 
 export const isBoatDeploymentId = (value: string): boolean => DEPLOYMENT_ID.test(value);

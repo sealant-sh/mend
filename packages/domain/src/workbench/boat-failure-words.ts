@@ -221,9 +221,9 @@ const NO_KEY: BoatProblemWords = {
 };
 
 const REFUSAL_WORDS: { readonly [K in BoatLaunchRefusalCode]: Refusal } = {
-  // Core names no account and no worker has the server's own key: the organization needs its own.
+  // sealant names no account and no worker has the server's own key: the organization needs its own.
   "boat-account-required": () => NO_KEY,
-  // Without the organization's key, Core says this when the server has no key either and stores
+  // Without the organization's key, sealant says this when the server has no key either and stores
   // none (the commonest case), or when nothing on the server starts Boat VMs at all.
   "unsupported-runtime": (_coreMessage, context) =>
     context.holder === "server"
