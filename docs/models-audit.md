@@ -1,8 +1,8 @@
 # Models audit
 
-Roadmap item 5 of `ROADMAP.md` (0.36): what each client offered for a session's model before this
-change, where the list came from, and the decisions the one picker is built on. Facts first, dated
-2026-10-03, at main `63e5d8b80`.
+The 0.36 model picker: what each client offered for a session's model before it, where the list came
+from, and the decisions the one picker is built on. Facts first, dated 2026-10-03, at main
+`63e5d8b80`.
 
 ## Before
 
@@ -92,6 +92,14 @@ phone names a model.
    because `--model` would beat the project's or the user's own opencode config. A verbatim `argv`
    (`mend run -- …`) names its own command and records nothing; the CLI and the dashboard send a
    structured start for every harness, bare or not.
+
+   _Since then:_ on 2026-10-12 migration `0130_claude_own_default` (#737) took the default off
+   Claude's catalog too, so `HARNESSES_CHOOSING_THEIR_OWN_MODEL` is opencode and claude: a Claude
+   launch that names no model runs on Claude Code's own default, as a `claude` run by hand does, and
+   records `null`. Since #1094 (2026-10-20) a PTY launch writes its record through the engine's
+   `admittedLaunch` (`onAdmitted` in `session-start.ts`), inside the per-session gate, so two PTY
+   launches of one session can no longer leave the row naming the model that did not run.
+
 4. **Effort stays optional.** `null` means the harness's own default and is reported as such. The
    catalog carries which efforts a model takes, not a default effort: the harnesses pick their own
    default and Mend does not second-guess it.
@@ -121,17 +129,9 @@ phone names a model.
 10. **Slack** keeps reading the seed for the words it recognises offline; a model the seed does not
     know is still passed through as text, as before. Reading the live catalog there is a follow-up.
 
-## Not done
+## Known limits
 
-- No write endpoint or settings page for the catalog; an operator edits the table.
-- Slack's vocabulary reads the seed, not the table.
-- The catalog is not discovered from the harness binaries (t3code's `refreshModels`); it is a table
-  an operator edits.
-- A PTY launch records its options inside the account's launch slot but before the engine's
-  per-session gate: two PTY launches of one session that both pass the account budget can leave the
-  row reporting the second's model while the first one ran (the second fails `session_starting`).
-  Recording inside the engine's `oneLaunch`, as the protocol path does inside `launchProtocol`,
-  closes it; it needs `engine.launch` to take the resolved options beside the argv.
+- The catalog is a table an operator edits by SQL; Slack's offline vocabulary reads the seed.
 - A protocol launch records after `composeProtocolArgv` accepts the harness, so an unsupported
   harness rewrites nothing; the engine's later refusals (a workspace that fails to build) leave the
   record standing beside the failed session, which is what it ran with.

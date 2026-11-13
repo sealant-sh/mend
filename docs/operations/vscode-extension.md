@@ -6,8 +6,10 @@ and [Open VSX](https://open-vsx.org/extension/sealant-sh/mend) (which VSCodium, 
 Code builds install from). The workflow is `.github/workflows/publish-vscode.yml`. It packages the
 extension with no credential in reach, publishes the `.vsix` to Open VSX from the
 `vscode-marketplace` environment after an approval, and attaches the same `.vsix` to a
-`vscode-vX.Y.Z` GitHub release. The owner uploads that `.vsix` to the Marketplace by hand. Automated
-Marketplace publishing would need Azure DevOps or Microsoft Entra ID, and is deliberately not used.
+`vscode-vX.Y.Z` GitHub release. The owner uploads that `.vsix` to the Marketplace by hand. The
+workflow can publish to the Marketplace too, from the same approved job, when the environment holds
+a `VSCE_PAT` secret; it is not set, because a Marketplace token needs Azure DevOps or Microsoft
+Entra ID, which this repository does not use.
 
 The listing's name is the `displayName` in `apps/vscode/package.json`. The Marketplace refused
 `Mend`, which another extension already uses, so it is `Mend by Sealant`; inside VS Code the views
@@ -57,8 +59,8 @@ Every step needs an account only the owner holds. Nothing here is automated.
    as the environment secret `OVSX_PAT`, so only the approved publish job can read it:
 
    ```sh
-   gh api -X PUT repos/sealant-sh/Mend/environments/vscode-marketplace
-   gh secret set OVSX_PAT --repo sealant-sh/Mend --env vscode-marketplace
+   gh api -X PUT repos/sealant-sh/mend/environments/vscode-marketplace
+   gh secret set OVSX_PAT --repo sealant-sh/mend --env vscode-marketplace
    ```
 
    Add the reviewer and the deployment rules in the web UI. The workflow refuses to publish while
@@ -79,7 +81,7 @@ After Mend's own release of the same minor (the extension needs that server):
    or dispatch from main, which tags the commit it published:
 
    ```sh
-   gh workflow run publish-vscode.yml --repo sealant-sh/Mend --ref main
+   gh workflow run publish-vscode.yml --repo sealant-sh/mend --ref main
    ```
 
 2. **Approve the run.** Approve the `vscode-marketplace` deployment when the run asks. The run
@@ -88,7 +90,7 @@ After Mend's own release of the same minor (the extension needs that server):
 3. **Download the `.vsix`** from the release:
 
    ```sh
-   gh release download vscode-v0.36.0 --repo sealant-sh/Mend --pattern 'mend-*.vsix'
+   gh release download vscode-v0.36.0 --repo sealant-sh/mend --pattern 'mend-*.vsix'
    ```
 
 4. **Upload it to the Marketplace** at

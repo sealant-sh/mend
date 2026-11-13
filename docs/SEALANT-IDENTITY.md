@@ -1,7 +1,7 @@
 # Per-user Sealant identity
 
 Status: decided 2026-08-22. Shipped in sealant (sealant-sh/sealant#189) and Mend (#105). Supersedes
-the `SEALANT_OWNER_USER_ID` hand-off in `DEVELOPMENT.md` and the 2026-08-18 entry in `docs/BUGS.md`.
+the `SEALANT_OWNER_USER_ID` hand-off in `DEVELOPMENT.md`.
 
 ## Problem
 
@@ -27,9 +27,9 @@ principal_ and acts _on behalf of_ the mapped Sealant user on every call. Users 
 Claude / Codex / GitHub accounts from Mend (web, desktop, CLI); Mend forwards the credential to
 Sealant under the user's own Sealant id and never stores it.
 
-"Infra provider" here means the connected-account providers Sealant models today (`claude`, `codex`,
-`github`). Sealant has no compute-provider concept — the worker always drives the host Docker daemon
-— and this change does not introduce one.
+"Infra provider" here means the connected-account providers Sealant modelled at the time (`claude`,
+`codex`, `github`), not where a workspace runs. Sealant has since gained workspace runtimes besides
+the host Docker daemon (Kubernetes, MicroVM, Boat); this decision is independent of them.
 
 ### sealant
 
@@ -68,12 +68,13 @@ Sealant under the user's own Sealant id and never stores it.
 4. Mend API: `GET /me/sealant` (the caller's Sealant user id + accounts),
    `POST /me/sealant/accounts`, `DELETE /me/sealant/accounts/:id`. Secrets pass through to Sealant
    and are never persisted or logged by Mend.
-5. Surfaces: Settings → "Connected accounts" on web and desktop; `mend connect claude|codex|github`
-   - `mend accounts`. For codex the CLI reads the file the provider's CLI wrote at login, for github
-     it asks `gh` for its token, or `--from-stdin` takes a pasted credential. Since ADR 0005
-     (`docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md`), `mend connect claude` logs in
-     once against a directory Mend keeps, so Mend holds a Claude grant of its own and the laptop's
-     login is left as it is; `--use-my-login` sends the machine's existing login instead.
+5. Surfaces: Settings → "Agent logins" on web and desktop (first shipped as "Connected accounts");
+   `mend connect claude|codex|github` and `mend accounts`. For codex the CLI reads the file the
+   provider's CLI wrote at login, for github it asks `gh` for its token, or `--from-stdin` takes a
+   pasted credential. Since ADR 0005
+   (`docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md`), `mend connect claude` logs in
+   once against a directory Mend keeps, so Mend holds a Claude grant of its own and the laptop's
+   login is left as it is; `--use-my-login` sends the machine's existing login instead.
 6. Hot-pool skeletons are provisioned as their owner and claimed only by that owner's sessions — a
    warmed workspace carries the owner's connected accounts. Since organizations
    (docs/adr/0003-organizations-and-tenancy.md) the pool warms for each account that ran a session
@@ -92,7 +93,4 @@ Sealant under the user's own Sealant id and never stores it.
 - Organizations on Mend's side (shipped, `docs/adr/0003-organizations-and-tenancy.md`) do not need a
   Sealant counterpart: ownership on the platform stays per user; sharing is a Mend concern.
 - Mend takes `@sealant/sdk` and `@sealant/api-contracts` from npm through the catalog in
-  `pnpm-workspace.yaml` (0.37.2 today).
-- Open: revoking a Sealant user when a Mend user is deleted (archive connected accounts, expire
-  workspaces); surfacing "launched without a <provider> account" on the session status line —
-  tracked, not in this change.
+  `pnpm-workspace.yaml`.

@@ -666,8 +666,8 @@ export function packageOverrides(tarballs, consumers = null) {
 /**
  * Which of sealant's packages track sealantd's `next` line (`npm:@sealant/runtime-*-next@…`): those are
  * the ones a sealantd change reaches when it merges, so those are the ones the stack points at
- * sealantd's source. A package pinned to an older stable line (`^0.6.0`) keeps what it pins, as sealant
- * ships it. The packed runtime-client depends on runtime-protocol by its exact version, so that edge
+ * sealantd's source (today `apps/ssh-gateway`, `@sealant/workspaces` and `@sealant/telemetry`). A
+ * package pinned to a stable line instead keeps what it pins, as sealant ships it. The packed runtime-client depends on runtime-protocol by its exact version, so that edge
  * follows too.
  */
 export function runtimeConsumers(manifests) {

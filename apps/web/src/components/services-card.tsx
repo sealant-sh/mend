@@ -57,7 +57,7 @@ import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 
 /**
- * The session's Services (docs/SESSION-SERVICES.md §presentation): what runs
+ * The session's Services (docs/SESSION-SERVICES.md, "Surfaces"): what runs
  * and where it is reachable, plus the declared recipes as one-tap launchers.
  * Status words are observations — reachable means the forwarded port accepted
  * a connection, never a judgment about the application.

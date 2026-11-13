@@ -4,38 +4,31 @@ An editor reaches a session's worktree through the Sealant workspace SSH gateway
 gateway and registers the client's public key through the public SDK. The client talks to Mend, not
 a separate Sealant installation.
 
-The original plan was recorded on 2026-08-29. Manual configuration shipped in mend#151. Self-service
-setup is implemented; certificates and attachment leases below remain proposals. The packaging stack
-(#210 to #217) shipped persistent gateway keys, per-server client configuration, and explicit remote
-addressing. Installed VS Code and physical MacBook-to-Mac-Mini acceptance remain separate checks,
-not conclusions from the Linux process tests.
+This page records the design behind it: what setup relies on, and how removing a key and removing a
+member take effect. How to use it is elsewhere:
 
-## Current setup
+- setup, identity selection, configuration conflicts, removing a key and gateway host-key rotation:
+  the [CLI's Workspace SSH section](../apps/cli/README.md#workspace-ssh);
+- publishing the gateway beyond loopback and the `workspace-ssh` gate item:
+  [exposure](../apps/docs/src/content/docs/operate/exposure.md) and
+  [deploy on a VPS](../apps/docs/src/content/docs/operate/deploy-vps.md);
+- the gateway's limits before login:
+  [Mac mini with VS Code](../apps/docs/src/content/docs/operate/mac-mini-vscode.md#behind-an-https-edge).
 
-```sh
-mend login --url http://mend-server.example:3105
-mend ssh setup
-mend ssh
-```
-
-The last command reports configuration and client-key registration. It does not prove a successful
-SSH connection or establish host trust. See the [CLI SSH guide](../apps/cli/README.md#workspace-ssh)
-for identity selection, encrypted keys, configuration conflicts, and verified host-key rotation.
+## Setup
 
 - The CLI and VS Code share address and OpenSSH configuration code. The normalized Mend server URL
   determines its alias. Settings for one Mend server do not overwrite another server's settings.
 - The configured Mend URL supplies the client-reachable hostname. Gateway metadata supplies the SSH
-  port and username prefix. Explicit overrides support unusual network layouts. Mend does not
-  discover interfaces or fall back to a path on the client's filesystem.
-- Managed settings precede wildcard defaults because OpenSSH uses the first matching value. Setup
-  preserves unrelated Host/Match rules and refuses a rewrite when it cannot preserve their scope.
-- The selected public identity must have a matching usable private key or be available through an
-  unlocked SSH agent. Setup preserves an existing selection rather than silently replacing it.
+  port and username prefix. Mend does not discover interfaces or fall back to a path on the client's
+  filesystem.
 - The workspace ID travels in the SSH username. The editor opens `/workspace/repo` through the
   server's alias; it does not need a new SSH configuration block for each session.
 - A settled session needs a running workspace. The editor flow offers shell resume without launching
-  an agent. Agents started in that terminal can be observed through the mounted harness home, as
-  implemented by the observed-agents work in mend#147 and mend#148.
+  an agent.
+- Setup reports configuration and client-key registration, not a successful connection or host
+  trust. The public SDK reports gateway coordinates, not its host-key fingerprint, so OpenSSH's
+  `accept-new` decides first contact, and Mend never removes or replaces `known_hosts` entries.
 
 ## Removing a key
 
@@ -47,8 +40,7 @@ mend ssh keys remove SHA256:Vn6v0P2d…  # the SHA256: prefix is optional
 Settings → Workspace SSH lists the same keys with a Remove action. A person sees and removes only
 their own keys: Mend asks the platform for the caller's Sealant user's keys, and archiving a key id
 that is not theirs answers 404, as an unknown id does, for an organization owner and the operator
-too. An owner removing one key of a member they keep is not built. The audit log records each key
-registered (`ssh_key.added`) and removed (`ssh_key.removed`).
+too. The audit log records each key registered (`ssh_key.added`) and removed (`ssh_key.removed`).
 
 Removing a member from the organization removes all of their keys. The membership's deletion and a
 row in `ssh_key_revocations` commit in one transaction, so a removal is never recorded without the
@@ -74,9 +66,9 @@ connections, so the next connection offering a removed key is refused. Connectio
 it end too. The gateway names the key on every new shell, command, file transfer and port forward,
 and once the key is removed the platform refuses it (`WorkspaceSshKeyNoLongerRegisteredError`); the
 gateway then ends the connection. A connection that opens nothing new is asked again every minute,
-so every connection opened with the key ends within a minute of its removal (sealant#359, Sealant
-0.39.0-next.720). The removal says so (`openConnections: "end"` on
-`DELETE /api/workspace-ssh/keys/:id`, read from the platform's `sshKeyRemovalEndsConnections`).
+so every connection opened with the key ends within a minute of its removal (sealant#359). The
+removal says so (`openConnections: "end"` on `DELETE /api/workspace-ssh/keys/:id`, read from the
+platform's `sshKeyRemovalEndsConnections`).
 
 On a platform from before that, the removal answers `openConnections: "stay"`: connections already
 open stay open until the workspaces they reach stop. The answer then lists the caller's running
@@ -84,68 +76,15 @@ sessions (`runningSessions`). The CLI prints `mend stop` for each, and Settings 
 offers to stop them all, agent and Services, after a confirmation. Mend's own packaged server always
 runs the platform it pins, so this applies only to a server pointed at an older Sealant.
 
-The platform does not record when a key was last used (PLATFORM-FEEDBACK.md, 2026-10-10).
+The platform does not record when a key was last used. `mend uninstall --home` removes the key this
+machine registered, and only that key, before it revokes the terminal's device token.
 
-### Limits before login
-
-Workspace SSH may be published to the internet (`mend server setup --ssh-bind`, the `workspace-ssh`
-item of the exposure gate). Until a connection has logged in, the platform's gateway holds it to
-limits modelled on sshd's (sealant#359):
-
-- a connection has 60 s to log in, room for a passphrase or a hardware key's touch;
-- at most 10 connections not yet logged in from one source, and 100 in all; one more is dropped as
-  it arrives;
-- 6 refused attempts per connection;
-- 60 lookups a minute per source of keys nobody holds. A lookup that finds a registered key costs
-  nothing. A source that spends them is refused until they refill.
-
-The gateway's key lookups also have their own budget in Sealant, so a flood of logins can refuse new
-logins for a while but never the shells and forwards of connections already open. Nobody reaches a
-workspace that way.
-
-A source is an IPv4 address or an IPv6 /64: every address in one /64 counts as one. The per-source
-limits need the gateway to see each client's own address. Rootful Docker keeps it for IPv4 clients.
-Rootless Docker, Docker Desktop and docker-proxy for IPv6 clients hide it, and every client then
-counts as one source and shares one budget. The limits are the gateway's `SSH_GATEWAY_*` settings
-(Sealant's environment reference); Mend's bundle keeps their defaults.
-
-`mend uninstall --home` removes the key this machine registered, and only that key, before it
-revokes the terminal's device token and deletes the key file. It identifies the key by its public
-half (the managed block's identity and the public keys under the Mend config directory), so an
-encrypted key or a stopped agent still names it. A key it cannot remove, or cannot read well enough
-to name, fails the uninstall with the fingerprint still registered and the command that removes it
-from another signed-in machine. It never revokes the account's other keys or devices.
+## The gateway
 
 The gateway authenticates the key's principal, authorizes access to the named workspace, and bridges
 channels onto its `sealantd` connection. Its shell, exec, environment, SFTP, and TCP forwarding
 support are the protocol requirements for Remote-SSH. Protocol support alone does not establish
 acceptance in an installed editor.
 
-## Server identity and trust
-
 The application container includes the gateway. Its host key persists in a Docker-managed volume,
-separate from each workspace. Ordinary server restarts and upgrades preserve it. See
-[self-hosting](SELF-HOSTING.md) for server configuration and data ownership.
-
-The public SDK reports gateway coordinates, not its host-key fingerprint. OpenSSH's `accept-new`
-policy accepts an unknown key on first connection and rejects a changed key. Mend never removes or
-replaces `known_hosts` entries during setup. Verify a changed fingerprint through a trusted server
-console or administrative connection before removing only the affected alias entry. `ssh-keyscan`
-alone is not verification.
-
-## Proposed follow-up: certificates
-
-Short-lived OpenSSH user certificates could replace public-key registration. A future SDK operation
-would return a certificate binding the authenticated principal to one workspace. The gateway would
-trust the issuing CA; ordinary registered keys could remain available for plain SSH clients.
-
-This needs a platform contract and implementation. The packaging stack did not include it. A
-WebSocket SSH tunnel could separately support networks where the gateway port is unreachable; there
-is no such fallback in the current client.
-
-## Proposed follow-up: attachment leases
-
-A future gateway API could report active editor attachments. Mend could then use those attachments
-for TTL renewal and reap deferral, and display an observed editor connection. Today an open editor
-is not itself a session process row or a guaranteed lease. Keep the session's workspace running; do
-not infer editor-presence tracking from SSH configuration or key-registration status.
+separate from each workspace, so ordinary server restarts and upgrades preserve it.
