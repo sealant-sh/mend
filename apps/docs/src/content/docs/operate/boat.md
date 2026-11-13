@@ -153,6 +153,22 @@ Each worktree keeps the runtime it was created with. Keep Boat set up while sess
 exist: `--no-boat` stops them from running. Change the resources choice only while no Boat session
 is running.
 
+## An organization's own Boat key
+
+The key you give setup is the server's: every organization's Boat sessions run in that Boat account
+unless the organization connects its own. An owner of an organization connects one with
+`mend boat connect`, which reads the key from a hidden prompt or standard input. Boat checks it
+before Sealant keeps it, sealed; Mend keeps only which Sealant Boat account is the organization's.
+From then on the organization's new Boat sessions, and its standby workspaces, run in, and are
+billed to, that Boat account.
+
+A session that is running stays in the Boat account it started in. Its next start uses the key the
+organization has then. `mend boat connect` again replaces the key in the same Boat account, and is
+refused when the new key cannot see the VMs or saved images the account holds now.
+`mend boat disconnect` sends new sessions back to the server's key, and is refused while the account
+still has VMs Boat may be running. `mend boat status` and `mend boat check` say what was observed
+and when. Connecting, replacing and removing the key are in the organization's audit log.
+
 ## When Boat VMs shut down
 
 Each Boat VM is billed while it runs. Mend stops a session after 15 idle minutes, the way the Stop

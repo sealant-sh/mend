@@ -1,153 +1,25 @@
-import type { BoatKey, NewBoatKey } from "@mend/db";
-import { BoatKeyTakenError } from "@mend/db";
-import type { ProjectId } from "@mend/domain";
-import type { AuditData, BoatKeyOwner } from "@mend/domain/workbench";
 import { Project } from "@mend/domain/workbench";
-import {
-  BoatAccountRefusal,
-  type BoatAccountRefusalReason,
-  type PlatformBoatAccount,
-  SealantPlatformError,
-} from "@mend/sealant";
-import { Effect, Redacted } from "effect";
+import { SealantPlatformError } from "@mend/sealant";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
+import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { organizationIdOf } from "../../test/support/tenancy-harness.ts";
 
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
 
-/** What Core is asked, with the key unwrapped only here, to prove it went to Core and nowhere else. */
-interface CoreCall {
-  readonly call: "create" | "list" | "rotate" | "remove";
-  readonly label?: string;
-  readonly key?: string;
-  readonly boatAccountId?: string;
-}
-
-const refusal = (
-  reason: BoatAccountRefusalReason,
-  counts: { liveRuns?: number; buildsInFlight?: number; unseen?: number } = {},
-) =>
-  new BoatAccountRefusal({
-    reason,
-    liveRuns: counts.liveRuns ?? null,
-    buildsInFlight: counts.buildsInFlight ?? null,
-    unseen: counts.unseen ?? null,
-    message: `Core says ${reason}`,
-  });
-
-const ownerKey = (owner: BoatKeyOwner) => owner.organizationId;
-
 describe("an organization's Boat key", () => {
   let api: TenancyApi;
   const logs: Array<string> = [];
-  const keys = new Map<string, BoatKey>();
-  const accounts = new Map<string, PlatformBoatAccount>();
-  const core: Array<CoreCall> = [];
-  const audited: Array<{ action: string; subjectId: string; data: AuditData; actor: string }> = [];
-  const reconciled: Array<ProjectId> = [];
-  /** The refusal Core answers the next call with, if any. */
-  let refuseNext: BoatAccountRefusal | SealantPlatformError | null = null;
-
-  const answer = <A>(value: () => A) =>
-    Effect.suspend(() => {
-      const refused = refuseNext;
-      refuseNext = null;
-      return refused === null ? Effect.sync(value) : Effect.fail(refused);
-    });
+  const boat = makeBoatWorld();
+  const { keys, accounts, core, audited, reconciled } = boat;
 
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
       logs,
       sessionRuntime: "boat",
-      implement: {
-        boatKeys: {
-          byOwner: (owner) => Effect.sync(() => keys.get(ownerKey(owner)) ?? null),
-          connect: (key: NewBoatKey) =>
-            Effect.suspend(() => {
-              if (keys.has(ownerKey(key.owner))) {
-                return Effect.fail(
-                  new BoatKeyTakenError({ organizationId: key.owner.organizationId }),
-                );
-              }
-              const row: BoatKey = {
-                ...key,
-                connectedAt: new Date("2026-11-13T12:00:00.000Z"),
-                keyReplacedAt: null,
-              };
-              keys.set(ownerKey(key.owner), row);
-              return Effect.succeed(row);
-            }),
-          markReplaced: (owner) =>
-            Effect.sync(() => {
-              const row = keys.get(ownerKey(owner));
-              if (row === undefined) return null;
-              const replaced = { ...row, keyReplacedAt: new Date("2026-11-13T13:00:00.000Z") };
-              keys.set(ownerKey(owner), replaced);
-              return replaced;
-            }),
-          remove: (owner) =>
-            Effect.sync(() => {
-              const row = keys.get(ownerKey(owner)) ?? null;
-              keys.delete(ownerKey(owner));
-              return row;
-            }),
-        },
-        boatAccounts: {
-          createBoatAccount: (label, key) =>
-            answer(() => {
-              const boatAccountId = `core-boat-${accounts.size + 1}`;
-              core.push({ call: "create", label, key: Redacted.value(key) });
-              const account: PlatformBoatAccount = {
-                boatAccountId,
-                label,
-                state: "active",
-                createdAt: new Date("2026-11-13T12:00:00.000Z"),
-                keyRotatedAt: null,
-                report: null,
-              };
-              accounts.set(boatAccountId, account);
-              return account;
-            }),
-          rotateBoatAccountKey: (boatAccountId, key) =>
-            answer(() => {
-              core.push({ call: "rotate", boatAccountId, key: Redacted.value(key) });
-              const account = accounts.get(boatAccountId);
-              if (account === undefined) throw new Error("rotated an unknown account");
-              return account;
-            }),
-          removeBoatAccount: (boatAccountId) =>
-            answer(() => {
-              core.push({ call: "remove", boatAccountId });
-              const account = accounts.get(boatAccountId);
-              if (account === undefined) throw new Error("removed an unknown account");
-              accounts.delete(boatAccountId);
-              return { ...account, state: "removing" as const };
-            }),
-          listBoatAccounts: () =>
-            answer(() => {
-              core.push({ call: "list" });
-              return [...accounts.values()];
-            }),
-        },
-        audit: {
-          record: (event) =>
-            Effect.sync(() => {
-              audited.push({
-                action: event.action,
-                subjectId: event.subjectId,
-                data: event.data ?? {},
-                actor: event.actorUserId,
-              });
-            }),
-        },
-        engine: {
-          launchUnderWay: () => false,
-          reconcileHotSessions: (projectId) => Effect.sync(() => void reconciled.push(projectId)),
-        },
-      },
+      implement: boat.implement,
     });
     const kept = [...api.world.projects.values()].find(
       (project) => project.organizationId === organizationIdOf("A"),
@@ -161,13 +33,8 @@ describe("an organization's Boat key", () => {
   });
 
   beforeEach(() => {
-    keys.clear();
-    accounts.clear();
-    core.length = 0;
-    audited.length = 0;
-    reconciled.length = 0;
+    boat.reset();
     logs.length = 0;
-    refuseNext = null;
   });
 
   const connect = (user: "alice" | "bob" | "carol", key = KEY) =>
@@ -286,7 +153,7 @@ describe("an organization's Boat key", () => {
 
   it("refuses a removal that would strand VMs, with Core's counts, and keeps the key", async () => {
     await connect("alice");
-    refuseNext = refusal("in-use", { liveRuns: 2, buildsInFlight: 1 });
+    boat.refuseNext(refusal("in-use", { liveRuns: 2, buildsInFlight: 1 }));
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(response.status).toBe(409);
     expect(await response.json()).toMatchObject({
@@ -304,7 +171,7 @@ describe("an organization's Boat key", () => {
 
   it("forgets a key Core already removed", async () => {
     await connect("alice");
-    refuseNext = refusal("not-found");
+    boat.refuseNext(refusal("not-found"));
     expect((await api.request("alice", "DELETE", "/api/organization/boat-key")).status).toBe(200);
     expect(keys.has(organizationIdOf("A"))).toBe(false);
   });
@@ -341,7 +208,7 @@ describe("an organization's Boat key", () => {
     },
   ]) {
     it(`says what to do about ${scenario.name} on connect, and keeps nothing`, async () => {
-      refuseNext = scenario.error;
+      boat.refuseNext(scenario.error);
       const response = await connect("alice");
       expect(response.status).toBe(scenario.status);
       expect(((await response.json()) as { message: string }).message).toContain(scenario.words);
@@ -369,7 +236,7 @@ describe("an organization's Boat key", () => {
   ]) {
     it(`says what to do about ${scenario.name} on replace, and keeps the key`, async () => {
       await connect("alice");
-      refuseNext = scenario.error;
+      boat.refuseNext(scenario.error);
       const response = await connect("alice", REPLACEMENT);
       expect(response.status).toBe(409);
       expect(((await response.json()) as { message: string }).message).toContain(scenario.words);
@@ -394,7 +261,7 @@ describe("an organization's Boat key", () => {
   it("never writes the key to a response, an error, the audit log or a log line", async () => {
     const bodies: Array<string> = [];
     bodies.push(await (await connect("alice")).text());
-    refuseNext = refusal("cannot-see", { unseen: 1 });
+    boat.refuseNext(refusal("cannot-see", { unseen: 1 }));
     bodies.push(await (await connect("alice", REPLACEMENT)).text());
     bodies.push(await (await connect("alice", REPLACEMENT)).text());
     bodies.push(await (await connect("alice", "x")).text());

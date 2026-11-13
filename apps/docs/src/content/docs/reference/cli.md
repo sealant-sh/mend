@@ -979,6 +979,10 @@ and how it is saved.
 | `mend folder push <name> <dir> [--replace]`                           | Owners only. Upload a local directory into a folder; `--replace` empties the folder first           |
 | `mend folder rm <name>`                                               | Owners only. Remove a folder; refused while a project still selects it                              |
 | `mend session share <session> on\|off [--yes]`                        | Turn shared control on or off for a session; turning it on asks first, `--yes` answers for a script |
+| `mend boat [status]`                                                  | Whether the organization has its own Boat key; owners also see who connected it and when            |
+| `mend boat connect`                                                   | Owners only. Connect or replace the organization's Boat key, read from a hidden prompt or stdin     |
+| `mend boat check`                                                     | Owners only. Ask Sealant what it holds for the key, and when that was observed                      |
+| `mend boat disconnect`                                                | Owners only. Remove the key; new Boat sessions use the server's. Refused while its VMs still run    |
 
 Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no
 email: you share the invitation link yourself. With `--email`, only an account with that address can
@@ -989,6 +993,12 @@ A project selects which folders its sessions receive, at `/workspace/home/<name>
 chosen otherwise, from its next session. `mend folder push` skips `.git` and `node_modules`
 directories, symlinks, and files over 1 MiB, and counts what it skipped. See
 [Folders](/organizations/folders/).
+
+With its own Boat key, an organization's new Boat sessions run in, and are billed to, that key's
+Boat account instead of the server's. `mend boat connect` never takes the key as an argument, so it
+stays out of shell history and the process list: paste it at the prompt, or pipe it in with
+`mend boat connect < boat-key.txt`. Every `mend boat` command takes `--json`. See
+[Boat](/operate/boat/#an-organizations-own-boat-key).
 
 Only the session's owner turns shared control on; the owner or an organization owner turns it off.
 While it is on, anyone who can see the project sends turns, answers approvals and interrupts. In a
