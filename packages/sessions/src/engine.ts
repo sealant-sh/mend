@@ -3043,7 +3043,7 @@ export class SessionEngine extends Context.Service<
       | PastedImageError
       | SealantPlatformError
     >;
-    /** The repositories the session holds beside its own worktree (docs/adr/0010). */
+    /** The repositories the session holds beside its own worktree (docs/adr/0011). */
     readonly listRepositories: (
       sessionId: SessionId,
     ) => Effect.Effect<ReadonlyArray<SessionRepositoryRow>, SessionNotFoundError>;
@@ -3055,7 +3055,7 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
     ) => Effect.Effect<ReadonlyArray<AddableProject>, SessionNotFoundError | ProjectNotFoundError>;
     /**
-     * Add a project of the store as a repository of the session (docs/adr/0010): a worktree of
+     * Add a project of the store as a repository of the session (docs/adr/0011): a worktree of
      * that project, named after the session's own worktree unless `worktree` says, at
      * `/workspace/repos/<name>`. The row answers at once in state `adding`; the files are brought
      * into the live workspace in the engine's lifetime, and the row reads `ready` or `failed`
@@ -9892,7 +9892,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * The create half of `ensureWorktreeIn`, never a join: a name already taken fails at the
        * worktrees table's unique name (or at the branch ref before it), so a caller that must not
-       * join an existing worktree (a repository in a session, docs/adr/0010) cannot be handed one
+       * join an existing worktree (a repository in a session, docs/adr/0011) cannot be handed one
        * made between its check and its create.
        */
       const createWorktreeIn = Effect.fn("SessionEngine.createWorktreeIn")(function* (
@@ -14030,7 +14030,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
             // A linked project rides as a read-write extra mount on the record: what the agent
             // could change, and where — the linked project's own worktree. A capture executor
-            // mounts nothing, so nothing is recorded there (docs/adr/0010 "Linked projects"):
+            // mounts nothing, so nothing is recorded there (docs/adr/0011 "Linked projects"):
             // the record and the agent's note name only what the workspace holds.
             ...(captureSource !== null
               ? []
@@ -18876,7 +18876,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { path: placement.path, mediaType: checked.mediaType, bytes: bytes.byteLength };
       });
 
-      // ─── Repositories in a session (docs/adr/0010) ─────────────────────────────────────────
+      // ─── Repositories in a session (docs/adr/0011) ─────────────────────────────────────────
 
       const viewerOf = Effect.fn("SessionEngine.viewerOf")(function* (
         ownerUserId: string | null,
@@ -18932,7 +18932,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Bring the repository's files into the live workspace (ADR 0010 "How the worktree
+       * Bring the repository's files into the live workspace (ADR 0011 "How the worktree
        * arrives", today): a clone of the project's origin through the workspace's own git
        * transport, checked out on the session's branch at Mend's recorded base, nested inside the
        * main worktree so the main worktree's captures carry it, and linked at its path. The row
@@ -19076,7 +19076,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Last before the worktree is made, so the window in which another add could make the
         // same worktree is the one between this read and the create, and the create's unique
         // constraint on the name is the backstop. Joining an existing worktree would clone the
-        // base over work its chain already holds (ADR 0010 "Considered options"), so it is
+        // base over work its chain already holds (ADR 0011 "Considered options"), so it is
         // refused until the daemon materialises from the chain.
         if ((yield* worktreesRepo.byName(target.id, worktreeName)) !== null) {
           return yield* refuse(
@@ -20585,7 +20585,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        // Repositories added in an earlier launch (docs/adr/0010): their files came back with the
+        // Repositories added in an earlier launch (docs/adr/0011): their files came back with the
         // worktree, their links did not. A relink that cannot run costs the links, never the launch.
         const noRepositories: ReadonlyArray<SessionRepositoryRow> = [];
         const repositories = yield* relinkRepositories(session, workspace).pipe(
@@ -23117,7 +23117,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
           // A retained workspace may hold a repository whose add this server did not see end
-          // (docs/adr/0010): settle it from what the workspace holds, as a fresh launch would.
+          // (docs/adr/0011): settle it from what the workspace holds, as a fresh launch would.
           // Never the launch's to fail on.
           yield* relinkRepositories(session, workspace).pipe(
             Effect.catchCause((cause) =>
@@ -28621,7 +28621,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
             ),
           ),
-        // Repositories in a session (docs/adr/0010): the helper's `mend repo` verbs. A refusal
+        // Repositories in a session (docs/adr/0011): the helper's `mend repo` verbs. A refusal
         // reaches the helper as its message.
         listRepositories: () =>
           listRepositories(sessionId).pipe(

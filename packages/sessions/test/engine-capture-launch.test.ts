@@ -1188,7 +1188,7 @@ describe("SessionEngine capture mode", () => {
   );
 
   it.effect(
-    "adds a repository of another project to a live session: a worktree of that project, a nested clone of its origin linked at /workspace/repos/<name>, and the refusals in the person's words (docs/adr/0010)",
+    "adds a repository of another project to a live session: a worktree of that project, a nested clone of its origin linked at /workspace/repos/<name>, and the refusals in the person's words (docs/adr/0011)",
     () =>
       Effect.gen(function* () {
         const created: Array<CreateOptions> = [];

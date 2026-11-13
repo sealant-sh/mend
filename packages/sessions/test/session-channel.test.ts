@@ -676,7 +676,7 @@ describe("SessionChannelNetworkHost", () => {
   // Four native helper processes include two required two-second repository polls.
   // A five-second default leaves under one second for their startup on CI.
   it(
-    "mend repo lists, names what can be added, and adds through the session's own channel, polling until the row settles (docs/adr/0010)",
+    "mend repo lists, names what can be added, and adds through the session's own channel, polling until the row settles (docs/adr/0011)",
     { timeout: 15_000 },
     async () => {
       await Effect.runPromise(

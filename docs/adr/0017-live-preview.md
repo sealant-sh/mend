@@ -1,14 +1,16 @@
 # Live preview: a link to the change running, from Slack and the phone
 
-Status: proposed 2026-10-24. Commits Mend to a preview gateway, an HTTP listener on an origin of its
-own that opens a worktree's dev server inside its workspace. The link appears in the Slack thread,
-on the phone and in the web app after a turn changes the app. Yiannis decided its six decisions on
-2026-10-24: the domain, public links (who opens a link), a shared database, the setup cache, idle
-defaults, and the gateway on a private instance. He also decided how Mend's cookies change on a
-tailnet, how app cookies are kept apart, and what happens to a write that reaches a stopped preview.
-On 2026-10-25 he decided three more: whose **Stop** keeps a preview stopped, what the gateway
-strips, and that a bound dial never falls back to Docker. Each section quotes him. The other choices
-in the decision log are proposals he may overturn.
+Status: accepted 2026-10-25; built in #1136 to #1281 (steps 2 to 12) and #1495 (fixed address).
+Steps 13 (terminal trigger, share links) and 14 (WordPress) are not built. Commits Mend to a preview
+gateway, an HTTP listener on an origin of its own that opens a worktree's dev server inside its
+workspace. The link appears in the Slack thread, on the phone and in the web app after a turn
+changes the app. Yiannis decided its six decisions on 2026-10-24: the domain, public links (who
+opens a link), a shared database, the setup cache, idle defaults, and the gateway on a private
+instance. He also decided how Mend's cookies change on a tailnet, how app cookies are kept apart,
+and what happens to a write that reaches a stopped preview. On 2026-10-25 he decided three more:
+whose **Stop** keeps a preview stopped, what the gateway strips, and that a bound dial never falls
+back to Docker. Each section quotes him. The other choices in the decision log are proposals he may
+overturn.
 
 **What this ADR does not claim.** A preview is not a deployment, and it does not say that a change
 works. It shows what the dev server answered when someone asked
@@ -107,17 +109,17 @@ and exposure gate item 14 (`apps/cli/src/server-edge.ts:287-360`,
   parameters and the credential (`:247-251`). Signed stateless tokens were rejected (decision 4,
   `:404-407`).
 - **The plan's decision log, 2026-08-01, amended 2026-08-20**
-  (`MEND-AGENT-WORKBENCH-PLAN.md:1656-1663`). Per-port TCP forwards, not an HTTP path proxy, because
-  "path prefixes … break absolute asset paths, HMR WebSockets, and cookies", and "raw forwards
-  cannot enforce Mend authentication per request; the UI states that the private network is the
-  access boundary".
+  (`d5a5c763:MEND-AGENT-WORKBENCH-PLAN.md:1656-1663`). Per-port TCP forwards, not an HTTP path
+  proxy, because "path prefixes … break absolute asset paths, HMR WebSockets, and cookies", and "raw
+  forwards cannot enforce Mend authentication per request; the UI states that the private network is
+  the access boundary".
 - **Plan §2.7 and §4.10.** "The running application should be another authenticated view of the
   session" (`:96-101`), and it "must not become public by default" (`:189-193`).
 - **The platform.** Mend uses Sealant only through the public SDK, and a gap is a
-  `PLATFORM-FEEDBACK.md` entry, not a workaround (AGENTS.md). SDK 0.39.0 has no links between
-  workspaces, no named shared volumes (host bind mounts only, and none in capture mode), no reverse
-  forward, and no suspend or wake. A workspace's `env` is fixed when the workspace is created. A
-  process's env is not, and the engine already passes one to `openSession`
+  `0dd4b4bf:PLATFORM-FEEDBACK.md` entry, not a workaround (AGENTS.md). SDK 0.39.0 has no links
+  between workspaces, no named shared volumes (host bind mounts only, and none in capture mode), no
+  reverse forward, and no suspend or wake. A workspace's `env` is fixed when the workspace is
+  created. A process's env is not, and the engine already passes one to `openSession`
   (`engine.ts:21945-21960`). The forward appends inbound frames to an array that has no bound, so a
   slow reader grows Mend's memory instead of slowing the dev server (SDK `facade/workspace.js:833`,
   `:859`). sealant's 409, 502, 404 and 403 all reach Mend as the same WebSocket error.
@@ -921,11 +923,11 @@ The cross-origin admission policy is unchanged. A fixed registration does not ma
 SAML POST responses or other cross-origin writes work through the gateway. Setup names that
 app/provider limit and documents a GET callback alternative only when supported.
 
-**The plan's decision log, 2026-08-01** (`MEND-AGENT-WORKBENCH-PLAN.md:1656-1663`), and §7.6
-(`:754`). Append: "ADR 0017 adds an authenticated HTTP gateway for browser previews, on an origin of
-its own, with one host per preview (on a tailnet's `ts.net` default, one port per preview) and
-authorization on every request. Path prefixes stay rejected. Raw TCP and UDP Services and the CLI
-tunnel keep their purposes and their network boundary." The earlier plan said that the gateway
+**The plan's decision log, 2026-08-01** (`d5a5c763:MEND-AGENT-WORKBENCH-PLAN.md:1656-1663`), and
+§7.6 (`:754`). Append: "ADR 0017 adds an authenticated HTTP gateway for browser previews, on an
+origin of its own, with one host per preview (on a tailnet's `ts.net` default, one port per preview)
+and authorization on every request. Path prefixes stay rejected. Raw TCP and UDP Services and the
+CLI tunnel keep their purposes and their network boundary." The earlier plan said that the gateway
 "doesn't contradict" this entry. It does, because the entry rests on the private network being the
 boundary.
 
@@ -959,7 +961,7 @@ boundary.
 
 ## Platform feedback
 
-This PR adds five entries to `PLATFORM-FEEDBACK.md`:
+This ADR added five entries to `0dd4b4bf:PLATFORM-FEEDBACK.md`:
 
 1. **A bounded forward.** Receive backpressure and a send-ready signal, tested with a fast producer
    and a slow consumer. A Node `Duplex` around today's forward cannot bound a queue that it does not
@@ -1009,46 +1011,36 @@ This PR adds five entries to `PLATFORM-FEEDBACK.md`:
   ships on the instance a reader uses.
 - Services prove themselves first. Yiannis made "services work properly in alpha" the gate for Slack
   work (2026-09-23). That proof was never recorded before alpha was torn down
-  (`docs/current-scope.md`, "Services on alpha"), so it is recorded on the box.
+  (`0dd4b4bf:docs/current-scope.md`, "Services on alpha"), so it is recorded on the box.
 
 ## Delivery
 
-One ready-for-review PR per step. Each ends in something a person can check.
+Steps 1 to 12 are built, one pull request per step (#1131 to #1281, and the fixed address in #1495);
+each step as planned is in git history. Code and commits cite the step numbers:
 
-1. This ADR, with the six answers written in, and the platform feedback.
-2. Services proved on the box: a recipe Service opened through `mend service connect`, with its
-   evidence recorded.
-3. Sealant: the bounded forward, typed dial errors, and a forward bound to a process, released in
-   the 0.37 chain (sealantd, then sealant, then the Mend pin).
-4. Preview identity and bindings, read-only. Two sessions in one worktree resolve one preview,
-   another worktree resolves another, and a removed label is never reused.
-5. The forward adapter, shared by `ServiceHost`, the tunnel and the gateway. The CLI tunnel still
-   carries bytes and half-close, and the cost of a cold dial is recorded on Docker and Firecracker.
-6. The `preview` ticket and the grant, against an HTTP fixture. One ticket opens once. A wrong host,
-   a wrong target or a repeated parameter fails. Signing out, a revoked device and removal from the
-   organization end access, and so does a project made private, for open streams too.
-7. The gateway: HTTP, keep-alive, WebSockets, SSE, the `Origin` rule and held writes. A Vite app's
-   page, its assets and hot reload work through it. A page on another preview cannot post to it or
-   open its socket. A slow-reader test holds Mend's memory under a stated ceiling. A form post and
-   an upload larger than 1 GiB to a stopped preview start it and arrive whole, with Mend's memory
-   flat while it holds them, behind Caddy, behind an nginx ingress, and through `tailscale serve`. A
-   start that times out answers the stated 503 page.
-8. The edge site with its log filter, DNS-01 or a supplied certificate, the Helm equivalent, and
-   gate item 15. A phone opens a preview over an issued certificate, and the edge log holds no
-   ticket. On loopback, a `*.localhost` preview opens in Chrome, Firefox and Safari with its grant
-   cookie, or the step records which browser refuses and why. On a tailnet, the `ts.net` default
-   opens a preview on its port from a phone, and the step records whether a Service definition takes
-   a port range.
-9. Recipe fields: per-recipe parsing, `cwd`, `env`, `MEND_PREVIEW_URL`, `ready`, `depends`,
-   `[setup]` and the recipe digest.
-10. Start after a changed turn in a protocol session, the web **Open** and the phone button.
-11. Slack: the button and the review line.
-12. The service-only workspace start, the idle clock and the wake on any request (decision 5). A
-    stopped preview opened from Slack starts once however many people open it, and a start that
-    fails says so without looping.
+1. This ADR (#1131). 2. Services proved on the box (#1136). 3. Sealant's bounded forward, typed dial
+   errors and a forward bound to a process, in the 0.37 chain. 4. Preview identity and bindings
+   (#1141). 5. The forward adapter (#1147, #1154). 6. The `preview` ticket and the grant (#1143). 7.
+   The gateway (#1159). 8. The edge: 8a the packaged edge and Helm with gate item 15 (#1160), 8b the
+   tailnet default and Mend's cookies on `__Host-` (#1162). 9. Recipe fields: 9a parsing and the run
+   path (#1169), 9b `[setup]` (#1171), 9c the recipe digest (#1194). 10. Start after a changed turn
+   (10a, #1226), the web **Open** (10b, #1228) and the phone button (10c, #1245). 11. Slack: the
+   button and the review line. 12. The idle clock and the wake on any request (#1281).
+
+Not built:
+
 13. Terminal sessions' trigger, and owner share links (decision 2's later slice).
 14. WordPress: a seeded site with a theme and plugins, `host = "preserve"`, and its database from
     the project's shared services (P-SLNT-46).
+
+### Measured
+
+- **Step 2, Services on the box:** passed on 2026-10-24 (#1136). A recipe Service opened through
+  `mend service connect` on alpha.mend.run answered through the tunnel.
+- **Step 5, the cold dial:** one cold `ForwardAdapter` dial costs about 3 ms at the median on local
+  Docker over loopback. On the box, a cold tunnel GET took 255 ms at the median against 46 ms warm;
+  network round trips account for most of the difference, and the server's share of a new connection
+  is about 31 ms or less. Firecracker was not measured (#1154).
 
 ## Decision log
 

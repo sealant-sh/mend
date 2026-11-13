@@ -279,7 +279,7 @@ function CheckpointsSection({
   );
 }
 
-/** The repositories the session holds beside its worktree (docs/adr/0010), when it holds any. */
+/** The repositories the session holds beside its worktree (docs/adr/0011), when it holds any. */
 function RepositoriesSection({ facts }: { readonly facts: SessionFacts }) {
   const repositories = facts.detail.repositories;
   if (repositories.length === 0) return null;

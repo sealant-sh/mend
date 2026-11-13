@@ -374,7 +374,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(Gh, {}),
   Layer.mock(InstanceRolesRepo, { isOperator: () => Effect.succeed(false) }),
   Layer.mock(GithubIdentity, {}),
-  // No session holds a worktree of these projects as a repository (docs/adr/0010).
+  // No session holds a worktree of these projects as a repository (docs/adr/0011).
   Layer.mock(SessionRepositoriesRepo, { listForProject: () => Effect.succeed([]) }),
   Layer.mock(ResourcesRepo, {}),
   Layer.succeed(DeploymentConfig, {

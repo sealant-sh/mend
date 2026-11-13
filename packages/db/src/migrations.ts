@@ -2905,7 +2905,7 @@ const harnessModelsMigration = Effect.gen(function* () {
 });
 
 /**
- * 0103: repositories in a session (docs/adr/0010): the sibling worktrees a session holds at
+ * 0103: repositories in a session (docs/adr/0011): the sibling worktrees a session holds at
  * `/workspace/repos/<name>`, with the state of their arrival and how each is saved.
  */
 const sessionRepositoriesMigration = Effect.gen(function* () {

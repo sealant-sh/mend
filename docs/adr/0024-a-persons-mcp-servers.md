@@ -1,10 +1,10 @@
 # A person's own MCP servers
 
-Status: accepted 2026-11-09, for 0.37. Yiannis asked for it on 2026-11-09: "Can we add real MCPs to
-Claude right now? Maybe rename the Executor tab to MCPs, have a list of MCPs we can add, and have
-the Executor there. I'm talking about things like Figma that won't be added via Executor because
-they only work with Claude Code." Read against Mend `4b58b0d5ce`. Builds on
-[ADR 0010](0010-secret-files.md) (secrets sealed per person),
+Status: accepted 2026-11-09, for 0.37; built in #1562 to #1565. Yiannis asked for it on 2026-11-09:
+"Can we add real MCPs to Claude right now? Maybe rename the Executor tab to MCPs, have a list of
+MCPs we can add, and have the Executor there. I'm talking about things like Figma that won't be
+added via Executor because they only work with Claude Code." Read against Mend `4b58b0d5ce`. Builds
+on [ADR 0010](0010-secret-files.md) (secrets sealed per person),
 [ADR 0016](0016-per-person-harness-homes.md) (per-person homes and shared steering, whose decisions
 6 and 7a this amends) and [ADR 0022](0022-executor-per-organization.md) (the organization's
 Executor).
@@ -234,7 +234,8 @@ claims the files are unreadable to another person in the same executor.
   stored copy stays the newest.
 - **sealant rewrites Claude's whole credentials file** when it pushes a refreshed login, about every
   7 hours, which removes restored sign-ins from a running session until it starts again. The stored
-  copy is untouched. sealant should merge only the login (PLATFORM-FEEDBACK, 2026-11-09).
+  copy is untouched. sealant should merge only the login (`0dd4b4bf:PLATFORM-FEEDBACK.md`,
+  2026-11-09).
 - **A Forget during a running session in the same home.** A session that started before the Forget
   can still refresh and rewrite its copy into the home's file, and a session that started after it
   reads that file and keeps the sign-in again. It needs two live sessions in one home around a

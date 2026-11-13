@@ -751,7 +751,7 @@ export const createTenancyApi = async (
       recording(ProjectClusterBindingsRepo, "clusterBindings", {}, calls),
       recording(ProjectEnvironmentRepo, "environment", options.implement?.environment ?? {}, calls),
       recording(ProjectLinksRepo, "links", options.implement?.links ?? {}, calls),
-      // A session's repositories (docs/adr/0010): none in these worlds, so the detail lists none.
+      // A session's repositories (docs/adr/0011): none in these worlds, so the detail lists none.
       recording(
         SessionRepositoriesRepo,
         "sessionRepositories",
