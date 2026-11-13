@@ -21,6 +21,43 @@ afterEach(async () => {
 });
 
 describe("Boat sessions: the server's own Boat key", { timeout: 120_000 }, () => {
+  it("asks for the key without echo at a terminal, instead of reading standard input (SLNT-822)", async () => {
+    const f = await fixture();
+    f.update({ boatGatewayImage: GATEWAY });
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const asked: Array<string> = [];
+    const atTerminal: ServerSetupRuntime = {
+      ...f.runtime,
+      stdinIsTerminal: true,
+      askHidden: async (label) => {
+        asked.push(label);
+        return `${KEY}\n`;
+      },
+      readStdin: async () => {
+        throw new Error("read standard input at a terminal");
+      },
+    };
+    const args = [
+      "setup",
+      "--offline",
+      "--session-runtime",
+      "boat",
+      "--boat-deployment-id",
+      DEPLOYMENT,
+      "--boat-api-key-stdin",
+      ...ENDPOINTS,
+    ];
+    expect(await serverCommand(args, atTerminal)).toEqual({ _tag: "ok" });
+    expect(asked).toEqual(["This server's Boat key (hidden): "]);
+    expect(f.files()["server.env"] ?? "").toContain(`SEALANT_BOAT_API_KEY=${KEY}\n`);
+    expect(f.lines.join("\n")).not.toContain(KEY);
+    // Cancelled at the prompt: nothing read, nothing changed.
+    const before = f.active();
+    const cancelled = await serverCommand(args, { ...atTerminal, askHidden: async () => null });
+    expect(cancelled).toMatchObject({ _tag: "error" });
+    expect(f.active()).toEqual(before);
+  });
+
   it("gives the server a key of its own on standard input, pins it to a Boat organization, and drops it", async () => {
     const f = await fixture();
     f.update({ boatGatewayImage: GATEWAY });

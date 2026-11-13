@@ -1,3 +1,4 @@
+import type { RuntimeSupportReading } from "../runtime-support.ts";
 import type { SessionRuntime } from "../settings.ts";
 import { type BoatKeyHolder, boatProblemWords } from "./boat-failure-words.ts";
 import type { BoatFailure, BoatFailureKind } from "./boat-failure.ts";
@@ -71,6 +72,41 @@ export const boatAddressLine = (address: BoatAddress, from: string): StatusLine 
 
 const NO_WORKER_FIX =
   "On the server's machine, mend server logs --tail 200 shows what the worker said, and mend server restart starts it again.";
+
+/**
+ * Whether sealant lists Boat as launchable, as a member reads it (SLNT-822): from what sealant
+ * reports about the runtime their organization's sessions run on, with no server facts. Null when
+ * the organization's sessions do not run on Boat.
+ */
+export const memberBoatLaunchLine = (
+  effective: SessionRuntime | null,
+  reading: RuntimeSupportReading,
+): StatusLine | null => {
+  if (effective !== "boat") return null;
+  switch (reading.state) {
+    case "observed":
+      return {
+        label: "boat launch",
+        state: "ok",
+        detail: `sealant lists Boat: a worker reported that it launches Boat VMs · ${observed(reading.observedAt)}`,
+        fix: null,
+      };
+    case "not-launched":
+      return {
+        label: "boat launch",
+        state: "failed",
+        detail: `sealant does not list Boat, so this organization's Boat sessions are refused · ${observed(reading.observedAt)}`,
+        fix: "An owner checks that a Boat key is connected (mend boat status); if one is, the person who runs this Mend server runs mend doctor as the operator, which says why.",
+      };
+    case "unread":
+      return {
+        label: "boat launch",
+        state: "info",
+        detail: `not read · ${reading.reason}`,
+        fix: null,
+      };
+  }
+};
 
 /**
  * Whether Sealant lists Boat. It does once a worker has reported that it launches Boat VMs and

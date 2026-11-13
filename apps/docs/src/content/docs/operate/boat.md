@@ -248,14 +248,16 @@ Boat sessions in that key's Boat account, which pays for all of them. Without it
 pays for its own Boat sessions, and one with no key connected starts none.
 
 Give it to setup on standard input, never as an argument. Pipe it from your password manager's CLI
-into `mend server setup --yes --boat-api-key-stdin`, or run that command and paste the key, then
-press Ctrl+D. Setup reads standard input to its end, and a terminal shows what you paste. Setup
-keeps the key in the install's `server.env` only, and Sealant checks it when the server starts and
-once a day.
+into `mend server setup --yes --boat-api-key-stdin`, or run that command at a terminal and paste the
+key at its hidden prompt, which does not show what you paste. Setup keeps the key in the install's
+`server.env` only, and sealant checks it when the server starts and once a day. To check it now, the
+operator runs `mend doctor --check-boat-key`, or presses **Check the server's Boat key now** on the
+instance's Exposure page; both ask Boat read-only and then show what it observed.
 
 For a personal key, add `--boat-organization <id or name>` to say which Boat organization pays.
-Sealant names that organization on every request the server's key makes, so billing does not follow
-the key's active wallet.
+sealant names that organization on every request the server's key makes, so billing does not follow
+the key's active wallet. Without it, sealant pins the server's personal key to the wallet it bills
+when sealant first checks it, which needs the key's `account.read` permission.
 
 ## Check a key
 
@@ -265,13 +267,16 @@ nothing and costs nothing. Sealant also checks every key when it is connected or
 a day. The page and `mend boat status` show the last answer and when it was observed:
 
 - who the key is, and whether it is a Boat organization's key or a personal one
-- the wallet it bills
+- the wallet it bills, and whether that is fixed (see
+  [Choose the wallet a key bills](#choose-the-wallet-a-key-bills))
+- for a personal key, every wallet its Boat account can bill, with the one active in Boat now
 - whether that wallet can start a VM now, and how many VMs run of how many are allowed
 - how many of the account's saved snapshot slots are used
 - the key's permissions and when it expires
 
 Then they say what needs doing: a key that expires within fourteen days, a missing permission, a
-wallet that cannot start a VM, every snapshot slot used. A fact Boat did not show is marked not
+wallet that cannot start a VM, every snapshot slot used, a key sealant has not pinned to a wallet
+yet, and anything Boat holds that sealant cannot reach. A fact Boat did not show is marked not
 observed, with Boat's reason. When Boat does not answer, Mend says so and keeps the last report.
 
 Boat does not show a Boat organization's key its own permissions or expiry, so for that kind of key
@@ -300,6 +305,42 @@ If a check stops before it finishes, Sealant removes what it made and reports th
 interrupted. Until Boat has deleted everything, replacing or removing the key is refused with a
 sentence naming the VM or snapshot Boat may still hold, because only the key that made them can
 delete them. Wait, or delete them in Boat.
+
+### Choose the wallet a key bills
+
+A Boat organization's key bills that organization and nothing else: there is nothing to choose, and
+Mend shows the organization's name. A personal key can bill your personal Boat account or any Boat
+organization your Boat account belongs to. sealant pins it, when it is connected, to the wallet it
+bills at that moment, your active wallet in Boat, and names that wallet on every request, so a later
+`boat org switch` does not move Mend's bill.
+
+When the key's Boat account can bill more than one wallet, the Boat page and **Settings · Account**
+show them all, the one billed now chosen, under **Wallet this key bills**. Choose another and
+confirm. From the command line, `mend boat wallet` lists them and `mend boat wallet <name>` (a Boat
+organization's name or id, or `personal`) chooses one; add `--mine` for your own key. The change
+needs no key and takes effect at once, for the Boat sessions that start next. Sessions running now,
+and the images already saved, stay in the wallet they were made in, and sealant keeps managing them
+there. A key whose Boat account has one wallet shows it and offers no choice.
+
+The choice comes after the key is connected, not before: sealant learns which wallets a key can bill
+only by asking Boat with that key, which it does when the key is connected. Until you choose, the
+key bills the wallet that was active in Boat when you connected it.
+
+A key connected before sealant pinned keys follows the active wallet in Boat until sealant pins it,
+within about a minute of the upgrade, and starts no new session meanwhile. If its wallet changed in
+that time, the page says the bill moved, from which wallet, and when that was observed.
+
+### What Boat holds that sealant cannot reach
+
+A key's Boat account may hold saved images, session VMs or image build leftovers that sealant made
+before it recorded wallets, and that it now finds in none of the wallets the key can bill: they were
+deleted in Boat since, or they are in a Boat organization the account has left. sealant keeps them
+on record, never uses or removes them, and waits on them for nothing, but while Boat still holds
+them they cost money or keep a saved snapshot slot. The Boat page, `mend boat status` and
+`mend doctor` name the saved images as Boat's Saved snapshots list shows them, and count the rest.
+Remove them in Boat, or connect a key whose Boat account can see them. Owners see their
+organization's, each person their own key's, and the operator the server's own key's, on the
+instance page and in `mend doctor`.
 
 ## Where each organization's sessions run
 

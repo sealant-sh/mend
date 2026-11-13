@@ -92,10 +92,19 @@ export const billsFact = (
     return report.wallet.observed
       ? { label: "Bills", value: "not observed", tone: "off" }
       : unobserved("Bills", report.wallet);
-  const role =
-    report.wallet.observed && report.wallet.kind === "organization" && report.wallet.role !== null
-      ? ` · the key's role there: ${report.wallet.role}`
-      : "";
+  // The role in the wallet billed: from the listed wallet when the pin names one, so a wallet
+  // fact Boat answered for another wallet never lends its role.
+  const id = billedId(report);
+  const choice = choicesOf(report)?.find((each) => each.id === id);
+  const roleIn =
+    choice !== undefined
+      ? choice.kind === "organization"
+        ? choice.role
+        : null
+      : report.wallet.observed && report.wallet.kind === "organization"
+        ? report.wallet.role
+        : null;
+  const role = roleIn === null ? "" : ` · the key's role there: ${roleIn}`;
   const billing = report.billing;
   if (billing === null) return { label: "Bills", value: `${label}${role}`, tone: null };
   switch (billing.mode) {

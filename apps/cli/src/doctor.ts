@@ -2,8 +2,9 @@ import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { BoatKeyStatus } from "@mend/api-contracts";
+import { BoatKeyStatus, OrganizationRuntimeView } from "@mend/api-contracts";
 import {
+  boatUnreachableLine,
   claudeGrantFacts,
   HOST_USER_NAMESPACES_REFUSED,
   hostUserNamespacesFixLine,
@@ -12,6 +13,7 @@ import {
   type LoginClass,
   loginChoiceOf,
   loginWords,
+  memberBoatLaunchLine,
   ServerBoatFacts,
   serverBoatLines,
   sessionRuntimesLine,
@@ -131,6 +133,11 @@ export interface DoctorProbes {
   readonly claudeGrant: () => string | null;
   readonly onPath: (command: string) => boolean;
   /**
+   * `--check-boat-key` (SLNT-822): ask sealant to check the server's own Boat key with Boat now,
+   * read-only, before the machine view is read, so its lines show this check. Operators only.
+   */
+  readonly checkBoatKey?: boolean;
+  /**
    * What a Docker daemon stop waits for against what its host allows (`docker-shutdown.ts`), read
    * only when docker is on PATH: the daemon of the context named, the server's own when one is
    * installed here, else the current one. Absent: the line is left out.
@@ -218,6 +225,48 @@ const getJson = async <T>(config: DoctorConfig, route: string): Promise<Fetched<
 };
 
 /**
+ * The operator's check of the server's own Boat key, now (SLNT-822), as one doctor line: what the
+ * check did, while the Boat lines after it say what it observed.
+ */
+const checkServerBoatKey = async (config: DoctorConfig): Promise<Check> => {
+  const label = "boat key check";
+  try {
+    const response = await fetch(`${config.url}/api/machine/boat-key/check`, {
+      method: "POST",
+      headers: config.token === null ? {} : { authorization: `Bearer ${config.token}` },
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (response.ok)
+      return {
+        label,
+        state: "ok",
+        detail: `sealant asked Boat about the server's own key now · observed ${new Date().toISOString().slice(0, 16).replace("T", " ")} UTC`,
+        fix: null,
+      };
+    if (response.status === 404)
+      return {
+        label,
+        state: "failed",
+        detail: "not checked: only this server's operator checks its own Boat key",
+        fix: "sign in as the operator (mend login), then mend doctor --check-boat-key",
+      };
+    const body: unknown = await response.json().catch(() => null);
+    const message =
+      typeof body === "object" && body !== null && typeof Reflect.get(body, "message") === "string"
+        ? String(Reflect.get(body, "message"))
+        : `HTTP ${response.status}`;
+    return { label, state: "failed", detail: `not checked · ${message}`, fix: null };
+  } catch (error) {
+    return {
+      label,
+      state: "failed",
+      detail: `not checked · the server did not answer (${error instanceof Error ? error.message : String(error)})`,
+      fix: null,
+    };
+  }
+};
+
+/**
  * Past this, the server's clock and this machine's disagree enough to say so. A Date header is
  * whole seconds and a slow answer adds its own, so a smaller gap is not a finding.
  */
@@ -300,6 +349,9 @@ interface MachineDto {
 
 const decodeServerBoat = Schema.decodeUnknownOption(Schema.toCodecJson(ServerBoatFacts));
 const decodeBoatKeyStatus = Schema.decodeUnknownOption(Schema.toCodecJson(BoatKeyStatus));
+const decodeOrganizationRuntime = Schema.decodeUnknownOption(
+  Schema.toCodecJson(OrganizationRuntimeView),
+);
 const decodePersonBoatKey = Schema.decodeUnknownOption(PersonStatusWire);
 
 /**
@@ -319,15 +371,42 @@ const boatChecks = async (
   const facts = machine.boat === undefined ? null : decodeServerBoat(machine.boat);
   if (facts !== null && facts._tag === "Some")
     checks.push(...serverBoatLines({ facts: facts.value, now, from: "the server" }));
+  else {
+    // A member reads no server facts, but whether sealant lists Boat for their organization's
+    // runtime (SLNT-822); a server from before that route answers 404: nothing to say.
+    const runtime = await getJson<unknown>(config, "/organization/runtime");
+    const view = runtime.value === null ? null : decodeOrganizationRuntime(runtime.value);
+    const launch =
+      view !== null && view._tag === "Some"
+        ? memberBoatLaunchLine(view.value.sessionRuntime.effective, view.value.support)
+        : null;
+    if (launch !== null) checks.push(launch);
+  }
   const organization = await getJson<unknown>(config, "/organization/boat-key");
   const status = organization.value === null ? null : decodeBoatKeyStatus(organization.value);
-  if (status !== null && status._tag === "Some")
+  if (status !== null && status._tag === "Some") {
     checks.push(organizationBoatKeyLine(status.value, now));
+    const unreachable = boatUnreachableLine(
+      "org boat unreachable",
+      status.value.details?.unreachable ?? null,
+      "organization",
+    );
+    if (unreachable !== null) checks.push(unreachable);
+  }
   // A server from before a person's own key (SLNT-797) answers 404: nothing to say.
   const person = await getJson<unknown>(config, "/me/boat-key");
   const own = person.value === null ? null : decodePersonBoatKey(person.value);
   const ownLine = own !== null && own._tag === "Some" ? personBoatKeyLine(own.value, now) : null;
   if (ownLine !== null) checks.push(ownLine);
+  const ownUnreachable =
+    own !== null && own._tag === "Some"
+      ? boatUnreachableLine(
+          "own boat unreachable",
+          own.value.details?.unreachable ?? null,
+          "person",
+        )
+      : null;
+  if (ownUnreachable !== null) checks.push(ownUnreachable);
   return checks;
 };
 
@@ -335,6 +414,10 @@ const boatChecks = async (
 const BOAT_LABELS = [
   "boat address",
   "boat key",
+  "boat key check",
+  "boat unreachable",
+  "org boat unreachable",
+  "own boat unreachable",
   "boat launch",
   "boat gateway",
   "org boat key",
@@ -772,6 +855,7 @@ export const runChecks = async (
     );
   }
 
+  if (signedIn && probes.checkBoatKey === true) checks.push(await checkServerBoatKey(config));
   const machine = signedIn ? await getJson<MachineDto>(config, "/machine") : null;
   const exposure = machine === null || machine.value === null ? undefined : machine.value.exposure;
   checks.push(exposure === undefined ? notChecked("exposure") : exposureCheck(exposure));
@@ -836,6 +920,7 @@ export const doctorCommand = async (
     readonly harness: string | null;
     readonly project: string | null;
     readonly api: ApiCall;
+    readonly checkBoatKey?: boolean;
   } | null = null,
 ): Promise<void> => {
   if (
@@ -861,6 +946,7 @@ export const doctorCommand = async (
     claudeGrant,
     onPath,
     dockerStop: observeHostDockerStop,
+    ...(options?.checkBoatKey === true ? { checkBoatKey: true } : {}),
     ...(localServer === undefined ? {} : { localServer }),
     ...(process.platform === "darwin"
       ? { macPowerSettings: readMacPowerSettings, macLid: readMacLid }
