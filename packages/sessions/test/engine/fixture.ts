@@ -10,6 +10,7 @@ import {
   AgentConversationRepo,
   CheckpointOrdinalTakenError,
   BoatKeysRepo,
+  OrganizationSettingsRepo,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectNotFoundError,
@@ -98,6 +99,8 @@ import {
   SessionProcessId,
   Sha,
   MendSettings,
+  type SessionRuntime,
+  SessionRuntimeOffer,
   WorktreeId,
   defaultSettings,
   type DotfilesRepository,
@@ -321,6 +324,14 @@ export const sessionPagesLayerOf = (
 export const boatKeysLayer = (accounts: ReadonlyMap<string, string> = new Map()) =>
   Layer.mock(BoatKeysRepo, {
     accountForLaunch: (organizationId) => Effect.sync(() => accounts.get(organizationId) ?? null),
+  });
+
+/** Each organization's choice of where its new sessions run (SLNT-794); none unless a test sets one. */
+export const organizationRuntimesLayer = (
+  choices: ReadonlyMap<string, SessionRuntime> = new Map(),
+) =>
+  Layer.mock(OrganizationSettingsRepo, {
+    sessionRuntime: (organizationId) => Effect.sync(() => choices.get(organizationId) ?? null),
   });
 
 export const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
@@ -3903,7 +3914,12 @@ const wrappedSessions = (
 
 /** Dependencies and persisted fixture state used by one engine scope. */
 interface EngineOptions {
+  /** A server set up the old way (`MEND_SESSION_RUNTIME`): it offers this one runtime. */
   readonly sessionRuntime?: "docker" | "boat" | null;
+  /** What the server offers (`MEND_SESSION_RUNTIMES`); wins over `sessionRuntime`. */
+  readonly sessionRuntimes?: SessionRuntimeOffer;
+  /** Each organization's choice of where its new sessions run, by id; a test may change it. */
+  readonly organizationRuntimes?: Map<string, SessionRuntime>;
   readonly deploymentMode?: "local" | "kubernetes";
   /** The worktree's resources (ADR 0019); none run unless a test provides a runtime. */
   readonly resourceRuntime?: Layer.Layer<ResourceRuntime>;
@@ -4147,20 +4163,30 @@ export const withPreparedEngineEffect = <B, A, E>(
       captureLayers === null
         ? CaptureRuntimeOff
         : CaptureRuntimeLive.pipe(Layer.provide(captureLayers));
+    const offer =
+      options.sessionRuntimes !== undefined
+        ? { sessionRuntimes: options.sessionRuntimes }
+        : options.sessionRuntime === undefined
+          ? {}
+          : {
+              sessionRuntimes:
+                options.sessionRuntime === null
+                  ? null
+                  : new SessionRuntimeOffer({
+                      offered: [options.sessionRuntime],
+                      default: options.sessionRuntime,
+                    }),
+            };
     const deploymentLayer =
       captureLayers === null
         ? Layer.succeed(DeploymentConfig, {
             mode: options.deploymentMode ?? "local",
             sessionEndpoint: undefined,
             sessionStore: "colocated",
-            ...(options.sessionRuntime === undefined
-              ? {}
-              : { sessionRuntime: options.sessionRuntime }),
+            ...offer,
           })
         : Layer.succeed(DeploymentConfig, {
-            ...(options.sessionRuntime === undefined
-              ? {}
-              : { sessionRuntime: options.sessionRuntime }),
+            ...offer,
             mode: options.deploymentMode ?? "local",
             sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
             sessionStore: "captured",
@@ -4278,6 +4304,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           projectRecipesEmptyLayer,
           options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
           boatKeysLayer(options.boatAccounts),
+          organizationRuntimesLayer(options.organizationRuntimes),
           options.seals ?? CaptureSealsNone,
           options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
           options.previewUrls ?? PreviewUrlsNone,

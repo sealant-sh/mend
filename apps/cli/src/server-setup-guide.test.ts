@@ -1267,9 +1267,91 @@ describe("where sessions run", () => {
     // The key is never typed into the guide, so it keeps Docker and names the flags that set Boat up.
     expect(flags).not.toContain("--session-runtime");
     expect(resolveSetupSettings(null, flags).sessionRuntime).toBeUndefined();
-    expect(transcript).toContain("Where should new sessions run?");
+    expect(transcript).toContain("Where can sessions run?");
     expect(transcript).toContain("Boat is not set up on this server yet");
     expect(transcript).toContain("--boat-api-key-stdin");
+  });
+
+  it("offers both once Boat is set up: each organization chooses, new ones start on Docker", async () => {
+    const saved = { ...BOX, ...BOAT_SET_UP };
+    const { outcome, transcript } = await converse(["2", "8", "3", "", ""], saved);
+    expect(outcome, transcript).toMatchObject({ _tag: "apply" });
+    const flags = flagsOf(outcome);
+    expect(flags).toEqual(["--session-runtimes", "docker,boat"]);
+    expect(resolveSetupSettings(saved, flags)).toMatchObject({
+      sessionRuntime: "docker",
+      sessionRuntimes: ["docker", "boat"],
+    });
+    expect(transcript).toContain("Where can sessions run?");
+    expect(transcript).toContain("Owners choose in Organization settings");
+  });
+
+  it("goes back to one runtime from both, and starts new organizations on Boat when asked", async () => {
+    const both = {
+      ...BOX,
+      ...BOAT_SET_UP,
+      sessionRuntime: "docker" as const,
+      sessionRuntimes: ["docker", "boat"] as const,
+    };
+    const onlyBoat = await converse(["2", "8", "2", "", ""], both);
+    expect(flagsOf(onlyBoat.outcome)).toEqual([
+      "--session-runtimes",
+      "boat",
+      "--session-runtime",
+      "boat",
+    ]);
+    expect(resolveSetupSettings(both, flagsOf(onlyBoat.outcome))).toMatchObject({
+      sessionRuntime: "boat",
+      sessionRuntimes: ["boat"],
+    });
+    const boatFirst = await converse(["2", "8", "4", "", ""], both);
+    expect(flagsOf(boatFirst.outcome)).toEqual(["--session-runtime", "boat"]);
+  });
+
+  it("declares the offered runtimes and the default with flags, keeping --session-runtime", () => {
+    const saved = { ...BOX, ...BOAT_SET_UP };
+    // A server set up the old way stays that way: one runtime, no list.
+    expect(resolveSetupSettings(saved, ["--session-runtime", "boat"])).toMatchObject({
+      sessionRuntime: "boat",
+    });
+    expect(
+      resolveSetupSettings(saved, ["--session-runtime", "boat"]).sessionRuntimes,
+    ).toBeUndefined();
+    // A list keeps the saved default it holds and takes its first otherwise.
+    expect(
+      resolveSetupSettings({ ...saved, sessionRuntime: "boat" }, [
+        "--session-runtimes",
+        "docker,boat",
+      ]),
+    ).toMatchObject({ sessionRuntime: "boat", sessionRuntimes: ["docker", "boat"] });
+    expect(
+      resolveSetupSettings({ ...saved, sessionRuntime: "docker" }, ["--session-runtimes", "boat"]),
+    ).toMatchObject({ sessionRuntime: "boat", sessionRuntimes: ["boat"] });
+    const both = {
+      ...saved,
+      sessionRuntime: "docker" as const,
+      sessionRuntimes: ["docker", "boat"] as const,
+    };
+    expect(resolveSetupSettings(both, ["--session-runtime", "boat"])).toMatchObject({
+      sessionRuntime: "boat",
+      sessionRuntimes: ["docker", "boat"],
+    });
+    expect(() =>
+      resolveSetupSettings({ ...both, sessionRuntimes: ["docker"] }, ["--session-runtime", "boat"]),
+    ).toThrow(/does not offer \(docker\)\. Offer it with --session-runtimes docker,boat/);
+    expect(() => resolveSetupSettings(saved, ["--session-runtimes", "docker,vm"])).toThrow(
+      /docker, boat or both/,
+    );
+  });
+
+  it("refuses to offer Boat when Boat is not set up", () => {
+    expect(() => resolveSetupSettings(BOX, ["--session-runtimes", "docker,boat"])).toThrow(
+      /--boat-api-key-stdin/,
+    );
+    expect(resolveSetupSettings(BOX, ["--session-runtimes", "docker"])).toMatchObject({
+      sessionRuntime: "docker",
+      sessionRuntimes: ["docker"],
+    });
   });
 
   it("records an explicit Boat choice once Boat is set up", () => {

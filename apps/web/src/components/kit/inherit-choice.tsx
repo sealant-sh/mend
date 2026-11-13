@@ -26,6 +26,11 @@ const sourceTip = (source: InheritSource) => (
   </>
 );
 
+const ON_OFF: ReadonlyArray<SegmentOption<"on" | "off">> = [
+  { value: "on", label: "On" },
+  { value: "off", label: "Off" },
+];
+
 /**
  * `tri`: Inherit · On · Off for one setting. The Inherit option shows the value it resolves to
  * ("Inherit · on"); hovering or focusing it says where that value comes from, which screen readers
@@ -53,7 +58,42 @@ export function InheritChoice({
   readonly onChange: (value: InheritValue) => void;
   readonly disabled?: boolean;
 }) {
-  const options: ReadonlyArray<SegmentOption<InheritValue>> = [
+  return (
+    <InheritSegment
+      label={label}
+      value={value}
+      resolved={resolved}
+      source={source}
+      choices={ON_OFF}
+      onChange={onChange}
+      {...(disabled === undefined ? {} : { disabled })}
+    />
+  );
+}
+
+/**
+ * Inherit beside a setting's own `choices`, for a setting that is not on or off (where sessions
+ * run: Docker · Boat). Reads and behaves as `InheritChoice` does.
+ */
+export function InheritSegment<T extends string>({
+  label,
+  value,
+  resolved,
+  source,
+  choices,
+  onChange,
+  disabled,
+}: {
+  readonly label: string;
+  readonly value: "inherit" | T;
+  /** The value Inherit resolves to, in the setting's own words. */
+  readonly resolved: string;
+  readonly source: InheritSource;
+  readonly choices: ReadonlyArray<SegmentOption<T>>;
+  readonly onChange: (value: "inherit" | T) => void;
+  readonly disabled?: boolean;
+}) {
+  const options: ReadonlyArray<SegmentOption<"inherit" | T>> = [
     {
       value: "inherit",
       className: "min-w-[104px] justify-center",
@@ -67,8 +107,7 @@ export function InheritChoice({
       ),
       tip: sourceTip(source),
     },
-    { value: "on", label: "On" },
-    { value: "off", label: "Off" },
+    ...choices,
   ];
   return (
     <SettingRow label={label}>

@@ -146,8 +146,8 @@ describe("the machine view's t3code gateway", () => {
     expect(readMachine(exposure)).not.toHaveProperty("t3Gateway");
   });
 
-  it("leaves the host's user namespaces out while new sessions run on Boat", () => {
-    expect(readMachine(exposure, undefined, false, refused).userNamespaces).toEqual(refused());
-    expect(readMachine(exposure, undefined, true, refused)).not.toHaveProperty("userNamespaces");
+  it("reports the host's user namespaces only while the server offers Docker sessions", () => {
+    expect(readMachine(exposure, undefined, true, refused).userNamespaces).toEqual(refused());
+    expect(readMachine(exposure, undefined, false, refused)).not.toHaveProperty("userNamespaces");
   });
 });

@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
-import { OrganizationSettingsView, OrganizationView } from "@mend/api-contracts";
+import {
+  OrganizationSessionRuntimeView,
+  OrganizationSettingsView,
+  OrganizationView,
+} from "@mend/api-contracts";
 import {
   defaultSettings,
   inheritedOrganizationSettings,
@@ -43,12 +47,25 @@ const viewer = (role: OrganizationRole) =>
   });
 const instance = new MendSettings({ ...defaultSettings, autoLand: false, autoTour: true });
 const own = new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true });
-const settingsView = (editable: boolean) =>
+const dockerOnly = new OrganizationSessionRuntimeView({
+  chosen: null,
+  effective: "docker",
+  offered: ["docker"],
+  serverDefault: "docker",
+});
+const bothRuntimes = new OrganizationSessionRuntimeView({
+  chosen: null,
+  effective: "docker",
+  offered: ["docker", "boat"],
+  serverDefault: "docker",
+});
+const settingsView = (editable: boolean, sessionRuntime = dockerOnly) =>
   new OrganizationSettingsView({
     organization: own,
     instance,
     effective: organizationDefaults(instance, own),
     editable,
+    sessionRuntime,
   });
 const MEMBERS = [
   { userId: "carol", name: "Carol", email: "carol@acme.test", role: "owner", joinedAt: NOW },
@@ -200,6 +217,71 @@ describe("Organization · Defaults", () => {
     expect(document.querySelectorAll("button")).toHaveLength(0);
     expect(document.body.textContent).toContain("on · from acme's defaults");
     expect(document.body.textContent).toContain("on · from the instance default");
+  });
+});
+
+describe("Organization · Defaults · where new sessions run (SLNT-794)", () => {
+  const RUNTIME = "Where new sessions run";
+  const choseBoat = new OrganizationSessionRuntimeView({
+    ...bothRuntimes,
+    chosen: "boat",
+    effective: "boat",
+  });
+
+  it("lets an owner pick among what the server offers, shown at once", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, bothRuntimes),
+      "organization.setSessionRuntime": settingsView(true, choseBoat),
+    };
+    await render(<DefaultsTab />);
+    expect(pressed(RUNTIME)).toContain("Inherit · Docker");
+    // The server keeps the choice: the read after the save answers it too.
+    answers = { ...answers, "organization.settings": settingsView(true, choseBoat) };
+    await act(async () => option(RUNTIME, "Boat").click());
+    await settle();
+    expect(calls).toContain("organization.setSessionRuntime");
+    expect(pressed(RUNTIME)).toBe("Boat");
+  });
+
+  it("offers an owner no choice the server does not offer", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(true, dockerOnly),
+    };
+    await render(<DefaultsTab />);
+    expect(group(RUNTIME)).toBeUndefined();
+    expect(document.body.textContent).toContain("Docker · from this server");
+    expect(document.body.textContent).not.toContain("Boat");
+  });
+
+  it("shows a member the organization's choice, with nothing to press", async () => {
+    answers = {
+      "organization.current": viewer("member"),
+      "organization.settings": settingsView(false, choseBoat),
+    };
+    await render(<DefaultsTab />);
+    expect(group(RUNTIME)).toBeUndefined();
+    expect(document.querySelectorAll("button")).toHaveLength(0);
+    expect(document.body.textContent).toContain("Boat · from acme's defaults");
+  });
+
+  it("says Sealant picks where the server offers nothing", async () => {
+    answers = {
+      "organization.current": viewer("owner"),
+      "organization.settings": settingsView(
+        true,
+        new OrganizationSessionRuntimeView({
+          chosen: null,
+          effective: null,
+          offered: [],
+          serverDefault: null,
+        }),
+      ),
+    };
+    await render(<DefaultsTab />);
+    expect(group(RUNTIME)).toBeUndefined();
+    expect(document.body.textContent).toContain("Sealant picks · from this server");
   });
 });
 

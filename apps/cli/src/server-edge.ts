@@ -83,6 +83,8 @@ export const isDeclarableItem = (value: string): value is DeclarableItem =>
 /** What a server config says about how the install is reached and for whom. */
 export interface ServerPosture {
   readonly sessionRuntime?: "docker" | "boat";
+  /** The runtimes organizations may choose among; absent, the server offers `sessionRuntime`. */
+  readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   /** The name the edge's certificate is for; absent, no edge runs. */
   readonly edgeHost?: string;
   readonly exposure?: Exposure;
@@ -250,6 +252,9 @@ export const postureEnvironment = (
     ...(posture.sessionRuntime === undefined
       ? []
       : [["MEND_SESSION_RUNTIME", posture.sessionRuntime] as const]),
+    ...(posture.sessionRuntimes === undefined
+      ? []
+      : [["MEND_SESSION_RUNTIMES", posture.sessionRuntimes.join(",")] as const]),
     ...(posture.exposure === undefined ? [] : [["MEND_EXPOSURE", posture.exposure] as const]),
     ...(posture.tenancy === undefined ? [] : [["MEND_TENANCY", posture.tenancy] as const]),
     ...(gate

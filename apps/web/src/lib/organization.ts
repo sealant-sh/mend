@@ -27,10 +27,21 @@ export const ORGANIZATION_SETTING_WORDS: Readonly<Record<string, string>> = {
   autoName: "session naming",
   autoLand: "land when a turn completes",
   backgroundSessions: "background sessions",
+  sessionRuntime: "new sessions run on",
+};
+
+/** Where sessions run, in the words the settings use. */
+export const SESSION_RUNTIME_WORDS: Readonly<Record<string, string>> = {
+  docker: "this server's Docker",
+  boat: "Boat",
 };
 
 /** One changed default as the audit states it: its new value, or that it follows the instance. */
-const organizationSettingFact = (value: string | number | boolean | null): string => {
+const organizationSettingFact = (key: string, value: string | number | boolean | null): string => {
+  if (key === "sessionRuntime")
+    return value === null
+      ? "the server's default"
+      : (SESSION_RUNTIME_WORDS[String(value)] ?? String(value));
   if (value === null) return "follows the instance";
   if (typeof value === "boolean") return value ? "on" : "off";
   return String(value);
@@ -129,7 +140,7 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       const changed = Object.entries(event.data)
         .map(
           ([key, value]) =>
-            `${ORGANIZATION_SETTING_WORDS[key] ?? key} ${organizationSettingFact(value)}`,
+            `${ORGANIZATION_SETTING_WORDS[key] ?? key} ${organizationSettingFact(key, value)}`,
         )
         .join(", ");
       return changed === ""

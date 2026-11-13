@@ -158,6 +158,18 @@ describe("describeAudit for organization defaults (docs/adr/0003)", () => {
       "changed the organization defaults",
     );
   });
+
+  it("says where new sessions run, in plain words", () => {
+    expect(describeAudit(event("organization.settings_changed", { sessionRuntime: "boat" }))).toBe(
+      "set the organization defaults: new sessions run on Boat",
+    );
+    expect(
+      describeAudit(event("organization.settings_changed", { sessionRuntime: "docker" })),
+    ).toBe("set the organization defaults: new sessions run on this server's Docker");
+    expect(describeAudit(event("organization.settings_changed", { sessionRuntime: null }))).toBe(
+      "set the organization defaults: new sessions run on the server's default",
+    );
+  });
 });
 
 describe("describeAudit for the Boat key (SLNT-790)", () => {

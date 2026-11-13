@@ -5569,4 +5569,11 @@ export const migrations = {
     yield* sql`CREATE UNIQUE INDEX IF NOT EXISTS boat_keys_person_key
       ON boat_keys (organization_id, owner_user_id) WHERE owner_user_id IS NOT NULL`;
   }),
+  // Where an organization's new sessions run, of what the server offers; null follows the
+  // server's default (SLNT-794).
+  "0218_organization_session_runtime": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE organization_settings ADD COLUMN IF NOT EXISTS session_runtime text
+      CHECK (session_runtime IN ('docker', 'boat'))`;
+  }),
 };

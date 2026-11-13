@@ -13,6 +13,7 @@ import {
   MendDBLive,
   migrations,
   OrganizationsRepo,
+  OrganizationSettingsRepoLive,
   OrganizationsRepoLive,
   ProjectsRepo,
   ProjectsRepoLive,
@@ -117,6 +118,7 @@ const databaseLayer = (startupParameters?: Readonly<Record<string, string>>) =>
   );
 const repos = Layer.mergeAll(
   ProjectsRepoLive,
+  OrganizationSettingsRepoLive,
   OrganizationsRepoLive,
   UserGitAuthorRepoLive,
   UserGitAccessRepoLive,

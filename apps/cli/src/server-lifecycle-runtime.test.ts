@@ -58,5 +58,19 @@ it(
       _tag: "error",
       message: expect.stringContaining('must be "docker" or "boat"'),
     });
+    // SLNT-794: offering both lets each organization choose; the default stays the saved one.
+    expect(
+      await serverCommand(["setup", "--offline", "--session-runtimes", "docker,boat"], f.runtime),
+    ).toEqual({ _tag: "ok" });
+    const both = f.files();
+    expect(both["server.env"]).toContain("MEND_SESSION_RUNTIME=docker\n");
+    expect(both["server.env"]).toContain("MEND_SESSION_RUNTIMES=docker,boat\n");
+    expect(both["compose.posture.yaml"]).toContain("MEND_SESSION_RUNTIMES");
+    expect(JSON.parse(both["server.json"] ?? "{}")).toMatchObject({
+      sessionRuntime: "docker",
+      sessionRuntimes: ["docker", "boat"],
+    });
+    expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.files()["server.env"]).toContain("MEND_SESSION_RUNTIMES=docker,boat\n");
   },
 );
