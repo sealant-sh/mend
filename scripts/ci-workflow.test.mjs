@@ -162,7 +162,7 @@ test("store-image-git runs the store's handoff tests under the runtime stage's o
   assert.match(script, /vitest run test\/handoff\.test\.ts/);
 });
 
-test("required database and live-adapter evidence keeps its preparation and worker caps", () => {
+test("both engines lanes keep required database and live-adapter preparation and worker caps", () => {
   for (const lane of ["engines", "engines-b"]) {
     const engines = jobs[`test-${lane}`];
     assert.equal(engines.services.postgres.image, "postgres:17");

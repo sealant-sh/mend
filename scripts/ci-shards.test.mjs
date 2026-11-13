@@ -131,7 +131,7 @@ test("all modes preserve package scripts, exact filters, native CLI and sessions
     const result = f.check(shard);
     assert.equal(result.status, 0, result.stderr);
     const records = f.recordings();
-    assert.equal(records.length, shard === "engines-b" ? 1 : 2);
+    assert.equal(records.length, 2);
     assert.equal(result.stdout, "child stdout\n".repeat(records.length));
     assert.equal(result.stderr, "child stderr\n".repeat(records.length));
     assert.equal(records.map((recorded) => recorded.stdin).join(""), "inherited input\n");
@@ -189,7 +189,8 @@ test("all modes preserve package scripts, exact filters, native CLI and sessions
   assert.deepEqual([...allSelected, ...native.keys()].toSorted(), packagesWithTests.toSorted());
   assert.deepEqual([...native.keys()].toSorted(), ["@mend/sessions", "@sealant/mend"]);
   for (const indices of native.values()) assert.deepEqual(indices, ["--shard=1/2", "--shard=2/2"]);
-  for (const required of ["@mend/api-server", "@mend/db", "@mend/jobs", "@mend/auth"]) {
+  assert.deepEqual(selected.get("engines-b"), ["@mend/api-server"]);
+  for (const required of ["@mend/db", "@mend/jobs", "@mend/auth"]) {
     assert.ok(selected.get("engines").includes(required), required);
   }
   assert.ok(selected.get("clients-a").includes("mend"), "the unscoped VS Code package is selected");
@@ -249,7 +250,7 @@ test("a broad workspace pattern still excludes the root Turbo orchestration and 
 for (const [name, edited, diagnostic] of [
   [
     "duplicate within one shard",
-    source.replace('"@mend/api-server",', '"@mend/sessions",'),
+    source.replace('"@mend/db",', '"@mend/sessions",'),
     /Duplicate shard assignment: @mend\/sessions/,
   ],
   [
@@ -500,7 +501,7 @@ setInterval(() => {
   if (files.length === 2) process.exit(0);
 }, 10);
 `);
-  for (const mode of ["engines", "clients-a", "clients-b"]) {
+  for (const mode of ["engines", "engines-b", "clients-a", "clients-b"]) {
     f.clearRecordings();
     const result = f.check(mode);
     assert.equal(result.status, 0, result.stderr);

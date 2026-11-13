@@ -9,7 +9,6 @@ import { ciTurboOptions } from "./ci-turbo.mjs";
 
 const shards = {
   engines: [
-    "@mend/api-server",
     "@mend/db",
     "@mend/jobs",
     "@mend/auth",
@@ -19,7 +18,7 @@ const shards = {
     "@mend/sealant",
     "@mend/slack",
   ],
-  "engines-b": [],
+  "engines-b": ["@mend/api-server"],
   "clients-a": [
     "@mend/t3-gateway",
     "@mend/desktop",
@@ -161,7 +160,7 @@ const parsePartition = (inventory) => {
     else if (!pkg.hasTest) problems.push(`Assigned package has no test script: ${split.package}.`);
   }
   for (const [shard, names] of Object.entries(shards)) {
-    if (names.length === 0 && shard !== "engines-b") {
+    if (names.length === 0) {
       problems.push(`Empty ordinary task lane: ${shard}.`);
     }
     for (const name of names) {
@@ -196,7 +195,7 @@ const runShard = (root, shard, options) =>
       settle(failure("The CI shard runner requires POSIX process groups."));
       return;
     }
-    const commands = shards[shard].length > 0 ? [turboArguments(shards[shard], options)] : [];
+    const commands = [turboArguments(shards[shard], options)];
     for (const split of splitPackages) {
       const member = split.members.find((entry) => entry.shard === shard);
       if (member !== undefined) {
