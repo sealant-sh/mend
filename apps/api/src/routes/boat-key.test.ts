@@ -337,6 +337,15 @@ describe("an organization's Boat key", () => {
       words: "Boat refused this key, so nothing changed.",
     },
     {
+      name: "a key without every permission Mend needs",
+      error: refusal("missing-permissions", {
+        missingPermissions: ["sandbox.delete", "snapshot.write"],
+      }),
+      status: 422,
+      words:
+        "This Boat key lacks permissions Mend needs: sandbox.delete, snapshot.write. Nothing changed. Create a key with the command on Mend's Boat page",
+    },
+    {
       name: "Boat not answering",
       error: refusal("key-unverified"),
       status: 422,

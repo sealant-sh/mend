@@ -28,6 +28,8 @@ export const BoatAccountRefusalReason = Schema.Literals([
   "key-refused",
   /** Boat did not answer whether the key is valid. Nothing was stored or changed. */
   "key-unverified",
+  /** The key provably lacks Boat permissions sealant needs (`missingPermissions`). Nothing changed. */
+  "missing-permissions",
   /** A removal while VMs Boat may hold (`liveRuns`) or image builds (`buildsInFlight`) remain. */
   "in-use",
   /** A replacement key that cannot see `unseen` of the VMs or saved images the account has. */
@@ -50,6 +52,8 @@ export class BoatAccountRefusal extends Schema.TaggedError<BoatAccountRefusal>()
     liveRuns: Schema.NullOr(Schema.Number),
     buildsInFlight: Schema.NullOr(Schema.Number),
     unseen: Schema.NullOr(Schema.Number),
+    /** `missing-permissions`: the Boat permissions sealant needs that the key lacks, as sealant names them. */
+    missingPermissions: Schema.NullOr(Schema.Array(Schema.String)),
     /** sealant's words, which never name the key. */
     message: Schema.String,
   },
@@ -87,6 +91,7 @@ const REASONS_BY_TAG: Readonly<Record<string, BoatAccountRefusalReason>> = {
 const REASONS_BY_CODE: Readonly<Record<string, BoatAccountRefusalReason>> = {
   "boat-key-refused": "key-refused",
   "boat-key-unverified": "key-unverified",
+  "boat-key-missing-permissions": "missing-permissions",
   "boat-account-in-use": "in-use",
   "boat-key-cannot-see": "cannot-see",
   "boat-account-removing": "removing",
@@ -112,6 +117,7 @@ export const boatAccountRefusalOf = (cause: unknown): BoatAccountRefusal | null 
     liveRuns: countOf(cause.cause, "liveRuns"),
     buildsInFlight: countOf(cause.cause, "buildsInFlight"),
     unseen: countOf(cause.cause, "unseen"),
+    missingPermissions: cause.missingPermissions ?? null,
     message: cause.message,
   });
 };

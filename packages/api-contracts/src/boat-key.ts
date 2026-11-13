@@ -21,8 +21,11 @@ export class BoatKeyRefused extends Schema.TaggedError<BoatKeyRefused>()(
   "BoatKeyRefused",
   {
     message: Schema.String,
-    /** `shape`: not a Boat key, nothing sent. `refused`: Boat said no. `unverified`: Boat did not answer. */
-    reason: Schema.Literals(["shape", "refused", "unverified"]),
+    /**
+     * `shape`: not a Boat key, nothing sent. `refused`: Boat said no. `unverified`: Boat did not
+     * answer. `missing-permissions`: the key lacks Boat permissions Mend needs; the message names them.
+     */
+    reason: Schema.Literals(["shape", "refused", "unverified", "missing-permissions"]),
   },
   { httpApiStatus: 422 },
 ) {}

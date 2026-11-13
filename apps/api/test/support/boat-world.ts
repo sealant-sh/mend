@@ -26,13 +26,19 @@ export interface CoreCall {
 
 export const refusal = (
   reason: BoatAccountRefusalReason,
-  counts: { liveRuns?: number; buildsInFlight?: number; unseen?: number } = {},
+  counts: {
+    liveRuns?: number;
+    buildsInFlight?: number;
+    unseen?: number;
+    missingPermissions?: ReadonlyArray<string>;
+  } = {},
 ) =>
   new BoatAccountRefusal({
     reason,
     liveRuns: counts.liveRuns ?? null,
     buildsInFlight: counts.buildsInFlight ?? null,
     unseen: counts.unseen ?? null,
+    missingPermissions: counts.missingPermissions ?? null,
     message: `sealant says ${reason}`,
   });
 
