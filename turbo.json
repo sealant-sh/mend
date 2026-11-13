@@ -58,7 +58,15 @@
         "DOCKER_*",
         "TEST_*"
       ],
-      "passThroughEnv": ["CI_TEST_REPORT_DIR"],
+      "passThroughEnv": [
+        "CI_TEST_REPORT_DIR",
+        "GITHUB_STEP_SUMMARY",
+        "GITHUB_JOB",
+        "GITHUB_RUN_ID",
+        "GITHUB_RUN_ATTEMPT",
+        "GITHUB_SHA",
+        "GITHUB_EVENT_PATH"
+      ],
       "outputs": [],
       "inputs": [
         "$TURBO_DEFAULT$",
