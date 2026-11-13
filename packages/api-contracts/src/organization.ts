@@ -5,6 +5,8 @@ import {
   OrganizationSettings,
   ProjectId,
   RuntimeSupportReading,
+  RuntimeSwitchImpact,
+  RuntimeSwitchMoves,
   SessionRuntime,
   WorkspaceImage,
 } from "@mend/domain";
@@ -137,11 +139,30 @@ export class OrganizationRuntimeView extends Schema.Class<OrganizationRuntimeVie
   support: RuntimeSupportReading,
 }) {}
 
-/** An owner's choice of where new sessions run; null follows the server's default again. */
+/**
+ * An owner's choice of where new sessions run; null follows the server's default again. `moves`
+ * (SLNT-796) moves environments the new runtime cannot run, in the same step: each is moved only
+ * while the runtime still cannot run it, to what `runtimeSwitch` names. Left out, nothing moves.
+ */
 export class OrganizationSessionRuntimeRequest extends Schema.Class<OrganizationSessionRuntimeRequest>(
   "OrganizationSessionRuntimeRequest",
 )({
   sessionRuntime: Schema.NullOr(SessionRuntime),
+  moves: Schema.optional(RuntimeSwitchMoves),
+}) {}
+
+/**
+ * What choosing `sessionRuntime` would change for the organization's new sessions, from what
+ * Sealant says that runtime supports (SLNT-796). Existing worktrees keep where they run.
+ */
+export class OrganizationRuntimeSwitchView extends Schema.Class<OrganizationRuntimeSwitchView>(
+  "OrganizationRuntimeSwitchView",
+)({
+  /** The choice asked about; null follows the server's default. */
+  chosen: Schema.NullOr(SessionRuntime),
+  /** Where new sessions would then run; null where Sealant picks. */
+  effective: Schema.NullOr(SessionRuntime),
+  impact: RuntimeSwitchImpact,
 }) {}
 
 /**
@@ -292,6 +313,15 @@ export const organizationGroup = HttpApiGroup.make("organization")
     HttpApiEndpoint.get("runtime", "/organization/runtime", {
       success: OrganizationRuntimeView,
       error: NotFound,
+    }),
+  )
+  .add(
+    // Owners only: what choosing `sessionRuntime` (absent: the server's default) would change for
+    // new sessions, before anything is saved. Projects the owner cannot see are counted, not named.
+    HttpApiEndpoint.get("runtimeSwitch", "/organization/settings/session-runtime/impact", {
+      query: { sessionRuntime: Schema.optional(SessionRuntime) },
+      success: OrganizationRuntimeSwitchView,
+      error: [NotFound, SettingsFailure],
     }),
   )
   .add(
