@@ -139,7 +139,7 @@ export const signInExecutorOwner = (
   target: ExecutorTarget,
   input: {
     readonly email: string;
-    readonly password: Redacted.Redacted<string>;
+    readonly password: Redacted.Redacted;
     readonly organizationName: string;
   },
   callback: string,

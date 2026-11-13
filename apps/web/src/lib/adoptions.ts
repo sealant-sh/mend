@@ -280,7 +280,7 @@ export const progressWords = (progress: AdoptionProgressDto | undefined): string
       if (git === null) return "cloning · waiting for the git host";
       const counted =
         git.total === null
-          ? `${git.done.toLocaleString()}`
+          ? git.done.toLocaleString()
           : `${git.done.toLocaleString()} of ${git.total.toLocaleString()}`;
       const bytes =
         git.received === null

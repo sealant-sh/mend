@@ -222,6 +222,7 @@ export const fixtureApi: DashboardContext["api"] = <T>(
   route: string,
 ): Promise<T> => {
   // The fixture stands in for JSON off the wire, as untyped here as it is there.
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fixture: the dashboard's api is generic over the answer its caller names
   const answer = (value: unknown): Promise<T> => Promise.resolve(value as T);
   if (method !== "GET")
     return Promise.reject(new Error(`${method} ${route}: fixture is read-only`));

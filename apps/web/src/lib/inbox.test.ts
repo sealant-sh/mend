@@ -252,7 +252,9 @@ describe("inbox places", () => {
     const notes = [annotation("read", { totalComments: 2 })];
     expect(place(sessions, notes).map((row) => row.place)).toEqual(["settled", "settled"]);
     const kept = place(sessions, notes, [mark("stopped", "inbox"), mark("read", "inbox")]);
-    expect(kept.map((row) => [row.title, row.place]).toSorted()).toEqual([
+    expect(
+      kept.toSorted((a, b) => a.title.localeCompare(b.title)).map((row) => [row.title, row.place]),
+    ).toEqual([
       ["Session read", "review"],
       ["Session stopped", "review"],
     ]);

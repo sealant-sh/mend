@@ -19,7 +19,7 @@ const Scope = Schema.Struct({
 });
 const Scopes = Schema.Record(Schema.String, Scope);
 export interface DopplerLocalConfig {
-  readonly token: Redacted.Redacted<string>;
+  readonly token: Redacted.Redacted;
   readonly scopes: ReadonlyArray<{
     readonly directory: string;
     readonly dopplerProject: string;

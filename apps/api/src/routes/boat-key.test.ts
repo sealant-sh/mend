@@ -1,15 +1,29 @@
 import { boatKeyProofFixture, boatKeyReportFixture } from "@mend/domain/boat-key-fixtures";
 import { BOAT_KEY_REQUIRED_PERMISSIONS, Project } from "@mend/domain/workbench";
 import { SealantPlatformError } from "@mend/sealant";
-import { Deferred, Duration, Effect } from "effect";
+import { Deferred, Duration, Effect, Predicate, Schema } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
 import { makeBoatWorld, refusal } from "../../test/support/boat-world.ts";
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
 import { accessKeyBearerOf, organizationIdOf } from "../../test/support/tenancy-harness.ts";
 
+/** A Boat key status's details as a test reads them: the report is compared, not decoded. */
+const detailsBody = Schema.decodeUnknownSync(
+  Schema.Struct({ details: Schema.NullOr(Schema.Struct({ report: Schema.Unknown })) }),
+);
+
+/** A refusal's words, as a test reads them. */
+const messageBody = Schema.decodeUnknownSync(Schema.Struct({ message: Schema.String }));
+
 const KEY = "boat_live_SYNTHETIC0123456789abcdef";
 const REPLACEMENT = "boat_live_SYNTHETICreplacement98765";
+
+/** A refusal's words, or "" when the answer carries none. */
+const messageOf = async (response: Response): Promise<string> => {
+  const body: unknown = await response.json();
+  return Predicate.isObject(body) && typeof body["message"] === "string" ? body["message"] : "";
+};
 
 describe("an organization's Boat key", () => {
   let api: TenancyApi;
@@ -256,7 +270,7 @@ describe("an organization's Boat key", () => {
     boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(response.status).toBe(409);
-    const { message } = (await response.json()) as { message: string };
+    const message = await messageOf(response);
     expect(message).toMatch(
       /^Mend asked Sealant to end 2 of its own standby workspaces in the organization's Boat account and did not see them end within \d+ s, so nothing changed and the key stays\. No session holds the account\. Their VMs may still be running and billed\. Mend asks Sealant to end them again at least every 10 minutes, and again each time the key is removed\.$/,
     );
@@ -272,7 +286,7 @@ describe("an organization's Boat key", () => {
     boat.holds.refusal = refusal("in-use", { liveRuns: 2 });
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(response.status).toBe(409);
-    expect(((await response.json()) as { message: string }).message).toMatch(
+    expect(await messageOf(response)).toMatch(
       /^The organization's Boat account still has 1 session workspace whose VM Boat may be running, so nothing changed and the key stays\. To remove it, stop the organization's Boat sessions, then remove the key again\. Mend also asked Sealant to end 1 of its own standby workspaces there and did not see it end within \d+ s\. Its VM may still be running and billed\. Mend asks Sealant to end it again at least every 10 minutes, and again each time the key is removed\.$/,
     );
   });
@@ -304,14 +318,15 @@ describe("an organization's Boat key", () => {
     const second = api.request("alice", "DELETE", "/api/organization/boat-key");
     await new Promise((wake) => setTimeout(wake, 50));
     await Effect.runPromise(Deferred.succeed(gate, undefined));
-    const bodies = await Promise.all(
+    const removals = await Promise.all(
       [first, second].map(async (response) => {
         const answered = await response;
         expect(answered.status).toBe(200);
-        return (await answered.json()) as { removal?: { standbysDrained: number } };
+        const body: unknown = await answered.json();
+        return Predicate.isObject(body) ? body["removal"] : undefined;
       }),
     );
-    expect(bodies.map((body) => body.removal)).toEqual([{ standbysDrained: 1 }, undefined]);
+    expect(removals).toEqual([{ standbysDrained: 1 }, undefined]);
     expect(core.filter((call) => call.call === "remove")).toHaveLength(1);
     expect(audited.filter((event) => event.action === "boat_key.removed")).toHaveLength(1);
   });
@@ -367,7 +382,7 @@ describe("an organization's Boat key", () => {
       boat.refuseNext(scenario.error);
       const response = await connect("alice");
       expect(response.status).toBe(scenario.status);
-      expect(((await response.json()) as { message: string }).message).toContain(scenario.words);
+      expect(await messageOf(response)).toContain(scenario.words);
       expect(keys.size).toBe(0);
       expect(audited).toEqual([]);
     });
@@ -395,7 +410,7 @@ describe("an organization's Boat key", () => {
       boat.refuseNext(scenario.error);
       const response = await connect("alice", REPLACEMENT);
       expect(response.status).toBe(409);
-      expect(((await response.json()) as { message: string }).message).toContain(scenario.words);
+      expect(await messageOf(response)).toContain(scenario.words);
       expect(keys.get(organizationIdOf("A"))?.keyReplacedAt).toBeNull();
       expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
     });
@@ -406,9 +421,12 @@ describe("an organization's Boat key", () => {
     expect(await none.json()).toMatchObject({ state: "none", report: null, unanswered: null });
     await connect("alice");
     const checked = await api.request("alice", "POST", "/api/organization/boat-key/check");
-    const body = (await checked.json()) as { state: string; observedAt: string; report: null };
+    const body: unknown = await checked.json();
     expect(body).toMatchObject({ state: "active", report: null, unanswered: null });
-    expect(Number.isNaN(Date.parse(body.observedAt))).toBe(false);
+    const { observedAt } = Schema.decodeUnknownSync(Schema.Struct({ observedAt: Schema.String }))(
+      body,
+    );
+    expect(Number.isNaN(Date.parse(observedAt))).toBe(false);
     boat.refuseNext(refusal("not-found"));
     const missing = await api.request("alice", "POST", "/api/organization/boat-key/check");
     expect(await missing.json()).toMatchObject({ state: "missing" });
@@ -418,14 +436,12 @@ describe("an organization's Boat key", () => {
     const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
     const report = boatKeyReportFixture({}, OBSERVED);
     const statusOf = async (user: "alice" | "carol") =>
-      (await (await api.request(user, "GET", "/api/organization/boat-key")).json()) as {
-        details: { report: unknown } | null;
-      };
+      detailsBody(await (await api.request(user, "GET", "/api/organization/boat-key")).json());
 
     it("answers sealant's report after a connect, without asking Boat again", async () => {
       boat.observe(report);
-      const body = (await (await connect("alice")).json()) as { details: { report: unknown } };
-      expect(body.details.report).toMatchObject({
+      const body = detailsBody(await (await connect("alice")).json());
+      expect(body.details?.report).toMatchObject({
         observedAt: OBSERVED.toISOString(),
         identity: { observed: true, login: "acme-ci" },
         permissions: { observed: true, missing: [] },
@@ -460,10 +476,8 @@ describe("an organization's Boat key", () => {
         OBSERVED,
       );
       boat.observe(expired);
-      const body = (await (await connect("alice", REPLACEMENT)).json()) as {
-        details: { report: unknown };
-      };
-      expect(body.details.report).toMatchObject({ expiry: { observed: true, expired: true } });
+      const body = detailsBody(await (await connect("alice", REPLACEMENT)).json());
+      expect(body.details?.report).toMatchObject({ expiry: { observed: true, expired: true } });
     });
 
     it("checks the key with Boat now on Check now, and answers the fresh report", async () => {
@@ -527,7 +541,7 @@ describe("an organization's Boat key", () => {
       );
       const refused = await connect("alice");
       expect(refused.status).toBe(422);
-      const body = (await refused.json()) as { message: string };
+      const body = messageBody(await refused.json());
       expect(body.message).toBe(
         "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command on Mend's Boat page (Settings, Organization, Boat) and connect that one. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
       );
@@ -795,18 +809,14 @@ describe("a person's own Boat key (SLNT-797)", () => {
   it("answers what Boat says about the caller's own key, as the organization's", async () => {
     const OBSERVED = new Date("2026-11-13T14:02:00.000Z");
     boat.observe(boatKeyReportFixture({}, OBSERVED));
-    const connected = (await (await connectOwn("carol")).json()) as {
-      details: { report: unknown };
-    };
-    expect(connected.details.report).toMatchObject({
+    const connected = detailsBody(await (await connectOwn("carol")).json());
+    expect(connected.details?.report).toMatchObject({
       observedAt: OBSERVED.toISOString(),
       identity: { observed: true, login: "acme-ci" },
     });
     core.length = 0;
-    const status = (await (await api.request("carol", "GET", ROUTE)).json()) as {
-      details: { report: unknown };
-    };
-    expect(status.details.report).toMatchObject({ wallet: { observed: true } });
+    const status = detailsBody(await (await api.request("carol", "GET", ROUTE)).json());
+    expect(status.details?.report).toMatchObject({ wallet: { observed: true } });
     expect(core.map((call) => call.call)).toEqual(["list"]);
     core.length = 0;
     const checked = await api.request("carol", "POST", `${ROUTE}/check`);
@@ -839,12 +849,12 @@ describe("a person's own Boat key (SLNT-797)", () => {
     );
     const refused = await connectOwn("carol");
     expect(refused.status).toBe(422);
-    expect(((await refused.json()) as { message: string }).message).toBe(
+    expect(messageBody(await refused.json()).message).toBe(
       "This Boat key has expired, so Boat refused it and nothing changed. Create a new key using the command in Settings, Account and connect that one there, or with mend boat connect --mine. Boat keys last 90 days unless made to last longer; the command on the Boat page makes one that lasts a year.",
     );
     boat.refuseNext(refusal("missing-permissions", { missingPermissions: ["host"] }));
     const lacking = await connectOwn("carol");
-    expect(((await lacking.json()) as { message: string }).message).toContain(
+    expect(messageBody(await lacking.json()).message).toContain(
       "Create a key with the command on the Boat key card in Settings, Account, which grants",
     );
   });
@@ -956,7 +966,7 @@ describe("a person's own Boat key (SLNT-797)", () => {
     boat.refuseNext(refusal("cannot-see", { unseen: 2 }));
     const response = await connectOwn("carol", REPLACEMENT);
     expect(response.status).toBe(409);
-    expect(((await response.json()) as { message: string }).message).toContain(
+    expect(await messageOf(response)).toContain(
       "This key cannot see 2 VMs or saved images your Boat account holds now",
     );
     expect(keys.get(`${A}/carol`)?.keyReplacedAt).toBeNull();

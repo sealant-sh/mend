@@ -142,7 +142,9 @@ const typeEndpoint = (value: string) => {
 };
 
 const leaveEndpoint = () =>
-  act(() => endpointField().dispatchEvent(new FocusEvent("focusout", { bubbles: true })));
+  act(() => {
+    endpointField().dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
 
 describe("the agent login rows", () => {
   it("shows a key beside a subscription in the words of ADR 0018, the default marked", async () => {

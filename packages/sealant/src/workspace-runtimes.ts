@@ -28,13 +28,14 @@ export const RUNTIMES_READ_TIMEOUT = Duration.seconds(5);
  */
 const unreadReason = (cause: SealantPlatformError | TimedOut): string =>
   cause instanceof TimedOut
-    ? "Sealant did not answer within 5 seconds"
+    ? cause.message
     : cause.status !== null && cause.status > 0
       ? `Sealant answered HTTP ${cause.status}`
       : "Sealant could not be reached";
 
 class TimedOut {
   readonly _tag = "TimedOut";
+  readonly message = "Sealant did not answer within 5 seconds";
 }
 
 export const WorkspaceRuntimesReportLive: Layer.Layer<
@@ -67,7 +68,7 @@ export const WorkspaceRuntimesReportLive: Layer.Layer<
       ),
       Effect.catch((cause) =>
         Effect.logWarning("workspace runtimes: Sealant's report could not be read").pipe(
-          Effect.annotateLogs({ cause: String(cause) }),
+          Effect.annotateLogs({ cause: `${cause._tag}: ${cause.message}` }),
           Effect.as<WorkspaceRuntimesReading>({ state: "unread", reason: unreadReason(cause) }),
         ),
       ),

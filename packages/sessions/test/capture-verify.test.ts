@@ -29,7 +29,7 @@ import {
   uploadObjects,
   writeCdcPack,
 } from "@mend/store/testing";
-import { Cause, Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, Option, Schema, Scope } from "effect";
 import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -115,9 +115,13 @@ const packWithoutSubtree = (work: string, worktreeId: string, epoch: number, bas
 };
 
 const packsOf = (sections: unknown): ReadonlyArray<string> =>
-  (sections as { git: { packs: ReadonlyArray<string> } }).git.packs;
+  Schema.decodeUnknownSync(
+    Schema.Struct({ git: Schema.Struct({ packs: Schema.Array(Schema.String) }) }),
+  )(sections).git.packs;
 const refsOf = (sections: unknown): Readonly<Record<string, string>> =>
-  (sections as { git: { refs: Readonly<Record<string, string>> } }).git.refs;
+  Schema.decodeUnknownSync(
+    Schema.Struct({ git: Schema.Struct({ refs: Schema.Record(Schema.String, Schema.String) }) }),
+  )(sections).git.refs;
 
 /**
  * The Mend host failing one git step (review 2026-09-28 (13) #1): a `git` first on `PATH` that,
@@ -3299,7 +3303,7 @@ describeSeals(
         expect(await sealOf(at)).toBeNull();
         world.memory.putAuthority.delete(`${at.worktreeId}:${at.epoch}`);
         // One it bound to other bytes of a pack index the seal names is on record too: held.
-        const packs = (at.git as { readonly packs: ReadonlyArray<string> }).packs;
+        const packs = packsOf({ git: at.git });
         const index = `${packs[0] ?? ""}.idx`;
         world.memory.boundIndexes.set(index, {
           sha256: "0".repeat(64),
@@ -3404,7 +3408,7 @@ describeSeals(
         registerOn(at.worktreeId, at.epoch, at.api)(built).pipe(Effect.flip),
       );
       expect(refused).toMatchObject({ status: 400 });
-      expect(String(refused.message)).toContain("pack index key(s) as packs");
+      expect(refused.message).toContain("pack index key(s) as packs");
     });
 
     it("Astra review: a seal an older server recorded over a pack listed under an index's name is void", async () => {
@@ -3417,9 +3421,9 @@ describeSeals(
       // As an older server would have registered it: the workspace pack listed as `<sha>.idx`.
       const row = world.memory.captures.get(file.cap.id);
       if (row === undefined) throw new Error("the sealed capture is not registered");
-      const sections = JSON.parse(JSON.stringify(row.sections)) as {
-        workspace: { packs: Array<string> };
-      };
+      const sections: { workspace: { packs: Array<string> } } = JSON.parse(
+        JSON.stringify(row.sections),
+      );
       sections.workspace.packs = sections.workspace.packs.map((key) => `${key}.idx`);
       world.memory.captures.set(file.cap.id, { ...row, sections });
       expect(await sealOf(at)).toBeNull();
@@ -3458,7 +3462,7 @@ describeSeals(
       const at = await claimed();
       await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
       // A valid pack and its index under this executor's own prefix: the base pack's bytes.
-      const base = (at.git as { readonly packs: ReadonlyArray<string> }).packs[0] ?? "";
+      const base = packsOf({ git: at.git })[0] ?? "";
       const name = base.slice(base.lastIndexOf("/") + 1);
       const pack = captureKeys(at.worktreeId, at.epoch).pack(name);
       const index = `${pack}.idx`;

@@ -9,6 +9,7 @@ import PairScreen from "@/app/pair";
 import { claimPairing } from "@/data/pairing";
 import { clearConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
+import { jsonBody, requestUrl } from "@/test/fake-fetch";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));
 vi.mock("expo-constants", () => ({ default: { expoConfig: null } }));
@@ -58,11 +59,11 @@ const messageSettings = {
   puts: [] as Array<unknown>,
 };
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = new URL(String(input));
+  const url = requestUrl(input);
   if (network.down) throw new TypeError("Network request failed");
   if (url.pathname === "/api/pair") {
     network.pairClaims += 1;
-    const body: unknown = JSON.parse(String(init?.body));
+    const body: unknown = jsonBody(init);
     const code =
       typeof body === "object" && body !== null && "code" in body ? String(body.code) : "";
     return json({
@@ -77,7 +78,7 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
   if (url.pathname === `/api/sessions/${SESSION}/pages`) return json([PAGE_WIRE]);
   if (url.pathname === "/api/me/message-settings") {
     if (init?.method === "PUT") {
-      const body: unknown = JSON.parse(String(init.body));
+      const body: unknown = jsonBody(init);
       messageSettings.puts.push(body);
       if (
         typeof body === "object" &&

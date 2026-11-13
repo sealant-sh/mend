@@ -112,6 +112,7 @@ const openDashboard = async (
       const answer = { ...ROUTES, ...options.routes }[`${method} ${route}`];
       if (answer === undefined) throw new Error(`no fake for ${method} ${route}`);
       // The fake answers with the DTOs typed above; the dashboard's api is generic over them.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- test fake: the api is generic over the answer its caller names
       return answer as T;
     },
     attachTty: async () => {

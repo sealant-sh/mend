@@ -306,6 +306,7 @@ const call = async <M extends Method, P extends PathOf<M>>(
     throw new ApiError(failure.words, response.status, failure.serverWords, failure.tag);
   }
   // The bridge hands back the parsed JSON; its shape is the contract's promise (lib/contract.ts).
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the renderer trusts the contract's shape and does not decode it again (lib/contract.ts)
   return response.body as Answer<M, P>;
 };
 

@@ -32,6 +32,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loginWalk, TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
+import { urlText } from "#/test-fixtures/fake-fetch";
 
 import { DefaultsTab } from "./org-defaults.tsx";
 import { leavingFacts, MembersTab, REMOVAL_FACTS, RemoveMemberDialog } from "./org-members.tsx";
@@ -125,7 +126,7 @@ const render = async (node: ReactNode) => {
         url: "http://mend.test/trpc",
         transformer: superjson,
         fetch: async (url, init) => {
-          const path = new URL(url.toString()).pathname.replace("/trpc/", "");
+          const path = new URL(urlText(url)).pathname.replace("/trpc/", "");
           calls.push(path);
           if (typeof init?.body === "string")
             sent.push({ path, input: JSON.parse(init.body).json });

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { clearConfig, saveConfig } from "@/data/pairing-config";
 import { PairingBoundary } from "@/data/pairing-scope";
+import { requestUrl } from "@/test/fake-fetch";
 import { onlyWebView, resetWebViews, webViews } from "@/test/fake-webview";
 
 vi.mock("react-native-webview", () => import("@/test/fake-webview"));
@@ -23,7 +24,7 @@ vi.mock("expo", () => ({
 const SERVER = "https://a.example";
 let tickets = 0;
 const serve = async (input: RequestInfo | URL): Promise<Response> => {
-  if (new URL(String(input)).pathname === "/api/upgrade-tickets") {
+  if (requestUrl(input).pathname === "/api/upgrade-tickets") {
     tickets += 1;
     return new Response(JSON.stringify({ ticket: `ticket-${tickets}` }), { status: 200 });
   }

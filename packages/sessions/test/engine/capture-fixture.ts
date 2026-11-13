@@ -34,7 +34,7 @@ import {
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import type { CreateOptions, WorkspaceCaptureStatus } from "@sealant/sdk";
-import { Cause, Duration, Effect, Exit, Layer, Schedule } from "effect";
+import { Cause, Duration, Effect, Exit, Layer, Schedule, Schema } from "effect";
 
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { captureAnswer, now, sealantLaunchLayer, setup, type World } from "./fixture.ts";
@@ -45,6 +45,10 @@ export const ubuntu: FamilyWorkspaceImage = {
   os: "ubuntu",
   services: { docker: false },
 };
+/** The git packs a registered capture's sections list. */
+const decodeGitPacks = Schema.decodeUnknownSync(
+  Schema.Struct({ git: Schema.Struct({ packs: Schema.Array(Schema.String) }) }),
+);
 
 /** The exec that writes Mend's default shell profile where no file exists (`shell-profile.ts`). */
 export const isShellProfileExec = (argv: ReadonlyArray<string>): boolean =>
@@ -101,7 +105,7 @@ export const shipCaptureFiles = (
       seq: 100,
       kind,
       git: {
-        packs: parent === null ? [] : (parent.sections as { git: { packs: string[] } }).git.packs,
+        packs: parent === null ? [] : decodeGitPacks(parent.sections).git.packs,
         refs: {},
         head: "refs/heads/main",
         fsck: "verified",

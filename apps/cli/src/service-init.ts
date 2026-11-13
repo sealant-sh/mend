@@ -248,9 +248,13 @@ export const workspaceGlobs = (
   }
   if (packageJsonText !== null) {
     try {
-      const parsed = JSON.parse(packageJsonText) as { workspaces?: unknown };
-      if (Array.isArray(parsed.workspaces)) {
-        globs.push(...parsed.workspaces.filter((g): g is string => typeof g === "string"));
+      const parsed: unknown = JSON.parse(packageJsonText);
+      const workspaces =
+        typeof parsed === "object" && parsed !== null && "workspaces" in parsed
+          ? parsed.workspaces
+          : undefined;
+      if (Array.isArray(workspaces)) {
+        globs.push(...workspaces.filter((g): g is string => typeof g === "string"));
       }
     } catch {
       // no workspaces to read

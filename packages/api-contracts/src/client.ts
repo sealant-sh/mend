@@ -29,15 +29,16 @@ export const makeMendApiClient = (options: {
  */
 export const errorStatusByTag: ReadonlyMap<string, number> = (() => {
   const statuses = new Map<string, number>();
-  const tagOf = SchemaAST.resolveAt("~sentinels");
+  const tagOf =
+    SchemaAST.resolveAt<ReadonlyArray<{ readonly key: PropertyKey; readonly literal: unknown }>>(
+      "~sentinels",
+    );
   HttpApi.reflect(MendApi, {
     onGroup: () => {},
     onEndpoint: ({ errors }) => {
       for (const [status, schemas] of errors) {
         for (const schema of schemas) {
-          const sentinels = tagOf(schema.ast) as
-            | ReadonlyArray<{ readonly key: string; readonly literal: unknown }>
-            | undefined;
+          const sentinels = tagOf(schema.ast);
           const tag = sentinels?.find((sentinel) => sentinel.key === "_tag")?.literal;
           if (typeof tag === "string" && !statuses.has(tag)) statuses.set(tag, status);
         }

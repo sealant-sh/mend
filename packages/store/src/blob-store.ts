@@ -20,7 +20,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { Cause, Clock, Effect, Exit, Layer, Schema, Semaphore } from "effect";
+import { Cause, Clock, Effect, Exit, Layer, Predicate, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { mendHome } from "./paths.ts";
@@ -613,10 +613,9 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
       const raw: unknown = JSON.parse(
         fs.readFileSync(path.join(uploadDir(uploadId), "meta.json"), "utf8"),
       );
-      if (typeof raw !== "object" || raw === null) return null;
-      const record = raw as Record<string, unknown>;
-      const key = record["key"];
-      const initiatedAt = record["initiatedAt"];
+      if (!Predicate.isObject(raw)) return null;
+      const key = raw["key"];
+      const initiatedAt = raw["initiatedAt"];
       return typeof key === "string" && typeof initiatedAt === "string"
         ? { key, initiatedAt }
         : null;
@@ -1299,7 +1298,7 @@ export const makeS3BlobStore = Effect.fnUntraced(function* (options: S3BlobStore
       }
       return yield* completeConditional(key, uploadId, ordered);
     }).pipe(
-      entry.lock.withPermit,
+      Semaphore.withPermit(entry.lock),
       Effect.ensuring(
         Effect.sync(() => {
           entry.users -= 1;

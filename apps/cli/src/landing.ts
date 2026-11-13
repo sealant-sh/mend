@@ -24,7 +24,7 @@ import { gitCurrentBranch, gitTopLevel, redactCredentials } from "./shared.ts";
  */
 
 const paint = (code: string) => (text: string) =>
-  process.stdout.isTTY === true ? `[${code}m${text}[0m` : text;
+  process.stdout.isTTY ? `[${code}m${text}[0m` : text;
 const dim = paint("2");
 const green = paint("32");
 const amber = paint("33");

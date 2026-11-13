@@ -102,12 +102,7 @@ export function ProjectResources({ detail }: { readonly detail: ProjectDetailDto
       id: worktree.id,
       name: worktree.name,
       page: read?.data,
-      failed:
-        read?.error === null || read?.error === undefined
-          ? null
-          : read.error instanceof Error
-            ? read.error.message
-            : String(read.error),
+      failed: read?.error === null || read?.error === undefined ? null : read.error.message,
     };
   });
 

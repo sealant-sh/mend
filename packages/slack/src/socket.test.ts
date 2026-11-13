@@ -16,6 +16,8 @@ const socketPeer = async () => {
   const requests: Array<{ method: string; bearerMatches: boolean }> = [];
   server.on("connection", (socket) => {
     socket.on("message", (bytes) => {
+      // ws hands text frames over as one Buffer unless binaryType says otherwise.
+      if (!Buffer.isBuffer(bytes)) throw new Error("Expected a Buffer message");
       received.push(bytes.toString());
       for (const waiter of pending.splice(0)) {
         if (received.length >= waiter.count) waiter.resolve();
@@ -31,7 +33,7 @@ const socketPeer = async () => {
     if (typeof address === "string" || address === null)
       throw new Error("Expected owned TCP address");
     const fetch: typeof globalThis.fetch = async (input, init) => {
-      const method = new URL(String(input)).pathname;
+      const method = new URL(input instanceof Request ? input.url : input).pathname;
       requests.push({
         method,
         bearerMatches: new Headers(init?.headers).get("authorization") === "Bearer xapp-fixture",

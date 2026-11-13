@@ -16,7 +16,7 @@ describe("personal Doppler API", () => {
     Map<ProjectId, { projectId: ProjectId; dopplerProject: string; config: string }>
   >();
   const cipherInputs: Array<string> = [];
-  const externalTokens: Array<Redacted.Redacted<string>> = [];
+  const externalTokens: Array<Redacted.Redacted> = [];
   beforeAll(async () => {
     api = await createTenancyApi(undefined, {
       implement: {
