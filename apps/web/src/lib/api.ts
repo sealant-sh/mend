@@ -165,12 +165,14 @@ export type AccountOrganizationDto = Outputs["organizations"]["list"][number];
 export type AuditEntryDto = Outputs["organization"]["audit"][number];
 export type OrganizationSettingsViewDto = Outputs["organization"]["settings"];
 export type OrganizationSettingsDto = OrganizationSettingsViewDto["organization"];
+export type OrganizationRuntimeSwitchDto = Outputs["organization"]["runtimeSwitch"];
 export type OrganizationWorkspaceEnvironmentSaveResultDto =
   Outputs["organization"]["setWorkspaceEnvironment"];
 export type BoatKeyStatusDto = Outputs["boatKey"]["status"];
 export type BoatKeyDetailsDto = NonNullable<BoatKeyStatusDto["details"]>;
 export type BoatKeyCheckDto = Outputs["boatKey"]["check"];
 export type BoatKeyReportDto = NonNullable<BoatKeyCheckDto["report"]>;
+export type PersonBoatKeyStatusDto = Outputs["personBoatKey"]["status"];
 export type SlackAppStatusDto = Outputs["slack"]["app"];
 export type SlackAppDto = NonNullable<SlackAppStatusDto["app"]>;
 export type SlackSettingsDto = SlackAppDto["settings"];

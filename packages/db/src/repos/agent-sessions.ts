@@ -12,6 +12,7 @@ import {
 } from "@mend/domain";
 import {
   type CaptureDrainReason,
+  type BoatKeyChoice,
   captureAnswerReplaces,
   OrganizationRole,
   type ProjectTenancy,
@@ -376,6 +377,8 @@ export class SessionsRepo extends Context.Service<
     readonly setWorkspaceImage: (id: SessionId, image: WorkspaceImage) => Effect.Effect<void>;
     /** The dotfiles this session actually launched with — stamped at launch, a recorded fact. */
     readonly setDotfiles: (id: SessionId, dotfiles: SessionDotfiles) => Effect.Effect<void>;
+    /** Which Boat key this session's workspace was created on (SLNT-797), stamped at launch. */
+    readonly setBoatKey: (id: SessionId, boatKey: BoatKeyChoice | null) => Effect.Effect<void>;
     /** Record whether the harness left a conversation behind (settle-time classification). */
     readonly setHasTranscript: (id: SessionId, hasTranscript: boolean) => Effect.Effect<void>;
     /** Settled sessions the boot sweep has not classified yet, oldest first, bounded. */
@@ -1311,6 +1314,17 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* db
           .update(agentSessions)
           .set({ dotfiles, updatedAt: yield* DateTime.nowAsDate })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const setBoatKey = Effect.fn("SessionsRepo.setBoatKey")(function* (
+        id: SessionId,
+        boatKey: BoatKeyChoice | null,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ boatKey, updatedAt: yield* DateTime.nowAsDate })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
       });
@@ -2534,6 +2548,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setSealantSessionId,
         setWorkspaceImage,
         setDotfiles,
+        setBoatKey,
         setHasTranscript,
         listSettledUnclassified,
         setProviderSessionId,

@@ -1,3 +1,4 @@
+import { boatKeyLine, type BoatKeyChoice } from "@mend/domain/workbench";
 import { useSyncExternalStore } from "react";
 
 import { createLocalStore } from "./local-store.ts";
@@ -121,3 +122,20 @@ export const keyIsTaken = (event: Pick<Event, "composedPath">): boolean =>
         isTyping(target) ||
         (target instanceof HTMLElement && target.hasAttribute("data-screen-input")),
     );
+
+/**
+ * Which Boat key a session runs on, for its details (SLNT-797), from where the viewer stands: the
+ * owner reads "your own Boat key", anyone else, a steerer included, the owner's name. Null off
+ * Boat. The key is the one that decided when the workspace was created; steering never moves it.
+ */
+export const sessionBoatKeyLine = (
+  boatKey: BoatKeyChoice | null,
+  viewerIsOwner: boolean,
+  ownerName: string | null,
+): string | null =>
+  boatKey === null
+    ? null
+    : boatKeyLine(
+        boatKey,
+        viewerIsOwner ? "your" : ownerName === null ? "its owner's" : `${ownerName}'s`,
+      );

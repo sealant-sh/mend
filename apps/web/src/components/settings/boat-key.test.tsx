@@ -42,7 +42,12 @@ const viewer = (role: OrganizationRole) =>
     mountDelivery: "bind",
   });
 
-const notConnected: BoatKeyStatusDto = { connected: false, sessionRuntime: "boat", details: null };
+const notConnected: BoatKeyStatusDto = {
+  connected: false,
+  sessionRuntime: "boat",
+  details: null,
+  peopleWithOwnKeys: [],
+};
 
 const fullReport = (overrides: Partial<BoatKeyReportDto> = {}): BoatKeyReportDto => ({
   observedAt: new Date(),
@@ -91,6 +96,7 @@ const fullReport = (overrides: Partial<BoatKeyReportDto> = {}): BoatKeyReportDto
 const connected = (report: BoatKeyReportDto | null): BoatKeyStatusDto => ({
   connected: true,
   sessionRuntime: "boat",
+  peopleWithOwnKeys: [],
   details: {
     sealantBoatAccountId: "core-boat-1",
     connectedByUserId: "alice",
@@ -443,7 +449,9 @@ describe("the Boat page, connected", () => {
   it("removes the key after saying what removing does", async () => {
     const { state } = await open({ status: connected(null), role: "owner" });
     await click(byText("button", "Remove…"));
-    expect(text()).toContain("New Boat sessions in the organization use the server's Boat key.");
+    expect(text()).toContain(
+      "New Boat sessions in the organization use the server's Boat key, apart from those of people who connected their own.",
+    );
     expect(text()).toContain(
       "Mend first stops the standby workspaces it keeps in this Boat account",
     );
@@ -482,7 +490,7 @@ describe("the Boat page, connected", () => {
 describe("the Boat page for a member", () => {
   it("says only whether the organization has its own key, with no controls", async () => {
     await open({
-      status: { connected: true, sessionRuntime: "boat", details: null },
+      status: { connected: true, sessionRuntime: "boat", details: null, peopleWithOwnKeys: null },
       role: "member",
     });
     expect(text()).toContain("This organization has its own Boat key");
@@ -497,5 +505,34 @@ describe("the Boat page for a member", () => {
       "This organization has no Boat key, so its Boat sessions use the server's.",
     );
     expect(document.querySelectorAll("button")).toHaveLength(0);
+  });
+});
+
+describe("the Boat page's people with their own key (SLNT-797)", () => {
+  it("names them for an owner, and says none of their key's details", async () => {
+    await open({
+      status: {
+        ...notConnected,
+        peopleWithOwnKeys: [
+          { userId: "carol", name: "Carol" },
+          { userId: "dan", name: "Dan" },
+        ],
+      },
+      role: "owner",
+    });
+    expect(text()).toContain("People with their own Boat key");
+    expect(text()).toContain(
+      "Carol and Dan have connected their own Boat key, so the organization's repositories are checked out in VMs in their Boat accounts. Only they see their key's details or change it.",
+    );
+  });
+
+  it("says so when nobody has one", async () => {
+    await open({ status: notConnected, role: "owner" });
+    expect(text()).toContain("Nobody in this organization has connected their own Boat key.");
+  });
+
+  it("shows a member nothing about who has one", async () => {
+    await open({ status: { ...notConnected, peopleWithOwnKeys: null }, role: "member" });
+    expect(text()).not.toContain("People with their own Boat key");
   });
 });
