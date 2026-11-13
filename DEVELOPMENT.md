@@ -1,7 +1,8 @@
 # Developing Mend
 
 How to get a checkout running and tested. `AGENTS.md` holds the rules and the checks before a PR.
-For an installed server, see [`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md).
+For an installed server, see [Install Mend](apps/docs/src/content/docs/getting-started/install.md)
+and the [operator pages](apps/docs/src/content/docs/operate/) of the public docs.
 
 ## First run
 
@@ -48,6 +49,26 @@ host-side dev server refuses it; the comment in `deploy/dev/executor.compose.yam
   for any script you change with `node --test`.
 - With `pnpm dev` running, `node --test apps/web/scripts/dev-auth.integration.mjs` checks that auth
   requests reach the auth server rather than the app.
+
+The default suite runs no performance benchmark. Three measurements have their own commands. Run
+each on an otherwise idle machine, and keep the JSON report, the workload and the machine with the
+result, failures included:
+
+```sh
+# Session list and view reads, on a disposable Postgres: each enriched read must stay within +5% or
+# +20 ms of its plain read, median and p90, in each of three rounds.
+MEND_TEST_DATABASE_URL=postgres://mend:mend@localhost:5434/mend pnpm --filter @mend/db bench:session-live-people
+
+# Verifying a capture of 126,000 files against local blobs, twice. A measurement with no budget.
+MEND_VERIFY_BENCH_REPORT=/tmp/mend-capture-verification.json pnpm --filter @mend/store bench:capture-verification
+
+# Worktree routes (diff, file, search, a 400,000-file listing) through the real request handler,
+# against their p90 budgets. Needs no database. The Worktree reads performance workflow runs it too.
+GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null \
+MEND_WORKTREE_PERF_CONTEXT=local-serial \
+MEND_WORKTREE_PERF_REPORT=/tmp/mend-worktree-reads.json \
+pnpm --filter @mend/api-server bench:worktree-reads
+```
 
 A running checkout is not verification. To see a change working on a real stack, use the `verify`
 skill in `.agents/skills/verify/`.

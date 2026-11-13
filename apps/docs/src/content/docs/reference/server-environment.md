@@ -76,12 +76,37 @@ enqueue duplicates during a rolling deployment.
 | `MEND_CAPTURE_MANIFEST_FORMAT`               | `2`                          | `2` lets executors that read it ship a capture's directories in a few packs; `1` makes them write one object per directory again. Captures in either format restore. |
 | `MEND_RUN_DIR`                               | `<store root>/_run/sessions` | Where per-session run directories live.                                                                                                                              |
 
+An executor that dies between its parts and the completing request leaves an open multipart upload.
+Mend's hourly retention pass aborts it; give a real bucket an `AbortIncompleteMultipartUpload` rule
+after one day as well, for the hours Mend is down (see
+[Deploy on Kubernetes](/operate/deploy-kubernetes/#step-2-make-the-bucket)).
+
 To roll executors back to a sealantd that predates dir packs, set `MEND_CAPTURE_MANIFEST_FORMAT=1`
 and restart Mend first, then keep the newer sealantd running until every session you mean to keep
 has written a capture since (a stop writes one). `1` changes what executors write next; it does not
 rewrite captures already written. An older executor asked to resume a session whose latest capture
 still holds dir packs is refused before it touches the worktree (`manifest-format`), and the session
 resumes on a sealantd that reads them.
+
+## Stops and idle sessions
+
+A stop, an idle stop, a relaunch and a replacement ahead of the platform's cap all drain first: Mend
+flushes the executor's captures, reads what is left and repeats until nothing is, with no short
+deadline. Meanwhile the session reads `stopping · saving · 3 left` and its workspace stays up. The
+worktree lease is released only once the platform reports the workspace gone.
+
+| Variable                                        | Default         | What it does                                                                                                                                                                                                                                                                          |
+| ----------------------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_CAPTURE_DRAIN_STALL_SECONDS`              | `600`           | A drain that moves nothing for this long reads `not saved · 3 pending · workspace kept`, and its owner's phone is told once. The workspace is kept and tried again after 10 s, doubling to 5 min while nothing changes, and at once when something does.                              |
+| `MEND_EXECUTOR_MAX_SECONDS`                     | unset (unknown) | The platform's cap on one executor, counted from its start. Set, Mend starts a planned drain and a replacement at the deadline less the two values below. Unset, a replacement starts at 7 h 30, which fits an 8 h cap only. Set it to the MicroVM runtime's maximum duration on AWS. |
+| `MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS`           | `300`           | How long a planned drain is given before that deadline.                                                                                                                                                                                                                               |
+| `MEND_EXECUTOR_DEADLINE_MARGIN_SECONDS`         | `300`           | A further margin before that deadline.                                                                                                                                                                                                                                                |
+| `MEND_PROTOCOL_IDLE_STOP_MINUTES`               | `15`            | Minutes an idle conversation session, and on Boat an idle terminal session, waits before Mend stops it the way Stop does. `0` turns the idle stop off. What counts as idle is in [When Boat VMs stop](/operate/boat/#when-boat-vms-stop).                                             |
+| `SEALANT_DOCKER_CAPTURE_STOP_GRACE_SECONDS`     | `3600`          | Read by the Sealant worker. How long a planned stop of a Docker capture workspace waits for the executor's final flush; Sealant passes it to `docker stop -t`.                                                                                                                        |
+| `SEALANT_DOCKER_CONTAINER_STOP_TIMEOUT_SECONDS` | `60`            | Read by the Sealant worker. The stop timeout of a workspace container for any other stop: a plain `docker stop`, or dockerd's own shutdown. See [Docker hangs on start](/operate/troubleshooting/#docker-hangs-on-start-after-a-restart-or-upgrade).                                  |
+
+Only the owner's **Discard unsaved and stop** ends a session with captures pending, and the
+organization's audit log records it.
 
 ## Session channel
 
@@ -158,29 +183,33 @@ See [Exposure and the public gate](/operate/exposure/) for what each item means.
 `0` turns one budget off, and the public exposure gate needs all of them on. What each bounds is in
 [Budgets](/operate/exposure/#budgets).
 
-| Variable                                       | Default    |
-| ---------------------------------------------- | ---------- |
-| `MEND_BUDGET_BODY_BYTES`                       | `1048576`  |
-| `MEND_BUDGET_UPLOAD_BODY_BYTES`                | `25165824` |
-| `MEND_BUDGET_FRAME_BYTES`                      | `1048576`  |
-| `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`      | `1200`     |
-| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`   | `1200`     |
-| `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`      | `20`       |
-| `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`            | `24`       |
-| `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`       | `120`      |
-| `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`       | `4`        |
-| `MEND_BUDGET_BUNDLE_BYTES`                     | `67108864` |
-| `MEND_BUDGET_HANDOFF_FILE_BYTES`               | `8388608`  |
-| `MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT`       | `2`        |
-| `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE` | `30`       |
-| `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`            | `12`       |
-| `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       |
-| `MEND_BUDGET_ACCOUNT_TUNNELS`                  | `24`       |
-| `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        |
-| `MEND_BUDGET_ACCOUNT_SCREEN_VIEWERS`           | `8`        |
-| `MEND_BUDGET_SCREEN_VIEWERS`                   | `16`       |
-| `MEND_BUDGET_ACCOUNT_RAW_READS`                | `128`      |
-| `MEND_BUDGET_RAW_READS`                        | `512`      |
+| Variable                                          | Default    |
+| ------------------------------------------------- | ---------- |
+| `MEND_BUDGET_BODY_BYTES`                          | `1048576`  |
+| `MEND_BUDGET_UPLOAD_BODY_BYTES`                   | `25165824` |
+| `MEND_BUDGET_FRAME_BYTES`                         | `1048576`  |
+| `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`         | `1200`     |
+| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`      | `1200`     |
+| `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`         | `20`       |
+| `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`               | `24`       |
+| `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`          | `120`      |
+| `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`          | `4`        |
+| `MEND_BUDGET_BUNDLE_BYTES`                        | `67108864` |
+| `MEND_BUDGET_HANDOFF_FILE_BYTES`                  | `8388608`  |
+| `MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT`          | `2`        |
+| `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE`    | `30`       |
+| `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`               | `12`       |
+| `MEND_BUDGET_ACCOUNT_TERMINALS`                   | `24`       |
+| `MEND_BUDGET_ACCOUNT_TUNNELS`                     | `24`       |
+| `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`                 | `4`        |
+| `MEND_BUDGET_ACCOUNT_SCREEN_VIEWERS`              | `8`        |
+| `MEND_BUDGET_SCREEN_VIEWERS`                      | `16`       |
+| `MEND_BUDGET_ACCOUNT_RAW_READS`                   | `128`      |
+| `MEND_BUDGET_RAW_READS`                           | `512`      |
+| `MEND_BUDGET_ADDRESS_PREVIEW_REQUESTS_PER_MINUTE` | `12000`    |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_CONNECTIONS`         | `48`       |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_IN_FLIGHT`    | `4`        |
+| `MEND_BUDGET_ACCOUNT_PREVIEW_STARTS_PER_MINUTE`   | `4`        |
 
 ## Slack
 

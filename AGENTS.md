@@ -14,8 +14,7 @@ work on this repo lands.
 
 `PRODUCT.md` says what Mend is and is not: its principles, non-goals and direction. Read it before a
 product or UX decision, and check `docs/decisions.md` and `docs/adr/` for decisions already made in
-the area. The roadmap is in Linear. The retired issue-to-PR/queue documents live in `docs/archive/`:
-never build against them.
+the area. The roadmap is in Linear.
 
 - `apps/api`: the Mend server (Effect HttpApi): sessions engine, store, landing, Slack, workers.
 - `apps/cli`: the `mend` CLI (`@sealant/mend` on npm): OpenTUI dashboard, sessions, `mend server`.

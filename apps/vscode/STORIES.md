@@ -3,8 +3,8 @@
 - **Release:** 0.36
 - **Status:** approved by Yiannis on 2026-10-17; his four answers are under
   [Decided](#decided-yiannis-2026-10-17). The Figma storyboards follow these stories.
-- **Replaces:** the screen-first design in `vscode-extension-redesign.md`. Yiannis rejected it on
-  2026-10-17. That spec's as-built map, bug trace and API gap list still hold.
+- **Replaces:** a screen-first design, which Yiannis rejected on 2026-10-17. It was
+  `docs/specs/vscode-extension-redesign.md`, since removed; see git history.
 - **Written:** 2026-10-17, against mend main `637009289`.
 
 ## Who and why
@@ -159,7 +159,7 @@ _The agent is mid-task; Dana wants to look at the code it is writing and run the
 - **The window is already that workspace.** Opening it again focuses the agent's terminal and does
   nothing else. If another window already has it, VS Code focuses that window.
 - **Double-click on the row.** It selects the row and shows the change. It never opens a window.
-  This is today's double-open bug (traced in `vscode-extension-redesign.md`, Divergences).
+  This is the double-open bug the extension had when this was written.
 
 ## d. Dana reviews what the agent changed, entirely in VS Code
 
@@ -488,7 +488,7 @@ Exists today:
 - workspace SSH keys;
 - the device sign-in.
 
-Gaps, numbered as in `vscode-extension-redesign.md`:
+Gaps:
 
 | Gap       | What the story needs                                                                                                                      | Story              | Without it                                                                                                                                                                   |
 | --------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

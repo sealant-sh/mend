@@ -10,7 +10,7 @@ description:
 
 # Standby discard model
 
-`docs/specs/formal/standby-discard/` holds a TLA+ model of every actor that can reach
+`docs/formal/standby-discard/` holds a TLA+ model of every actor that can reach
 `drainHotWorkspace`'s `stopWorkspace(…, { discardUnsaved: true })`, checked by TLC across every
 order of their steps. Its `README.md` explains the promise, the finding it made and how the code
 fixed it (SLNT-823), the bounds and the Postgres behaviour it rests on. This skill is the procedure:
@@ -34,8 +34,8 @@ covered function changed, the model still describes the code and you are done.
 ## 2. Run the check
 
 ```sh
-docs/specs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~15 s
-docs/specs/formal/standby-discard/check.sh           # before handing off: full bounds, ~4 min on 32 cores
+docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~15 s
+docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~4 min on 32 cores
 ```
 
 Each row prints `as expected` or `NOT AS EXPECTED`, and the script exits 0 only when every row is
@@ -58,7 +58,7 @@ Done when the full run exits 0, or every `NOT AS EXPECTED` row is classified by 
 Print the row's trace one step per line:
 
 ```sh
-docs/specs/formal/standby-discard/check.sh <row> | python3 -I docs/specs/formal/standby-discard/trace.py
+docs/formal/standby-discard/check.sh <row> | python3 -I docs/formal/standby-discard/trace.py
 ```
 
 Walk every step against the code its action names (the record below). A step is **real** when the

@@ -1,72 +1,140 @@
-# AWS capture POC
+# Mend on AWS
 
-Run `node --test scripts/aws-tofu.test.mjs` from the repository root for the offline control-plane
-gate tests. They require OpenTofu compatible with `tofu/versions.tf`; CI installs 1.12.0. An
-explicit `MEND_TEST_TOFU_BINARY` can select a local binary. Missing OpenTofu, failed initialization
-and absent plan results fail the test.
+Nothing runs on AWS today. The EKS control plane is off (`cluster_enabled = false`), and the single
+EC2 instance that served alpha.mend.run was torn down when alpha moved to the self-hosted box (see
+[preview builds](../../docs/operations/preview-builds.md#the-box)). This directory is what it takes
+to stand Mend up on AWS again.
 
-The tests copy the checked-in configuration and provider lock into an owned scratch directory,
-initialize without a backend or lockfile changes, and evaluate all four cluster/instance settings
-with a mocked AWS provider in plan mode. They compare the actual planned resource addresses against
-independent cluster, instance and shared inventories. Initialization downloads the locked public
-provider. The test passes no cloud credentials, operator tfvars, state or CLI configuration, and
-does not apply infrastructure. Computed policy/ARN placeholders are fixture data; these tests prove
-resource gating, not live AWS permissions or provisioning. The existing resource-address migration
-checks remain separate source checks.
+The stack is Mend on EKS or on one EC2 instance, PlanetScale Postgres over PrivateLink, captures in
+S3, and disposable Lambda MicroVM executors. No FSx. Account `954648881795`, region `eu-central-1`.
+The MicroVM images, the PlanetScale database and any Tailscale devices are outside the OpenTofu
+state; check what is left of them before reusing a name.
 
-Mend on EKS or on one EC2 instance, PlanetScale Postgres over PrivateLink, authoritative captures in
-S3, and disposable Lambda MicroVM executors. No FSx. The EKS control plane has no public application
-ingress. The single instance (which runs alpha.mend.run) is public behind the Caddy edge, as its
-steps below describe. Account `954648881795`, region `eu-central-1`; the destroyed benchmark stack
-is not reused.
-
-See the [capture-store ADR](../../docs/adr/0002-session-capture-store.md),
-[product statement](../../PRODUCT.md), [Sealant manifests](kubernetes/README.md), and
+See the [capture store ADR](../../docs/adr/0002-session-capture-store.md),
+[product statement](../../PRODUCT.md), [Sealant manifests](kubernetes/README.md),
+[costs](poc-cost-plans.md), [what stops real high availability](issues-for-real-ha.md) and the
 [teardown procedure](TEARDOWN.md).
 
 ## Two control planes, one stack
 
-This stack can run Mend's control plane two ways, and sessions run in Lambda MicroVMs either way.
+The stack runs Mend's control plane one of two ways, and sessions run in Lambda MicroVMs either way.
 
 |                 | Setting            | Default | What it adds                                                                                                                |
 | --------------- | ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------- |
 | EKS cluster     | `cluster_enabled`  | `true`  | The cluster, node group and add-ons, the EBS CSI role, one IAM role per service account, the VPC-only session load balancer |
 | Single instance | `instance_enabled` | `false` | One ARM64 instance with an Elastic IP and a data volume, one instance role                                                  |
 
-The two are independent: either, both or neither. Everything else here is shared and never gated:
-the VPC and NAT gateway, both buckets, the PlanetScale endpoint, the MicroVM connector and the
-MicroVM build and execution roles. Turning a control plane off removes only what that row names.
-Before `cluster_enabled = false` on a cluster that has run, follow [`TEARDOWN.md`](TEARDOWN.md)
-steps 1 to 3: a PVC deleted after the EBS CSI controller is gone leaves its volume behind.
+The two are independent: either, both or neither. Everything else is shared and never gated: the VPC
+and NAT gateway, both buckets, the PlanetScale endpoint, the MicroVM connector and the MicroVM build
+and execution roles. Turning a control plane off removes only what its row names. Before
+`cluster_enabled = false` on a cluster that has run, follow [`TEARDOWN.md`](TEARDOWN.md) steps 1 to
+3: a PVC deleted after the EBS CSI controller is gone leaves its volume behind.
 
-## Single instance
+## Prerequisites
 
-`tofu/instance.tf` puts the control plane on one EC2 instance. It is off until
-`instance_enabled = true`. The instance runs
-[`deploy/docker/compose.aws.yaml`](../docker/compose.aws.yaml) behind the Caddy edge and reuses this
-stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Sessions stay in Lambda
+- An AWS identity with administrative rights in account `954648881795`. A root-console identity is
+  not an EKS access grant.
+- `nix-shell deploy/aws/shell.nix` for the AWS CLI, OpenTofu, kubectl, Helm and Python with boto3.
+  The provider lockfile pins the AWS provider; do not casually run `init -upgrade`.
+- `deploy/aws/tofu/poc.tfvars`, copied from [`example.tfvars`](tofu/example.tfvars), with the
+  operator's CIDR (the only address the EKS API admits), the budget email, and which control planes
+  to run. Never put AWS or database credentials in it.
+- A PlanetScale organization with a Postgres database for Mend and Sealant, and its role API. The
+  bootstrap script reads mode-0600 `bootstrap-role.json`, `mend-app-role.json` and
+  `sealant-app-role.json` from `~/.config/mend/aws-poc/`.
+- For the single instance: a DNS name you control, as a DNS-only A record.
+- For owner-only access to the cluster: a tailnet you administer (below).
+
+Keep the private configuration directory, `~/.config/mend/aws-poc/`, and the OpenTofu state in
+`deploy/aws/tofu/` together. State and plans are ignored by Git and not encrypted: keep them on
+encrypted storage, use one operator at a time, and do not use either application bucket as a state
+backend.
+
+## Test offline first
+
+```sh
+node --test scripts/aws-tofu.test.mjs
+pnpm test:aws-shell
+```
+
+The first needs OpenTofu compatible with `tofu/versions.tf` (CI installs 1.12.0;
+`MEND_TEST_TOFU_BINARY` picks a local binary). It copies the configuration and provider lock into a
+scratch directory, initialises without a backend, and plans all four cluster and instance settings
+against a mocked AWS provider. It compares the planned resource addresses with independent cluster,
+instance and shared inventories. It passes no credentials and applies nothing, so it proves resource
+gating, not live AWS permissions. The second exercises `kubernetes/smoke.sh` and
+`scripts/build-workspace-image.sh` with local command fixtures, with no AWS or network calls. CI
+runs both.
+
+## Provision
+
+```sh
+aws sts get-caller-identity # must be 954648881795
+umask 077
+cd deploy/aws/tofu
+tofu init -input=false -lockfile=readonly
+tofu fmt -check && tofu validate
+tofu plan -input=false -var-file=poc.tfvars -out=poc.tfplan
+# Inspect the plan and get approval before applying it.
+tofu apply -input=false poc.tfplan
+tofu output -json > outputs.json
+```
+
+Never create a second state for these resource names. Changing the Kubernetes version also needs
+matching node release and add-on versions.
+
+## On EKS
+
+From the repository root, with an explicit kubeconfig:
+
+```sh
+export KUBECONFIG="$HOME/.config/mend/aws-poc/kubeconfig"
+aws eks update-kubeconfig --name mend-capture-poc --alias mend-aws-capture-poc \
+  --kubeconfig "$KUBECONFIG"
+kubectl get nodes
+# Wait for CoreDNS and CSI to exist and finish their rollouts before application setup.
+python3 deploy/aws/scripts/bootstrap-databases.py
+# Optional read-only SQL diagnostics, through an ephemeral pod:
+python3 deploy/aws/scripts/bootstrap-databases.py --inspect
+
+OUT="$HOME/.config/mend/aws-poc/rendered"
+mkdir -p "$OUT"
+python3 deploy/aws/scripts/render-mend.py foundations < deploy/aws/tofu/outputs.json > "$OUT/foundations.json"
+python3 deploy/aws/scripts/render-mend.py values < deploy/aws/tofu/outputs.json > "$OUT/mend-values.json"
+python3 deploy/aws/kubernetes/render.py --outputs deploy/aws/tofu/outputs.json \
+  --microvm-image-arn <microvm image arn> --microvm-image-version <version> --output "$OUT/sealant.yaml"
+kubectl apply -f "$OUT/foundations.json"
+kubectl apply -f "$OUT/sealant.yaml"
+helm upgrade --install mend deploy/helm/mend -n mend -f "$OUT/mend-values.json" --wait --timeout 6m
+kubectl -n mend port-forward --address 127.0.0.1 svc/mend-web 3105:3105
+```
+
+The bootstrap script needs its temporary admin role still valid. It refuses broadly privileged
+application roles, mounts the operator's public CA bundle, removes its pod, Secret and ConfigMap
+afterwards, and never prints passwords. Running it again keeps the application identity. The shared
+StorageClass and Mend's service account belong to `render-mend.py`, not the Sealant renderer. Do not
+set `SEALANT_K8S_NAMESPACE`: only the build namespace is configured. `render-mend.py`'s defaults
+(Mend version, a localhost origin) are old: set the version and origins in the values before
+installing. [`kubernetes/README.md`](kubernetes/README.md) covers the Sealant manifests.
+
+PlanetScale's default 25-connection limit is too few for both applications at start (Postgres error
+`53300`); the earlier deployment set `pgconf.max_connections=50` through PlanetScale's API, outside
+OpenTofu. Both applications use `LISTEN/NOTIFY`, so they connect on the direct port 5432. A global
+RFC1918-only IP rule on PlanetScale keeps the public endpoint closed, following its
+[PrivateLink guidance](https://planetscale.com/docs/postgres/connecting/ip-restrictions).
+
+`scripts/session-smoke.py` drives one session through public Mend HTTP routes, with explicit
+`provision`, `launch`, `restore`, `status` and `stop` phases, a dedicated test account and a small
+public repository. It runs no paid inference and pushes nothing. Check the record, the capture
+object and pointer, and the restored file before claiming persistence, and stop executors after.
+
+## On one instance
+
+`tofu/instance.tf` puts the control plane on one EC2 instance, with `instance_enabled = true`. It
+runs [`deploy/docker/compose.aws.yaml`](../docker/compose.aws.yaml) behind the Caddy edge and reuses
+the stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Sessions stay in Lambda
 MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no tenant code runs on the
 host.
-
-A project's image is built away from this host. Since Sealant 0.36 every runtime builds the image
-for a project's blueprint itself, and MicroVM does it with AWS's managed image build. The worker
-uploads a build context (a Containerfile and the in-VM agent's scripts, no binaries and no secrets)
-to `sealant/workspace-images/` in the artifacts bucket, the managed build runs the recipe, and the
-worker deletes the context. One recipe is one image, named `<name>-ws-<plan hash>` and reused by
-every workspace with that recipe. Sealant's retention deletes the ones nothing uses, and refuses to
-build past 50. A first session on a new recipe waits for the build, which took 193 to 203 s when
-measured on this account on 2026-09-20; the VM then started in 7 s.
-
-A recipe step runs as root and can read the build role's credentials. So that role can read that one
-prefix and write its build log, and nothing else. Measured on this account: a step cannot reach this
-VPC, the database or the capture bucket. The role is one for the whole deployment. One role and one
-prefix per organization is Sealant's next step, and this stack gains them then. Until then a step of
-one organization's recipe could read another's build context if it could guess a random key, and a
-context holds no secrets. No Docker socket is mounted: the socket is root on the host, and "for
-staging only" would be a promise about the worker's code, not a control.
-
-Workspace-scoped Docker inside a session is off (`SEALANT_MICROVM_DOCKER_ENABLED`). Its image is
-created with every OS capability, and that variant has not been built on the platform yet.
 
 What is published: 80 and 443 to the edge, 2222 to Mend's workspace SSH gateway, and 3106 to the
 MicroVM connector's security group only. There is no host sshd on the Internet. Administration is
@@ -82,241 +150,170 @@ SSM Session Manager, and Mend's own port stays on loopback.
 3. Put `compose.aws.yaml`, `compose.edge.yaml`, `compose.logs.aws.yaml`, `Caddyfile` and a `.env`
    from [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`, mode 600, owned by root. The
    `.env` holds the only secrets; nothing secret is in OpenTofu state or user data. Do not send it
-   with `aws ssm send-command`: a command's input and output are kept in the account's SSM history.
-   Forward the instance's sshd over Session Manager and copy the files through that. Nothing is
-   opened to the Internet, and the key is removed afterwards. Take the two prefixes
-   (`microvm_artifact_prefix`, `microvm_image_name_prefix`) from `tofu output` as they are: the
-   instance role and the build role are granted exactly those.
+   with `aws ssm send-command`: a command's input and output stay in the account's SSM history.
+   Forward the instance's sshd over Session Manager and copy the files through that, then remove the
+   key. Take `microvm_artifact_prefix` and `microvm_image_name_prefix` from `tofu output` as they
+   are: the instance role and the build role are granted exactly those.
 4. First boot with `MEND_TENANCY=single`, `MEND_EXPOSURE=private` and
    `MEND_ALLOWED_ORIGINS=["http://localhost:3105"]`, **and start `mend` only**:
    `docker compose -f compose.aws.yaml up -d mend`. Both gates count the operator account, so
    neither `multi` nor `public` may start on an empty database. Registration is open until that
-   account exists, and the edge would serve the public name the moment it starts. Its certificate
-   puts that name in the public certificate logs at once. So the edge stays down until step 6.
+   account exists, and the edge would serve the public name the moment it starts, putting the name
+   in the public certificate logs. So the edge stays down until step 6.
 5. Run `instance_first_account_tunnel` and create the first account at `http://localhost:3105`. It
    becomes the owner and the operator, and registration closes (`/api/instance` answers
    `"registration":"closed"`). The extra origin in step 4 is what lets sign-up accept the tunnel.
-   Session Manager closes a forward that sits idle, so start it when you are ready to register.
+   Session Manager closes an idle forward, so start it when you are ready to register.
 6. Remove `MEND_ALLOWED_ORIGINS`, set `MEND_TENANCY=multi` and `MEND_EXPOSURE=public`, and bring
    everything up:
-   `docker compose -f compose.aws.yaml -f compose.edge.yaml -f compose.logs.aws.yaml up -d` (the
+   `docker compose -f compose.aws.yaml -f compose.edge.yaml -f compose.logs.aws.yaml up -d`. The
    last file sends the server's and the edge's logs to CloudWatch, `/mend/<name>/containers`, so a
-   restart or a roll keeps them). Read `mend operator gate` and `mend operator exposure`, or the
-   `tenancy` and `exposure` lines Mend logs at start.
-7. From outside the VPC: TLS and the redirect on the public name, a sign-up without an invitation
-   (refused), which ports answer at the public address (80, 443 and 2222, and nothing else), and a
-   connection to PlanetScale's public endpoint with an application role (refused). Only then name
+   restart keeps them. Read `mend operator gate` and `mend operator exposure`.
+7. From outside the VPC, check TLS and the redirect on the public name, that a sign-up without an
+   invitation is refused, that only 80, 443 and 2222 answer at the public address, and that an
+   application role cannot connect to PlanetScale's public endpoint. Only then name
    `core-private,edge-tls` in `MEND_EXPOSURE_DECLARED` and `up -d` again. The `reassessment` item
    stays open until someone records a reassessment of the running release.
 
-This order ran on 2026-09-20 for `alpha.mend.run` (Mend 0.29.0, Sealant 0.36.0). Steps 4 and 5 are
-as corrected by that run: the first attempt started the edge with `mend`, and the public name
-answered with registration open until the edge was stopped. No account had been made.
-
 The instance role holds the three policies the cluster keeps on separate service accounts, because
 Mend and Sealant's API and worker run in one container here. The worker's policy covers running
-MicroVMs and building, reading and deleting images under this stack's name prefix.
-`CreateMicrovmImage`, `ListMicrovmImages` and `TagResource` (a create carries tags) authorize
-against no resource, so those are granted on `*`; what the worker may create is bounded by the name
-prefix in its configuration. `GetMicrovmImage` and `DeleteMicrovmImage` authorize against the image
-ARN, so those are granted on the name pattern. Measured on the instance on 2026-09-21: the first
-build was refused until the create action was granted on `*`. The metadata hop limit is 2 so that
-container can use the role; user data drops the edge network's path to the metadata address.
+MicroVMs and building, reading and deleting images under the stack's name prefix.
+`CreateMicrovmImage`, `ListMicrovmImages` and `TagResource` authorise against no resource, so those
+are granted on `*`; the name prefix in the worker's configuration bounds what it may create.
+`GetMicrovmImage` and `DeleteMicrovmImage` are granted on the image name pattern. The metadata hop
+limit is 2 so the container can use the role; user data drops the edge network's path to the
+metadata address.
 
 Docker's data root is a separate encrypted volume with daily snapshots, seven kept, and
 `prevent_destroy`. It holds the store, the SSH host key and the edge's certificates. PlanetScale and
 S3 hold the rest.
 
-## Private access update — 2026-09-16 UTC
+## Workspace images
 
-Owner-only Tailscale HTTPS is installed at <https://mend-access.tailc79e49.ts.net>. Connect
-Tailscale and use the existing Mend login. See the
-[deployment record](../../docs/operations/aws-access-deployment.md) for versions, restrictions,
-verification, remaining acceptance and rollback notes. This does not make Mend public-ready or
-enable teammate access. The original infrastructure observations below predate this access change.
+Every Sealant runtime builds the image for a project's recipe itself, and MicroVM does it with AWS's
+managed image build. The worker uploads a build context (a Containerfile and the in-VM agent's
+scripts, no binaries and no secrets) to `sealant/workspace-images/` in the artifacts bucket, the
+managed build runs it, and the worker deletes the context. One recipe is one image,
+`<name>-ws-<plan hash>`, shared by every workspace with that recipe. Sealant deletes the ones
+nothing uses and refuses to build past 50. A first session on a new recipe waits for the build,
+about three minutes when measured on this account.
 
-## Application and Docker update
+A recipe step runs as root and can read the build role's credentials, so that role can read that one
+prefix and write its build log, and nothing else. A step cannot reach the VPC, the database or the
+capture bucket. The role is one for the whole deployment, so a step of one organization's recipe
+could read another's build context if it could guess a random key; a context holds no secrets.
 
-As of 2026-09-16 UTC, Mend API/web **0.28.0** and Sealant API/worker **0.33.0** are now deployed
-with digest-pinned images. Fresh Docker-required workspaces select the separately retained
-`mend-capture-poc-workspace-docker` image, version **1.0**. The ordinary image is unchanged. Both
-application IAM policies now allow that exact Docker image ARN; no actions, role trust or other
-resource grants changed.
+Docker inside a session ships on every image family since Sealant 0.36.1, so no separate Docker
+workspace image is needed.
 
-One shell-only Mend session passed Docker info, build, run, Compose, root-owned bind writes, nested
-DNS and closed Docker TCP ports. CLI and Mend planned-stop capture flushes reported nothing pending
-and no fence. The test VM was independently confirmed terminated, test data was removed, and the
-normal **3600-second** limit was restored. No new inference calls were recorded. A redundant SDK
-flush ran after normal VM termination; the checker's later post-stop file read was not reached. See
-the [Docker service record](../../docs/operations/aws-docker-service.md) for that qualification,
-resource limits and remaining gaps.
+## Access and HTTPS
 
-The upgrade preserved existing Helm values, owner-only HTTPS, storage, networking and projects. Its
-private evidence and rollback inputs are under `~/.config/mend/aws-poc/upgrade-0.28.0/`. Do not
-reconstruct this live release with `scripts/render-mend.py`: it still defaults to Mend 0.27.5 and a
-localhost origin. Use the saved live values and the released chart for subsequent upgrades.
+The single instance is public behind the Caddy edge, as above. The EKS control plane has no public
+application ingress; the earlier deployment reached it in two ways.
 
-## Original deployment observations, 2026-09-15 UTC
+**A loopback port-forward**,
+`kubectl -n mend port-forward --address 127.0.0.1 svc/mend-web 3105:3105`. It ends when its web pod
+is replaced. HTTPS cookie sessions do not work over it; use the CLI's bearer login.
 
-- EKS `mend-capture-poc`: one healthy ARM64 `m7g.large`, desired/min/max **1**. All four managed
-  add-ons are healthy. No autoscaling or executor EC2 fleet.
-- Mend API/web `0.27.5`, Sealant API/worker `0.32.0`, and Zot are deployed. Mend's health endpoint
-  answers through a loopback-only port-forward. The internal session NLB has a healthy NodePort
-  target. Encrypted gp3 claims are bound: Mend 20 GiB, registry 10 GiB.
-- PlanetScale `mend/aws-poc/main` remains **Metal M-10**. Direct port **5432** is intentional: both
-  applications use `LISTEN/NOTIFY`. Its default 25-connection limit caused PostgreSQL `53300` during
-  Mend startup. Setting `pgconf.max_connections=50` through PlanetScale's supported API resolved
-  startup without changing the SKU, replicas, or pricing. This setting is outside ToFu.
-- Private DNS resolves to the endpoint's `10.42.*` addresses. `psql` with `sslmode=verify-full`
-  connected using TLS 1.3. PlanetScale terminates that TLS at its proxy; `pg_stat_ssl` describes the
-  provider's backend hop, not this client connection.
-- Separate logical databases `mend` and `sealant_control_plane`, each with a dedicated application
-  role. Stable `postgres` owns the databases; each application has connect/create rights only in its
-  database and create/usage on its public schema. Neither application inherits `postgres`,
-  `pg_read_all_data`, or `pg_write_all_data`.
-- A global PlanetScale RFC1918-only IP rule blocks public connections, following its
-  [PrivateLink restriction guidance](https://planetscale.com/docs/postgres/connecting/ip-restrictions).
-  A real public-endpoint connection with valid credentials was rejected with `28000`.
-- The fixed MicroVM image `mend-capture-poc-workspace`, version **1.0**, reached `CREATED`. **This
-  is a private platform candidate**, not the unmodified public daemon release; see below.
-- **Capture/replacement acceptance passed.** The first shell exited 0 with checkpoint sequence 28. A
-  different workspace joined the same captured worktree, verified the exact file contents, ran
-  `sealantctl --socket /run/sealant/control.sock capture flush`, and exited 0 with checkpoint
-  sequence 35. Both AWS MicroVMs are `TERMINATED`; all control-plane pods remain healthy. Evidence
-  is in `~/.config/mend/aws-poc/acceptance.json`. This tests a new shell conversation on the same
-  worktree, not native Codex/Claude conversation resume, and uses the private candidate.
+**Owner-only HTTPS through Tailscale.** The Tailscale Kubernetes operator ran a standalone L7
+Ingress, `mend/mend-access`, forwarding only to `mend-web:3105`. The operator registered its proxy
+as a tailnet device, and MagicDNS resolved `mend-access.<tailnet>.ts.net` to it for connected
+clients. With HTTPS certificates enabled in the tailnet, Tailscale Serve in the proxy obtained a
+Let's Encrypt certificate through a DNS-01 challenge Tailscale answers under `ts.net`, and renews it
+itself. No public inbound port, ACM certificate or cert-manager was needed. The hostname is public
+in certificate transparency logs; Funnel stayed off. TLS ends at the proxy, and the hop to
+`mend-web` is plain HTTP inside the cluster, restricted by NetworkPolicy. Mend's `APP_URL` was the
+`ts.net` origin.
 
-Live IDs and non-secret provenance are in `~/.config/mend/aws-poc/deployment.json`. Credentials,
-application identity, explicit kubeconfig, rendered manifests and smoke-account state live beside it
-with restrictive permissions, outside Git. Local ToFu state remains in `deploy/aws/tofu/`. Both
-locations are needed for an orderly handoff and teardown; do not discard them.
+To set it up again:
+
+1. Get the owner's approval for the tailnet, a neutral hostname (the certificate discloses it), the
+   member list and billing.
+2. Enable MagicDNS and HTTPS certificates. Define the tags before any device exists:
+   `tag:mend-operator` owns `tag:mend-ingress`, and nothing else uses either.
+3. Create the operator's OAuth client with the write scopes `General/Services`, `Devices/Core` and
+   `Keys/Auth Keys`, scoped to the operator tag. Precreate the `operator-oauth` Secret with
+   `client_id` and `client_secret`; never pass them with Helm `--set`, in Git or on stdout.
+4. Pin an exact operator chart version and its ARM64 image digests, with the operator and proxy on
+   the same version. Before installing, change the chart's `proxies` Role to `rules: []`: upstream
+   grants proxies namespace-wide access to Secrets, the OAuth credential included. Grant the proxy
+   `get`, `patch` and `update` only on its own state Secret, plus events. Keep
+   `apiServerProxyConfig.mode: "false"`.
+5. Run the operator and proxy as UID/GID 1000 with `RuntimeDefault` seccomp, dropped capabilities
+   and no privilege escalation, in a namespace that enforces restricted Pod Security, with no host
+   networking or mounts. NetworkPolicy lets the proxy reach DNS, the Kubernetes API (its Service IP
+   and endpoint IPs), Tailscale over public HTTPS and UDP, and `mend-web`, and nothing else: not the
+   database, Sealant, the registry, Mend's API directly or the metadata address.
+6. Give the tailnet a policy that admits only the owner to the ingress tag on 443, with tests for
+   everything else. Grants are additive, so remove any starter allow-all rule:
+
+   ```json
+   {
+     "groups": { "group:mend-users": ["owner@example.com"] },
+     "tagOwners": {
+       "tag:mend-operator": ["autogroup:admin"],
+       "tag:mend-ingress": ["tag:mend-operator"]
+     },
+     "acls": [],
+     "grants": [{ "src": ["group:mend-users"], "dst": ["tag:mend-ingress"], "ip": ["tcp:443"] }],
+     "tests": [
+       {
+         "src": "owner@example.com",
+         "accept": ["tag:mend-ingress:443"],
+         "deny": [
+           "tag:mend-ingress:22",
+           "tag:mend-ingress:3101",
+           "tag:mend-ingress:3106",
+           "tag:mend-ingress:4000",
+           "tag:mend-ingress:5432",
+           "tag:mend-operator:443"
+         ]
+       }
+     ]
+   }
+   ```
+
+7. Set Mend's `APP_URL` to the `https://…ts.net` origin, then check from a tailnet device: health
+   answers 200 with certificate verification on, an unauthenticated request gets 401, and only 443
+   answers on the proxy.
+
+To remove it: keep the operator running while you delete `mend/mend-access`, so its finalizer
+removes the proxy and its tailnet device. Check that it did, then uninstall `tailscale-operator` and
+remove its namespace, ProxyClass, the Mend ingress policy, the operator device, the OAuth client and
+the unused tags and grants. Leave unrelated tailnet access alone. Removing access does not stop
+executors or tear down AWS or PlanetScale.
 
 ## Footprint and boundaries
 
 - VPC `10.42.0.0/16`, two AZs, private `/20` subnets, one NAT in `eu-central-1a`, and an S3 gateway
   endpoint. The worker stays in that AZ for gp3 reattachment and to avoid cross-AZ NAT charges.
-- EKS 1.35 uses standard support. Its public control-plane endpoint admits only the operator's
-  configured CIDR; private access is also enabled. No SSH; IMDSv2, hop limit 1; encrypted 40 GiB
-  node boot disk. VPC CNI network-policy enforcement is enabled.
-- PrivateLink has two endpoint ENIs. Its SG permits PostgreSQL only from the EKS workload SG. The
-  MicroVM connector has a different SG and no database grant.
-- Internal TCP NLB `3106 → 31006` admits only the MicroVM connector. The session channel is **HTTP
-  inside the private VPC, not TLS**. Session tokens protect its application protocol.
-- Separate IRSA roles for Mend, Sealant API/worker, CNI and EBS CSI. The node has no capture or
-  MicroVM management privileges. Executors get per-session tokens and presigned S3 URLs, not
-  database credentials or a bucket-wide IAM role.
-- Capture and build-artifact buckets block public access and require TLS, use SSE-S3 and abort
+- The EKS control-plane endpoint admits only the operator's CIDR; private access is on too. No SSH;
+  IMDSv2, hop limit 1; an encrypted 40 GiB node boot disk. VPC CNI network-policy enforcement is on,
+  in standard mode, which can briefly allow traffic before a policy attaches.
+- PrivateLink has two endpoint ENIs. Its security group admits PostgreSQL only from the EKS workload
+  group. The MicroVM connector has a different group and no database grant.
+- An internal TCP NLB, `3106 → 31006`, admits only the MicroVM connector. The session channel is
+  **plain HTTP inside the VPC**; session tokens protect its protocol.
+- Separate IRSA roles for Mend, Sealant's API and worker, CNI and EBS CSI. The node has no capture
+  or MicroVM privileges. Executors get per-session tokens and presigned S3 URLs, not database
+  credentials or a bucket-wide role.
+- The capture and build-artifact buckets block public access, require TLS, use SSE-S3 and abort
   incomplete multipart uploads after one day. **No versioning or object expiry**; both have
-  `force_destroy=false`. Capture retention belongs to the application.
-- Immutable-tag ECR repository; MicroVM build, connector and runtime-log roles; 14-day log groups.
-  MicroVM sessions run for at most 8 hours, the platform maximum
-  (`SEALANT_MICROVM_MAX_DURATION_SECONDS`, 28800 by default). Keep project standby counts at zero.
-- **$100 account-wide monthly budget**, actual alerts at $25/$75 and forecast alert at $100. It
-  includes unrelated AWS usage, excludes PlanetScale billing, and is **not a spending cap**.
+  `force_destroy=false`. Capture retention belongs to Mend. Capture objects can hold harness login
+  material, which SSE-S3 does not hide from anyone allowed to read the bucket.
+- An immutable-tag ECR repository; MicroVM build, connector and runtime-log roles; 14-day log
+  groups. A MicroVM session runs for at most 8 hours, the platform's maximum
+  (`SEALANT_MICROVM_MAX_DURATION_SECONDS`, 28800 by default); set `MEND_EXECUTOR_MAX_SECONDS` to
+  match. Keep project standby counts at zero.
+- A **$100 account-wide monthly budget**, with actual-spend alerts at $25 and $75 and a forecast
+  alert at $100. It includes unrelated AWS use, excludes PlanetScale, and is **not a spending cap**.
 
-Tags are `project=mend`, `environment=aws-capture-poc`; CSI volumes also carry the cluster tag. The
-AWS provider cannot tag the MicroVM connector. The inventory script includes separate runtime
-resources. This is not HA: one worker/NAT, one CoreDNS/CSI controller, and non-surge node updates.
+Tags are `project=mend` and `environment=aws-capture-poc`; CSI volumes also carry the cluster tag.
+The AWS provider cannot tag the MicroVM connector. This is not high availability: one worker, one
+NAT, one CoreDNS and CSI controller, and node updates without surge. See
+[issues-for-real-ha.md](issues-for-real-ha.md).
 
-## Local regression tests
+## Cost and teardown
 
-Run `pnpm test:aws-shell` from the repository root. CI runs the same command. The tests exercise
-`kubernetes/smoke.sh` and `scripts/build-workspace-image.sh` with local command fixtures. They make
-no AWS or network calls and build no images. They require Bash, Python 3 and standard Linux
-command-line tools; AWS CLI, kubectl and curl are replaced by the fixtures.
-
-## Provision and render
-
-Use `nix-shell deploy/aws/shell.nix` for AWS CLI, OpenTofu, kubectl, Helm and Python/boto3. The
-provider lockfile pins AWS provider 6.64.0; do not casually run `init -upgrade`.
-
-```sh
-aws sts get-caller-identity # must be 954648881795
-umask 077
-cd deploy/aws/tofu
-# On a NEW deployment only: copy example.tfvars to poc.tfvars and set CIDR/email.
-# Never overwrite the live inputs or create a second state for these resource names.
-tofu init -input=false -lockfile=readonly
-tofu fmt -check && tofu validate
-tofu plan -input=false -var-file=poc.tfvars -out=poc.tfplan
-# Inspect and obtain provisioning approval before applying a new plan.
-tofu apply -input=false poc.tfplan
-tofu output -json > outputs.json
-```
-
-State and plans are ignored, not encrypted. Keep them on encrypted storage; use one operator at a
-time. Do not put credentials in tfvars or either application bucket as a makeshift state backend.
-Changing the Kubernetes version also requires matching node release and add-on versions.
-
-From the worktree root, with the operator's explicit kubeconfig:
-
-```sh
-export KUBECONFIG="$HOME/.config/mend/aws-poc/kubeconfig"
-aws eks update-kubeconfig --name mend-capture-poc --alias mend-aws-capture-poc \
-  --kubeconfig "$KUBECONFIG"
-kubectl get nodes
-# Wait for CoreDNS and CSI to exist and finish their rollouts before application setup.
-python3 deploy/aws/scripts/bootstrap-databases.py
-# Optional read-only SQL diagnostics, using an ephemeral pod:
-python3 deploy/aws/scripts/bootstrap-databases.py --inspect
-
-OUT="$HOME/.config/mend/aws-poc/rendered"
-mkdir -p "$OUT"
-python3 deploy/aws/scripts/render-mend.py foundations < deploy/aws/tofu/outputs.json > "$OUT/foundations.json"
-python3 deploy/aws/scripts/render-mend.py values < deploy/aws/tofu/outputs.json > "$OUT/mend-values.json"
-python3 deploy/aws/kubernetes/render.py --outputs deploy/aws/tofu/outputs.json \
-  --microvm-image-arn arn:aws:lambda:eu-central-1:954648881795:microvm-image:mend-capture-poc-workspace \
-  --microvm-image-version 1.0 --output "$OUT/sealant.yaml"
-kubectl apply -f "$OUT/foundations.json"
-kubectl apply -f "$OUT/sealant.yaml"
-helm upgrade --install mend deploy/helm/mend -n mend -f "$OUT/mend-values.json" --wait --timeout 6m
-kubectl -n mend port-forward --address 127.0.0.1 svc/mend-web 3105:3105
-```
-
-The bootstrap script expects mode-0600 `bootstrap-role.json`, `mend-app-role.json`, and
-`sealant-app-role.json` from PlanetScale's role API in the private config directory. Its temporary
-admin role must still be valid. It refuses broadly privileged application roles, mounts the
-operator's public CA bundle, and removes its bootstrap pod/Secret/ConfigMap afterward. It never
-prints passwords. Re-running preserves the application identity; do not rotate it accidentally. The
-shared StorageClass and Mend service account belong to `render-mend.py`, not the Sealant renderer.
-**Do not set `SEALANT_K8S_NAMESPACE`**: only the build namespace is configured.
-
-## Candidate image and acceptance
-
-Docker capability work uses a separate opt-in image and does not change this deployed default. See
-the [AWS Docker service runbook](../../docs/operations/aws-docker-service.md) for the released
-configuration, privilege model, source-selection options and acceptance limits. Source pins Sealant
-0.33.0 for the SDK, packaged services, AWS control-plane templates and MicroVM recipe; the private
-deployment now runs that release. The original ordinary-image acceptance below remains a separate
-observation.
-
-The official sealant recipe at `abe4d6c7258a5d6b479b72162de368c45953d9ee` reproduces a packaging
-failure: `sealantd:0.15.2` contains the daemon and socat but no `sealantctl`. The CLI is required
-for suspend and terminate capture flushes. Sealant 0.33.0 still uses that daemon release, so the
-packaging gap remains. The hook has not been removed or bypassed.
-
-`scripts/build-sealantctl-pod.json` builds the CLI natively on ARM64 from daemon revision
-`5173e4920d44d5663b6a4fec4606ab58e7607ca1`, with Rust **1.96.1** explicitly selected (the
-repository's `stable` override would otherwise select a different toolchain). Copy the binary out,
-then remove the temporary pod. `scripts/sealantd-candidate.Dockerfile` adds only that CLI to the
-pinned public daemon image. The private candidate digest is recorded in `deployment.json`.
-
-Set `SEALANTD_IMAGE` to the candidate when running `scripts/build-workspace-image.sh`. The script
-defaults to the official sealant 0.33.0 recipe at `17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3`, adds
-pinned pnpm/Codex/Claude CLI versions, and uses the scoped build role and artifact bucket. The fixed
-AWS image is **not** the OCI output of a workspace-profile BuildKit job. The original ordinary-image
-acceptance used `node:24-bookworm` (its custom-base contract requires Git, Node and npm), no extra
-packages and no Docker service. A bare Amazon Linux profile failed that prerequisite before any VM
-launch. The actual VM still runs the separately built Amazon Linux image: Debian or arbitrary
-profile/image customization is **not** established by this deployment.
-
-With the loopback tunnel running, `scripts/session-smoke.py` provides explicit `provision`,
-`launch`, `restore`, `status` and `stop` phases. It uses public Mend HTTP routes, a dedicated test
-account and a public tiny repository. The shell writes `aws-capture-proof.txt`; it invokes no paid
-inference and pushes nothing. Credentials and IDs stay in the private config directory. Check the
-record, capture object/pointer and restored file before claiming persistence. Stop executors after
-testing.
-
-Capture objects can contain harness login material. SSE-S3 does not hide it from authorized bucket
-readers. Treat reader grants and backups accordingly. Follow [TEARDOWN.md](TEARDOWN.md) to stop
-billing; deleting this checkout or closing the UI tunnel does not delete cloud resources.
+[poc-cost-plans.md](poc-cost-plans.md) has the cost review. [TEARDOWN.md](TEARDOWN.md) is the
+ordered teardown: deleting this checkout or closing a tunnel deletes no cloud resources.

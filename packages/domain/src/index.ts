@@ -1,6 +1,6 @@
 /**
  * @mend/domain — root barrel: the retiring queue-era model, kept compiling
- * while its reusable pieces migrate (docs/archive/M0-INVENTORY.md). The canonical
+ * while its reusable pieces migrate (the M0 inventory, in git history). The canonical
  * workbench object model lives at `@mend/domain/workbench`
  * (the product model in apps/docs concepts/product-model.md) — new code imports from there.
  */

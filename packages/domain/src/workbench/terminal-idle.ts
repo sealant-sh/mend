@@ -4,7 +4,7 @@ import { currentAgentProcess, isLiveProcess } from "./session-fold.ts";
 import { isWakeShell, type SessionProcess } from "./session-process.ts";
 
 /**
- * The terminal idle stop (docs/SELF-HOSTING.md, "Idle agents"). On Boat every session is its own
+ * The terminal idle stop (docs: "When Boat VMs stop"). On Boat every session is its own
  * paid machine, so a terminal session (a shell, `mend run`, an agent in terminal mode) stops after
  * the same MEND_PROTOCOL_IDLE_STOP_MINUTES as a protocol agent once its terminals have been
  * quiet that long: nobody attached, nobody typed, nothing printed. What else runs in the

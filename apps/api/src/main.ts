@@ -1085,7 +1085,7 @@ const MainLive = Layer.unwrap(
         : [Layer.effectDiscard(Effect.flatMap(ResourceLoads, (loads) => loads.recover))]),
     ).pipe(
       // Session steering, landing (docs/adr/0007-landing.md) for the landing routes, receiving a
-      // handoff (docs/specs/mend-handoff.md) for the handoff routes, and a project's resources
+      // handoff (docs/decisions.md, 2026-10-17) for the handoff routes, and a project's resources
       // (docs/adr/0019) for their routes and every session's channel.
       Layer.provide(
         Layer.mergeAll(
@@ -1225,8 +1225,8 @@ const MainLive = Layer.unwrap(
 
 // Graceful shutdown gets a deadline. runMain interrupts the main fiber on
 // SIGTERM/SIGINT and unwinds finalizers — but an uninterruptible pending
-// platform promise inside a watch fiber can wedge that unwind forever
-// (docs/BUGS.md), leaving a half-dead server: HTTP gone, Service ports and
+// platform promise inside a watch fiber can wedge that unwind forever,
+// leaving a half-dead server: HTTP gone, Service ports and
 // session sockets still held, the watch runner waiting on a child that will
 // never exit. The timer is unref'd: a clean unwind exits on its own first;
 // the deadline only fires for a wedge, and the OS reclaims every fd.

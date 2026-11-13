@@ -738,7 +738,7 @@ device's session keeps the three newest URLs of each file or image, and a newer 
 oldest, so a thread's re-mints never fill the device's 4,096 grants (16,384 in all, 16 MiB of grant
 records). Raw worktree bytes stream with backpressure, without a whole-file buffer. There is no byte
 budget. Mend bounds raw reads on its side too (`accountRawReads`, `rawReads`,
-docs/operations/budgets.md).
+[Budgets](https://docs.mend.run/operate/exposure/#budgets)).
 
 For captured and checkpoint files, Mend serves the bytes as the capture recorded them, before clean,
 LFS and line-ending filters (the capture's `raw_tree`); a checkpoint serves its commit's files. Only

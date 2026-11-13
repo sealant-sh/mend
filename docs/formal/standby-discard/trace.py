@@ -3,7 +3,7 @@
 Reads TLC's output (with or without -difftrace) on stdin and prints each step's action and
 what it changed, by key, so a trace reads as "CTake: status[s1] ready -> claimed".
 
-    docs/specs/formal/standby-discard/check.sh code-promise | python3 -I docs/specs/formal/standby-discard/trace.py
+    docs/formal/standby-discard/check.sh code-promise | python3 -I docs/formal/standby-discard/trace.py
 """
 
 import re

@@ -9,9 +9,8 @@ Every claim below is source-inferred unless marked observed. Nothing here author
 changes.
 
 See the [deployment overview](README.md), the [cost review](poc-cost-plans.md), the
-[capture store ADR](../../docs/adr/0002-session-capture-store.md) and the
-[public exposure](../../docs/archive/reviews/public-exposure-findings.md) and
-[team support](../../docs/archive/reviews/team-support-findings.md) reviews. The
+[capture store ADR](../../docs/adr/0002-session-capture-store.md), and the public exposure and team
+support reviews of September 2026 (removed; see git history). The
 [product statement](../../PRODUCT.md) remains the product source of truth.
 
 ## Summary
