@@ -38,8 +38,18 @@ docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~1
 docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~4 min on 32 cores
 ```
 
+TLC is the reference: the run you hand off with a change to the model or to the code it models is a
+TLC run. While iterating, `--engine tlx` (it composes with `--quick` and a row name) runs the same
+rows with tlx, a Rust checker about twelve times faster here: ~22 s for the full bounds, ~2 s with
+`--quick`. tlx is version 0.1, from github.com/tlaplus-x/tlx, measured at commit `8d5f082b0f`; it is
+not in the Nix flake or CI. README "TLC and tlx" says how to build it and has the measured table.
+`check.sh` takes it from `MEND_TLX`, else `tlx` on `PATH`, and exits 2 when there is none.
+
 Each row prints `as expected` or `NOT AS EXPECTED`, and the script exits 0 only when every row is
-`as expected`. The rows and their expected outcomes are the `ROWS` table in `check.sh`:
+`as expected`: the verdict matches and the distinct-state count equals the one `ROWS` pins for those
+bounds. A wrong count from either checker fails the row even when the verdict matches. When an
+intended model change moves a count, take the new count from a TLC run, full and `--quick`. The rows
+and their expected outcomes are the `ROWS` table in `check.sh`:
 
 - `code-promise`, `code-promise-atomic-retire` and `code-claimable` are the code, expected to hold.
 - `mutant-no-reread` is the drain as it was before SLNT-823, with no session read after `retire`. It
@@ -86,7 +96,8 @@ guards allow it, and the value it acts on was read where and when the code reads
   bite.
 - A new caller of `drainHotWorkspace`, `claim`, `retire`, `setFailed`, `setReady` or `remove` is a
   new action (and a new drain slot for a new caller), added to `Next` and to the record below.
-- Run the full check, update README's "Last full run" table, then move the sync commit.
+- Run the full check with TLC, update the counts in `ROWS` (full and `--quick`) and README's "Last
+  full run" table, then move the sync commit.
 
 ## Coverage record
 

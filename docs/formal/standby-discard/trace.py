@@ -1,7 +1,8 @@
 """Print a TLC counterexample from StandbyDiscard as one line per step.
 
 Reads TLC's output (with or without -difftrace) on stdin and prints each step's action and
-what it changed, by key, so a trace reads as "CTake: status[s1] ready -> claimed".
+what it changed, by key, so a trace reads as "CTake: status[s1] ready -> claimed". tlx's
+output, which has the same trace format and never diffs, reads the same way.
 
     docs/formal/standby-discard/check.sh code-promise | python3 -I docs/formal/standby-discard/trace.py
 """
