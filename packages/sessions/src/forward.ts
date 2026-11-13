@@ -83,7 +83,7 @@ export type ForwardAttempts =
   | readonly [Attempt<"loopback", "connection-refused">, Attempt<"docker", ForwardAttemptOutcome>];
 
 /**
- * One dial's phases, on the monotonic clock. `openMs` is the SDK call: Core's authentication,
+ * One dial's phases, on the monotonic clock. `openMs` is the SDK call: sealant's authentication,
  * daemon lookup, runtime connection and the TCP connect inside the workspace, which Mend cannot
  * split. `lookupMs` is null when the dial ended before the lookup finished.
  */

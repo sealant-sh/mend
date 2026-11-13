@@ -43,7 +43,7 @@ describe("an organization's Boat key", () => {
   const connect = (user: "alice" | "bob" | "carol", key = KEY) =>
     api.request(user, "PUT", "/api/organization/boat-key", { key });
 
-  it("lets an owner connect a key: Core gets the key, Mend keeps only Core's account", async () => {
+  it("lets an owner connect a key: sealant gets the key, Mend keeps only sealant's account", async () => {
     const response = await connect("alice");
     expect(response.status).toBe(200);
     const body = await response.json();
@@ -55,7 +55,7 @@ describe("an organization's Boat key", () => {
         connectedByUserId: "alice",
         connectedByName: "Alice",
         keyReplacedAt: null,
-        // Nothing observed about the key itself until the pinned SDK returns Core's report.
+        // Nothing observed about the key itself until the pinned SDK returns sealant's report.
         report: null,
       },
     });
@@ -124,7 +124,7 @@ describe("an organization's Boat key", () => {
     expect(core.at(-1)).toEqual({ call: "remove", boatAccountId: "core-boat-2" });
   });
 
-  it("replaces the key in the same Core account and records it", async () => {
+  it("replaces the key in the same sealant account and records it", async () => {
     await connect("alice");
     const response = await connect("alice", REPLACEMENT);
     expect(response.status).toBe(200);
@@ -158,7 +158,7 @@ describe("an organization's Boat key", () => {
       actor: "alice",
     });
     expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
-    // Removing again is a no-op that asks Core nothing and drains nothing.
+    // Removing again is a no-op that asks sealant nothing and drains nothing.
     core.length = 0;
     steps.length = 0;
     const again = await api.request("alice", "DELETE", "/api/organization/boat-key");
@@ -168,7 +168,7 @@ describe("an organization's Boat key", () => {
     expect(steps).toEqual([]);
   });
 
-  it("refuses at once a removal that would strand people's work, with Core's counts, and keeps the key", async () => {
+  it("refuses at once a removal that would strand people's work, with sealant's counts, and keeps the key", async () => {
     await connect("alice");
     boat.refuseNext(refusal("in-use", { liveRuns: 2, buildsInFlight: 1 }));
     const response = await api.request("alice", "DELETE", "/api/organization/boat-key");
@@ -181,7 +181,7 @@ describe("an organization's Boat key", () => {
       message:
         "The organization's Boat account still has 2 session workspaces whose VMs and 1 image build Boat may be running, so nothing changed and the key stays. To remove it, stop the organization's Boat sessions and wait for its image builds to finish, then remove the key again.",
     });
-    // Mend drained nothing there, so Core's count is final the first time.
+    // Mend drained nothing there, so sealant's count is final the first time.
     expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
     expect(keys.has(organizationIdOf("A"))).toBe(true);
     expect(audited.map((event) => event.action)).toEqual(["boat_key.connected"]);
@@ -196,7 +196,7 @@ describe("an organization's Boat key", () => {
       connected: false,
       removal: { standbysDrained: 2 },
     });
-    // Drained before Core was asked; the organization's projects rewarm once the change ends.
+    // Drained before sealant was asked; the organization's projects rewarm once the change ends.
     expect(steps).toEqual(["drain core-boat-1", "remove core-boat-1", "rewarm"]);
     expect(standbys.size).toBe(0);
     expect(keys.has(organizationIdOf("A"))).toBe(false);
@@ -206,7 +206,7 @@ describe("an organization's Boat key", () => {
     });
   });
 
-  it("asks Core again while it still counts a standby Mend just drained", async () => {
+  it("asks sealant again while it still counts a standby Mend just drained", async () => {
     await connect("alice");
     standbys.set("core-boat-1", 1);
     boat.refuseNext(refusal("in-use", { liveRuns: 1 }));
@@ -223,7 +223,7 @@ describe("an organization's Boat key", () => {
     expect(keys.has(organizationIdOf("A"))).toBe(false);
   });
 
-  it("refuses with only a person's sessions counted once Core's count stops falling, and the standbys warm again", async () => {
+  it("refuses with only a person's sessions counted once sealant's count stops falling, and the standbys warm again", async () => {
     await connect("alice");
     standbys.set("core-boat-1", 2);
     boat.holds.refusal = refusal("in-use", { liveRuns: 1 });
@@ -277,15 +277,15 @@ describe("an organization's Boat key", () => {
     );
   });
 
-  it("ends where one run would when Core removed the account but its answer was lost", async () => {
+  it("ends where one run would when sealant removed the account but its answer was lost", async () => {
     await connect("alice");
     standbys.set("core-boat-1", 1);
-    // Core removes the account, then its answer never reaches Mend.
+    // sealant removes the account, then its answer never reaches Mend.
     boat.lose.next = true;
     const lost = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(lost.status).toBe(503);
     expect(keys.has(organizationIdOf("A"))).toBe(true);
-    // Run again: Core says it is removing that account, which is done as far as Mend goes.
+    // Run again: sealant says it is removing that account, which is done as far as Mend goes.
     boat.refuseNext(refusal("removing"));
     const again = await api.request("alice", "DELETE", "/api/organization/boat-key");
     expect(again.status).toBe(200);
@@ -316,7 +316,7 @@ describe("an organization's Boat key", () => {
     expect(audited.filter((event) => event.action === "boat_key.removed")).toHaveLength(1);
   });
 
-  it("forgets a key Core already removed", async () => {
+  it("forgets a key sealant already removed", async () => {
     await connect("alice");
     boat.refuseNext(refusal("not-found"));
     expect((await api.request("alice", "DELETE", "/api/organization/boat-key")).status).toBe(200);
@@ -401,7 +401,7 @@ describe("an organization's Boat key", () => {
     });
   }
 
-  it("checks what Core holds, and says when it was observed", async () => {
+  it("checks what sealant holds, and says when it was observed", async () => {
     const none = await api.request("alice", "POST", "/api/organization/boat-key/check");
     expect(await none.json()).toMatchObject({ state: "none", report: null, unanswered: null });
     await connect("alice");
@@ -710,7 +710,7 @@ describe("a person's own Boat key (SLNT-797)", () => {
     expect(await status.json()).toMatchObject({ connected: true, organizationKey: true });
   });
 
-  it("replaces a person's key in the same Core account and records it as theirs", async () => {
+  it("replaces a person's key in the same sealant account and records it as theirs", async () => {
     await connectOwn("carol");
     const response = await connectOwn("carol", REPLACEMENT);
     expect(await response.json()).toMatchObject({
@@ -749,7 +749,7 @@ describe("a person's own Boat key (SLNT-797)", () => {
       data: { key: "own", standbysDrained: 1 },
       actor: "carol",
     });
-    // A retry finds nothing to remove, and asks Core nothing.
+    // A retry finds nothing to remove, and asks sealant nothing.
     core.length = 0;
     steps.length = 0;
     const again = await api.request("carol", "DELETE", ROUTE);
@@ -774,7 +774,7 @@ describe("a person's own Boat key (SLNT-797)", () => {
     expect(keys.has(`${A}/carol`)).toBe(true);
   });
 
-  it("refuses an access key connecting or removing a person's key, and sends Core nothing", async () => {
+  it("refuses an access key connecting or removing a person's key, and sends sealant nothing", async () => {
     const headers = { authorization: `Bearer ${accessKeyBearerOf("carol")}` };
     for (const response of [
       await api.request(null, "PUT", ROUTE, { key: KEY }, headers),

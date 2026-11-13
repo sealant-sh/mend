@@ -40,7 +40,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { organizationSessionRuntime } from "./organization-settings.ts";
 import { membership } from "./organization.ts";
 
-/** Core keeps at most 200 characters of a Boat account's label. */
+/** sealant keeps at most 200 characters of a Boat account's label. */
 const LABEL_LIMIT = 200;
 
 const plural = (count: number, one: string, many: string) => `${count} ${count === 1 ? one : many}`;
@@ -83,8 +83,8 @@ const PERSON_WORDS: KeyWords = {
 const capital = (words: string) => `${words.charAt(0).toUpperCase()}${words.slice(1)}`;
 
 /**
- * Core's refusal in words the person can act on (SLNT-790). Core's own message is never passed
- * on: it is written for Core's operators, and the reason and counts carry everything it says. A
+ * sealant's refusal in words the person can act on (SLNT-790). sealant's own message is never passed
+ * on: it is written for sealant's operators, and the reason and counts carry everything it says. A
  * removal's `in-use` is `removalInUse`'s, which knows the standbys Mend drained first.
  */
 export const boatKeyFailure = (
@@ -384,8 +384,8 @@ const rewarmStandbys = (found: OrganizationMembership) =>
   });
 
 /**
- * How long a removal waits for the standbys it drained to leave Core's count, and how often it
- * asks Core again meanwhile (SLNT-803). Inside an edge's request limit. A reference so a test can
+ * How long a removal waits for the standbys it drained to leave sealant's count, and how often it
+ * asks sealant again meanwhile (SLNT-803). Inside an edge's request limit. A reference so a test can
  * shorten it.
  */
 export interface RemovalWait {
@@ -408,7 +408,7 @@ const waited = (millis: number) => {
 };
 
 /**
- * Core's `in-use` answer to a removal, counting only what a person acts on: the VMs Core counts
+ * sealant's `in-use` answer to a removal, counting only what a person acts on: the VMs sealant counts
  * that are not Mend's own standbys there, and image builds. Mend's standbys whose end it has not
  * seen are named as Mend's, with how long it waited and what asks again. Nothing changed, so the
  * key stays and the standbys warm again.
@@ -465,15 +465,15 @@ const removalInUse = (
   );
 };
 
-/** Core's two answers count the same VMs and builds. */
+/** sealant's two answers count the same VMs and builds. */
 const sameCount = (a: BoatAccountRefusal, b: BoatAccountRefusal) =>
   a.liveRuns === b.liveRuns && a.buildsInFlight === b.buildsInFlight;
 
 /**
- * Drains the organization's standbys in the account, then asks Core to remove it (SLNT-803). A
- * standby Mend just drained may still count in Core's answer for a moment, so an `in-use` answer
+ * Drains the organization's standbys in the account, then asks sealant to remove it (SLNT-803). A
+ * standby Mend just drained may still count in sealant's answer for a moment, so an `in-use` answer
  * is asked again until `BoatKeyRemovalWait` runs out, each time after draining again. It is final
- * at once when Mend drained nothing there, or when no standby is still stopping and Core counts
+ * at once when Mend drained nothing there, or when no standby is still stopping and sealant counts
  * what it counted the time before: then what holds the account is a person's work.
  */
 const removeAccount = (boatAccountId: string, standbys: BoatAccountStandbys, words: KeyWords) =>
@@ -489,7 +489,7 @@ const removeAccount = (boatAccountId: string, standbys: BoatAccountStandbys, wor
       const answer = yield* clients.removeBoatAccount(boatAccountId).pipe(Effect.result);
       if (Result.isSuccess(answer)) return drain;
       const error = answer.failure;
-      // One Core no longer has, or is already removing, is gone as far as new sessions go.
+      // One sealant no longer has, or is already removing, is gone as far as new sessions go.
       if (
         error._tag === "BoatAccountRefusal" &&
         (error.reason === "not-found" || error.reason === "removing")
@@ -529,12 +529,12 @@ const record = (
     });
   });
 
-/** Whose key a request acts on, and how its answers and Core's label name it. */
+/** Whose key a request acts on, and how its answers and sealant's label name it. */
 interface KeyHolder {
   readonly found: OrganizationMembership;
   readonly owner: BoatKeyOwner;
   readonly words: KeyWords;
-  /** Core's label for a new account. */
+  /** sealant's label for a new account. */
   readonly label: string;
   /** What the audit entry adds, so the log tells a person's key from the organization's. */
   readonly audit: AuditData;
@@ -562,8 +562,8 @@ const personHolder = Effect.gen(function* () {
 });
 
 /**
- * Connects the holder's key, or replaces it in the same Core account when there is one. The key
- * goes to Core and nowhere else. Answers the row as it is now, with the account Core just checked.
+ * Connects the holder's key, or replaces it in the same sealant account when there is one. The key
+ * goes to sealant and nowhere else. Answers the row as it is now, with the account sealant just checked.
  */
 const connectKey = (holder: KeyHolder, pasted: string) =>
   Effect.gen(function* () {
@@ -620,7 +620,7 @@ const connectKey = (holder: KeyHolder, pasted: string) =>
   });
 
 /**
- * Asks Boat about the holder's key now, through Core (read-only), and answers what Mend observed:
+ * Asks Boat about the holder's key now, through sealant (read-only), and answers what Mend observed:
  * the organization's and a person's own key the same way.
  */
 const checkKey = (holder: KeyHolder) =>
@@ -639,7 +639,7 @@ const checkKey = (holder: KeyHolder) =>
   });
 
 /**
- * Removes the holder's key: drains Mend's standbys in its account, then asks Core to remove it.
+ * Removes the holder's key: drains Mend's standbys in its account, then asks sealant to remove it.
  * One key change per organization at a time: a second removal asked meanwhile finds no key once
  * the first is done, and reports nothing it did not do. Null: there was no key to remove.
  */
@@ -664,7 +664,7 @@ const removeKey = (holder: KeyHolder) =>
 
 /**
  * The organization's Boat key (SLNT-790). Members read whether there is one; owners connect,
- * replace, check and remove it, and see which members have their own. The key goes to Core in the
+ * replace, check and remove it, and see which members have their own. The key goes to sealant in the
  * request that connects it and nowhere else: Mend's database, logs, audit log and errors never
  * hold it.
  */

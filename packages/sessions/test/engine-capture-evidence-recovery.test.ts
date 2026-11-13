@@ -617,7 +617,7 @@ describe("SessionEngine ninth review (2026-09-28)", () => {
   // #4 (the reviewer's engine sequence): boot A sealed at observation 100; recovery boot B
   // (generation 0, ordered against nothing) answered a failed snapshot; a delayed answer boot A
   // made before its seal replaced B's, the seal covered that one, and a lost FINAL answer then
-  // sent Core an attestation for the old seal.
+  // sent sealant an attestation for the old seal.
   it.effect(
     "#4 a delayed older answer after a recovery boot's failure never revives the old seal: no attestation",
     () =>
@@ -1182,7 +1182,7 @@ describe("review 10 #7 a direct complete answer", () => {
 });
 
 /**
- * Carried review 2026-09-28 (10) #6 (cross-repo decision 35): a final flush Core's deadline or the
+ * Carried review 2026-09-28 (10) #6 (cross-repo decision 35): a final flush sealant's deadline or the
  * daemon's own shutdown asked for runs with no Mend drain, so its uploads used to be metered, and a
  * held tree past the byte quota stayed unsaved (413). sealantd now names the flush on the wire
  * (`"flush":"final"`): exempt from the byte and call quotas whether or not Mend drains.
@@ -1313,7 +1313,7 @@ it("refuses to start a session on a shallow project with the reason", async () =
 });
 
 /**
- * e2e8 (i), HSB: an executor stopped outside Mend that Core keeps for recovery (exit 75) read
+ * e2e8 (i), HSB: an executor stopped outside Mend that sealant keeps for recovery (exit 75) read
  * `running` beside `retained`. The first word follows the executor: a session whose current
  * executor the platform keeps for recovery reads `stopping · retained`, never `running`.
  */

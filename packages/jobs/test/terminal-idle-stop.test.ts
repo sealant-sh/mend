@@ -277,7 +277,7 @@ describe("the terminal idle stop on Boat", () => {
   });
 
   it("stops a silent terminal although the run's sequence keeps rising", async () => {
-    // Core's high-water mark is the whole run's telemetry: it moves on every read here, as it does
+    // sealant's high-water mark is the whole run's telemetry: it moves on every read here, as it does
     // every 12 to 17 seconds on a real silent terminal. It is not output.
     const w = world();
     await w.sweepAt(0);

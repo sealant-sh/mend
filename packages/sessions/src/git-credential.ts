@@ -2,7 +2,7 @@
  * `mend-git-credential` (docs/adr/0016, decision 4): git's credential helper for
  * `https://github.com` in a person-layout executor, staged beside the `mend` helper at
  * `/run/mend/bin` and named in the system git config by the person layout's prepare. It answers
- * with the GitHub login Core wrote into the calling user's own home, `~/.config/gh/hosts.yml`,
+ * with the GitHub login sealant wrote into the calling user's own home, `~/.config/gh/hosts.yml`,
  * and nothing else: no `gh` is needed in the image, no token is in the environment, and nobody's
  * push uses another person's login. The home is the user's passwd home, never `$HOME`, so a tool
  * that moves `HOME` still pushes as its user. `mend-git-credential token` prints the token for a

@@ -1108,7 +1108,7 @@ const platformShape = (
       };
     case "opencode":
     case "pi":
-      // Baked into the unified image with every other agent CLI (Core 0.39): the shell's shape,
+      // Baked into the unified image with every other agent CLI (sealant 0.39): the shell's shape,
       // its credential ladder included, until each brings logins of its own.
       return { ...platformShape("shell"), starts: harness };
     default:
@@ -1458,7 +1458,7 @@ const NO_DOTFILES = {
  * owner alone, as the worktree's owner and its one person. Complete for any worktree a person
  * standby serves (`standbyLayoutFor`): no `people/` in its head, and its change owner is the
  * launcher, who is the standby's owner. The claim names the same map (`captureReplan`'s
- * `expectedOwnerMap`), which Core compares with the one the standby booted with.
+ * `expectedOwnerMap`), which sealant compares with the one the standby booted with.
  */
 const standbyOwnerMapOf = (owner: LinuxIdentity): CaptureOwnerMap => ({
   gid: MEND_GROUP.gid,
@@ -1507,7 +1507,7 @@ const dotfilesRecordWith = (record: SessionDotfiles, reason: string): SessionDot
   ],
 });
 
-/** Core's launch phase (sealant#342) as the session line says it. */
+/** sealant's launch phase (sealant#342) as the session line says it. */
 export const launchPhaseWords = (phase: WorkspacePhase): string =>
   phase.name === "queued"
     ? LAUNCH_QUEUED
@@ -1943,7 +1943,7 @@ const STALE_ON_START_PREFIXES = [
   SECRET_FILES_SUMMARY_PREFIX,
 ] as const;
 
-/** A create Core fenced before it made anything, found with no launch asking again. */
+/** A create sealant fenced before it made anything, found with no launch asking again. */
 const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
 /**
  * A launch whose create answer was lost, whose executor Mend found by its key and drained, and
@@ -2137,8 +2137,8 @@ type WorkspaceLookup =
   | { readonly kind: "unknown"; readonly error: string };
 
 /**
- * The drain states Core records once a capture executor's drain is over and nothing of it is kept
- * (`WorkspaceCaptureDrain.state`, Core's next SDK): removed after its drain, saved, gone, or its
+ * The drain states sealant records once a capture executor's drain is over and nothing of it is kept
+ * (`WorkspaceCaptureDrain.state`, sealant's next SDK): removed after its drain, saved, gone, or its
  * unsaved captures discarded by the owner.
  */
 const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "gone", "discarded"]);
@@ -2763,7 +2763,7 @@ export interface CaptureHold {
 /**
  * The standbys of one Boat key change (SLNT-803): `drained` ended as the platform confirmed, counted
  * once each across every pass; `stopping` are Mend's own standbys still in the pool there, not
- * claimed, whose VMs Core may still count.
+ * claimed, whose VMs sealant may still count.
  */
 export interface StandbyDrain {
   readonly drained: number;
@@ -3915,7 +3915,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       // ── Capture mode (ADR-0002) ─────────────────────────────────────────────────
       /**
        * The create-request half of a capture launch: the `capture` source carrying the session
-       * channel token (sealed by Core into the boot env file as `SEALANT_CAPTURE_TOKEN`). Null
+       * channel token (sealed by sealant into the boot env file as `SEALANT_CAPTURE_TOKEN`). Null
        * under the co-located store.
        */
       /**
@@ -5158,17 +5158,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * What the platform says of one workspace, without running anything in it: `found` (live:
        * queued · running · ready, with its status), `gone` (stopped, or no such workspace),
        * `unknown` (no answer). Capture mode: any other terminal status (`retained`, `failed`,
-       * `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
-       * final flush (cross-repo decision 2), so its disk may hold work only it has, and Core may
-       * boot it again to save it; until Core says otherwise its lease and its token stay (e2e run
-       * 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
-       * Mend that saved read `stopping` for good, Core reporting it `failed` with its container
+       * `cancelled`) is `kept` — sealant retains a capture executor that ended without a completed
+       * final flush (cross-repo decision 2), so its disk may hold work only it has, and sealant may
+       * boot it again to save it; until sealant says otherwise its lease and its token stay (e2e run
+       * 5). What sealant last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
+       * Mend that saved read `stopping` for good, sealant reporting it `failed` with its container
        * removed): a `failed` or `cancelled` executor whose drain ended (`stopped` — removed after
-       * it — `saved`, `gone`, `discarded`) and that Core does not retain is `gone`. So is a launch
+       * it — `saved`, `gone`, `discarded`) and that sealant does not retain is `gone`. So is a launch
        * that never ran an executor (no drain recorded, no runtime: its image build failed): no
-       * disk holds anything of it, and Core refused to stop it as "still launching" for good, so
+       * disk holds anything of it, and sealant refused to stop it as "still launching" for good, so
        * its session read `stopping · saving` until the machine was wiped (RC 3, 2026-10-11).
-       * Retained, still draining or kept, or a drain Core cannot be asked about (SDK 0.37.2),
+       * Retained, still draining or kept, or a drain sealant cannot be asked about (SDK 0.37.2),
        * stays `kept`.
        */
       const lookupWorkspace = (workspaceId: SealantWorkspaceId): Effect.Effect<WorkspaceLookup> =>
@@ -5229,7 +5229,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * terminal status (stopped · failed · cancelled) or no such workspace. A live status is
        * confirmed with a one-shot exec, because a killed container stays `ready` on the control
        * plane until something touches it (observed three minutes after `docker kill` in the local
-       * proof). Anything else — a Core error, a timeout, an exec that did not answer — is
+       * proof). Anything else — a sealant error, a timeout, an exec that did not answer — is
        * `unknown`: no pickup, no fence, look again on the next tick (ADR-0002 "Replacement and
        * pickup": confirm termination through the platform first).
        */
@@ -5465,7 +5465,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * The logins each person standby's create wrote into its owner's home, by standby, for its
        * claim (docs/adr/0016, decision 5). Forgotten by a restart: a standby claimed then takes
-       * nothing as held, and its launcher's first process asks Core for their logins.
+       * nothing as held, and its launcher's first process asks sealant for their logins.
        */
       const standbyLogins = new Map<string, WorkspaceCredentialsOptions | undefined>();
 
@@ -5496,7 +5496,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * The executor a lapsed lease is bound to, resolved on the platform's word when the holder's
-       * row no longer names its launch: a launch id is the create's idempotency key, so Core
+       * row no longer names its launch: a launch id is the create's idempotency key, so sealant
        * finds the workspace the create made (`found`: that workspace's state decides), or fences
        * the key (`none`: nothing was made under it, nor ever will be — Mend's own launch cut
        * short between its claim and its create, by a restart, leaves exactly this). `unknown`
@@ -5680,7 +5680,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         // The holder's executor is its owner's, whoever asks (`WorkspaceCaller`), so it is looked
         // up as that owner, like every other holder check here. Asked as a joiner of another
-        // person, Core answered 404, read as `unreachable`, and the join waited `leaseWait` (30
+        // person, sealant answered 404, read as `unreachable`, and the join waited `leaseWait` (30
         // min) on a holder that was running (alpha 2026-10-06, 9e486cfc). The handle it returns
         // is bound to the owner's client, so the join's own process runs there.
         const lookup: HolderLookup =
@@ -6412,7 +6412,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * What a stop Mend asks of the platform carries: the caller's options, and the store's
        * sealed record of the executor's completed final flush when there is one
-       * (`executorSealOf`) — Core keeps an executor's disk unless it observed `complete: true`
+       * (`executorSealOf`) — sealant keeps an executor's disk unless it observed `complete: true`
        * itself or is told this. Nothing is attested that the store did not seal.
        */
       const stopOptionsFor = Effect.fn("SessionEngine.stopOptionsFor")(function* (
@@ -6429,7 +6429,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const read = yield* evidenceToken(workspaceId);
         const seal = session === null ? null : yield* executorSealOf(session, workspaceId);
         if (seal === null || session === null) return options;
-        // Core names an executor by its runtime identity, never by the Sealant workspace id: the
+        // sealant names an executor by its runtime identity, never by the Sealant workspace id: the
         // one recorded for the very launch the seal names, with this workspace (review
         // 2026-09-28 (3) #1). Never whichever runtime the workspace answers for now — a seal
         // never transfers to another physical executor.
@@ -6464,7 +6464,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             executorId: resourceId,
             launchId: seal.executorId,
             sealedAt: seal.sealedAt.toISOString(),
-            // The seal's own stamp (cross-repo decision 17): what Core orders the attestation
+            // The seal's own stamp (cross-repo decision 17): what sealant orders the attestation
             // by. A seal without one (an older daemon) sends none.
             ...(seal.bootId === undefined ||
             seal.bootId === null ||
@@ -6513,7 +6513,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const recorded = yield* sessions.executorResourceOf(sessionId);
         if (recorded !== null && recorded.workspaceId === workspaceId) return;
         // Only the runtime of the launch recorded with this workspace: a runtime another launch
-        // made is another physical executor (Core's `runtime.launchId`).
+        // made is another physical executor (sealant's `runtime.launchId`).
         const launch = yield* sessions.executorLaunchOf(sessionId);
         const resourceId = yield* sealant
           .runtimeResourceId(
@@ -6576,7 +6576,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
           );
         }
-        // Core keeps the executor for recovery: its disk holds work Core cannot confirm saved.
+        // sealant keeps the executor for recovery: its disk holds work sealant cannot confirm saved.
         // Nothing ended; the drain reads `not saved · executor kept for recovery`.
         if (answer.retained !== null) {
           yield* Effect.logWarning(
@@ -6591,7 +6591,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           return { ended: false, retained: answer.retained, saved: null } as const;
         }
-        // The seal Core accepted for this very stop: the executor was saved, as sealed.
+        // The seal sealant accepted for this very stop: the executor was saved, as sealed.
         const attested = sent?.completion;
         const saved =
           answer.completion?.outcome === "accepted" &&
@@ -6895,11 +6895,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
           // Ended on its runtime and kept by the platform (e2e run 5): no daemon answers a final
-          // flush. Core's own stop says what it is — ended, or retained for recovery — and only
+          // flush. sealant's own stop says what it is — ended, or retained for recovery — and only
           // an end it confirms releases the lease and the executor's token; kept, both stay for
           // the recovery boot, and the drain reads `not saved · executor kept for recovery`.
           if (lookup.kind === "kept") {
-            // Core's stop below may confirm an end and release the lease: what the Stop put off
+            // sealant's stop below may confirm an end and release the lease: what the Stop put off
             // runs first, on whatever the drain last read of the executor.
             if (
               !(yield* runDeferred(
@@ -6920,7 +6920,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.ended) {
               yield* endDrain(sessionId);
-              // Core ended it on the seal Mend attested and it accepted: saved (e2e run 6).
+              // sealant ended it on the seal Mend attested and it accepted: saved (e2e run 6).
               if (terminated.saved !== null) {
                 yield* restateSettled(sessionId, {
                   outcome: "stopped",
@@ -6944,7 +6944,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return "kept" as const;
           }
           // A runtime that is not ready yet (a launch still starting, or one whose worker died
-          // after it started — Core adopts it as retained once its launch lease lapses) has no
+          // after it started — sealant adopts it as retained once its launch lease lapses) has no
           // daemon to flush: kept for now, looked at again on the kept drain's backoff, never
           // asked every poll.
           if (capture !== null && lookup.kind === "found" && lookup.status !== "ready") {
@@ -7824,14 +7824,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * A session's executor create whose answer is not on its row (`executor_create_key`): a
        * create whose answer was lost (a timeout, a restart mid-create). The key finds what it
-       * made (Core's `workspaces.findByIdempotencyKey`):
+       * made (sealant's `workspaces.findByIdempotencyKey`):
        * - `adopted`: an executor exists — it goes on the row as the session's under its launch
        *   (the key), and drains unless `drain` is false (the caller drains it itself);
        * - `reserved`: nothing is on record under the key as of the lookup — which is not proof
        *   (review 2026-09-28 (3) #21): the create may still be on its way and commit after it.
        *   The key stays, holding the worktree; a launch of the session asks the same create
        *   again under it, which can only ever make that one executor;
-       * - `cancelled`: Core fenced the key (`fenceWorkspaceCreate`): nothing is made under it
+       * - `cancelled`: sealant fenced the key (`fenceWorkspaceCreate`): nothing is made under it
        *   now or later — the key clears, and the launch's own claim on the worktree is released
        *   when no other executor of the session can hold it;
        * - `unsupported`: the SDK cannot look (0.37.2) — ownership stays unresolved, holding the
@@ -7862,7 +7862,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const session = yield* sessions.byId(sessionId);
           let workspaceFound = found.kind === "found" ? found.workspaceId : null;
           if (workspaceFound === null) {
-            // Nothing on record yet (or a create still open under the key). Only Core's fence
+            // Nothing on record yet (or a create still open under the key). Only sealant's fence
             // makes that final: `cancelCreate` refuses a delayed original create for good.
             const fence =
               found.kind === "cancelled"
@@ -8503,7 +8503,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const throughput = throughputs.get(session.sealantWorkspaceId) ?? null;
             const plan = planExecutorCap({
               executorStartedAt,
-              // `workspace.runtimeDeadline()` once the SDK reports it (Core's next SDK); SDK
+              // `workspace.runtimeDeadline()` once the SDK reports it (sealant's next SDK); SDK
               // 0.37.2 answers null and the configuration or the fallback age plans the drain
               // (PLATFORM-FEEDBACK.md 2026-09-27, "The runtime deadline").
               platformDeadline: deadline?.at ?? null,
@@ -8549,8 +8549,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const state = judged.state;
           if (state === "kept") {
             // Ended on its runtime, kept by the platform for recovery (e2e run 5): not dead, not
-            // picked up. Its lease and its token stay; the stop drain asks Core what it is and
-            // reads `not saved · executor kept for recovery` until Core confirms an end.
+            // picked up. Its lease and its token stay; the stop drain asks sealant what it is and
+            // reads `not saved · executor kept for recovery` until sealant confirms an end.
             yield* Effect.logWarning(
               "session engine: capture mode · lease expired · the platform keeps the executor · nothing released",
             ).pipe(Effect.annotateLogs({ sessionId: session.id, epoch: lease.epoch }));
@@ -9605,7 +9605,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const agentProcess = yield* agentProcessForRun(session.id, sessionRun.sealantRunId);
         const exitCode =
           typeof settled.result.exitCode === "number" ? settled.result.exitCode : null;
-        // Core settles an interactive session's run `completed` whatever its process exited with,
+        // sealant settles an interactive session's run `completed` whatever its process exited with,
         // so the outcome reads the exit code as the PTY watcher does (`endProcess`): a launch that
         // exits non-zero is failed whichever of the two observes its end first (2026-10-05, two
         // joins that failed to start read `failed · exited with code 1` and `completed`). An
@@ -12086,7 +12086,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               asSealantUser(session.ownerUserId),
             );
             if (answers) {
-              // An executor that answers may be one Core restarted on its own disk to save it,
+              // An executor that answers may be one sealant restarted on its own disk to save it,
               // after the host's Docker stopped or killed it under the harness: then the harness
               // did not finish, the host ended it (RC 0.36.0-next.768).
               if (!(yield* executorRetained(session, lookup.workspace))) return null;
@@ -12139,10 +12139,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Whether Core retains this executor: it ended on its runtime without a complete final flush
-       * (a `docker stop` past its timeout, a Docker restart), and Core keeps it, or has restarted
+       * Whether sealant retains this executor: it ended on its runtime without a complete final flush
+       * (a `docker stop` past its timeout, a Docker restart), and sealant keeps it, or has restarted
        * it on its own disk, to save what it holds. One that answers an exec while retained is that
-       * restart: not the boot the harness ran in. False when Core cannot be asked or does not say.
+       * restart: not the boot the harness ran in. False when sealant cannot be asked or does not say.
        */
       const executorRetained = Effect.fn("SessionEngine.executorRetained")(function* (
         session: Session,
@@ -13405,7 +13405,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          */
         readonly restoredFrom?: number | null;
         /**
-         * Makes the create idempotent on the platform (Core's next SDK): `onAsking` runs once,
+         * Makes the create idempotent on the platform (sealant's next SDK): `onAsking` runs once,
          * right before the first create is asked, so the key is on the row before any executor
          * can exist under it.
          */
@@ -13445,7 +13445,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly resources?: "none";
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
-        // The project inherits its organization's environment. What a runtime can run is Core's to
+        // The project inherits its organization's environment. What a runtime can run is sealant's to
         // say: it refuses a create it cannot run, before anything is reserved (sealant#633).
         const settings = yield* settingsRepo.forOrganization(project.organizationId);
         // The Boat account this workspace runs in and is billed to, for its whole life: the
@@ -13552,7 +13552,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // person launch applies none at boot (docs/adr/0016, decision 11): the launcher's go
         // through `dotfiles.apply` as them once prepare has made their user, or, where the
         // platform cannot do that yet, are not applied and the session says so. A shared launch
-        // sends them with the create, which Core's Boat runtime refuses, and `dotfiles.apply`
+        // sends them with the create, which sealant's Boat runtime refuses, and `dotfiles.apply`
         // never writes root's home: a shared Boat launch starts without them and says so.
         const personLaunch = launchLayout.layout === "person";
         const {
@@ -13643,7 +13643,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // store, the socket dir, the harness home, references, declared folders or linked
         // projects; it materialises the worktree's head capture and ships captures back. The
         // session token is the capture credential (one token, two names) and rides the create
-        // request on the source, sealed by Core into the boot env file.
+        // request on the source, sealed by sealant into the boot env file.
         const captureSource = yield* captureSourceFor(sessionId, channel.secretEnv);
         // The first three mounts are the store, the socket dir and the harness home — never
         // user-facing; anything past them is a reference, a declared folder or a linked project.
@@ -13685,9 +13685,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : undefined;
         // Remote-SSH is the launcher's (decision 10): the person whose launch started this
         // workspace, this create's (after it stops, whoever launches the next one; not the
-        // worktree's first session's owner). The create is made as their Sealant user, so Core's
+        // worktree's first session's owner). The create is made as their Sealant user, so sealant's
         // gateway admits them and nobody else, and runs the session as their own user, the uid of
-        // their `credentialsHome` (Mend names none), which prepare makes. Core checks it against
+        // their `credentialsHome` (Mend names none), which prepare makes. sealant checks it against
         // the person their Sealant user is bound to (bound here, once); without that binding the
         // create asks nothing and Remote-SSH stays root, said on the line. A fallback to one shared
         // home sets it back to root (`settlePrepare`).
@@ -13795,7 +13795,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
         ): Effect.Effect<Workspace, SealantPlatformError> => {
           const [credentials, ...remaining] = attempts;
-          /** The ladder's next attempt after Core refused this one, or the refusal. */
+          /** The ladder's next attempt after sealant refused this one, or the refusal. */
           const afterRefusal = (error: SealantPlatformError) => {
             const without =
               credentialsHome === undefined ? null : withoutLaunchRefusedLogin(error, attempts);
@@ -13826,7 +13826,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // A missing harness account must not discard a valid GitHub account (and vice versa).
         // Try the complete identity first, then each useful subset before interactive auth. A
         // person launch never steps below its harness's own login (docs/adr/0016, decision 5):
-        // Core refusing that account refuses the launch, in a join's words, before anything runs.
+        // sealant refusing that account refuses the launch, in a join's words, before anything runs.
         const workspace = yield* createWithCredentialFallback(
           credentialsHome === undefined
             ? shape.credentialAttempts
@@ -14470,7 +14470,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const headBefore = yield* restoredCaptureOf(session.worktreeId);
         // sealantd reads the owner map only at boot (sealant#333) and its replan restores under
         // that map (`materialize_delta`), so the claim names the map it expects: none for a
-        // shared standby, its owner's for a person one. Core refuses any other
+        // shared standby, its owner's for a person one. sealant refuses any other
         // (`owner-map-mismatch`) before its daemon is reached, and the launch goes cold.
         const outcome = yield* sealant
           .captureReplan(workspace, { expectedOwnerMap })
@@ -16450,10 +16450,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * A person's dotfiles apply that Core runs in an executor, by workspace and person (review of
-       * mend#569, P2-1 and P3-1). Core's run goes on whatever Mend waits for, so the apply is kept
+       * A person's dotfiles apply that sealant runs in an executor, by workspace and person (review of
+       * mend#569, P2-1 and P3-1). sealant's run goes on whatever Mend waits for, so the apply is kept
        * here until a start has seen it through: a start that comes while it runs joins it rather
-       * than ask Core again, and one that lands after every start stopped waiting is seen through
+       * than ask sealant again, and one that lands after every start stopped waiting is seen through
        * then (`seeDotfilesThrough`).
        */
       interface DotfilesInFlight {
@@ -16532,7 +16532,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         } else {
           const failure = Cause.findErrorOption(exit.cause);
-          // Core's refusal as the session line says it (decision 13), by its stable code.
+          // sealant's refusal as the session line says it (decision 13), by its stable code.
           reason = Option.isSome(failure)
             ? dotfilesRefusalWords(failure.value)
             : "the dotfiles apply was interrupted";
@@ -16617,7 +16617,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * A person's dotfiles at their first process in an executor (docs/adr/0016, decision 11):
        * applied as them into their home through the platform's `dotfiles.apply`, and Mend's links
-       * put back over whatever they placed there. The start waits for it, bounded; Core's run goes
+       * put back over whatever they placed there. The start waits for it, bounded; sealant's run goes
        * on past that bound, and is seen through when it lands (`watchDotfilesLanding`), never
        * asked for twice. Recorded on the session as every launch records its dotfiles. Where the
        * platform cannot apply them as the person, none is applied and the record says why. Never
@@ -16639,7 +16639,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const key = personKeyOf(workspace.id, as.person.accountId);
         const known = dotfilesInFlight.get(key);
-        // An apply of theirs Core still runs here (a start that went on without it, or one that
+        // An apply of theirs sealant still runs here (a start that went on without it, or one that
         // was refused): joined, never asked for again, nor its sources resolved again.
         const dotfiles =
           known !== undefined
@@ -16698,7 +16698,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : null);
         if (entry !== null && known === undefined) boundedSet(dotfilesInFlight, key, entry);
         if (entry !== null) {
-          // The start waits, bounded; Core's run does not stop with it.
+          // The start waits, bounded; sealant's run does not stop with it.
           const landed = yield* Fiber.await(entry.fiber).pipe(
             Effect.timeoutOption(
               harnessLayoutConfig.dotfilesApplyBound ?? Duration.millis(DOTFILES_APPLY_BOUND_MS),
@@ -16843,7 +16843,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         {
           readonly user: ProcessUser;
           readonly env: Readonly<Record<string, string>>;
-          /** The line's words for an optional login Core left out of the person's put. */
+          /** The line's words for an optional login sealant left out of the person's put. */
           readonly loginsLeftOut: ReadonlyArray<string>;
           /** What each login in the person's home spends (`processAs`). */
           readonly logins: PlacedLogins;
@@ -16892,7 +16892,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             concurrency: 2,
           }).pipe(
             // A start that failed, whenever it failed (a delivery may fail while the person's login
-            // write is still in flight, and Core finishes a write its caller abandoned): the idle
+            // write is still in flight, and sealant finishes a write its caller abandoned): the idle
             // check releases the logins and Mend token of anyone with nothing live here, after
             // their start's grace (review of mend#566, P3-3 and round 2 P3-1). The launcher's
             // create-time home is never released.
@@ -19989,7 +19989,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   // made none under THIS attempt; anything else may have made one Mend has not
                   // seen. A key asked again after an earlier attempt that never answered stays
                   // reserved whatever this attempt heard (review 2026-09-28 (5) #13): a
-                  // refusal — a validation Core runs before its idempotent replay, an access
+                  // refusal — a validation sealant runs before its idempotent replay, an access
                   // check — disproves nothing of that earlier request, which may still commit.
                   // Only an executor found under the key or the platform's fence releases it.
                   error._tag === "SealantPlatformError" &&
@@ -20997,7 +20997,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* noteLaunchWords(sessionId, personal.words).pipe(Effect.ignore);
         }
         yield* watchBootstrap(sessionId, bootstrapWaited);
-        // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
+        // An optional login sealant left out (pi's or opencode's ChatGPT), said once it started.
         for (const words of startAs?.loginsLeftOut ?? []) {
           yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
         }
@@ -21083,7 +21083,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      /** Every live person executor's homes against Core's `GET`, once, at startup. */
+      /** Every live person executor's homes against sealant's `GET`, once, at startup. */
       const reconcileLoginsAtStartup = (): Effect.Effect<void> =>
         Effect.gen(function* () {
           const workspaceIds = new Set(
@@ -22094,7 +22094,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      /** A person's own login, as Core said it stood within the last minute: active only. */
+      /** A person's own login, as sealant said it stood within the last minute: active only. */
       const activeLogins = new Map<string, number>();
       const ACTIVE_LOGIN_TTL_MS = 60_000;
 
@@ -22671,7 +22671,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /**
        * While a cold create gets ready: `booting` at once, and `building the workspace image …`
-       * once the platform has reported no executor for `imageBuildAfter` (Core launches the runtime
+       * once the platform has reported no executor for `imageBuildAfter` (sealant launches the runtime
        * only after it has built or found the image); `booting` again once an executor exists.
        * Best-effort: a look that fails says nothing new, and the create never waits on it.
        */
@@ -22683,7 +22683,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* sayLaunchPhase(sessionId, LAUNCH_BOOTING);
             while (true) {
               yield* Effect.sleep(drainPolicy.createPhaseInterval);
-              // Core's own launch phase (sealant#342): queued, building the image (step N/M), or
+              // sealant's own launch phase (sealant#342): queued, building the image (step N/M), or
               // booting. One read; a platform that reports none answers null, and the executor
               // read below says what was observed instead.
               const phase = yield* Effect.tryPromise(() => workspace.phase()).pipe(
@@ -22765,7 +22765,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Remote-SSH is down while a fallback's SSH reset has not reached Core: said on the session
+       * Remote-SSH is down while a fallback's SSH reset has not reached sealant: said on the session
        * line (kept there across retries) and taken off once it has (docs/adr/0016, decision 10).
        */
       const remoteSshResetLine =
@@ -23552,7 +23552,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* noteLaunchWords(sessionId, personal.words).pipe(Effect.ignore);
           }
           yield* watchBootstrap(sessionId, bootstrapWaited);
-          // An optional login Core left out (pi's or opencode's ChatGPT), said once it started.
+          // An optional login sealant left out (pi's or opencode's ChatGPT), said once it started.
           for (const words of personStart?.loginsLeftOut ?? []) {
             yield* noteLaunchWords(sessionId, words).pipe(Effect.ignore);
           }
@@ -25657,7 +25657,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * false and is logged: the caller never records such a process as stopped (mend#558 review,
        * P1-1), and the next stop tries again. Meanwhile the process holds the workspace (in use,
        * a capture hold, project removal waits), as a running one should. It cannot stick for
-       * good: Core settles a close on a stopped runtime, or of a session its daemon no longer has,
+       * good: sealant settles a close on a stopped runtime, or of a session its daemon no longer has,
        * as done; only a runtime that is ready with a daemon it cannot reach keeps refusing.
        */
       const closeProcessPty = (
@@ -29592,7 +29592,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ));
         // Capture mode: an unclaimed standby holds no worktree, and its capture route refuses
         // every upload (`standbyApiFor`), so nothing it could ship is a person's work. An ordinary
-        // stop asks Core to save its final flush first, which never happens: Core keeps the
+        // stop asks sealant to save its final flush first, which never happens: sealant keeps the
         // executor, paid for, until its owner discards it (SLNT-803). So it is discarded, once
         // its row is out of the pool in the same statement that checks no claim took it. A
         // claimed entry, or one a session adopted, is a session's and is stopped as one is.
@@ -29610,7 +29610,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.result,
             asSealantUser(entry.ownerUserId),
           );
-          // Capture mode: Core's stop answer is honoured as every other stop's is (e2e run 6).
+          // Capture mode: sealant's stop answer is honoured as every other stop's is (e2e run 6).
           // Kept, still draining, or an end not observed: the standby may still be running its
           // final flush, so its token, its socket and its pool row stay — revoked, its flush
           // fails `401` for good — and the row reads failed, so nothing claims it and the next
@@ -29866,7 +29866,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       interface LeavingBoatAccount {
         readonly drained: Set<string>;
       }
-      /** By Core Boat account id; an account belongs to one organization, whose lock holds it. */
+      /** By sealant Boat account id; an account belongs to one organization, whose lock holds it. */
       const leavingBoatAccounts = new Map<string, LeavingBoatAccount>();
 
       /** One reconcile pass; callers serialize through `requestHotReconcile`. */
@@ -29982,7 +29982,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           // warming = a crashed provision (this pass is the only live one), failed = retry by
           // rebuild, stale fingerprint, an owner the pool no longer serves, or over-target = drain.
-          // One whose end Core has not confirmed may still be a running, paid VM: it counts
+          // One whose end sealant has not confirmed may still be a running, paid VM: it counts
           // toward its owner's target, so none warms beside it (SLNT-803).
           if (!(yield* drainHotWorkspace(entry))) {
             unconfirmed.set(entry.ownerUserId, (unconfirmed.get(entry.ownerUserId) ?? 0) + 1);
@@ -30152,7 +30152,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               discard: true,
             }).pipe(Effect.timeoutOption(within));
             // Read from the pool itself, not from passes: one still waiting behind an earlier
-            // pass has drained nothing yet, and Core counts its VM all the same.
+            // pass has drained nothing yet, and sealant counts its VM all the same.
             return {
               drained: leaving.drained.size,
               stopping: yield* standbysIn(organizationId, boatAccountId, found),
@@ -31180,7 +31180,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ),
         scope,
       );
-      // Per-person harness homes (docs/adr/0016, decision 5): at startup, what Core keeps in the
+      // Per-person harness homes (docs/adr/0016, decision 5): at startup, what sealant keeps in the
       // homes of each live person executor is what Mend knows it holds, and a home whose person
       // has nothing live there is released. With the flag off and nothing recorded, nothing runs.
       if (capture !== null && layoutSteps.personPossible()) {

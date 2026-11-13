@@ -16,7 +16,7 @@ import type { createTenancyApi } from "./tenancy-api.ts";
 
 type Implement = NonNullable<NonNullable<Parameters<typeof createTenancyApi>[1]>["implement"]>;
 
-/** What Core is asked, with the key unwrapped only here, to prove it went to Core and nowhere else. */
+/** What sealant is asked, with the key unwrapped only here, to prove it went to sealant and nowhere else. */
 export interface CoreCall {
   readonly call: "create" | "list" | "rotate" | "remove" | "check";
   readonly label?: string;
@@ -43,14 +43,14 @@ export const refusal = (
     missingPermissions: counts.missingPermissions ?? null,
     boat: counts.boat ?? null,
     report: counts.report ?? null,
-    message: `Core says ${reason}`,
+    message: `sealant says ${reason}`,
   });
 
 const ownerKey = (owner: BoatKeyOwner) =>
   owner.kind === "organization" ? owner.organizationId : `${owner.organizationId}/${owner.userId}`;
 
 /**
- * Boat keys in memory and Core's Boat accounts faked at `@mend/sealant`'s boundary (SLNT-790):
+ * Boat keys in memory and sealant's Boat accounts faked at `@mend/sealant`'s boundary (SLNT-790):
  * what a tenancy API needs to follow a Boat key request past authorization.
  */
 export const makeBoatWorld = () => {
@@ -60,20 +60,20 @@ export const makeBoatWorld = () => {
   const audited: Array<{ action: string; subjectId: string; data: AuditData; actor: string }> = [];
   const reconciled: Array<ProjectId> = [];
   /**
-   * The standbys Mend keeps in each Core Boat account (SLNT-803), what a key change drains, and
+   * The standbys Mend keeps in each sealant Boat account (SLNT-803), what a key change drains, and
    * how many of them a drain still reports stopping.
    */
   const standbys = new Map<string, number>();
   const stopping = { count: 0 };
-  /** What a removal did, in order: `drain <account>`, Core's `remove <account>`, `rewarm`. */
+  /** What a removal did, in order: `drain <account>`, sealant's `remove <account>`, `rewarm`. */
   const steps: Array<string> = [];
-  /** The refusals Core answers the next calls with, in order. */
+  /** The refusals sealant answers the next calls with, in order. */
   const refusals: Array<BoatAccountRefusal | SealantPlatformError> = [];
-  /** Core's answer to a removal while this is set, every time. */
+  /** sealant's answer to a removal while this is set, every time. */
   const holds: { refusal: BoatAccountRefusal | null } = { refusal: null };
-  /** Holds Core's next removal until settled, for two at once. */
+  /** Holds sealant's next removal until settled, for two at once. */
   const gate: { next: Deferred.Deferred<void> | null } = { next: null };
-  /** Core does the next removal, then its answer never reaches Mend. */
+  /** sealant does the next removal, then its answer never reaches Mend. */
   const lose = { next: false };
   const changes = Semaphore.makeUnsafe(1);
   /** What Core's check of a key observes, the next time it checks one (create, rotate, check). */

@@ -157,7 +157,7 @@ The initial investigation list is:
 | Store runner-cache landing                                           | Run 38440817203 took 6.209 s against the default 5 s                             | Two cold cache generations, five landing commits, two pushes and bundle verification exercise real Git. Retain every phase and assertion; give this one adapter test a 15 s budget. No runtime improvement claimed.                                                        |
 | Database upgrade to 0108, pin retained versions                      | Run 38440817203 exceeded 5 s at 5.106 s; Blacksmith baseline was 0.898 s         | Creates a real database and replays the migration history before and after seeding an old version. Retain the DDL and exact pinned-row assertion with a local 15 s budget.                                                                                                 |
 | Gateway shell late pointer                                           | Run 38440817203 saw a completed initial snapshot where the test expected running | The fixture assumes the first read has started after 300 ms and holds its response for 800 ms. Replace elapsed-time assumptions with request capture and release, preserving running snapshot followed by completed update.                                                |
-| Core strace integration                                              | Runner thread reports a CPU/process-budget failure resolved in Core #366         | Explicit 30 s per-test budget, reported by the runner thread. Preserve its separate repository evidence.                                                                                                                                                                   |
+| sealant strace integration                                           | Runner thread reports a CPU/process-budget failure resolved in sealant #366      | Explicit 30 s per-test budget, reported by the runner thread. Preserve its separate repository evidence.                                                                                                                                                                   |
 
 ## Step 1: remove serial dependencies and select extra jobs
 
@@ -825,19 +825,19 @@ effect-clock.
 `aws-tofu.test.mjs` (39.8 seconds) is unchanged: its time is the provider download that a runner
 image cache removes.
 
-## Step 6: Core and sealantd
+## Step 6: sealant and sealantd
 
-Step 6 applies the same work to Core (`sealant-sh/sealant`) and sealantd. Both run on the box
+Step 6 applies the same work to sealant (`sealant-sh/sealant`) and sealantd. Both run on the box
 runners beside Mend, so a minute saved there is a runner freed for Mend.
 
-| Change                                                                                 | Outcome                                    |
-| -------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Core: cancel a pull request's previous run; no `cache: pnpm` on box jobs               | Core #367, merged                          |
-| sealantd: cargo-nextest instead of `cargo test`                                        | sealantd #163, merged                      |
-| sealantd: tests that fail when starved of CPU                                          | Filed as sealantd #167; next: paused clock |
-| sealantd: a persistent `CARGO_TARGET_DIR` on the box runners instead of rust-cache     | Rejected, see below                        |
-| Core: the Kubernetes e2e runs the sealantd image Core pins, not one built from `main`  | Core #368                                  |
-| sealantd: documentation-only pull requests skip the Rust and Node jobs (sealantd #158) | sealantd #168                              |
+| Change                                                                                      | Outcome                                    |
+| ------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| sealant: cancel a pull request's previous run; no `cache: pnpm` on box jobs                 | sealant #367, merged                       |
+| sealantd: cargo-nextest instead of `cargo test`                                             | sealantd #163, merged                      |
+| sealantd: tests that fail when starved of CPU                                               | Filed as sealantd #167; next: paused clock |
+| sealantd: a persistent `CARGO_TARGET_DIR` on the box runners instead of rust-cache          | Rejected, see below                        |
+| sealant: the Kubernetes e2e runs the sealantd image sealant pins, not one built from `main` | sealant #368                               |
+| sealantd: documentation-only pull requests skip the Rust and Node jobs (sealantd #158)      | sealantd #168                              |
 
 ### Rejected: a persistent Cargo target directory
 

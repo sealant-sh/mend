@@ -115,8 +115,8 @@ describe("resolveWorkspaceEnvironment", () => {
     });
   });
 
-  it("saves the code defaults on Arch once each id answers from Core's catalog (sealant#364)", async () => {
-    // Core's own test pins this list (package-standardization.test.ts, `MEND_DEFAULTS`) and
+  it("saves the code defaults on Arch once each id answers from sealant's catalog (sealant#364)", async () => {
+    // sealant's own test pins this list (package-standardization.test.ts, `MEND_DEFAULTS`) and
     // resolves each id on Arch from its catalog. Change one, change the other.
     expect(defaultWorkspaceImage.packages).toEqual([
       "pnpm",

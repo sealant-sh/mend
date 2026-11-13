@@ -1,9 +1,9 @@
 # Turborepo
 
-Mend and Sealant Core both run their tasks through Turborepo, pinned exactly to `turbo` **2.11.9**
-in each root `package.json`. This page covers how turbo is meant to be used, the rules both
+Mend and sealant both run their tasks through Turborepo, pinned exactly to `turbo` **2.11.9** in
+each root `package.json`. This page covers how turbo is meant to be used, the rules both
 repositories follow, and the crash that drove the pin. Cache inputs and CI selection for Mend are in
-[ci-cache-audit.md](ci-cache-audit.md). The Core section at the end covers what differs there.
+[ci-cache-audit.md](ci-cache-audit.md). The sealant section at the end covers what differs there.
 
 Citations point into a reference clone of `vercel/turborepo` at tag `v2.11.9`
 (`~/Developer/refs/turborepo`): `docs/…` means `apps/docs/content/docs/…`.
@@ -28,7 +28,7 @@ after a test task failed. Successful runs never crashed: 16 forced typecheck and
   - one task fails while others are still running (the default `--continue=never`);
   - Ctrl-C;
   - an agent or CI timeout signalling the process group.
-- **Why Core never crashed.** 2.9.x did not have the scan, and Core was locked to 2.9.18.
+- **Why sealant never crashed.** 2.9.x did not have the scan, and sealant was locked to 2.9.18.
 - **What it looked like.** `Segmentation fault (core dumped)` or `Bus error` (exit 139 or 135) in
   place of turbo's failure summary. Dev servers were left orphaned holding their ports, so the next
   `pnpm dev` failed with `EADDRINUSE`.
@@ -129,10 +129,10 @@ Other fixes in the 2.10.4 to 2.11.9 range that matter here (`gh release view`,
 7. A failing task stops the run (`--continue=never`). Use `--continue` to see every failure. It is
    no longer a crash trigger on 2.11.9.
 
-## Sealant Core
+## sealant
 
-Core uses the same pin and rules. Its `turbo.json` is smaller: no `globalEnv`, no remote cache, and
-CI runs `pnpm lint`, `pnpm typecheck` and `pnpm exec turbo test --force`. The 2.11.9 PR there
+sealant uses the same pin and rules. Its `turbo.json` is smaller: no `globalEnv`, no remote cache,
+and CI runs `pnpm lint`, `pnpm typecheck` and `pnpm exec turbo test --force`. The 2.11.9 PR there
 (sealant-sh/sealant, branch `chore/turbo-latest`) changed four things:
 
 - `build` hashes `$TURBO_ROOT$/tooling/scripts/bundle-app.mjs`. Before, editing the bundler replayed

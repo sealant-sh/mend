@@ -44,12 +44,12 @@ but session launches cannot. For host-side source development, the Sealant worke
 to mount the store paths that this API uses; the production bundle's Docker-volume layout does not
 configure an unrelated development control plane.
 
-Mend-run Executor requires Mend's API in a container that Core can attach to its private caller
+Mend-run Executor requires Mend's API in a container that sealant can attach to its private caller
 network. The host-side development server refuses that choice. For a source-built container, use
 `deploy/dev/executor.compose.yaml` over the packaged Compose file on a dedicated Docker context. Its
 comment gives the command. First run `mend server setup` with a fresh `XDG_CONFIG_HOME` on that
 context to create the development installation's private environment and owned volumes. Use that
-generation's `.env` for the override. Core's API and worker receive the caller mapping for
+generation's `.env` for the override. sealant's API and worker receive the caller mapping for
 `mend-dev-caller`, including callback port 4401; the callback port is never published to the host.
 
 With dev running, check the auth proxy without creating accounts or sessions:

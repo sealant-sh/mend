@@ -182,7 +182,7 @@ describe("rollback authoritative Git files", () => {
                   env: { PATH: process.env["PATH"], HOME: f.root, GIT_CONFIG_GLOBAL: "/dev/null" },
                   maxBuffer: 16 * 1024 * 1024,
                 });
-                // Core next.794 also redacts token-shaped matches inside opaque base64 packs.
+                // sealant next.794 also redacts token-shaped matches inside opaque base64 packs.
                 return {
                   ...result,
                   stdout:
@@ -214,7 +214,7 @@ describe("rollback authoritative Git files", () => {
         expect((yield* Effect.promise(() => f.git("show", `${savedSha}:tracked`))).stdout).toBe(
           "work before Undo\n",
         );
-        // A later byte-exact Core read can finish this same operation from its retained save.
+        // A later byte-exact sealant read can finish this same operation from its retained save.
         redactPack = false;
         const recovery = yield* saveRollbackRecovery(authority);
         expect(recovery.operationId).toBe("operation");

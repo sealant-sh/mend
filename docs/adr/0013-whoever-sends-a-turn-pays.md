@@ -3,7 +3,7 @@
 Status: proposed 2026-10-03. Amends [ADR 0008](0008-one-refresher-for-provider-logins.md) ("Whose
 login pays") and [ADR 0003](0003-organizations-and-tenancy.md) ("Sessions and shared control"):
 under shared control a steerer's turn no longer spends the owner's login. Read against Mend at
-`6abd2ab9` and Sealant Core `origin/main` at `6d624c1` (SDK 0.38.1).
+`6abd2ab9` and sealant `origin/main` at `6d624c1` (SDK 0.38.1).
 
 Amended 2026-10-05 and 2026-10-06 by [ADR 0016](0016-per-person-harness-homes.md): ships in 0.36, no
 longer held until the SDK. The mechanism changes: each person has their own Linux user, and a turn
@@ -36,9 +36,9 @@ a usage limit is reached. That is the same switch with the same person on both s
   `packages/sessions/src/protocol-host.ts` claims the next queued turn and calls `adapter.sendTurn`,
   one turn at a time per process, under a permit. A turn sent while the harness is busy is requeued,
   not merged into the running one.
-- **Core can write a login into a running workspace.** Its refresh workers push each refreshed copy
-  over the executor's control connection (`writeCredentialFiles`, ADR 0008 "Push, do not wait") to
-  every running instance launched with that account. Nothing can choose a different account for a
+- **sealant can write a login into a running workspace.** Its refresh workers push each refreshed
+  copy over the executor's control connection (`writeCredentialFiles`, ADR 0008 "Push, do not wait")
+  to every running instance launched with that account. Nothing can choose a different account for a
   live workspace: credentials are fixed at create, and `restartWorkspace` rebuilds them from the
   recorded spec.
 - **The harnesses read the file differently** (ADR 0008's table, tested 2026-10-01). Claude Code
@@ -68,14 +68,15 @@ someone else's turn.
 ### The switch sits in dispatch
 
 Before `dispatchNext` sends a turn, it compares the turn's sender with the login the workspace
-holds. If they differ, Mend asks Core to write the sender's login into the workspace, then sends the
-turn. If they match, nothing extra happens.
+holds. If they differ, Mend asks sealant to write the sender's login into the workspace, then sends
+the turn. If they match, nothing extra happens.
 
 - **The owner's own turns cost nothing.** A session with shared control off, or one steered only by
   its owner, never makes the call.
 - **Launch and saving are untouched.** The workspace still starts with the owner's login. The switch
   writes only credential files, and captures exclude them.
-- **Mend still never holds a secret.** Mend names a person and an account; Core decrypts and writes.
+- **Mend still never holds a secret.** Mend names a person and an account; sealant decrypts and
+  writes.
 - **The host remembers what the workspace holds.** Each hosted process starts with the owner's login
   (the one the workspace launched with) and updates it after each switch. A new process, after a
   restart or a relaunch, starts again from the owner's.
@@ -126,7 +127,7 @@ without a restart. So in a terminal session only the owner types, even while con
   it with the existing mode switch (`SessionEngine.switchMode`), which starts the conversation in
   the same workspace, and from then on every turn is paid by its sender.
 
-### Core: one endpoint
+### sealant: one endpoint
 
 ```
 POST /v1/workspaces/:id/credentials   { onBehalfOf, claude?: name | true, codex?: name | true }
@@ -141,17 +142,17 @@ without a refresh token over the control connection, and:
 - **leaves the recorded spec alone**, so a restart lands on the owner's login, the safe default, and
   Mend switches again at the next dispatch;
 - **authorises the write as the steerer's own work**: Mend's instance acts for both people, the
-  account belongs to `onBehalfOf`, and the login is selected only for that person's turn. Core's
+  account belongs to `onBehalfOf`, and the login is selected only for that person's turn. sealant's
   rule "a login is selected only for that owner's work" stands.
 
-Core also injects a Claude setup token as a credentials file instead of `CLAUDE_CODE_OAUTH_TOKEN`,
-so every Claude login in a workspace can be switched. Mend's seed already writes that file
-(`packages/sessions/src/harness-seeds.ts`).
+sealant also injects a Claude setup token as a credentials file instead of
+`CLAUDE_CODE_OAUTH_TOKEN`, so every Claude login in a workspace can be switched. Mend's seed already
+writes that file (`packages/sessions/src/harness-seeds.ts`).
 
 ### Every turn records its payer
 
 Each turn records `billed_user_id`, `billed_account_id` and `billed_account_name`: the person and
-the connected account it ran on, as Core reported them, with the account's name as it was then.
+the connected account it ran on, as sealant reported them, with the account's name as it was then.
 Until the switch ships, that is the owner's login for every turn, which the conversation then says
 truthfully. Where a turn's payer differs from its sender, the conversation shows it: "Turn by Maria
 · billed to Yiannis's `default` · observed". After the switch it reads "Turn by Maria · billed to
@@ -161,7 +162,7 @@ Maria's `work` · observed".
 
 - A steerer's prompts no longer spend the owner's subscription. "Runs as \<owner\>" (ADR 0003)
   becomes "each turn runs on its sender's login".
-- A session where only the owner speaks is exactly as fast as today. A switch adds one Core call
+- A session where only the owner speaks is exactly as fast as today. A switch adds one sealant call
   before the turn, and for Codex a process restart; a steerer's turn adds a second call when it
   ends.
 - Terminal sessions lose shared typing. Steering them now means continuing them as a conversation.
@@ -179,10 +180,10 @@ Mend, one stack:
    why.
 3. Every turn records its payer, and the conversation shows it.
 4. After the SDK ships the endpoint: the switch in `dispatchNext`, the switch back, the Codex
-   restart, the refusal at submit, and the payer filled from Core's answer. Amended 2026-10-06: in
-   0.36, as a process per sender (ADR 0016 decision 6, Delivery 17 and 18).
+   restart, the refusal at submit, and the payer filled from sealant's answer. Amended 2026-10-06:
+   in 0.36, as a process per sender (ADR 0016 decision 6, Delivery 17 and 18).
 
-Core (`sealant-sh/sealant`), its own stack:
+sealant (`sealant-sh/sealant`), its own stack:
 
 1. `POST /v1/workspaces/:id/credentials` and the SDK method.
 2. Claude setup tokens injected as a file.
@@ -191,7 +192,7 @@ Core (`sealant-sh/sealant`), its own stack:
 
 - **A proxy holding everyone's logins (rejected).** A local proxy (CLIProxyAPI, TeamClaude) pools
   logins and rotates them per request. It would be a second credential store and a second refresher,
-  against ADR 0008, and pooling is what the providers' terms and Core's design forbid.
+  against ADR 0008, and pooling is what the providers' terms and sealant's design forbid.
 - **Switch on Enter in terminal sessions (rejected for now).** Claude would take the new file
   mid-session, but the sender of a keystroke stream is a guess, and Codex cannot switch without a
   restart. Owner decision, 2026-10-03.

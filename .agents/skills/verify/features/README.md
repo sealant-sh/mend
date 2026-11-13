@@ -13,7 +13,7 @@ pass's results and evidence paths, and its corrections are in these files.
 ## Baseline preconditions
 
 - The stack under test comes from the `verify` skill's Launch section
-  ([`../SKILL.md`](../SKILL.md)): the full stack from source (sealantd, Core and Mend), inside a
+  ([`../SKILL.md`](../SKILL.md)): the full stack from source (sealantd, sealant and Mend), inside a
   Mend session, its web tunnelled to this machine. The skill's Drive section maps this file's
   placeholders to that stack and names its drivers for the web, the CLI, the terminal dashboard, the
   desktop app and the mobile web build.

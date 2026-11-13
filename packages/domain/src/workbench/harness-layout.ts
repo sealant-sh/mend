@@ -25,7 +25,7 @@ export const DEFAULT_HARNESS_LAYOUT: HarnessLayout = "person";
  *
  * - `worktree`: the worktree's sticky record (`worktrees.harness_layout`); once `person`, always.
  * - `operator`: the operator-only `harnessLayout` on a start that made the worktree (the benchmark).
- * - `capability`: what Mend or Core knows of the image, when it rules `person` out.
+ * - `capability`: what Mend or sealant knows of the image, when it rules `person` out.
  * - `flag`: `MEND_HARNESS_LAYOUT`, for a worktree with no layout yet.
  * - `fallback`: a launch predicted `person` whose prepare found otherwise, on a fresh worktree.
  */

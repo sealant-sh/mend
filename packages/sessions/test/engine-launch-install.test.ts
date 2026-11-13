@@ -697,7 +697,7 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
     "a launch whose run settles completed but exited non-zero settles failed, as its PTY end reads",
     () =>
       Effect.gen(function* () {
-        // Core settles an interactive session's run `completed` whatever its process exited with.
+        // sealant settles an interactive session's run `completed` whatever its process exited with.
         // 2026-10-05: two joins whose `claude` could not start read `failed · exited with code 1`
         // and `completed`, depending on whether the PTY watcher or the run's supervision saw the
         // end first.

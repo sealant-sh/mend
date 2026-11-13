@@ -285,7 +285,7 @@ yourself with the variable in an override file, as
 shows.
 
 A stopped session's VM is deleted, never just paused. The stop saves the session's work first, then
-asks Boat to delete the VM. Core waits up to 20 seconds for Boat to confirm the deletion, then
+asks Boat to delete the VM. sealant waits up to 20 seconds for Boat to confirm the deletion, then
 checks a deletion still pending every 30 seconds. Work that cannot be saved keeps the VM: the
 session reads `not saved · 3 pending · workspace kept`, and the VM stays up, with no time limit,
 until the work is saved or its owner discards it. A build VM left behind when the server restarts

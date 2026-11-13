@@ -28,7 +28,7 @@ const custom: WorkspaceImage = {
 };
 
 describe("what the organization's runtime supports", () => {
-  it("reads the runtime its new sessions run on, Core's default where Sealant picks", () => {
+  it("reads the runtime its new sessions run on, sealant's default where Sealant picks", () => {
     expect(runtimeSupportFor(DOCKER_AND_BOAT, "boat")).toEqual({
       state: "observed",
       observedAt: OBSERVED_AT,
@@ -40,7 +40,7 @@ describe("what the organization's runtime supports", () => {
     });
   });
 
-  it("says a runtime Core did not list is not launched, and an unread report is unread", () => {
+  it("says a runtime sealant did not list is not launched, and an unread report is unread", () => {
     expect(runtimeSupportFor(observedRuntimes(DOCKER_SUPPORT), "boat")).toEqual({
       state: "not-launched",
       observedAt: OBSERVED_AT,
@@ -50,8 +50,8 @@ describe("what the organization's runtime supports", () => {
   });
 });
 
-describe("environment refusals come from Core's report", () => {
-  it("refuses what the report marks unsupported, in Core's words", () => {
+describe("environment refusals come from sealant's report", () => {
+  it("refuses what the report marks unsupported, in sealant's words", () => {
     expect(environmentRefusal(BOAT_SUPPORT, arch)).toBe(
       "Boat supports Ubuntu and Nix; Arch is unsupported.",
     );

@@ -217,7 +217,7 @@ export const resourceBindings = (rows: ResourceBindingRows): ReadonlyArray<Resou
     return [];
   });
 
-/** The server level Core should attach for each selected alias. Own Postgres uses the project server. */
+/** The server level sealant should attach for each selected alias. Own Postgres uses the project server. */
 export const reachAliases = (
   bindings: ReadonlyArray<ResourceBinding>,
 ): Record<string, "project" | "worktree"> =>

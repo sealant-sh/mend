@@ -1,11 +1,11 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
 # Sealant stays a published platform dependency. These stages copy the released 0.40.0-next.872 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.40.0-next.872 runs its job queue
+# this build never imports sealant source or its database schema. Sealant 0.40.0-next.872 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
 #
 # The defaults are the release pins. Only a preview build (.github/workflows/preview.yml) passes
-# other Core images, built from a Sealant branch; a release build passes none of these.
+# other sealant images, built from a Sealant branch; a release build passes none of these.
 ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api-next@sha256:655b2c8515753f8bc3399319c53114e04b12652917ed48a76aff2899062eecc4
 ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker-next@sha256:d82271f209c857921c1e790e61a917b1bf43fb4d525b4703dd47d8c9f1bd11c3
 ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway-next@sha256:5bad52a1d4fd95be6c545d888b193bb519a1e12a94fc3f500904391c2f269c41
@@ -40,10 +40,10 @@ ARG MEND_PREVIEW_SEALANTD_IMAGE=""
 # address (Sealant's SEALANT_DOCKER_NETWORK_GUARD_IMAGE). Named once: the worker's ENV below and the
 # dev.sealant.mend.network-guard-image label, which `mend server setup` preloads, both read it.
 ARG MEND_NETWORK_GUARD_IMAGE=busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e
-# Core's Boat resource gateway, by digest: the bundled worker runs it on the Docker host for Boat
+# sealant's Boat resource gateway, by digest: the bundled worker runs it on the Docker host for Boat
 # sessions linked to project resources (@db). Named once: the ENV scripts/bundle-supervisor.mjs
 # hands the worker, and the dev.sealant.mend.boat-gateway-image label `mend server setup` preloads.
-# scripts/sealant-pins.mjs moves it with the other Core images.
+# scripts/sealant-pins.mjs moves it with the other sealant images.
 ARG MEND_BOAT_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-boat-gateway-next@sha256:0e3adafebf2318cad8726a5fd015e6a68d94b4161ed661a029f01b1809c2ef42
 # dev.sealant.mend.t3-gateway: this image carries the confined t3code gateway (ADR 0012), which
 # `mend server setup --t3-gateway` checks for before turning it on. dev.sealant.mend.previews: what

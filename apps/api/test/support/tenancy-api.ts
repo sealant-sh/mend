@@ -338,7 +338,7 @@ export const createTenancyApi = async (
     readonly sessionRuntimes?: SessionRuntimeOffer;
     /** Each organization's choice of where its new sessions run, by organization id. */
     readonly organizationRuntimes?: ReadonlyMap<string, SessionRuntime>;
-    /** What Sealant reports each runtime supports; Docker and Boat as Core 870 answers unless stated. */
+    /** What Sealant reports each runtime supports; Docker and Boat as sealant 870 answers unless stated. */
     readonly workspaceRuntimes?: WorkspaceRuntimesReading;
     /**
      * What a few services answer, for tests that follow a request past authorization. Each is
@@ -348,7 +348,7 @@ export const createTenancyApi = async (
     readonly checkpointRequestLimit?: Duration.Duration;
     /** How long a raw body waits for its reader (`RawReadStallLimit`). */
     readonly rawReadStall?: Duration.Duration;
-    /** How long a Boat key removal waits for drained standbys, and how often it asks Core. */
+    /** How long a Boat key removal waits for drained standbys, and how often it asks sealant. */
     readonly boatKeyRemovalWait?: RemovalWait;
     /** Runs as a removal takes its mark, before anything else it reads: for races. */
     readonly beforeTake?: Effect.Effect<void>;
@@ -394,7 +394,7 @@ export const createTenancyApi = async (
       readonly executorRepo?: Layer.PartialEffectful<ExecutorRepo["Service"]>;
       readonly slackInstalls?: Layer.PartialEffectful<SlackInstallsRepo["Service"]>;
       readonly boatKeys?: Layer.PartialEffectful<BoatKeysRepo["Service"]>;
-      /** Core's Boat accounts, as the platform answers them (SLNT-790). */
+      /** sealant's Boat accounts, as the platform answers them (SLNT-790). */
       readonly boatAccounts?: Partial<
         Pick<
           SealantClients["Service"],

@@ -234,7 +234,7 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     ).toMatchObject({ layout: "person", onMissing: "refuse" });
   });
 
-  it("launches a person worktree whose no is made only of passing failures, for Core and prepare to decide", () => {
+  it("launches a person worktree whose no is made only of passing failures, for sealant and prepare to decide", () => {
     for (const missing of [["the image could not be checked"], ["the users could not be made"]]) {
       expect(
         decideHarnessLayout({
@@ -345,7 +345,7 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     ).toMatchObject({ kind: "refuse" });
   });
 
-  it("rules out only Cloudflare by runtime: Kubernetes asks Core like any other", () => {
+  it("rules out only Cloudflare by runtime: Kubernetes asks sealant like any other", () => {
     expect(runtimeLayoutObstacle("cloudflare")).toBe(
       "Cloudflare sandboxes cannot run per-person users",
     );
@@ -354,7 +354,7 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
     }
   });
 
-  it("keys an image by Core's digest when known, else by what Mend asks for", () => {
+  it("keys an image by sealant's digest when known, else by what Mend asks for", () => {
     expect(imageLayoutKeyOf(defaultWorkspaceImage, "sha256:abc")).toBe("digest:sha256:abc");
     const key = imageLayoutKeyOf(defaultWorkspaceImage, null);
     expect(key).toMatch(/^spec:[0-9a-f]{32}$/);
@@ -887,13 +887,13 @@ describe("a person ensured again while their deliveries run (review of mend#619,
   });
 });
 
-describe("a home Core wrote into before its user existed (decision 5)", () => {
+describe("a home sealant wrote into before its user existed (decision 5)", () => {
   it("becomes the user's, logins included, with the skeleton copied in and nothing replaced", () => {
     const root = fakeRoot();
     const harnessHome = path.join(root.dir, "harness-home");
     const home = path.join(root.dir, "home", alice.name);
     fs.mkdirSync(harnessHome, { recursive: true });
-    // What Core writes at create into `credentialsHome`, before prepare: root's files, 0600.
+    // What sealant writes at create into `credentialsHome`, before prepare: root's files, 0600.
     fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
     fs.writeFileSync(path.join(home, ".claude/.credentials.json"), "alice's login", {
       mode: 0o600,
@@ -919,7 +919,7 @@ describe("a home Core wrote into before its user existed (decision 5)", () => {
     expect(root.log()).toContain(`chown -hR ${alice.uid}:40000 ${home}\n`);
   });
 
-  it("a home made for a new user holds the skeleton and is theirs, before useradd and Core's POST race for it", () => {
+  it("a home made for a new user holds the skeleton and is theirs, before useradd and sealant's POST race for it", () => {
     const root = fakeRoot();
     const harnessHome = path.join(root.dir, "harness-home");
     const home = path.join(root.dir, "home", alice.name);
@@ -947,12 +947,12 @@ describe("a home Core wrote into before its user existed (decision 5)", () => {
     ).toEqual([`chown -hR ${alice.uid}:40000 ${home}`]);
   });
 
-  it("a home Core's POST made first, logins inside, is kept and becomes the user's", () => {
+  it("a home sealant's POST made first, logins inside, is kept and becomes the user's", () => {
     const root = fakeRoot();
     const harnessHome = path.join(root.dir, "harness-home");
     const home = path.join(root.dir, "home", alice.name);
     fs.mkdirSync(harnessHome, { recursive: true });
-    // Core's POST with uid and gid made the home first (0700, the skeleton) and wrote the login.
+    // sealant's POST with uid and gid made the home first (0700, the skeleton) and wrote the login.
     fs.mkdirSync(path.join(home, ".codex"), { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(home, ".codex/auth.json"), "alice's codex", { mode: 0o600 });
     const run = root.run(

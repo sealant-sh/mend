@@ -41,7 +41,7 @@ Three facts about that file, verified on a developer machine and in the shipped 
 3. **The grant is long-lived and the access token is not.** On the machine inspected: access token
    good for under six hours, refresh token good for 27 days.
 
-The platform already owns refreshing, and does it the honest way. Core stores the credential as
+The platform already owns refreshing, and does it the honest way. sealant stores the credential as
 `connected_accounts.encrypted_payload` (AES-256-GCM, scoped by owner), injects it into a workspace
 as a **file** at `$HOME/.claude/.credentials.json` mode 0600 so the official CLI can rotate it in
 place, reads the rotated file back newest-wins, and sweeps stale accounts every 15 minutes within a
@@ -71,7 +71,7 @@ servers. A pasted `--from-stdin` payload is narrowed the same way, and a `setup-
 bare token, not a document) passes through unchanged.
 
 The narrowing is a pure function in `@mend/domain`, used by the CLI **and** by Mend's API, so a
-hand-rolled client cannot widen it. Core narrowing the same way is platform feedback below; Mend
+hand-rolled client cannot widen it. sealant narrowing the same way is platform feedback below; Mend
 does not depend on it.
 
 ### A grant of Mend's own
@@ -137,7 +137,7 @@ it observes about expiry; it does not mint.
 
 | PR  | What it delivers                                                                             |
 | --- | -------------------------------------------------------------------------------------------- |
-| 1   | This ADR, and the platform feedback for the two Core halves.                                 |
+| 1   | This ADR, and the platform feedback for the two sealant halves.                              |
 | 2   | `claudeAiOauth` only, in `@mend/domain`, used by the CLI and the API.                        |
 | 3   | The harness-home credential stays 0600.                                                      |
 | 4   | ADR 0002 and `DEVELOPMENT.md` corrected to what sealantd does.                               |
@@ -157,10 +157,11 @@ doctor on the connecting machine is the honest report, and it says which machine
 ## Decision log
 
 1. **Narrow, rather than ask the platform to narrow.** The over-share is Mend's to stop; it is Mend
-   that reads the file. Core narrowing is defence in depth, not the fix.
+   that reads the file. sealant narrowing is defence in depth, not the fix.
 2. **A dedicated grant, rather than mint-on-demand.** Minting means calling Anthropic's token
-   endpoint, which Core refuses to do by design, and a Keychain read cannot be automated headless.
-   The platform's sweeper already is mint-on-demand, with the refresher where the credential lives.
+   endpoint, which sealant refuses to do by design, and a Keychain read cannot be automated
+   headless. The platform's sweeper already is mint-on-demand, with the refresher where the
+   credential lives.
 3. **A dedicated grant, rather than accepting the race.** The race is not rare: the platform
    refreshes on a schedule, so the laptop loses within a day of normal use.
 4. **No `--relogin` flag.** A flag asks the person to know which state they are in. The command can

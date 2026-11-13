@@ -154,13 +154,13 @@ describe("the forward adapter's dial", () => {
     });
   });
 
-  it("keeps a reason Core sent that this SDK does not know", async () => {
+  it("keeps a reason sealant sent that this SDK does not know", async () => {
     const { record } = await probeWith(async () => {
       throw new ForwardDialError({
         reason: "unrecognized-refusal",
         wireReason: "quota-thawing",
         status: 503,
-        message: "newer Core",
+        message: "newer sealant",
       });
     }, portTarget);
     expect(record).toMatchObject({
@@ -174,7 +174,7 @@ describe("the forward adapter's dial", () => {
     ).toBe("stop");
   });
 
-  it("keeps Mend's own refusals apart from Core's, and a lookup failure apart from both", async () => {
+  it("keeps Mend's own refusals apart from sealant's, and a lookup failure apart from both", async () => {
     for (const code of ["no_standing", "creator_no_access", "NO_PRINCIPAL"] as const) {
       const sealant = scriptedSealant(openPort(), () =>
         Effect.fail(new SealantPlatformError({ code, status: 403, message: code, cause: null })),
@@ -213,7 +213,7 @@ describe("the forward adapter's dial", () => {
     ).toBe("retry");
   });
 
-  it("ends at once on a lookup Core will answer the same way again: gone, unauthorized, forbidden", async () => {
+  it("ends at once on a lookup sealant will answer the same way again: gone, unauthorized, forbidden", async () => {
     for (const [status, reason] of [
       [404, "not-found"],
       [401, "unauthorized"],

@@ -320,7 +320,7 @@ describe("who may redeem a pickup ticket (review of mend#555, P3-10)", () => {
           }),
         },
       );
-      // A standby boots with no owner map, and a claim says it expects none (sealant#333), so Core
+      // A standby boots with no owner map, and a claim says it expects none (sealant#333), so sealant
       // refuses one booted with a map before its daemon is reached.
       expect(replanned).toEqual([{ expectedOwnerMap: null }]);
     }),

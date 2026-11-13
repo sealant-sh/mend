@@ -127,7 +127,7 @@ export interface CaptureDrainPolicyShape {
   readonly leaseWaitInterval: Duration.Duration;
   /**
    * How long a create may go with no executor on the platform before the session line says the
-   * workspace image is being built (SDK 0.38.0 reports no build state; Core builds or finds the
+   * workspace image is being built (SDK 0.38.0 reports no build state; sealant builds or finds the
    * image before it launches a runtime).
    */
   readonly imageBuildAfter: Duration.Duration;
@@ -223,7 +223,7 @@ const unreadablePathsOf = (value: unknown): ReadonlyArray<string> =>
     ? value.filter((path): path is string => typeof path === "string" && path !== "")
     : [];
 
-/** A time sealantd may report as unix milliseconds (or Core as ISO-8601); null otherwise. */
+/** A time sealantd may report as unix milliseconds (or sealant as ISO-8601); null otherwise. */
 const reportedTime = (value: unknown): Date | null => {
   if (typeof value === "number" && Number.isFinite(value) && value > 0) return new Date(value);
   if (typeof value === "string" && value !== "") {
@@ -252,9 +252,9 @@ const reportedMillis = (value: unknown): number | null => {
 
 /**
  * A capture step past its bound (`CaptureStatusReport.overdue`, field 31, sealantd e2e8): `{ step,
- * startedUnixMs, runningMs, boundMs }` as Core's SDK surfaces it in camelCase (the protobuf's
+ * startedUnixMs, runningMs, boundMs }` as sealant's SDK surfaces it in camelCase (the protobuf's
  * `started_unix_ms`, `running_ms`, `bound_ms` read too). Null when the answer carries none or no
- * step: absent from an older daemon and from a Core that does not forward it.
+ * step: absent from an older daemon and from a sealant that does not forward it.
  */
 const overdueOf = (value: unknown): CaptureOverdue | null => {
   if (typeof value !== "object" || value === null) return null;
@@ -317,12 +317,12 @@ const countOf = (value: unknown): number | null =>
 /**
  * Where in its own history the executor made an answer (`CapturePosition`, cross-repo decision
  * 17): sealantd's stamp — `launch`, `boot_id`, `boot_generation`, `observation` (status report
- * fields 27–30), as Core's SDK surfaces them in camelCase under `origin` — with the answer's own
+ * fields 27–30), as sealant's SDK surfaces them in camelCase under `origin` — with the answer's own
  * `epoch` and `headN`. A field the answer does not carry reads null (an older daemon, an SDK that drops it),
  * and such a position orders nothing. An answer without an epoch has no position.
  */
 export const capturePositionOf = (report: object): CapturePosition | null => {
-  // Core's SDK carries the stamp as `origin`; a relay that passes sealantd's fields through
+  // sealant's SDK carries the stamp as `origin`; a relay that passes sealantd's fields through
   // carries them on the answer itself.
   const origin = fieldOf(report, "origin");
   const stamp = typeof origin === "object" && origin !== null ? origin : report;

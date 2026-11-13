@@ -85,7 +85,7 @@ const wrap = <A>(run: () => Promise<A>): Effect.Effect<A, SealantPlatformError> 
 /**
  * Scopes need a service key and never an owner, so one service-level client serves every project.
  * A scope's id is kept for the process once ensured: `ensure` is idempotent by key, so the key is
- * the durable identity and Mend stores no copy of Core's id.
+ * the durable identity and Mend stores no copy of sealant's id.
  */
 export const ResourceScopesLive: Layer.Layer<ResourceScopes, never, SealantEnv> = Layer.effect(
   ResourceScopes,

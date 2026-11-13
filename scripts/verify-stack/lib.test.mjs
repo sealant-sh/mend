@@ -403,7 +403,7 @@ test("a recording window records what appeared and has the stack's shape, by ide
       { id: "c4", name: "mend-mend-2", compose: "mend" },
       // Another client on the session's daemon: a dev database, its network and its data.
       { id: "c5", name: "mend-dev-postgres-1", compose: "mend-dev" },
-      // The person's Core dev stack (Compose project `sealant`), and a hand-named `sealant-…`
+      // The person's sealant dev stack (Compose project `sealant`), and a hand-named `sealant-…`
       // container and sidecar lookalike: none is an inner session (R8-1).
       { id: "c6", name: "sealant-postgres-1", compose: "sealant", mounts: ["mend-control"] },
       { id: "c7", name: "sealant-test-redis", compose: "", mounts: ["0f3a"] },
@@ -639,7 +639,7 @@ test("a packed tarball names its package", () => {
   assert.throws(() => tarballPackage("sealant-sdk-latest.tgz"));
 });
 
-test("only Core's packages on sealantd's next line follow sealantd's source", () => {
+test("only sealant's packages on sealantd's next line follow sealantd's source", () => {
   const consumers = runtimeConsumers([
     {
       name: "@sealant/workspaces",

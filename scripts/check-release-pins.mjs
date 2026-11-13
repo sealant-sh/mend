@@ -2,8 +2,8 @@
 // The first job of a release (.github/workflows/release-cli.yml), before anything builds or
 // publishes (docs/adr/0015-next-channel.md):
 //
-// - Every release: the commit is on main; the Core pins are consistent (sealant-pins.mjs), each
-//   pinned digest is what GHCR serves for the pinned Core version, and the bundle's setup assets
+// - Every release: the commit is on main; the sealant pins are consistent (sealant-pins.mjs), each
+//   pinned digest is what GHCR serves for the pinned sealant version, and the bundle's setup assets
 //   name that version.
 // - A `next` build (vX.Y.Z-next.N): the tag is the version next-version.mjs gives its commit, and
 //   no higher next tag exists (npm's `next` only moves forward).
