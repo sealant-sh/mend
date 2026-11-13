@@ -49,12 +49,12 @@ for (const { name, registration } of [
     ${unadvancedSleeper}.pipe(Effect.provide([TestClock.layer(), TestConsole.layer])));`,
   },
 ]) {
-  test(`fails the runner for ${name}`, async () => {
+  void test(`fails the runner for ${name}`, async () => {
     assertClockFailure(await runGuard({ source: preamble + registration }), name);
   });
 }
 
-test("shares one replacement clock across consumers of the same layer", async () => {
+void test("shares one replacement clock across consumers of the same layer", async () => {
   const result = await runGuard({
     source: `${preamble}
       class First extends Context.Service()("guard/First") {}
