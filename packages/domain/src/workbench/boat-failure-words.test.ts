@@ -166,15 +166,27 @@ describe("the words for every Boat failure", () => {
 
 describe("the words for sealant's refusals before anything ran", () => {
   for (const kind of BOAT_LAUNCH_REFUSAL_CODES) {
-    it(kind, () => {
-      const words = boatProblemWords(
-        { kind, coreMessage: "Boat supports Ubuntu and Nix; Arch is unsupported." },
-        { holder: "organization", place: "launch" },
-      );
-      expect(words.happened).toMatch(/^[A-Z].*\.$/);
-      expect(words.todo).toMatch(/^[A-Z].*\.$/);
-    });
+    for (const holder of HOLDERS) {
+      it(`${kind} · ${holder}'s key`, () => {
+        const words = boatProblemWords(
+          { kind, coreMessage: "Boat supports Ubuntu and Nix; Arch is unsupported." },
+          { holder, place: "launch" },
+        );
+        expect(words.happened).toMatch(/^[A-Z].*\.$/);
+        expect(words.todo).toMatch(/^[A-Z].*\.$/);
+      });
+    }
   }
+
+  it("names the session owner's own key, not the organization's, when nothing starts Boat VMs", () => {
+    const words = boatProblemWords(
+      { kind: "unsupported-runtime", coreMessage: "no worker" },
+      { holder: "person", place: "launch" },
+    );
+    expect(words.happened).toBe(
+      "The session owner's own Boat key is connected, and Sealant says nothing on this server starts Boat VMs right now, so nothing was started.",
+    );
+  });
 });
 
 /**

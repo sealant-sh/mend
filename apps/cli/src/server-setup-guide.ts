@@ -26,7 +26,11 @@ import {
   parseMirrorSize,
   type ServerMirrors,
 } from "./server-mirrors.ts";
-import { sameRemoteEndpoints, type ServerRemoteEndpoints } from "./server-remote-endpoints.ts";
+import {
+  parseRemoteEndpoints,
+  sameRemoteEndpoints,
+  type ServerRemoteEndpoints,
+} from "./server-remote-endpoints.ts";
 import { shellWord } from "./shared.ts";
 
 /**
@@ -52,7 +56,10 @@ export interface SetupSettings {
   readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   /** Saved HTTPS origins and loopback listeners for remote workspaces. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
-  /** Boat's deployment and resources; its key is set with flags only (`--boat-api-key-stdin`). */
+  /**
+   * Boat's deployment and resources. No key is needed: each organization's owner connects its own.
+   * The server's optional key of its own is given with flags only (`--boat-api-key-stdin`).
+   */
   readonly boat?: ServerBoat;
   readonly bind: string;
   /** Where workspace SSH is published when not on `bind`; undefined, it follows `bind`. */
@@ -205,6 +212,9 @@ export const flagsFor = (before: SetupSettings, after: SetupSettings): ReadonlyA
     flags.push("--session-runtimes", offeredOf(after).join(","));
   if ((before.sessionRuntime ?? "docker") !== (after.sessionRuntime ?? "docker"))
     flags.push("--session-runtime", after.sessionRuntime ?? "docker");
+  // Naming Boat where sessions run turns it on with project resources; the guide never takes it away.
+  if (after.boat !== undefined && after.boat.resources !== (before.boat?.resources ?? true))
+    flags.push(after.boat.resources ? "--boat-resources" : "--no-boat-resources");
   if (!sameRemoteEndpoints(before.remoteEndpoints, after.remoteEndpoints)) {
     const remote = after.remoteEndpoints;
     flags.push(
@@ -1640,36 +1650,76 @@ const askSessionRuntime = async (asked: Asked, settings: SetupSettings): Promise
     ],
     answers.indexOf(answerOf(settings)),
   );
-  // The key is never typed into the guide: Boat is set up with flags, the key on standard input.
-  if (picked !== "docker" && settings.boat === undefined) {
-    asked.io.write(
-      `Boat is not set up on this server yet, so sessions keep running where they are set to (${sessionsRunOf(settings)}). Set it up with: ${BOAT_SETUP_COMMAND}, with the Boat API key piped on standard input (https://docs.mend.run/operate/boat/).`,
-    );
-    return settings;
-  }
+  // Picking Boat on a server without it sets Boat up here; a Boat key is never asked for.
+  const next =
+    picked !== "docker" && settings.boat === undefined ? await askBoat(asked, settings) : settings;
   asked.io.write(
     "Existing sessions keep where they run. Boat sessions use no local mirrors. Mend's environment settings show which environments Boat can run, as Sealant reports them.",
   );
   if (picked === "docker" || picked === "boat")
     return {
-      ...settings,
+      ...next,
       sessionRuntime: picked,
       // A server that never offered both keeps the setting it had; one that did offers one now.
-      ...(settings.sessionRuntimes === undefined ? {} : { sessionRuntimes: [picked] }),
+      ...(next.sessionRuntimes === undefined ? {} : { sessionRuntimes: [picked] }),
     };
   asked.io.write(
     "Owners choose in Organization settings · Defaults. Existing worktrees keep where they run.",
   );
   return {
-    ...settings,
+    ...next,
     sessionRuntime: picked === "both-boat" ? "boat" : "docker",
     sessionRuntimes: ["docker", "boat"],
   };
 };
 
-/** How Boat is set up: with flags, so its key comes on standard input, never typed here. */
-export const BOAT_SETUP_COMMAND =
-  "mend server setup --yes --session-runtime boat --boat-api-key-stdin --session-endpoint-url https://<host>:8443 --blob-store-public-url https://<host>:10000";
+/** An address Boat VMs dial, as typed: an HTTPS origin (`parseRemoteEndpoints` checks the pair). */
+const httpsOrigin = (input: string): { readonly value: string } | { readonly refused: string } => {
+  const url = URL.parse(input);
+  return url !== null && url.protocol === "https:" && url.pathname === "/" && url.search === ""
+    ? { value: url.origin }
+    : { refused: "An https:// origin with no path, such as https://mend.example.com:8443." };
+};
+
+/**
+ * Boat, as the guide sets it up: the two public addresses its VMs dial back, and whether its
+ * sessions reach project resources. No Boat key is asked for; the guide says who connects one.
+ */
+const askBoat = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {
+  asked.io.write("");
+  asked.io.write(
+    "Boat sessions run in each organization's own Boat account, which pays for them. No Boat key is asked for here: an owner of each organization connects one in Settings, Organization, Boat, or with mend boat connect, and Sealant keeps it sealed. Until then, that organization's Boat sessions are refused.",
+  );
+  let remote = settings.remoteEndpoints;
+  if (remote === undefined) {
+    asked.io.write(
+      "Boat VMs reach this server at two public HTTPS addresses, one for session traffic and one for saved work. Forward them to this machine's 127.0.0.1:13106 and 127.0.0.1:13900 with a Tailscale Funnel or your own TLS proxy (https://docs.mend.run/operate/boat/).",
+    );
+    while (remote === undefined) {
+      const sessionUrl = await typed(
+        asked.io,
+        "The address for session traffic",
+        undefined,
+        httpsOrigin,
+      );
+      const blobUrl = await typed(asked.io, "The address for saved work", undefined, httpsOrigin);
+      const parsed = parseRemoteEndpoints({
+        sessionUrl,
+        blobUrl,
+        sessionPort: 13106,
+        blobPort: 13900,
+      });
+      if (parsed._tag === "ok") remote = parsed.value;
+      else asked.io.write(`  ${parsed.error.message}`);
+    }
+  }
+  const resources = await yesNo(
+    asked.io,
+    "Let Boat sessions reach project resources such as @db, through a gateway on this server's Docker?",
+    true,
+  );
+  return { ...settings, remoteEndpoints: remote, boat: { resources } };
+};
 
 /** Every question, in order. */
 const walk = async (asked: Asked, settings: SetupSettings): Promise<SetupSettings> => {

@@ -15,7 +15,12 @@ import {
   RuntimeSupport,
   runtimeSupportFor,
 } from "../src/runtime-support.ts";
-import { defaultWorkspaceImage, type WorkspaceImage } from "../src/settings.ts";
+import {
+  builtInSettingsFor,
+  defaultSettings,
+  defaultWorkspaceImage,
+  type WorkspaceImage,
+} from "../src/settings.ts";
 
 const arch: WorkspaceImage = { ...defaultWorkspaceImage, os: "arch" };
 const ubuntu: WorkspaceImage = { ...defaultWorkspaceImage, os: "ubuntu" };
@@ -104,5 +109,18 @@ describe("a new project's environment", () => {
       os: { ...BOAT_SUPPORT.os, ubuntu: { supported: false, message: "no" } },
     });
     expect(newProjectWorkspaceImage(arch, nixOnly)).toMatchObject({ os: "nix" });
+  });
+});
+
+describe("the instance's settings before its operator saves any", () => {
+  it("start on an environment the server's default runtime runs", () => {
+    expect(environmentRefusal(BOAT_SUPPORT, builtInSettingsFor("boat").workspaceImage)).toBeNull();
+    expect(environmentRefusal(BOAT_SUPPORT, defaultSettings.workspaceImage)).not.toBeNull();
+    expect(builtInSettingsFor("boat")).toMatchObject({
+      ...defaultSettings,
+      workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu" },
+    });
+    expect(builtInSettingsFor("docker")).toBe(defaultSettings);
+    expect(builtInSettingsFor(null)).toBe(defaultSettings);
   });
 });

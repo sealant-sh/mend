@@ -39,14 +39,20 @@ import {
   BOAT_GATEWAY_IMAGE_LABEL,
   boatEnvLines,
   isBoatApiKey,
+  isBoatOrganization,
+  isBoatOverlayOf,
   KEEP_BOAT,
   parseBoatApiKey,
   parseBoatDeploymentId,
   parseBoatField,
+  parseBoatOrganization,
   renderBoatOverlay,
   resolveBoat,
+  resolveBoatKey,
+  sameBoat,
   type BoatRequest,
   type ServerBoat,
+  type ServerBoatKey,
 } from "./server-boat.ts";
 import {
   claimServerDockerVolumes,
@@ -359,7 +365,10 @@ interface SetupOptions {
   /** `--session-runtimes`: the runtimes organizations may choose among. */
   readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   readonly remoteEndpoints?: ServerRemoteEndpoints | null;
-  /** `--boat-deployment-id`, `--boat-api-key-stdin`, `--[no-]boat-resources`, `--no-boat`. */
+  /**
+   * `--boat-deployment-id`, `--boat-api-key-stdin`, `--no-boat-api-key`, `--[no-]boat-organization`,
+   * `--[no-]boat-resources`, `--no-boat`.
+   */
   readonly boat: BoatRequest;
   readonly context: string | undefined;
   readonly version: string | undefined;
@@ -433,7 +442,7 @@ export interface ServerConfig {
   readonly sessionRuntimes?: ReadonlyArray<"docker" | "boat">;
   /** Remote workspaces use HTTPS through the operator's proxy; absent keeps Docker-network URLs. */
   readonly remoteEndpoints?: ServerRemoteEndpoints;
-  /** Boat sessions' deployment and resources (server-boat.ts); its key is in server.env only. */
+  /** Boat sessions' deployment and resources (server-boat.ts); the server's own key is in server.env only. */
   readonly boat?: ServerBoat;
   readonly schemaVersion: number;
   readonly assetContract: string;
@@ -529,8 +538,11 @@ interface ServerSecrets {
    * only, never in the identity: the identity's bytes anchor volume ownership and never change.
    */
   readonly dockerHubToken?: string;
-  /** Boat's API key, when Boat is set up. Kept in `server.env` only, like the Docker Hub token. */
-  readonly boatApiKey?: string;
+  /**
+   * The server's own Boat key and the Boat organization it bills, when the operator gave one
+   * (server-boat.ts). Kept in `server.env` only, like the Docker Hub token.
+   */
+  readonly boatKey?: ServerBoatKey;
 }
 
 interface DockerContextRow {
@@ -675,6 +687,24 @@ const resolveSessionRuntimes = (
   return { sessionRuntime, sessionRuntimes: offered };
 };
 
+/** The runtimes with Boat taken out: Docker where Boat was the default or the only one offered. */
+const withoutBoat = (
+  runtimes: Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes">,
+): Pick<ServerConfig, "sessionRuntime" | "sessionRuntimes"> => {
+  if (runtimes.sessionRuntimes === undefined)
+    return runtimes.sessionRuntime === "boat" ? {} : runtimes;
+  const offered: ReadonlyArray<"docker" | "boat"> = runtimes.sessionRuntimes.filter(
+    (runtime) => runtime !== "boat",
+  );
+  if (offered.length === 0) return {};
+  const [first = "docker"] = offered;
+  const kept = runtimes.sessionRuntime;
+  return {
+    sessionRuntime: kept !== undefined && offered.includes(kept) ? kept : first,
+    sessionRuntimes: offered,
+  };
+};
+
 const SETUP_FLAGS = new Set([
   "--session-runtime",
   "--session-runtimes",
@@ -685,6 +715,9 @@ const SETUP_FLAGS = new Set([
   "--no-remote-endpoints",
   "--boat-deployment-id",
   "--boat-api-key-stdin",
+  "--no-boat-api-key",
+  "--boat-organization",
+  "--no-boat-organization",
   "--boat-resources",
   "--no-boat-resources",
   "--no-boat",
@@ -736,6 +769,8 @@ const SETUP_FLAGS = new Set([
 const SWITCHES: ReadonlySet<string> = new Set([
   "--no-remote-endpoints",
   "--boat-api-key-stdin",
+  "--no-boat-api-key",
+  "--no-boat-organization",
   "--boat-resources",
   "--no-boat-resources",
   "--no-boat",
@@ -1012,11 +1047,27 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const boatDeploymentId = flagValue("--boat-deployment-id");
   const boatResources = pair("--boat-resources", "--no-boat-resources");
   const boatApiKeyStdin = values.has("--boat-api-key-stdin");
+  const noBoatApiKey = values.has("--no-boat-api-key");
+  const boatOrganizationFlag = flagValue("--boat-organization");
+  const noBoatOrganization = values.has("--no-boat-organization");
+  const sessionRuntimeFlag = flagValue("--session-runtime");
+  const sessionRuntimesFlag = flagValue("--session-runtimes");
   if (
     values.has("--no-boat") &&
-    (boatDeploymentId !== undefined || boatApiKeyStdin || boatResources !== undefined)
+    (boatDeploymentId !== undefined ||
+      boatApiKeyStdin ||
+      noBoatApiKey ||
+      boatOrganizationFlag !== undefined ||
+      noBoatOrganization ||
+      boatResources !== undefined)
   )
     throw setupError("--no-boat contradicts the other --boat flags.");
+  if (boatApiKeyStdin && noBoatApiKey)
+    throw setupError("--boat-api-key-stdin and --no-boat-api-key contradict each other.");
+  if (boatOrganizationFlag !== undefined && (noBoatOrganization || noBoatApiKey))
+    throw setupError(
+      `--boat-organization and ${noBoatOrganization ? "--no-boat-organization" : "--no-boat-api-key"} contradict each other.`,
+    );
   if (boatApiKeyStdin && dockerHubTokenStdin)
     throw setupError(
       "--boat-api-key-stdin and --docker-hub-token-stdin both read standard input: give one of them per run of mend server setup.",
@@ -1027,15 +1078,21 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
       deploymentId:
         boatDeploymentId === undefined ? undefined : parseBoatDeploymentId(boatDeploymentId),
       apiKeyStdin: boatApiKeyStdin,
+      removeKey: noBoatApiKey,
+      organization: noBoatOrganization
+        ? null
+        : boatOrganizationFlag === undefined
+          ? undefined
+          : parseBoatOrganization(boatOrganizationFlag),
       resources: boatResources,
       off: values.has("--no-boat"),
     },
-    ...(flagValue("--session-runtime") === undefined
+    ...(sessionRuntimeFlag === undefined
       ? {}
-      : { sessionRuntime: sessionRuntimeOf(flagValue("--session-runtime")) }),
-    ...(flagValue("--session-runtimes") === undefined
+      : { sessionRuntime: sessionRuntimeOf(sessionRuntimeFlag) }),
+    ...(sessionRuntimesFlag === undefined
       ? {}
-      : { sessionRuntimes: sessionRuntimesOf(flagValue("--session-runtimes")) }),
+      : { sessionRuntimes: sessionRuntimesOf(sessionRuntimesFlag) }),
     context: flagValue("--context"),
     version: version === undefined ? undefined : parseVersion(version),
     bind: flagValue("--bind"),
@@ -1386,19 +1443,20 @@ const validateExposure = (
   | "sessionRuntimes"
   | "boat"
 > => {
-  const runtimes = resolveSessionRuntimes(options, existing);
+  const namesBoatRuntime =
+    options.sessionRuntime === "boat" || options.sessionRuntimes?.includes("boat") === true;
+  if (options.boat.off && namesBoatRuntime)
+    throw setupError(
+      "--no-boat takes Boat away, and --session-runtime or --session-runtimes names it. Give one of them.",
+    );
+  const resolvedRuntimes = resolveSessionRuntimes(options, existing);
+  // Without Boat, nothing may still say sessions run on it: they would be refused as not set up.
+  const runtimes = options.boat.off ? withoutBoat(resolvedRuntimes) : resolvedRuntimes;
   const remoteEndpoints =
     options.remoteEndpoints === null
       ? undefined
       : (options.remoteEndpoints ?? existing?.remoteEndpoints);
-  const boat = resolveBoat(existing?.boat, options.boat);
-  if (
-    (options.sessionRuntime === "boat" || options.sessionRuntimes?.includes("boat") === true) &&
-    boat === undefined
-  )
-    throw setupError(
-      "Boat sessions need Boat's API key on this server: pipe it with --boat-api-key-stdin.",
-    );
+  const boat = resolveBoat(existing?.boat, options.boat, namesBoatRuntime);
   if (boat !== undefined && remoteEndpoints === undefined) throw setupError(BOAT_NEEDS_ENDPOINTS);
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
@@ -1836,12 +1894,28 @@ const parseSecrets = (raw: string): ServerSecrets => {
       ? { dockerHubToken: envValue(fields, "MEND_DOCKER_HUB_TOKEN") }
       : {}),
     ...(fields.has("SEALANT_BOAT_API_KEY")
-      ? { boatApiKey: envValue(fields, "SEALANT_BOAT_API_KEY") }
+      ? {
+          boatKey: {
+            apiKey: envValue(fields, "SEALANT_BOAT_API_KEY"),
+            ...(fields.has("SEALANT_BOAT_ORGANIZATION")
+              ? { organization: envValue(fields, "SEALANT_BOAT_ORGANIZATION") }
+              : {}),
+          },
+        }
       : {}),
   };
-  if (secrets.boatApiKey !== undefined && !isBoatApiKey(secrets.boatApiKey)) {
+  if (secrets.boatKey !== undefined && !isBoatApiKey(secrets.boatKey.apiKey)) {
     throw setupError("Server secrets are corrupt: SEALANT_BOAT_API_KEY has an invalid value.");
   }
+  if (fields.has("SEALANT_BOAT_ORGANIZATION") && secrets.boatKey === undefined)
+    throw setupError(
+      "Server secrets are corrupt: SEALANT_BOAT_ORGANIZATION is set and SEALANT_BOAT_API_KEY is not.",
+    );
+  if (
+    secrets.boatKey?.organization !== undefined &&
+    !isBoatOrganization(secrets.boatKey.organization)
+  )
+    throw setupError("Server secrets are corrupt: SEALANT_BOAT_ORGANIZATION has an invalid value.");
   if (secrets.dockerHubToken !== undefined && !isDockerHubCredential(secrets.dockerHubToken)) {
     throw setupError("Server secrets are corrupt: MEND_DOCKER_HUB_TOKEN has an invalid value.");
   }
@@ -2457,8 +2531,8 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     // compose.posture.yaml read them from here, and only from here.
     ...postureEnvLines(config),
     ...remoteEndpointsEnvLines(config.remoteEndpoints, config.edgeHost),
-    // Boat's key and settings (server-boat.ts); compose.boat.yaml hands them to Mend.
-    ...boatEnvLines(config.boat, secrets.boatApiKey, secrets.betterAuthSecret),
+    // Boat's settings and the server's own key, if any (server-boat.ts); compose.boat.yaml hands them to Mend.
+    ...boatEnvLines(config.boat, secrets.boatKey, secrets.betterAuthSecret),
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
     ...renderGarage(secrets, config),
@@ -2537,7 +2611,7 @@ const validateOverlays = (
       "Server generation is corrupt: remote workspace endpoints do not match the saved settings.",
     );
   checkRemoteEndpointsAsset(config, config.bucket);
-  if (files.boat !== renderBoatOverlay(config.boat))
+  if (!isBoatOverlayOf(files.boat, config.boat))
     throw setupError(
       "Server generation is corrupt: compose.boat.yaml does not match the saved Boat settings.",
     );
@@ -2759,9 +2833,9 @@ export const readServerInstallation = (
         "Server secrets are corrupt: server.env does not match the persisted server config and identity.",
       );
     }
-    if ((config.boat === undefined) !== (secrets.boatApiKey === undefined))
+    if (config.boat === undefined && secrets.boatKey !== undefined)
       throw setupError(
-        "Server secrets are corrupt: Boat's settings and SEALANT_BOAT_API_KEY go together.",
+        "Server secrets are corrupt: server.env has SEALANT_BOAT_API_KEY and Boat is not set up.",
       );
     const envKeys = validateServerEnv(generation.files.env, secrets, config);
     validateComposeAsset(generation.files.compose);
@@ -3881,31 +3955,69 @@ const resolveDockerHubToken = async (
 };
 
 /**
- * Boat's API key: read from standard input with `--boat-api-key-stdin`, else the one this install
- * keeps in `server.env` while Boat stays set up, else none. Never taken from argv or the
- * environment, and never written anywhere but `server.env`.
+ * The server's own Boat key after this run (server-boat.ts `resolveBoatKey`): read from standard
+ * input with `--boat-api-key-stdin`, else the one this install keeps in `server.env`, unless this
+ * run drops it. Never taken from argv or the environment, and never written anywhere but
+ * `server.env`. `dropped` is the generations directory when a key this install kept is dropped:
+ * its earlier generations still hold it, and setup never rewrites or deletes a generation.
  */
-const resolveBoatApiKey = async (
+const resolveServerBoatKey = async (
   runtime: ServerSetupRuntime,
   options: SetupOptions,
   boat: ServerBoat | undefined,
   store: ServerStore,
-): Promise<string | undefined> => {
-  if (boat === undefined) return undefined;
+): Promise<{ readonly key: ServerBoatKey | undefined; readonly dropped: string | null }> => {
+  const active = storeValue(store.readActive());
+  const saved = active === null ? undefined : parseSecrets(active.files.env).boatKey;
+  let given: string | undefined;
   if (options.boat.apiKeyStdin) {
     if (runtime.readStdin === undefined)
       throw setupError("--boat-api-key-stdin needs standard input, and none is available.");
     const key = parseBoatApiKey(await runtime.readStdin());
     if (key instanceof ServerSetupError) throw key;
-    return key;
+    given = key;
   }
-  const active = storeValue(store.readActive());
-  const saved = active === null ? undefined : parseSecrets(active.files.env).boatApiKey;
-  if (saved === undefined)
-    throw setupError(
-      "Boat is set up without its API key: pipe the key with --boat-api-key-stdin, or take Boat away with --no-boat.",
+  const key = boat === undefined ? undefined : resolveBoatKey(saved, options.boat, given);
+  const dropped =
+    active !== null && saved !== undefined && key?.apiKey !== saved.apiKey
+      ? path.dirname(active.directory)
+      : null;
+  return { key, dropped };
+};
+
+/**
+ * What setup says about Boat once the server is up: who connects a Boat key and where, which
+ * sessions run where until one is, and who pays. Without a key of its own, an organization whose
+ * sessions run on Boat starts none until its owner connects its key.
+ */
+const boatNextStepLines = (
+  config: Pick<ServerConfig, "boat" | "sessionRuntime" | "sessionRuntimes">,
+  key: ServerBoatKey | undefined,
+  dropped: string | null,
+): ReadonlyArray<string> => {
+  const lines: Array<string> = [];
+  if (dropped !== null)
+    lines.push(
+      `This server no longer has a Boat key of its own. Its earlier configurations in ${dropped} still hold the old key in their server.env, and setup leaves them as they are. Revoke that key in Boat if nothing else uses it.`,
     );
-  return saved;
+  if (config.boat === undefined) return lines;
+  const offered = offeredSessionRuntimes(config);
+  const defaultRuntime = config.sessionRuntime ?? offered[0] ?? "docker";
+  const where = !offered.includes("boat")
+    ? "Boat is set up, and this server offers no Boat sessions yet: offer them with --session-runtimes docker,boat or --session-runtime boat."
+    : defaultRuntime === "boat"
+      ? "New organizations' sessions run on Boat until an owner chooses otherwise in Settings, Organization, Defaults."
+      : "Organizations' sessions run on Docker unless an owner chooses Boat in Settings, Organization, Defaults.";
+  lines.push(where);
+  lines.push(
+    "Each organization's Boat sessions run in its own Boat account: an owner connects the organization's Boat key in Settings, Organization, Boat, or with mend boat connect, and that account pays for them.",
+  );
+  lines.push(
+    key === undefined
+      ? "Until an organization's key is connected, its Boat sessions are refused and its Docker sessions run as before. This server has no Boat key of its own; give it one with --boat-api-key-stdin to run every organization without a key in one shared Boat account, which then pays for all of them."
+      : `Until an organization's key is connected, its Boat sessions run in this server's own Boat key's account${key.organization === undefined ? "" : ` (Boat organization ${key.organization})`}, which pays for them. Drop that key with --no-boat-api-key to make each organization connect its own.`,
+  );
+  return lines;
 };
 
 /**
@@ -4460,7 +4572,7 @@ const setupServer = async (
     mirrors,
   };
   const dockerHubToken = await resolveDockerHubToken(runtime, options, mirrors, store);
-  const boatApiKey = await resolveBoatApiKey(runtime, options, configWithoutBucket.boat, store);
+  const boatKey = await resolveServerBoatKey(runtime, options, configWithoutBucket.boat, store);
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
   checkSshBindAsset(configWithoutBucket, assets.compose);
   const bucket = composeBucket(assets.compose);
@@ -4521,7 +4633,7 @@ const setupServer = async (
   const secrets: ServerSecrets = {
     ...(savedSecrets ?? createSecrets(runtime)),
     ...(dockerHubToken === undefined ? {} : { dockerHubToken }),
-    ...(boatApiKey === undefined ? {} : { boatApiKey }),
+    ...(boatKey.key === undefined ? {} : { boatKey: boatKey.key }),
   };
   // A port something else holds would keep the whole mend container from starting, gateway and
   // all: refused here, before anything changes, rather than Mend not coming up (review nit).
@@ -4590,6 +4702,18 @@ const setupServer = async (
   }
   if (config.boat !== undefined && config.remoteEndpoints !== undefined)
     for (const line of await boatEndpointLines(runtime, config.remoteEndpoints))
+      runtime.writeLine(line);
+  // Said when this run touched Boat or where sessions run, not on every rerun.
+  const boatTouched =
+    existing === null ||
+    !sameBoat(existing.config.boat, config.boat) ||
+    options.sessionRuntime !== undefined ||
+    options.sessionRuntimes !== undefined ||
+    options.boat.apiKeyStdin ||
+    options.boat.removeKey ||
+    options.boat.organization !== undefined;
+  if (boatTouched || boatKey.dropped !== null)
+    for (const line of boatNextStepLines(config, boatKey.key, boatKey.dropped))
       runtime.writeLine(line);
   for (const line of preview.lines) runtime.writeLine(line);
   if (config.preview !== undefined) {
@@ -5261,7 +5385,7 @@ const upgradeServer = async (
   const secrets: ServerSecrets = {
     ...parseSecrets(previous.files.identity),
     ...(previousToken === undefined ? {} : { dockerHubToken: previousToken }),
-    ...(previousSecrets.boatApiKey === undefined ? {} : { boatApiKey: previousSecrets.boatApiKey }),
+    ...(previousSecrets.boatKey === undefined ? {} : { boatKey: previousSecrets.boatKey }),
   };
   // The edge and the posture are in `carried`, so the target renders the same overlays from the
   // same config, with this CLI's copy of the edge files. Identity bytes come only from the old

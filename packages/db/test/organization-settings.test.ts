@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import {
+  builtInSettingsFor,
   defaultSettings,
   inheritedOrganizationSettings,
   MendSettings,
@@ -16,7 +17,7 @@ import {
   OrganizationSettingsRepo,
   OrganizationSettingsRepoLive,
 } from "../src/repos/organization-settings.ts";
-import { SettingsRepo, SettingsRepoLive } from "../src/repos/settings.ts";
+import { BuiltInSettings, SettingsRepo, SettingsRepoLive } from "../src/repos/settings.ts";
 import { postgresTestConfig } from "./postgres.ts";
 
 /** Runs in a throwaway PostgreSQL database. See postgresTestConfig for local opt-out. */
@@ -215,5 +216,32 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
         expect(rows).toEqual([]);
       }),
     );
+  });
+
+  it("on a Boat server, follows an instance that has saved nothing onto an environment Boat runs", async () => {
+    const boatServer = Layer.mergeAll(
+      OrganizationSettingsRepoLive,
+      SettingsRepoLive.pipe(
+        Layer.provide(Layer.succeed(BuiltInSettings, builtInSettingsFor("boat"))),
+      ),
+    ).pipe(Layer.provideMerge(MendDBLive), Layer.provideMerge(scratchLayer));
+    const onBoat = await Effect.runPromise(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`DELETE FROM settings WHERE key = 'mend'`;
+        return yield* (yield* SettingsRepo).forOrganization(ACME);
+      }).pipe(Effect.provide(boatServer), Effect.scoped),
+    );
+    expect(onBoat.workspaceImage).toMatchObject({ mode: "family", os: "ubuntu" });
+    // What the operator saves is theirs: a saved row is read as it is.
+    const saved = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* SettingsRepo;
+        yield* repo.modify((current) => new MendSettings({ ...current, autoName: false }));
+        return yield* repo.get();
+      }).pipe(Effect.provide(boatServer), Effect.scoped),
+    );
+    expect(saved.workspaceImage).toMatchObject({ os: "ubuntu" });
+    expect(saved.autoName).toBe(false);
   });
 });

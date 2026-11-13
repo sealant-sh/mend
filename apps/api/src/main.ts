@@ -113,6 +113,7 @@ import {
   type WorktreeChangesRepo,
   type AgentConversationRepo,
   SessionsRepoLive,
+  BuiltInSettings,
   SettingsRepoLive,
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
@@ -124,7 +125,7 @@ import {
   UsersRepoLive,
   UpgradeTicketsRepoLive,
 } from "@mend/db";
-import type { ChangeId, SessionId } from "@mend/domain";
+import { builtInSettingsFor, type ChangeId, type SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
 import {
   BriefCompiler,
@@ -288,6 +289,7 @@ import {
   StoreConfig,
   COLOCATED_STORE_DEPRECATION,
   DeploymentConfigLive,
+  sessionRuntimeOfferOf,
   SourcePolicyLive,
 } from "@mend/store";
 import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
@@ -363,6 +365,15 @@ const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
  */
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
+// A Boat server's instance settings start on an environment Boat runs (`builtInSettingsFor`).
+const BuiltInSettingsLive: Layer.Layer<never> = Layer.effect(
+  BuiltInSettings,
+  Effect.gen(function* () {
+    const deployment = yield* DeploymentConfig;
+    return builtInSettingsFor(sessionRuntimeOfferOf(deployment)?.default ?? null);
+  }),
+).pipe(Layer.provide(DeploymentConfigLive));
+
 const DrizzleRepositoriesLive = Layer.mergeAll(
   AgentConversationRepoLive,
   SessionHistoryRepoLive,
@@ -403,7 +414,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ResourcesRepoLive,
   ResourceLoadsRepoLive,
   SessionRepositoriesRepoLive,
-  SettingsRepoLive,
+  SettingsRepoLive.pipe(Layer.provide(BuiltInSettingsLive)),
   SkillsRepoLive,
   SlackInstallsRepoLive,
   SlackLinksRepoLive,

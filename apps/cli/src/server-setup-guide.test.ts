@@ -1256,20 +1256,74 @@ const BOAT_SET_UP = {
 };
 
 describe("where sessions run", () => {
-  it("offers Docker by default, and says how to set Boat up when it is not yet", async () => {
+  it("sets Boat up when it is picked: the two public addresses and resources, never a key", async () => {
+    // reach: this machine · T3, previews, mirrors: keep · runtime: Boat · the two addresses ·
+    // resources: yes · apply
     const { outcome, transcript } = await converse(
-      ["1", "", "", "", "2", ""],
+      [
+        "1",
+        "",
+        "",
+        "",
+        "2",
+        "https://mend.example.com:8443",
+        "https://mend.example.com:10000",
+        "",
+        "",
+      ],
       null,
       observe({ tailscale: async () => null }),
     );
     expect(outcome, transcript).toMatchObject({ _tag: "apply" });
     const flags = flagsOf(outcome);
-    // The key is never typed into the guide, so it keeps Docker and names the flags that set Boat up.
-    expect(flags).not.toContain("--session-runtime");
-    expect(resolveSetupSettings(null, flags).sessionRuntime).toBeUndefined();
-    expect(transcript).toContain("Where can sessions run?");
-    expect(transcript).toContain("Boat is not set up on this server yet");
-    expect(transcript).toContain("--boat-api-key-stdin");
+    expect(flags).toEqual(
+      expect.arrayContaining([
+        "--session-runtime",
+        "boat",
+        "--session-endpoint-url",
+        "https://mend.example.com:8443",
+        "--blob-store-public-url",
+        "https://mend.example.com:10000",
+      ]),
+    );
+    expect(flags).not.toContain("--boat-api-key-stdin");
+    expect(resolveSetupSettings(null, flags)).toMatchObject({
+      sessionRuntime: "boat",
+      boat: { resources: true },
+      remoteEndpoints: REMOTE,
+    });
+    expect(transcript).toContain("No Boat key is asked for here");
+    expect(transcript).toContain("Settings, Organization, Boat, or with mend boat connect");
+    expect(transcript).not.toContain("API key");
+  });
+
+  it("keeps Docker by default, and turns Boat's resources off when asked", async () => {
+    const docker = await converse(
+      ["1", "", "", "", "", ""],
+      null,
+      observe({ tailscale: async () => null }),
+    );
+    expect(flagsOf(docker.outcome)).not.toContain("--session-runtime");
+    const noResources = await converse(
+      [
+        "1",
+        "",
+        "",
+        "",
+        "2",
+        "https://mend.example.com:8443",
+        "mend.example.com:10000",
+        "https://mend.example.com:10000",
+        "n",
+        "",
+      ],
+      null,
+      observe({ tailscale: async () => null }),
+    );
+    expect(noResources.transcript).toContain("An https:// origin with no path");
+    const flags = flagsOf(noResources.outcome);
+    expect(flags).toContain("--no-boat-resources");
+    expect(resolveSetupSettings(null, flags).boat).toEqual({ resources: false });
   });
 
   it("offers both once Boat is set up: each organization chooses, new ones start on Docker", async () => {
@@ -1344,10 +1398,16 @@ describe("where sessions run", () => {
     );
   });
 
-  it("refuses to offer Boat when Boat is not set up", () => {
+  it("turns Boat on when it is offered, and needs the two public addresses for it", () => {
     expect(() => resolveSetupSettings(BOX, ["--session-runtimes", "docker,boat"])).toThrow(
-      /--boat-api-key-stdin/,
+      /two public HTTPS addresses/,
     );
+    expect(
+      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
+        "--session-runtimes",
+        "docker,boat",
+      ]).boat,
+    ).toEqual({ resources: true });
     expect(resolveSetupSettings(BOX, ["--session-runtimes", "docker"])).toMatchObject({
       sessionRuntime: "docker",
       sessionRuntimes: ["docker"],
@@ -1360,10 +1420,13 @@ describe("where sessions run", () => {
     expect(resolveSetupSettings(saved, []).boat).toEqual(BOAT_SET_UP.boat);
   });
 
-  it("refuses Boat without its key or the two public addresses, and names the VMs itself", () => {
+  it("turns Boat on with no key, refuses it without the two public addresses, and names the VMs itself", () => {
     expect(() => resolveSetupSettings(BOX, ["--session-runtime", "boat"])).toThrow(
-      /--boat-api-key-stdin/,
+      /two public HTTPS addresses/,
     );
+    expect(
+      resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, ["--session-runtime", "boat"]),
+    ).toMatchObject({ sessionRuntime: "boat", boat: { resources: true } });
     expect(() =>
       resolveSetupSettings(BOX, ["--boat-deployment-id", BOAT_DEPLOYMENT, "--boat-api-key-stdin"]),
     ).toThrow(/two public HTTPS addresses/);
@@ -1371,12 +1434,12 @@ describe("where sessions run", () => {
     expect(
       resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, ["--boat-api-key-stdin"]).boat,
     ).toEqual({ resources: true });
-    expect(() =>
+    expect(
       resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
         "--boat-deployment-id",
         BOAT_DEPLOYMENT,
-      ]),
-    ).toThrow(/needs its API key/);
+      ]).boat,
+    ).toEqual({ deploymentId: BOAT_DEPLOYMENT, resources: true });
     expect(
       resolveSetupSettings({ ...BOX, remoteEndpoints: REMOTE }, [
         "--boat-deployment-id",
@@ -1407,7 +1470,31 @@ describe("where sessions run", () => {
     expect(() => resolveSetupSettings(saved, ["--no-boat", "--no-boat-resources"])).toThrow(
       /--no-boat contradicts/,
     );
-    expect(() => resolveSetupSettings(BOX, ["--no-boat-resources"])).toThrow(/needs Boat set up/);
+    expect(() => resolveSetupSettings(BOX, ["--no-boat-resources"])).toThrow(
+      /two public HTTPS addresses/,
+    );
+    // Without Boat, nothing says sessions run on it: Docker takes its place.
+    const off = resolveSetupSettings({ ...saved, sessionRuntime: "boat" }, ["--no-boat"]);
+    expect([off.sessionRuntime, off.sessionRuntimes, off.boat]).toEqual([
+      undefined,
+      undefined,
+      undefined,
+    ]);
+    expect(
+      resolveSetupSettings(
+        { ...saved, sessionRuntime: "boat", sessionRuntimes: ["boat", "docker"] },
+        ["--no-boat"],
+      ),
+    ).toMatchObject({ sessionRuntime: "docker", sessionRuntimes: ["docker"] });
+    expect(() => resolveSetupSettings(saved, ["--no-boat", "--session-runtime", "boat"])).toThrow(
+      /--no-boat takes Boat away/,
+    );
+    expect(() =>
+      resolveSetupSettings(saved, ["--boat-api-key-stdin", "--no-boat-api-key"]),
+    ).toThrow(/contradict each other/);
+    expect(() => resolveSetupSettings(saved, ["--boat-organization", " spaced"])).toThrow(
+      /--boat-organization is the id or name/,
+    );
     expect(() =>
       resolveSetupSettings(saved, [
         "--boat-api-key-stdin",

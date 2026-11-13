@@ -340,6 +340,20 @@ export const defaultSettings = new MendSettings({
 });
 
 /**
+ * The instance's settings while its operator has saved none, for a server whose organizations'
+ * sessions run on `runtime` until they choose. Boat runs no Arch, so a Boat server starts on
+ * Ubuntu, which it runs with Docker inside; every organization that follows the instance then
+ * starts with an environment its sessions can run.
+ */
+export const builtInSettingsFor = (runtime: SessionRuntime | null): MendSettings =>
+  runtime === "boat"
+    ? new MendSettings({
+        ...defaultSettings,
+        workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu" },
+      })
+    : defaultSettings;
+
+/**
  * An organization's own defaults (docs/adr/0003-organizations-and-tenancy.md, "Resources that were
  * instance-global"). The instance's settings document is the operator's; an organization's owners
  * set these instead, and every project in the organization inherits them unless it overrides a
