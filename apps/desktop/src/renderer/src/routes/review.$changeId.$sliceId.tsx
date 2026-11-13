@@ -115,6 +115,8 @@ function ReviewPage({
     !canRelaunchSession(
       {
         steer: true,
+        // An older server leaves terminalInput out, which means the viewer may type.
+        // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- see above
         terminalInput: sessionControl.data.control.terminalInput !== false,
       },
       sessionControl.data.currentAgent?.kind ?? null,
@@ -285,7 +287,7 @@ function ReviewPage({
             <button
               type="button"
               className="mt-0.5 font-sans text-[12.5px] text-label hover:text-foreground"
-              onClick={() => navigate({ to: "/" })}
+              onClick={() => void navigate({ to: "/" })}
             >
               ← Workbench
             </button>
@@ -467,7 +469,7 @@ function ReviewPage({
             onSelectComments={setSelectedComments}
             onInstruction={setInstruction}
             onCommentChange={() =>
-              queryClient.invalidateQueries({ queryKey: ["change", changeId, "comments"] })
+              void queryClient.invalidateQueries({ queryKey: ["change", changeId, "comments"] })
             }
             onChangeComment={() => {
               setComposer({ target: changeCommentTarget, label: "Whole change" });

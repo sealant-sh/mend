@@ -258,6 +258,8 @@ export function TerminalPane({
     agentRunsAsConversation(currentAgent ?? listedAgent, launchModeOf(tab.sessionId));
   // Only the owner types in a terminal, even while control is shared (docs/adr/0013). An older
   // server's control omits the flag and takes every steerer's keys.
+  // An older server leaves terminalInput out, which means the viewer may type.
+  // oxlint-disable-next-line typescript/no-unnecessary-boolean-literal-compare -- see above
   const terminalInput = control.terminalInput !== false;
   // Resume rejoins a settled session in the mode its agent last ran in; a mode switch continues the
   // same provider session in the other mode, and is the owner's alone even while control is
