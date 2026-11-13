@@ -146,7 +146,10 @@ export const boatGatewayLine = (
     ? {
         label: "boat gateway",
         state: "info",
-        detail: "declared on · not observed while Sealant does not list Boat",
+        detail:
+          launch.state === "unread"
+            ? "declared on · not observed"
+            : "declared on · not observed while Sealant does not list Boat",
         fix: null,
       }
     : null;
@@ -199,15 +202,20 @@ export const boatKeyLine = (input: {
   readonly now: Date;
 }): StatusLine => {
   const { label, holder, report, replace, now } = input;
-  const detail = summaryOf(report, now);
   const refusal = reportRefusal(report);
   if (refusal !== null) {
     const words = boatProblemWords(
       { kind: refusal.kind, failure: refusal },
       { holder, place: "status" },
     );
-    return { label, state: "failed", detail, fix: `${words.happened} ${words.todo}` };
+    return {
+      label,
+      state: "failed",
+      detail: `Boat refused the key when Sealant last checked it · ${observed(report.observedAt)}`,
+      fix: `${words.happened} ${words.todo}`,
+    };
   }
+  const detail = summaryOf(report, now);
   const warnings = boatKeyWarnings(report, now, replace);
   const needs = warnings.filter((warning) => warning.tone !== "note");
   const state: StatusState = needs.some((warning) => warning.tone === "bad")

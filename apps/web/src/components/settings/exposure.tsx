@@ -6,6 +6,7 @@ import { ErrorNote, StatusWord, errorText } from "#/components/kit/status";
 import { DataTable } from "#/components/kit/table";
 import { useTRPC } from "#/lib/trpc";
 
+import { SessionsAndBoat } from "./exposure-sessions";
 import {
   DECLARED_WORDS,
   establishedTone,
@@ -102,6 +103,7 @@ export function Exposure() {
           </Button>
         </div>
       </SettingsSection>
+      <SessionsAndBoat />
     </Panel>
   );
 }

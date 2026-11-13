@@ -14,8 +14,18 @@ import {
   hostUserNamespacesFix,
   hostUserNamespacesOf,
 } from "@mend/domain/host-user-namespaces";
-import { parseDuration } from "@mend/domain/workbench";
+import {
+  type BoatAddress,
+  boatAddressLine,
+  boatGatewayLine,
+  parseDuration,
+  ServerBoatFacts,
+  serverBoatLines,
+  sessionRuntimesLine,
+  type StatusLine,
+} from "@mend/domain/workbench";
 import { readPreviewPorts, writePreviewPorts } from "@mend/network";
+import { Schema } from "effect";
 
 import {
   needsInput,
@@ -2560,6 +2570,8 @@ export interface ServerInstallation {
   readonly edgeImage?: string;
   /** The images this generation's mirrors overlay pins, read from the generation like the edge's. */
   readonly mirrorImages?: ReadonlyArray<string>;
+  /** Whether its server.env gives the server a Boat key of its own; never the key. */
+  readonly serverBoatKey?: boolean;
 }
 
 /** The generation's Compose target: its directory, context and the overlays its config declares. */
@@ -2849,6 +2861,7 @@ export const readServerInstallation = (
         directory: generation.directory,
         ...(edgeImage === undefined ? {} : { edgeImage }),
         ...(mirrorImages.length === 0 ? {} : { mirrorImages }),
+        ...(secrets.boatKey === undefined ? {} : { serverBoatKey: true }),
       },
     };
   } catch (cause) {
@@ -4025,24 +4038,40 @@ const boatNextStepLines = (
  * the forwarding reaches something. Said as observed; a VM on Boat's network is another place, so
  * this is the nearest check setup can make, not proof that a VM reaches them.
  */
+const observeBoatAddresses = async (
+  runtime: ServerSetupRuntime,
+  remote: ServerRemoteEndpoints,
+): Promise<ReadonlyArray<BoatAddress>> => {
+  const addresses: Array<BoatAddress> = [];
+  for (const [purpose, url] of [
+    ["sessions", remote.sessionUrl],
+    ["saved-work", remote.blobUrl],
+  ] as const) {
+    const answer = await runtime.fetchText(`${url}/`, 5_000);
+    addresses.push({
+      purpose,
+      url,
+      answer:
+        answer.error === undefined && answer.status > 0
+          ? { answered: true, status: answer.status }
+          : { answered: false, detail: answer.error ?? "no answer" },
+      observedAt: new Date(),
+    });
+  }
+  return addresses;
+};
+
 const boatEndpointLines = async (
   runtime: ServerSetupRuntime,
   remote: ServerRemoteEndpoints,
-): Promise<ReadonlyArray<string>> => {
-  const lines: Array<string> = [];
-  for (const [url, what, port] of [
-    [remote.sessionUrl, "session traffic", remote.sessionPort],
-    [remote.blobUrl, "saved work", remote.blobPort],
-  ] as const) {
-    const answer = await runtime.fetchText(`${url}/`, 5_000);
-    lines.push(
-      answer.error === undefined && answer.status > 0
-        ? `Boat VMs reach this server for ${what} at ${url}: it answered from this machine (HTTP ${answer.status}) · observed.`
-        : `Boat VMs reach this server for ${what} at ${url}, and it did not answer from this machine (${answer.error ?? "no answer"}). Forward ${url} to 127.0.0.1:${port} (a Tailscale Funnel or your TLS proxy) before starting a Boat session.`,
-    );
-  }
-  return lines;
-};
+): Promise<ReadonlyArray<string>> =>
+  (await observeBoatAddresses(runtime, remote)).map((address) => {
+    const what = address.purpose === "sessions" ? "session traffic" : "saved work";
+    const port = address.purpose === "sessions" ? remote.sessionPort : remote.blobPort;
+    return address.answer.answered
+      ? `Boat VMs reach this server for ${what} at ${address.url}: it answered from this machine (HTTP ${address.answer.status}) · observed.`
+      : `Boat VMs reach this server for ${what} at ${address.url}, and it did not answer from this machine (${address.answer.detail}). Forward ${address.url} to 127.0.0.1:${port} (a Tailscale Funnel or your TLS proxy) before starting a Boat session.`;
+  });
 
 /** What setup says when a mirror was turned on or off, and where an off mirror's cache stays. */
 const mirrorsChangedLines = (
@@ -5545,26 +5574,33 @@ const observeEdgeCertificate = async (
  * install. Read over Mend's own port with the bearer, the way the health probe reads. Lines to
  * print, or the reason they could not be read, as a fact.
  */
-const operatorReportLines = async (
+/**
+ * The operator's reads of the running server, through this machine's saved sign-in when it is to
+ * this install, over Mend's own port with the bearer, the way the health probe reads. `read`
+ * answers the decoded body, or a line saying why it was not read.
+ */
+type OperatorReader =
+  | { readonly _tag: "reader"; readonly read: (route: string) => Promise<unknown> }
+  | { readonly _tag: "no-login" }
+  | { readonly _tag: "unread"; readonly why: string };
+
+const operatorReader = (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
-): Promise<ReadonlyArray<string>> => {
+): OperatorReader => {
   const login = runtime.readLogin?.(runtime.configDir) ?? null;
-  if (login === null) {
-    return [
-      `gate items · every item with its detail needs the operator's sign-in on this machine: mend login --url ${installation.config.appUrl}, then mend server status again, or mend operator gate and mend operator exposure`,
-    ];
-  }
+  if (login === null) return { _tag: "no-login" };
   let loginOrigin: string;
   try {
     loginOrigin = new URL(login.url).origin;
   } catch {
-    return [`gate items · the saved sign-in's URL "${login.url}" is not a URL · not read`];
+    return { _tag: "unread", why: `the saved sign-in's URL "${login.url}" is not a URL · not read` };
   }
   if (loginOrigin !== installation.config.appUrl) {
-    return [
-      `gate items · this machine is signed in to ${loginOrigin}, not ${installation.config.appUrl} · not read`,
-    ];
+    return {
+      _tag: "unread",
+      why: `this machine is signed in to ${loginOrigin}, not ${installation.config.appUrl} · not read`,
+    };
   }
   const headers = { Authorization: `Bearer ${login.token}` };
   const read = async (route: string): Promise<unknown | string> => {
@@ -5584,6 +5620,20 @@ const operatorReportLines = async (
       return `${route} · not read: the answer is not JSON`;
     }
   };
+  return { _tag: "reader", read };
+};
+
+/** The operator's two gate reports. Lines to print, or the reason they could not be read, as a fact. */
+const operatorReportLines = async (
+  reader: OperatorReader,
+  installation: ServerInstallation,
+): Promise<ReadonlyArray<string>> => {
+  if (reader._tag === "no-login")
+    return [
+      `gate items · every item with its detail needs the operator's sign-in on this machine: mend login --url ${installation.config.appUrl}, then mend server status again, or mend operator gate and mend operator exposure`,
+    ];
+  if (reader._tag === "unread") return [`gate items · ${reader.why}`];
+  const { read } = reader;
   const lines: Array<string> = [];
   const gate = await read("/operator/gate");
   const gateItems = Array.isArray(gate) ? gate.flatMap(gateItemOf) : null;
@@ -5826,7 +5876,10 @@ const serverStatus = async (
   runtime.writeLine(reachableLine(config));
   // What the running server reports, beside what was declared above.
   for (const line of observedPostureLines(config, healthPosture(body))) runtime.writeLine(line);
-  for (const line of await operatorReportLines(runtime, installation)) runtime.writeLine(line);
+  const reader = operatorReader(runtime, installation);
+  for (const line of await operatorReportLines(reader, installation)) runtime.writeLine(line);
+  const sessions = await sessionStatusLines(runtime, installation, reader);
+  for (const line of sessions) runtime.writeLine(statusLineText(line));
   if (runtime.observe !== undefined) {
     const userNamespaces = !offeredSessionRuntimes(config).includes("docker")
       ? null
@@ -5843,8 +5896,74 @@ const serverStatus = async (
             },
           ]
         : []),
+      ...sessions
+        .filter((line) => line.state === "failed")
+        .map((line) => ({
+          id: line.label.replace(/\s+/g, "_"),
+          state: "todo" as const,
+          detail: line.detail,
+          fix: line.fix,
+        })),
     ]);
   }
+};
+
+/** A status line as `mend server status` prints it: the fact, then what to do after an arrow. */
+const statusLineText = (line: StatusLine): string =>
+  `${line.label} · ${line.detail}${line.fix === null ? "" : ` → ${line.fix}`}`;
+
+const decodeServerBoat = Schema.decodeUnknownOption(Schema.toCodecJson(ServerBoatFacts));
+
+/**
+ * Where sessions run and how Boat is doing (SLNT-799). What the server offers is its own config.
+ * The two public addresses are asked from this machine, as setup asks them. The server's own Boat
+ * key, whether Sealant lists Boat and the gateway come from the running server's machine view,
+ * which only its operator reads; without that sign-in, what the config declares is said.
+ */
+const sessionStatusLines = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  reader: OperatorReader,
+): Promise<ReadonlyArray<StatusLine>> => {
+  const { config } = installation;
+  const offered = offeredSessionRuntimes(config);
+  const lines: Array<StatusLine> = [
+    sessionRuntimesLine({ offered, default: config.sessionRuntime ?? offered[0] ?? "docker" }),
+  ];
+  if (config.boat === undefined || !offered.includes("boat")) return lines;
+  if (config.remoteEndpoints !== undefined)
+    for (const address of await observeBoatAddresses(runtime, config.remoteEndpoints))
+      lines.push(boatAddressLine(address, "this machine"));
+  const machine = reader._tag === "reader" ? await reader.read("/machine") : null;
+  const boat: unknown =
+    typeof machine === "object" && machine !== null ? Reflect.get(machine, "boat") : undefined;
+  const facts = boat === undefined ? null : decodeServerBoat(boat);
+  if (facts !== null && facts._tag === "Some") {
+    const observed = serverBoatLines({
+      facts: { ...facts.value, addresses: [] },
+      now: new Date(),
+      from: "the server",
+      gatewayDeclared: config.boat.resources,
+    });
+    return [...lines, ...observed];
+  }
+  const why =
+    reader._tag === "no-login"
+      ? `what Sealant last observed of it, and whether a worker launches Boat, needs the operator's sign-in on this machine: mend login --url ${config.appUrl}, then mend server status again`
+      : reader._tag === "unread"
+        ? reader.why
+        : typeof machine === "string"
+          ? machine
+          : "the server's machine view carried no Boat facts: the signed-in account does not hold the operator role, or the server predates them";
+  lines.push({
+    label: "boat key",
+    state: "info",
+    detail: `${installation.serverBoatKey === true ? "this server has a Boat key of its own" : "this server has no Boat key of its own"} · declared · ${why}`,
+    fix: null,
+  });
+  const gateway = boatGatewayLine({ state: "unread", reason: "not read" }, config.boat.resources);
+  if (gateway !== null) lines.push(gateway);
+  return lines;
 };
 
 const manageServer = async (
