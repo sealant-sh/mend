@@ -5,6 +5,7 @@ import { Link } from "@tanstack/react-router";
 import {
   InheritChoice,
   InheritedValue,
+  InheritSegment,
   type InheritSource,
   type InheritValue,
 } from "#/components/kit/inherit-choice";
@@ -12,6 +13,7 @@ import { Panel, SettingsSection } from "#/components/kit/section";
 import { ErrorNote, errorText } from "#/components/kit/status";
 import type { OrganizationSettingsDto, OrganizationSettingsViewDto } from "#/lib/api";
 import { documentWriter } from "#/lib/optimistic";
+import { SESSION_RUNTIME_WORDS } from "#/lib/organization";
 import { DEFAULT_SWITCHES, onOff, type DefaultSwitch } from "#/lib/organization-defaults";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -46,6 +48,113 @@ const organizationDefaultsWriter = documentWriter<
   saved: (_server, saved) => saved,
 });
 
+type SessionRuntime = OrganizationSettingsViewDto["sessionRuntime"]["offered"][number];
+
+/** An owner's pending choice of where new sessions run, over the server's view. */
+const withSessionRuntime = (
+  view: OrganizationSettingsViewDto,
+  chosen: SessionRuntime | null,
+): OrganizationSettingsViewDto => ({
+  ...view,
+  sessionRuntime: {
+    ...view.sessionRuntime,
+    chosen,
+    effective:
+      chosen !== null && view.sessionRuntime.offered.includes(chosen)
+        ? chosen
+        : view.sessionRuntime.serverDefault,
+  },
+});
+
+/** The runtime choice has its own route, so its own writer over the same document. */
+const sessionRuntimeWriter = documentWriter<
+  OrganizationSettingsViewDto,
+  SessionRuntime | null,
+  OrganizationSettingsViewDto
+>({
+  overlay: withSessionRuntime,
+  saved: (_server, saved) => saved,
+});
+
+const RUNTIME_LABEL: Readonly<Record<SessionRuntime, string>> = { docker: "Docker", boat: "Boat" };
+const RUNTIME_TIP: Readonly<Record<SessionRuntime, string>> = {
+  docker: "On this server's Docker.",
+  boat: "Each session in a Boat VM, paid by the organization's Boat key or the server's.",
+};
+const SESSION_RUNTIME_LABEL = "Where new sessions run";
+const KEPT = "Existing worktrees keep where they run.";
+
+/**
+ * Where the organization's new sessions run. The operator declares what the server offers and its
+ * default; with more than one offered, owners pick Inherit or one of them. Everyone else, and an
+ * owner on a server that offers one, reads where they run and why.
+ */
+function SessionRuntimeRow({
+  settings,
+  name,
+  onChoose,
+}: {
+  readonly settings: OrganizationSettingsViewDto;
+  readonly name: string;
+  readonly onChoose: (runtime: SessionRuntime | null) => void;
+}) {
+  const runtime = settings.sessionRuntime;
+  const server: InheritSource = {
+    title: "From this server",
+    detail: `Set by this server's operator, who also chooses where sessions may run. ${KEPT}`,
+  };
+  if (runtime.serverDefault === null)
+    return (
+      <InheritedValue
+        label={SESSION_RUNTIME_LABEL}
+        resolved="Sealant picks"
+        source={{
+          title: "From this server",
+          detail:
+            "This server leaves it to Sealant. Its operator can offer runtimes with MEND_SESSION_RUNTIMES.",
+        }}
+      />
+    );
+  if (settings.editable && runtime.offered.length > 1)
+    return (
+      <InheritSegment
+        label={SESSION_RUNTIME_LABEL}
+        value={runtime.chosen ?? "inherit"}
+        resolved={RUNTIME_LABEL[runtime.serverDefault]}
+        source={{
+          ...server,
+          detail: `Set by this server's operator. Pick Docker or Boat to set it for ${name}. ${KEPT}`,
+        }}
+        choices={runtime.offered.map((value) => ({
+          value,
+          label: RUNTIME_LABEL[value],
+          tip: RUNTIME_TIP[value],
+        }))}
+        onChange={(choice) => onChoose(choice === "inherit" ? null : choice)}
+      />
+    );
+  const effective = runtime.effective ?? runtime.serverDefault;
+  const source: InheritSource =
+    runtime.offered.length === 1
+      ? {
+          title: "From this server",
+          detail: `This server runs sessions only on ${SESSION_RUNTIME_WORDS[effective] ?? effective}. Its operator chooses where sessions may run.`,
+        }
+      : runtime.chosen !== null && runtime.chosen === effective
+        ? {
+            title: `From ${name}'s defaults`,
+            detail: `The owners of ${name} chose it for every new session here. ${KEPT}`,
+          }
+        : server;
+  return (
+    <InheritedValue
+      label={SESSION_RUNTIME_LABEL}
+      resolved={RUNTIME_LABEL[effective]}
+      source={source}
+    />
+  );
+}
+
 /** Where Inherit's value comes from: the instance, which its operator sets. */
 export const instanceSource = (organizationName: string, operator: boolean): InheritSource => ({
   title: "From the instance default",
@@ -69,7 +178,8 @@ export function DefaultsTab() {
   const client = useTRPCClient();
   const queryClient = useQueryClient();
   const server = useSuspenseQuery(trpc.organization.settings.queryOptions()).data;
-  const settings = organizationDefaultsWriter.useVisible(server) ?? server;
+  const withDefaults = organizationDefaultsWriter.useVisible(server) ?? server;
+  const settings = sessionRuntimeWriter.useVisible(withDefaults) ?? withDefaults;
   const name = view.organization.name;
   const save = useMutation(
     organizationDefaultsWriter.options({
@@ -82,6 +192,15 @@ export function DefaultsTab() {
       related: [trpc.platform.automation.queryKey()],
     }),
   );
+  const saveRuntime = useMutation(
+    sessionRuntimeWriter.options({
+      queryClient,
+      documentKey: trpc.organization.settings.queryKey(),
+      mutationKey: trpc.organization.setSessionRuntime.mutationKey(),
+      send: (sessionRuntime) => client.organization.setSessionRuntime.mutate({ sessionRuntime }),
+    }),
+  );
+  const error = save.error ?? saveRuntime.error;
   const sources = organizationDefaultSources(settings.organization);
   const instance = instanceSource(name, view.operator);
   const choose = (key: DefaultSwitch, choice: InheritValue) => {
@@ -125,9 +244,14 @@ export function DefaultsTab() {
             />
           ),
         )}
-        {save.error === null ? null : (
-          <ErrorNote className="mt-3">{errorText(save.error)}</ErrorNote>
-        )}
+        <SessionRuntimeRow
+          settings={settings}
+          name={name}
+          onChoose={(runtime) => {
+            if (settings.sessionRuntime.chosen !== runtime) saveRuntime.mutate(runtime);
+          }}
+        />
+        {error === null ? null : <ErrorNote className="mt-3">{errorText(error)}</ErrorNote>}
       </SettingsSection>
     </Panel>
   );
