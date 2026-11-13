@@ -26,10 +26,6 @@ const targetWords = (image: WorkspaceImage): string =>
 const plural = (count: number, one: string, many = `${one}s`) =>
   `${count} ${count === 1 ? one : many}`;
 
-/** How many environments `moves` would move. */
-const moveCount = (moves: RuntimeSwitchMoves): number =>
-  (moves.organizationDefault ? 1 : 0) + moves.projects.length;
-
 function Row({ name, children }: { readonly name: ReactNode; readonly children: ReactNode }) {
   return (
     <li className="grid gap-0.5 px-3 py-2">
@@ -118,9 +114,9 @@ export function RuntimeImpactList({
       {impact.unseen === 0 ? null : (
         <Row name={plural(impact.unseen, "private project")}>
           <Fact>
-            Other members&apos; private {impact.unseen === 1 ? "project uses" : "projects use"}{" "}
-            something {runtime} does not run. Mend does not name them or move them; their creators
-            can change them.
+            {impact.unseen === 1
+              ? `Another member's private project uses something ${runtime} does not run. Mend does not name or move it; its creator can change it.`
+              : `Other members' private projects use something ${runtime} does not run. Mend does not name or move them; their creators can change them.`}
           </Fact>
         </Row>
       )}
@@ -199,7 +195,7 @@ export function RuntimeSwitchBody({
         </Button>
         {movable ? (
           <Button variant="primary" disabled={pending} onClick={() => onSwitch(moves)}>
-            {pending ? "Switching…" : `Move ${moveCount(moves)} and switch`}
+            {pending ? "Switching…" : "Move and switch"}
           </Button>
         ) : null}
       </div>

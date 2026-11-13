@@ -350,13 +350,15 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     expect(text).toContain("fedora · 19 packages → Ubuntu with Mend's default packages");
     expect(text).toContain("Service dev on port 8080 cannot listen: Boat holds that port");
     expect(text).toContain("Follows the organization's environment");
-    expect(text).toContain("1 private project");
+    expect(text).toContain(
+      "Another member's private project uses something Boat does not run. Mend does not name or move it",
+    );
     expect(text).not.toContain("hidden");
     expect(text).toContain("takes a few minutes the first time");
     // Nothing saved yet: the choice shown is still the saved one.
     expect(pressed(RUNTIME)).toContain("Inherit · Docker");
 
-    await press("Move 2 and switch");
+    await press("Move and switch");
     expect(switchesSent()).toEqual([
       { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
     ]);
@@ -423,7 +425,7 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     expect(document.body.textContent).toContain(
       "New sessions in Acme run on Boat, which cannot run everything here as it is",
     );
-    await press("Move 2 to what Boat runs");
+    await press("Move to what Boat runs");
     expect(switchesSent()).toEqual([
       { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
     ]);

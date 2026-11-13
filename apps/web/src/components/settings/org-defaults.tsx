@@ -201,7 +201,6 @@ function StandingImpact({
   const { impact } = view;
   if (impact.state !== "observed" || switchChangesNothing(impact)) return null;
   const moves = offeredMoves(impact);
-  const count = (moves.organizationDefault ? 1 : 0) + moves.projects.length;
   const runtime = runtimeName(impact.runtime);
   return (
     <div className="mt-3 grid max-w-[760px] gap-2.5">
@@ -213,7 +212,7 @@ function StandingImpact({
       {movesAnything(moves) ? (
         <div className="flex flex-wrap items-center gap-2.5">
           <Button disabled={pending} onClick={() => onMove(moves)}>
-            {pending ? "Moving…" : `Move ${count} to what ${runtime} runs`}
+            {pending ? "Moving…" : `Move to what ${runtime} runs`}
           </Button>
           <span className="text-[12.5px] text-muted-foreground">
             Packages a project added are not kept. The next session in each builds the new
