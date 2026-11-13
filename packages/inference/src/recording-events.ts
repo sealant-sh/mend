@@ -11,7 +11,7 @@ const parseDate = Schema.decodeUnknownOption(Schema.DateFromString);
 export const parseRecordingEvent = (
   entry: TimelineEntry,
 ): Effect.Effect<RecordingEvent, InferenceToolError> => {
-  // Core's timeline occurredAt is a decimal-string monotonic timestamp, not epoch time.
+  // sealant's timeline occurredAt is a decimal-string monotonic timestamp, not epoch time.
   // Preserve older wall-clock strings, but never let Date.parse turn a short counter into a year.
   const monotonic = typeof entry.occurredAt === "string" && /^\d+$/.test(entry.occurredAt);
   return decodeEvent({

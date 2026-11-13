@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import type { OrganizationId } from "../ids.ts";
 
 /**
- * Whose Boat key a Boat launch spends. Sealant Core holds the key, sealed, as one of its Boat
+ * Whose Boat key a Boat launch spends. sealant holds the key, sealed, as one of its Boat
  * accounts; Mend keeps only which owner that account belongs to: an organization (SLNT-790), or
  * one person in one organization (SLNT-797). A launch takes the person's key over the
  * organization's, and the organization's over the server's.
@@ -23,7 +23,7 @@ export type BoatKeyOwner =
 export const BoatKeyChoice = Schema.Literals(["person", "organization", "server"]);
 export type BoatKeyChoice = typeof BoatKeyChoice.Type;
 
-/** What a Boat launch names: the Core account of the key that decided, null for the server's. */
+/** What a Boat launch names: the sealant account of the key that decided, null for the server's. */
 export type BoatLaunchKey =
   | {
       readonly decidedBy: "person" | "organization";
@@ -46,7 +46,7 @@ export const boatKeyLine = (choice: BoatKeyChoice, ownersKey = "its owner's"): s
   }
 };
 
-/** What Core takes as a Boat key (`BoatSecret`): checked before anything is sent. */
+/** What sealant takes as a Boat key (`BoatSecret`): checked before anything is sent. */
 const BOAT_KEY_SHAPE = /^[A-Za-z0-9._~-]{16,4096}$/;
 
 /**
@@ -59,7 +59,7 @@ export const boatKeyShapeProblem = (key: string): string | null =>
     : "That is not a Boat key. A Boat key is the boat_… value Boat shows once when you create the key: at least 16 letters, digits and . _ ~ - with no spaces. Nothing was sent.";
 
 /**
- * The Boat permissions Sealant Core needs of every key it runs sessions on, from the Boat calls it
+ * The Boat permissions sealant needs of every key it runs sessions on, from the Boat calls it
  * makes. Boat's `ci` preset is not enough: its `sandbox.delete-own` does not satisfy
  * `sandbox.delete`. The one list the page's command and its missing-permissions comparison read.
  */

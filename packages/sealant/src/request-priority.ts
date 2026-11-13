@@ -3,7 +3,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { Effect, Fiber, Scope } from "effect";
 import { dual } from "effect/Function";
 
-/** The allowance a workflow asks Core to spend, independent of its resource principal. */
+/** The allowance a workflow asks sealant to spend, independent of its resource principal. */
 export type SealantRequestPriority = "normal" | "interactive";
 
 type PrioritySource = SealantRequestPriority | (() => SealantRequestPriority);

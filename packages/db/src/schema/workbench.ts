@@ -1578,7 +1578,7 @@ export const slackInstalls = pgTable(
 );
 
 /**
- * Boat keys (SLNT-790): which Sealant Core Boat account holds whose key. Core keeps the key sealed;
+ * Boat keys (SLNT-790): which sealant Boat account holds whose key. sealant keeps the key sealed;
  * this table never sees it. A row with no `ownerUserId` is the organization's key; one with an
  * `ownerUserId` will be that person's own key in the organization (SLNT-797), so each owner has at
  * most one. A Boat launch names the account of the launching person's key, else the

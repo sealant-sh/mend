@@ -14,7 +14,7 @@ export class BoatKeyTakenError extends Schema.TaggedError<BoatKeyTakenError>()(
   { organizationId: Schema.String },
 ) {}
 
-/** Which Core Boat account holds an owner's Boat key, and who connected it when. Never the key. */
+/** Which sealant Boat account holds an owner's Boat key, and who connected it when. Never the key. */
 export interface BoatKey {
   readonly owner: BoatKeyOwner;
   readonly sealantBoatAccountId: string;
@@ -37,7 +37,7 @@ export interface NewBoatKey {
 
 /**
  * Boat keys: one per owner, an organization's (SLNT-790) or a person's in one organization
- * (SLNT-797), its key held by Sealant Core as a Boat account.
+ * (SLNT-797), its key held by sealant as a Boat account.
  */
 export class BoatKeysRepo extends Context.Service<
   BoatKeysRepo,
@@ -56,7 +56,7 @@ export class BoatKeysRepo extends Context.Service<
     ) => Effect.Effect<ReadonlyArray<PersonWithBoatKey>>;
     readonly byOwner: (owner: BoatKeyOwner) => Effect.Effect<BoatKey | null>;
     readonly connect: (key: NewBoatKey) => Effect.Effect<BoatKey, BoatKeyTakenError>;
-    /** Stamps that the owner's key was replaced; the Core account stays the same. */
+    /** Stamps that the owner's key was replaced; the sealant account stays the same. */
     readonly markReplaced: (owner: BoatKeyOwner) => Effect.Effect<BoatKey | null>;
     /** Forgets the owner's key; null when there was none. */
     readonly remove: (owner: BoatKeyOwner) => Effect.Effect<BoatKey | null>;

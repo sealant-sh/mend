@@ -6,7 +6,7 @@ import {
 } from "./runtime-support.ts";
 
 /**
- * Reports for tests, shaped like Core's 0.40.0-next.870 answers for this server's Docker and for
+ * Reports for tests, shaped like sealant's 0.40.0-next.870 answers for this server's Docker and for
  * Boat. Tests change them to show that what Mend allows follows the report, never its own copy.
  */
 
@@ -65,7 +65,7 @@ export const BOAT_SUPPORT = new RuntimeSupport({
 
 export const OBSERVED_AT = new Date("2026-11-13T14:02:00.000Z");
 
-/** Core's answer listing `runtimes`, the first its default. */
+/** sealant's answer listing `runtimes`, the first its default. */
 export const observedRuntimes = (
   ...runtimes: ReadonlyArray<RuntimeSupport>
 ): WorkspaceRuntimesReading => ({

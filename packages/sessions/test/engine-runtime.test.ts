@@ -260,7 +260,7 @@ describe("the server's session runtime choice", () => {
 
   /**
    * SLNT-790: a Boat workspace runs in, and is billed to, its organization's Boat account when the
-   * organization has connected a key; Core pins the account for the workspace's life. Each launch
+   * organization has connected a key; sealant pins the account for the workspace's life. Each launch
    * asks again, so a stopped session's next launch follows the key the organization has then.
    */
   it("names the organization's Boat account on a Boat launch, and follows a key change on resume", async () => {
@@ -368,7 +368,7 @@ describe("the server's session runtime choice", () => {
   });
 
   for (const runtime of ["docker", "boat"] as const) {
-    it(`${runtime === "boat" ? "tells Core a Boat workspace has no resources only while its worktree binds none" : "never tells Core a Docker workspace has no resources"}`, async () => {
+    it(`${runtime === "boat" ? "tells sealant a Boat workspace has no resources only while its worktree binds none" : "never tells sealant a Docker workspace has no resources"}`, async () => {
       const created: CreateOptions[] = [];
       const bindings = { present: false };
       const resourceRuntime = Layer.effect(
@@ -401,7 +401,7 @@ describe("the server's session runtime choice", () => {
   }
 
   /**
-   * A shared-layout launch sends its owner's dotfiles with the create as archives. Core's Boat
+   * A shared-layout launch sends its owner's dotfiles with the create as archives. sealant's Boat
    * runtime refuses any create that carries them, so a Boat launch sends none, resolves none, and
    * names each source the person keeps as not applied. Docker sends them as before.
    */
@@ -503,7 +503,7 @@ describe("the server's session runtime choice", () => {
       copy: "Boat supports Ubuntu and Nix; Arch is unsupported. Switch the project's environment to one Boat runs, then start the session again.",
     },
   ]) {
-    it(`surfaces Core's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {
+    it(`surfaces sealant's HTTP ${refusal.status} ${refusal.code} as an actionable typed refusal without trying Docker`, async () => {
       const requests: Array<{
         method: string | undefined;
         url: string | undefined;
@@ -527,7 +527,8 @@ describe("the server's session runtime choice", () => {
       await new Promise<void>((resolve) => core.listen(0, "127.0.0.1", resolve));
       try {
         const address = core.address();
-        if (address === null || typeof address === "string") throw new Error("Core did not listen");
+        if (address === null || typeof address === "string")
+          throw new Error("sealant did not listen");
         const clients = SealantClientsLive.pipe(
           Layer.provide(
             Layer.succeed(SealantEnv, {

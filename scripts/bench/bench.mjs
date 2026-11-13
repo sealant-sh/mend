@@ -112,7 +112,7 @@
 //   Read on the host from the container's cgroup (v2, or v1's hierarchical totals); when it cannot
 //   be read, the parts are not run, with why.
 // - Each shell open counts the person's logins the engine wrote into the executor during it
-//   (`shell.open_credential_writes`, Core's credentials POST), unbudgeted.
+//   (`shell.open_credential_writes`, sealant's credentials POST), unbudgeted.
 // - The different-person join gets memory of its own: when the second account holds none in the
 //   project, a memory file of the run is imported for it (removed after), in both layouts, so a
 //   person executor's join delivers it and its delivery is timed (`join.other.delivery`,

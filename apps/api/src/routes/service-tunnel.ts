@@ -54,7 +54,7 @@ const frameSize = (frame: string | Uint8Array): number =>
 
 /**
  * The close code a refused dial ends the tunnel with: 4000 plus the HTTP status the refusal would
- * have had. The reason text is the refusal's name, never Core's message.
+ * have had. The reason text is the refusal's name, never sealant's message.
  */
 const TUNNEL_REFUSAL_CLOSE = {
   "connection-refused": 4502,

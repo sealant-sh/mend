@@ -20,8 +20,8 @@ qualification; the ingress-installation versions below are historical.
   retained. The owner also enabled HTTPS certificates and accepted hostname publication in
   certificate transparency logs. Funnel is not enabled.
 - Standalone Tailscale Ingress `mend/mend-access` forwards only to `mend-web:3105`. No subnet
-  routes, exit node, Kubernetes API proxy, executor enrollment, or separate Core/admin endpoint was
-  added.
+  routes, exit node, Kubernetes API proxy, executor enrollment, or separate sealant/admin endpoint
+  was added.
 - Helm release `tailscale-operator`, namespace `tailscale`, revision 1 uses chart **1.102.3**, with
   the upstream `proxies` Role deliberately changed to `rules: []` before installation. Do not
   upgrade directly from the unmodified upstream chart: that would restore namespace-wide proxy
@@ -35,12 +35,12 @@ qualification; the ingress-installation versions below are historical.
   generated ingress proxy uses userspace networking, without host networking or host mounts.
 - New policies select the Tailscale namespace and explicitly labeled ingress proxy. They allow DNS,
   Kubernetes HTTPS for controller/state operations, public HTTPS/UDP for Tailscale transport, and
-  the proxy's connection to Mend web. Private database, Core, registry, direct Mend API and
+  the proxy's connection to Mend web. Private database, sealant, registry, direct Mend API and
   instance-metadata connections are denied. These policies do not harden Mend's existing egress.
 - At ingress installation, Mend Helm revision **3** kept API/web images at **0.27.5**. Both tiers
   received `APP_URL=https://mend-access.tailc79e49.ts.net` and the alternate origin
   `http://localhost:3105`. That operation left image versions, Secret references, storage and
-  session-channel configuration unchanged. Core remained **0.32.0**. No executor was launched for
+  session-channel configuration unchanged. sealant remained **0.32.0**. No executor was launched for
   ingress verification.
 
 Pinned images, both verified to include ARM64:
@@ -102,8 +102,8 @@ Passed from the owner's laptop:
   login session was signed out afterward. A sign-in request from an unapproved browser origin
   received 403.
 - Tailnet proxy TCP 443 reachable; 22, 3101, 3106, 4000 and 5432 unreachable.
-- From the proxy pod: Mend web and Kubernetes HTTPS reachable; direct Mend API, Core, registry, the
-  tested PrivateLink database address and EC2 instance metadata unreachable.
+- From the proxy pod: Mend web and Kubernetes HTTPS reachable; direct Mend API, sealant, registry,
+  the tested PrivateLink database address and EC2 instance metadata unreachable.
 - Kubernetes authorization checks: proxy state Secret readable; operator OAuth Secret denied.
 - Authenticated SSE: 200 with `text/event-stream`, and the 25-second heartbeat received through the
   HTTPS proxy. This is a heartbeat check, not a sustained reconnect test.

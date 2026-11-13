@@ -164,7 +164,7 @@ const sentLogin = () => {
   return typeof body === "object" && body !== null && "login" in body ? body.login : undefined;
 };
 
-describe("connecting an account, as Core is asked to write it", () => {
+describe("connecting an account, as sealant is asked to write it", () => {
   it("reconnects the chosen login by the default selector when it is named work", async () => {
     accounts = [wireAccount("default", false), wireAccount("work", true)];
     await connect({ provider: "claude" });
@@ -200,7 +200,7 @@ describe("connecting an account, as Core is asked to write it", () => {
     expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: undefined });
   });
 
-  it("targets by name on a Core that cannot choose a default", async () => {
+  it("targets by name on a sealant that cannot choose a default", async () => {
     defaultsFeature = false;
     accounts = [wireAccount("default", undefined), wireAccount("backup", undefined)];
     await connect({ provider: "claude", accountId: "cacc_default" });
@@ -211,7 +211,7 @@ describe("connecting an account, as Core is asked to write it", () => {
 });
 
 describe("connecting an API key", () => {
-  it("sends the class and the default choice, names no account, and keeps the class Core answers", async () => {
+  it("sends the class and the default choice, names no account, and keeps the class sealant answers", async () => {
     keysFeature = true;
     accounts = [{ ...wireAccount("api-key", true), login: { kind: "api-key", suffix: "a1b2" } }];
     const saved = await connect({ provider: "claude", login: "api-key", makeDefault: true });
@@ -228,7 +228,7 @@ describe("connecting an API key", () => {
     expect(target()).toEqual({ name: undefined, accountId: undefined, makeDefault: undefined });
   });
 
-  it("sends nothing to a Core that cannot run sessions on a key, and says so", async () => {
+  it("sends nothing to a sealant that cannot run sessions on a key, and says so", async () => {
     accounts = [];
     await expect(connect({ provider: "codex", login: "api-key" })).rejects.toMatchObject({
       code: "connected-account-api-keys-unsupported",
@@ -238,7 +238,7 @@ describe("connecting an API key", () => {
     expect(posted).toEqual([]);
   });
 
-  it("leaves the class off for a Core that predates it, as connects were before", async () => {
+  it("leaves the class off for a sealant that predates it, as connects were before", async () => {
     accounts = [];
     await connect({ provider: "claude", login: "subscription" });
     expect(sentLogin()).toBeUndefined();
@@ -295,7 +295,7 @@ describe("disconnecting the chosen login", () => {
     expect(chosen).toEqual([]);
   });
 
-  it("chooses none when the one left was refused, or on a Core that cannot choose", async () => {
+  it("chooses none when the one left was refused, or on a sealant that cannot choose", async () => {
     accounts = [
       wireAccount("api-key", true),
       { ...wireAccount("default", false), status: "invalid" },
@@ -311,7 +311,7 @@ describe("disconnecting the chosen login", () => {
 describe("connecting a key to an endpoint", () => {
   const endpoint = Schema.decodeSync(EndpointUrl)("http://gateway.internal:8080/v1");
 
-  it("sends the endpoint with the key and keeps the host Core answers on the login", async () => {
+  it("sends the endpoint with the key and keeps the host sealant answers on the login", async () => {
     keysFeature = true;
     endpointsFeature = true;
     accounts = [
@@ -330,7 +330,7 @@ describe("connecting a key to an endpoint", () => {
     });
   });
 
-  it("sends nothing to a Core that cannot keep an endpoint, and says so", async () => {
+  it("sends nothing to a sealant that cannot keep an endpoint, and says so", async () => {
     keysFeature = true;
     accounts = [];
     await expect(connect({ provider: "codex", login: "api-key", endpoint })).rejects.toMatchObject({

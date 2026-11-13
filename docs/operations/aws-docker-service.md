@@ -88,14 +88,14 @@ reporting success. Runtime directories are prepared on each start rather than re
 created by the Dockerfile. Image validation does not run a nested container.
 
 The Docker guest uses a version-2 required-service handshake. An old or incapable image cannot
-silently accept the request. The guest waits for `docker info` before starting sealantd; Core also
-checks the authenticated agent and real control channel. A daemon exit fails immediately. After
+silently accept the request. The guest waits for `docker info` before starting sealantd; sealant
+also checks the authenticated agent and real control channel. A daemon exit fails immediately. After
 readiness, isolated probe failures have a bounded grace period rather than killing a busy workspace.
 
-A confirmed Docker failure denies new control connections and makes Core inspect report the executor
-exited. Sealantd stays alive for the terminate hook's capture flush. The worker's exit reconciler
-then terminates the VM. If the worker is unavailable, the VM's maximum duration remains the final
-lifetime limit.
+A confirmed Docker failure denies new control connections and makes sealant inspect report the
+executor exited. Sealantd stays alive for the terminate hook's capture flush. The worker's exit
+reconciler then terminates the VM. If the worker is unavailable, the VM's maximum duration remains
+the final lifetime limit.
 
 ### Privilege and storage
 

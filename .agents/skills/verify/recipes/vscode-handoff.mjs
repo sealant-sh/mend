@@ -86,7 +86,7 @@ export default async (h) => {
   const oldSettings = readFileSync(settingsFile, "utf8");
   const proxy = await handoffProxy(state.server.origin, token);
   // A launch needs a Claude login. The skill's fake one starts the agent, which is all a handoff's
-  // launch is checked for here. Core marks it invalid within seconds of the first inference after
+  // launch is checked for here. sealant marks it invalid within seconds of the first inference after
   // a connect (a new session's naming), so every gesture that launches connects right before it.
   const connectClaude = async () => {
     const connected = await world.cli(["connect", "claude", "--from-stdin"], env, {

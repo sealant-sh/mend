@@ -47,7 +47,7 @@ export type HotWorkspaceEnvironment = typeof HotWorkspaceEnvironment.Type;
  */
 /**
  * Who a person launch's Remote-SSH runs as (docs/adr/0016, decision 10): its launcher's own user
- * (`owner`), or root because Core could not bind their person (`unbound`) or runs no SSH session
+ * (`owner`), or root because sealant could not bind their person (`unbound`) or runs no SSH session
  * as a user (`not-taken`).
  */
 export const RemoteSsh = Schema.Literals(["owner", "unbound", "not-taken"]);
@@ -81,8 +81,8 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
   harnessLayout: HarnessLayout,
   /**
    * Who Remote-SSH into the standby runs as (docs/adr/0016, decision 10), decided at its create and
-   * kept for its claim: `owner` its owner's own user; `unbound` root, because Core could not bind
-   * the owner's person; `not-taken` root, because Core runs no SSH session as a user. Rows from
+   * kept for its claim: `owner` its owner's own user; `unbound` root, because sealant could not bind
+   * the owner's person; `not-taken` root, because sealant runs no SSH session as a user. Rows from
    * before it are `not-taken`.
    */
   remoteSsh: RemoteSsh,

@@ -53,7 +53,7 @@ const view = (row: Row): PlatformSshKey => ({
 });
 
 /**
- * The platform's key table as Core keeps it: active fingerprints are unique across accounts, an
+ * The platform's key table as sealant keeps it: active fingerprints are unique across accounts, an
  * archive is scoped to the owner, and the gateway resolves a fingerprint to an active row only.
  */
 const makePlatform = () => {

@@ -2399,7 +2399,7 @@ const captureExecutorIdentityMigration = Effect.gen(function* () {
 });
 
 /**
- * 0082: a create Mend asked for and has not seen answered (review 2026-09-28 #7, Core's
+ * 0082: a create Mend asked for and has not seen answered (review 2026-09-28 #7, sealant's
  * idempotent create). `executor_create_key`: the idempotency key of the session's executor
  * create, written before the create is asked and cleared once the platform's answer is on the row
  * (or it refused). While it stands, the lease that names the session belongs to an executor Mend
@@ -3103,7 +3103,7 @@ const agentMemoryHomesMigration = Effect.gen(function* () {
  *   `confirmed`: prepare found the executor could run it (a `person` prediction may fall back to
  *   `shared` on a fresh worktree, and is then recorded as `shared` from `fallback`).
  * - `image_layout_capabilities`: what an executor's prepare found about its image and runtime,
- *   per image key, which wins over Core's report for the same image.
+ *   per image key, which wins over sealant's report for the same image.
  */
 const harnessLayoutMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -3162,7 +3162,7 @@ const personIdentityMigration = Effect.gen(function* () {
  * 0114: who created a workspace, found by the workspace (`SessionsRepo.executorSessionOf`): the
  * session whose row names it under a launch of its own (0083). A call about a workspace runs as
  * that session's owner, whoever asks (alpha 2026-10-06, 9e486cfc: a second person's join looked
- * the holder's workspace up as themselves, and Core answered 404). Partial: joined rows name the
+ * the holder's workspace up as themselves, and sealant answered 404). Partial: joined rows name the
  * workspace with no launch and are never the answer. One assumption: 0083 backfilled
  * `executor_launch_id = id` on every row that named a workspace, joined ones included, so for an
  * executor older than 0083 (2026-09-28) a joiner's row could answer too. No such executor is still
@@ -3333,7 +3333,7 @@ const preReleaseExecutorsMigration = Effect.gen(function* () {
 
 /**
  * 0119 (docs/adr/0016, Delivery 21): whether an image's per-person answer was observed in a
- * per-person executor (its prepare, or Core's create refusing the owner map). A shared launch's
+ * per-person executor (its prepare, or sealant's create refusing the owner map). A shared launch's
  * probe cannot see what only a per-person executor meets (no-new-privileges, the owner map), so
  * its "yes" is a prediction: it never replaces an answer already recorded, and no executor is
  * retired on it. Rows recorded before this release count as unconfirmed, but for a "yes" on an
@@ -3388,7 +3388,7 @@ const checkpointSourceMigration = Effect.gen(function* () {
 /**
  * Who Remote-SSH into a standby runs as, decided at its create (docs/adr/0016, decision 10), so a
  * claim reports a root SSH on its session line as a cold launch does. Rows from before it never
- * asked Core for an SSH user: `not-taken`.
+ * asked sealant for an SSH user: `not-taken`.
  */
 const hotWorkspaceRemoteSshMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -3637,9 +3637,9 @@ const previewGrantsMigration = Effect.gen(function* () {
 });
 
 /**
- * 0138 (docs/adr/0016): Kubernetes (runc) workspaces run per person once Core reports
+ * 0138 (docs/adr/0016): Kubernetes (runc) workspaces run per person once sealant reports
  * `kubernetesPersonLayout`, so the reasons Mend recorded only because Kubernetes refused them no
- * longer hold. Core before it also refused an image it had not probed as one whose sealantd does
+ * longer hold. sealant before it also refused an image it had not probed as one whose sealantd does
  * not restore files per person, on any runtime. The words are frozen as Mend recorded them.
  */
 const kubernetesPersonLayoutMigration = Effect.gen(function* () {
@@ -5551,7 +5551,7 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`ALTER TABLE agent_sessions ADD COLUMN IF NOT EXISTS stop_summary text`;
   }),
-  // Which Core Boat account holds an organization's Boat key (SLNT-790); never the key.
+  // Which sealant Boat account holds an organization's Boat key (SLNT-790); never the key.
   "0217_boat_keys": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`CREATE TABLE IF NOT EXISTS boat_keys (

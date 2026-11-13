@@ -373,7 +373,7 @@ export const rollbackCases = (
           const logins: string[] = [];
           const credentialPosts: string[] = [];
           const forbiddenHome = "/run/mend-conv/ff51d664-c8e7-4c4a-b0c8-5623cdb0fb00";
-          const refusal = `${forbiddenHome} is not a home Core writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.`;
+          const refusal = `${forbiddenHome} is not a home sealant writes into: it belongs to root and is not /root, or its parent is one its owner could rename it in. Nothing was written.`;
           const credentialServer = http.createServer((request, response) => {
             const chunks: Buffer[] = [];
             request.on("data", (chunk: Buffer) => chunks.push(chunk));

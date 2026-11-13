@@ -8,7 +8,7 @@
   **box-side**. On 2026-10-05 `https://alpha.mend.run/api/health` reported
   `version 0.36.0-next.601`, `tenancy multi`, `exposure.declared public` with 3 items open.
 - **PRs:**
-  - mend#463 (preview builds of Mend, Core and sealantd branches for one box);
+  - mend#463 (preview builds of Mend, sealant and sealantd branches for one box);
   - mend#497 (the box deploys itself: `deploy` / `even_if_live` inputs, `deploy-box.yml`, the
     live-session guard, previous logs kept);
   - mend#499 (deploy over SSH from a hosted runner, not a self-hosted one);
@@ -30,8 +30,8 @@ Hetzner box (`yiannis-k8s-arc`: i9-9900K, 62 GB, 2 × 1 TB NVMe) to find bugs wh
 
 Problems an operator had before:
 
-- Branches of Mend, Core and sealantd could only be tried together after three releases, waiting on
-  each other's CI.
+- Branches of Mend, sealant and sealantd could only be tried together after three releases, waiting
+  on each other's CI.
 - Deploying meant an SSH session as root and a hand-run script.
 - An upgrade during a phone session lost that session's evidence (2026-10-03).
 - Upgrades threw away the previous server's log with its container.
@@ -50,7 +50,7 @@ sessions, and versions they can read in `/api/health`.
 
 An operator can:
 
-1. **Build a preview** of any Mend branch, optionally with a Core branch and a sealantd branch:
+1. **Build a preview** of any Mend branch, optionally with a sealant branch and a sealantd branch:
 
    ```sh
    gh workflow run preview.yml --repo sealant-sh/mend --ref <mend-branch> \
@@ -280,9 +280,9 @@ CLI says so in its refusal text, and nothing checks it.
 
 The owner (Yiannis) and an agent he runs (Ana) operate the box. Ben uses `alpha.mend.run`.
 
-1. Ana opens a PR on `fix/foo` with a Core branch `fix/bar`. She dispatches
+1. Ana opens a PR on `fix/foo` with a sealant branch `fix/bar`. She dispatches
    `gh workflow run preview.yml --ref fix/foo -f sealant_ref=fix/bar -f deploy=true`.
-2. The run builds Core and Mend in about four minutes. The summary says
+2. The run builds sealant and Mend in about four minutes. The summary says
    `Mend 0.36.0-next.601.preview.40: sealant 1a2b3c…, sealantd pinned, linux/amd64` and lists
    `ghcr.io/sealant-sh/mend:0.36.0-next.601.preview.40`.
 3. The `deploy` job connects to `deploy@49.12.133.97:2223`. Ben has a Claude session running, so the
@@ -392,8 +392,8 @@ The owner (Yiannis) and an agent he runs (Ana) operate the box. Ben uses `alpha.
 - Rollback has no command. It is the hand procedure above, and only safe over additive migrations.
 - Upgrade backups and generations are never pruned.
 - A preview's migrations are not reversed (preview-builds.md "Limits"): use a box you can rebuild.
-- A Core branch that changes the SDK or API contract, or a sealantd branch that changes the runtime
-  packages, does not reach a preview. Merge it and pin the prerelease.
+- A sealant branch that changes the SDK or API contract, or a sealantd branch that changes the
+  runtime packages, does not reach a preview. Merge it and pin the prerelease.
 - `mend server upgrade` cannot see a Mend migration whose code changed under the same id and name.
   The next-channel runbook gives a hand check.
 - Docker sessions run privileged: the box is for trusted users (ROADMAP "Not scheduled").
@@ -405,8 +405,8 @@ The owner (Yiannis) and an agent he runs (Ana) operate the box. Ben uses `alpha.
 
 **Tests.**
 
-- `scripts/bundle-packaging.test.mjs`: pinned Core digests; `MEND_PREVIEW_SEALANTD_IMAGE` empty in
-  releases and wired into the worker when set; the queue env.
+- `scripts/bundle-packaging.test.mjs`: pinned sealant digests; `MEND_PREVIEW_SEALANTD_IMAGE` empty
+  in releases and wired into the worker when set; the queue env.
 - `apps/cli/src/server-lifecycle.test.ts`:
   - edge and posture through upgrade, start, restart and stop;
   - `--no-edge`;

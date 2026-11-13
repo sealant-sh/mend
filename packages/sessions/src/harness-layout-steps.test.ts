@@ -132,7 +132,7 @@ const workspace: Workspace = {
   credentials: { put: never, release: never, list: async () => [], prune: never },
 };
 
-/** Every credentials call the platform was asked for, and how Core answers a POST. */
+/** Every credentials call the platform was asked for, and how sealant answers a POST. */
 interface CoreCalls {
   /** Every call and step, in order: `post:`, `delete:`, `list`, `mint:`, `revoke:`, `exec:`. */
   readonly calls: Array<string>;
@@ -144,11 +144,11 @@ interface CoreCalls {
     readonly partial: boolean;
   }>;
   /**
-   * Core's answer to the nth POST (0-based): a failure, the providers a partial POST leaves out
+   * sealant's answer to the nth POST (0-based): a failure, the providers a partial POST leaves out
    * (only those it named), or nothing for a write.
    */
   answer: (index: number, logins: HomeLogins) => CoreAnswer;
-  /** What Core answers a write placed in the home, by whose home it is. */
+  /** What sealant answers a write placed in the home, by whose home it is. */
   placed: (onBehalfOf: string) => PlacedLogins;
   homes: ReadonlyArray<{
     home: string;
@@ -165,7 +165,7 @@ interface CoreCalls {
   imageReports: number;
   /** How often the control plane was asked what it can do. */
   controlPlaneReads: number;
-  /** Core's answers to `sshAsRoot`, in order (`never`: no answer); then yes. */
+  /** sealant's answers to `sshAsRoot`, in order (`never`: no answer); then yes. */
   sshAnswers: Array<boolean | "never">;
 }
 
@@ -186,7 +186,7 @@ const coreCalls = (): CoreCalls => ({
   sshAnswers: [],
 });
 
-/** Core's report on an image, as `PersonLayoutPlatform.imageReport` answers. */
+/** sealant's report on an image, as `PersonLayoutPlatform.imageReport` answers. */
 interface ImageReport {
   readonly digest: string | null;
   readonly runtime: string | null;
@@ -200,7 +200,7 @@ const platformOf = (
     readonly dotfilesUser?: boolean;
     readonly controlPlaneObstacle?: string | null;
     readonly workspaceProcessUser?: "supported" | "unsupported" | "unknown";
-    /** Core's report on the image; a Docker image it can run per person unless a test says. */
+    /** sealant's report on the image; a Docker image it can run per person unless a test says. */
     readonly report?: ImageReport;
   } = {},
 ) =>
@@ -248,7 +248,7 @@ const platformOf = (
             answer instanceof SealantPlatformError
               ? Effect.fail(answer)
               : Effect.succeed({
-                  // Core leaves out only providers the POST named for an account.
+                  // sealant leaves out only providers the POST named for an account.
                   skipped: (answer ?? []).filter((skip) => input.logins[skip.provider] === true),
                   placed: core.placed(input.onBehalfOf),
                 }),
@@ -282,7 +282,7 @@ const stepsWith = (
     readonly platform?: Layer.Layer<PersonLayoutPlatform>;
     /** Every exec's script (or argv, for a non-shell exec) and the user it ran as. */
     readonly execs?: Array<{ readonly script: string; readonly user: string | null }>;
-    /** Where mints, revocations and execs are logged in order, beside Core's calls. */
+    /** Where mints, revocations and execs are logged in order, beside sealant's calls. */
     readonly log?: Array<string>;
     readonly revoked?: Array<{ readonly accountId: string; readonly issuedBefore: number }>;
     readonly forks?: Array<Effect.Effect<void>>;
@@ -372,7 +372,7 @@ const stepsWith = (
   );
 
 /**
- * A create Core's owner-map guard refused, as Mend's client receives it: the error the SDK's
+ * A create sealant's owner-map guard refused, as Mend's client receives it: the error the SDK's
  * `ready()` throws for the failed workspace, mapped as `createWorkspace` maps it.
  */
 const coreRefused = (code: string) =>
@@ -452,7 +452,7 @@ describe("the default against images and runtimes that cannot run per person (re
   /** A shared executor's probe that finds everything a shared executor can see. */
   const probedYes = "mend-layout probed\n";
 
-  it("Core's no: every fresh launch runs shared, probes nothing, records nothing and retires nothing", async () => {
+  it("sealant's no: every fresh launch runs shared, probes nothing, records nothing and retires nothing", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
@@ -499,7 +499,7 @@ describe("the default against images and runtimes that cannot run per person (re
     expect(result.fresh).toEqual({ layout: "shared" });
   });
 
-  it("a Kubernetes runtime whose Core says yes runs person: Core's answer passes through", async () => {
+  it("a Kubernetes runtime whose sealant says yes runs person: sealant's answer passes through", async () => {
     const core = coreCalls();
     const layout = await Effect.runPromise(
       Effect.gen(function* () {
@@ -513,7 +513,7 @@ describe("the default against images and runtimes that cannot run per person (re
     expect(core.imageReports).toBe(1);
   });
 
-  it("a Core without the Kubernetes person layout runs a fresh worktree shared and refuses one already person, on any runtime, naming the Sealant it needs", async () => {
+  it("a sealant without the Kubernetes person layout runs a fresh worktree shared and refuses one already person, on any runtime, naming the Sealant it needs", async () => {
     const obstacle = controlPlaneObstacleOf({
       processUserRoutes: true,
       dotfilesApply: true,
@@ -605,7 +605,7 @@ describe("the default against images and runtimes that cannot run per person (re
   });
 
   it("a new image's first shared launch answers for the launches after its build, in its own worktree too", async () => {
-    // Core reports a digest only once the image is built: the first launch records under the
+    // sealant reports a digest only once the image is built: the first launch records under the
     // image's spec, and the launches after the build ask under its digest (box, next.721).
     const can: { report: ImageReport } = {
       report: { digest: null, runtime: "docker", person: null, missing: [] },
@@ -661,7 +661,7 @@ describe("the default against images and runtimes that cannot run per person (re
     ]);
   });
 
-  it("Core's own answer for a built image beats what was recorded under its spec", async () => {
+  it("sealant's own answer for a built image beats what was recorded under its spec", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
@@ -824,7 +824,7 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     });
   });
 
-  it("an image Core could not check replaces an unconfirmed answer: a fresh worktree's next launch runs shared, and a day on one checks again", async () => {
+  it("an image sealant could not check replaces an unconfirmed answer: a fresh worktree's next launch runs shared, and a day on one checks again", async () => {
     const state = makeHarnessLayoutsMemoryState();
     state.capabilities.set(IMAGE, {
       imageKey: "digest:sha256:img",
@@ -868,7 +868,7 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     expect(result.dayOn).toMatchObject({ layout: "shared", probe: true });
   });
 
-  it("an image Core could not check never replaces a confirmed yes: the next launch runs person", async () => {
+  it("an image sealant could not check never replaces a confirmed yes: the next launch runs person", async () => {
     const state = makeHarnessLayoutsMemoryState();
     state.capabilities.set(IMAGE, {
       imageKey: "digest:sha256:img",
@@ -898,7 +898,7 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     expect(result.next).toBe("person");
   });
 
-  it("a no made only of passing failures does not refuse a worktree already person: it launches person, and Core decides", async () => {
+  it("a no made only of passing failures does not refuse a worktree already person: it launches person, and sealant decides", async () => {
     const launch = (missing: ReadonlyArray<string>) => {
       const state = makeHarnessLayoutsMemoryState();
       state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
@@ -954,7 +954,7 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     }
   });
 
-  it("never checks again against Core's explicit no, and Core's no beats a probe's unconfirmed yes", async () => {
+  it("never checks again against sealant's explicit no, and sealant's no beats a probe's unconfirmed yes", async () => {
     const coreNo = { digest: "sha256:img", runtime: "docker", person: false, missing: ["no sudo"] };
     const recorded = makeHarnessLayoutsMemoryState();
     recordNo(recorded, ["no ACLs on /workspace"]);
@@ -998,7 +998,7 @@ describe("a recorded no, checked again or kept (review 2 of mend#582)", () => {
     expect(result).toMatchObject({ person: false, missing: [NO_NEW_PRIVILEGES_MISSING] });
   });
 
-  it("rules out Core's Cloudflare runtime before any launch: none is refused to learn it", async () => {
+  it("rules out sealant's Cloudflare runtime before any launch: none is refused to learn it", async () => {
     const state = makeHarnessLayoutsMemoryState();
     const result = await twoLaunches(state, {
       digest: "sha256:img",
@@ -1270,7 +1270,7 @@ describe("the layout each launch runs, as the channel reads it (docs/adr/0016)",
   });
 });
 
-/** What a partial POST answers for a provider Core left out (sealant#337). */
+/** What a partial POST answers for a provider sealant left out (sealant#337). */
 const skipped = (
   provider: LoginProvider,
   reason: LoginSkip["reason"],
@@ -1425,7 +1425,7 @@ describe("standbys and person launches (docs/adr/0016; sealant#333)", () => {
 const refusedOf = (fields: { code: string; status: number; provider?: string; message: string }) =>
   refusedAccountOf(new SealantPlatformError({ ...fields, cause: null }));
 
-/** Core's answer to a write whose script exited 1 (the box, 2026-10-09, mend 0.36.0-next.652). */
+/** sealant's answer to a write whose script exited 1 (the box, 2026-10-09, mend 0.36.0-next.652). */
 const unconfirmed = (home: string) =>
   new SealantPlatformError({
     code: "WorkspaceBadGatewayError",
@@ -1434,7 +1434,7 @@ const unconfirmed = (home: string) =>
     cause: null,
   });
 
-/** A Claude key Core placed in `home`, as its receipt says. */
+/** A Claude key sealant placed in `home`, as its receipt says. */
 const keyIn = (home: string) =>
   ({ kind: "api-key", suffix: "a1b2", keyPath: `${home}/.sealant/keys/plc_1` }) as const;
 
@@ -1575,7 +1575,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       }),
     );
     expect(result.afterLauncher).toEqual([]);
-    // Exactly one Core call for the join, naming Maria and Maria's home, with her numeric owner,
+    // Exactly one sealant call for the join, naming Maria and Maria's home, with her numeric owner,
     // and her own other agent login beside her Claude one.
     expect(core.posts).toEqual([
       {
@@ -1595,7 +1595,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
   });
 
   describe("what a person's placed logins spend (docs/adr/0018)", () => {
-    it("a joiner's later start reads the key Core placed at their first, with no second write", async () => {
+    it("a joiner's later start reads the key sealant placed at their first, with no second write", async () => {
       const core = coreCalls();
       core.placed = (onBehalfOf) =>
         onBehalfOf === "user-maria" ? { claude: keyIn("/home/maria") } : {};
@@ -1614,7 +1614,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       expect(result.launcher?.logins.claude).toBeUndefined();
     });
 
-    it("after a restart, a running person's home keeps what Core listed it spends", async () => {
+    it("after a restart, a running person's home keeps what sealant listed it spends", async () => {
       const core = coreCalls();
       const result = await withPersonExecutor(
         core,
@@ -1766,7 +1766,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
           ...withDotfiles(true),
           worktreeId: WorktreeId.make("wt-3"),
         });
-        // Core 0.39.0-next.703 applies them as the launcher (sealant#334): person, nothing asked.
+        // sealant 0.39.0-next.703 applies them as the launcher (sealant#334): person, nothing asked.
         const verb = yield* stepsWith("person", makeHarnessLayoutsMemoryState());
         const applied = yield* verb.steps.decide({
           ...withDotfiles(true),
@@ -1792,17 +1792,17 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         yield* start(steps, "user-maria");
       }),
     );
-    // One partial call: Core wrote Claude and Codex and left GitHub out; no second
+    // One partial call: sealant wrote Claude and Codex and left GitHub out; no second
     // `github: null` call.
     expect(core.posts.map((post) => [post.logins, post.partial])).toEqual([
       [{ claude: true, codex: true, github: true }, true],
     ]);
   });
 
-  it("a pi or opencode join names its ChatGPT login for Core to write, in the same one call (sealant#336)", async () => {
+  it("a pi or opencode join names its ChatGPT login for sealant to write, in the same one call (sealant#336)", async () => {
     for (const harness of ["pi", "opencode"] as const) {
       const core = coreCalls();
-      // Maria's Codex account is not a ChatGPT login: Core leaves pi's or opencode's out.
+      // Maria's Codex account is not a ChatGPT login: sealant leaves pi's or opencode's out.
       core.answer = () => skipped(harness, "connected-account-unsupported");
       const result = await withPersonExecutor(core, ({ steps, execs }) =>
         Effect.gen(function* () {
@@ -1824,7 +1824,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(loginNeedOf("shell").optional).toEqual(["claude", "codex", "github"]);
   });
 
-  it("the launcher's pi start asks Core for pi's login only: the create wrote the rest", async () => {
+  it("the launcher's pi start asks sealant for pi's login only: the create wrote the rest", async () => {
     const core = coreCalls();
     await withPersonExecutor(core, ({ steps }) =>
       Effect.gen(function* () {
@@ -1878,7 +1878,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
           partial: true,
         },
       ]);
-      // Core writes Codex's file there (`~/.codex/auth.json`), as her: her process runs with
+      // sealant writes Codex's file there (`~/.codex/auth.json`), as her: her process runs with
       // that home.
       expect(connected.started?.user.home).toBe(`/home/${connected.maria.name}`);
 
@@ -1887,7 +1887,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       const started = await withPersonExecutor(withoutCodex, ({ steps }) =>
         Effect.gen(function* () {
           const first = yield* start(steps, "user-maria", "claude");
-          // Her second process: Codex is known not connected, so Core is not asked again.
+          // Her second process: Codex is known not connected, so sealant is not asked again.
           yield* start(steps, "user-maria", "claude");
           return first;
         }),
@@ -1961,7 +1961,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
       expect(reads).toEqual(["user-maria", "user-bob"]);
     });
 
-    it("a create that went without the launcher's Codex records it not connected: their first Claude process asks Core for nothing", async () => {
+    it("a create that went without the launcher's Codex records it not connected: their first Claude process asks sealant for nothing", async () => {
       const core = coreCalls();
       await withPersonExecutor(
         core,
@@ -1979,7 +1979,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     });
   });
 
-  it("refuses a join whose harness login is not connected or needs reconnecting, by Core's reason, and revokes the token minted for it", async () => {
+  it("refuses a join whose harness login is not connected or needs reconnecting, by sealant's reason, and revokes the token minted for it", async () => {
     for (const [failure, words] of [
       [
         notConnected("claude"),
@@ -2030,7 +2030,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         Effect.gen(function* () {
           const maria = yield* repo.ensureIdentity("user-maria");
           const before = log.length;
-          // As Core's write did on the box: run beside the exec still making her, it exits 1.
+          // As sealant's write did on the box: run beside the exec still making her, it exits 1.
           core.answer = () =>
             log.slice(before).includes("exec-done:root")
               ? null
@@ -2040,7 +2040,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         }),
       { execTakes: Duration.millis(50) },
     );
-    // Her home exec ran to its end first, then exactly one write, which Core confirmed.
+    // Her home exec ran to its end first, then exactly one write, which sealant confirmed.
     expect(result.steps.filter((line) => !line.startsWith("mint:"))).toEqual([
       "exec:root",
       "exec-done:root",
@@ -2117,7 +2117,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     }
   });
 
-  it("releases a person's logins once nothing of theirs runs: Core's files, ChatGPT logins included, and their token", async () => {
+  it("releases a person's logins once nothing of theirs runs: sealant's files, ChatGPT logins included, and their token", async () => {
     const core = coreCalls();
     const result = await withPersonExecutor(core, ({ steps, repo, revoked, execs, forks }) =>
       Effect.gen(function* () {
@@ -2144,7 +2144,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.calls.filter((call) => call.startsWith("delete:"))).toEqual([
       `delete:/home/${result.maria.name}`,
     ]);
-    // Core's release removes pi's and opencode's ChatGPT logins with the rest (sealant#336):
+    // sealant's release removes pi's and opencode's ChatGPT logins with the rest (sealant#336):
     // Mend runs nothing of its own in her home for it.
     expect(result.execs.some((exec) => exec.script.startsWith("node -e"))).toBe(false);
     expect(result.revoked.map((entry) => entry.accountId)).toEqual(["user-maria"]);
@@ -2208,7 +2208,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
               ? ["Info: session engine: a person's logins released · observed"]
               : [],
           );
-          // Current bounded fallback forgets the idle home even if Core could not delete it.
+          // Current bounded fallback forgets the idle home even if sealant could not delete it.
           // This records existing behavior, not a guarantee that external credentials disappeared.
           yield* release(steps, ["user-alice"]);
           expect(deletes).toBe(attempts);
@@ -2376,7 +2376,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(releasable).toBe(true);
   });
 
-  it("at startup, lists Core's homes first and releases only the one whose person runs nothing, not one held for a start since", async () => {
+  it("at startup, lists sealant's homes first and releases only the one whose person runs nothing, not one held for a start since", async () => {
     const core = coreCalls();
     const result = await withPersonExecutor(
       core,
@@ -2421,7 +2421,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(core.posts.filter((post) => post.onBehalfOf === "user-maria")).toHaveLength(0);
   });
 
-  it("at startup, releases a home Core holds for anyone but its person, never adopting it (review of mend#564, P3-2)", async () => {
+  it("at startup, releases a home sealant holds for anyone but its person, never adopting it (review of mend#564, P3-2)", async () => {
     const core = coreCalls();
     const marias = await withPersonExecutor(
       core,
@@ -2477,7 +2477,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         ({ steps, repo, log, execs }) =>
           Effect.gen(function* () {
             const maria = yield* repo.ensureIdentity("user-maria");
-            // Core still holds Maria's Claude login: her Claude agent runs, with its token.
+            // sealant still holds Maria's Claude login: her Claude agent runs, with its token.
             core.homes = [
               {
                 home: `/home/${maria.name}`,
@@ -2543,7 +2543,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     expect(checks).toEqual({ byReconcile: 0, byRelease: 1 });
   });
 
-  it("at startup, a home of someone idle is released whole: Core's files and their token, and nothing run in it", async () => {
+  it("at startup, a home of someone idle is released whole: sealant's files and their token, and nothing run in it", async () => {
     const core = coreCalls();
     const result = await withPersonExecutor(
       core,
@@ -2679,7 +2679,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     // GitHub disconnected since the create: left out, and the Claude launch goes on.
     const optional = await settle("claude", notConnected("github"));
     expect(optional._tag).toBe("Success");
-    // The harness's own provider left out: refused, in Mend's words, by Core's reason.
+    // The harness's own provider left out: refused, in Mend's words, by sealant's reason.
     const required = await settle("claude", needsReconnect("claude"));
     expect(required._tag === "Failure" ? required.failure.message : null).toBe(
       loginRefusal("claude", "connected-account-invalid"),
@@ -2691,7 +2691,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     );
   });
 
-  it("reads a refused account from Core's stable reason and provider, never from its words (sealant#335)", () => {
+  it("reads a refused account from sealant's stable reason and provider, never from its words (sealant#335)", () => {
     expect(
       refusedOf({
         code: "connected-account-missing",
@@ -2708,7 +2708,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
         message: "",
       }),
     ).toEqual({ provider: "codex", reason: "connected-account-unsupported" });
-    // Core's old words with no stable code are not a refusal any more, nor a code with no provider.
+    // sealant's old words with no stable code are not a refusal any more, nor a code with no provider.
     expect(
       refusedOf({
         code: "WorkspaceNotFoundError",
@@ -2722,7 +2722,7 @@ describe("logins per person (docs/adr/0016, decision 5)", () => {
     ).toBeNull();
   });
 
-  it("maps a person launch refused for its owner map to Mend's words by Core's code, and records the image's answer (sealant#333)", async () => {
+  it("maps a person launch refused for its owner map to Mend's words by sealant's code, and records the image's answer (sealant#333)", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
@@ -3113,7 +3113,7 @@ describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
       return { steps, settled };
     });
 
-  it("never holds the launch: a reset Core never answers is left running beside it", async () => {
+  it("never holds the launch: a reset sealant never answers is left running beside it", async () => {
     const core = coreCalls();
     core.sshAnswers.push("never");
     const forks: Array<Effect.Effect<void>> = [];
@@ -3130,7 +3130,7 @@ describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
   });
 
   effectIt.effect(
-    "is retried with backoff, said on the line until Core takes it, then taken off",
+    "is retried with backoff, said on the line until sealant takes it, then taken off",
     () =>
       Effect.gen(function* () {
         const core = coreCalls();
@@ -3170,7 +3170,7 @@ describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
         yield* Fiber.join(fiber);
         expect(core.calls.filter((call) => call === "ssh-user:root")).toHaveLength(8);
         expect(told.every((resolved) => !resolved)).toBe(true);
-        // A shell in the fallback executor: its start forks the reset again, and Core takes it.
+        // A shell in the fallback executor: its start forks the reset again, and sealant takes it.
         yield* steps.processAs({
           workspace,
           launchId: "launch-ssh",
@@ -3230,8 +3230,8 @@ describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
       }),
     );
     expect(forks).toHaveLength(1);
-    // Mend restarts before the reset reached Core (it never ran): new steps over the same store,
-    // and Core takes the reset this time.
+    // Mend restarts before the reset reached sealant (it never ran): new steps over the same store,
+    // and sealant takes the reset this time.
     core.sshAnswers.length = 0;
     const afterRestart: Array<Effect.Effect<void>> = [];
     const toldAfter: Array<boolean> = [];
@@ -3258,7 +3258,7 @@ describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
         if (reset === undefined) throw new Error("no reset forked");
         yield* reset;
         expect(core.calls.filter((call) => call === "ssh-user:root")).toHaveLength(1);
-        // Taken by Core: the next start forks nothing more.
+        // Taken by sealant: the next start forks nothing more.
         yield* start(steps);
         expect(afterRestart).toHaveLength(1);
       }),

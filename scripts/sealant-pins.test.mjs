@@ -61,7 +61,7 @@ test("the pin writer owns seven production consumers and never test expectations
 const repositoryPins = async () =>
   readPins({ dockerfile: await read("Dockerfile"), workspace: await read("pnpm-workspace.yaml") });
 
-test("the checked-in pins are one exact Core version, by digest, with no preview sealantd", async () => {
+test("the checked-in pins are one exact sealant version, by digest, with no preview sealantd", async () => {
   const pins = await repositoryPins();
   assert.deepEqual(pinProblems(pins, { stable: pins.sealantVersion.includes("-") === false }), []);
   for (const { argument, repository } of SEALANT_IMAGES) {
@@ -91,7 +91,7 @@ test("a prerelease is pinned under the -next names, a release under the plain on
   };
   assert.deepEqual(pinProblems(next, { stable: false }), []);
   const refused = pinProblems(next, { stable: true }).join("\n");
-  assert.match(refused, /Release Core 0\.39\.0/);
+  assert.match(refused, /Release sealant 0\.39\.0/);
   assert.match(
     refused,
     /cannot depend on a prerelease package: npm:@sealant\/sdk-next@0\.39\.0-next\.12/,
@@ -377,7 +377,7 @@ for (const failure of [
   });
 }
 
-test("the setup assets and the supervisor name the pinned Core version", async () => {
+test("the setup assets and the supervisor name the pinned sealant version", async () => {
   const pins = await repositoryPins();
   const files = Object.fromEntries(
     await Promise.all(PIN_FILES.map(async (file) => [file, await read(file)])),
@@ -396,7 +396,7 @@ test("the setup assets and the supervisor name the pinned Core version", async (
   assert.equal(assetProblems(files, "0.39.0-next.12").length, 9);
 });
 
-test("the public pin CLI and preview guard agree on the bundled Core digests", async () => {
+test("the public pin CLI and preview guard agree on the bundled sealant digests", async () => {
   const scratch = await mkdtemp(path.join(tmpdir(), "mend-pin-authority-"));
   const requests = [];
   let targetVersion = "0.39.0-next.99999";
@@ -528,7 +528,7 @@ globalThis.fetch = (input, options) => {
     const workflow = parse(await read(".github/workflows/preview.yml"));
     const steps = workflow.jobs.plan.steps;
     const guard = steps.find(
-      (step) => step.name === "Verify pinned Core digests match the bundle version",
+      (step) => step.name === "Verify pinned sealant digests match the bundle version",
     );
     assert.ok(guard, "pinned previews must check the label against GHCR before building");
     assert.equal(guard.if, "inputs.sealant_ref == ''");

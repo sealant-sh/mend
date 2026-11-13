@@ -1,4 +1,4 @@
-# The `next` prerelease channel across sealantd, Core and Mend
+# The `next` prerelease channel across sealantd, sealant and Mend
 
 - **Release:** 0.36
 - **Status:**
@@ -10,31 +10,31 @@
     - mend#524 (ROADMAP "How releases work");
     - the "Argument list too long" fix: mend#533, sealant#322, sealantd#140, all open.
   - **Published:**
-    - Core `0.39.0-next.682` and `0.39.0-next.683`;
+    - sealant `0.39.0-next.682` and `0.39.0-next.683`;
     - sealantd `0.20.0-next.142`.
   - **Not yet on npm:** Mend's first next build, `v0.36.0-next.601`. Its npm step failed (see Edge
     cases).
 - **PRs:** mend#521, mend#522, mend#523, mend#524, mend#531, mend#532; sealant#318, sealant#319,
   sealant#321; sealantd#137, sealantd#138. The fix in flight: mend#533, sealant#322, sealantd#140.
 - **Decision records:** docs/adr/0015-next-channel.md (Mend). Runbook:
-  docs/operations/next-channel.md (Mend). Also Core `DEVELOPMENT.md` and sealantd
+  docs/operations/next-channel.md (Mend). Also sealant `DEVELOPMENT.md` and sealantd
   `docs/runtime/integration.md`.
 - **Written:** 2026-10-05, against mend main `c9b645b0b`, sealant main `bc9ec42`, sealantd main
   `07ada50`.
 
 ## Why it exists
 
-Mend compiles against `@sealant/sdk` from npm and bundles Core's images, and Core bakes in sealantd.
-Before this, a Mend change that needed a new Core API waited for a Core release, and that waited for
-a sealantd release. The roadmap allowed one of each per Mend release. In October 2026 three Mend
-changes were blocked this way: faster status polling (sealant#314), `available` on a run's changes
-(sealant#313), and the steering login switch (sealant#315, sealant#316).
+Mend compiles against `@sealant/sdk` from npm and bundles sealant's images, and sealant bakes in
+sealantd. Before this, a Mend change that needed a new sealant API waited for a sealant release, and
+that waited for a sealantd release. The roadmap allowed one of each per Mend release. In October
+2026 three Mend changes were blocked this way: faster status polling (sealant#314), `available` on a
+run's changes (sealant#313), and the steering login switch (sealant#315, sealant#316).
 
 Nobody outside the box could try Mend before a release: preview builds reached only the box.
 
-There was also a live supply-chain gap. Core installed with `pnpm install --lockfile=false` in CI,
-release and image builds, and on 2026-09-13 an Effect `rc` drifted into the `sealant-api` image that
-way. With prereleases of Sealant's own packages on npm, `workspace:^` ranges would let a newer
+There was also a live supply-chain gap. sealant installed with `pnpm install --lockfile=false` in
+CI, release and image builds, and on 2026-09-13 an Effect `rc` drifted into the `sealant-api` image
+that way. With prereleases of Sealant's own packages on npm, `workspace:^` ranges would let a newer
 prerelease drift into any image (ADR 0015, "The drift that has to go first").
 
 The owner's 0.36 goal is a release shared with people and bulletproof. That needs a channel people
@@ -51,8 +51,8 @@ can install with one command, and a stable release that is provably the build th
     none: `X.Y.(Z+1)`; any minor: `X.(Y+1).0`; any major: `(X+1).0.0`), or the package's own version
     when it is higher (Version Packages merged, not yet tagged);
   - the base of the highest next build already handed out above that tag. For Mend that is its
-    `vX.Y.Z-next.N` tags. For Core and sealantd it is also the package's published next versions on
-    npm.
+    `vX.Y.Z-next.N` tags. For sealant and sealantd it is also the package's published next versions
+    on npm.
 - A preview build of an unmerged branch is `B-next.N.preview.R`: B and N of the branch's merge base
   with `origin/main`, and R the preview workflow's run number.
 
@@ -60,8 +60,8 @@ Observed on 2026-10-04/05:
 
 | Repository | Commit      | Count | Version           |
 | ---------- | ----------- | ----- | ----------------- |
-| Core       | `ef9e537`   | 682   | `0.39.0-next.682` |
-| Core       | `bc9ec42`   | 683   | `0.39.0-next.683` |
+| sealant    | `ef9e537`   | 682   | `0.39.0-next.682` |
+| sealant    | `bc9ec42`   | 683   | `0.39.0-next.683` |
 | sealantd   | `07ada50`   | 142   | `0.20.0-next.142` |
 | Mend       | `c9b645b0b` | 601   | `0.36.0-next.601` |
 
@@ -73,7 +73,7 @@ Observed on 2026-10-04/05:
     by digest.
   - npm, under `next`: `@sealant/runtime-protocol-next` and `@sealant/runtime-client-next`
     `<version>`, with provenance.
-- **Core:** every push to main (`next.yml`).
+- **sealant:** every push to main (`next.yml`).
   - The unit and integration tests (against Postgres) and the workspace runtime e2e against the
     pinned sealantd must pass first.
   - Images: `ghcr.io/sealant-sh/sealant-{api,worker,ssh-gateway}-next:<version>`, amd64 and arm64,
@@ -92,12 +92,12 @@ Observed on 2026-10-04/05:
 
 **Separate packages and images.**
 
-- Prereleases of Core and sealantd never publish under the stable names.
+- Prereleases of sealant and sealantd never publish under the stable names.
 - The `next` trusted publisher (workflow `next.yml`, environment `next`) is registered only on the
   four `-next` packages.
 - Consumers pin prereleases by exact alias:
   - Mend's catalog: `"@sealant/sdk": npm:@sealant/sdk-next@0.39.0-next.683`;
-  - Core's `packages/workspaces/package.json`:
+  - sealant's `packages/workspaces/package.json`:
     `"@sealant/runtime-client": "npm:@sealant/runtime-client-next@0.20.0-next.142"`.
 - A `-next` package depends on its sibling only as `npm:@sealant/<sibling>-next@<same version>`.
 - Mend's own next builds stay `@sealant/mend` on the `next` dist-tag, because people install
@@ -122,12 +122,12 @@ A server moves forward only. `mend server upgrade` refuses a lower version:
 
 1. sealantd merges its Version Packages PR, which freezes its main. That commit publishes
    `X.Y.Z-next.N`.
-2. Core pins that build (`pin-sealantd.mjs`).
+2. sealant pins that build (`pin-sealantd.mjs`).
 3. sealantd tags `vX.Y.Z` on that commit.
-4. Core pins sealantd `vX.Y.Z` and merges its Version Packages PR, which freezes its main.
-5. Mend pins that Core build, cuts a next build and runs it on the box.
-6. Core tags its release.
-7. Mend pins Core's release and cuts a next build of its own release version: the proof.
+4. sealant pins sealantd `vX.Y.Z` and merges its Version Packages PR, which freezes its main.
+5. Mend pins that sealant build, cuts a next build and runs it on the box.
+6. sealant tags its release.
+7. Mend pins sealant's release and cuts a next build of its own release version: the proof.
 8. Mend merges its Version Packages PR and tags it.
 
 Guards refuse the steps that can be checked. The rest is the runbook checklist.
@@ -140,27 +140,27 @@ checking migrations. The CLI help reads:
 **In scope.**
 
 - `next-version.mjs`: the same file in all three repositories.
-- Core and sealantd `next.yml`: plan, image, image-tag, Core's `test` and `workspace-e2e`, pack,
-  publish.
+- sealant and sealantd `next.yml`: plan, image, image-tag, sealant's `test` and `workspace-e2e`,
+  pack, publish.
 - The republish block: the same in all three.
-- `check-tarball.mjs` (Core, sealantd).
+- `check-tarball.mjs` (sealant, sealantd).
 - The release guards:
   - Mend `check-release-pins.mjs`;
-  - Core `check-release-pins.mjs` and `--stray`;
+  - sealant `check-release-pins.mjs` and `--stray`;
   - sealantd's `stable-tag` job.
-- The pin tools: Mend `sealant-pins.mjs`, Core `pin-sealantd.mjs`.
+- The pin tools: Mend `sealant-pins.mjs`, sealant `pin-sealantd.mjs`.
 - The image rules: Mend `image.yml` (a version is pushed once; a dispatch must come from main and
   name a tagged or dev version).
 - The preview renumbering in Mend `preview.yml`.
 - `--from-preview` and `/app/migrations.txt` in Mend's image.
-- Core's recovery check accepting `sealantd-next`.
-- Lockfile-bound installs (Core #318, Mend `version.yml`) and the CI check that refuses a
+- sealant's recovery check accepting `sealantd-next`.
+- Lockfile-bound installs (sealant #318, Mend `version.yml`) and the CI check that refuses a
   lockfile-free install.
 - Exact internal dependencies (`workspace:*`).
-- CODEOWNERS (Core, sealantd).
+- CODEOWNERS (sealant, sealantd).
 - Action and BuildKit/binfmt pins in every write-token job.
 - The socat checksum (sealantd#138).
-- Mend main pinning Core `0.39.0-next.683` and sealantd `0.20.0-next.142` (mend#531, mend#532;
+- Mend main pinning sealant `0.39.0-next.683` and sealantd `0.20.0-next.142` (mend#531, mend#532;
   sealant#321).
 
 **Out of scope.**
@@ -170,9 +170,9 @@ checking migrations. The CLI help reads:
   images (ADR 0015, "Known gaps").
 - **Mend servers pull `ghcr.io/sealant-sh/mend:<version>` by tag.** Image digests are not in the CLI
   package (recommended follow-up, not built).
-- **Byte-identical stable releases.** Core's and sealantd's stable images are rebuilt from the tag.
-  Base images float, `corepack` is unpinned in Mend's Dockerfile, `ssh2`'s own deps resolve at build
-  time, and `@opentui/*` are carets in the published CLI.
+- **Byte-identical stable releases.** sealant's and sealantd's stable images are rebuilt from the
+  tag. Base images float, `corepack` is unpinned in Mend's Dockerfile, `ssh2`'s own deps resolve at
+  build time, and `@opentui/*` are carets in the published CLI.
 - **Mend has no CODEOWNERS and no required review on main.**
 - **Changesets pre mode or `--snapshot`.** Nothing about a prerelease is committed.
 - **Floating image tags.** `next` and `edge` never exist.
@@ -182,7 +182,7 @@ checking migrations. The CLI help reads:
 
 ## How it works
 
-**1. Computing a version** (`scripts/next-version.mjs`; Core `tooling/scripts/next-version.mjs`;
+**1. Computing a version** (`scripts/next-version.mjs`; sealant `tooling/scripts/next-version.mjs`;
 byte-identical, sha256 `1f005e25…`).
 
 - `planAt` (`:181-197`) reads, at the commit:
@@ -247,7 +247,7 @@ byte-identical, sha256 `1f005e25…`).
 - **The `next` environment** in sealantd deploys only from branch `main` (environments API,
   2026-10-05).
 
-**3. Core `next.yml`** (Core `.github/workflows/next.yml`).
+**3. sealant `next.yml`** (sealant `.github/workflows/next.yml`).
 
 - **Trigger.** `push` to main, `if: github.repository == 'sealant-sh/sealant'`. Concurrency `next`,
   no cancel.
@@ -267,9 +267,9 @@ byte-identical, sha256 `1f005e25…`).
   4. Rename to `-next`, with `@sealant/sdk-next` depending on `npm:@sealant/api-contracts-next@<v>`.
   5. Pack, then `check-tarball.mjs`.
 - **`publish`** (`:365-579`): environment `next`. Republishes `api-contracts-next`, then `sdk-next`.
-- **The `next` environment** in Core deploys only from branch `main`.
+- **The `next` environment** in sealant deploys only from branch `main`.
 
-**4. The republish block.** It is the same text in Mend `release-cli.yml:122-293`, Core
+**4. The republish block.** It is the same text in Mend `release-cli.yml:122-293`, sealant
 `next.yml:392-563` and sealantd `next.yml`. `republish.test.mjs` (identical in all three) extracts
 it from the workflow and runs it against a stub registry.
 
@@ -365,10 +365,10 @@ it from the workflow and runs it against a stub registry.
     - `deploy/helm/mend/Chart.yaml`, whose only changed lines may be `version` and `appVersion`,
       with `appVersion` equal to the release.
 
-**7. Core's and sealantd's stable guards.**
+**7. sealant's and sealantd's stable guards.**
 
-- **Core `release.yml` `pins`:**
-  - `check-release-pins.mjs` (Core):
+- **sealant `release.yml` `pins`:**
+  - `check-release-pins.mjs` (sealant):
     - the tag is stable;
     - every sealantd reference in `buildkit-builder.ts` and `apps/cf-bridge/Dockerfile` matches
       `^ghcr\.io/sealant-sh/sealantd:\d+\.\d+\.\d+@sha256:[0-9a-f]{64}$` (`:31`);
@@ -393,19 +393,20 @@ it from the workflow and runs it against a stub registry.
      as whole tokens, and the catalog becomes an alias or plain version.
   3. Checks `pinProblems`.
   4. Runs `pnpm install`.
-- **Core:** `node tooling/scripts/pin-sealantd.mjs <version>`.
+- **sealant:** `node tooling/scripts/pin-sealantd.mjs <version>`.
   1. Reads the digest from `sealant-sh/sealantd[-next]`.
   2. Writes `ghcr.io/sealant-sh/sealantd[-next]:<version>@sha256:<digest>` into both image files.
   3. Sets both runtime packages in `packages/workspaces/package.json` exact: aliases for a
      prerelease.
   4. Runs `pnpm install`.
-- **Recovery boot.** Core's recovery check (`packages/workspaces/src/runtime/daemon-recovery.ts:41`)
-  accepts `ghcr.io/sealant-sh/sealantd:X.Y.Z` or `ghcr.io/sealant-sh/sealantd-next:X.Y.Z-next.N`
-  from 0.19.0 on, with an optional digest.
+- **Recovery boot.** sealant's recovery check
+  (`packages/workspaces/src/runtime/daemon-recovery.ts:41`) accepts
+  `ghcr.io/sealant-sh/sealantd:X.Y.Z` or `ghcr.io/sealant-sh/sealantd-next:X.Y.Z-next.N` from 0.19.0
+  on, with an optional digest.
 - **Current pins.**
-  - Core main: `ghcr.io/sealant-sh/sealantd-next:0.20.0-next.142@sha256:5983d0b8…` and
+  - sealant main: `ghcr.io/sealant-sh/sealantd-next:0.20.0-next.142@sha256:5983d0b8…` and
     `npm:@sealant/runtime-*-next@0.20.0-next.142` (sealant#321).
-  - Mend main pins Core `0.39.0-next.683`:
+  - Mend main pins sealant `0.39.0-next.683`:
     - catalog: aliases;
     - images: `sealant-*-next@sha256:1114bdcf…`, `a0873bea…` and `27f38ffa…`;
     - label: `0.39.0-next.683`.
@@ -443,13 +444,13 @@ it from the workflow and runs it against a stub registry.
 
 **10. Lockfile and supply chain.**
 
-- Core: every `pnpm install` in CI, `release.yml`, `version.yml` and the four Dockerfiles is
+- sealant: every `pnpm install` in CI, `release.yml`, `version.yml` and the four Dockerfiles is
   `--frozen-lockfile`. `ssh2@1.17.0` is exact.
-- Core's and Mend's `ci.yml` fail on `lockfile=false`, `PNPM_CONFIG_LOCKFILE` or
+- sealant's and Mend's `ci.yml` fail on `lockfile=false`, `PNPM_CONFIG_LOCKFILE` or
   `no-frozen-lockfile` in workflows, Dockerfiles or scripts.
 - `@sealant/sdk` → `@sealant/api-contracts` and `runtime-client` → `runtime-protocol` are
   `workspace:*` (exact on publish).
-- Core's `minimumReleaseAgeExclude` names the two runtime packages and their `-next` packages
+- sealant's `minimumReleaseAgeExclude` names the two runtime packages and their `-next` packages
   (`pnpm-workspace.yaml:69-73`).
 - sealantd builds with `cargo build --locked`.
 - sealantd's socat comes over HTTPS and is checked against a pinned sha256 (sealantd#138).
@@ -458,7 +459,7 @@ it from the workflow and runs it against a stub registry.
 
 **Ordering and concurrency.**
 
-- Core and sealantd `next` runs share one concurrency group per repository, and do not cancel a
+- sealant and sealantd `next` runs share one concurrency group per repository, and do not cancel a
   running one.
 - The forward-only check runs twice: in `plan`, before any build, and right before `npm publish`.
 - Mend checks tag order in `pins` and checks `next` again in the `npm` job, after approval.
@@ -471,7 +472,7 @@ it from the workflow and runs it against a stub registry.
 
 Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 
-1. Core's `next.yml` run 37243345550 (on `ef9e537`):
+1. sealant's `next.yml` run 37243345550 (on `ef9e537`):
    - computes `0.39.0-next.682` (count 682; B = `0.39.0` from a pending minor over `v0.38.1`);
    - finds nothing published from another commit;
    - builds six images, runs the tests and the e2e, and tags
@@ -484,8 +485,9 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 2. sealantd#136 merges as `07ada50`. `ci` succeeds. `next.yml` run 37243952334 publishes
    `ghcr.io/sealant-sh/sealantd-next:0.20.0-next.142` and the two runtime `-next` packages at
    23:34:52Z.
-3. On 2026-10-05 Yiannis runs `node tooling/scripts/pin-sealantd.mjs 0.20.0-next.142` in Core and
-   merges sealant#321 (`bc9ec42`). Core publishes `0.39.0-next.683` at 15:25:07Z (run 37331747877).
+3. On 2026-10-05 Yiannis runs `node tooling/scripts/pin-sealantd.mjs 0.20.0-next.142` in sealant and
+   merges sealant#321 (`bc9ec42`). sealant publishes `0.39.0-next.683` at 15:25:07Z (run
+   37331747877).
 4. In Mend he runs `node scripts/sealant-pins.mjs pin 0.39.0-next.683`, then `pnpm format:fix`,
    opens mend#532 and merges it (`c9b645b0b`).
 5. He cuts the Mend next build:
@@ -513,7 +515,7 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
      `ghcr.io/sealant-sh/mend:0.36.0-next.<M> carries all <k> migrations this server applied.` and
      upgrades.
    - From then on `deploy-box.yml` deploys next builds and new-style previews.
-8. **At release:** sealantd tags `v0.20.0`; Core pins it and tags `v0.39.0`; Mend pins `0.39.0`,
+8. **At release:** sealantd tags `v0.20.0`; sealant pins it and tags `v0.39.0`; Mend pins `0.39.0`,
    cuts `v0.36.0-next.<P>`, proves it on the box, merges Version Packages and tags `v0.36.0`. `pins`
    finds no prerelease pinned or locked, the promotion diff clean, and `v0.36.0-next.<P>` on npm.
    `@sealant/mend@0.36.0` publishes as `latest`, and the images are retagged `latest`.
@@ -525,7 +527,7 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
    `X.Y.Z-next.*`. N never decreases, and B never falls below a base handed out since the last
    stable tag.
 2. **An older commit never publishes after a newer one.** It computes a lower version, and `plan`
-   (Core, sealantd) or `pins` (Mend) refuses it before any build.
+   (sealant, sealantd) or `pins` (Mend) refuses it before any build.
 3. **npm's `next` dist-tag never moves back through a workflow.** Every publish re-reads `next`
    uncached right before `npm publish` and refuses a version that is not newer.
 4. **A version is published from exactly one commit.** A re-run on the same commit skips what is
@@ -559,14 +561,14 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 10. **No release leaves out one of its own next builds.** No stable release of X.Y.Z, in any
     repository, is cut from a commit that leaves out a next build of X.Y.Z: a server on that build
     would lose work by "upgrading".
-11. **A stable Core release pins no sealantd prerelease.**
+11. **A stable sealant release pins no sealantd prerelease.**
     - Every sealantd image reference is a release, pinned `tag@sha256`.
     - No `@sealant/runtime-*` range or locked version is a prerelease.
-    - No published manifest of Core or sealantd depends on an `npm:` alias.
-12. **Mend's pinned Core digests match GHCR.** Each digest Mend pins equals what GHCR serves
-    anonymously for that Core version's tag when the release runs.
+    - No published manifest of sealant or sealantd depends on an `npm:` alias.
+12. **Mend's pinned sealant digests match GHCR.** Each digest Mend pins equals what GHCR serves
+    anonymously for that sealant version's tag when the release runs.
 13. **Every dependency install is bound to the lockfile.** That covers every install in a workflow
-    or Dockerfile of Core and Mend, and every cargo build of sealantd (`--locked`).
+    or Dockerfile of sealant and Mend, and every cargo build of sealantd (`--locked`).
 14. **No server upgrade drops data.**
     - A server never moves to a lower version.
     - `--from-preview` refuses a target that lacks a migration the server applied, would skip one,
@@ -586,12 +588,12 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
     staged publishing" (22:56:21Z).
   - `next-version.mjs` ignores both: `0.0.0-stage` is not a next version, and `0.0.0-next.0` is not
     above the anchor.
-- **First Core publish.** `0.39.0-next.682` from `ef9e537`, at 23:24:59Z.
+- **First sealant publish.** `0.39.0-next.682` from `ef9e537`, at 23:24:59Z.
 - **First sealantd publish.** `0.20.0-next.142` from `07ada50`, at 23:34:52Z. The merges of
   sealantd#138 (`42d69da`, count 140) and sealantd#137 (`231691f`, count 141) never published: their
   main `ci` runs were cancelled by the next push (`ci.yml` `cancel-in-progress: true`), and
   `next.yml` skipped them.
-- **Second Core publish.** `0.39.0-next.683` from `bc9ec42` (sealant#321, pinning sealantd
+- **Second sealant publish.** `0.39.0-next.683` from `bc9ec42` (sealant#321, pinning sealantd
   `0.20.0-next.142`), on 2026-10-05 at 15:25:07Z.
 - **Mend's first release failed.** `v0.36.0-next.601` on `c9b645b0b`, run 37342721738.
   - `pins`, `npm-pack`, the images (eight builds, four merges), packaged acceptance on both
@@ -606,7 +608,7 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
   - **Fix.** mend#533, sealant#322 and sealantd#140 pass the JSON on stdin (`<<<"$var"`,
     `readFileSync(0)`) in `published_from`, `dist_tag` and the `npm pack --json` read. They add a
     test with a document over 256 KB. All three are open.
-  - **Still exposed.** Core's and sealantd's publish jobs carry the same block. Their `-next`
+  - **Still exposed.** sealant's and sealantd's publish jobs carry the same block. Their `-next`
     documents are 4–8 KB today and grow about 2 KB per publish, so each would hit the limit after
     roughly 60 more publishes without the fix.
 
@@ -633,7 +635,7 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 
 **Concurrency**
 
-- **Two merges in quick succession** (Core or sealantd). The second run waits for the first. A
+- **Two merges in quick succession** (sealant or sealantd). The second run waits for the first. A
   third, arriving while one runs and one is pending, cancels the pending one (GitHub keeps one
   pending run per group), so not every merge publishes. Versions stay monotonic.
 - **A run of an older commit started after a newer commit published** fails in `plan` with
@@ -644,8 +646,8 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
     `@sealant/mend's next is already <newer>, not older than <older>. Nothing was published.` Its
     GitHub prerelease and images remain.
   - Two approvals in the wrong order cannot move `next` back.
-- **A merge to sealantd or Core during the freeze** (between its Version Packages merge and its tag)
-  publishes `X.Y.Z-next.M` from a commit the tag on the Version Packages commit leaves out. The
+- **A merge to sealantd or sealant during the freeze** (between its Version Packages merge and its
+  tag) publishes `X.Y.Z-next.M` from a commit the tag on the Version Packages commit leaves out. The
   stable release then refuses: `<version> was built from <sha>, which vX.Y.Z would not contain…`.
 - **Image job ran, publish failed.** A re-run keeps the existing image tag (Mend may already have
   pinned its digest) and publishes npm only.
@@ -656,7 +658,7 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
   "nothing published".
 - **Exception: Mend's stable `published()` check** is one GET. A 5xx throws and fails `pins`; re-run
   it.
-- **Core publishes `api-contracts-next`, then fails on `sdk-next`.** A re-run: `plan` sees
+- **sealant publishes `api-contracts-next`, then fails on `sdk-next`.** A re-run: `plan` sees
   `sdk-next` unpublished, `publish_rebuilt` finds `api-contracts-next` already published from this
   commit and skips it, then publishes `sdk-next`.
 - **A GHCR digest that differs from the pin at Mend release time** (a tag moved after the pin) fails
@@ -674,7 +676,7 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 
 - **A Mend tag that is not SEMVER, or is a prerelease other than `-next.N`** (for example
   `v0.36.0-rc.1`): refused in `pins`.
-- **A Core or sealantd tag with `-`:** refused
+- **A sealant or sealantd tag with `-`:** refused
   (`… is a prerelease. Prereleases publish from main (next.yml), never from a tag.`).
 - **A mistyped Mend next tag** (wrong N): refused in `pins`, but it counts as handed out from the
   moment it exists. Raised B for later builds, or a tag off main blocking its version's release; the
@@ -701,8 +703,8 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 
 - **Mend next and stable tags:** only admins (ruleset `protect-release-tags`), then the owner's
   approval in `release`.
-- **Core and sealantd prereleases:** anyone who can merge to main. Code-owner review is not enforced
-  (see Divergences). The `next` environment deploys only from `main`.
+- **sealant and sealantd prereleases:** anyone who can merge to main. Code-owner review is not
+  enforced (see Divergences). The `next` environment deploys only from `main`.
 - **Image pushes:** anyone with write access can run a branch workflow that asks for
   `packages: write` and push any image, stable ones included. No review stops it (ADR 0015, Known
   gaps).
@@ -713,8 +715,8 @@ Yiannis (owner, admin) merges sealant#319 on 2026-10-04.
 
 - **CLI:** `@sealant/mend@next` bundles what it imports from `@sealant/*`, so installing it never
   resolves the SDK.
-- **Server images** carry the Core pinned by that commit, possibly a Core prerelease, and Core's
-  pinned sealantd.
+- **Server images** carry the sealant pinned by that commit, possibly a sealant prerelease, and
+  sealant's pinned sealantd.
 - **Web, desktop, mobile, VS Code, Slack and the t3 gateway** run against whatever server version is
   installed. The `versions differ — the server's API wins` line in `mend version` shows a mismatch.
 
@@ -732,16 +734,16 @@ From ADR 0015, "Known gaps":
   - unpinned `corepack` in Mend's Dockerfile;
   - `ssh2`'s transitive ranges;
   - `@opentui/*` carets in the published CLI;
-  - Core's ssh-gateway and telemetry still on `^0.6.0` / `^0.4.0` of `@sealant/runtime-*`;
+  - sealant's ssh-gateway and telemetry still on `^0.6.0` / `^0.4.0` of `@sealant/runtime-*`;
   - workspace images install agent CLIs at `@latest`, by design.
 - **Migrations:** `--from-preview` cannot see a Mend migration changed under the same id and name.
   An ordinary preview-to-next upgrade checks no migrations.
 - **Mend main:** no CODEOWNERS, no required review.
-- **Core's and sealantd's stable npm jobs** still check out, install (frozen, `--ignore-scripts`)
+- **sealant's and sealantd's stable npm jobs** still check out, install (frozen, `--ignore-scripts`)
   and build in the job that holds `id-token`. The republish hardening applies to next builds and to
   Mend's npm job only. The stable jobs rely on the tag-only, review-gated `release` environment.
-- **The main freezes:** sealantd main and Core main each freeze from their Version Packages merge to
-  their tag. Mend main is in effect frozen from the proving next build to its tag.
+- **The main freezes:** sealantd main and sealant main each freeze from their Version Packages merge
+  to their tag. Mend main is in effect frozen from the proving next build to its tag.
 - **Mend next builds** take 30–45 minutes on eight runners and an approval each, so they are cut on
   demand, not per merge.
 - **Withdrawing a prerelease** needs an owner's npm login with 2FA. Nothing in the workflows can
@@ -763,12 +765,12 @@ From ADR 0015, "Known gaps":
   - `scripts/bundle-packaging.test.mjs`: digests.
   - `apps/cli/src/server-lifecycle.test.ts` and `apps/cli/src/server-migrations.test.ts`:
     `--from-preview`.
-- **Core:**
+- **sealant:**
   `tooling/scripts/{next-version,check-release-pins,check-tarball,republish,pin-sealantd}.test.mjs`
   (CI) and `packages/workspaces/src/runtime/daemon-recovery.test.ts`.
 - **sealantd:** `scripts/{next-version,check-tarball,republish}.test.mjs` (CI).
 - **Not covered by tests:**
-  - the workflows end to end (Core's and sealantd's `next.yml` run only on main);
+  - the workflows end to end (sealant's and sealantd's `next.yml` run only on main);
   - the size of real registry documents, which is what broke 601;
   - GitHub concurrency behaviour;
   - Mend's stable path end to end (no stable release has run under these rules);
@@ -802,7 +804,7 @@ Run the runbook's box loop for each local `ghcr.io/sealant-sh/mend:*-preview.*` 
 **Signals to watch:**
 
 - Run summaries:
-  - Core: `## Sealant <v>` with `Pin it in Mend: …`;
+  - sealant: `## Sealant <v>` with `Pin it in Mend: …`;
   - sealantd: `## sealantd <v>` with the digest.
 - Errors:
   - `::error::` lines from `pins`, `plan` and `publish_rebuilt`;
@@ -814,30 +816,31 @@ Run the runbook's box loop for each local `ghcr.io/sealant-sh/mend:*-preview.*` 
 ## Divergences found while writing
 
 1. **Registry JSON passed as an argument** (`.github/workflows/release-cli.yml:184-191` in Mend, and
-   the same block at Core `.github/workflows/next.yml:454-461` and sealantd `next.yml`).
+   the same block at sealant `.github/workflows/next.yml:454-461` and sealantd `next.yml`).
    - `published_from` passes the registry document to `node -e` as an argument. That killed Mend's
      first next publish (`v0.36.0-next.601`, run 37342721738, `Argument list too long`, exit 126).
    - `dist_tag` (`release-cli.yml:177-181`) and `rebuild_tarball`'s `npm pack --json` read (`:264`)
      have the same shape.
-   - The fix is in review (mend#533, sealant#322, sealantd#140). Core and sealantd will hit it as
+   - The fix is in review (mend#533, sealant#322, sealantd#140). sealant and sealantd will hit it as
      their `-next` documents grow.
 2. **ADR 0015 decision 4(c) is not done.** Code-owner review is listed as an owner action "before
-   merging #319 and #137". `require_code_owner_reviews` is `false` on Core and sealantd main (branch
-   protection API, 2026-10-05), with 0 required approvals. The CODEOWNERS files exist but bind
-   nothing, so anyone who can merge to main can edit `next.yml` and publish under the `-next` names.
+   merging #319 and #137". `require_code_owner_reviews` is `false` on sealant and sealantd main
+   (branch protection API, 2026-10-05), with 0 required approvals. The CODEOWNERS files exist but
+   bind nothing, so anyone who can merge to main can edit `next.yml` and publish under the `-next`
+   names.
 3. **"Every merge to main" does not publish** (ADR 0015 decision 2; the `next.yml` headers).
    - sealantd's `ci` cancels in progress per ref (`.github/workflows/ci.yml:18-20`), so a main
      commit superseded by the next push has no successful CI and is never published. `231691f`
      (sealantd#137's own merge) and `42d69da` were skipped.
    - In both repositories, `concurrency: next` keeps only one pending run, so a third quick merge
      cancels the pending second.
-4. **The ADR and the code differ on the sealantd digest** (ADR 0015 "Guards", Core).
+4. **The ADR and the code differ on the sealantd digest** (ADR 0015 "Guards", sealant).
    - The ADR writes `sealantd:X.Y.Z[@sha256:…]`, which reads as the digest being optional.
-   - Core `tooling/scripts/check-release-pins.mjs:31` requires the digest and refuses a tag alone.
-     The runbook matches the code.
+   - sealant `tooling/scripts/check-release-pins.mjs:31` requires the digest and refuses a tag
+     alone. The runbook matches the code.
 5. **Mend's `npm-pack` job has no `check-tarball` step**
    (`.github/workflows/release-cli.yml:75-81`).
-   - Core's and sealantd's `pack` jobs have one, and ADR 0015 ("Who holds the npm credential")
+   - sealant's and sealantd's `pack` jobs have one, and ADR 0015 ("Who holds the npm credential")
      describes `pack` as checking each tarball.
    - A Mend tarball missing `dist/main.js` (its `bin`) would publish. Packaged acceptance tests the
      images, not the npm tarball.
@@ -868,7 +871,7 @@ Run the runbook's box loop for each local `ghcr.io/sealant-sh/mend:*-preview.*` 
     `deploy-box.yml` use "preview" for `B-next.N.preview.R` builds of unmerged branches. Which one
     the product means is unclear.
 11. **The changesets name prerelease versions** (`.changeset/sealant-0-39-next.md`,
-    `.changeset/sealantd-0-20-next.md`). Unless they are rewritten when Core is re-pinned to a
+    `.changeset/sealantd-0-20-next.md`). Unless they are rewritten when sealant is re-pinned to a
     release (promotion step 7), the stable 0.36.0 CHANGELOG will name prerelease versions. Intent
     unclear.
 12. **Mend's stable `published()` check is not retried** (`scripts/check-release-pins.mjs:120-126`).

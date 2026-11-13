@@ -164,7 +164,7 @@ const inspection = (
   personLayout: { status, missing: [...missing], unknown: [], runtime: "docker", acl: "supported" },
 });
 
-/** Core 0.39.0-next.706: every feature the person layout uses, before SSH users. */
+/** sealant 0.39.0-next.706: every feature the person layout uses, before SSH users. */
 const EVERY_FEATURE: SealantFeatures = {
   processUserRoutes: true,
   dotfilesApply: true,
@@ -182,7 +182,7 @@ const EVERY_FEATURE: SealantFeatures = {
   connectedAccountEndpoints: false,
   inferenceAllowedLogin: false,
 };
-/** A control plane from before any of them (an older Core reports every flag false). */
+/** A control plane from before any of them (an older sealant reports every flag false). */
 const NO_FEATURE: SealantFeatures = {
   processUserRoutes: false,
   dotfilesApply: false,
@@ -269,7 +269,7 @@ const account = (id: string, isDefault: boolean) =>
     isDefault,
   });
 
-describe("the live platform (Core 0.39)", () => {
+describe("the live platform (sealant 0.39)", () => {
   it("runs processes as a user, and writes, releases and lists a person's logins per home", async () => {
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
@@ -286,7 +286,7 @@ describe("the live platform (Core 0.39)", () => {
       }),
     );
     expect(whole.skipped).toEqual([]);
-    // Core is named the person's Sealant user, and the home's numeric owner.
+    // sealant is named the person's Sealant user, and the home's numeric owner.
     expect(puts).toEqual([
       {
         home: "/home/mxyz2345a",
@@ -311,7 +311,7 @@ describe("the live platform (Core 0.39)", () => {
     expect(calls).toEqual(["put:/home/mxyz2345a", "release:/home/mxyz2345a", "list"]);
   });
 
-  it("puts a join's logins in one partial call, pi's and opencode's ChatGPT logins included, and answers what Core left out (sealant#336, #337)", async () => {
+  it("puts a join's logins in one partial call, pi's and opencode's ChatGPT logins included, and answers what sealant left out (sealant#336, #337)", async () => {
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
     );
@@ -399,7 +399,7 @@ describe("the live platform (Core 0.39)", () => {
       };
       return workspace;
     };
-    /** Core with `features`, whose connected accounts for a person answer `accounts`. */
+    /** sealant with `features`, whose connected accounts for a person answer `accounts`. */
     const clientsWith = (
       features: SealantFeatures,
       accounts: Effect.Effect<ReadonlyArray<ConnectedAccount>, SealantPlatformError>,
@@ -417,7 +417,7 @@ describe("the live platform (Core 0.39)", () => {
       });
     const withAccounts = (accounts: ReadonlyArray<ConnectedAccount>, asked: Array<string>) =>
       clientsWith(PLACEMENTS, Effect.succeed(accounts), asked);
-    it("answers each provider's placed login from Core's receipts, a Claude key's file path included", async () => {
+    it("answers each provider's placed login from sealant's receipts, a Claude key's file path included", async () => {
       const asked: Array<string> = [];
       const written = await put(withAccounts([], asked), answering([claudeKey, codexKey]));
       expect(written.placed).toEqual({
@@ -524,13 +524,13 @@ describe("the live platform (Core 0.39)", () => {
     const bootstrap = applied.bootstrap;
     expect(bootstrap).not.toBeNull();
     if (bootstrap === null) return;
-    // A failing install.sh ends with its exit code, a datum; asked twice, Core is waited on once.
+    // A failing install.sh ends with its exit code, a datum; asked twice, sealant is waited on once.
     expect(await Effect.runPromise(bootstrap.ended)).toEqual({ exitCode: 3 });
     expect(await Effect.runPromise(bootstrap.ended)).toEqual({ exitCode: 3 });
     expect(waits).toBe(1);
   });
 
-  it("fails a refused dotfiles apply with Core's stable code, and a failed one with dotfiles_failed", async () => {
+  it("fails a refused dotfiles apply with sealant's stable code, and a failed one with dotfiles_failed", async () => {
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
     );
@@ -590,7 +590,7 @@ describe("the live platform (Core 0.39)", () => {
     expect(platform.withOwnerMap(standby, map)).toBe(standby);
   });
 
-  it("asks Core about an image once per key while the answer lasts, as the launcher", async () => {
+  it("asks sealant about an image once per key while the answer lasts, as the launcher", async () => {
     const asked: Array<CreateOptions> = [];
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(
@@ -611,7 +611,7 @@ describe("the live platform (Core 0.39)", () => {
     expect(asked[0]?.harness.id).toBe(claudeCode().id);
   });
 
-  it("reads an image question the SDK refuses as unknown, and asks Core nothing", async () => {
+  it("reads an image question the SDK refuses as unknown, and asks sealant nothing", async () => {
     const asked: Array<CreateOptions> = [];
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(
@@ -649,7 +649,7 @@ describe("the live platform (Core 0.39)", () => {
     expect(asked).toEqual([]);
   });
 
-  it("reads Core's unknown as unknown, never as a no", () => {
+  it("reads sealant's unknown as unknown, never as a no", () => {
     expect(imageLayoutReportOf(inspection("unknown"))).toEqual({
       digest: null,
       runtime: "docker",
@@ -661,39 +661,46 @@ describe("the live platform (Core 0.39)", () => {
 });
 
 describe("what the control plane says it can do (review of mend#569, P3-4)", () => {
-  effectIt.effect("refuses the person layout by Core's own report, read once while it lasts", () =>
-    Effect.gen(function* () {
-      const answers: Array<SealantFeatures | null> = [NO_FEATURE, EVERY_FEATURE, null];
-      let asked = 0;
-      const features = () =>
-        Effect.suspend(() => {
-          const answer = answers[asked++];
-          return answer === null || answer === undefined
-            ? Effect.fail(
-                new SealantPlatformError({ code: "x", status: 503, message: "down", cause: null }),
-              )
-            : Effect.succeed(answer);
-        });
-      const platform = yield* PersonLayoutPlatform.pipe(
-        Effect.provide(
-          PersonLayoutPlatformLive.pipe(
-            Layer.provide(clientsLayer([], inspection("supported"), features)),
+  effectIt.effect(
+    "refuses the person layout by sealant's own report, read once while it lasts",
+    () =>
+      Effect.gen(function* () {
+        const answers: Array<SealantFeatures | null> = [NO_FEATURE, EVERY_FEATURE, null];
+        let asked = 0;
+        const features = () =>
+          Effect.suspend(() => {
+            const answer = answers[asked++];
+            return answer === null || answer === undefined
+              ? Effect.fail(
+                  new SealantPlatformError({
+                    code: "x",
+                    status: 503,
+                    message: "down",
+                    cause: null,
+                  }),
+                )
+              : Effect.succeed(answer);
+          });
+        const platform = yield* PersonLayoutPlatform.pipe(
+          Effect.provide(
+            PersonLayoutPlatformLive.pipe(
+              Layer.provide(clientsLayer([], inspection("supported"), features)),
+            ),
           ),
-        ),
-      );
-      const older = controlPlaneObstacleOf(NO_FEATURE);
-      expect(yield* platform.controlPlaneObstacle).toBe(older);
-      // Kept: asked once while the answer lasts.
-      expect(yield* platform.controlPlaneObstacle).toBe(older);
-      expect(asked).toBe(1);
-      // An upgraded control plane is seen once it has passed.
-      yield* TestClock.adjust("6 minutes");
-      expect(yield* platform.controlPlaneObstacle).toBeNull();
-      yield* TestClock.adjust("6 minutes");
-      // Unreadable is no, and asked again soon.
-      expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_UNREADABLE);
-      expect(asked).toBe(3);
-    }),
+        );
+        const older = controlPlaneObstacleOf(NO_FEATURE);
+        expect(yield* platform.controlPlaneObstacle).toBe(older);
+        // Kept: asked once while the answer lasts.
+        expect(yield* platform.controlPlaneObstacle).toBe(older);
+        expect(asked).toBe(1);
+        // An upgraded control plane is seen once it has passed.
+        yield* TestClock.adjust("6 minutes");
+        expect(yield* platform.controlPlaneObstacle).toBeNull();
+        yield* TestClock.adjust("6 minutes");
+        // Unreadable is no, and asked again soon.
+        expect(yield* platform.controlPlaneObstacle).toBe(CONTROL_PLANE_UNREADABLE);
+        expect(asked).toBe(3);
+      }),
   );
 });
 
@@ -707,13 +714,13 @@ describe("the features the person layout needs, and the workspace's own answer (
     expect(controlPlaneObstacleOf(EVERY_FEATURE)).toBeNull();
     const older =
       "the Sealant control plane does not report what per-person users need, which Sealant 0.40.0 or later does";
-    // An older Core: every flag false (it reports none of them, or only `processUser`).
+    // An older sealant: every flag false (it reports none of them, or only `processUser`).
     expect(controlPlaneObstacleOf(NO_FEATURE)).toBe(older);
     expect(controlPlaneObstacleOf({ ...EVERY_FEATURE, credentialsPiOpencode: false })).toBe(older);
     expect(controlPlaneObstacleOf({ ...EVERY_FEATURE, kubernetesPersonLayout: false })).toBe(older);
   });
 
-  it("reads the workspace's answer from its launch, else asks Core, and reads a failure as unknown", async () => {
+  it("reads the workspace's answer from its launch, else asks sealant, and reads a failure as unknown", async () => {
     const platform = await platformWith(
       PersonLayoutPlatformLive.pipe(Layer.provide(clientsLayer([]))),
     );
@@ -746,7 +753,7 @@ describe("the features the person layout needs, and the workspace's own answer (
     expect(await Effect.runPromise(platform.workspaceProcessUser(failing))).toBe("unknown");
   });
 
-  it("says why a process was refused as a person, by Core's reason, never running it as anyone else", () => {
+  it("says why a process was refused as a person, by sealant's reason, never running it as anyone else", () => {
     expect(
       refused(
         "Workspace ws-1's sealantd doesn't run processes as another user (no exec.user), so nothing was started as 'm1'.",
@@ -784,7 +791,7 @@ describe("the features the person layout needs, and the workspace's own answer (
   });
 });
 
-describe("a credentials call Core never answers (review 2 of mend#564, P3-5)", () => {
+describe("a credentials call sealant never answers (review 2 of mend#564, P3-5)", () => {
   effectIt.effect(
     "gives up after 30 s with words, so a person's lock is never held for minutes",
     () =>
@@ -857,14 +864,14 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
       ),
     );
 
-  it("is named only where Core says its gateway runs SSH sessions as one", async () => {
+  it("is named only where sealant says its gateway runs SSH sessions as one", async () => {
     expect(runsSshAsUser(reporting)).toBe(true);
     expect(runsSshAsUser(EVERY_FEATURE)).toBe(false);
     expect(await Effect.runPromise((await platformReporting(reporting)).sshUser)).toBe(true);
     expect(await Effect.runPromise((await platformReporting(EVERY_FEATURE)).sshUser)).toBe(false);
   });
 
-  it("is set back to root through the handle, only where Core takes it, and never fails", async () => {
+  it("is set back to root through the handle, only where sealant takes it, and never fails", async () => {
     const asked: Array<string | null> = [];
     const settable = {
       ...workspaceRecording([], []),
@@ -892,7 +899,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
     expect(await Effect.runPromise(platform.sshAsRoot(failing))).toBe(false);
   });
 
-  effectIt.effect("gives up on an attempt Core does not answer within 5 s, as a no", () =>
+  effectIt.effect("gives up on an attempt sealant does not answer within 5 s, as a no", () =>
     Effect.gen(function* () {
       const platform = yield* PersonLayoutPlatform.pipe(
         Effect.provide(
@@ -914,7 +921,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
   );
 
   effectIt.effect(
-    "is not done while Core cannot be asked: an unreadable feature read keeps the reset pending (review 2 of mend#641, N2)",
+    "is not done while sealant cannot be asked: an unreadable feature read keeps the reset pending (review 2 of mend#641, N2)",
     () =>
       Effect.gen(function* () {
         let reads = 0;
@@ -940,7 +947,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
           },
         };
         expect(yield* platform.sshAsRoot(handle)).toBe(false);
-        // The kept answer runs out, and Core cannot be asked: still tried, still not done.
+        // The kept answer runs out, and sealant cannot be asked: still tried, still not done.
         yield* TestClock.adjust("6 minutes");
         expect(yield* platform.sshAsRoot(handle)).toBe(false);
         expect({ resets, reads }).toEqual({ resets: 2, reads: 2 });
@@ -984,7 +991,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
     );
 
     effectIt.effect(
-      "stays root where Core cannot bind: refused (kept a while), no route, no answer",
+      "stays root where sealant cannot bind: refused (kept a while), no route, no answer",
       () =>
         Effect.gen(function* () {
           const refusedCalls: Array<string> = [];
@@ -1000,7 +1007,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
           expect(yield* refusing.sshAsOwnerFor(ALICE)).toBe("unbound");
           expect(refusedCalls).toHaveLength(2);
 
-          // A Core that runs SSH as a user but has no binding route: never asks for the user.
+          // A sealant that runs SSH as a user but has no binding route: never asks for the user.
           const noRoute: Array<string> = [];
           const older = yield* PersonLayoutPlatform.pipe(
             Effect.provide(withBinding(reporting, () => Effect.succeed("bound" as const), noRoute)),
@@ -1008,7 +1015,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
           expect(yield* older.sshAsOwnerFor(ALICE)).toBe("unbound");
           expect(noRoute).toEqual([]);
 
-          // A binding Core does not answer within 5 s.
+          // A binding sealant does not answer within 5 s.
           const silent = yield* PersonLayoutPlatform.pipe(
             Effect.provide(withBinding(binding, () => Effect.never, [])),
           );
@@ -1018,7 +1025,7 @@ describe("the workspace's SSH user (docs/adr/0016 decision 10, sealant#348)", ()
         }),
     );
 
-    effectIt.effect("asks nothing where Core runs no SSH session as a user", () =>
+    effectIt.effect("asks nothing where sealant runs no SSH session as a user", () =>
       Effect.gen(function* () {
         const calls: Array<string> = [];
         const platform = yield* PersonLayoutPlatform.pipe(

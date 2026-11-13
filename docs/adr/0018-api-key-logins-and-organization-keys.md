@@ -6,8 +6,8 @@ calls that came out of the design on 2026-10-25 (SLNT-102 to SLNT-109). Amends
 [ADR 0008](0008-one-refresher-for-provider-logins.md) (what the refresher and the push touch),
 [ADR 0013](0013-whoever-sends-a-turn-pays.md) (who pays for a turn) and
 [ADR 0016](0016-per-person-harness-homes.md) decision 5 ("no person ever runs on anyone else's
-login"). Read against Mend `7239f5cac` and Sealant Core `9802ef32`. The product view, the risks and
-the harness behaviour this rests on are in the spec, [API-key logins](../specs/api-key-logins.md).
+login"). Read against Mend `7239f5cac` and sealant `9802ef32`. The product view, the risks and the
+harness behaviour this rests on are in the spec, [API-key logins](../specs/api-key-logins.md).
 Amended 2026-11-08 with a custom endpoint (decision 11).
 
 ## Amendment: a custom endpoint, 2026-11-08
@@ -43,7 +43,7 @@ reached its limit to a key, and not from an invalid key to a subscription. The o
 providers is in decision 6.
 
 The harnesses read a key through their official paths. Claude Code reads it through `apiKeyHelper`,
-which Mend sets to read a file Core placed in the person's home (0600, the person's own, outside
+which Mend sets to read a file sealant placed in the person's home (0600, the person's own, outside
 every capture root). Codex reads its official key file, `auth.json` with `auth_mode: apikey`. Mend
 never puts a key it places into a command line, an environment variable, a log, a record or a
 capture. Decision 7 names what that does not cover.
@@ -68,9 +68,9 @@ that provider runs on it. Within that:
 - **A refused key is refused for everyone.** When the provider refuses the organization key, it
   turns invalid for every member at once.
 
-How Core holds the organization key and lets members' homes and inference passes reach it is Core's
-design (Delivery, C5), settled by an architect panel before any code. So is how a turn's billing
-record names the organization, which ADR 0013's `billed_user_id` cannot.
+How sealant holds the organization key and lets members' homes and inference passes reach it is
+sealant's design (Delivery, C5), settled by an architect panel before any code. So is how a turn's
+billing record names the organization, which ADR 0013's `billed_user_id` cannot.
 
 ### 3. Who pays for a turn (amends ADR 0013)
 
@@ -86,8 +86,8 @@ provider. So:
 
 ### 4. A person's home (amends ADR 0016 decision 5)
 
-"No person ever runs on anyone else's login" stands. An organization key is no person's login. Core
-places it in the member's home, owned by the member's user, like their own login.
+"No person ever runs on anyone else's login" stands. An organization key is no person's login.
+sealant places it in the member's home, owned by the member's user, like their own login.
 
 The shared layout (ADR 0016 decision 7a) is outside this feature (D4): its removal is a prerequisite
 that lands first (spec risk 9). In that layout one home holds one set of logins, so a join or a
@@ -113,8 +113,8 @@ organization key in use for them, sees the lines they see today.
 One rule decides which passes may run on a key. A pass that a person's own action starts runs on
 their login, a key included: the session name after they start a session, the request intent and
 Slack thread reading after they send a request, and any pass they ask for. A pass Mend queues on its
-own, and the retry onto another provider, never run on a key. Core's `allowedLogin` on the inference
-request (`subscription` or `any`) is the one place this is enforced.
+own, and the retry onto another provider, never run on a key. sealant's `allowedLogin` on the
+inference request (`subscription` or `any`) is the one place this is enforced.
 
 - **The person who asks pays.** On the organization key, the organization pays.
 - **The Claude-to-Codex retry never lands on a key.** Session names, request intent and Slack thread
@@ -129,7 +129,7 @@ request (`subscription` or `any`) is the one place this is enforced.
 
 ### 7. A refused key, a read key
 
-- **A refused key turns invalid.** Mend and Core mark a key invalid on the provider's structured
+- **A refused key turns invalid.** Mend and sealant mark a key invalid on the provider's structured
   401, never on message text, and only when the key Mend placed is the one the harness used.
 - **An agent that reads its own key is a stated limit**, as it is for a subscription copy today. A
   key works until it is revoked, while a subscription copy expires within hours. Mend masks
@@ -156,7 +156,7 @@ connect a subscription.
 
 ### 10. Provider key names are logins, not project secrets
 
-The names in Core's `providerLoginEnvNames` (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
+The names in sealant's `providerLoginEnvNames` (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`,
 `CLAUDE_CODE_OAUTH_TOKEN`, `OPENAI_API_KEY` and `CODEX_API_KEY`) are refused as new project secret
 names, with words that point to Connected accounts. Rows stored under those names before are kept,
 listed with the refusal words, and can be deleted or renamed. They are delivered at launch as
@@ -170,7 +170,7 @@ repository or dotfiles settings supply is reported as observed, and not stripped
   host, and no user name, password, query or fragment. A trailing slash is dropped. `http` is
   allowed because endpoints on a private network often have no TLS. With an endpoint, the key may be
   any value without whitespace, a placeholder included, because some endpoints take no key.
-- **Where it is kept.** Core seals the endpoint with the key in the login's payload. Reconnecting
+- **Where it is kept.** sealant seals the endpoint with the key in the login's payload. Reconnecting
   replaces both, so a reconnect without an endpoint removes it. The account summary carries only the
   endpoint's host. The placement of a key in a home carries the full URL, and Mend reads it at
   launch.
@@ -227,8 +227,8 @@ only loopback, on the pinned Claude Code 2.1.292 and Codex 0.160.1.
    sends the chosen name as it is. For a Codex conversation with no model named, Mend picks the
    catalog's default, so an endpoint that serves other names refuses the turn. Only the CLI's
    `--model` takes a name outside the catalog.
-5. **Inference** follows the asker's login, as decision 6 and ADR 0013 decided, and Core's engines
-   use the login's endpoint the same way the sessions do. The passes that name a fixed model
+5. **Inference** follows the asker's login, as decision 6 and ADR 0013 decided, and sealant's
+   engines use the login's endpoint the same way the sessions do. The passes that name a fixed model
    (`claude-haiku-4-5`, `gpt-5.6-luna`) fail on an endpoint that does not serve it, and the read is
    skipped.
 
@@ -247,7 +247,7 @@ only loopback, on the pinned Claude Code 2.1.292 and Codex 0.160.1.
 
 ## Delivery
 
-Core (`sealant-sh/sealant`):
+sealant (`sealant-sh/sealant`):
 
 1. C1, a chosen default login per provider (sealant#403, merged).
 2. C2, every credential placement is recorded (sealant#414, merged). Placements replace
@@ -278,9 +278,9 @@ The shared layout's removal is its own 0.37 work and lands before this feature i
   others, which ADR 0013 rejects for subscriptions and which C avoids by making the organization the
   payer.
 - **A proxy that keeps keys out of homes (not now).** A proxy holding the key would stop members
-  reading it. It is new Core work, outside 0.37. Yiannis accepted members reading the organization
-  key instead. ADR 0013's rejection of a proxy that pools subscription logins is unrelated and
-  stands.
+  reading it. It is new sealant work, outside 0.37. Yiannis accepted members reading the
+  organization key instead. ADR 0013's rejection of a proxy that pools subscription logins is
+  unrelated and stands.
 - **The organization key as a fallback past an invalid own login (rejected).** It would spend the
   organization's money without anyone choosing it, against decision 1.
 - **The Claude-to-Codex retry onto a key (rejected).** Same reason: per-token money spent without a

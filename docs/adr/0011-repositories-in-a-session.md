@@ -10,12 +10,12 @@ command uses the session's own channel credential and no other.
 ## Context
 
 The owner develops Mend inside Mend on the box. That work touches three sibling repositories (Mend,
-Sealant Core, sealantd), all adopted as projects of the same store. A session has `/workspace/repo`
-only. Linked projects (ADR 0001) put a sibling at `/workspace/repos/<name>` through a host mount
-bound at launch, which a capture executor cannot have: it mounts nothing. In capture mode the engine
-logs `host mounts not applied · references, folders and linked projects stay on this machine`, and
-the session record still lists `/workspace/repos/<name>` to the agent, which finds nothing there.
-The box runs capture mode.
+sealant, sealantd), all adopted as projects of the same store. A session has `/workspace/repo` only.
+Linked projects (ADR 0001) put a sibling at `/workspace/repos/<name>` through a host mount bound at
+launch, which a capture executor cannot have: it mounts nothing. In capture mode the engine logs
+`host mounts not applied · references, folders and linked projects stay on this machine`, and the
+session record still lists `/workspace/repos/<name>` to the agent, which finds nothing there. The
+box runs capture mode.
 
 Three facts shape the design:
 

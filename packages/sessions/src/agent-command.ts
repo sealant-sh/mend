@@ -9,7 +9,7 @@
 /**
  * Decodes the prompt from base64 chunks and runs the command after them with it as its last
  * argument: `sh -c PROMPT_SCRIPT mend-prompt <chunk count> <chunk>… <command>…`. The exact bytes
- * travel as bounded chunks: a prompt can outgrow one argv word (Core's
+ * travel as bounded chunks: a prompt can outgrow one argv word (sealant's
  * `SESSION_ARGV_MAX_WORD_BYTES`), and a control plane before 0.39.0-next.712 refused arguments with
  * outer whitespace. The sentinel keeps trailing newlines through command substitution.
  */

@@ -1,4 +1,4 @@
-# Mend's words for Core's planned stop before a runtime's time limit
+# Mend's words for sealant's planned stop before a runtime's time limit
 
 - **Release:** 0.36
 - **Status:** designed. No PR yet. ROADMAP 0.36 "Already open, ships with it" and mend#530 "Carried
@@ -19,10 +19,10 @@
 
 - **Time limit** (code: deadline). The instant a runtime itself ends an executor, whatever anyone
   asks: an AWS Lambda MicroVM's maximum duration from its start (8 h by default, mend#451). Docker
-  and Kubernetes executors have none. Core reports it as `runtime.deadline` (null where there is
+  and Kubernetes executors have none. sealant reports it as `runtime.deadline` (null where there is
   none); the SDK as `workspace.runtimeDeadline()`.
-- **Core's planned stop.** Core's deadline sweep (`preserveBeforeDeadline`) starts a FINAL drain and
-  a stop on its own at `preservationStartsAt = deadline − lead − estimate` (lead
+- **sealant's planned stop.** sealant's deadline sweep (`preserveBeforeDeadline`) starts a FINAL
+  drain and a stop on its own at `preservationStartsAt = deadline − lead − estimate` (lead
   `WORKSPACE_CAPTURE_DEADLINE_LEAD_MS`, 15 min by default; estimate = what is still to upload at the
   observed or an assumed 1 MiB/s rate, × 1.5). Not to be confused with cf-bridge's "planned" stop
   mode (SIGTERM rather than fence) or Mend's own `why: 'planned stop'` flush.
@@ -31,10 +31,10 @@
   `drain estimate (300 s, or the measured one) + margin (300 s)` before the deadline. The session
   keeps running on a new executor.
 
-**The problem.** On a MicroVM, Core's planned stop starts at least 15 minutes before the time limit,
-Mend's planned replacement at least 10 minutes before it; Core's normally fires first. Mend then
-sees the executor run a final flush it did not ask for, stops the session, and once saved the
-session reads:
+**The problem.** On a MicroVM, sealant's planned stop starts at least 15 minutes before the time
+limit, Mend's planned replacement at least 10 minutes before it; sealant's normally fires first.
+Mend then sees the executor run a final flush it did not ask for, stops the session, and once saved
+the session reads:
 
 ```
 stopped · stopped outside Mend · saved at 11:44:02 UTC · capture 21
@@ -53,45 +53,45 @@ confusion and a support question per long session, not lost work.
 
 ## What it does
 
-When a session's executor ends because of Core's planned stop, every surface that shows the
+When a session's executor ends because of sealant's planned stop, every surface that shows the
 session's line says so, in place of `stopped outside Mend`:
 
-| The executor's end, as Mend observes it today               | Today                                                                               | Intended                                                                                                                     |
-| ----------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| Core's drain under way (session `stopping`)                 | summary unchanged; capture line `saving · 12 MB left`                               | summary `stopping before the platform's time limit at 12:00:00 UTC`; capture line unchanged                                  |
-| saved (`ExecutorEnd.kind = saved`)                          | `stopped outside Mend · saved at 11:44:02 UTC · capture 21`                         | `stopped before the platform's time limit · saved at 11:44:02 UTC · capture 21`                                              |
-| its own final capture registered, not confirmed             | `stopped outside Mend · last capture 21 at 11:44:02 UTC · not confirmed`            | `stopped before the platform's time limit · last capture 21 at 11:44:02 UTC · not confirmed`                                 |
-| a confirmed save left undecided                             | `stopped outside Mend · last saved capture 21 at 11:44:02 UTC · completion unknown` | `stopped before the platform's time limit · last saved capture 21 at 11:44:02 UTC · completion unknown`                      |
-| lost (Core's drain kept, the runtime ended it at the limit) | `executor lost · last saved capture 21 at … · changes after that were not saved`    | `executor lost · at the platform's time limit 12:00:00 UTC · last saved capture 21 at … · changes after that were not saved` |
+| The executor's end, as Mend observes it today                  | Today                                                                               | Intended                                                                                                                     |
+| -------------------------------------------------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| sealant's drain under way (session `stopping`)                 | summary unchanged; capture line `saving · 12 MB left`                               | summary `stopping before the platform's time limit at 12:00:00 UTC`; capture line unchanged                                  |
+| saved (`ExecutorEnd.kind = saved`)                             | `stopped outside Mend · saved at 11:44:02 UTC · capture 21`                         | `stopped before the platform's time limit · saved at 11:44:02 UTC · capture 21`                                              |
+| its own final capture registered, not confirmed                | `stopped outside Mend · last capture 21 at 11:44:02 UTC · not confirmed`            | `stopped before the platform's time limit · last capture 21 at 11:44:02 UTC · not confirmed`                                 |
+| a confirmed save left undecided                                | `stopped outside Mend · last saved capture 21 at 11:44:02 UTC · completion unknown` | `stopped before the platform's time limit · last saved capture 21 at 11:44:02 UTC · completion unknown`                      |
+| lost (sealant's drain kept, the runtime ended it at the limit) | `executor lost · last saved capture 21 at … · changes after that were not saved`    | `executor lost · at the platform's time limit 12:00:00 UTC · last saved capture 21 at … · changes after that were not saved` |
 
-- The time shown is the deadline Core reported (`runtimeDeadline()`), in UTC, as every capture line
-  names times (`utcTime`).
+- The time shown is the deadline sealant reported (`runtimeDeadline()`), in UTC, as every capture
+  line names times (`utcTime`).
 - Status words do not change: `stopping`, `stopped`, `failed` as today. Only the summary's words
   change. Every `executor lost` line still starts with `executor lost`.
 - Everything after the first part (`saved at …`, `· capture n`, `· not confirmed`, pending words) is
   exactly what `executorEndWords` says today.
 - Any other end that Mend did not ask for keeps `stopped outside Mend`: a `docker stop`, a
-  Kubernetes eviction, an operator's `stop()` through Core, an executor without a time limit.
+  Kubernetes eviction, an operator's `stop()` through sealant, an executor without a time limit.
 - The owner's Stop keeps its bare `stopped`.
 - A resume or a new launch clears the line, as it clears `stopped outside Mend` today.
 
-**Defaults.** No setting. A Mend talking to a Core or SDK that does not report the signal below
+**Defaults.** No setting. A Mend talking to a sealant or SDK that does not report the signal below
 keeps today's words.
 
 **In scope.**
 
-- Recognising Core's planned stop from what the public SDK reports.
+- Recognising sealant's planned stop from what the public SDK reports.
 - The words on the session line (summary) on every surface, during and after.
 - Keeping that recognition across a Mend restart.
 - The restatement rules (`restatedSummary`, `STALE_ON_START_PREFIXES`) for the new prefix.
 
 **Out of scope.**
 
-- Whether Mend should relaunch (replace) the session's executor when Core's planned stop comes
+- Whether Mend should relaunch (replace) the session's executor when sealant's planned stop comes
   first, the way its own planned replacement would. Today the session stops; this spec keeps that
   and only changes the words (see Divergences).
-- Changing Core's or Mend's lead times.
-- Any new Core API: the SDK already reports what is needed.
+- Changing sealant's or Mend's lead times.
+- Any new sealant API: the SDK already reports what is needed.
 - The co-located store (no executors with a time limit).
 
 ## How it works
@@ -102,19 +102,19 @@ Intended behaviour; none of this is built. Code pointers name where each part go
 
 1. `workspace.runtimeDeadline()` (SDK `packages/sdk/src/types.ts:917`; Mend
    `packages/sealant/src/client.ts:254` `runtimeDeadlineOf`): the time limit, or null.
-2. `workspace.captureDrain()` (SDK `types.ts:979`; Core maps it in
+2. `workspace.captureDrain()` (SDK `types.ts:979`; sealant maps it in
    `apps/api/src/routes/workspaces/workspaces.module.ts:2131`): `preservationStartsAt` is set once
-   Core's sweep planned this run's preservation, and visible once the drain has a recorded state
-   (Core hides a drain row whose `state` is null). Mend's `captureDrainOf`
+   sealant's sweep planned this run's preservation, and visible once the drain has a recorded state
+   (sealant hides a drain row whose `state` is null). Mend's `captureDrainOf`
    (`packages/sealant/src/client.ts:333`) reads only `state` and `retained` today; it must also
    return `preservationStartsAt` (a `Date`, null when absent or unreadable).
-3. **Rule.** An executor's end is Core's planned stop when, at the moment Mend first observes the
+3. **Rule.** An executor's end is sealant's planned stop when, at the moment Mend first observes the
    executor ending on its own:
    - the runtime reports a time limit (`runtimeDeadline()` non-null), and
    - `captureDrain().preservationStartsAt` is present and not after that moment (Mend's clock is not
-     compared with the executor's; this compares Core's recorded instant with the time Mend read it,
-     both from Core's answer and Mend's receipt; a small slack, one status interval, is allowed).
-     Anything else, including an SDK without either method, a read that fails, or a
+     compared with the executor's; this compares sealant's recorded instant with the time Mend read
+     it, both from sealant's answer and Mend's receipt; a small slack, one status interval, is
+     allowed). Anything else, including an SDK without either method, a read that fails, or a
      `preservationStartsAt` still in the future, is "outside Mend".
 4. "Mend first observes the executor ending on its own" is either of today's two moments:
    - a status read finds a final flush Mend did not ask for (`reading.complete === false` and
@@ -127,7 +127,7 @@ Intended behaviour; none of this is built. Code pointers name where each part go
      it there too.
 5. **Recorded durably.** The cause (`outside` or `platform-time-limit`, with the deadline) is
    recorded on the session row with the workspace id it is about, not only in the in-memory
-   `endedOutsideMend` set (`engine.ts:2727`), so a Mend restart between the start of Core's drain
+   `endedOutsideMend` set (`engine.ts:2727`), so a Mend restart between the start of sealant's drain
    and the saved end keeps it.
 
 ### The words
@@ -139,7 +139,7 @@ Intended behaviour; none of this is built. Code pointers name where each part go
    changes.
 7. The saved-end sites that prefix `stopped outside Mend · ` by hand (`engine.ts:4516-4520`,
    `4691-4695`, through `sayEndedOutsideMend`, `engine.ts:4302`) use the same choice.
-8. While Core's drain runs and the session reads `stopping`, its summary is
+8. While sealant's drain runs and the session reads `stopping`, its summary is
    `stopping before the platform's time limit at <HH:MM:SS> UTC`; the capture line beside it
    (`captureStatusLine`) is unchanged.
 9. `EXECUTOR_VERDICTS` (`capture-drain.ts:1045`) and `STALE_ON_START_PREFIXES` (`engine.ts:880`)
@@ -156,21 +156,21 @@ Intended behaviour; none of this is built. Code pointers name where each part go
 
 ### Ordering and restart
 
-- Core's planned stop and Mend's planned replacement can both be due: whichever Mend sees first
+- sealant's planned stop and Mend's planned replacement can both be due: whichever Mend sees first
   decides. If Mend's own replacement drain is already running (`replacing`), the executor's final
   flush is Mend's, and nothing here applies.
-- The owner pressing Stop during Core's drain: the session stops as today; once saved it reads the
-  planned-stop words if Core's drain started first (preservation start before the owner's Stop),
-  else the bare `stopped`.
-- A discard during Core's drain: `unsaved work discarded by <name> at …` as today.
-- Mend restarts during Core's drain: the recorded cause (step 5) is read back with the session.
+- The owner pressing Stop during sealant's drain: the session stops as today; once saved it reads
+  the planned-stop words if sealant's drain started first (preservation start before the owner's
+  Stop), else the bare `stopped`.
+- A discard during sealant's drain: `unsaved work discarded by <name> at …` as today.
+- Mend restarts during sealant's drain: the recorded cause (step 5) is read back with the session.
 
 ## Happy path
 
 Capture mode on AWS MicroVMs (8 h limit). Alice starts `mend codex "refactor the parser"` at
 04:00:00 UTC; the executor's limit is 12:00:00 UTC.
 
-1. At 11:42:30 Core's sweep starts the preservation (15 min lead plus an estimate for 40 MB
+1. At 11:42:30 sealant's sweep starts the preservation (15 min lead plus an estimate for 40 MB
    pending). The executor runs its final flush.
 2. Mend's next status read sees a final flush it did not ask for, reads `runtimeDeadline()` =
    12:00:00 and `captureDrain().preservationStartsAt` = 11:42:30, records the cause, and stops the
@@ -187,11 +187,11 @@ Capture mode on AWS MicroVMs (8 h limit). Alice starts `mend codex "refactor the
 ## Invariants
 
 1. A session reads `… before the platform's time limit …` only if the runtime reported a time limit
-   and Core reported a preservation start no later than Mend's first observation of the executor
+   and sealant reported a preservation start no later than Mend's first observation of the executor
    ending on its own.
 2. Every other end Mend did not ask for reads exactly as today (`stopped outside Mend …`,
    `executor lost …`).
-3. The owner's Stop never reads as a planned stop unless Core's preservation had started first.
+3. The owner's Stop never reads as a planned stop unless sealant's preservation had started first.
 4. No status word changes; `saved` is never said without the evidence `executorEndOf` requires
    today. The new wording never upgrades `not confirmed`, `completion unknown` or `lost`.
 5. The words say what was observed: the platform's time limit and its time, the save and its time.
@@ -205,24 +205,24 @@ Capture mode on AWS MicroVMs (8 h limit). Alice starts `mend codex "refactor the
 
 ## Edge cases and failure behaviour
 
-- **SDK or Core without `runtimeDeadline()` or `captureDrain()`** (SDK 0.37.2): outside Mend, as
+- **SDK or sealant without `runtimeDeadline()` or `captureDrain()`** (SDK 0.37.2): outside Mend, as
   today.
 - **`captureDrain()` fails or times out at the observation:** read once more at the end observation;
   still unknown → outside Mend. Never guessed from the clock alone.
-- **A time limit is known but no preservation start is reported** (Core's sweep never planned it, or
-  the drain row has no state yet): outside Mend.
-- **An operator stops the workspace through Core inside the watch window but before
+- **A time limit is known but no preservation start is reported** (sealant's sweep never planned it,
+  or the drain row has no state yet): outside Mend.
+- **An operator stops the workspace through sealant inside the watch window but before
   `preservationStartsAt`:** `preservationStartsAt` is in the future at observation → outside Mend.
 - **An operator stops it after `preservationStartsAt`:** indistinguishable from the planned stop
   through the SDK; reads as the planned stop. Accepted.
-- **Core's drain keeps the executor** (not saved, `retained`): the session reads `stopping` with
+- **sealant's drain keeps the executor** (not saved, `retained`): the session reads `stopping` with
   `not saved · … · executor kept for recovery` as today; if the runtime then ends it at its limit,
   the lost line names the time limit.
 - **Mend's own replacement already draining:** the final flush is Mend's; no planned-stop words.
 - **Joined sessions** (capture mode, another session's agent running in the executor): their ends
   read the same cause (invariant 8).
-- **Mend restart** during Core's drain, or between the saved end and the restatement: the recorded
-  cause stands.
+- **Mend restart** during sealant's drain, or between the saved end and the restatement: the
+  recorded cause stands.
 - **Older data:** sessions that already read `stopped outside Mend …` keep their words; nothing is
   backfilled.
 - **Permissions:** the line is part of the session; whoever can see the session sees it.
@@ -231,10 +231,10 @@ Capture mode on AWS MicroVMs (8 h limit). Alice starts `mend codex "refactor the
 
 ## Known limits
 
-- An operator's stop through Core after the preservation start reads as the planned stop (no SDK
+- An operator's stop through sealant after the preservation start reads as the planned stop (no SDK
   field says who asked).
-- The rule depends on Core recording `preservationStartsAt`; a Core that drains ahead of the limit
-  without recording it reads as outside Mend.
+- The rule depends on sealant recording `preservationStartsAt`; a sealant that drains ahead of the
+  limit without recording it reads as outside Mend.
 - Only MicroVM runtimes have a time limit today; Docker (the box) and Kubernetes never show these
   words.
 
@@ -252,21 +252,21 @@ Capture mode on AWS MicroVMs (8 h limit). Alice starts `mend codex "refactor the
   `stopped outside Mend …`; the owner's Stop still bare `stopped`; a restart between the observation
   and the end keeps the cause; a resume clears it.
 
-**By hand.** Needs a MicroVM runtime, or a Core whose fake runtime reports a deadline. Set
+**By hand.** Needs a MicroVM runtime, or a sealant whose fake runtime reports a deadline. Set
 `WORKSPACE_CAPTURE_DEADLINE_LEAD_MS` large enough that the preservation is due a few minutes after
 launch, start a session, wait, and read `mend sessions` and the web line.
 
 **Signals.** Logs
 `session engine: capture mode · the executor is running a final flush Mend did not ask for · stopping`
 (extend it with the cause and the deadline),
-`session engine: capture mode · the platform's deadline · observed`; Core's worker log
+`session engine: capture mode · the platform's deadline · observed`; sealant's worker log
 `Workspace stop (deadline preservation): …`.
 
 ## Divergences found while writing
 
 - `packages/domain/src/workbench/capture-drain.ts:994-1016` and
   `packages/sessions/src/engine.ts:4519`, `4694`: every end Mend did not ask for reads
-  `stopped outside Mend`, Core's planned stop included. The subject of this spec.
+  `stopped outside Mend`, sealant's planned stop included. The subject of this spec.
 - `packages/sealant/src/client.ts:333-348`: `captureDrainOf` drops `preservationStartsAt`, which the
   SDK reports.
 - `packages/sessions/src/engine.ts:2908-2935`: a `stopped` status is `gone` without reading the
@@ -274,12 +274,12 @@ launch, start a session, wait, and read `mend sessions` and the web line.
 - `packages/sessions/src/engine.ts:2727`: `endedOutsideMend` is process memory. A Mend restart while
   the executor's own final flush runs loses it, and the saved end then reads a bare `stopped`, the
   owner's Stop wording (the run 9 D9 case decision 42 fixed, back under a restart).
-- `packages/sessions/src/engine.ts:5670-5697` with Core
+- `packages/sessions/src/engine.ts:5670-5697` with sealant
   `packages/workspaces/src/worker/preserve-before-deadline.ts:121-127`: Mend's planned replacement
-  (lead ≥ 10 min) loses to Core's planned stop (lead ≥ 15 min plus 1.5 × the upload estimate) on
+  (lead ≥ 10 min) loses to sealant's planned stop (lead ≥ 15 min plus 1.5 × the upload estimate) on
   every MicroVM, so a long session stops at the limit instead of moving to a new executor. Mend's
   replacement path, built for exactly this, never runs there. Owner decision needed: align the
-  leads, or relaunch after Core's planned stop.
+  leads, or relaunch after sealant's planned stop.
 - `docs/adr/0002-session-capture-store.md` decision 42 and `apps/cli/CHANGELOG.md:511-514` describe
   a platform deadline stop as "stopped outside Mend" on purpose; both need the new decision when
   this is built.

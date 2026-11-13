@@ -8,7 +8,7 @@ import { CONVERSATION_LINE } from "./conversation-home.ts";
 import { conversationMissingWords, makeConversationSteps } from "./conversation-steps.ts";
 
 /**
- * The hand-over's budget (docs/adr/0016, Performance, CI guards): two Core calls, DELETE then
+ * The hand-over's budget (docs/adr/0016, Performance, CI guards): two sealant calls, DELETE then
  * POST, one stop and one start, with the staging beside the stop and the exchange the only exec
  * that waits for the old process.
  */
@@ -23,7 +23,7 @@ const harness = (
   options: {
     readonly stage?: string;
     readonly post?: (logins: HomeLogins) => SealantPlatformError | null;
-    /** What Core answers each sender's put placed in the home. */
+    /** What sealant answers each sender's put placed in the home. */
     readonly placed?: (onBehalfOf: string) => PlacedLogins;
   } = {},
 ) => {
@@ -111,14 +111,14 @@ describe("the hand-over (docs/adr/0016, decision 6)", () => {
     expect(back.login).toEqual({ kind: "subscription" });
   });
 
-  it("costs two Core calls, DELETE then POST, one stop and the exchange after it", async () => {
+  it("costs two sealant calls, DELETE then POST, one stop and the exchange after it", async () => {
     const world = harness();
     await Effect.runPromise(handOverTo(world, alice, { first: true }));
     // The first home of a session: nothing held yet, so no DELETE.
     expect(world.calls).toEqual(["exec:stage", "exec:exchange", `post:alice-1:${HOME}`]);
     world.calls.length = 0;
     const handed = await Effect.runPromise(handOverTo(world, bob));
-    // The staging runs beside the stop (which says first is the scheduler's); only the two Core
+    // The staging runs beside the stop (which says first is the scheduler's); only the two sealant
     // calls and the exchange wait for the old process.
     expect(world.calls.slice(0, 2).toSorted()).toEqual(["exec:stage", "stop"]);
     expect(world.calls.slice(2)).toEqual([`delete:${HOME}`, "exec:exchange", `post:bob-2:${HOME}`]);

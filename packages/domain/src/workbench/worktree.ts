@@ -41,7 +41,7 @@ export class Worktree extends Schema.Class<Worktree>("Worktree")({
   projectId: ProjectId,
   /** Display identity — the name-first flow's answer; renameable; unique per project. */
   name: Schema.String,
-  /** Pinned at creation. Null keeps a pre-choice worktree on Core's original default. */
+  /** Pinned at creation. Null keeps a pre-choice worktree on sealant's original default. */
   sessionRuntime: Schema.NullOr(SessionRuntime).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),

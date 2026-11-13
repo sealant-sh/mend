@@ -43,7 +43,7 @@ describe("pickup tickets", () => {
     let now = 0;
     const tickets = makePickupTickets({ now: () => now });
     const ticket = tickets.mint(binding, files);
-    // Core's run-exec queue may hold an exec behind installs for minutes (review of mend#555, P2-1).
+    // sealant's run-exec queue may hold an exec behind installs for minutes (review of mend#555, P2-1).
     now += 5 * 60_000;
     expect(tickets.take(ticket).kind).toBe("taken");
     expect(PICKUP_TICKET_TTL_MS).toBeGreaterThanOrEqual(10 * 60_000);
