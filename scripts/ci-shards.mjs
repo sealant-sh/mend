@@ -7,10 +7,8 @@ import { parseDocument } from "yaml";
 
 import { ciTurboOptions } from "./ci-turbo.mjs";
 
-const engineLanePackage = "@mend/sessions";
 const shards = {
   engines: [
-    engineLanePackage,
     "@mend/api-server",
     "@mend/db",
     "@mend/jobs",
@@ -21,6 +19,7 @@ const shards = {
     "@mend/sealant",
     "@mend/slack",
   ],
+  "engines-b": [],
   "clients-a": [
     "@mend/t3-gateway",
     "@mend/desktop",
@@ -42,15 +41,25 @@ const shards = {
   ],
 };
 
-// The CLI keeps its package test script; Turbo forwards each native Vitest shard argument.
-const cliSplit = {
-  package: "@sealant/mend",
-  total: 2,
-  members: [
-    { shard: "clients-a", index: 1 },
-    { shard: "clients-b", index: 2 },
-  ],
-};
+// Split packages keep their own test scripts; Turbo forwards native Vitest shard arguments.
+const splitPackages = [
+  {
+    package: "@sealant/mend",
+    total: 2,
+    members: [
+      { shard: "clients-a", index: 1 },
+      { shard: "clients-b", index: 2 },
+    ],
+  },
+  {
+    package: "@mend/sessions",
+    total: 2,
+    members: [
+      { shard: "engines", index: 1 },
+      { shard: "engines-b", index: 2 },
+    ],
+  },
+];
 
 const failure = (message) => ({ _tag: "error", message });
 const isRecord = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -114,45 +123,45 @@ const readInventory = async (root) => {
 const parsePartition = (inventory) => {
   const assigned = new Map();
   const problems = [];
-  const boundShards = new Set(["engines", ...cliSplit.members.map((member) => member.shard)]);
+  const boundShards = new Set(["engines", "engines-b", "clients-a", "clients-b"]);
   for (const shard of Object.keys(shards)) {
     if (!boundShards.has(shard)) problems.push(`Unbound package shard: ${shard}.`);
   }
   for (const shard of boundShards) {
     if (!Object.hasOwn(shards, shard)) problems.push(`Missing bound package shard: ${shard}.`);
   }
-  if (!Object.hasOwn(shards, "engines") || !shards.engines.includes(engineLanePackage)) {
-    problems.push(`Missing dedicated engines package assignment: ${engineLanePackage}.`);
-  }
-  const splitIndices = new Set();
-  const splitShards = new Set();
-  if (cliSplit.total !== 2 || cliSplit.members.length !== 2) {
-    problems.push("CLI split must declare exactly two native Vitest shards.");
-  }
-  for (const member of cliSplit.members) {
-    if (!Object.hasOwn(shards, member.shard) || member.shard === "engines") {
-      problems.push(`Unknown CLI client shard: ${member.shard}.`);
+  for (const split of splitPackages) {
+    const splitIndices = new Set();
+    const splitShards = new Set();
+    if (!Number.isSafeInteger(split.total) || split.total < 1) {
+      problems.push(`Invalid native shard total for ${split.package}: ${split.total}.`);
     }
-    if (splitShards.has(member.shard))
-      problems.push(`Duplicate CLI client shard: ${member.shard}.`);
-    splitShards.add(member.shard);
-    if (!Number.isSafeInteger(member.index) || member.index < 1 || member.index > cliSplit.total) {
-      problems.push(`Invalid CLI native shard index: ${member.index}.`);
+    for (const member of split.members) {
+      if (!boundShards.has(member.shard)) {
+        problems.push(`Unknown split lane for ${split.package}: ${member.shard}.`);
+      }
+      if (splitShards.has(member.shard))
+        problems.push(`Duplicate split lane for ${split.package}: ${member.shard}.`);
+      splitShards.add(member.shard);
+      if (!Number.isSafeInteger(member.index) || member.index < 1 || member.index > split.total) {
+        problems.push(`Invalid native shard index for ${split.package}: ${member.index}.`);
+      }
+      if (splitIndices.has(member.index))
+        problems.push(`Duplicate native shard index for ${split.package}: ${member.index}.`);
+      splitIndices.add(member.index);
     }
-    if (splitIndices.has(member.index))
-      problems.push(`Duplicate CLI native shard index: ${member.index}.`);
-    splitIndices.add(member.index);
+    for (let index = 1; index <= split.total; index++) {
+      if (!splitIndices.has(index))
+        problems.push(`Missing native shard index for ${split.package}: ${index}.`);
+    }
+    if (assigned.has(split.package)) problems.push(`Duplicate shard assignment: ${split.package}.`);
+    assigned.set(split.package, "native split");
+    const pkg = inventory.get(split.package);
+    if (pkg === undefined) problems.push(`Unknown assigned workspace package: ${split.package}.`);
+    else if (!pkg.hasTest) problems.push(`Assigned package has no test script: ${split.package}.`);
   }
-  for (let index = 1; index <= 2; index++) {
-    if (!splitIndices.has(index)) problems.push(`Missing CLI native shard index: ${index}.`);
-  }
-  assigned.set(cliSplit.package, "native CLI split");
-  const cli = inventory.get(cliSplit.package);
-  if (cli === undefined) problems.push(`Unknown assigned workspace package: ${cliSplit.package}.`);
-  else if (!cli.hasTest) problems.push(`Assigned package has no test script: ${cliSplit.package}.`);
   for (const [shard, names] of Object.entries(shards)) {
-    const dedicated = shard === "engines" ? engineLanePackage : cliSplit.package;
-    if (names.filter((name) => name !== dedicated).length === 0) {
+    if (names.length === 0 && shard !== "engines-b") {
       problems.push(`Empty ordinary task lane: ${shard}.`);
     }
     for (const name of names) {
@@ -187,16 +196,17 @@ const runShard = (root, shard, options) =>
       settle(failure("The CI shard runner requires POSIX process groups."));
       return;
     }
-    const member = cliSplit.members.find((entry) => entry.shard === shard);
-    const dedicated = shard === "engines" ? engineLanePackage : cliSplit.package;
-    const commands = [
-      turboArguments(
-        shards[shard].filter((name) => name !== dedicated),
-        options,
-      ),
-      turboArguments([dedicated], options),
-    ];
-    if (member !== undefined) commands[1].push("--", `--shard=${member.index}/${cliSplit.total}`);
+    const commands = shards[shard].length > 0 ? [turboArguments(shards[shard], options)] : [];
+    for (const split of splitPackages) {
+      const member = split.members.find((entry) => entry.shard === shard);
+      if (member !== undefined) {
+        commands.push([
+          ...turboArguments([split.package], options),
+          "--",
+          `--shard=${member.index}/${split.total}`,
+        ]);
+      }
+    }
     const children = new Set(
       commands.map((args) =>
         spawn("pnpm", args, {
@@ -277,7 +287,9 @@ const runShard = (root, shard, options) =>
 const main = async () => {
   const args = process.argv.slice(2);
   if (args.length !== 1 || !(args[0] === "--check" || Object.hasOwn(shards, args[0]))) {
-    console.error("Usage: node scripts/ci-shards.mjs --check|engines|clients-a|clients-b");
+    console.error(
+      "Usage: node scripts/ci-shards.mjs --check|engines|engines-b|clients-a|clients-b",
+    );
     process.exitCode = 1;
     return;
   }
@@ -291,7 +303,7 @@ const main = async () => {
   }
   if (args[0] === "--check") {
     console.log(
-      `CI shards cover ${discovered.inventory.size - [...discovered.inventory.values()].filter((pkg) => !pkg.hasTest).length} test packages; the CLI has two complete native Vitest shards.`,
+      `CI shards cover ${discovered.inventory.size - [...discovered.inventory.values()].filter((pkg) => !pkg.hasTest).length} test packages; CLI and sessions native Vitest shards are complete.`,
     );
     return;
   }

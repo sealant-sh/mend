@@ -118,20 +118,20 @@ test("the source workspace inventory is covered and --check starts no package co
   const f = fixture(t);
   const result = f.check("--check");
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /test packages; the CLI has two complete native Vitest shards/);
+  assert.match(result.stdout, /test packages; CLI and sessions native Vitest shards are complete/);
   assert.deepEqual(f.recordings(), []);
 });
 
-test("all modes preserve package scripts, exact filters, native CLI shards, caps, environment and stdio", (t) => {
+test("all modes preserve package scripts, exact filters, native CLI and sessions shards, caps, environment and stdio", (t) => {
   const f = fixture(t);
   const selected = new Map();
-  const native = [];
-  for (const shard of ["engines", "clients-a", "clients-b"]) {
+  const native = new Map();
+  for (const shard of ["engines", "engines-b", "clients-a", "clients-b"]) {
     f.clearRecordings();
     const result = f.check(shard);
     assert.equal(result.status, 0, result.stderr);
     const records = f.recordings();
-    assert.equal(records.length, 2);
+    assert.equal(records.length, shard === "engines-b" ? 1 : 2);
     assert.equal(result.stdout, "child stdout\n".repeat(records.length));
     assert.equal(result.stderr, "child stderr\n".repeat(records.length));
     assert.equal(records.map((recorded) => recorded.stdin).join(""), "inherited input\n");
@@ -150,7 +150,8 @@ test("all modes preserve package scripts, exact filters, native CLI shards, caps
       assert.equal(recorded.ci, "1");
       assert.equal(recorded.workers, "3");
       assert.equal(recorded.postgres, f.env.MEND_TEST_DATABASE_URL);
-      if (recorded.args[8] === "--filter=@sealant/mend") {
+      if (["--filter=@sealant/mend", "--filter=@mend/sessions"].includes(recorded.args[8])) {
+        const pkg = recorded.args[8].slice("--filter=".length);
         assert.deepEqual(recorded.args, [
           "exec",
           "turbo",
@@ -160,11 +161,11 @@ test("all modes preserve package scripts, exact filters, native CLI shards, caps
           "--cache=local:rw",
           "--summarize",
           "--concurrency=1",
-          "--filter=@sealant/mend",
+          `--filter=${pkg}`,
           "--",
-          `--shard=${shard === "clients-a" ? 1 : 2}/2`,
+          `--shard=${["engines", "clients-a"].includes(shard) ? 1 : 2}/2`,
         ]);
-        native.push(recorded.args.at(-1));
+        native.set(pkg, [...(native.get(pkg) ?? []), recorded.args.at(-1)]);
       } else {
         assert.ok(
           recorded.args
@@ -177,35 +178,18 @@ test("all modes preserve package scripts, exact filters, native CLI shards, caps
         ]);
       }
     }
-    if (shard === "engines") {
-      assert.equal(
-        records.filter((recorded) => recorded.args.slice(8).includes("--filter=@mend/sessions"))
-          .length,
-        1,
-      );
-      assert.ok(
-        records.some(
-          (recorded) =>
-            recorded.args.length === 9 && recorded.args[8] === "--filter=@mend/sessions",
-        ),
-      );
-    }
   }
+
   const packagesWithTests = packageFiles
     .map((file) => JSON.parse(readFileSync(join(repository, file), "utf8")))
     .filter((pkg) => pkg.scripts?.test !== undefined)
     .map((pkg) => pkg.name);
   const allSelected = [...selected.values()].flat();
   assert.equal(new Set(allSelected).size, allSelected.length);
-  assert.deepEqual([...allSelected, "@sealant/mend"].toSorted(), packagesWithTests.toSorted());
-  assert.deepEqual(native, ["--shard=1/2", "--shard=2/2"]);
-  for (const required of [
-    "@mend/sessions",
-    "@mend/api-server",
-    "@mend/db",
-    "@mend/jobs",
-    "@mend/auth",
-  ]) {
+  assert.deepEqual([...allSelected, ...native.keys()].toSorted(), packagesWithTests.toSorted());
+  assert.deepEqual([...native.keys()].toSorted(), ["@mend/sessions", "@sealant/mend"]);
+  for (const indices of native.values()) assert.deepEqual(indices, ["--shard=1/2", "--shard=2/2"]);
+  for (const required of ["@mend/api-server", "@mend/db", "@mend/jobs", "@mend/auth"]) {
     assert.ok(selected.get("engines").includes(required), required);
   }
   assert.ok(selected.get("clients-a").includes("mend"), "the unscoped VS Code package is selected");
@@ -218,7 +202,7 @@ test("a future test package outside apps and packages cannot disappear from CI",
     "examples/nested/new/package.json",
     JSON.stringify({ name: "@mend/future", scripts: { test: "node test.mjs" } }),
   );
-  for (const action of ["--check", "engines", "clients-a", "clients-b"]) {
+  for (const action of ["--check", "engines", "engines-b", "clients-a", "clients-b"]) {
     const result = f.check(action);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /Missing shard assignment: @mend\/future/);
@@ -291,38 +275,71 @@ for (const [name, edited, diagnostic] of [
   [
     "duplicate CLI native index",
     source.replace("index: 2", "index: 1"),
-    /Duplicate CLI native shard index: 1/,
+    /Duplicate native shard index for @sealant\/mend: 1/,
   ],
   [
     "missing CLI native index",
     source.replace(/^\s+\{ shard: "clients-b", index: 2 \},\n/m, ""),
-    /Missing CLI native shard index: 2/,
+    /Missing native shard index for @sealant\/mend: 2/,
   ],
   [
     "out-of-range CLI native index",
     source.replace("index: 2", "index: 3"),
-    /Invalid CLI native shard index: 3/,
+    /Invalid native shard index for @sealant\/mend: 3/,
   ],
   [
     "incomplete declared CLI split",
     source.replace("total: 2", "total: 3"),
-    /CLI split must declare exactly two/,
+    /Missing native shard index for @sealant\/mend: 3/,
   ],
   [
     "unknown CLI client mode",
     source.replace('shard: "clients-b"', 'shard: "clients-unknown"'),
-    /Unknown CLI client shard/,
+    /Unknown split lane for @sealant\/mend/,
   ],
   [
     "duplicate CLI client mode",
     source.replace('shard: "clients-b"', 'shard: "clients-a"'),
-    /Duplicate CLI client shard/,
+    /Duplicate split lane for @sealant\/mend/,
+  ],
+  [
+    "duplicate sessions native index",
+    source.replace('{ shard: "engines-b", index: 2 }', '{ shard: "engines-b", index: 1 }'),
+    /Duplicate native shard index for @mend\/sessions: 1/,
+  ],
+  [
+    "missing sessions native index",
+    source.replace(/^\s+\{ shard: "engines-b", index: 2 \},\n/m, ""),
+    /Missing native shard index for @mend\/sessions: 2/,
+  ],
+  [
+    "out-of-range sessions native index",
+    source.replace('{ shard: "engines-b", index: 2 }', '{ shard: "engines-b", index: 3 }'),
+    /Invalid native shard index for @mend\/sessions: 3/,
+  ],
+  [
+    "incomplete declared sessions split",
+    source.replace(
+      'package: "@mend/sessions",\n    total: 2',
+      'package: "@mend/sessions",\n    total: 3',
+    ),
+    /Missing native shard index for @mend\/sessions: 3/,
+  ],
+  [
+    "unknown sessions lane",
+    source.replace('shard: "engines-b"', 'shard: "engines-unknown"'),
+    /Unknown split lane for @mend\/sessions/,
+  ],
+  [
+    "duplicate sessions lane",
+    source.replace('shard: "engines-b"', 'shard: "engines"'),
+    /Duplicate split lane for @mend\/sessions/,
   ],
 ]) {
   test(`${name} refuses to run either shard`, (t) => {
     assert.notEqual(edited, source, "the fixture actually changed the assignment");
     const f = fixture(t, edited);
-    for (const action of ["--check", "engines", "clients-a", "clients-b"]) {
+    for (const action of ["--check", "engines", "engines-b", "clients-a", "clients-b"]) {
       const result = f.check(action);
       assert.equal(result.status, 1);
       assert.match(result.stderr, diagnostic);
@@ -362,7 +379,7 @@ test("an empty ordinary client lane refuses even when every package remains assi
     .replace(/("clients-a": \[[\s\S]*?)(\n  \])/, `$1${body}$2`)
     .replace(/"clients-b": \[[\s\S]*?\n  \]/, '"clients-b": []');
   const f = fixture(t, edited);
-  for (const mode of ["--check", "engines", "clients-a", "clients-b"]) {
+  for (const mode of ["--check", "engines", "engines-b", "clients-a", "clients-b"]) {
     const result = f.check(mode);
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /Empty ordinary task lane: clients-b/);
@@ -377,7 +394,7 @@ test("an unused package shard refuses even when every package remains assigned",
     .replace("const shards = {", 'const shards = {\n  future: ["@mend/docs"],');
   assert.notEqual(edited, source);
   const f = fixture(t, edited);
-  for (const mode of ["--check", "engines", "clients-a", "clients-b", "future"]) {
+  for (const mode of ["--check", "engines", "engines-b", "clients-a", "clients-b", "future"]) {
     const result = f.check(mode);
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stderr, /Unbound package shard: future/);
@@ -474,7 +491,7 @@ setInterval(() => {
   });
 }
 
-test("both lanes in every mode must start before either can complete", (t) => {
+test("both processes in each shared lane must start before either can complete", (t) => {
   const f = fixture(t);
   f.command(`
 record({ args: process.argv.slice(2) });
