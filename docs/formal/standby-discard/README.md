@@ -95,29 +95,71 @@ keeps, and the VM would stay billed (the SLNT-803 leak, for that case).
 ## Run it
 
 ```sh
-docs/formal/standby-discard/check.sh           # every row, full bounds, about 4 minutes on 32 cores
-docs/formal/standby-discard/check.sh --quick   # one launch instead of two, about 15 seconds
-docs/formal/standby-discard/check.sh <row>     # one row with TLC's whole output and trace
+docs/formal/standby-discard/check.sh                # every row, full bounds, about 4 minutes on 32 cores
+docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 15 seconds
+docs/formal/standby-discard/check.sh <row>          # one row with the checker's whole output and trace
+docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 22 seconds, 2 with --quick
 ```
 
-A run ends with exit 0 only when every row of the table in `check.sh` ends as the table expects. TLC
-is tla2tools 1.7.4 (TLC 2.19), from the repository's pinned nixpkgs (`flake.lock`) when Nix is
-installed. Otherwise it is the GitHub release, checked against its sha256; that path needs `java`
-and `curl`. To tell a counterexample as one line per step, pipe it through `trace.py`:
+A run ends with exit 0 only when every row of the table in `check.sh` ends with the verdict the
+table expects and reaches the number of distinct states it pins, at the full bounds or at
+`--quick`'s. The pinned count is what makes a second checker safe to use: a checker that says
+"holds" over a different state space fails the run. A row that holds explores every reachable state,
+and a row expected to fail runs on one worker and stops at the same shortest trace, so both counts
+are the same on every run. TLC is tla2tools 1.7.4 (TLC 2.19), from the repository's pinned nixpkgs
+(`flake.lock`) when Nix is installed. Otherwise it is the GitHub release, checked against its
+sha256; that path needs `java` and `curl`. To tell a counterexample as one line per step, pipe it
+through `trace.py`, which reads either checker's trace:
 
 ```sh
 docs/formal/standby-discard/check.sh mutant-no-reread | python3 -I docs/formal/standby-discard/trace.py
 ```
 
+### TLC and tlx
+
+TLC is the reference. The run that goes with a change to the model, or to the code it models, is a
+TLC run, and a pinned count is only ever moved to what TLC reached. tlx is for iterating: a TLA+
+checker written in Rust that reads the same `.tla` and `.cfg` files, about twelve times faster here.
+`check.sh` runs it with `-tlc`, its mode that promises TLC's verdicts, counts, depth and shortest
+traces.
+
+tlx is version 0.1, about a month old, with no releases. It comes from
+[tlaplus-x/tlx](https://github.com/tlaplus-x/tlx) and was measured at commit
+`8d5f082b0f0d922bf5999d9a8db00c70a4c1d261`. Build it with Rust and a C compiler, then point
+`check.sh` at it (it is not in the Nix flake or CI):
+
+```sh
+git clone https://github.com/tlaplus-x/tlx && cd tlx && git checkout 8d5f082b0f
+nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo build --release   # or plain cargo
+MEND_TLX=$PWD/target/release/tlx docs/formal/standby-discard/check.sh --engine tlx
+```
+
+Without `MEND_TLX`, `check.sh --engine tlx` runs `tlx` from `PATH`, and stops with exit 2 when there
+is none. `MEND_FORMAL_ENGINE=tlx` picks tlx as `--engine tlx` does.
+
+Measured on 2026-11-13 on a 32-core machine, both checkers on the same model at full bounds: each
+row alone with its time and peak memory, then whole `check.sh` runs. Every verdict, violated
+invariant, state count and depth matched:
+
+| Row                                      | TLC           | tlx          | Distinct states (both) |
+| ---------------------------------------- | ------------- | ------------ | ---------------------: |
+| `code-promise`                           | 142 s, 7.3 GB | 11 s, 1.5 GB |             18,141,305 |
+| `code-claimable`                         | 167 s         | 12 s         |             18,141,305 |
+| `mutant-no-reread` (one worker)          | 6.1 s         | 0.8 s        |                113,052 |
+| `mutant-reused-id` (one worker)          | 1.6 s         | 0.2 s        |                  9,408 |
+| `mutant-no-reread-no-sweep`              | 5.0 s         | 0.6 s        |                293,226 |
+| whole `check.sh` (all ten rows, wall)    | 214 s         | 22 s         |                        |
+| whole `check.sh --quick` (all ten, wall) | 16 s          | 2 s          |                        |
+
 ## Files
 
-| File                         | What it is                                                      |
-| ---------------------------- | --------------------------------------------------------------- |
-| `StandbyDiscard.tla`         | The model: state, one action per code step, the two properties. |
-| `MCStandbyDiscard.tla`       | The model plus two restrictions used by the diagnostic rows.    |
-| `check.sh`                   | The runner and the table of rows with their expected outcomes.  |
-| `trace.py`                   | Prints a TLC trace as one line per step.                        |
-| `postgres-read-committed.sh` | The throwaway-Postgres observations below, rerunnable.          |
+| File                         | What it is                                                        |
+| ---------------------------- | ----------------------------------------------------------------- |
+| `StandbyDiscard.tla`         | The model: state, one action per code step, the two properties.   |
+| `MCStandbyDiscard.tla`       | The model plus two restrictions used by the diagnostic rows.      |
+| `check.sh`                   | The runner, and the rows with their expected outcomes and counts. |
+| `trace.py`                   | Prints a TLC or tlx trace as one line per step.                   |
+| `postgres-read-committed.sh` | The throwaway-Postgres observations below, rerunnable.            |
 
 ## What the model is
 
@@ -289,10 +331,10 @@ At `aa029659e3` (the SLNT-823 fix), Standbys = {s1, s2}, Launches = {l1, l2}, on
 | `mutant-claim-leaves-ready`      | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |             188 |   0s |
 | `mutant-reused-id`               | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |           9,408 |   1s |
 
-The whole run exited 0. The `mutant-no-reread` rows reach exactly the state counts the code rows
-reached at `374094f416`, and `code-promise` reaches exactly the count the candidate row
-`fix-reread-session` reached there: the mutant is the old code and the code is the fix the model
-checked.
+The whole run exited 0. `check.sh` pins these counts, and a TLC run at `16abbc19c0` reached each of
+them again. The `mutant-no-reread` rows reach exactly the state counts the code rows reached at
+`374094f416`, and `code-promise` reaches exactly the count the candidate row `fix-reread-session`
+reached there: the mutant is the old code and the code is the fix the model checked.
 
 Once, at the same commit, with three standbys and one launch (`Standbys = {s1, s2, s3}`,
 `Launches = {l1}`, a one-off configuration, not a row of `check.sh`): the code holds
