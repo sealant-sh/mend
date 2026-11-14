@@ -27,6 +27,7 @@ import {
   screenRows,
   withScreens,
 } from "./engine/screen-fixture.ts";
+import { eventually } from "./screen-world.ts";
 
 /** The engine's own fibers run on the event loop: give them turns until `done` holds. */
 const until = (done: () => Effect.Effect<boolean>, what: string) =>
@@ -695,121 +696,118 @@ describe("the session's screen (ADR 0020)", () => {
       ),
   );
 
-  it.effect("reaps a lost start's display as the person and opens it again, once", () => {
-    const lost = lostStart(1);
-    return withScreens(
-      (world, platform) =>
-        Effect.gen(function* () {
-          const engine = yield* SessionEngine;
-          const [project] = [...world.projects.values()];
-          if (project === undefined) throw new Error("no project");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "screen",
-            ownerUserId: "user-fixture",
-            start: { kind: "base", base: null },
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          lost.arm();
-          const screen = yield* engine.startScreen(session.id);
-          const reap = screenReapArgv(DisplayNumber.make(10));
-          const reaps = platform.execs.flatMap((argv, at) =>
-            argv.join("\n") === reap.join("\n") ? [platform.execUsers[at]] : [],
-          );
-          expect(reaps).toEqual([LAUNCHER]);
-          expect(screen.display).toBe(10);
-          expect(platform.spawned.filter((argv) => argv[3] === "mend-screen")).toHaveLength(1);
-          expect(screenRows(world)).toMatchObject([
-            { exitedAt: null, sealantSessionId: expect.any(String) },
-          ]);
-        }),
-      { openFails: lost.openFails },
-    );
-  });
+  // The launch starts the screen beside the agent by itself (ADR 0020, D7), so its start is the one
+  // whose answers are lost: a start of the test's own would race it for the display.
+  it.live(
+    "reaps a lost start's display as the person and opens it again, once",
+    () => {
+      const lost = lostStart(1);
+      lost.arm();
+      return withScreens(
+        (world, platform) =>
+          Effect.gen(function* () {
+            const { session } = yield* launched(world);
+            yield* eventually(
+              () =>
+                Effect.sync(() => screenRows(world).some((row) => row.sealantSessionId !== null)),
+              "the screen was never opened again",
+            );
+            const reap = screenReapArgv(DisplayNumber.make(10));
+            const reaps = platform.execs.flatMap((argv, at) =>
+              argv.join("\n") === reap.join("\n") ? [platform.execUsers[at]] : [],
+            );
+            expect(reaps).toEqual([LAUNCHER]);
+            expect((yield* world.screens.ofSession(session.id))?.display).toBe(10);
+            expect(platform.spawned.filter((argv) => argv[3] === "mend-screen")).toHaveLength(1);
+            expect(screenRows(world)).toMatchObject([
+              { exitedAt: null, sealantSessionId: expect.any(String) },
+            ]);
+          }),
+        { openFails: lost.openFails },
+      );
+    },
+    { timeout: 60_000 },
+  );
 
-  it.effect("gives up after one retry, reaps that attempt too, and the screen reads ended", () => {
-    const lost = lostStart(2);
-    return withScreens(
-      (world, platform) =>
-        Effect.gen(function* () {
-          const engine = yield* SessionEngine;
-          const [project] = [...world.projects.values()];
-          if (project === undefined) throw new Error("no project");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "screen",
-            ownerUserId: "user-fixture",
-            start: { kind: "base", base: null },
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          lost.arm();
-          const failed = yield* engine.startScreen(session.id).pipe(Effect.flip);
-          expect(failed).toMatchObject({ _tag: "SealantPlatformError" });
-          const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
-          const reaps = platform.execs.flatMap((argv, at) =>
-            argv.join("\n") === reap ? [platform.execUsers[at]] : [],
-          );
-          expect(reaps).toEqual([LAUNCHER, LAUNCHER]);
-          expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
-          expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
-            _tag: "Ended",
-            reason: "start-failed",
-          });
-          expect(yield* engine.screenPasswords(session.id)).toBeNull();
-        }),
-      { openFails: lost.openFails },
-    );
-  });
+  it.live(
+    "gives up after one retry, reaps that attempt too, and the screen reads ended",
+    () => {
+      const lost = lostStart(2);
+      lost.arm();
+      return withScreens(
+        (world, platform) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launched(world);
+            yield* eventually(
+              () =>
+                Effect.map(
+                  world.screens.ofSession(session.id),
+                  (screen) => screen?.life._tag === "Ended",
+                ),
+              "the screen's start never ended",
+            );
+            const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
+            const reaps = platform.execs.flatMap((argv, at) =>
+              argv.join("\n") === reap ? [platform.execUsers[at]] : [],
+            );
+            expect(reaps).toEqual([LAUNCHER, LAUNCHER]);
+            expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
+            expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+              _tag: "Ended",
+              reason: "start-failed",
+            });
+            expect(yield* engine.screenPasswords(session.id)).toBeNull();
+          }),
+        { openFails: lost.openFails },
+      );
+    },
+    { timeout: 60_000 },
+  );
 
-  it.effect("keeps a lost start it could not reap, and a later Stop reaps its display", () => {
-    const lost = lostStart(2);
-    let reapFails = false;
-    return withScreens(
-      (world, platform) =>
-        Effect.gen(function* () {
-          const engine = yield* SessionEngine;
-          const [project] = [...world.projects.values()];
-          if (project === undefined) throw new Error("no project");
-          const session = yield* engine.provision({
-            projectId: project.id,
-            harness: "claude",
-            label: null,
-            name: "screen",
-            ownerUserId: "user-fixture",
-            start: { kind: "base", base: null },
-          });
-          yield* engine.launch(session.id, ["claude"]);
-          lost.arm();
-          reapFails = true;
-          yield* Effect.flip(engine.startScreen(session.id));
-          expect(screenRows(world)).toMatchObject([{ exitedAt: null, sealantSessionId: null }]);
-          expect((yield* world.screens.ofSession(session.id))?.life._tag).toBe("Starting");
-          expect(yield* engine.screenPasswords(session.id)).toBeNull();
+  it.live(
+    "keeps a lost start it could not reap, and a later Stop reaps its display",
+    () => {
+      const lost = lostStart(2);
+      lost.arm();
+      let reapFails = true;
+      let refused = 0;
+      return withScreens(
+        (world, platform) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launched(world);
+            yield* eventually(
+              () => Effect.sync(() => refused === 2),
+              "the lost start was never reaped",
+            );
+            expect(screenRows(world)).toMatchObject([{ exitedAt: null, sealantSessionId: null }]);
+            expect((yield* world.screens.ofSession(session.id))?.life._tag).toBe("Starting");
+            expect(yield* engine.screenPasswords(session.id)).toBeNull();
 
-          reapFails = false;
-          const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
-          const reapsBefore = platform.execs.filter((argv) => argv.join("\n") === reap).length;
-          yield* engine.stopScreen(session.id, "idle");
-          const reaps = platform.execs.flatMap((argv, at) =>
-            argv.join("\n") === reap ? [platform.execUsers[at]] : [],
-          );
-          expect(reaps.slice(reapsBefore)).toEqual([LAUNCHER]);
-          expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
-          expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
-            _tag: "Ended",
-            reason: "idle",
-          });
-        }),
-      {
-        openFails: lost.openFails,
-        reap: () => (reapFails ? Effect.fail(lostReap) : undefined),
-      },
-    );
-  });
+            reapFails = false;
+            const reap = screenReapArgv(DisplayNumber.make(10)).join("\n");
+            const reapsBefore = platform.execs.filter((argv) => argv.join("\n") === reap).length;
+            yield* engine.stopScreen(session.id, "idle");
+            const reaps = platform.execs.flatMap((argv, at) =>
+              argv.join("\n") === reap ? [platform.execUsers[at]] : [],
+            );
+            expect(reaps.slice(reapsBefore)).toEqual([LAUNCHER]);
+            expect(screenRows(world).every((row) => row.exitedAt !== null)).toBe(true);
+            expect((yield* world.screens.ofSession(session.id))?.life).toEqual({
+              _tag: "Ended",
+              reason: "idle",
+            });
+          }),
+        {
+          openFails: lost.openFails,
+          reap: () =>
+            reapFails
+              ? Effect.sync(() => refused++).pipe(Effect.andThen(Effect.fail(lostReap)))
+              : undefined,
+        },
+      );
+    },
+    { timeout: 60_000 },
+  );
 
   it.effect("refuses a screen in a workspace that cannot give it its own person", () =>
     withScreens(
