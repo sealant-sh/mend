@@ -1,0 +1,16 @@
+[
+  {
+    "schemaVersion": 1,
+    "package": "@mend/engine",
+    "file": "packages/engine/src/host.test.ts",
+    "name": "protocol host > demotes and recovers from idle refusal",
+    "outcome": "failed-twice",
+    "firstError": "Error: expected idle, got busy (older)",
+    "attemptsMs": [1200, 300],
+    "durationMs": 1510,
+    "job": "test-engines",
+    "runId": "102",
+    "runAttempt": "1",
+    "commit": "c2"
+  }
+]

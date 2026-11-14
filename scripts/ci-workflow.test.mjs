@@ -377,6 +377,10 @@ const runsTests = (name) =>
     ),
   );
 
+// A job whose tests needed a retry marks its report, so scripts/ci-flakes.mjs downloads only those.
+const testReportName =
+  "test-report-${{ github.job }}${{ hashFiles('.ci-reports/test/retried-*.json') != '' && '-retried' || '' }}";
+
 test("every job that runs tests uploads its per-file test timings, even when tests fail", () => {
   assert.deepEqual(Object.keys(jobs).filter(runsTests), [
     "changes",
@@ -391,9 +395,7 @@ test("every job that runs tests uploads its per-file test timings, even when tes
   );
   assert.match(turboUpload.uses, /^actions\/upload-artifact@[a-f0-9]{40}$/);
   for (const name of Object.keys(jobs)) {
-    const uploads = jobs[name].steps.filter(
-      (step) => step.with?.name === "test-report-${{ github.job }}",
-    );
+    const uploads = jobs[name].steps.filter((step) => step.with?.name === testReportName);
     if (!runsTests(name)) {
       assert.deepEqual(uploads, [], name);
       assert.equal(jobs[name].env?.CI_TEST_REPORT_DIR, undefined, name);
@@ -408,7 +410,7 @@ test("every job that runs tests uploads its per-file test timings, even when tes
           if: "${{ !cancelled() }}",
           uses: turboUpload.uses,
           with: {
-            name: "test-report-${{ github.job }}",
+            name: testReportName,
             path: ".ci-reports/test/*.json",
             "include-hidden-files": true,
             "if-no-files-found": "ignore",
@@ -424,7 +426,16 @@ test("every job that runs tests uploads its per-file test timings, even when tes
 
 test("the test report reaches Turbo tasks without entering hashes, outputs or git", () => {
   const turbo = JSON.parse(readFileSync(new URL("turbo.json", root), "utf8"));
-  assert.deepEqual(turbo.tasks.test.passThroughEnv, ["CI_TEST_REPORT_DIR"]);
+  // The GitHub run context names each retried test's job, run and commit, and its step summary.
+  assert.deepEqual(turbo.tasks.test.passThroughEnv, [
+    "CI_TEST_REPORT_DIR",
+    "GITHUB_STEP_SUMMARY",
+    "GITHUB_JOB",
+    "GITHUB_RUN_ID",
+    "GITHUB_RUN_ATTEMPT",
+    "GITHUB_SHA",
+    "GITHUB_EVENT_PATH",
+  ]);
   const tasks = Object.values(turbo.tasks);
   for (const manifest of globSync("{apps,packages,tooling}/*/turbo.json", {
     cwd: root,
@@ -433,14 +444,15 @@ test("the test report reaches Turbo tasks without entering hashes, outputs or gi
     assert.equal(packageTest?.passThroughEnv, undefined, `${manifest} replaces the report dir`);
     if (packageTest) tasks.push(packageTest);
   }
+  // Each run has its own values: hashing any of them would make every test task a cache miss.
   for (const pattern of [...turbo.globalEnv, ...tasks.flatMap((task) => task.env ?? [])]) {
     const prefix = pattern.endsWith("*") ? pattern.slice(0, -1) : undefined;
-    assert.ok(
-      prefix === undefined
-        ? pattern !== "CI_TEST_REPORT_DIR"
-        : !"CI_TEST_REPORT_DIR".startsWith(prefix),
-      `${pattern} would hash the report directory`,
-    );
+    for (const name of turbo.tasks.test.passThroughEnv) {
+      assert.ok(
+        prefix === undefined ? pattern !== name : !name.startsWith(prefix),
+        `${pattern} would hash ${name}`,
+      );
+    }
   }
   for (const task of tasks) {
     assert.ok(!(task.outputs ?? []).some((output) => output.includes(".ci-reports")));
@@ -514,7 +526,9 @@ test("a newer pull request or dispatched head cancels its stale run; main pushes
     assert.equal(resolve(group, github), `CI-${github.run_id}`, github.event_name);
     assert.equal(resolve(cancel, github), false, github.event_name);
   }
-  const pr = context("pull_request", { event: { pull_request: { number: 7 } } });
+  const pr = context("pull_request", {
+    event: { pull_request: { number: 7 } },
+  });
   assert.equal(resolve(group, pr), "CI-7");
   assert.equal(resolve(cancel, pr), true);
 });
@@ -721,7 +735,12 @@ esac
     );
     assert.doesNotMatch(comment, /issue create/);
     assert.match(
-      run({ ...failed, RUN_NAME: "CI", RUN_EVENT: "push", FAKE_OPEN_ISSUE: "42" }),
+      run({
+        ...failed,
+        RUN_NAME: "CI",
+        RUN_EVENT: "push",
+        FAKE_OPEN_ISSUE: "42",
+      }),
       /^issue comment 42 --body The CI run for a push to main ended \*\*failure\*\*/m,
     );
     const hoursAgo = (hours) => new Date(Date.now() - hours * 3600_000).toISOString();
@@ -904,7 +923,10 @@ test("both scoped lanes delete package tests before any lane step and write no T
       ["the cache setting is gone", (lane) => delete lane.env.TURBO_CACHE],
       [
         "the job configures the box cache",
-        (lane) => lane.steps.push({ run: 'node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"' }),
+        (lane) =>
+          lane.steps.push({
+            run: 'node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"',
+          }),
       ],
       ["the job runs Turbo", (lane) => lane.steps.push({ run: "pnpm exec turbo run build" })],
       ["the job holds a cache token", (lane) => (lane.env.TURBO_TOKEN = "box")],
@@ -994,7 +1016,11 @@ const resolutions = (files = globSync(".github/workflows/*.yml", { cwd: root }))
               event,
               inputs,
               job,
-              labels: resolveRunner(runsOn, { inputs, matrix, github: { event_name: event } }),
+              labels: resolveRunner(runsOn, {
+                inputs,
+                matrix,
+                github: { event_name: event },
+              }),
             })),
       ),
     );
@@ -1070,7 +1096,11 @@ test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatc
         event,
         inputs,
         job: "static",
-        labels: resolveRunner(runsOn, { inputs, matrix: {}, github: { event_name: event } }),
+        labels: resolveRunner(runsOn, {
+          inputs,
+          matrix: {},
+          github: { event_name: event },
+        }),
       })),
     );
   assert.notDeepEqual(mutated(BOX), [], "a literal box lane");

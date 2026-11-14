@@ -69,6 +69,56 @@ when a scheduled run of either workflow does not succeed, when CI fails on a pus
 when either has had no successful scheduled run on `main` for 30 hours. GitHub can start a schedule
 hours late.
 
+## Flaky tests
+
+Flaky tests are bugs. A test that passes or fails depending on timing, ordering or load is wrong,
+and so may be the code it tests. CI does not tolerate them. It finds them and ranks them, so the
+worst get fixed first.
+
+**CI retries a failed Vitest test once.** `vitestCiGuard` (`tooling/test-ci/src/vitest.ts`) sets
+`retry: 1` under the same CI condition that turns on its timing records, so a local `pnpm test`
+never retries. A test that fails twice fails the run as before. One that fails and then passes on
+its retry does not, so a single flake no longer blocks every pull request behind it.
+
+**Every retry is recorded.** The reporter writes each retried test to
+`retried-vitest-<package>.json` in the job's `test-report` artifact: package, file, full test name,
+`passed-on-retry` or `failed-twice`, the first attempt's error (trimmed), each attempt's duration,
+and the job, run, attempt and commit (a pull request's head, not its merge commit). A setup file the
+guard adds in CI times each attempt from the first `beforeEach` to the end of `afterEach`, because
+Vitest reports only the sum. Tests that passed on their retry are also listed under "Flaky in this
+run" in the job's step summary, so a green run still shows them. A job whose report holds retries
+uploads it as `test-report-<job>-retried`. Turbo passes the GitHub run context (`GITHUB_JOB`,
+`GITHUB_RUN_ID`, the step summary and the rest) through to test tasks without hashing it.
+
+**The file budget charges only the attempt that counted.** Each Vitest file has 60 seconds. A
+retried test's failed attempts are subtracted from its file's time before the comparison: a file is
+never failed for the time its own retry cost, and the budget is never raised. The file record keeps
+the full `durationMs` beside `retriedAttemptsMs` and the `budgetedMs` that was compared.
+
+**The ledger ranks them.** Run this to choose which flaky test to fix next:
+
+```sh
+node scripts/ci-flakes.mjs                      # completed CI runs of the last 7 days
+node scripts/ci-flakes.mjs --since 2026-11-01   # or --runs 50; add --branch main, --json
+```
+
+It ranks tests by the number of distinct commits they needed a retry or failed twice on, with both
+counts, the latest error and links to the runs. It makes one run list and one artifact list, then
+downloads only `-retried` reports, each once: they are cached in `~/.cache/mend-ci-flakes`. It says
+how many runs it covered and how many had no report. Reports expire after 14 days, so the ledger
+cannot look further back than that.
+
+A test at the top of the ledger gets a ticket and a fix. Nobody relaxes an assertion, raises a
+timeout or budget, adds a sleep or skips the test to make it pass.
+
+The retry has a cost. A product bug that shows only sometimes, such as a race, can now pass on its
+retry and reach `main` with a green run. The ledger is the answer: the bug still appears there, and
+it rises with every commit it hits.
+
+The `node --test` suites (the CI and release scripts under `scripts/`, and test-ci's own suite) are
+not retried. Node's runner has no retry. A failure there fails the run on the first attempt, and the
+ledger does not count it.
+
 ## Task selection and cache
 
 Test lanes and static checks use Turbo's `--affected`, with the pull request's base SHA in
