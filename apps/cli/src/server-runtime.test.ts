@@ -951,6 +951,60 @@ describe.skipIf(!composeAvailable)(
       expect(rendered).not.toContain("poison");
       expect(rendered).not.toContain(`MEND_URL_BEARERS": "accept`);
     });
+
+    it("a generation with remote endpoints renders loopback listeners and HTTPS advertisements as compose.remote-endpoints.yaml intends", async () => {
+      const root = temporary();
+      const configDir = path.join(root, "server");
+      const runtime = setupRuntime(configDir);
+      expect(
+        await serverCommand(
+          [
+            "setup",
+            "--yes",
+            "--context",
+            "default",
+            "--session-endpoint-url",
+            "https://mend.example.com:8443",
+            "--blob-store-public-url",
+            "https://mend.example.com:10000",
+          ],
+          runtime,
+        ),
+      ).toEqual({ _tag: "ok" });
+      const directory = fs.realpathSync(path.join(configDir, "active"));
+      const rendered = await runProductionDocker(
+        serverComposeArgs(
+          {
+            directory,
+            dockerContext: "default",
+            overlays: ["compose.mirrors.yaml", "compose.remote-endpoints.yaml"],
+          },
+          ["config", "--format", "json"],
+        ),
+        root,
+        { ...process.env, MEND_SESSION_ENDPOINT_URL: "poison" },
+      );
+      expect(JSON.parse(rendered)).toMatchObject({
+        services: {
+          mend: {
+            environment: {
+              MEND_SESSION_ENDPOINT_URL: "https://mend.example.com:8443",
+              MEND_BLOB_STORE_PUBLIC_URL: "https://mend.example.com:10000",
+              MEND_EXECUTOR_NETWORK: "",
+            },
+            ports: expect.arrayContaining([
+              expect.objectContaining({ host_ip: "127.0.0.1", published: "13106", target: 3106 }),
+            ]),
+          },
+          garage: {
+            ports: [
+              expect.objectContaining({ host_ip: "127.0.0.1", published: "13900", target: 3900 }),
+            ],
+          },
+        },
+      });
+      expect(rendered).not.toContain("poison");
+    });
   },
 );
 
