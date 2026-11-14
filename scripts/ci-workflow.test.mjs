@@ -281,16 +281,22 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     `\${{ runner.os }}-\${{ runner.arch }}-tofu-${tofu.with.tofu_version}`,
   );
   assert.ok(steps.indexOf(binary) < steps.indexOf(tofu), "restore before setup downloads tofu");
-  assert.equal(
-    jobs.packaging.env.TF_PLUGIN_CACHE_DIR,
-    "${{ github.workspace }}/../tofu-plugin-cache",
+  // actions/cache refuses a path with a `.` or `..` segment and then never saves (SLNT-547).
+  const named = steps.find((step) =>
+    step.run?.includes(
+      'echo "TF_PLUGIN_CACHE_DIR=$RUNNER_TEMP/tofu-plugin-cache" >> "$GITHUB_ENV"',
+    ),
   );
+  assert.ok(named, "name the plugin cache the inventory test reads");
   const providers = steps.find(
     (step) =>
       step.uses?.startsWith("actions/cache@") &&
-      step.with.path === "${{ env.TF_PLUGIN_CACHE_DIR }}/**/terraform-provider-*",
+      step.with.path === "${{ runner.temp }}/tofu-plugin-cache/**/terraform-provider-*",
   );
   assert.ok(providers, "persist the plugin cache consumed by the inventory test");
+  assert.doesNotMatch(providers.with.path, /(^|\/)\.\.?(\/|$)/);
+  assert.ok(steps.indexOf(named) < steps.indexOf(providers));
+  assert.equal(jobs.packaging.env.TF_PLUGIN_CACHE_DIR, undefined);
   assert.match(providers.with.key, /runner\.os.*runner\.arch/);
   assert.match(providers.with.key, /hashFiles\('deploy\/aws\/tofu\/\.terraform\.lock\.hcl'\)/);
   assert.ok(
