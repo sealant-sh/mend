@@ -65,6 +65,7 @@ test("product source owes a box check and screenshots; its tests and docs do not
     "pre-pr-checks",
   ]);
   assert.deepEqual(ids(["docs/operations/ci.md", "AGENTS.md"]), ["pre-pr-checks"]);
+  assert.deepEqual(ids([".github/workflows/ci.yml"]), ["pre-pr-checks"]);
 });
 
 test("code a model covers owes that model, and gated suites name their gate", () => {

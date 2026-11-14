@@ -64,7 +64,9 @@ export const changedFiles = (root, mergeBase) => {
   ].toSorted();
 };
 
-const matches = (file, globs) => globs.some((glob) => matchesGlob(file, glob));
+// matchesGlob never lets `**` cross a dot segment (`.github/`, `.gitignore`); `**` alone means
+// every path here.
+const matches = (file, globs) => globs.some((glob) => glob === "**" || matchesGlob(file, glob));
 
 /** The obligations a set of changed files carries, each owed. */
 export const matchObligations = (map, files) =>
