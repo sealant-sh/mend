@@ -519,6 +519,18 @@ Three things change once the server runs this sealant:
   could be handed the output of sealant's own reading of the working tree instead. One effect in
   Mend was a session start failing with "the home's record does not unseal".
 
+### After upgrading to sealant 0.40.0-next.894
+
+- **Every Boat image is built once more.** This sealant runs workspaces on a newer sealantd, and
+  every Boat image carries it. Each environment's next Boat session waits for its image to be built
+  again, once, as long as a first build takes. The old images keep their saved snapshot slots, so
+  the count on the Boat page rises by one for each image rebuilt, then drops as the hourly pass
+  removes each old one, a day after it was last used. Docker workspace images are built again once
+  too.
+- **A dropped connection while a VM boots no longer fails the session's start.** About twice in 150
+  launches, a session ended with `capture plan.get failed: transport: io: unexpected end of file`,
+  and starting it again worked. sealantd now asks again for about 20 seconds before giving up.
+
 ## Remove or replace a key
 
 **Replace the organization's key.** Connect the new key on the Boat page or with
