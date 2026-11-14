@@ -2,7 +2,7 @@ import { ScreensRepo } from "@mend/db";
 import { ViewerConnectionId } from "@mend/domain";
 import type { ScreenInputEvent } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
-import { Effect, Fiber } from "effect";
+import { Deferred, Effect, Fiber } from "effect";
 import { describe, expect } from "vitest";
 
 import { Screens } from "../src/screen/screens.ts";
@@ -14,6 +14,7 @@ import {
   CONNECTION,
   logOf,
   movedTo,
+  nextControl,
   postgres,
   rowOf,
   sessionWithScreen,
@@ -74,12 +75,9 @@ describe.skipIf(postgres.skip)("people's input on a screen with no hand", () => 
         });
         yield* TestClock.adjust("119 seconds");
         expect((yield* rowOf(screen.id)).input._tag).toBe("Paused");
+        const timedOut = yield* nextControl("PausedTimeout");
         yield* TestClock.adjust("1 second");
-        yield* Effect.yieldNow;
-        for (let turn = 0; (yield* rowOf(screen.id)).input._tag === "Paused"; turn++) {
-          if (turn > 100) throw new Error("never handed back");
-          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
-        }
+        yield* Deferred.await(timedOut);
         expect((yield* rowOf(screen.id)).input._tag).toBe("AwaitingAgent");
         const last = (yield* logOf(screen.id)).at(-1);
         expect([last?.actor, last?.body._tag]).toEqual([{ _tag: "Mend" }, "HandedBack"]);
@@ -96,11 +94,9 @@ describe.skipIf(postgres.skip)("people's input on a screen with no hand", () => 
         expect(yield* screens.heartbeat(sessionId, ViewerConnectionId.make("other"))).toBe(false);
         yield* TestClock.adjust("8 seconds");
         expect((yield* rowOf(screen.id)).input._tag).toBe("Person");
+        const lapsed = yield* nextControl("Lapse");
         yield* TestClock.adjust("3 seconds");
-        for (let turn = 0; (yield* rowOf(screen.id)).input._tag === "Person"; turn++) {
-          if (turn > 100) throw new Error("never paused");
-          yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 10)));
-        }
+        yield* Deferred.await(lapsed);
         expect((yield* rowOf(screen.id)).input).toMatchObject({
           _tag: "Paused",
           reason: "lease-lapsed",
