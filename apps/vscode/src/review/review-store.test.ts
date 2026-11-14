@@ -502,6 +502,9 @@ describe("Read this change, refused", () => {
     const failures: Array<ReviewFailure> = [];
     store.onDidFail((failure) => failures.push(failure));
     await store.readChange();
+    // The failed pass is read after `readChange` returns: wait for its toast, then give a second
+    // toast the same moment to show before checking there is only one.
+    await vi.waitFor(() => expect(failures).not.toEqual([]), SETTLE);
     await settle();
     expect(failures.map(({ words }) => words)).toEqual([
       "Mend could not read this change: authentication_failed",
@@ -630,8 +633,8 @@ describe("sending a review from the store", () => {
     mend.answer = "pending";
     const store = await readyStore(kept, mend);
     const key = await sendAll(store);
-    await settle();
-    expect(await phaseOf(kept, key)).toBe("pending");
+    // The send's drive keeps Mend's answer after Send returns.
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("pending"), SETTLE);
     // Held with no live agent: the title offers Retry delivery on it, not a second Send review.
     expect(store.offer()).toEqual({ kind: "retry" });
     expect(store.retryTarget()?.key).toBe(key);
@@ -828,9 +831,9 @@ describe("sending a review from the store", () => {
     // Dismissed on Mend, in another window or on the web, before the review reaches it.
     mend.serverComments = mend.serverComments.map((draft) => ({ ...draft, state: "dismissed" }));
     const key = await sendAll(store);
-    await settle();
+    // The send's drive reads the draft dismissed after Send returns, and stops there.
+    await vi.waitFor(async () => expect(await phaseOf(kept, key)).toBe("refused"), SETTLE);
     expect(mend.writes).not.toContain("state d1 open");
-    expect(await phaseOf(kept, key)).toBe("refused");
   });
 
   it("puts her words on Mend when she edited a draft she accepted, and dismisses the draft once they are there", async () => {
