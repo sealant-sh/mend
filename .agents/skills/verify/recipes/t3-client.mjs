@@ -107,6 +107,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     terminals: [],
     transcript: "",
     mints: [],
+    settles: [],
   };
   const watchSocket = (target, tab) =>
     target.on("websocket", (socket) => {
@@ -132,6 +133,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
             sentAt: Date.now(),
           });
         }
+        if (
+          frame.tag === "orchestration.dispatchCommand" &&
+          JSON.stringify(frame.payload ?? null).includes('"thread.settle"')
+        )
+          rpc.settles.push({ key: `${tab}:${frame.id}`, answer: null });
         if (frame.tag.startsWith("terminal."))
           rpc.terminals.push({
             tab,
@@ -153,6 +159,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
             if (!mint.ok) mint.message = failureMessage(frame.exit?.cause);
           }
         }
+        const settle = rpc.settles.find((entry) => entry.key === `${tab}:${frame?.requestId}`);
+        if (settle !== undefined && frame?._tag === "Exit")
+          settle.answer =
+            frame.exit?._tag === "Success"
+              ? { ok: true }
+              : { ok: false, message: failureMessage(frame.exit?.cause) };
         if (frame?._tag === "Exit" && frame.exit?._tag === "Failure")
           rpc.failures.push({ tab, tag, message: failureMessage(frame.exit.cause) });
         if (tag === "assets.createUrl" && frame?.exit?._tag === "Success") {
@@ -325,6 +337,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     "Mend's workspace menu reads New worktree, checked",
   );
   await page.keyboard.press("Escape");
+  // A New-worktree send needs a base branch, which the client picks once its branch list loads; a
+  // message sent before then is refused ("Select a base branch before sending in New worktree
+  // mode.").
+  await main
+    .getByRole("combobox")
+    .filter({ hasText: /^From / })
+    .first()
+    .waitFor();
   const opening = `Opening message from the t3code client ${stamp}`;
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.click();
@@ -468,10 +488,19 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.goto(threadUrl);
   await main.getByRole("heading", { name: opening, level: 2 }).waitFor();
   await main.getByRole("button", { name: /^Thread actions for/ }).click();
+  const settlesBefore = rpc.settles.length;
   await page
     .getByRole("button", { name: "Settle thread" })
     .filter({ hasText: "Settle thread" })
     .click();
+  // The gateway answers the settle, or refuses it (a turn running, a message waiting, a question
+  // open): wait on that answer, then on the shell carrying it.
+  const settleAnswer = await until(
+    "the gateway's answer to the client's settle",
+    () => rpc.settles.slice(settlesBefore).find((entry) => entry.answer !== null)?.answer,
+    15_000,
+  );
+  ok(settleAnswer.ok, `the gateway took the settle · ${JSON.stringify(settleAnswer)}`);
   await until("the shell's thread carries settledAt", () => state().settledAt, 15_000);
   ok(
     state().snoozedUntil == null,
