@@ -93,7 +93,7 @@ not `passed`, unless `tooling/verify/allowed-skips.json` allows that skip.
 
 ```sh
 pnpm verify plan     # what this change owes: gated suites, models, screenshots, box check, CI jobs
-pnpm verify check    # the gate above
+pnpm verify check    # the gate above; add --concurrency 2 on a shared, busy machine
 pnpm verify status --markdown   # one line per obligation for this exact commit, for the PR body
 ```
 

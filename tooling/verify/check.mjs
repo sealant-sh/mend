@@ -24,6 +24,8 @@ export const readSkips = (root, reportDir) => {
     .toSorted()) {
     const report = JSON.parse(readFileSync(join(reportDir, name), "utf8"));
     for (const file of report.testResults ?? []) {
+      // A failed file's hook failure marks its tests skipped; the failure is the finding there.
+      if (file.status === "failed") continue;
       const path = relative(root, file.name ?? "");
       for (const test of file.assertionResults ?? []) {
         if (SKIPPED.has(test.status))
@@ -110,11 +112,20 @@ const timed = async (step, work) => {
 
 const relLog = (root, path) => relative(root, path);
 
+/** Turbo's own count, so a run that tested no package says so. */
+const turboTasks = (log) => {
+  const text = existsSync(log) ? readFileSync(log, "utf8") : "";
+  const total = /Tasks:\s+(\d+) successful, (\d+) total/.exec(text);
+  return total ? `${total[2]} test tasks` : "test task count unknown";
+};
+
 /** Runs the gate. `runner` is injectable so the skip rule can be tested on fixture reports. */
 export const runCheck = async (
   root,
-  { head, all = false, env = process.env, stamp, runner = run },
+  { head, all = false, concurrency, env = process.env, stamp, runner = run },
 ) => {
+  // A shared machine caps turbo's tasks and each Vitest run's workers with the same number.
+  const cap = concurrency === undefined ? [] : [`--concurrency=${concurrency}`];
   const logs = join(root, ".verify/logs");
   const reportDir = join(root, ".verify/reports", `check-${stamp}`);
   const files = head.mergeBase === null ? [] : changedFiles(root, head.mergeBase);
@@ -142,8 +153,8 @@ export const runCheck = async (
   }
 
   for (const [id, title, args] of [
-    ["typecheck", "Typecheck, forced", ["exec", "turbo", "typecheck", "--force"]],
-    ["lint", "Lint, forced", ["exec", "turbo", "lint", "--force"]],
+    ["typecheck", "Typecheck, forced", ["exec", "turbo", "typecheck", "--force", ...cap]],
+    ["lint", "Lint, forced", ["exec", "turbo", "lint", "--force", ...cap]],
   ]) {
     steps.push(
       await timed({ id, title, command: `pnpm ${args.join(" ")}` }, async () => {
@@ -153,10 +164,20 @@ export const runCheck = async (
     );
   }
 
-  const testArgs = ["exec", "turbo", "test", "--force", ...(all ? [] : ["--affected"])];
+  // --continue: one failing package must not hide the others' failures and skips.
+  const testArgs = [
+    "exec",
+    "turbo",
+    "test",
+    "--force",
+    "--continue",
+    ...cap,
+    ...(all ? [] : ["--affected"]),
+  ];
   const testEnv = {
     ...env,
     CI_TEST_REPORT_DIR: reportDir,
+    ...(concurrency === undefined ? {} : { VITEST_MAX_WORKERS: String(concurrency) }),
     ...(all || head.mergeBase === null ? {} : { TURBO_SCM_BASE: head.mergeBase }),
   };
   const usesPostgres = env.MEND_SKIP_POSTGRES_TESTS !== "1";
@@ -206,7 +227,7 @@ export const runCheck = async (
           status: failed ? "failed" : unallowed.length > 0 ? "skipped" : "passed",
           log: relLog(root, logOf("tests")),
           detail: [
-            `turbo exit ${code}`,
+            `turbo exit ${code}, ${turboTasks(logOf("tests"))}`,
             nodeTests.length > 0 ? `node --test ${nodeTests.length} files exit ${nodeCode}` : null,
             `${skipped.length} skipped, ${unallowed.length} not allowed to skip`,
           ]

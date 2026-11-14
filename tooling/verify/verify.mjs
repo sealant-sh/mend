@@ -49,7 +49,12 @@ export const parseArgs = (argv) => {
     if (arg === "--json") options.json = true;
     else if (arg === "--markdown") options.markdown = true;
     else if (arg === "--all") options.all = true;
-    else if (arg === "--base") {
+    else if (arg === "--concurrency") {
+      const value = Number(argv[++index]);
+      if (!Number.isInteger(value) || value < 1)
+        throw new UsageError("--concurrency needs a whole number");
+      options.concurrency = value;
+    } else if (arg === "--base") {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new UsageError("--base needs a ref");
       options.base = value;
@@ -73,8 +78,8 @@ const help = () =>
       ([verb, line]) => `  ${verb.padEnd(9)} ${line} (not implemented yet)`,
     ),
     "",
-    "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all (check),",
-    "--markdown (status). Results: .verify/latest/<verb>.json. Exit: 0 passed, 1 failed,",
+    "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
+    "--concurrency <n> (check: turbo tasks and Vitest workers), --markdown (status). Results: .verify/latest/<verb>.json. Exit: 0 passed, 1 failed,",
     "2 usage, 3 blocked by a prerequisite, 4 any other status.",
   ].join("\n");
 
@@ -103,6 +108,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     const { steps, next, plan, reportDir } = await runCheck(root, {
       head,
       all: options.all,
+      concurrency: options.concurrency,
       stamp: stampOf(startedAt),
       ...(options.env ? { env: options.env } : {}),
       ...(options.runner ? { runner: options.runner } : {}),

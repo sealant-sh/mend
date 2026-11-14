@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { readSkips } from "./check.mjs";
 import { exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
 import { main, runVerb } from "./verify.mjs";
 
@@ -244,4 +245,51 @@ test("wrong usage exits 2 and writes no result", async (t) => {
   assert.equal(await main(["nonsense"], root), 2);
   assert.equal(await main(["plan", "--base"], root), 2);
   assert.equal(await main(["plan", "--frobnicate"], root), 2);
+});
+
+test("tests a failed file's hook skipped are its failure, not skips", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mend-verify-reports-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  writeFileSync(
+    join(root, "vitest-packages-db.json"),
+    JSON.stringify({
+      testResults: [
+        {
+          name: join(root, "packages/db/test/a.test.ts"),
+          status: "failed",
+          assertionResults: [{ fullName: "after a hook timeout", status: "skipped" }],
+        },
+        {
+          name: join(root, "packages/db/test/b.test.ts"),
+          status: "passed",
+          assertionResults: [{ fullName: "gated", status: "pending" }],
+        },
+      ],
+    }),
+  );
+  assert.deepEqual(readSkips(root, root), [
+    { name: "packages/db/test/b.test.ts > gated", file: "packages/db/test/b.test.ts" },
+  ]);
+});
+
+test("--concurrency caps every turbo run and each Vitest run's workers", async (t) => {
+  const { root, commit } = fixture(t);
+  commit("docs/a.md");
+  const calls = [];
+  await runVerb(
+    root,
+    "check",
+    options({
+      concurrency: 2,
+      env: noPostgres,
+      runner: async (_root, command, args, { env }) => {
+        calls.push({ command, args, workers: env.VITEST_MAX_WORKERS });
+        return 0;
+      },
+    }),
+  );
+  const turbo = calls.filter((call) => call.args.includes("turbo"));
+  assert.equal(turbo.length, 3);
+  for (const call of turbo) assert.ok(call.args.includes("--concurrency=2"), call.args.join(" "));
+  assert.equal(turbo.find((call) => call.args.includes("test")).workers, "2");
 });
