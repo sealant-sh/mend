@@ -956,7 +956,8 @@ const remoteEndpointFlags = [
 ];
 
 describe("remote workspace endpoints", () => {
-  it("renders real Compose loopback listeners and HTTPS advertisements, retaining them until explicitly disabled", async () => {
+  // server-runtime.test.ts renders this generation with real Compose; here, what setup keeps.
+  it("keeps loopback listeners and HTTPS advertisements across a rerun until explicitly disabled", async () => {
     const control = makeRuntime();
     const configDir = control.runtime.configDir;
     expect(
@@ -972,46 +973,7 @@ describe("remote workspace endpoints", () => {
       },
     });
     const directory = activeDirectory(configDir);
-    const rendered = spawnSync(
-      "docker",
-      [
-        "compose",
-        "--project-directory",
-        directory,
-        "--env-file",
-        path.join(directory, "server.env"),
-        "-f",
-        path.join(directory, "compose.yaml"),
-        "-f",
-        path.join(directory, "compose.mirrors.yaml"),
-        "-f",
-        path.join(directory, "compose.remote-endpoints.yaml"),
-        "config",
-        "--format",
-        "json",
-      ],
-      { encoding: "utf8" },
-    );
-    expect(rendered.status, rendered.stderr).toBe(0);
-    expect(JSON.parse(rendered.stdout)).toMatchObject({
-      services: {
-        mend: {
-          environment: {
-            MEND_SESSION_ENDPOINT_URL: "https://mend.example.com:8443",
-            MEND_BLOB_STORE_PUBLIC_URL: "https://mend.example.com:10000",
-            MEND_EXECUTOR_NETWORK: "",
-          },
-          ports: expect.arrayContaining([
-            expect.objectContaining({ host_ip: "127.0.0.1", published: "13106", target: 3106 }),
-          ]),
-        },
-        garage: {
-          ports: [
-            expect.objectContaining({ host_ip: "127.0.0.1", published: "13900", target: 3900 }),
-          ],
-        },
-      },
-    });
+    expect(fs.existsSync(path.join(directory, "compose.remote-endpoints.yaml"))).toBe(true);
     expect(await serverCommand(["setup", "--yes"], control.runtime)).toEqual({ _tag: "ok" });
     expect(activeDirectory(configDir)).toBe(directory);
     expect(
