@@ -11,6 +11,7 @@ import {
   sshRunner,
 } from "./box.mjs";
 import { runCheck } from "./check.mjs";
+import { health, VANTAGES } from "./health.mjs";
 import { planSteps } from "./plan.mjs";
 import {
   createResult,
@@ -20,6 +21,7 @@ import {
   UsageError,
   validateResult,
 } from "./result.mjs";
+import { stackDown, stackStatus, stackUp } from "./stack.mjs";
 import { statusSteps, toMarkdown } from "./status.mjs";
 
 // `pnpm verify <verb>`: one JSON result per run (TOOLKIT-SPEC.md). Progress goes to stderr; with
@@ -33,14 +35,16 @@ const VERBS = {
     "The pre-PR gate: forced typecheck and lint, affected tests with no unallowed skip, format",
   status: "For each obligation, whether a passing result exists for this exact commit",
   box: "Box-check setup: plan, prepare, cli, identity, release (--yes to change the box)",
+  health: "From where the server is and is not reachable: --from local,host,workspace",
+  stack: "A Mend stack in an outer session, ready when usable: up, status, down",
 };
+
+const STACK = ["up", "status", "down"];
 
 const BOX = ["plan", "prepare", "cli", "identity", "release"];
 
 // Verbs the shared contract names that this repo does not have yet: they say so, never pretend.
 const PLANNED = {
-  stack: "A local Mend that is ready when usable: up, status, down",
-  health: "From where the server is and is not reachable",
   drive: "Run a recipe against web, TUI, desktop, mobile-web, VS Code or T3",
   evidence: "Gather screenshots and transcripts, scan for secrets, write the verdict file",
   formal: "Run the models whose covered paths the diff touches, and report drift",
@@ -61,7 +65,34 @@ export const parseArgs = (argv) => {
     else if (arg === "--markdown") options.markdown = true;
     else if (arg === "--all") options.all = true;
     else if (arg === "--yes") options.yes = true;
-    else if (arg === "--ssh") {
+    else if (["--mend", "--sealant", "--sealantd"].includes(arg)) {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a source`);
+      (options.sources ??= []).push(arg, value);
+    } else if (["--expect-mend", "--expect-sealant", "--expect-sealantd"].includes(arg)) {
+      const value = argv[++index];
+      if (!/^[0-9a-f]{4,40}$/.test(value ?? ""))
+        throw new UsageError(`${arg} needs a commit prefix`);
+      (options.expect ??= {})[arg.slice("--expect-".length)] = value;
+    } else if (arg === "--port") {
+      const value = Number(argv[++index]);
+      if (!Number.isInteger(value) || value < 1024 || value > 65535)
+        throw new UsageError("--port needs a port from 1024 to 65535");
+      options.port = value;
+    } else if (arg === "--project") {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError("--project needs a name");
+      options.project = value;
+    } else if (arg === "--url" || arg === "--expect-version") {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a value`);
+      options[arg === "--url" ? "url" : "expectVersion"] = value;
+    } else if (arg === "--from") {
+      const value = (argv[++index] ?? "").split(",").filter(Boolean);
+      if (value.length === 0 || value.some((from) => !VANTAGES.includes(from)))
+        throw new UsageError(`--from takes a list of ${VANTAGES.join(", ")}`);
+      options.from = value;
+    } else if (arg === "--ssh") {
       const value = argv[++index];
       if (!value) throw new UsageError("--ssh needs the ssh arguments that reach the box");
       options.ssh = value;
@@ -100,7 +131,9 @@ const help = () =>
     "",
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
     "--concurrency <n> (check: turbo tasks and Vitest workers), --markdown (status),",
-    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box). Results:",
+    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box), --url, --from,",
+    "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
+    "--expect-mend|sealant|sealantd <sha> (stack). Results:",
     ".verify/latest/<verb>.json. Exit: 0 passed, 1 failed, 2 usage, 3 blocked by a",
     "prerequisite, 4 any other status.",
   ].join("\n");
@@ -114,6 +147,45 @@ const stampOf = (date) =>
 /** Builds a verb's result without saving or printing it. */
 export const runVerb = async (root, verb, options, startedAt = new Date()) => {
   const head = readHead(root, options.base);
+  if (verb === "stack") {
+    const shared = {
+      ...(options.exec ? { exec: options.exec } : {}),
+      ...(options.env ? { env: options.env } : {}),
+      expect: options.expect ?? {},
+    };
+    const { steps, next, ...rest } = await {
+      up: () =>
+        stackUp(root, {
+          ...shared,
+          ...(options.port ? { port: options.port } : {}),
+          ...(options.project ? { project: options.project } : {}),
+          sources: options.sources ?? [],
+          ...(options.wait ? { wait: options.wait } : {}),
+        }),
+      status: () => stackStatus(root, shared),
+      down: () => stackDown(root, shared),
+    }[options.subverb]();
+    return createResult({
+      verb: `stack ${options.subverb}`,
+      head,
+      startedAt,
+      steps,
+      next,
+      ...rest,
+    });
+  }
+  if (verb === "health") {
+    const sshArgs = options.ssh ?? process.env.MEND_VERIFY_BOX_SSH;
+    const ssh = options.sshRunner ?? (sshArgs ? sshRunner(sshArgs.trim().split(/\s+/)) : null);
+    const { steps, next, ...rest } = await health({
+      url: options.url,
+      from: options.from ?? VANTAGES,
+      ssh,
+      expectVersion: options.expectVersion,
+      ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+    });
+    return createResult({ verb, head, startedAt, steps, next, ...rest });
+  }
   if (verb === "box") {
     const sshArgs = options.ssh ?? process.env.MEND_VERIFY_BOX_SSH;
     const ssh = options.sshRunner ?? (sshArgs ? sshRunner(sshArgs.trim().split(/\s+/)) : null);
@@ -234,6 +306,13 @@ export const main = async (argv, root = repoRoot) => {
   if (verb === "box") {
     if (!BOX.includes(words[1])) {
       process.stderr.write(`verify box needs one of: ${BOX.join(", ")}\n`);
+      return 2;
+    }
+    options.subverb = words[1];
+  }
+  if (verb === "stack") {
+    if (!STACK.includes(words[1])) {
+      process.stderr.write(`verify stack needs one of: ${STACK.join(", ")}\n`);
       return 2;
     }
     options.subverb = words[1];
