@@ -6,6 +6,13 @@ import { pageDocument } from "./page-document.ts";
 
 const parse = (html: string) => new DOMParser().parseFromString(html, "text/html");
 
+// Milliseconds to build the page document `times` times over.
+const timed = (html: string, times: number) => {
+  const started = performance.now();
+  for (let run = 0; run < times; run += 1) pageDocument(html, "dark");
+  return performance.now() - started;
+};
+
 const bootstrapped = (document: Document) => ({
   theme: document.head.querySelectorAll("style#t3-theme").length,
   scripts: [...document.head.querySelectorAll("script")].filter((script) =>
@@ -64,9 +71,22 @@ describe("the page document, as a browser parses it", () => {
     ["head tags", "<head>"],
     ["meta tags", "<meta name=viewport>"],
   ])("takes linear time on a page of %s", (_, unit) => {
-    const html = unit.repeat(Math.floor(PAGE_LIMITS.htmlChars / unit.length));
-    const started = performance.now();
-    pageDocument(html, "dark");
-    expect(performance.now() - started).toBeLessThan(250);
+    // A wall-clock bound measures the runner as much as the scan. Instead, time one full page
+    // against 16 pages a sixteenth its size, back to back in the same run: both do the same work
+    // if the scan is linear, and the full page does 16 times more if it is quadratic. The two
+    // samples last about as long, so load slows both alike, and each keeps its fastest of several
+    // interleaved rounds, so a pause lands in one sample rather than the result.
+    const page = (chars: number) => unit.repeat(Math.floor(chars / unit.length));
+    const full = page(PAGE_LIMITS.htmlChars);
+    const sixteenth = page(PAGE_LIMITS.htmlChars / 16);
+    timed(sixteenth, 16);
+    timed(full, 1);
+    let fullBest = Number.POSITIVE_INFINITY;
+    let sixteenthsBest = Number.POSITIVE_INFINITY;
+    for (let round = 0; round < 7; round += 1) {
+      sixteenthsBest = Math.min(sixteenthsBest, timed(sixteenth, 16));
+      fullBest = Math.min(fullBest, timed(full, 1));
+    }
+    expect(fullBest / sixteenthsBest).toBeLessThan(4);
   });
 });
