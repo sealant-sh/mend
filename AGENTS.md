@@ -86,15 +86,19 @@ Linear with the `sealant` label instead of working around it.
 
 ## Checks Before a PR
 
-Never open a PR, or push a branch for one, until these pass. Typecheck and lint run forced, so a
-warm cache can't lie:
+Never open a PR, or push a branch for one, until `pnpm verify check` passes on the commit you push.
+It runs typecheck and lint forced, so a warm cache can't lie, the tests of every package the change
+affects, and the format check (`pnpm format:fix` fixes it). A test that skips makes it `skipped`,
+not `passed`, unless `tooling/verify/allowed-skips.json` allows that skip.
 
 ```sh
-pnpm exec turbo typecheck --force
-pnpm exec turbo lint --force
-pnpm --filter <package> test   # for each package the change touches
-pnpm format:fix
+pnpm verify plan     # what this change owes: gated suites, models, screenshots, box check, CI jobs
+pnpm verify check    # the gate above
+pnpm verify status --markdown   # one line per obligation for this exact commit, for the PR body
 ```
+
+Each prints one JSON result with `--json` and keeps it in `.verify/latest/`. Its `next` lists the
+commands that turn a result that did not pass into one that does.
 
 In a fresh worktree, run `pnpm install` before anything else, or `pnpm format:fix` rewrites files
 the change never touched. Then run `pnpm build` once: typecheck needs the route trees it generates.

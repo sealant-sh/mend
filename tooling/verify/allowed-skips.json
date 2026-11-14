@@ -1,0 +1,14 @@
+{
+  "allowed": [
+    {
+      "file": "apps/cli/src/server-docker-protocol.test.ts",
+      "gate": "MEND_DOCKER_TEST_CONTEXT",
+      "reason": "Needs a disposable Docker context. Owed only when the server's Docker setup changes; verify plan says when"
+    },
+    {
+      "file": "apps/cli/src/server-postgres-bootstrap.test.ts",
+      "gate": "MEND_DOCKER_TEST_CONTEXT",
+      "reason": "Starts the official Postgres image in a disposable Docker context. Owed only when the server's Docker setup changes; verify plan says when"
+    }
+  ]
+}

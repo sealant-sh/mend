@@ -20,6 +20,7 @@
     "test:s3-contract": "node scripts/test-s3-contract.mjs",
     "test:watch": "vitest",
     "typecheck": "turbo typecheck --ui=tui",
+    "verify": "node tooling/verify/verify.mjs",
     "version-packages": "changeset version && node scripts/sync-chart-version.mjs && pnpm format:fix"
   },
   "dependencies": {

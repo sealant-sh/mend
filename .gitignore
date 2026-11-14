@@ -30,3 +30,6 @@ apps/cli/man/
 # Claude Code: per-machine settings and agent worktrees; .claude/settings.json and .claude/skills/ are shared
 .claude/settings.local.json
 .claude/worktrees/
+
+# pnpm verify results, logs and test reports
+.verify/
