@@ -253,6 +253,7 @@ void test(`${runner}: CI retries a failure once; a pass on the retry passes the 
       runner,
       report: { workspace: true },
       github: {
+        GITHUB_ACTIONS: "true",
         GITHUB_JOB: "test-engines",
         GITHUB_RUN_ID: "1234",
         GITHUB_RUN_ATTEMPT: "2",
@@ -288,6 +289,8 @@ void test(`${runner}: CI retries a failure once; a pass on the retry passes the 
       /^\| packages\/fixture\/guard\.test\.ts > group > flaky \| first attempt refused second line \| \d+ ms, \d+ ms \|$/m,
     );
     assert.doesNotMatch(String(result.summary), /steady/);
+    // Vitest's own GitHub reporter would bury the list under a full report for every package.
+    assert.doesNotMatch(String(result.summary), /Vitest Test Report/);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

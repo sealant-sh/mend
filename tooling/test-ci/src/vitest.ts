@@ -43,6 +43,8 @@ interface RuntimeContext {
       push(
         reporter: TimingReporter | ClockWarningReporter | ["json", { readonly outputFile: string }],
       ): number;
+      readonly length: number;
+      [index: number]: unknown;
     };
     readonly root: string;
   };
@@ -442,6 +444,27 @@ const testReportFile = (root: string): string | undefined => {
 
 const attemptTimer = fileURLToPath(new URL("./vitest-attempts.ts", import.meta.url));
 
+/**
+ * Vitest's own GitHub Actions reporter (on whenever GITHUB_ACTIONS is true) appends a full test
+ * report per package to the step summary once Turbo passes GITHUB_STEP_SUMMARY through. Keep its
+ * error annotations but not that report, so the step summary stays the short flaky-test list.
+ */
+const quietGithubJobSummary = (reporters: RuntimeContext["config"]["reporters"]): void => {
+  for (let index = 0; index < reporters.length; index++) {
+    const entry = reporters[index];
+    if (!Array.isArray(entry) || entry[0] !== "github-actions") continue;
+    const options: unknown = entry[1];
+    const jobSummary: unknown = isObject(options) ? options["jobSummary"] : undefined;
+    reporters[index] = [
+      "github-actions",
+      {
+        ...(isObject(options) ? options : {}),
+        jobSummary: { ...(isObject(jobSummary) ? jobSummary : {}), enabled: false },
+      },
+    ];
+  }
+};
+
 /** Append after CLI reporter resolution, retaining default reporters and explicit JSON output. */
 export const vitestCiGuard = (options: VitestCiGuardOptions): VitestCiPlugin => {
   const budget = options.fileBudgetMs ?? 60_000;
@@ -465,6 +488,7 @@ export const vitestCiGuard = (options: VitestCiGuardOptions): VitestCiPlugin => 
       }
       if (registered.has(vitest)) return;
       registered.add(vitest);
+      quietGithubJobSummary(vitest.config.reporters);
       vitest.config.reporters.push(new ClockWarningReporter(options.packageName));
       if (enabled) vitest.config.reporters.push(new TimingReporter(options.packageName, budget));
       const outputFile = testReportFile(vitest.config.root);
