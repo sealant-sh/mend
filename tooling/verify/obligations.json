@@ -24,7 +24,8 @@
         {
           "kind": "box-check",
           "what": "another agent uses the change on the box, on a build that contains this PR, and posts the verdict on the PR",
-          "how": "AGENTS.md, Check Features on the Box; the verify skill's box check"
+          "how": "AGENTS.md, Check Features on the Box: pnpm verify box plan, prepare, cli, identity, then another agent's check",
+          "command": "pnpm verify box plan"
         }
       ]
     },

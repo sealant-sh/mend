@@ -70,6 +70,10 @@ which is signed in, so they can stay private. `ghcr.io/sealant-sh/mend` is alrea
 
 ## Deploy
 
+For a box check, `pnpm verify box prepare --yes` takes the database dump and holds the box first,
+and `pnpm verify box identity` proves afterwards that the running build contains the PR (AGENTS.md,
+Check Features on the Box).
+
 On the box, as root, with the `mend` CLI installed, run the command from the run's summary:
 
 ```sh

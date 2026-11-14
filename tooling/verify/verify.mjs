@@ -1,6 +1,15 @@
 #!/usr/bin/env node
 import { fileURLToPath } from "node:url";
 
+import {
+  boxCli,
+  boxIdentity,
+  boxPlan,
+  boxPrepare,
+  boxRelease,
+  checkTag,
+  sshRunner,
+} from "./box.mjs";
 import { runCheck } from "./check.mjs";
 import { planSteps } from "./plan.mjs";
 import {
@@ -23,11 +32,13 @@ const VERBS = {
   check:
     "The pre-PR gate: forced typecheck and lint, affected tests with no unallowed skip, format",
   status: "For each obligation, whether a passing result exists for this exact commit",
+  box: "Box-check setup: plan, prepare, cli, identity, release (--yes to change the box)",
 };
+
+const BOX = ["plan", "prepare", "cli", "identity", "release"];
 
 // Verbs the shared contract names that this repo does not have yet: they say so, never pretend.
 const PLANNED = {
-  box: "Box-check setup: plan, prepare, cli, identity",
   stack: "A local Mend that is ready when usable: up, status, down",
   health: "From where the server is and is not reachable",
   drive: "Run a recipe against web, TUI, desktop, mobile-web, VS Code or T3",
@@ -49,7 +60,16 @@ export const parseArgs = (argv) => {
     if (arg === "--json") options.json = true;
     else if (arg === "--markdown") options.markdown = true;
     else if (arg === "--all") options.all = true;
-    else if (arg === "--concurrency") {
+    else if (arg === "--yes") options.yes = true;
+    else if (arg === "--ssh") {
+      const value = argv[++index];
+      if (!value) throw new UsageError("--ssh needs the ssh arguments that reach the box");
+      options.ssh = value;
+    } else if (arg === "--pr") {
+      const value = argv[++index];
+      if (!/^\d+$/.test(value ?? "")) throw new UsageError("--pr needs a pull request number");
+      options.pr = value;
+    } else if (arg === "--concurrency") {
       const value = Number(argv[++index]);
       if (!Number.isInteger(value) || value < 1)
         throw new UsageError("--concurrency needs a whole number");
@@ -79,8 +99,10 @@ const help = () =>
     ),
     "",
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
-    "--concurrency <n> (check: turbo tasks and Vitest workers), --markdown (status). Results: .verify/latest/<verb>.json. Exit: 0 passed, 1 failed,",
-    "2 usage, 3 blocked by a prerequisite, 4 any other status.",
+    "--concurrency <n> (check: turbo tasks and Vitest workers), --markdown (status),",
+    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box). Results:",
+    ".verify/latest/<verb>.json. Exit: 0 passed, 1 failed, 2 usage, 3 blocked by a",
+    "prerequisite, 4 any other status.",
   ].join("\n");
 
 const stampOf = (date) =>
@@ -92,6 +114,20 @@ const stampOf = (date) =>
 /** Builds a verb's result without saving or printing it. */
 export const runVerb = async (root, verb, options, startedAt = new Date()) => {
   const head = readHead(root, options.base);
+  if (verb === "box") {
+    const sshArgs = options.ssh ?? process.env.MEND_VERIFY_BOX_SSH;
+    const ssh = options.sshRunner ?? (sshArgs ? sshRunner(sshArgs.trim().split(/\s+/)) : null);
+    const tag = checkTag(options.pr, head);
+    const context = { head, ssh, tag, yes: options.yes === true, stamp: stampOf(startedAt) };
+    const { steps, next, ...rest } = {
+      plan: () => boxPlan(root, context),
+      prepare: () => boxPrepare(root, context),
+      cli: () => boxCli(root, { ...context, ...(options.run ? { run: options.run } : {}) }),
+      identity: () => boxIdentity(root, context),
+      release: () => boxRelease(context),
+    }[options.subverb]();
+    return createResult({ verb: `box ${options.subverb}`, head, startedAt, steps, next, ...rest });
+  }
   if (verb === "plan") {
     const { plan, steps, next } = planSteps(root, { head, files: options.files });
     return createResult({
@@ -194,6 +230,13 @@ export const main = async (argv, root = repoRoot) => {
   if (!(verb in VERBS) && !(verb in PLANNED)) {
     process.stderr.write(`Unknown verb ${verb}\n\n${help()}\n`);
     return 2;
+  }
+  if (verb === "box") {
+    if (!BOX.includes(words[1])) {
+      process.stderr.write(`verify box needs one of: ${BOX.join(", ")}\n`);
+      return 2;
+    }
+    options.subverb = words[1];
   }
   const startedAt = new Date();
   const result = await runVerb(root, verb, options, startedAt);
