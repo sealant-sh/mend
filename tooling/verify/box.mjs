@@ -516,7 +516,7 @@ ${dir}/node_modules/.bin/mend --version`,
         status: staged.code === 0 ? "passed" : "failed",
         detail:
           staged.code === 0
-            ? `${dir}/node_modules/.bin/mend, version ${staged.stdout.trim()}`
+            ? `${dir}/node_modules/.bin/mend, version ${staged.stdout.trim().split("\n")[0]}`
             : staged.stderr.trim().split("\n").at(-1),
       },
     ],

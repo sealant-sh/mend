@@ -122,6 +122,20 @@ names the build, the sessions it ran and what it saw. For a feature, a local sta
 accounts, a unit test, green CI or reading the code is not a verdict. Test, CI and docs PRs don't
 need one.
 
+The setup around the check is commands. Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments
+that reach it as root), then, in order:
+
+```sh
+pnpm verify box plan --pr <n>            # what it runs, whether another check holds it, schema, disk
+pnpm verify box prepare --pr <n> --yes   # pg_dumpall to /root/backups, and hold the box
+pnpm verify box cli --pr <n> --yes       # a CLI packed from this commit, installed beside the global one
+# build and deploy the preview: docs/operations/preview-builds.md
+pnpm verify box identity                 # by patch id, the running build contains this change
+pnpm verify box release --pr <n> --yes   # after the verdict is posted
+```
+
+`plan` and `identity` only read; the others change the box only with `--yes`.
+
 Spend tokens on that check, not on review panels. Ask for a second, independent review (the home
 repo's `interrogate` skill) only when two designs a reviewer could defend are genuinely in dispute.
 Otherwise the box check is the feature's one review, graded by Fix Now or File in
