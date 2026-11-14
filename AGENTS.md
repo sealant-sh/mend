@@ -127,6 +127,7 @@ that reach it as root), then, in order:
 
 ```sh
 pnpm verify box plan --pr <n>            # what it runs, whether another check holds it, schema, disk
+pnpm verify health                       # from where its app URL answers: here, its host, a container
 pnpm verify box prepare --pr <n> --yes   # pg_dumpall to /root/backups, and hold the box
 pnpm verify box cli --pr <n> --yes       # a CLI packed from this commit, installed beside the global one
 # build and deploy the preview: docs/operations/preview-builds.md

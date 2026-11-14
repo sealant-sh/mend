@@ -41,14 +41,19 @@ const world = (t, answers = {}) => {
     if (is(/doctor\.mjs/))
       return answer("doctor", { code: 0, stdout: "ok · tunnel\nok · health\n" });
     if (is(/^mend sessions --json/))
+      // Off a terminal the CLI wraps its answer in its command contract.
       return {
         code: 0,
         stdout: JSON.stringify({
-          sessions: [
-            { id: "s-outer", worktree: answer("worktree", "") },
-            { id: "s-sibling", worktree: answer("worktree", "") },
-            { id: "s-someone-else", worktree: "st-verify-other" },
-          ],
+          v: 1,
+          status: "done",
+          data: {
+            sessions: [
+              { id: "s-outer", worktree: answer("worktree", "") },
+              { id: "s-sibling", worktree: answer("worktree", "") },
+              { id: "s-someone-else", worktree: "st-verify-other" },
+            ],
+          },
         }),
       };
     if (is(/settle\.mjs/)) return { code: answer("settle", 0), stdout: "" };

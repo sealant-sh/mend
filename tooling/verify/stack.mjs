@@ -275,11 +275,12 @@ export const stackUp = async (
   } catch {
     // Reported below.
   }
-  state.sessionId = parsed?.sessionId ?? null;
+  const started = parsed?.data ?? parsed;
+  state.sessionId = started?.sessionId ?? null;
   if (
     !passFail(
       session,
-      session.code === 0 && parsed?.status === "running",
+      session.code === 0 && started?.status === "running",
       state.sessionId ? `session ${state.sessionId}` : "no session started",
     )
   )
@@ -569,8 +570,10 @@ export const stackDown = async (
     const sessions = await exec("mend", ["sessions", "--json"], { cwd: root, env: stepEnv });
     let siblings = [];
     try {
-      siblings = JSON.parse(sessions.stdout)
-        .sessions.filter((s) => s.worktree === state.worktree && s.id !== state.sessionId)
+      // Off a terminal the CLI may answer in its command contract, `{ v, status, data }`.
+      const parsed = JSON.parse(sessions.stdout);
+      siblings = (parsed.sessions ?? parsed.data.sessions)
+        .filter((s) => s.worktree === state.worktree && s.id !== state.sessionId)
         .map((s) => s.id);
     } catch {
       steps.push({
