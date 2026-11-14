@@ -20,8 +20,14 @@ import {
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
+/**
+ * Other programs on the machine may probe any new loopback listener (T3 Code's port discovery
+ * sends `GET /`), so the fake hands the test only requests on Mend's API.
+ */
 const startFakeMend = async (handle: Handler) => {
-  const server = createServer(handle);
+  const server = createServer((request, response) =>
+    request.url?.startsWith("/api/") === true ? handle(request, response) : response.end(),
+  );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   const address = server.address();

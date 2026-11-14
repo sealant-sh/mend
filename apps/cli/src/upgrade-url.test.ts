@@ -84,13 +84,20 @@ describe("upgrade URLs", () => {
   });
 });
 
+/**
+ * Other programs on the machine may probe any new loopback listener (T3 Code's port discovery
+ * sends `GET /`), so these servers answer and count only requests on Mend's API.
+ */
+const fromMend = (request: IncomingMessage): boolean => request.url?.startsWith("/api/") === true;
+
 it.each(["headers", "body"])(
   "abandons health discovery on cancellation during %s",
   async (phase) => {
     const controller = new AbortController();
     const received = Promise.withResolvers<void>();
     const headers = Promise.withResolvers<void>();
-    const server = createServer((_request, response) => {
+    const server = createServer((request, response) => {
+      if (!fromMend(request)) return void response.end();
       received.resolve();
       if (phase === "body") {
         response.writeHead(200, { "content-type": "application/json" });
@@ -131,6 +138,7 @@ it(
   async () => {
     const requests: string[] = [];
     const server = createServer((request, response) => {
+      if (!fromMend(request)) return void response.end();
       requests.push(`${request.method} ${request.url}`);
       response.writeHead(200, { "content-type": "application/json" });
       response.flushHeaders();
@@ -151,4 +159,4 @@ it(
   },
 );
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, type IncomingMessage } from "node:http";
