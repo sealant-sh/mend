@@ -29,7 +29,9 @@ export function measurementWorkflow(ci) {
     for (const step of job.steps) {
       if (
         step.run === "node scripts/ci-turbo.mjs build typecheck lint" ||
-        /^node scripts\/ci-shards\.mjs (engines|clients-a|clients-b)$/.test(step.run ?? "")
+        /^node scripts\/ci-shards\.mjs (engines|engines-b|clients-a|clients-b)$/.test(
+          step.run ?? "",
+        )
       ) {
         step.env = {
           ...step.env,
