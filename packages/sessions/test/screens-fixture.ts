@@ -16,7 +16,7 @@ import {
   SessionProcessId,
   ViewerConnectionId,
 } from "@mend/domain";
-import type { Screen, ScreenAction } from "@mend/domain/workbench";
+import type { Screen, ScreenAction, ScreenInputEvent } from "@mend/domain/workbench";
 import { BlobStoreFsLive } from "@mend/store";
 import { Deferred, Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
@@ -68,6 +68,21 @@ export const holdNextEndWith = (held: EndHeld | null) => {
   holdNextEnd = held;
 };
 
+const awaitedControls: Array<{
+  readonly tag: ScreenInputEvent["_tag"];
+  readonly done: Deferred.Deferred<void>;
+}> = [];
+
+/**
+ * Done once the next control of kind `tag` has been through the store, as a timer's transition
+ * on the test clock is: ask before the clock moves, then wait for it rather than poll the row.
+ */
+export const nextControl = (tag: ScreenInputEvent["_tag"]) =>
+  Effect.map(Deferred.make<void>(), (done) => {
+    awaitedControls.push({ tag, done });
+    return done;
+  });
+
 const reposLayer = Layer.effect(
   ScreensRepo,
   Effect.map(ScreensRepo, (stored): ScreensRepo["Service"] => ({
@@ -81,7 +96,17 @@ const reposLayer = Layer.effect(
           yield* Deferred.await(held.go);
         }
         return yield* stored.control(id, event, owner, frame);
-      }),
+      }).pipe(
+        Effect.ensuring(
+          Effect.suspend(() => {
+            const waiting = awaitedControls.filter((each) => each.tag === event._tag);
+            for (const each of waiting) awaitedControls.splice(awaitedControls.indexOf(each), 1);
+            return Effect.forEach(waiting, (each) => Deferred.succeed(each.done, undefined), {
+              discard: true,
+            });
+          }),
+        ),
+      ),
   })),
 ).pipe(Layer.provideMerge(storedReposLayer));
 

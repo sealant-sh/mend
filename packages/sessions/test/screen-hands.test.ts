@@ -1,9 +1,11 @@
+import { once } from "node:events";
+
 import { ScreensRepo, ScreensRepoMemory } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import type { Screen } from "@mend/domain/workbench";
 import { sealantRequestPriority, withInteractiveSealant } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
-import { Effect, Exit, Layer, Scope } from "effect";
+import { Deferred, Effect, Exit, Layer, Scope } from "effect";
 import { afterAll, beforeAll, describe, expect } from "vitest";
 
 import { ForwardAdapterLive } from "../src/forward.ts";
@@ -12,7 +14,6 @@ import { SCREEN_WORKER, screenWorkersLayer } from "../src/screen/screen-workers.
 import { dialLog } from "./forward-fixture.ts";
 import { decodePng } from "./png.ts";
 import {
-  eventually,
   handSocketOf,
   OWNER,
   makeScreenWorld,
@@ -136,14 +137,17 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
     () =>
       Effect.gen(function* () {
         const ended: Array<Screen> = [];
-        const hands = yield* makeHands((screen) => Effect.sync(() => void ended.push(screen)));
+        const told = yield* Deferred.make<void>();
+        const hands = yield* makeHands((screen) =>
+          Effect.andThen(
+            Effect.sync(() => void ended.push(screen)),
+            Deferred.succeed(told, undefined),
+          ),
+        );
         const screen = yield* screenOf(freshSession());
         const first = yield* hands.of(screen);
         handSocketOf(world, screen.processId).destroy();
-        yield* eventually(
-          () => Effect.sync(() => ended.length > 0),
-          "the hand's end was never told",
-        );
+        yield* Deferred.await(told);
         expect(ended.map((each) => each.id)).toEqual([screen.id]);
         expect(hands.open(screen.id)).toBeNull();
         const second = yield* hands.of(screen);
@@ -166,7 +170,10 @@ describe.skipIf(!dockerReady)("a screen's hand, against TigerVNC Xvnc", () => {
         expect(yield* hands.of(screen)).not.toBeNull();
         const socket = handSocketOf(world, screen.processId);
         yield* Scope.close(scope, Exit.void);
-        yield* Effect.sleep("100 millis");
+        // The hands' fibers ran in that scope, so none is left to tell of an end once it closed.
+        yield* Effect.promise(() =>
+          socket.closed ? Promise.resolve() : once(socket, "close").then(() => undefined),
+        );
         expect(socket.destroyed).toBe(true);
         expect(ended).toEqual([]);
       }).pipe(Effect.provide(layer)),
