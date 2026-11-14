@@ -297,9 +297,8 @@ describe("handoffWorktreeName", () => {
         fc.array(fc.string({ maxLength: 70 }), { maxLength: 5 }),
         fc.nat({ max: 4 }),
         (branch, head, extra, preTaken) => {
-          const first = handoffWorktreeName(branch, Sha.make(head), none);
           const taken = new Set(extra);
-          let current = first;
+          let current = handoffWorktreeName(branch, Sha.make(head), (name) => taken.has(name));
           for (let i = 0; i < preTaken; i++) {
             taken.add(current);
             current = handoffWorktreeName(branch, Sha.make(head), (name) => taken.has(name));
@@ -309,6 +308,8 @@ describe("handoffWorktreeName", () => {
           expect(taken.has(current)).toBe(false);
         },
       ),
+      // This seed's run 37 has an extra name equal to the first answer (SLNT-363).
+      { seed: 491360096 },
     );
   });
 });
