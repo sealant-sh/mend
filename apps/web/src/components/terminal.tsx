@@ -200,7 +200,7 @@ export function SessionTerminal({
 
     const attach = () => {
       const term = new Terminal({
-        fontFamily: cssVar("--font-mono", "JetBrains Mono, monospace"),
+        fontFamily: cssVar("--font-mono", "Geist Mono, monospace"),
         fontSize: 12.5,
         cursorBlink: !readOnly,
         disableStdin: readOnly,

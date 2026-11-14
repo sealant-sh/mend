@@ -137,8 +137,9 @@ Otherwise the box check is the feature's one review, graded by Fix Now or File i
 - All backend code is Effect v4; see Effect below.
 - Write TypeScript to the `coding-standards` skill
   (`../agent-home/.agents/skills/coding-standards/`), including its rules on `any` and casts.
-- Before any non-tiny UI change, read `DESIGN.md` and follow it as the design source of truth. Mend
-  shares Sealant's Evidence Review design language, and must look like part of the same family.
+- Before any non-tiny UI change, read `DESIGN.md` and follow it as the design source of truth. The
+  web app uses Mend's own look, Sheet; the marketing site and desktop app still use Sealant's
+  Evidence Review look until they move.
 - This repo is not Next.js: write no `"use client"` directives.
 - In React, derive data from props, state and loaders; reach for `useEffect` only when no cleaner
   data flow exists.

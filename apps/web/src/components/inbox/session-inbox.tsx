@@ -122,7 +122,7 @@ export function SessionInbox({
     <aside
       ref={list}
       aria-label="Sessions"
-      className="sticky top-0 flex h-dvh w-[284px] shrink-0 flex-col gap-0.5 overflow-y-auto overscroll-contain border-r border-rule px-3 py-[18px] max-md:static max-md:h-auto max-md:min-h-0 max-md:w-full max-md:flex-1 max-md:border-r-0"
+      className="sticky top-0 flex h-dvh w-[284px] shrink-0 flex-col gap-0.5 overflow-y-auto overscroll-contain border-r border-rule bg-canvas max-md:bg-background px-3 py-[18px] max-md:static max-md:h-auto max-md:min-h-0 max-md:w-full max-md:flex-1 max-md:border-r-0"
     >
       <div className="flex items-center gap-2 px-1.5 pb-3">
         <h2 className="font-sans text-[15px] font-semibold">Sessions</h2>

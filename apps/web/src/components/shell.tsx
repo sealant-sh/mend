@@ -114,7 +114,7 @@ function Rail() {
   return (
     <aside
       aria-label="Mend"
-      className="sticky top-0 flex h-dvh w-[60px] shrink-0 max-md:hidden flex-col items-center gap-1.5 border-r border-rule pt-4 pb-3.5"
+      className="sticky top-0 flex h-dvh w-[60px] shrink-0 max-md:hidden flex-col items-center gap-1.5 border-r border-rule bg-canvas pt-4 pb-3.5"
     >
       <Link to="/" aria-label="Mend · sessions" className={cn("mb-3.5 rounded-[9px]", focusRing)}>
         <Mark />
@@ -220,7 +220,7 @@ function ExpandedRail({ currentProjectId }: { readonly currentProjectId: string 
   return (
     <aside
       aria-label="Mend"
-      className="sticky top-0 flex h-dvh w-[220px] shrink-0 max-md:hidden flex-col gap-[22px] overflow-y-auto border-r border-rule px-3.5 py-[22px]"
+      className="sticky top-0 flex h-dvh w-[220px] shrink-0 max-md:hidden flex-col gap-[22px] overflow-y-auto border-r border-rule bg-canvas px-3.5 py-[22px]"
     >
       <div className="flex items-start">
         <Link to="/" className={cn("rounded-md no-underline", focusRing)}>

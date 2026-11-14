@@ -25,6 +25,8 @@ catalog:
   "@effect/platform-node": 4.0.5
   "@effect/sql-pg": 4.0.5
   "@effect/vitest": 4.0.5
+  "@fontsource/geist-mono": ^5.3.0
+  "@fontsource/instrument-sans": ^5.3.0
   "@fontsource/inter": ^5.2.8
   "@fontsource/jetbrains-mono": ^5.2.8
   "@fontsource/space-grotesk": ^5.2.8
