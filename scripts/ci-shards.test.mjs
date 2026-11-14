@@ -611,7 +611,11 @@ const descendantProgram = [
   'fs.writeFileSync(file, "ready");',
   'setInterval(() => {}, 100);',
 ].join("\\n");
-const descendant = spawn(process.execPath, ["-e", descendantProgram], { stdio: "ignore" });
+// The descendant holds the runner's stdout, which the kernel closes only as it exits: the test's
+// wait for that pipe to close (spawnSync's return, or "close") is the wait for its death.
+const descendant = spawn(process.execPath, ["-e", descendantProgram], {
+  stdio: ["ignore", "inherit", "ignore"],
+});
 process.on("SIGTERM", () => {
   record({ kind, descendant: descendant.pid, state: "wrapper ended" });
   process.exit(0);
