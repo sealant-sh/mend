@@ -122,16 +122,24 @@ describe.skipIf(postgres.skip || !dockerReady)("the Screens service, against Tig
           const { sessionId, screen } = yield* sessionWithScreen;
           const agent = agentOf(sessionId);
           yield* screens.look(agent.call());
+          // The batch's first move shows on Xvnc only once the batch is admitted and its hand is
+          // running it; the take waits for that, so it lands while the 400 keys are still going.
+          const started = [321, 123];
+          expect(pointer()).not.toEqual(started);
           const running = yield* Effect.forkChild(
             screens.act(agent.call(), {
               actions: [
+                movedTo({ x: 321, y: 123 }),
                 { kind: "type", text: "a".repeat(400) },
                 { kind: "wait", ms: 3_000 },
                 movedTo({ x: 700, y: 700 }),
               ],
             }),
           );
-          yield* Effect.sleep("200 millis");
+          yield* eventually(
+            () => Effect.sync(() => String(pointer()) === String(started)),
+            "the batch never started",
+          );
           yield* screens.take(sessionId, OWNER, CONNECTION);
           const batch = answered(yield* Fiber.join(running));
           expect(batch.outcome).toBe("interrupted");
