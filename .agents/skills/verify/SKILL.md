@@ -131,6 +131,11 @@ verdicts. They never appear in a report.
 
 ## Launch
 
+`pnpm verify stack up` runs steps 1 to 7 below and the Doctor, through the guard, and passes only
+when the Doctor does (`--mend`, `--sealant`, `--sealantd` pass sources to `stack.mjs serve`;
+`--expect-*` to the Doctor). `pnpm verify stack status` reruns the Doctor; `pnpm verify stack down`
+is Cleanup. Read on for what each step does and what to do when one fails.
+
 Pick the run's names once, from the root of a Mend checkout; everything below uses them.
 
 ```sh

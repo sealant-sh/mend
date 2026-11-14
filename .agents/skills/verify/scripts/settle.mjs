@@ -50,7 +50,10 @@ const read = () => {
   });
   if (run.status !== 0) return null;
   try {
-    return JSON.parse(run.stdout).sessions.find((item) => item.id.startsWith(session)) ?? null;
+    // Off a terminal the CLI answers in its command contract, `{ v, status, data }`.
+    const parsed = JSON.parse(run.stdout);
+    const sessions = parsed.sessions ?? parsed.data?.sessions ?? [];
+    return sessions.find((item) => item.id.startsWith(session)) ?? null;
   } catch {
     return null;
   }
