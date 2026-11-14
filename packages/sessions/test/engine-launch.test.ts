@@ -94,10 +94,15 @@ describe("SessionEngine", () => {
   ])(
     "starts locally with owner $ownerUserId while enforcing the named origin's authority",
     async (control) => {
+      // The port is shared with every process on the runner: a Git client another test aimed at
+      // a port it has since let go can reach this recorder. Only this case's own repository path
+      // counts as this case's request.
+      const repository = `/private-${crypto.randomUUID()}.git`;
       const requested: string[] = [];
       const roleQueries: string[] = [];
       const server = http.createServer((request, response) => {
-        requested.push(request.url ?? "");
+        const url = request.url ?? "";
+        if (url.startsWith(`${repository}/`)) requested.push(url);
         response.writeHead(404).end();
       });
       await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -114,7 +119,7 @@ describe("SessionEngine", () => {
                 "remote",
                 "set-url",
                 "origin",
-                `http://127.0.0.1:${address.port}/private.git`,
+                `http://127.0.0.1:${address.port}${repository}`,
               ]);
               // Older projects may have no recorded source; their actual named target is still checked.
               world.projects.set(
@@ -145,7 +150,7 @@ describe("SessionEngine", () => {
         expect(requested.length > 0).toBe(control.transports);
         expect(roleQueries).toEqual(control.ownerUserId === null ? [] : [control.ownerUserId]);
         if (control.transports)
-          expect(requested).toEqual(["/private.git/info/refs?service=git-upload-pack"]);
+          expect(requested).toEqual([`${repository}/info/refs?service=git-upload-pack`]);
       } finally {
         await new Promise<void>((resolve, reject) => {
           server.close((error) => {
