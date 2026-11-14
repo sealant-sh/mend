@@ -970,7 +970,8 @@ describe("two Retry deliveries of one review at once in one window", () => {
       SETTLE,
     );
     expect(pastes).toHaveLength(1);
-    expect(kept.drives(target.place, target.key)).toBe(false);
+    // The drive gives its lease back as it ends, after it kept the paste.
+    await vi.waitFor(() => expect(kept.drives(target.place, target.key)).toBe(false), SETTLE);
     expect(await keptIn(directory).drivenFor(target.place, target.key)).toBeNull();
   }, 15_000);
 });
@@ -2256,7 +2257,12 @@ describe("a session read that fails after Mend answered the follow-up", () => {
     if (composed === null) throw new Error("nothing composed");
     expect(await sendComposed(store, composed, composed.text)).toEqual({ sent: true });
     await vi.waitFor(() => expect(mend.delivered).toHaveLength(1), SETTLE);
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    // Mend took the follow-up before its answer reaches the drive: the send leaves sending once
+    // the drive keeps that answer, whatever the read of the session after it does.
+    await vi.waitFor(
+      () => expect(store.review().sends.map(({ phase }) => phase.kind)).not.toEqual(["sending"]),
+      SETTLE,
+    );
     return { store, pastes, told };
   };
 
@@ -2314,7 +2320,8 @@ describe("a send whose drive fails the moment it begins", () => {
     expect(store.retryTarget()).not.toBeNull();
     const place = { url: "http://mend", viewer: "dana", sessionId: "s1" };
     const key = store.review().sends.at(-1)?.key ?? "";
-    expect(reviews.drives(place, key)).toBe(false);
+    // The drive gives its lease back as it ends, after it kept the send failed.
+    await vi.waitFor(() => expect(reviews.drives(place, key)).toBe(false), SETTLE);
   }, 15_000);
 });
 
@@ -2509,6 +2516,15 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     if (first === null) throw new Error("nothing composed");
     await sendComposed(store, first, first.text);
     await pastedInto(store, pastes, 1);
+    // The drive's end reads the change again: a review composed before that read lands is composed
+    // without the comment Mend posted, and Send refuses it as one whose comments changed.
+    await vi.waitFor(
+      () =>
+        expect(store.ready()?.comments.map(({ body }) => body)).toContainEqual(
+          expect.stringContaining("Use the shared limiter"),
+        ),
+      SETTLE,
+    );
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
