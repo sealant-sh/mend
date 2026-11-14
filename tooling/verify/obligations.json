@@ -1,0 +1,128 @@
+{
+  "obligations": [
+    {
+      "id": "pre-pr-checks",
+      "paths": ["**"],
+      "why": "Every PR passes the checks AGENTS.md lists before a PR, with no test skipped that is not allowed to skip",
+      "owes": [{ "kind": "tests", "verb": "check", "command": "pnpm verify check" }]
+    },
+    {
+      "id": "box-check",
+      "paths": [
+        "apps/api/**",
+        "apps/cli/**",
+        "apps/desktop/**",
+        "apps/mobile/**",
+        "apps/t3-gateway/**",
+        "apps/vscode/**",
+        "apps/web/**",
+        "packages/**"
+      ],
+      "exclude": ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/*.md", "**/vitest*.config.*"],
+      "why": "A feature or fix merges only after an agent that did not write it has used it on the box as a signed-in person, and put the verdict on the PR (AGENTS.md, Check Features on the Box). Test, CI and docs PRs owe none",
+      "owes": [
+        {
+          "kind": "box-check",
+          "what": "another agent uses the change on the box, on a build that contains this PR, and posts the verdict on the PR",
+          "how": "AGENTS.md, Check Features on the Box; the verify skill's box check"
+        }
+      ]
+    },
+    {
+      "id": "screenshots",
+      "paths": [
+        "apps/cli/src/**",
+        "apps/desktop/src/**",
+        "apps/marketing/src/**",
+        "apps/mobile/src/**",
+        "apps/vscode/src/**",
+        "apps/web/src/**"
+      ],
+      "exclude": ["**/*.test.*", "**/*.spec.*", "**/test/**"],
+      "why": "A change a person can see (a screen, a dialog, copy, styling, a CLI's output) carries screenshots of every state it touches, with main beside it when it alters an existing screen",
+      "owes": [
+        {
+          "kind": "screenshots",
+          "what": "a screenshot of every state the change touches, before and after",
+          "how": "the verify skill's drivers for web, TUI, desktop, mobile-web and VS Code"
+        }
+      ]
+    },
+    {
+      "id": "standby-discard",
+      "paths": [
+        "packages/db/src/repos/hot-workspaces.ts",
+        "packages/sessions/src/engine.ts",
+        "packages/sessions/src/capture-channel.ts",
+        "docs/formal/standby-discard/**"
+      ],
+      "why": "The standby discard model stands for this code: a discard never reaches a workspace a session holds or can still take",
+      "owes": [
+        {
+          "kind": "formal",
+          "model": "standby-discard",
+          "command": "docs/formal/standby-discard/check.sh --quick",
+          "how": ".agents/skills/standby-discard: decide whether the change touches the model, run it, keep it true to the code"
+        }
+      ]
+    },
+    {
+      "id": "server-docker-setup",
+      "paths": [
+        "apps/cli/src/server-docker-volumes.ts",
+        "apps/cli/src/server-docker-protocol.test.ts",
+        "apps/cli/src/server-runtime.ts",
+        "apps/cli/src/server-store.ts",
+        "apps/cli/src/server-postgres-bootstrap.test.ts"
+      ],
+      "why": "First server setup on a real Docker engine: volume ownership and the official Postgres bootstrap. CI does not run these; they skip unless given a disposable Docker context",
+      "owes": [
+        {
+          "kind": "tests",
+          "verb": "check",
+          "gate": "MEND_DOCKER_TEST_CONTEXT",
+          "command": "MEND_DOCKER_TEST_CONTEXT=default pnpm verify check"
+        }
+      ]
+    },
+    {
+      "id": "preview-gateway",
+      "paths": [
+        "apps/api/src/preview-*.ts",
+        "apps/api/test/preview-*",
+        "apps/api/test/support/preview-*"
+      ],
+      "exclude": ["**/*.test.ts"],
+      "why": "Preview cookies, cross-preview isolation and stream buffering are only exercised by the preview acceptance suite (real browser, Caddy, gateway), which CI does not run",
+      "owes": [
+        {
+          "kind": "tests",
+          "command": "pnpm --filter @mend/api-server test:preview-acceptance"
+        }
+      ]
+    },
+    {
+      "id": "cli-package",
+      "paths": ["apps/cli/package.json", "apps/cli/scripts/**"],
+      "why": "A CLI tarball can install and still fail to start; only the installed-CLI smoke sees it",
+      "owes": [{ "kind": "tests", "command": "pnpm --filter @sealant/mend test:package" }]
+    }
+  ],
+  "ciLanes": [
+    {
+      "lane": "mobile",
+      "job": "mobile-web",
+      "command": "pnpm --filter @mend/mobile check:web"
+    },
+    {
+      "lane": "packaging",
+      "job": "packaging",
+      "command": "the packaging job's node --test list in .github/workflows/ci.yml (needs Docker, Helm, OpenTofu and Chromium)"
+    },
+    {
+      "lane": "store",
+      "job": "store-image-git",
+      "command": "bash scripts/store-image-git.sh"
+    }
+  ]
+}

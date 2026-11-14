@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 // Conservatively gate only the extra mobile-web, packaging and store-image-git jobs. Turbo,
 // PostgreSQL and S3 contracts still run for every change. Unknown paths and unavailable history
 // run every extra.
-const full = { mobile: true, packaging: true, store: true };
+export const full = { mobile: true, packaging: true, store: true };
 const sha = /^[a-f0-9]{40,64}$/i;
 
 const changedPaths = (base, head) =>
@@ -32,7 +32,7 @@ export const testOnly = (path) =>
   !path.endsWith("/package.json") &&
   /^packages\/[^/]+\/(test\/|(.+\/)?[^/]+\.(test|spec)\.[cm]?[jt]sx?$)/.test(path);
 
-const extras = (paths) => {
+export const extras = (paths) => {
   if (paths.length === 0) return full;
   const scope = { mobile: false, packaging: false, store: false };
   for (const path of paths) {
