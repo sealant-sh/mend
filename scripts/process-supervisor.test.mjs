@@ -232,7 +232,9 @@ test("shutdown signals the child and its grandchild, and observes both exit", as
   const owned = [];
   try {
     const grandchild = `const fs=require("node:fs"); process.on("SIGTERM",()=>{fs.writeFileSync(${JSON.stringify(childTerm)}, "TERM");process.exit(0)}); fs.writeFileSync(${JSON.stringify(childReady)}, String(process.pid));setInterval(()=>{},1000);`;
-    const parent = `const fs=require("node:fs"); const child=require("node:child_process").spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:"ignore"}); child.once("exit",(code,signal)=>{fs.writeFileSync(${JSON.stringify(childExit)},JSON.stringify({pid:child.pid,code,signal}));process.exit(code===0?0:1)});process.on("SIGTERM",()=>{fs.writeFileSync(${JSON.stringify(parentTerm)}, "TERM")});fs.writeFileSync(${JSON.stringify(parentReady)},String(process.pid));setInterval(()=>{},1000);`;
+    // The group's TERM reaches the parent as two callbacks, its own TERM and its child's exit, in
+    // either order. It leaves only once it has seen both, so its TERM marker is always written.
+    const parent = `const fs=require("node:fs"); let termed=false, childCode; const leave=()=>{if(termed&&childCode!==undefined)process.exit(childCode===0?0:1)}; const child=require("node:child_process").spawn(process.execPath,["-e",${JSON.stringify(grandchild)}],{stdio:"ignore"}); child.once("exit",(code,signal)=>{fs.writeFileSync(${JSON.stringify(childExit)},JSON.stringify({pid:child.pid,code,signal}));childCode=code;leave()});process.on("SIGTERM",()=>{fs.writeFileSync(${JSON.stringify(parentTerm)}, "TERM");termed=true;leave()});fs.writeFileSync(${JSON.stringify(parentReady)},String(process.pid));setInterval(()=>{},1000);`;
     const tracked = await supervisor.start({
       name: "signal-target",
       command: [process.execPath, "-e", parent],
