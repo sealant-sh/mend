@@ -107,6 +107,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     terminals: [],
     transcript: "",
     mints: [],
+    settles: [],
+    messages: [],
   };
   const watchSocket = (target, tab) =>
     target.on("websocket", (socket) => {
@@ -132,6 +134,20 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
             sentAt: Date.now(),
           });
         }
+        if (
+          frame.tag === "orchestration.dispatchCommand" &&
+          JSON.stringify(frame.payload ?? null).includes('"thread.settle"')
+        )
+          rpc.settles.push({ key: `${tab}:${frame.id}`, answer: null });
+        if (
+          frame.tag === "orchestration.dispatchCommand" &&
+          JSON.stringify(frame.payload ?? null).includes('"message.dispatch"')
+        )
+          rpc.messages.push({
+            key: `${tab}:${frame.id}`,
+            payload: JSON.stringify(frame.payload),
+            answer: null,
+          });
         if (frame.tag.startsWith("terminal."))
           rpc.terminals.push({
             tab,
@@ -153,6 +169,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
             if (!mint.ok) mint.message = failureMessage(frame.exit?.cause);
           }
         }
+        for (const command of [...rpc.settles, ...rpc.messages])
+          if (command.key === `${tab}:${frame?.requestId}` && frame?._tag === "Exit")
+            command.answer =
+              frame.exit?._tag === "Success"
+                ? { ok: true }
+                : { ok: false, message: failureMessage(frame.exit?.cause) };
         if (frame?._tag === "Exit" && frame.exit?._tag === "Failure")
           rpc.failures.push({ tab, tag, message: failureMessage(frame.exit.cause) });
         if (tag === "assets.createUrl" && frame?.exit?._tag === "Success") {
@@ -325,6 +347,29 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     "Mend's workspace menu reads New worktree, checked",
   );
   await page.keyboard.press("Escape");
+  // A New-worktree send needs the draft's own base branch, which the client sets once its branch
+  // list loads; a message sent before then is refused ("Select a base branch before sending in New
+  // worktree mode."). The picker reads "From <branch>" earlier, from the checkout's current branch,
+  // so wait on the draft itself, as the client persists it.
+  const draftId = new URL(page.url()).pathname.split("/").at(-1);
+  await until(
+    "the client sets the draft's base branch",
+    () =>
+      page.evaluate((id) => {
+        try {
+          const drafts =
+            JSON.parse(localStorage.getItem("t3code:composer-drafts:v1") ?? "null")?.state
+              ?.draftThreadsByThreadKey ?? {};
+          return Object.entries(drafts).some(
+            ([key, draft]) =>
+              (key.includes(id) || draft?.threadId === id) && typeof draft?.branch === "string",
+          );
+        } catch {
+          return false;
+        }
+      }, draftId),
+    30_000,
+  );
   const opening = `Opening message from the t3code client ${stamp}`;
   const composer = page.getByRole("textbox", { name: "Message" });
   await composer.click();
@@ -369,6 +414,21 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       async () => (await composer.innerText()).trim() === "",
       10_000,
     );
+    // The client empties the composer before it dispatches the message, and drops an Enter
+    // silently until the gateway has answered that dispatch: wait on the answer before the next.
+    // Polled closely: the next message is meant to reach the gateway while this one's turn runs.
+    const deadline = Date.now() + 15_000;
+    let answer;
+    while (
+      (answer = rpc.messages.find((entry) => entry.payload.includes(text))?.answer ?? null) === null
+    ) {
+      if (Date.now() > deadline)
+        throw new Error(
+          `does not hold · the gateway's answer to the client's dispatch of "${text}" within 15 s`,
+        );
+      await page.waitForTimeout(50);
+    }
+    ok(answer.ok, `the gateway took "${text}" · ${JSON.stringify(answer)}`);
   };
   const second = `Second message ${stamp}`;
   const third = `Third message, queued ${stamp}`;
@@ -467,11 +527,34 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await shot("09-snoozed");
   await page.goto(threadUrl);
   await main.getByRole("heading", { name: opening, level: 2 }).waitFor();
-  await main.getByRole("button", { name: /^Thread actions for/ }).click();
-  await page
+  // The menu reads the environment's operate scope when it opens; right after the page loads the
+  // client may not hold it yet, and every action that needs it opens disabled until the menu is
+  // opened again.
+  const settleItem = page
     .getByRole("button", { name: "Settle thread" })
-    .filter({ hasText: "Settle thread" })
-    .click();
+    .filter({ hasText: "Settle thread" });
+  await until(
+    "the thread's menu offers Settle thread, enabled",
+    async () => {
+      await main.getByRole("button", { name: /^Thread actions for/ }).click();
+      await settleItem.waitFor();
+      if (await settleItem.isEnabled()) return true;
+      await page.keyboard.press("Escape");
+      await settleItem.waitFor({ state: "hidden" });
+      return false;
+    },
+    15_000,
+  );
+  const settlesBefore = rpc.settles.length;
+  await settleItem.click();
+  // The gateway answers the settle, or refuses it (a turn running, a message waiting, a question
+  // open): wait on that answer, then on the shell carrying it.
+  const settleAnswer = await until(
+    "the gateway's answer to the client's settle",
+    () => rpc.settles.slice(settlesBefore).find((entry) => entry.answer !== null)?.answer,
+    15_000,
+  );
+  ok(settleAnswer.ok, `the gateway took the settle · ${JSON.stringify(settleAnswer)}`);
   await until("the shell's thread carries settledAt", () => state().settledAt, 15_000);
   ok(
     state().snoozedUntil == null,
@@ -660,7 +743,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       await main.getByRole("heading", { name: opening, level: 2 }).waitFor();
       await showFiles();
       await reveal(...trail);
-      return open(trail.at(-1));
+      // The tree opens a file only when its selection changes, and after a reload the panel may
+      // select the file whose tab it kept, so clicking that row opens nothing: use the tab.
+      const name = trail.at(-1);
+      const tab = main.getByRole("button", { name, exact: true });
+      if ((await tab.count()) === 0) return open(name);
+      const from = assets.length;
+      await tab.click();
+      return () => assets.slice(from).filter((entry) => entry.path.endsWith(`/${name}`));
     };
   const reopenByRetry = (name) => async () => {
     const from = assets.length;
@@ -1131,10 +1221,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.waitForURL((url) => url.pathname !== "/login");
   if (new URL(page.url()).pathname === "/welcome")
     await page.getByRole("button", { name: "Continue to Mend" }).click();
-  await page.goto(new URL("/settings#devices", mend).href);
-  await page.getByRole("heading", { name: "Devices" }).waitFor();
+  await page.goto(new URL("/settings/devices", mend).href);
+  await page.getByRole("heading", { name: "Devices", level: 1 }).waitFor();
+  await page.getByRole("table", { name: "Devices" }).waitFor();
   const paired = page
-    .locator("#devices div.flex.items-start")
+    .getByRole("table", { name: "Devices" })
+    .getByRole("row")
     .filter({ hasText: "t3code · T3 Code Web" });
   ok(
     (await paired.count()) > 0,
@@ -1144,9 +1236,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   for (const [name, url] of minted)
     ok(curl(url).status === 200, `curl · before the revoke · ${name} · 200`);
   while ((await paired.count()) > 0) {
-    await paired.first().getByRole("button", { name: "Revoke" }).click();
-    await paired.first().getByRole("button", { name: "Confirm revoke" }).click();
-    await page.waitForTimeout(1000);
+    const before = await paired.count();
+    await paired.first().getByRole("button", { name: "Revoke t3code · T3 Code Web" }).click();
+    const dialog = page.getByRole("dialog", { name: "Revoke t3code · T3 Code Web?" });
+    await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
+    await dialog.waitFor({ state: "hidden" });
+    await until("the revoked device leaves the list", async () => (await paired.count()) < before);
   }
   const revokedAt = Date.now();
   await shot("23-devices-revoked");
