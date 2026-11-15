@@ -3160,17 +3160,27 @@ const validateEdge = async (
  * port on loopback. The edge's name resolves to a public address that may not route back to this
  * host, and what the probe asks is whether the Mend container answers with the pinned version.
  */
+/**
+ * HTTPS in front of a loopback bind (the edge, tailscale serve, the operator's own proxy) is
+ * checked at Mend's own port: whether the front answers from this machine says nothing of Mend.
+ */
+const servedInFront = (config: ServerConfig): boolean =>
+  config.edgeHost !== undefined ||
+  (isLoopbackBind(config.bind) && !isLoopbackHost(new URL(config.appUrl).hostname));
+
 const healthOrigin = (config: ServerConfig): string => {
-  if (config.edgeHost === undefined) return config.appUrl;
+  if (!servedInFront(config)) return config.appUrl;
   const host = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
   return `http://${host}:${config.appPort}`;
 };
 
-/** What setup and start say once health answered: where it answered, and the edge's origin. */
+/** What setup and start say once health answered: where it answered, and what serves it. */
 const reachableLine = (config: ServerConfig): string =>
-  config.edgeHost === undefined
+  !servedInFront(config)
     ? `Mend ${config.serverVersion} is reachable at ${config.appUrl}`
-    : `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · the edge is set up for ${config.appUrl}`;
+    : config.edgeHost !== undefined
+      ? `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · the edge is set up for ${config.appUrl}`
+      : `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · people reach it at ${config.appUrl} through the HTTPS in front of it`;
 
 /** How long setup watches for the gateway after Mend answered: it starts once Mend is ready. */
 const T3_GATEWAY_OBSERVE_ATTEMPTS = 15;

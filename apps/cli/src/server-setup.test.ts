@@ -2285,6 +2285,14 @@ describe("mend server setup", () => {
     expect(control.lines).toContain(
       "Until that first account exists, anyone who reaches https://mend.example.test can create it, so it is worth doing that soon.",
     );
+    expect(
+      control.lines.some((line) =>
+        line.endsWith(
+          "answers at http://127.0.0.1:3105 on this machine · people reach it at https://mend.example.test through the HTTPS in front of it",
+        ),
+      ),
+    ).toBe(true);
+    expect(control.fetched.some((url) => url.startsWith("https://mend.example.test"))).toBe(false);
   });
 
   it("a public address on an existing install is said as observed beside the declared exposure, and nothing on a private one", async () => {
