@@ -629,9 +629,20 @@ describe("preparing the preview after a changed turn (ADR 0017, After the agent 
         yield* startedOnceThenAgentStopped(harness);
         const sibling = yield* harness.sibling();
         const before = harness.timeline.length;
+        // "At once": neither preparation starts until both have found the preview free. Without
+        // this, one can finish starting web before the other looks, and that one answers Running.
+        let reached = 0;
+        const both = yield* Deferred.make<void>();
+        const atOnce: PreviewPreparationHold = {
+          report: () =>
+            Effect.suspend(() =>
+              ++reached === 2 ? Deferred.succeed(both, undefined) : Effect.void,
+            ).pipe(Effect.andThen(Deferred.await(both)), Effect.as(true)),
+          holds: Effect.succeed(true),
+        };
 
         const [first, second] = yield* Effect.all(
-          [harness.prepare(1), harness.prepare(1, undefined, sibling)],
+          [harness.prepare(1, atOnce), harness.prepare(1, atOnce, sibling)],
           { concurrency: 2 },
         );
 
