@@ -8,7 +8,7 @@ import type { WorkerReply, WorkerRequest } from "./screen-workers.ts";
 const queue = new ByteQueue();
 let framebuffer: Framebuffer | undefined;
 
-const answer = (request: WorkerRequest): WorkerReply => {
+const answer = (request: Exclude<WorkerRequest, { readonly _tag: "Stop" }>): WorkerReply => {
   switch (request._tag) {
     case "Decode":
       queue.push(request.bytes);
@@ -21,6 +21,8 @@ const answer = (request: WorkerRequest): WorkerReply => {
 };
 
 parentPort?.on("message", (request: WorkerRequest) => {
+  // Closing the port ends the thread once this handler returns, between requests.
+  if (request._tag === "Stop") return parentPort?.close();
   const reply = answer(request);
   // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a worker's port, which has no origin.
   parentPort?.postMessage(reply, reply._tag === "Pixels" ? [reply.pixels.buffer] : []);

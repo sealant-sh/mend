@@ -9,7 +9,9 @@ import type { FramebufferRead } from "./rfb-framebuffer.ts";
 export type WorkerRequest =
   | { readonly _tag: "Decode"; readonly bytes: Uint8Array<ArrayBuffer> }
   | { readonly _tag: "Copy" }
-  | { readonly _tag: "Encode"; readonly bytes: Uint8Array<ArrayBuffer> };
+  | { readonly _tag: "Encode"; readonly bytes: Uint8Array<ArrayBuffer> }
+  /** The thread finishes the request it is on, answers it, and exits. */
+  | { readonly _tag: "Stop" };
 
 /** `Started` is the thread's first message, once its module has loaded; the rest answer requests. */
 export type WorkerReply =
@@ -55,6 +57,7 @@ interface Thread {
     tag: Tag,
     deadline: Duration.Duration,
   ) => Effect.Effect<Reply<Tag>, WorkerStopped>;
+  /** Asks the thread to stop, and waits until it has. */
   readonly stop: Effect.Effect<void>;
   readonly stopped: Effect.Effect<never, WorkerStopped>;
 }
@@ -64,12 +67,23 @@ const isReply = <Tag extends WorkerReply["_tag"]>(
   tag: Tag,
 ): reply is Reply<Tag> => reply?._tag === tag;
 
+const STOP: WorkerRequest = { _tag: "Stop" };
+
+/**
+ * A thread is never `terminate()`d. Terminating one between a zlib handle's construction and its
+ * init, which every decode and encode does, aborts the whole process in Node's cleanup
+ * (`close before init`, SLNT-759). So a stop is a message the thread reads once it has answered
+ * the request it is on, and a request past its deadline leaves its thread to finish that request and
+ * exit: a decode or encode is bounded by the bytes it was given, so the thread always does.
+ */
 const threadOf = (url: URL): Thread => {
   const worker = new Worker(url);
   worker.unref();
   let alive = true;
+  let stopAsked = false;
   let ending: WorkerStopped["reason"] = "failed";
   const started = Deferred.makeUnsafe<void>();
+  const exited = Deferred.makeUnsafe<void>();
   const waiting: Array<(reply: WorkerReply | undefined) => void> = [];
   const watchers: Array<() => void> = [];
   const stopped = () => {
@@ -83,8 +97,22 @@ const threadOf = (url: URL): Thread => {
     else waiting.shift()?.(reply);
   });
   worker.on("error", stopped);
-  worker.on("exit", stopped);
-  const stop = Effect.promise(() => worker.terminate()).pipe(Effect.asVoid);
+  worker.on("exit", () => {
+    stopped();
+    Deferred.doneUnsafe(exited, Exit.void);
+  });
+  const askToStop = () => {
+    if (stopAsked) return;
+    stopAsked = true;
+    // Held until it exits, so that a wait for the exit is not cut short by an empty event loop.
+    worker.ref();
+    worker.postMessage(STOP, []);
+  };
+  const stop = Effect.suspend(() => {
+    if (!alive) return Effect.void;
+    askToStop();
+    return Deferred.await(exited);
+  });
   const failed = new WorkerStopped({ reason: "failed" });
   return {
     stop,
@@ -110,10 +138,9 @@ const threadOf = (url: URL): Thread => {
             orElse: () =>
               Effect.sync(() => {
                 ending = "deadline";
-              }).pipe(
-                Effect.andThen(stop),
-                Effect.andThen(Effect.fail(new WorkerStopped({ reason: "deadline" }))),
-              ),
+                askToStop();
+                stopped();
+              }).pipe(Effect.andThen(Effect.fail(new WorkerStopped({ reason: "deadline" })))),
           }),
         ),
       ),
