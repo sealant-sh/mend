@@ -87,7 +87,7 @@ const OUTER_HINT = [
 ];
 
 /** The environment every step runs in: the guard first on PATH, the run's private registry. */
-const runEnv = (root, env, state) => ({
+export const runEnv = (root, env, state) => ({
   ...env,
   PATH: `${join(root, SKILL, "scripts/guard")}:${env.PATH}`,
   MEND_VERIFY_PRIVATE: state.private,
