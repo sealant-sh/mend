@@ -71,6 +71,7 @@ import {
   TurnSteerKeyConflict,
   WorkspaceReplaceRefused,
   SessionNotLive,
+  ServiceSetupFailed,
   ServiceStartUnderWay,
   SettingsFailure,
   StoreFailure,
@@ -3479,7 +3480,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               ServiceBindError: (error) =>
                 Effect.fail(new StoreFailure({ message: error.message })),
               ServiceStartError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
+                Effect.fail(
+                  error.setupFailed === undefined
+                    ? new StoreFailure({ message: error.message })
+                    : new ServiceSetupFailed({ message: error.message, setup: error.setupFailed }),
+                ),
               ServiceStartUnderWayError: (error) =>
                 Effect.fail(new ServiceStartUnderWay({ message: error.message })),
             }),

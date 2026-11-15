@@ -13,13 +13,15 @@ import type { TrpcContext } from "../api/index.ts";
 const t = initTRPC.context<TrpcContext>().create({
   transformer: superjson,
   // The refusal's tag rides beside its words for the pages that branch on it (a worktree that is
-  // live, a name taken); the message a person reads never carries it (api/errors.ts).
+  // live, a name taken), with the facts of a refused removal or a failed setup; the message a
+  // person reads never carries them (api/errors.ts).
   errorFormatter: ({ shape, error }) => ({
     ...shape,
     data: {
       ...shape.data,
       tag: error.cause instanceof ApiRefusal ? error.cause.tag : null,
       removal: error.cause instanceof ApiRefusal ? error.cause.removal : null,
+      setup: error.cause instanceof ApiRefusal ? error.cause.setup : null,
     },
   }),
 });

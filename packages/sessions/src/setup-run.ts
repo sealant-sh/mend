@@ -1,6 +1,6 @@
 import { type SetupClaimRequest, type SetupRunAgain, SetupRunsRepo } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { ServiceStartSetup, type SetupDeclaration } from "@mend/domain/workbench";
+import { ServiceStartSetup, type SetupDeclaration, SetupStepFailure } from "@mend/domain/workbench";
 import { type ProcessUser, SealantClient, type SealantPlatformError } from "@mend/sealant";
 import type { Workspace } from "@sealant/sdk";
 import { Deferred, Duration, Effect, Exit, Option, Ref, Schema } from "effect";
@@ -22,9 +22,13 @@ import {
   setupStopArgv,
 } from "./setup.ts";
 
-/** Why setup did not let its plan go on, in the words the start reports. */
+/**
+ * Why setup did not let its plan go on, in the words the start reports. `failed` is set when a
+ * step ran and did not finish, with the facts the words were written from.
+ */
 export class SetupNotRun extends Schema.TaggedError<SetupNotRun>()("SetupNotRun", {
   message: Schema.String,
+  failed: Schema.optional(SetupStepFailure),
 }) {}
 
 /** The copy of the worktree Mend reads: beside this process, or only in the session's workspace. */
@@ -121,7 +125,8 @@ export const makeSetupRunner = Effect.gen(function* () {
       ...(person === null ? {} : { user: person.user }),
     });
 
-  const notRun = (message: string) => new SetupNotRun({ message });
+  const notRun = (message: string, failed?: SetupStepFailure) =>
+    new SetupNotRun(failed === undefined ? { message } : { message, failed });
   const platformFailed = (error: SealantPlatformError) =>
     notRun(`setup did not run · ${error.message}`);
 
@@ -334,6 +339,14 @@ export const makeSetupRunner = Effect.gen(function* () {
       yield* report(plan, "failed", step, why);
       return yield* notRun(
         withOutput(`setup did not finish, so nothing was started · ${why}`, outputTail),
+        new SetupStepFailure({
+          step,
+          ended:
+            end._tag === "OverLimit"
+              ? { _tag: "OverLimit", limitMinutes: SETUP_STEP_LIMIT_MINUTES }
+              : { _tag: "Exited", exitCode: end.exitCode },
+          output: outputTail,
+        }),
       );
     }
     if (plan.stopped()) return yield* notRun(SETUP_STOPPED);
@@ -387,7 +400,12 @@ export const makeSetupRunner = Effect.gen(function* () {
           Effect.fail(
             known
               ? error
-              : notRun(error === claimLost ? LOST_UNSTOPPED : `${error.message} · ${UNSTOPPED}`),
+              : error === claimLost
+                ? notRun(LOST_UNSTOPPED)
+                : notRun(
+                    `${error.message} · ${UNSTOPPED}`,
+                    error instanceof SetupNotRun ? error.failed : undefined,
+                  ),
           ),
         ),
       ),

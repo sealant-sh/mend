@@ -49,6 +49,7 @@ import {
   SessionProcess,
   SessionProcessKind,
   SessionStatus,
+  SetupStepFailure,
   WorkspaceRetirement,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
@@ -103,6 +104,17 @@ export class ServiceStartUnderWay extends Schema.TaggedError<ServiceStartUnderWa
   "ServiceStartUnderWay",
   { message: Schema.String },
   { httpApiStatus: 504 },
+) {}
+
+/**
+ * A recipe start whose `[setup]` step did not finish, so nothing was started: `setup` holds the
+ * step, how it ended and the end of its output, and `message` says it in words. 422, as the
+ * `StoreFailure` it was before, so a client older than this tag reads the same words.
+ */
+export class ServiceSetupFailed extends Schema.TaggedError<ServiceSetupFailed>()(
+  "ServiceSetupFailed",
+  { message: Schema.String, setup: SetupStepFailure },
+  { httpApiStatus: 422 },
 ) {}
 
 export const RespondAgentRequest = Schema.Union([
@@ -776,6 +788,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
         SessionNotSteerable,
         SessionNotLive,
         StoreFailure,
+        ServiceSetupFailed,
         ServiceStartUnderWay,
         RemovalInProgress,
       ],

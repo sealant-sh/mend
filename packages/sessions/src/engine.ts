@@ -184,6 +184,7 @@ import {
   ServiceStartSetup,
   ServiceStartStep,
   type SetupDeclaration,
+  SetupStepFailure,
   previewControlDecider,
   previewStartId,
   recipeRefusalLine,
@@ -2663,12 +2664,16 @@ export class ServiceNotFoundError extends Schema.TaggedError<ServiceNotFoundErro
   },
 ) {}
 
-/** The supervised command ended before its port ever answered. */
+/**
+ * The supervised command ended before its port ever answered. `setupFailed`: its plan's `[setup]`
+ * step did not finish, and `message` was written from these facts.
+ */
 export class ServiceStartError extends Schema.TaggedError<ServiceStartError>()(
   "ServiceStartError",
   {
     message: Schema.String,
     resourceStopped: Schema.optional(ResourceDependencyStopped),
+    setupFailed: Schema.optional(SetupStepFailure),
   },
 ) {}
 
@@ -27535,6 +27540,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   : error instanceof SetupNotRun
                     ? error.message
                     : `setup did not run · ${error.message}`,
+              ...(error instanceof SetupNotRun && error.failed !== undefined
+                ? { setupFailed: error.failed }
+                : {}),
             });
 
       /**
@@ -27597,6 +27605,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           state: "failed" | "stopped",
           message: string,
           resourceStopped?: ResourceDependencyStopped,
+          setupFailed?: SetupStepFailure,
         ) =>
           Effect.suspend(() =>
             progressTo(plan, new ServiceStartProgress({ ...plan.progress, state, message })),
@@ -27606,6 +27615,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 new ServiceStartError({
                   message,
                   ...(resourceStopped === undefined ? {} : { resourceStopped }),
+                  ...(setupFailed === undefined ? {} : { setupFailed }),
                 }),
               ),
             ),
@@ -27630,7 +27640,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             return yield* plan.stopped
               ? end("stopped", stoppedWords)
-              : end("failed", ran.failure.message);
+              : end("failed", ran.failure.message, undefined, ran.failure.setupFailed);
           }
         }
         for (const planned of steps.slice(0, -1)) {

@@ -32,7 +32,11 @@ let mode:
   | "http-401"
   | "removal-in-progress"
   | "removed-project"
+  | "setup-failed"
   | "drift-404" = "http-503";
+
+const SETUP_FAILED_WORDS =
+  "setup did not finish, so nothing was started · `pnpm install` exited 1\n--- output ---\nERR_PNPM_OUTDATED_LOCKFILE";
 
 beforeAll(async () => {
   server = createServer((_request, response) => {
@@ -45,6 +49,21 @@ beforeAll(async () => {
       response.writeHead(409, { "content-type": "application/json" });
       response.end(
         JSON.stringify({ _tag: "RemovalInProgress", message: REMOVED_PROJECT_WORK_REFUSED }),
+      );
+      return;
+    }
+    if (mode === "setup-failed") {
+      response.writeHead(422, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          _tag: "ServiceSetupFailed",
+          message: SETUP_FAILED_WORDS,
+          setup: {
+            step: "pnpm install",
+            ended: { _tag: "Exited", exitCode: 1 },
+            output: "ERR_PNPM_OUTDATED_LOCKFILE",
+          },
+        }),
       );
       return;
     }
@@ -209,6 +228,39 @@ describe("a refusal the API declared", () => {
     expect(error.message).toBe(
       "You belong to no organization, so there is none for an access key to act in.",
     );
+  });
+});
+
+describe("a Run on a Service whose setup did not finish, through the real client", () => {
+  it("crosses in the server's words, its tag and the step's facts beside them", async () => {
+    mode = "setup-failed";
+    const error = await failure(`http://127.0.0.1:${port}`, (api) =>
+      api.sessions.runServiceRecipe({
+        params: { id: SessionId.make("s-1") },
+        payload: { name: "web" },
+      }),
+    );
+    expect(error.code).toBe("UNPROCESSABLE_CONTENT");
+    expect(error.message).toBe(SETUP_FAILED_WORDS);
+    expect(error.cause).toBeInstanceOf(ApiRefusal);
+    expect(
+      error.cause instanceof ApiRefusal
+        ? { tag: error.cause.tag, setup: error.cause.setup, removal: error.cause.removal }
+        : null,
+    ).toEqual({
+      tag: "ServiceSetupFailed",
+      setup: {
+        step: "pnpm install",
+        ended: { _tag: "Exited", exitCode: 1 },
+        output: "ERR_PNPM_OUTDATED_LOCKFILE",
+      },
+      removal: null,
+    });
+  });
+
+  it("carries no setup facts on any other refusal", () => {
+    const error = toTRPCError(new StoreFailure({ message: "a Stop came before web started" }));
+    expect(error.cause instanceof ApiRefusal ? error.cause.setup : "no refusal").toBeNull();
   });
 });
 
