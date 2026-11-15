@@ -364,6 +364,10 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
     "scripts/next-version.histories.test.mjs",
   ])
     assert.ok(suite.split(/\s+/).includes(file), file);
+  assert.ok(
+    commands("packaging").includes("pnpm --filter @sealant/mend test:package"),
+    "packaging installs the packed CLI and starts it",
+  );
 });
 
 // Node pairs each reporter with the destination at the same position.

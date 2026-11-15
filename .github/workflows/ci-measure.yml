@@ -536,6 +536,8 @@ jobs:
           .agents/skills/verify/scripts/doctor.test.mjs
           .agents/skills/verify/scripts/drive-vscode.test.mjs
           .agents/skills/verify/scripts/fingerprint.test.mjs
+      - name: Installed-CLI smoke from the packed tarball
+        run: pnpm --filter @sealant/mend test:package
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -372,7 +372,7 @@ runtime. Source files remain runnable by the existing tests.
 fresh directory outside the checkout. It needs registry access. The smoke test checks the published
 files and runs server-independent commands with OpenTUI temporarily removed. Set
 `MEND_KEEP_PACKAGE_TEST=1` to retain the printed directory and installed package for inspection.
-Neither installation nor the build installs or starts a Mend server.
+Neither installation nor the build installs or starts a Mend server. CI's `packaging` job runs it.
 
 ## How it works
 
