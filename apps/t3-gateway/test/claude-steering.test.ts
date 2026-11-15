@@ -131,8 +131,13 @@ describe("Claude steering through the gateway and real adapter", () => {
               assert.strictEqual(during.runs[0]?.status, "running");
             } else if (afterAbort) yield* push(frame);
           }
-          const done = yield* projectionWhen(rpc, (projection) =>
-            projection.messages.some((item) => item.text === "steering fixture observed"),
+          // The message and the run's end reach the gateway as separate conversation changes, each
+          // its own refresh, so wait for both before reading how the run ended.
+          const done = yield* projectionWhen(
+            rpc,
+            (projection) =>
+              projection.messages.some((item) => item.text === "steering fixture observed") &&
+              projection.runs[0]?.status !== "running",
           );
           assert.lengthOf(done.runs, 1);
           assert.lengthOf(done.attempts, 1);
