@@ -479,9 +479,9 @@ jobs:
       - name: Cache OpenTofu providers
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684
         with:
-          path: ${{ runner.temp }}/tofu-plugin-cache/**/terraform-provider-*
+          path: ${{ runner.temp }}/tofu-plugin-cache/registry.opentofu.org/*/*/*/*
           key:
-            ${{ runner.os }}-${{ runner.arch }}-tofu-providers-${{
+            ${{ runner.os }}-${{ runner.arch }}-tofu-providers-v2-${{
             hashFiles('deploy/aws/tofu/.terraform.lock.hcl') }}
       - name: Install the declared Caddy image for edge access-log tests
         run: >

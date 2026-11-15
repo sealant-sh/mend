@@ -502,10 +502,11 @@ jobs:
       - name: Cache OpenTofu providers
         uses: actions/cache@5a3ec84eff668545956fd18022155c47e93e2684 # v4.2.3
         with:
-          # An outage on a cold run must not save an empty cache under this lockfile's key.
-          path: ${{ runner.temp }}/tofu-plugin-cache/**/terraform-provider-*
+          # Whole package directories: OpenTofu checks each against the lock file's hash, so the
+          # binary alone fails init. They exist only after an install, so an outage saves nothing.
+          path: ${{ runner.temp }}/tofu-plugin-cache/registry.opentofu.org/*/*/*/*
           key:
-            ${{ runner.os }}-${{ runner.arch }}-tofu-providers-${{
+            ${{ runner.os }}-${{ runner.arch }}-tofu-providers-v2-${{
             hashFiles('deploy/aws/tofu/.terraform.lock.hcl') }}
       - name: Install the declared Caddy image for edge access-log tests
         run: |

@@ -291,7 +291,7 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
   const providers = steps.find(
     (step) =>
       step.uses?.startsWith("actions/cache@") &&
-      step.with.path === "${{ runner.temp }}/tofu-plugin-cache/**/terraform-provider-*",
+      step.with.path === "${{ runner.temp }}/tofu-plugin-cache/registry.opentofu.org/*/*/*/*",
   );
   assert.ok(providers, "persist the plugin cache consumed by the inventory test");
   assert.doesNotMatch(providers.with.path, /(^|\/)\.\.?(\/|$)/);
