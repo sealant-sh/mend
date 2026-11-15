@@ -286,7 +286,11 @@ test("store-image-git runs the store's handoff tests under the runtime stage's o
 test("both engines lanes keep required database and live-adapter preparation and worker caps", () => {
   for (const lane of ["engines", "engines-b"]) {
     const engines = jobs[`test-${lane}`];
-    assert.equal(engines.services.postgres.image, "postgres:17");
+    // Postgres 17, by digest from a registry with no anonymous pull limit (not Docker Hub).
+    assert.match(
+      engines.services.postgres.image,
+      /^public\.ecr\.aws\/docker\/library\/postgres:17@sha256:[0-9a-f]{64}$/,
+    );
     assert.equal(engines.env.MEND_TEST_DATABASE_URL, "postgres://mend:mend@localhost:5432/mend");
     const durability = engines.steps.findIndex((step) => step.run?.includes("fsync = off"));
     assert.ok(
