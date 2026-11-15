@@ -217,6 +217,24 @@ test("every job that asks setup-node for the pnpm cache installs with pnpm", () 
   assert.deepEqual(offenders, []);
 });
 
+test("clients-b loads the built web app in Chromium after its tests", () => {
+  const run = commands("test-clients-b");
+  const shard = run.indexOf("node scripts/ci-shards.mjs clients-b");
+  const browser = run.findIndex((command) =>
+    command.includes("pnpm --filter @mend/web check:browser"),
+  );
+  assert.ok(shard >= 0 && browser > shard, "the browser check runs after the shard");
+  assert.match(run[browser], /turbo run build --filter=@mend\/web\n/);
+  assert.ok(
+    run.some((command) => command.includes("--filter @mend/mobile exec playwright-core install")),
+    "Chromium is installed for it",
+  );
+  const step = jobs["test-clients-b"].steps.find((candidate) =>
+    candidate.run?.includes("check:browser"),
+  );
+  assert.equal(step.env.MEND_VERIFY_PLAYWRIGHT, "${{ github.workspace }}/apps/mobile");
+});
+
 test("store-image-git runs the store's handoff tests under the runtime stage's own git", () => {
   assert.deepEqual(commands("store-image-git"), ["bash scripts/store-image-git.sh"]);
   const script = readFileSync(new URL("store-image-git.sh", import.meta.url), "utf8");

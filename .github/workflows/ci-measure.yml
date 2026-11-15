@@ -423,6 +423,16 @@ jobs:
         env:
           CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
           CI_MEASUREMENT_RUNNER: ${{ inputs.runner }}
+      - name: Install Chromium for the web app's browser check
+        run:
+          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
+          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+      - name: The built web app renders its sign-in page in Chromium
+        env:
+          MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
+        run: |
+          pnpm exec turbo run build --filter=@mend/web
+          pnpm --filter @mend/web check:browser
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
