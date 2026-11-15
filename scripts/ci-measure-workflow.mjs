@@ -17,7 +17,8 @@ export function measurementWorkflow(ci) {
       job["runs-on"] =
         `\${{ inputs.runner == 'box' && fromJSON('${JSON.stringify(BOX)}') || inputs.runner }}`;
       for (const step of job.steps) {
-        if (step.uses?.startsWith("actions/setup-node@")) {
+        // A job that installs nothing (formal) has no pnpm store to cache.
+        if (step.uses?.startsWith("actions/setup-node@") && step.with?.cache !== undefined) {
           step.with = { ...step.with, cache: "${{ inputs.runner != 'box' && 'pnpm' || '' }}" };
         }
       }

@@ -595,11 +595,9 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
-      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version-file: .node-version
-          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - name: Guard the models' coverage and check them
         env:
           EVENT_NAME: ${{ github.event_name }}

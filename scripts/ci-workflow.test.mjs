@@ -19,6 +19,7 @@ const versionWorkflow = parse(
 );
 const { jobs } = workflow;
 const commands = (job) => jobs[job].steps.flatMap((step) => (step.run ? [step.run] : []));
+const installs = (job) => (job.steps ?? []).some((step) => /^pnpm install\b/m.test(step.run ?? ""));
 const withoutReporterOptions = (command) =>
   command
     ?.split(/\s+/)
@@ -163,6 +164,25 @@ test("formal guards and quick-checks the models on a pull request, and runs ever
     ],
     0,
   );
+});
+
+// setup-node's post step saves the pnpm store under the lockfile's key. A job that never installs
+// has no store, so on a key nobody has saved yet that step fails the job (SLNT-989).
+test("every job that asks setup-node for the pnpm cache installs with pnpm", () => {
+  const files = globSync(".github/workflows/*.yml", { cwd: root });
+  assert.ok(files.includes(".github/workflows/ci.yml"));
+  const offenders = [];
+  for (const file of files) {
+    const parsed = parse(readFileSync(new URL(file, root), "utf8"));
+    for (const [name, job] of Object.entries(parsed.jobs ?? {})) {
+      const cached = (job.steps ?? []).some(
+        (step) =>
+          step.uses?.startsWith("actions/setup-node@") && String(step.with?.cache).includes("pnpm"),
+      );
+      if (cached && !installs(job)) offenders.push(`${file} ${name}`);
+    }
+  }
+  assert.deepEqual(offenders, []);
 });
 
 test("store-image-git runs the store's handoff tests under the runtime stage's own git", () => {
@@ -625,7 +645,9 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
         step.uses?.startsWith("actions/setup-node@"),
       );
       if (name === "store-image-git") assert.equal(setup, undefined);
-      else assert.equal(setup.with.cache, "${{ inputs.runner != 'box' && 'pnpm' || '' }}");
+      else if (installs(jobs[name]))
+        assert.equal(setup.with.cache, "${{ inputs.runner != 'box' && 'pnpm' || '' }}");
+      else assert.equal(setup.with.cache, undefined, `${name} installs nothing to cache`);
     }
     for (const step of measured.jobs[name].steps) {
       if (step.env?.CI_MEASUREMENT_CACHE !== undefined) {
