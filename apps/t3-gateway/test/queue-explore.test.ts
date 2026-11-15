@@ -357,7 +357,13 @@ describe("the gateway queue under every interleaving (ADR 0012)", () => {
 
   // SLNT-1023: once a relaunched agent is live, the message the gateway launched it for is sent
   // even while a Mend turn is open. When that is decided, this test passes and loses its `fails`.
-  it.fails("waits for an open Mend turn before sending a message it relaunched for", () => {
-    expect(brokenPromise(explore(true).broken)).toBeNull();
-  });
+  // No retry: Vitest retries before `fails` inverts the result, so CI's one retry would rerun this
+  // expected failure every time and report it as a flake, and a retry could only turn it red.
+  it.fails(
+    "waits for an open Mend turn before sending a message it relaunched for",
+    { retry: 0 },
+    () => {
+      expect(brokenPromise(explore(true).broken)).toBeNull();
+    },
+  );
 });
