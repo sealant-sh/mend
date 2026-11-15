@@ -40,7 +40,25 @@ const outOfScope = [
 ];
 
 /** Harmless mentions, `{ file, mention, reason }`. Keep this short. */
-const allowed = [];
+const allowed = [
+  // verify's skip list names the tests it lets skip, to match them in the JSON test reports; it
+  // never opens them, and verify runs in the static job and locally, not in the trimmed lanes.
+  ...[
+    "packages/sessions/test/rollback-mounted-layout.test.ts",
+    "packages/store/test/blob-store.test.ts",
+    "packages/sessions/test/capture-verify.test.ts",
+    "packages/sessions/src/native-convert.test.ts",
+  ].map((mention) => ({
+    file: "tooling/verify/allowed-skips.json",
+    mention,
+    reason: "matched against test reports, never read",
+  })),
+  {
+    file: "tooling/verify/skips.mjs",
+    mention: "packages/sessions/test/doppler-helper.test.ts",
+    reason: "matched against test reports, never read",
+  },
+];
 
 // An export's target paths, through any nesting of conditions and arrays.
 const targets = (value) =>

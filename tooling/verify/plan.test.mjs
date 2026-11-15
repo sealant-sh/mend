@@ -4,7 +4,6 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { full } from "../../scripts/ci-scope.mjs";
-import { loadAllowedSkips } from "./check.mjs";
 import {
   ciPlan,
   formalObligations,
@@ -13,6 +12,7 @@ import {
   readCiJobs,
   validateMap,
 } from "./plan.mjs";
+import { loadAllowedSkips } from "./skips.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const map = loadMap(root);

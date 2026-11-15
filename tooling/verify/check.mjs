@@ -1,58 +1,23 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { connect } from "node:net";
-import { dirname, join, matchesGlob, relative } from "node:path";
+import { dirname, join, relative } from "node:path";
 
 import { changedFiles, computePlan } from "./plan.mjs";
+import {
+  ALLOWED_SKIPS,
+  installHint,
+  judgeSkips,
+  loadAllowedSkips,
+  localGates,
+  readSkips,
+  summarizeSkips,
+} from "./skips.mjs";
 
 // The pre-PR gate: exactly what AGENTS.md lists before a PR (forced typecheck and lint, the tests
 // of the packages the change affects, formatting), each a step. Tests run with
 // CI_TEST_REPORT_DIR set, so every Vitest package and node --test suite writes the JSON report CI
 // reads (tooling/test-ci, scripts/ci-test-report.mjs); skipped tests are read from those reports.
-
-export const loadAllowedSkips = (root) =>
-  JSON.parse(readFileSync(join(root, "tooling/verify/allowed-skips.json"), "utf8")).allowed;
-
-const SKIPPED = new Set(["pending", "skipped", "todo", "disabled"]);
-
-/** Every test the reports say did not run, as { name, file }. */
-export const readSkips = (root, reportDir) => {
-  if (!existsSync(reportDir)) return [];
-  const skips = [];
-  for (const name of readdirSync(reportDir)
-    .filter((file) => file.endsWith(".json"))
-    .toSorted()) {
-    const report = JSON.parse(readFileSync(join(reportDir, name), "utf8"));
-    for (const file of report.testResults ?? []) {
-      // A failed file's hook failure marks its tests skipped; the failure is the finding there.
-      if (file.status === "failed") continue;
-      const path = relative(root, file.name ?? "");
-      for (const test of file.assertionResults ?? []) {
-        if (SKIPPED.has(test.status))
-          skips.push({ name: `${path} > ${test.fullName}`, file: path });
-      }
-    }
-  }
-  return skips;
-};
-
-/**
- * Splits skips into those the checked-in list allows here and those it does not. An allowed
- * skip stops being allowed when this change owes its gate (the plan names it), because then the
- * suite is the evidence the change needs.
- */
-export const judgeSkips = (skips, allowed, owedGates) =>
-  skips.map((skip) => {
-    const entry = allowed.find((candidate) => matchesGlob(skip.file, candidate.file));
-    if (entry === undefined) return { ...skip, allowed: false };
-    const owed = owedGates.includes(entry.gate);
-    return {
-      ...skip,
-      gate: entry.gate,
-      allowed: !owed,
-      ...(owed ? { reason: `this change owes ${entry.gate}` } : { reason: entry.reason }),
-    };
-  });
 
 /** The node --test files a change asks for: changed tests, and the tests beside changed scripts. */
 export const scriptTests = (root, files) => {
@@ -174,8 +139,11 @@ export const runCheck = async (
     ...cap,
     ...(all ? [] : ["--affected"]),
   ];
+  // Gates this machine can set safely when the tool is installed (skips.mjs, LOCAL_GATES).
+  const gates = localGates(env);
   const testEnv = {
     ...env,
+    ...Object.fromEntries(gates.map((gate) => [gate.gate, gate.value])),
     CI_TEST_REPORT_DIR: reportDir,
     ...(concurrency === undefined ? {} : { VITEST_MAX_WORKERS: String(concurrency) }),
     ...(all || head.mergeBase === null ? {} : { TURBO_SCM_BASE: head.mergeBase }),
@@ -216,12 +184,19 @@ export const runCheck = async (
             { env: testEnv, log: logOf("script-tests") },
           );
         }
-        const skipped = judgeSkips(readSkips(root, reportDir), loadAllowedSkips(root), owedGates);
+        const skipped = judgeSkips(
+          readSkips(root, reportDir),
+          loadAllowedSkips(root),
+          owedGates,
+          plan.ci,
+        );
         const unallowed = skipped.filter((skip) => !skip.allowed);
         const failed = code !== 0 || nodeCode !== 0;
         if (!failed && unallowed.length > 0) {
           for (const gate of new Set(unallowed.flatMap((skip) => (skip.gate ? [skip.gate] : []))))
-            next.push(`${gate}=… pnpm verify check  # see tooling/verify/allowed-skips.json`);
+            next.push(`${gate}=… pnpm verify check  # see ${ALLOWED_SKIPS}`);
+          for (const hint of new Set(unallowed.flatMap((skip) => installHint(skip) ?? [])))
+            next.push(hint);
         }
         return {
           status: failed ? "failed" : unallowed.length > 0 ? "skipped" : "passed",
@@ -230,10 +205,12 @@ export const runCheck = async (
             `turbo exit ${code}, ${turboTasks(logOf("tests"))}`,
             nodeTests.length > 0 ? `node --test ${nodeTests.length} files exit ${nodeCode}` : null,
             `${skipped.length} skipped, ${unallowed.length} not allowed to skip`,
+            ...gates.map((gate) => `set ${gate.gate} to the ${gate.binary} on PATH (${gate.why})`),
           ]
             .filter(Boolean)
             .join("; "),
           skipped: skipped.map(({ file: _file, ...skip }) => skip),
+          ...(skipped.length > 0 ? { skipSummary: summarizeSkips(skipped) } : {}),
         };
       },
     ),
