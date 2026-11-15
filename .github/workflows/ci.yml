@@ -7,9 +7,9 @@ on:
   pull_request:
   push:
     branches: [main]
-  # Version Packages pull requests need an explicit dispatch because their bot-authored
-  # pull_request runs stop for the repository's contributor approval policy before any job starts.
-  # The release runs it on the head it will merge (docs/operations/next-channel.md, step 8).
+  # The Version Packages pull request's bot-authored pull_request run stops at the repository's
+  # contributor approval policy; version.yml's approve-checks job approves it so `checks` reports
+  # there. A dispatched run does not show in a pull request's checks.
   # The x86 jobs run on GitHub's ubuntu-24.04, free for this public repository. A dispatch with
   # `runner: box` sends them back to the box's self-hosted runners; no other event can reach it.
   workflow_dispatch:
@@ -34,9 +34,9 @@ permissions:
 env:
   TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha }}
 
-# A pull request and a dispatched branch (such as the Version PR) keep only their newest run: an
-# older head's result is never what the required check reads. Pushes to main and nightly runs
-# each get their own group and are never cancelled: every commit that lands keeps its own result.
+# A pull request and a dispatched branch keep only their newest run: an older head's result is never
+# what the required check reads. Pushes to main and nightly runs each get their own group and are
+# never cancelled: every commit that lands keeps its own result.
 concurrency:
   group:
     ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name ==

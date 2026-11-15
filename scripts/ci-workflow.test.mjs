@@ -679,12 +679,102 @@ test("a newer pull request or dispatched head cancels its stale run; main pushes
   assert.equal(resolve(cancel, pr), true);
 });
 
-test("the Version workflow dispatches nothing: the release runs CI and acceptance on its head", () => {
+test("the Version workflow dispatches nothing, and only a job that cannot push approves", () => {
   assert.equal(versionWorkflow.jobs.version.permissions.actions, undefined);
   assert.deepEqual(
-    versionWorkflow.jobs.version.steps.filter((step) => step.run?.includes("gh workflow run")),
+    Object.values(versionWorkflow.jobs).flatMap(({ steps }) =>
+      steps.filter((step) => step.run?.includes("gh workflow run")),
+    ),
     [],
   );
+  assert.deepEqual(versionWorkflow.jobs["approve-checks"].permissions, {
+    actions: "write",
+    "pull-requests": "read",
+  });
+});
+
+// The Version workflow approves the Version Packages PR's held pull_request run of CI, so the
+// required `checks` reports on it. A fake `gh` serves the PR and its runs through the step's real
+// `--jq` filters (with jq, which gh's filters match here) and records each approval.
+const FAKE_GH = `#!/usr/bin/env bash
+set -euo pipefail
+jq_arg() { while [ $# -gt 0 ]; do [ "$1" = --jq ] && { printf '%s' "$2"; return; }; shift; done; }
+case "$1 $2" in
+  "pr view") jq -r "$(jq_arg "$@")" "$FAKE_DIR/pr.json" ;;
+  "api -X") echo "$4" >>"$FAKE_DIR/approved" ;;
+  api*) jq -r "$(jq_arg "$@")" "$FAKE_DIR/runs.json" ;;
+  *) exit 64 ;;
+esac
+`;
+const versionHead = "f".repeat(40);
+const heldRun = (id, workflow, conclusion, actor = "github-actions[bot]") => ({
+  id,
+  path: `.github/workflows/${workflow}`,
+  head_branch: "changeset-release/main",
+  conclusion,
+  actor: { login: actor },
+});
+const approveHeldRuns = (runs, headRefName = "changeset-release/main") => {
+  const dir = mkdtempSync(join(tmpdir(), "approve-checks-"));
+  try {
+    writeFileSync(join(dir, "gh"), FAKE_GH, { mode: 0o755 });
+    writeFileSync(join(dir, "pr.json"), JSON.stringify({ headRefName, headRefOid: versionHead }));
+    writeFileSync(join(dir, "runs.json"), JSON.stringify({ workflow_runs: runs }));
+    const { status } = spawnSync(
+      "bash",
+      ["-e", "-o", "pipefail", "-c", versionWorkflow.jobs["approve-checks"].steps[0].run],
+      {
+        env: {
+          ...process.env,
+          PATH: `${dir}:${process.env.PATH}`,
+          FAKE_DIR: dir,
+          GH_REPO: "sealant-sh/mend",
+          PR: "1134",
+          TRIES: "2",
+          POLL_SECONDS: "0",
+        },
+        encoding: "utf8",
+        timeout: 5_000,
+      },
+    );
+    const approved = existsSync(join(dir, "approved"))
+      ? readFileSync(join(dir, "approved"), "utf8").trim().split("\n")
+      : [];
+    return { status, approved };
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+};
+
+test("Version approves only the held CI run its own push created on the PR's head", () => {
+  assert.deepEqual(
+    approveHeldRuns([
+      heldRun(4, "release-acceptance.yml", "action_required"),
+      heldRun(3, "nix.yml", "action_required"),
+      heldRun(2, "ci.yml", "action_required"),
+      heldRun(1, "ci.yml", "action_required"),
+    ]),
+    { status: 0, approved: ["repos/sealant-sh/mend/actions/runs/2/approve"] },
+  );
+  assert.deepEqual(approveHeldRuns([heldRun(1, "ci.yml", null)]), { status: 0, approved: [] });
+});
+
+test("Version approves no held run that someone else triggered or that is not its PR's", () => {
+  assert.deepEqual(approveHeldRuns([heldRun(1, "ci.yml", "action_required", "someone")]), {
+    status: 1,
+    approved: [],
+  });
+  assert.deepEqual(approveHeldRuns([heldRun(1, "ci.yml", "action_required")], "feature"), {
+    status: 1,
+    approved: [],
+  });
+});
+
+test("Version fails when CI never starts a run on the head", () => {
+  assert.deepEqual(approveHeldRuns([heldRun(1, "nix.yml", "action_required")]), {
+    status: 1,
+    approved: [],
+  });
 });
 
 const normalize = (job) => ({

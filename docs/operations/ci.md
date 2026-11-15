@@ -57,9 +57,17 @@ request number, or the ref for a `workflow_dispatch`, and both cancel a run in p
 `main` and the nightly run are grouped by run id and never cancelled, so every landed commit keeps
 its own result.
 
-The Version Packages pull request is authored by `github-actions[bot]`, so its `pull_request` runs
-stop at the repository's contributor approval policy before any job starts. The release dispatches
-`ci.yml` on it (`docs/operations/next-channel.md`, step 8).
+The Version Packages pull request gets `checks` without a hand step. The Version workflow pushes its
+branch as `github-actions[bot]`, and GitHub holds the `pull_request` runs that push creates at
+`action_required`, with no jobs. Version's `approve-checks` job, which holds only `actions: write`
+and `pull-requests: read`, then approves the held CI run on the branch's new head, so it runs as an
+ordinary pull request run and reports `checks` on the commit the pull request merges. Every merge to
+`main` rebuilds the branch and the job approves the new run. If the job fails, approve the held run
+on the pull request's Checks tab ("Approve and run workflows").
+
+Dispatching `ci.yml` on `changeset-release/main` does not do it: sealant found on its own Version
+Packages pull request (2026-11-13) that a dispatched run's checks never show in the pull request's
+rollup.
 
 ## The nightly run
 
