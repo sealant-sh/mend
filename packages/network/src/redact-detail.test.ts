@@ -57,6 +57,46 @@ describe("redacting upstream detail from an error message", () => {
     );
   });
 
+  it("removes a credential however upstream names and quotes it, and keeps the name", () => {
+    expect(redactDetail("env: DB_PASSWORD=hunter22 rejected")).toBe(
+      "env: DB_PASSWORD=<redacted> rejected",
+    );
+    expect(redactDetail('upstream answered {"user":"carol","password":"hu\\"nter2"}')).toBe(
+      'upstream answered {"user":"carol","password":"<redacted>"}',
+    );
+    expect(redactDetail("config {'client_secret': 'hunter2'} refused")).toBe(
+      "config {'client_secret': '<redacted>'} refused",
+    );
+    expect(redactDetail('login failed for password="two words"')).toBe(
+      'login failed for password="<redacted>"',
+    );
+    expect(redactDetail("request had X-Api-Key: hunter2")).toBe(
+      "request had X-Api-Key: <redacted>",
+    );
+    expect(redactDetail("curl -H 'authorization: bearer hunter22' failed")).toBe(
+      "curl -H 'authorization: bearer <redacted>' failed",
+    );
+    expect(redactDetail("sent Authorization: token hunter22")).toBe(
+      "sent Authorization: token <redacted>",
+    );
+  });
+
+  it("leaves ordinary text alone, even beside a credential's name", () => {
+    for (const words of [
+      "process exited, exit code: 128",
+      "exit_code=128 after 3 tries",
+      "monkey=banana sort_key=name max_tokens=4096",
+      "PWD=build and pwd=build",
+      "token_type=bearer, password_hash=unknown",
+      "token expired, please sign in again",
+      "remote: Invalid username or password.",
+      "bearer token missing; basic auth failed",
+      "the key: value pair is malformed",
+    ]) {
+      expect(redactDetail(words)).toBe(words);
+    }
+  });
+
   it("keeps enough of a commit, a digest or a long branch name to say which one", () => {
     const sha = "9fceb02d0ae598e95dc970b74767f19372d61af8";
     expect(redactDetail(`checkpoint ${sha} not found`)).toBe("checkpoint 9fceb02d0ae5… not found");

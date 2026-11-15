@@ -114,29 +114,60 @@ describe("redactDetail removes every secret shape it names, wherever it sits", (
   });
 
   it("drops a value that names itself a credential, keeping the name", () => {
-    const names = [
+    // Also ordinary words, so these are taken only alone and before a bare `=`.
+    const words = ["ticket", "code", "signature", "key"];
+    // Credentials whatever precedes them, so these take a prefix and any separator.
+    const credentials = [
       "token",
-      "ticket",
-      "code",
       "password",
       "passwd",
+      "passphrase",
       "secret",
-      "signature",
+      "credentials",
       "apikey",
       "api_key",
       "api-key",
       "accesskey",
       "access_key",
-      "key",
+      "private_key",
+      "private-key",
+    ];
+    const prefixes = [
+      "",
+      "DB_",
+      "PG",
+      "access_",
+      "refresh_",
+      "client_",
+      "aws_secret_",
+      "X-",
+      "app.",
     ];
     forAll((gen) => {
-      const named = anyCase(gen, gen.pick(names));
       const value = secret(gen, 8, 32);
-      const message = around(gen, `${named}=${value}${gen.pick([" ", "&", ",", ";"])}`);
+      const { named, assignment } = gen.pick([
+        () => {
+          const word = anyCase(gen, gen.pick(words));
+          const quote = gen.pick(["", '"', "'"]);
+          return { named: word, assignment: `${word}=${quote}${value}${quote}` };
+        },
+        () => {
+          const name = anyCase(gen, `${gen.pick(prefixes)}${gen.pick(credentials)}`);
+          const quote = gen.pick(["", '"', "'"]);
+          const separator = gen.pick(["=", " = ", ": ", ":", " : "]);
+          // As upstream writes it: bare, a JSON field, or a Python dict entry.
+          return gen.pick([
+            () => ({ named: name, assignment: `${name}${separator}${quote}${value}${quote}` }),
+            () => ({ named: name, assignment: `{"user":"carol","${name}":"${value}"}` }),
+            () => ({ named: name, assignment: `{'${name}': '${value}'}` }),
+          ])();
+        },
+      ])();
+      const message = around(gen, `${assignment}${gen.pick([" ", "&", ",", ";"])}`);
       return () => {
         const shown = redactDetail(message);
         expect(shown, message).not.toContain(value);
-        expect(shown, message).toContain(`${named}=`);
+        expect(shown, message).toContain(named);
       };
     });
   });
@@ -147,6 +178,15 @@ describe("redactDetail removes every secret shape it names, wherever it sits", (
       const scheme = gen.pick(["Bearer", "Basic"]);
       const lead = gen.pick(["Authorization: ", "sent ", ""]);
       return () => expectGone(around(gen, `${lead}${scheme} ${value}`), value);
+    });
+  });
+
+  it("drops an Authorization header's value in any case, GitHub's token scheme too", () => {
+    forAll((gen) => {
+      const value = secret(gen, 12, 48);
+      const header = `${anyCase(gen, "authorization")}${gen.pick([": ", ":", "="])}`;
+      const scheme = anyCase(gen, gen.pick(["bearer", "basic", "token"]));
+      return () => expectGone(around(gen, `${header}${scheme} ${value}`), value);
     });
   });
 
@@ -229,10 +269,8 @@ describe("redactDetail removes every secret shape it names, wherever it sits", (
   });
 });
 
-// SLNT-998: two shapes that name themselves a credential are left in place today. When the fix
-// lands these turn red; remove the `.fails` marker then.
-describe("redactDetail's known misses (SLNT-998)", () => {
-  it.fails("SLNT-998: drops an environment-style assignment such as DB_PASSWORD=…", () => {
+describe("redactDetail on the shapes SLNT-998 found left in place", () => {
+  it("drops an environment-style assignment such as DB_PASSWORD=…", () => {
     forAll((gen) => {
       const name = gen.pick(["DB_PASSWORD", "AWS_SECRET_ACCESS_KEY", "GITHUB_TOKEN"]);
       const value = secret(gen, 12, 32);
@@ -240,7 +278,7 @@ describe("redactDetail's known misses (SLNT-998)", () => {
     });
   });
 
-  it.fails('SLNT-998: drops a JSON credential field such as {"password":"…"}', () => {
+  it('drops a JSON credential field such as {"password":"…"}', () => {
     forAll((gen) => {
       const name = gen.pick(["password", "token", "secret", "apiKey"]);
       const value = secret(gen, 12, 32);
