@@ -3729,12 +3729,19 @@ test("review 624 r5 (R5-2): `cleanup --all` owes again each run whose things app
   );
   const seed = ".claude/projects/-workspace-repo/memory/st-bench-ren001.md";
   const stray = ".claude/projects/-workspace-repo/memory/st-bench-stray.md";
-  // Both commit between the first sweep and the second.
-  setTimeout(() => {
-    world.stored.set(seed, { path: seed });
-    world.stored.set(stray, { path: stray });
-  }, 40);
+  // Both commit between the first sweep and the second: right after the first sweep's listing.
+  const list = world.ctx.api2.get;
+  let listings = 0;
+  world.ctx.api2.get = async (route) => {
+    const answer = await list(route);
+    if (route.endsWith("/memory") && ++listings === 1) {
+      world.stored.set(seed, { path: seed });
+      world.stored.set(stray, { path: stray });
+    }
+    return answer;
+  };
   await cleanupAll(world.ctx, { all: true, reconcile: true });
+  assert.equal(listings, 2, "two sweeps listed the memory");
   const renewed = JSON.parse(readFileSync(path.join(dir, "ren001.json"), "utf8"));
   assert.ok(renewed.quietUntil > Date.now());
   assert.deepEqual(renewed.accounts, ["bench-1", "bench-2"]);
