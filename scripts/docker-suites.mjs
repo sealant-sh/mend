@@ -12,6 +12,13 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../", import.meta.url));
 
+// The rollback suite's workspace is a test fixture. Docker Hub limits anonymous pulls per runner
+// address and CI has no login, so it comes by digest from Docker's official-image mirror on ECR
+// Public. The bootstrap suite's Postgres is the official image the server ships, and stays as the
+// product names it.
+const rollbackImage =
+  "public.ecr.aws/docker/library/node:26-trixie@sha256:e18c3ccdf7d71619990b0e85639f506e2028a95410999cab24cc373cbd10e0ac";
+
 const suites = [
   {
     filter: "@sealant/mend",
@@ -28,8 +35,8 @@ const suites = [
   {
     filter: "@mend/sessions",
     file: "test/rollback-mounted-layout.test.ts",
-    env: { MEND_TEST_ROLLBACK_MOUNT: "1" },
-    images: ["node:26-trixie"],
+    env: { MEND_TEST_ROLLBACK_MOUNT: "1", MEND_TEST_ROLLBACK_IMAGE: rollbackImage },
+    images: [rollbackImage],
   },
 ];
 

@@ -19,7 +19,11 @@ import { fileURLToPath } from "node:url";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-export const DIND_IMAGE = "docker:27.5.1-dind";
+// The test world's outer machine, a CI fixture rather than an image Mend ships. Docker Hub limits
+// anonymous pulls per runner address and CI has no login, so it comes by digest from Docker's
+// official-image mirror on ECR Public.
+export const DIND_IMAGE =
+  "public.ecr.aws/docker/library/docker:27.5.1-dind@sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce";
 /** Setup's own images beside the server: its database and object store, and the package mirrors. */
 export const SERVER_SUPPORT_IMAGES = [
   "postgres:17-alpine",

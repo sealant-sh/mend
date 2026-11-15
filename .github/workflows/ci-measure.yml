@@ -182,7 +182,7 @@ jobs:
       }}
     services:
       postgres:
-        image: postgres:17
+        image: public.ecr.aws/docker/library/postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
         env:
           POSTGRES_USER: mend
           POSTGRES_PASSWORD: mend
@@ -253,7 +253,7 @@ jobs:
       }}
     services:
       postgres:
-        image: postgres:17
+        image: public.ecr.aws/docker/library/postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
         env:
           POSTGRES_USER: mend
           POSTGRES_PASSWORD: mend
@@ -654,7 +654,7 @@ jobs:
       }}
     services:
       postgres:
-        image: postgres:17
+        image: public.ecr.aws/docker/library/postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
         env:
           POSTGRES_USER: mend
           POSTGRES_PASSWORD: mend
