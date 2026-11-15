@@ -852,7 +852,9 @@ Decided by Yiannis, 2026-10-29, for delivery step 8b:
   leftover tailnet hostname, and then D2 does not apply. Setup offers the way to https: serve Mend's
   own web port with `tailscale serve --bg --https=443 http://<its loopback address>:<web port>`,
   then use this machine's MagicDNS name as `APP_URL`. That is the one https `--url` setup takes on a
-  loopback bind. Rejected: allowing it with gate item 15 open.
+  loopback bind. Rejected: allowing it with gate item 15 open. Revisited 2026-11-16 (SLNT-1041):
+  setup takes any https `--url` on a loopback bind, as HTTPS the operator runs on this machine in
+  front of Mend's port; a `ts.net` name must still be this machine's own.
 - **D3. A preview domain on Mend's own site is allowed while APP_URL is https.** The 8a refusal of a
   preview domain that shares Mend's registrable domain is lifted in setup, at API start and in gate
   item 15, which observes `__Host-` for that layout. Over http Mend's cookies cannot be `__Host-`,

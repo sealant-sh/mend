@@ -1330,6 +1330,7 @@ const resolveAppUrl = (
 
 const checkExposurePair = (
   bind: string,
+  appPort: number,
   appUrl: string,
   requireExplicitUrl: boolean,
   tailnet: TailnetObservation | undefined,
@@ -1340,17 +1341,25 @@ const checkExposurePair = (
   }
   const url = parseUrl(appUrl, "--url");
   const appHostIsLoopback = isLoopbackHost(url.hostname);
-  // tailscale serve --https=443 on this machine proxies its MagicDNS name to the loopback bind, so
-  // that https URL is the one non-loopback URL a loopback bind takes.
-  const self = tailnet?._tag === "Observed" ? tailnet.self : null;
-  const servedHere =
-    bindIsLoopback &&
-    url.protocol === "https:" &&
-    url.hostname.endsWith(".ts.net") &&
-    (self === null || url.hostname === self);
-  if (bindIsLoopback !== appHostIsLoopback && !servedHere) {
+  if (bindIsLoopback === appHostIsLoopback) return;
+  if (!bindIsLoopback) {
     throw setupError(
-      "--bind and --url must both describe localhost exposure or both describe non-local exposure.",
+      `--bind ${bind} publishes Mend beyond this machine, and --url ${url.origin} reaches it on this machine alone. Give --url the origin people reach Mend at.`,
+    );
+  }
+  // An https URL on a loopback bind is HTTPS this machine runs in front of Mend's port: tailscale
+  // serve, or the operator's own proxy (nginx, Caddy, a Cloudflare Tunnel). Plain http to a name
+  // beyond this machine has nothing in front of it, so nothing would answer there.
+  if (url.protocol !== "https:") {
+    throw setupError(
+      `--url ${url.origin} is reached beyond this machine, and --bind ${bind} answers on this machine alone. Run HTTPS on this machine in front of http://${publishedAddress(bind, appPort)} and give its https origin as --url, or publish Mend where ${url.hostname} points with --bind <address>.`,
+    );
+  }
+  // tailscale serve proxies this machine's own MagicDNS name only.
+  const self = tailnet?._tag === "Observed" ? tailnet.self : null;
+  if (url.hostname.endsWith(".ts.net") && self !== null && url.hostname !== self) {
+    throw setupError(
+      `--url ${url.origin} is another machine's name on the tailnet; this machine is ${self}. Use https://${self}, served by tailscale serve on this machine.`,
     );
   }
 };
@@ -1563,7 +1572,13 @@ const validateExposure = (
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
-    checkExposurePair(bind, appUrl, options.url === undefined && existing === null, tailnet);
+    checkExposurePair(
+      bind,
+      appPort,
+      appUrl,
+      options.url === undefined && existing === null,
+      tailnet,
+    );
   if (exposure === "loopback" && !isLoopbackHost(parseUrl(appUrl, "--url").hostname)) {
     throw setupError(
       `--exposure loopback contradicts --url ${appUrl}: Mend is reached at a name beyond this machine.`,
@@ -3145,17 +3160,27 @@ const validateEdge = async (
  * port on loopback. The edge's name resolves to a public address that may not route back to this
  * host, and what the probe asks is whether the Mend container answers with the pinned version.
  */
+/**
+ * HTTPS in front of a loopback bind (the edge, tailscale serve, the operator's own proxy) is
+ * checked at Mend's own port: whether the front answers from this machine says nothing of Mend.
+ */
+const servedInFront = (config: ServerConfig): boolean =>
+  config.edgeHost !== undefined ||
+  (isLoopbackBind(config.bind) && !isLoopbackHost(new URL(config.appUrl).hostname));
+
 const healthOrigin = (config: ServerConfig): string => {
-  if (config.edgeHost === undefined) return config.appUrl;
+  if (!servedInFront(config)) return config.appUrl;
   const host = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
   return `http://${host}:${config.appPort}`;
 };
 
-/** What setup and start say once health answered: where it answered, and the edge's origin. */
+/** What setup and start say once health answered: where it answered, and what serves it. */
 const reachableLine = (config: ServerConfig): string =>
-  config.edgeHost === undefined
+  !servedInFront(config)
     ? `Mend ${config.serverVersion} is reachable at ${config.appUrl}`
-    : `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · the edge is set up for ${config.appUrl}`;
+    : config.edgeHost !== undefined
+      ? `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · the edge is set up for ${config.appUrl}`
+      : `Mend ${config.serverVersion} answers at ${healthOrigin(config)} on this machine · people reach it at ${config.appUrl} through the HTTPS in front of it`;
 
 /** How long setup watches for the gateway after Mend answered: it starts once Mend is ready. */
 const T3_GATEWAY_OBSERVE_ATTEMPTS = 15;
@@ -4793,6 +4818,18 @@ const setupServer = async (
     runtime.writeLine(
       `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
     );
+    // HTTPS run on this machine in front of the loopback bind may face the internet; setup cannot
+    // see from where it is reached. A tailnet name is private.
+    const served = new URL(config.appUrl);
+    if (
+      config.edgeHost === undefined &&
+      isLoopbackBind(config.bind) &&
+      !isLoopbackHost(served.hostname) &&
+      !served.hostname.endsWith(".ts.net")
+    )
+      runtime.writeLine(
+        `Until that first account exists, anyone who reaches ${config.appUrl} can create it, so it is worth doing that soon.`,
+      );
   } else if (urlChanged) {
     // Said by followUrlChange.
   } else if (
