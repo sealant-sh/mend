@@ -1,10 +1,12 @@
 # What the standby discard model stands for. .agents/skills/standby-discard says how to keep it true:
 # its Coverage record maps each model action to the code below.
 #
-# sync: the commit whose code the model was last confirmed to describe. 226ba0fbb7 is mend#1628's
-# squash on main; its covered files are byte for byte those of aa029659e3, the commit the skill's
-# full run was taken at. Move it only as the skill's step 1 and full run say.
-sync 226ba0fbb75d400d6a0435adfe7fa88c6f8cebe2
+# sync: the commit whose code the model was last confirmed to describe. Move it only as the
+# skill's step 1 and full run say. 163a84a967 is main when mend#1698 (SLNT-507) moved it: since
+# 226ba0fbb7, mend#1628's squash, the covered files changed only in comments (ADR numbers) and, in
+# that pull request, the name of a paste written in a live workspace (storePastedImage), none of
+# them in code an action models. Full TLC run at mend#1698's head: every row as expected.
+sync 163a84a96765a0f21cb53b9a9d4557a6a7c1a3c3
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
