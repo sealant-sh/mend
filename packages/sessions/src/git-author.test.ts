@@ -11,7 +11,16 @@ describe("gitAuthorConfigArgv", () => {
   it("writes the author as system config, below the user's own config", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-git-author-"));
     const system = path.join(home, "gitconfig-system");
-    const env = { ...process.env, HOME: home, GIT_CONFIG_SYSTEM: system, GIT_CONFIG_NOSYSTEM: "" };
+    // Git's global config is read from $XDG_CONFIG_HOME/git/config too, or from GIT_CONFIG_GLOBAL
+    // alone when that is set: both point into this home, never at the machine's own identity.
+    const { GIT_CONFIG_GLOBAL: _global, ...inherited } = process.env;
+    const env = {
+      ...inherited,
+      HOME: home,
+      XDG_CONFIG_HOME: path.join(home, ".config"),
+      GIT_CONFIG_SYSTEM: system,
+      GIT_CONFIG_NOSYSTEM: "",
+    };
     const author = { name: `Anna "The" O'Brien $(touch pwned)`, email: "anna@example.com" };
     const [command = "", ...args] = gitAuthorConfigArgv(author);
     const written = spawnSync(command, args, { env, cwd: home, encoding: "utf8" });
