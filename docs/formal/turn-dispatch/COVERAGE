@@ -1,0 +1,14 @@
+# What the turn dispatch model stands for. .agents/skills/turn-dispatch says how to keep it true:
+# its Coverage record maps each model action to the code below.
+#
+# sync: the commit whose code the model was last confirmed to describe (SLNT-1017's full run).
+# Move it only as the skill's step 1 and full run say.
+sync 163a84a96765a0f21cb53b9a9d4557a6a7c1a3c3
+
+model TurnDispatch.tla
+model MCTurnDispatch.tla
+model check.sh
+
+path packages/sessions/src/protocol-host.ts
+path packages/db/src/repos/agent-conversation.ts
+path packages/agent-protocol/src/codex.ts

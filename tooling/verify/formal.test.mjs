@@ -63,10 +63,10 @@ test("COVERAGE is read strictly: a sync commit, the model's files and the code i
     /needs a sync, a model and a path/,
   );
   const real = readCoverages(fileURLToPath(new URL("../../", import.meta.url)));
-  assert.deepEqual(
-    real.map((coverage) => coverage.area),
-    ["standby-discard"],
-  );
+  assert.deepEqual(real.map((coverage) => coverage.area).toSorted(), [
+    "standby-discard",
+    "turn-dispatch",
+  ]);
 });
 
 test("the guard fails covered code that moved neither the model nor the sync commit", (t) => {
