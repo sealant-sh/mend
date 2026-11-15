@@ -96,6 +96,11 @@
       "command": "pnpm --filter @mend/api-server test:preview-acceptance (needs Docker, Postgres, Chromium and Firefox)"
     },
     {
+      "lane": "vscode",
+      "job": "vscode-e2e",
+      "command": "MEND_TEST_VERSION=<a server image built from this commit> VSCODE_BIN=<VS Code's Electron binary> pnpm --filter ./apps/vscode test:e2e (needs Docker, VS Code and Xvfb; about 6 minutes)"
+    },
+    {
       "lane": "store",
       "job": "store-image-git",
       "command": "bash scripts/store-image-git.sh"

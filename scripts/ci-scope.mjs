@@ -3,8 +3,8 @@ import { fileURLToPath } from "node:url";
 
 import { readCoverages, touches } from "./formal-coverage.mjs";
 
-// Conservatively gate only the extra mobile-web, packaging, store-image-git, formal, docker-suites
-// and preview-acceptance jobs. Turbo,
+// Conservatively gate only the extra mobile-web, packaging, store-image-git, formal, docker-suites,
+// preview-acceptance and vscode-e2e jobs. Turbo,
 // PostgreSQL and S3 contracts still run for every change. Unknown paths and unavailable history
 // run every extra.
 export const full = {
@@ -14,6 +14,7 @@ export const full = {
   formal: true,
   docker: true,
   preview: true,
+  vscode: true,
 };
 // The formal lane runs a model when a change reaches what its docs/formal/<area>/COVERAGE names.
 const coverages = readCoverages(fileURLToPath(new URL("../", import.meta.url)));
@@ -34,6 +35,9 @@ const previewAcceptance = [
   /^apps\/cli\/test-fixtures\/packaged-edge\.ts$/,
   /^deploy\/docker\/Caddyfile$/,
 ];
+// The VS Code extension, which the real-host acceptance (scripts/vscode-remote-acceptance.mjs)
+// drives in a real VS Code over Remote-SSH. The scripts themselves select every extra.
+const vscodeAcceptance = /^apps\/vscode\//;
 
 const changedPaths = (base, head) =>
   execFileSync(
@@ -70,6 +74,7 @@ export const extras = (paths) => {
     formal: false,
     docker: false,
     preview: false,
+    vscode: false,
   };
   for (const path of paths) {
     if (path.includes("\n")) return full;
@@ -78,6 +83,7 @@ export const extras = (paths) => {
     if (path.startsWith("packages/store/")) scope.store = true;
     if (dockerSuites.some((pattern) => pattern.test(path))) scope.docker = true;
     if (previewAcceptance.some((pattern) => pattern.test(path))) scope.preview = true;
+    if (vscodeAcceptance.test(path)) scope.vscode = true;
     if (testOnly(path)) continue;
     // Manifest changes can alter the package graph or shared tooling even in unrelated apps.
     if (
@@ -129,7 +135,7 @@ const main = () => {
   }
   console.error(reason);
   console.log(
-    `mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}\nformal=${scope.formal}\ndocker=${scope.docker}\npreview=${scope.preview}`,
+    `mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}\nformal=${scope.formal}\ndocker=${scope.docker}\npreview=${scope.preview}\nvscode=${scope.vscode}`,
   );
 };
 

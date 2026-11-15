@@ -59,6 +59,7 @@ jobs:
       formal: ${{ steps.scope.outputs.formal }}
       docker: ${{ steps.scope.outputs.docker }}
       preview: ${{ steps.scope.outputs.preview }}
+      vscode: ${{ steps.scope.outputs.vscode }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -738,6 +739,60 @@ jobs:
       - name: Preview acceptance through every edge, in real browsers
         run: pnpm --filter @mend/api-server test:preview-acceptance
 
+  # The VS Code extension's real-host acceptance (apps/vscode test:e2e): a real VS Code under Xvfb
+  # signs in to a packaged Mend server in Docker-in-Docker, opens sessions over the real Remote-SSH
+  # extension and carries an extension to a later session. The server image is built from this
+  # commit and set up --offline, so the job needs no secret. A change to the extension selects it
+  # (scripts/ci-scope.mjs).
+  vscode-e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.vscode != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
+    timeout-minutes: 45
+    env:
+      MEND_TEST_VERSION: 0.0.0-ci
+      VSCODE_VERSION: 1.142.0
+      MEND_E2E_EVIDENCE: ${{ github.workspace }}/.ci-reports/vscode-e2e
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build the server image from this commit
+        run:
+          docker build -t "ghcr.io/sealant-sh/mend:$MEND_TEST_VERSION" --build-arg
+          "MEND_VERSION=$MEND_TEST_VERSION" .
+      - name: Pull the images the acceptance's world names
+        run: |
+          node --input-type=module -e 'const w = await import("./scripts/vscode-remote-world.mjs"); console.log([...w.SERVER_SUPPORT_IMAGES, w.WORKSPACE_BASE_IMAGE, w.DIND_IMAGE].join("\n"));' |
+            xargs -n1 docker pull -q
+      # Ubuntu 24.04 denies unprivileged user namespaces to unconfined binaries, and Electron's
+      # sandbox needs one.
+      - name: Install VS Code and Xvfb
+        run: |
+          sudo apt-get update -q && sudo apt-get install -y -q xvfb
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          curl -fsSL "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" -o "$RUNNER_TEMP/vscode.tar.gz"
+          tar -xzf "$RUNNER_TEMP/vscode.tar.gz" -C "$RUNNER_TEMP"
+          echo "VSCODE_CLI=$RUNNER_TEMP/VSCode-linux-x64/bin/code" >> "$GITHUB_ENV"
+          # The Linux launcher detaches; the suite runs in the Electron binary itself.
+          echo "VSCODE_BIN=$RUNNER_TEMP/VSCode-linux-x64/code" >> "$GITHUB_ENV"
+      - name: VS Code against a Mend server on another address, over Remote-SSH
+        run: pnpm --filter ./apps/vscode test:e2e
+      - name: Archive the acceptance's evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: vscode-e2e-evidence
+          path: .ci-reports/vscode-e2e
+          if-no-files-found: ignore
+          retention-days: 14
+
   # Retain the required check name. A missing classifier or skipped required job
   # must fail, even when every job that did run passed.
   checks:
@@ -755,6 +810,7 @@ jobs:
         formal,
         docker-suites,
         preview-acceptance,
+        vscode-e2e,
       ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
@@ -778,6 +834,7 @@ jobs:
             ["formal", "formal"],
             ["docker-suites", "docker"],
             ["preview-acceptance", "preview"],
+            ["vscode-e2e", "vscode"],
           ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {
