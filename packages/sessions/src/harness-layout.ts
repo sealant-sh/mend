@@ -547,10 +547,10 @@ export const LAYOUT_LINE = "mend-layout";
 /**
  * The image probe of decision 1, inside the executor, as root: `sudo`, `useradd` and `setfacl`,
  * sealantd's `exec.user`, `dotfiles.user` and `restore.owner_map` (`sealantd capabilities
- * --json`), no user or group in the reserved range other than `mend`, none of the people's names
- * taken by another uid, and ACLs on `/workspace`. Prints one `mend-layout missing <words>` per
- * thing missing, then `mend-layout probed`. Folded into the executor's first exec, so it costs no
- * exec of its own.
+ * --json`), no user or group in the reserved range other than `mend` and the people's own users
+ * as Mend makes them, none of the people's names taken by another uid, and ACLs on `/workspace`.
+ * Prints one `mend-layout missing <words>` per thing missing, then `mend-layout probed`. Folded
+ * into the executor's first exec, so it costs no exec of its own.
  */
 export const layoutProbeScript = (
   people: ReadonlyArray<LinuxIdentity>,
@@ -585,19 +585,27 @@ export const layoutProbeScript = (
     `caps=$(sealantd capabilities --json 2>/dev/null || true)`,
     `for c in exec.user dotfiles.user restore.owner_map; do case "$caps" in *"\\"$c\\""*) ;; ` +
       `*) missing "its sealantd cannot run processes as a user"; break ;; esac; done`,
-    // Every reserved uid and gid the image already uses, whoever holds it; the people's names.
-    `for w in $(awk -F: '${range} { print $3 }' ${passwd} 2>/dev/null); do missing "uid $w is taken in this image"; done`,
-    `for w in $(awk -F: '${range} && !($1=="${MEND_GROUP.name}" && $3==${MEND_GROUP.gid}) { print $3 }' ${group} 2>/dev/null); ` +
-      `do missing "gid $w is taken in this image"; done`,
-    `awk -F: '$1=="${MEND_GROUP.name}" && $3!=${MEND_GROUP.gid} { f=1 } END { exit !f }' ${group} 2>/dev/null && ` +
-      `missing "group ${MEND_GROUP.name} is taken in this image"`,
-    // One loop over the people list (`name:uid[:…]` each), however many people: their names
-    // taken by another uid.
+    // The people list (`name:uid[:…]` each), read by the loops below however many people.
     ...(options.listed === true || people.length === 0
       ? []
       : [
           `mend_people=${shellQuote(people.map((person) => `${person.name}:${person.uid}`).join(" "))}`,
         ]),
+    // Every reserved uid and gid the image already uses, whoever holds it; the people's names.
+    // A line that is one of this launch's people exactly as Mend makes them (their name, their
+    // uid, primary group `mend`) is Mend's, not the image's (SLNT-1038): their first shell, or
+    // a copy of this script, may have made it. Any other user in the range is the image's.
+    loop
+      ? `for w in $(awk -F: -v l="$mend_people" ` +
+        `'BEGIN { k=split(l, e, " "); for (i=1; i<=k; i++) { split(e[i], f, ":"); own[f[1] ":" f[2]]=1 } } ` +
+        `${range} && !((($1 ":" $3) in own) && $4==${MEND_GROUP.gid}) { print $3 }' ${passwd} 2>/dev/null); ` +
+        `do missing "uid $w is taken in this image"; done`
+      : `for w in $(awk -F: '${range} { print $3 }' ${passwd} 2>/dev/null); do missing "uid $w is taken in this image"; done`,
+    `for w in $(awk -F: '${range} && !($1=="${MEND_GROUP.name}" && $3==${MEND_GROUP.gid}) { print $3 }' ${group} 2>/dev/null); ` +
+      `do missing "gid $w is taken in this image"; done`,
+    `awk -F: '$1=="${MEND_GROUP.name}" && $3!=${MEND_GROUP.gid} { f=1 } END { exit !f }' ${group} 2>/dev/null && ` +
+      `missing "group ${MEND_GROUP.name} is taken in this image"`,
+    // Their names taken by another uid.
     ...(!loop
       ? []
       : [

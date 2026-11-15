@@ -75,7 +75,8 @@ runs with a shared home, and the session says why.
   Sealant is upgraded.
 - **The workspace's sealantd** reports `exec.user`, `dotfiles.user` and `restore.owner_map`.
 - **The image** has a setuid `sudo`, `useradd`, `setfacl`, and no user or group with an id in
-  40000–49999 other than the `mend` group (gid 40000). Sealant's managed images carry them.
+  40000–49999 other than the `mend` group (gid 40000) and the launch's own people as Mend makes them
+  (their name, their uid, primary group `mend`). Sealant's managed images carry them.
 - **The runtime** supports ACLs on `/workspace` and does not impose no-new-privileges on the
   executor, since `sudo` cannot work under it. A per-person workspace checks this before it makes
   anyone (`NoNewPrivs` in `/proc/self/status`), so a Docker host with `"no-new-privileges": true` in
@@ -89,12 +90,24 @@ home and its prepare checks the image, so the next launch on that image can run 
 workspace started before 0.36 is replaced (below) only once a per-person workspace has run on that
 image, or on a worktree that already runs per person.
 
+A shell, a Service or a paste that starts while a per-person workspace is still being prepared waits
+until the prepare has finished, usually a second or two, and only then makes its person's user. The
+prepare checks the image first, so nothing a person starts is taken for the image's own user. If the
+prepare ends with one shared home, the shell runs as root, as the session does; if the launch is
+refused, the shell is refused in the same words. A prepare still running after two minutes refuses
+the shell once ("This workspace was still being prepared after 120 s"), and the next one does not
+wait.
+
 A shared workspace's check cannot see what only a per-person workspace meets, so Mend weighs a
 remembered "no" by its reasons:
 
 - **Reasons a shared workspace sees** (no `sudo`, `useradd`, `setfacl` or `setpriv`, no ACLs on
   `/workspace`, a sealantd without the capabilities, a uid or name taken): the next shared launch
-  checks again, and its answer replaces the "no". Fixing the image heals on its own.
+  checks again, and its answer replaces the "no". Fixing the image heals on its own. Before 0.37, a
+  shell opened during a new worktree's first start could leave a wrong "uid 40001 is taken in this
+  image" this way. It heals the same way, at the next new worktree's launch on that image, which
+  runs with a shared home once. Until then a worktree that already runs per person is refused with
+  that reason, and the `DELETE` below clears it at once.
 - **A person who could not be made, or an image that could not be checked:** kept for a day, then
   checked again.
 - **No-new-privileges, an owner map refused, a runtime that cannot run per person (Cloudflare), or

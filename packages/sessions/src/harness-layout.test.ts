@@ -622,6 +622,106 @@ describe("what prepare makes (decision 1)", () => {
   });
 });
 
+/** The passwd line `personHomeScript` leaves for `person`: their uid, primary group `mend`. */
+const lineOf = (person: LinuxIdentity) =>
+  `${person.name}:x:${person.uid}:40000::/home/${person.name}:/bin/sh`;
+/**
+ * The interleaving the box saw, driven: the probe asks sealantd for its capabilities before it
+ * reads passwd, and this stand-in writes `line` into passwd right then, as a shell's copy of
+ * `personHomeScript` that ran its `useradd` in between would have.
+ */
+const userMadeMidProbe = (root: ReturnType<typeof fakeRoot>, line: string) =>
+  fs.writeFileSync(
+    path.join(root.dir, "bin", "sealantd"),
+    `#!/bin/sh\nprintf '%s\\n' '${line}' >> '${root.passwd}'\n` +
+      `echo '{"exec.user":true,"dotfiles.user":true,"restore.owner_map":true}'\n`,
+    { mode: 0o755 },
+  );
+
+describe("a person's own user, made beside the probe (SLNT-1038)", () => {
+  const maria = new LinuxIdentity({ accountId: "maria-1", name: "mfqt2bw4c", uid: 40_031 });
+  it("does not read the launcher's user, made between the probe's start and its read of passwd, as the image's", () => {
+    const root = fakeRoot();
+    userMadeMidProbe(root, lineOf(alice));
+    const { script } = prepare(root, [{ person: alice, ifSaved: false }]);
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.missing).toEqual([]);
+    expect(report.made).toEqual([alice.name]);
+    expect(report.ready).toBe(true);
+  });
+
+  it("does not read a member's user already in passwd as the image's", () => {
+    const root = fakeRoot();
+    fs.appendFileSync(root.passwd, `${lineOf(maria)}\n`);
+    const { script } = prepare(root, [
+      { person: alice, ifSaved: false },
+      { person: maria, ifSaved: true },
+    ]);
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.missing).toEqual([]);
+    expect(report.ready).toBe(true);
+  });
+
+  it("still refuses, in today's words, an image whose own user holds a person's uid under another name", () => {
+    const root = fakeRoot();
+    fs.appendFileSync(root.passwd, `builder:x:${alice.uid}:40000::/home/builder:/bin/sh\n`);
+    const { script } = prepare(root, [{ person: alice, ifSaved: false }]);
+    const report = parseLayoutReport(root.run(script).stdout);
+    expect(report.missing).toEqual([`uid ${alice.uid} is taken in this image`]);
+    expect(report.ready).toBe(false);
+    expect(report.made).toEqual([]);
+    expect(personLayoutRefusal(report.missing)).toBe(
+      `This worktree's sessions are saved per person, and its image cannot run per-person users (uid ${alice.uid} is taken in this image). Pick an image that can, or start a new worktree.`,
+    );
+  });
+
+  it("still refuses a person's name under another uid, and their name and uid under another group", () => {
+    const named = fakeRoot();
+    fs.appendFileSync(named.passwd, `${alice.name}:x:1000:1000::/home/x:/bin/sh\n`);
+    expect(
+      parseLayoutReport(
+        named.run(prepare(named, [{ person: alice, ifSaved: false }]).script).stdout,
+      ).missing,
+    ).toEqual([`user ${alice.name} is taken in this image`]);
+    // Their name and uid, but not as Mend makes them (primary group 1000, not mend): the image's.
+    const grouped = fakeRoot();
+    fs.appendFileSync(
+      grouped.passwd,
+      `${alice.name}:x:${alice.uid}:1000::/home/${alice.name}:/bin/sh\n`,
+    );
+    expect(
+      parseLayoutReport(
+        grouped.run(prepare(grouped, [{ person: alice, ifSaved: false }]).script).stdout,
+      ).missing,
+    ).toEqual([`uid ${alice.uid} is taken in this image`]);
+  });
+
+  it("reads a user made for someone this launch does not list as the image's: only its settled prepare keeps that out", () => {
+    // A member with no identity when the launch was decided, whose first shell then made one: the
+    // probe cannot tell that line from the image's. `processAs` waits for the prepare to settle,
+    // so nothing makes it while a probe runs (harness-layout-steps.test.ts).
+    const root = fakeRoot();
+    const late = new LinuxIdentity({ accountId: "late-1", name: "mlate2bw4", uid: 40_099 });
+    userMadeMidProbe(root, lineOf(late));
+    const report = parseLayoutReport(
+      root.run(prepare(root, [{ person: alice, ifSaved: false }]).script).stdout,
+    );
+    expect(report.missing).toEqual([`uid ${late.uid} is taken in this image`]);
+  });
+
+  it("leaves a shared launch's probe, which lists nobody, as it was", () => {
+    const dir = tempDir("mend-probe-");
+    const passwd = path.join(dir, "passwd");
+    fs.writeFileSync(passwd, `root:x:0:0:root:/root:/bin/sh\n${lineOf(alice)}\n`);
+    const group = path.join(dir, "group");
+    fs.writeFileSync(group, "root:x:0:\n");
+    const report = parseLayoutReport(
+      sh(layoutProbeScript([], { passwd, group, aclDir: dir })).stdout,
+    );
+    expect(report.missing).toContain(`uid ${alice.uid} is taken in this image`);
+  });
+});
+
 describe("a prepare under no-new-privileges (decision 1; review of mend#582, finding 3)", () => {
   it("says the executor cannot run per person, and makes nobody", () => {
     const root = fakeRoot();
