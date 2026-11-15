@@ -331,7 +331,8 @@ import them.
 ```sh
 pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts src/server-docker-volumes.test.ts
 pnpm --filter @sealant/mend exec vitest run --testTimeout=15000
-# Opt-in real Engine checks use unique test names, never the standard Mend resources:
+# Opt-in real Engine checks use unique test names, never the standard Mend resources. CI's
+# docker-suites job runs both through node scripts/docker-suites.mjs when their code changes:
 MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-docker-protocol.test.ts
 pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts src/server-lifecycle.test.ts src/help.test.ts
 # Preload official postgres:17-alpine in a local daemon that can bind-mount this worktree's temp files:

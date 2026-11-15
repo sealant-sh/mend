@@ -57,6 +57,7 @@ jobs:
       packaging: ${{ steps.scope.outputs.packaging }}
       store: ${{ steps.scope.outputs.store }}
       formal: ${{ steps.scope.outputs.formal }}
+      docker: ${{ steps.scope.outputs.docker }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -654,6 +655,27 @@ jobs:
             node tooling/verify/formal.mjs ci - "$GITHUB_SHA"
           fi
 
+  # The suites that need a real Docker engine and skip without one: first server setup on Docker
+  # (volume ownership, the official Postgres bootstrap) and Undo on a mounted per-person workspace.
+  # A change to the code they drive selects them (scripts/ci-scope.mjs); the runner fails when a
+  # case skips (scripts/docker-suites.mjs).
+  docker-suites:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.docker != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Server Docker setup and mounted Undo on the runner's Docker engine
+        run: node scripts/docker-suites.mjs
+
   # Retain the required check name. A missing classifier or skipped required job
   # must fail, even when every job that did run passed.
   checks:
@@ -669,6 +691,7 @@ jobs:
         mobile-web,
         store-image-git,
         formal,
+        docker-suites,
       ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
@@ -690,6 +713,7 @@ jobs:
             ["mobile-web", "mobile"],
             ["store-image-git", "store"],
             ["formal", "formal"],
+            ["docker-suites", "docker"],
           ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {

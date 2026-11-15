@@ -3,13 +3,21 @@ import { fileURLToPath } from "node:url";
 
 import { readCoverages, touches } from "./formal-coverage.mjs";
 
-// Conservatively gate only the extra mobile-web, packaging, store-image-git and formal jobs. Turbo,
+// Conservatively gate only the extra mobile-web, packaging, store-image-git, formal and docker-suites
+// jobs. Turbo,
 // PostgreSQL and S3 contracts still run for every change. Unknown paths and unavailable history
 // run every extra.
-export const full = { mobile: true, packaging: true, store: true, formal: true };
+export const full = { mobile: true, packaging: true, store: true, formal: true, docker: true };
 // The formal lane runs a model when a change reaches what its docs/formal/<area>/COVERAGE names.
 const coverages = readCoverages(fileURLToPath(new URL("../", import.meta.url)));
 const sha = /^[a-f0-9]{40,64}$/i;
+// The code the Docker-engine suites drive (scripts/docker-suites.mjs), and the suites themselves.
+const dockerSuites = [
+  /^apps\/cli\/src\/server-(docker-volumes|runtime|setup|store)\.ts$/,
+  /^apps\/cli\/src\/server-(docker-protocol|postgres-bootstrap)\.test\.ts$/,
+  /^packages\/sessions\/src\/(rollback-files|pickup-tickets|workspace-files|session-channel)\.ts$/,
+  /^packages\/sessions\/test\/(rollback-mounted-layout\.test|pickup-channel|support\/rollback-files)\.ts$/,
+];
 
 const changedPaths = (base, head) =>
   execFileSync(
@@ -39,12 +47,13 @@ export const testOnly = (path) =>
 
 export const extras = (paths) => {
   if (paths.length === 0) return full;
-  const scope = { mobile: false, packaging: false, store: false, formal: false };
+  const scope = { mobile: false, packaging: false, store: false, formal: false, docker: false };
   for (const path of paths) {
     if (path.includes("\n")) return full;
     if (coverages.some((coverage) => touches(coverage, path))) scope.formal = true;
     // store-image-git runs the store's tests, so their own changes select it.
     if (path.startsWith("packages/store/")) scope.store = true;
+    if (dockerSuites.some((pattern) => pattern.test(path))) scope.docker = true;
     if (testOnly(path)) continue;
     // Manifest changes can alter the package graph or shared tooling even in unrelated apps.
     if (
@@ -96,7 +105,7 @@ const main = () => {
   }
   console.error(reason);
   console.log(
-    `mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}\nformal=${scope.formal}`,
+    `mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}\nformal=${scope.formal}\ndocker=${scope.docker}`,
   );
 };
 
