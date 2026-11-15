@@ -319,6 +319,49 @@ describe("rewriteNativeConversation", () => {
     }),
   );
 
+  it.effect("rewrites a conversation from a macOS home whose name has a space", () =>
+    Effect.gen(function* () {
+      const mac = { checkout: "/Users/Ana Lopez/code/shop", home: "/Users/Ana Lopez" };
+      const from = `.claude/projects/-Users-Ana-Lopez-code-shop/${sessionId}.jsonl`;
+      const { files, report } = yield* rewriteNativeConversation({
+        provider: "claude",
+        source: mac,
+        target: mend,
+        files: [
+          {
+            relativePath: from,
+            content: ndjson({
+              type: "user",
+              cwd: "/Users/Ana Lopez/code/shop",
+              message: {
+                content: [
+                  `Saved to /Users/Ana Lopez/.claude/projects/-Users-Ana-Lopez-code-shop/${sessionId}/tool-results/out.txt`,
+                  "Compare /Users/Ana Lopez/code/shop/a.ts with /Users/Ana Lopez/code/shop-old/a.ts",
+                ],
+              },
+            }),
+          },
+        ],
+      });
+      expect(files.map((file) => file.relativePath)).toEqual([
+        `.claude/projects/-workspace-repo/${sessionId}.jsonl`,
+      ]);
+      expect(recordsOf(files[0]?.content ?? "")).toEqual([
+        {
+          type: "user",
+          cwd: "/workspace/repo",
+          message: {
+            content: [
+              `Saved to /var/lib/mend/h/.claude/projects/-workspace-repo/${sessionId}/tool-results/out.txt`,
+              "Compare /workspace/repo/a.ts with /Users/Ana Lopez/code/shop-old/a.ts",
+            ],
+          },
+        },
+      ]);
+      expect(report.leftovers).toEqual(["/Users/Ana Lopez/code/shop-old/a.ts"]);
+    }),
+  );
+
   describe("Codex", () => {
     const ChildMeta = Schema.Struct({
       payload: Schema.Struct({ history_base: Schema.Struct({ end_byte_offset: Schema.Number }) }),
