@@ -211,11 +211,11 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
-      # Bound both levels on an 8-vCPU / 7-GiB runner, including its Postgres.
-      # The shard runner permits two packages; Vitest 3 and 5 each get three workers.
-      VITEST_MAX_THREADS: "3"
-      VITEST_MAX_FORKS: "3"
-      VITEST_MAX_WORKERS: "3"
+      # ubuntu-24.04 has 4 CPUs. The shard runner runs two packages at once, so two workers each keep
+      # the lane at one worker per CPU; with three each, a file took up to twice as long (SLNT-1040).
+      VITEST_MAX_THREADS: "2"
+      VITEST_MAX_FORKS: "2"
+      VITEST_MAX_WORKERS: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -285,11 +285,11 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
-      # Bound both levels on an 8-vCPU / 7-GiB runner, including its Postgres.
-      # The shard runner permits two packages; Vitest 3 and 5 each get three workers.
-      VITEST_MAX_THREADS: "3"
-      VITEST_MAX_FORKS: "3"
-      VITEST_MAX_WORKERS: "3"
+      # ubuntu-24.04 has 4 CPUs. The shard runner runs two packages at once, so two workers each keep
+      # the lane at one worker per CPU; with three each, a file took up to twice as long (SLNT-1040).
+      VITEST_MAX_THREADS: "2"
+      VITEST_MAX_FORKS: "2"
+      VITEST_MAX_WORKERS: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -346,9 +346,10 @@ jobs:
       'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
-      VITEST_MAX_THREADS: "3"
-      VITEST_MAX_FORKS: "3"
-      VITEST_MAX_WORKERS: "3"
+      # Two packages at once on 4 CPUs: two workers each, as in the engine lanes (SLNT-1040).
+      VITEST_MAX_THREADS: "2"
+      VITEST_MAX_FORKS: "2"
+      VITEST_MAX_WORKERS: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -436,9 +437,10 @@ jobs:
       'ubuntu-24.04' }}
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
-      VITEST_MAX_THREADS: "3"
-      VITEST_MAX_FORKS: "3"
-      VITEST_MAX_WORKERS: "3"
+      # Two packages at once on 4 CPUs: two workers each, as in the engine lanes (SLNT-1040).
+      VITEST_MAX_THREADS: "2"
+      VITEST_MAX_FORKS: "2"
+      VITEST_MAX_WORKERS: "2"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

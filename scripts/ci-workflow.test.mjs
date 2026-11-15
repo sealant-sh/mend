@@ -307,7 +307,7 @@ test("both engines lanes keep required database and live-adapter preparation and
   }
   for (const name of ["test-engines", "test-engines-b", "test-clients-a", "test-clients-b"]) {
     for (const variable of ["VITEST_MAX_THREADS", "VITEST_MAX_FORKS", "VITEST_MAX_WORKERS"]) {
-      assert.equal(jobs[name].env[variable], "3", `${name}/${variable}`);
+      assert.equal(jobs[name].env[variable], "2", `${name}/${variable}`);
     }
     assert.equal(jobs[name].env.MEND_SKIP_POSTGRES_TESTS, undefined);
   }
