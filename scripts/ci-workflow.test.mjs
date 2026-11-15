@@ -442,6 +442,7 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
   for (const file of [
     "scripts/check-packaged-server.test.mjs",
     "scripts/release-publication.test.mjs",
+    "scripts/release-finalize.test.mjs",
     "scripts/ghcr-staging-cleanup.test.mjs",
     "scripts/upgrade-window.test.mjs",
     "scripts/check-split-tier.test.mjs",
