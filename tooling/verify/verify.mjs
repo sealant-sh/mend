@@ -338,6 +338,10 @@ const summary = (result) =>
     ...result.steps.map(
       (step) => `  ${step.status.padEnd(26)} ${step.id}${step.detail ? `: ${step.detail}` : ""}`,
     ),
+    ...(result.notApplicable ?? []).map(
+      (item) =>
+        `  ${"does not apply".padEnd(26)} ${item.id}${item.url ? ` (${item.url}: ${item.seen})` : ""}: ${item.why}`,
+    ),
     ...(result.obligations.length > 0
       ? [
           "obligations:",

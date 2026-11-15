@@ -111,7 +111,10 @@ A preview of a branch is built by the workflow and deployed by hand, with the co
 
 ## The box
 
-The box is set up by hand. None of this is in a repository, so check it on the box before you rely
+Two Mend servers run as VMs on one Proxmox host. A box check uses VM 131, the preview server with
+Boat set up; either server is acceptable. Name the server with `MEND_VERIFY_BOX_SSH`, as below.
+
+Both are set up by hand. None of this is in a repository, so check it on the server before you rely
 on it.
 
 - **The Proxmox host** (`49.12.133.97`):
@@ -119,8 +122,11 @@ on it.
   - hairpin DNAT for `tailscale0` and for `OUTPUT` to `49.12.133.97`;
   - `ethtool -K eno1 tso off gso off`, against the e1000e hang;
   - the Hetzner Robot firewall allows 22, 80, 443 (any protocol), 2223 and 41641/udp, among others.
-- **VM 130, `mend`** (`10.0.0.40`):
-  - Ubuntu 24.04, 12 vCPU, 40 GB RAM, 400 GB disk, `onboot 1`;
+- **VM 130, `mend`** (`10.0.0.40`), the server at `alpha.mend.run`:
+  - Ubuntu 24.04, 12 vCPU, 400 GB disk, `onboot 1`; 32 GB RAM from its next stop and start (40 GB
+    until then);
+  - every preview deploy leaves a 4 GB `all.sql` in a new `/root/preview-backup.*` directory and its
+    image in Docker, and nothing removes either: prune them when the disk fills;
   - Docker with `"shutdown-timeout": 3600` in `daemon.json`;
   - Node in `/opt/node`;
   - cloud-init `ssh_deletekeys: false`, so a hard reset keeps the pinned host key.
@@ -146,6 +152,25 @@ on it.
 
   The `mend` CLI on the box is whatever `npm install --global @sealant/mend@<version>` put there
   last. No deploy updates it.
+
+- **VM 131, `mend-boat-preview`** (`10.0.0.41`), the preview server made on 5 Nov 2026 for the Boat
+  work, where box checks run:
+  - 6 vCPU, 8 GB RAM, 116 GB disk, `onboot 1`;
+  - sessions run on Boat by default and may run in Docker (`MEND_SESSION_RUNTIMES=docker,boat`,
+    `MEND_SESSION_RUNTIME=boat`);
+  - its `APP_URL` is `https://yiannis-k8s-arc.tailc79e49.ts.net`, the Proxmox host's tailnet name;
+    its session endpoint is `https://mend-boat-preview.tailc79e49.ts.net:8443`;
+  - its resolver does not use tailnet DNS, so it cannot resolve its own `APP_URL` by itself, and a
+    deploy's health wait fails. One hosts line fixes that:
+    `100.94.101.28 yiannis-k8s-arc.tailc79e49.ts.net`. cloud-init rewrites `/etc/hosts` on every
+    boot (`manage_etc_hosts`), so the line is in `/etc/cloud/templates/hosts.debian.tmpl` as well as
+    `/etc/hosts`; a backup of each is beside it, `*.before-slnt-892-20261115`;
+  - Docker workspaces on it cannot resolve the `APP_URL` either, which does not matter: a workspace
+    reaches the server only through the session endpoint, and `pnpm verify health` says the app-URL
+    probe from a workspace does not apply there;
+  - deploys are by hand, with the command under [Deploy](#deploy);
+  - SSH: `ssh -J root@100.94.101.28 root@10.0.0.41`. For the box check,
+    `MEND_VERIFY_BOX_SSH='-J root@100.94.101.28 root@10.0.0.41'`.
 
 ## Limits
 

@@ -15,22 +15,25 @@ const body = (version = "0.37.0-next.1.preview.1") =>
 const answering = (version) => async () => ({ status: 200, text: async () => body(version) });
 
 // A box whose host and containers see the network as `seen` says: url → { s, b } or { e }.
-const box = (seen) => (script) => {
-  if (script.includes("APP_URL")) {
+// `settings` are the server container's session-runtime variables, as `docker inspect` lists them.
+const box =
+  (seen, settings = "MEND_SESSION_RUNTIMES=docker,boat\nMEND_SESSION_RUNTIME=boat\n") =>
+  (script) => {
+    if (script.includes("APP_URL")) {
+      return {
+        code: 0,
+        stdout: `APP_URL=${URL}\n${settings}IMAGE=ghcr.io/sealant-sh/mend:x\nNODE=node\n`,
+        stderr: "",
+      };
+    }
+    const urls = JSON.parse(/for \(const u of (\[.*?\])\)/.exec(script)[1]);
+    const from = script.startsWith("docker run") ? "workspace" : "host";
     return {
       code: 0,
-      stdout: `APP_URL=${URL}\nIMAGE=ghcr.io/sealant-sh/mend:x\nNODE=node\n`,
+      stdout: urls.map((u) => JSON.stringify({ u, ...seen[from](u) })).join("\n"),
       stderr: "",
     };
-  }
-  const urls = JSON.parse(/for \(const u of (\[.*?\])\)/.exec(script)[1]);
-  const from = script.startsWith("docker run") ? "workspace" : "host";
-  return {
-    code: 0,
-    stdout: urls.map((u) => JSON.stringify({ u, ...seen[from](u) })).join("\n"),
-    stderr: "",
   };
-};
 
 const statuses = (result) => Object.fromEntries(result.steps.map((step) => [step.id, step.status]));
 
@@ -47,11 +50,62 @@ test("each vantage says what it saw: healthy here, unresolvable from the box its
   assert.deepEqual(statuses(result), {
     local: "passed",
     host: "failed",
-    workspace: "failed",
     "workspace-session-endpoint": "passed",
   });
   assert.equal(result.server.appUrl, URL, "the URL is the server's own APP_URL");
   assert.match(result.steps.find((step) => step.id === "host").detail, /ENOTFOUND/);
+});
+
+// SLNT-1034: a workspace reaches the server only through the session endpoint, so the app URL
+// failing from a workspace container is recorded, not failed; the endpoint failing still fails.
+test("from a workspace, the app URL does not apply and the session endpoint does", async () => {
+  const run = (endpoint) =>
+    health({
+      from: VANTAGES,
+      ssh: box({
+        host: () => ({ s: 200, b: body() }),
+        workspace: (u) => (u.startsWith(ENDPOINT) ? endpoint : { e: "ENOTFOUND" }),
+      }),
+      fetchImpl: answering(),
+    });
+  const reachable = await run({ s: 401, b: "unauthorized" });
+  assert.deepEqual(statuses(reachable), {
+    local: "passed",
+    host: "passed",
+    "workspace-session-endpoint": "passed",
+  });
+  assert.deepEqual(
+    reachable.notApplicable.map((item) => [item.id, item.seen]),
+    [["workspace", "ENOTFOUND"]],
+  );
+  assert.match(reachable.notApplicable[0].why, /session endpoint/);
+
+  const unreachable = await run({ e: "ECONNRESET" });
+  assert.equal(statuses(unreachable)["workspace-session-endpoint"], "failed");
+});
+
+test("a server that offers only Boat has no workspace vantage, and says why", async () => {
+  const containers = [];
+  const ssh = box(
+    { host: () => ({ s: 200, b: body() }), workspace: () => ({ e: "ENOTFOUND" }) },
+    "MEND_SESSION_RUNTIMES=boat\n",
+  );
+  const result = await health({
+    from: VANTAGES,
+    ssh: (script) => {
+      if (script.startsWith("docker run")) containers.push(script);
+      return ssh(script);
+    },
+    fetchImpl: answering(),
+  });
+  assert.deepEqual(statuses(result), { local: "passed", host: "passed" });
+  assert.deepEqual(containers, [], "no workspace container is started");
+  assert.equal(result.notApplicable[0].id, "workspace");
+  assert.match(
+    result.notApplicable[0].why,
+    /offers no Docker workspaces \(session runtimes: boat\)/,
+  );
+  assert.deepEqual(result.server.sessionRuntimes, ["boat"]);
 });
 
 test("an answer that is not Mend's health, or another version, is not a pass", async () => {

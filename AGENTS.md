@@ -114,7 +114,7 @@ a library; never run `tsc6` yourself.
 
 ## Check Features on the Box
 
-A feature merges only after an agent that didn't write it has used it on the box, our live Mend
+A feature merges only after an agent that didn't write it has used it on the box, our preview Mend
 server, the way a person would. That means real logins, through a `mend` CLI and browser already
 signed in as a person, on a `-next` or preview build cut for the PR when the box doesn't run the
 code yet. Never sign that CLI in or out, and never read its token. The verdict goes on the PR. It
@@ -122,8 +122,10 @@ names the build, the sessions it ran and what it saw. For a feature, a local sta
 accounts, a unit test, green CI or reading the code is not a verdict. Test, CI and docs PRs don't
 need one.
 
-The setup around the check is commands. Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments
-that reach it as root), then, in order:
+The box is VM 131, the preview server with Boat set up; VM 130 (`alpha.mend.run`) is also
+acceptable. `docs/operations/preview-builds.md` ("The box") says how to reach each. The setup around
+the check is commands. Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as
+root), then, in order:
 
 ```sh
 pnpm verify box plan --pr <n>            # what it runs, whether another check holds it, schema, disk
