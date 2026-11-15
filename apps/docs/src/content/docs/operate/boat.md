@@ -531,9 +531,32 @@ Three things change once the server runs this sealant:
 - **A connection that drops at once while a VM boots no longer fails the session's start.** About
   twice in 150 launches, a session ended with
   `capture plan.get failed: transport: io: unexpected end of file`, and starting it again worked.
-  sealantd now asks again for about 20 seconds before giving up. A connection that hangs for longer
-  than that before it drops still fails the start, with `capture plan.get failed after 1 attempts`;
-  start the session again.
+  sealantd now asks again for about 20 seconds before giving up. On this build, a connection that
+  hung for 30 seconds before it dropped still failed the start, with
+  `capture plan.get failed after 1 attempts over 30.0 s`; sealant 0.40.0-next.918 asks again then
+  too (next section).
+
+### After upgrading to sealant 0.40.0-next.918
+
+This applies whether the server ran 0.40.0-next.894 or an older build before the upgrade.
+
+- **Every Boat image is built once more.** sealantd changed again, so each environment's next Boat
+  session waits for its image to be built again, once, as long as a first build takes. A server
+  upgraded straight from a build older than 0.40.0-next.894 builds each image once, not twice. The
+  saved snapshot count on the Boat page rises and then drops as described for 0.40.0-next.894.
+  Docker workspace images are built again once too.
+- **A connection that hangs and then drops while a VM boots is asked again.** sealantd gives each
+  ask for the session's plan a time limit of its own: 10 seconds, then 15, then 20. It makes at
+  least three asks, so a connection that hung and dropped is asked again. If every ask fails, the
+  start ends with `capture plan.get failed after N attempts over T s` and the reason; when each ask
+  hangs to its limit, that is three asks over about 46 seconds. Start the session again. The
+  trade-off: an answer slower than its limit on all three asks now fails the start, where before one
+  ask could wait 30 seconds.
+- **Reads from the capture store while a VM boots are retried.** After a dropped connection, a
+  timeout or a server error, sealantd tries the same read up to four times before the boot fails.
+- **A resource reads stopped as soon as its stop returns.** sealant could read a resource that had
+  just been stopped as still running until its next pass, and so stop it a second time or restart a
+  crashed one a pass late.
 
 ## Remove or replace a key
 
