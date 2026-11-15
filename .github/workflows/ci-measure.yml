@@ -56,6 +56,7 @@ jobs:
       formal: ${{ steps.scope.outputs.formal }}
       docker: ${{ steps.scope.outputs.docker }}
       preview: ${{ steps.scope.outputs.preview }}
+      vscode: ${{ steps.scope.outputs.vscode }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -490,8 +491,6 @@ jobs:
           tofu_version: 1.12.0
           tofu_wrapper: false
           cache: true
-      # actions/cache refuses a path with `..` in it, so the cache lives in the runner's temp
-      # directory, outside the checkout. `runner` is not available in job env, hence this step.
       - name: Name the OpenTofu provider cache
         run: echo "TF_PLUGIN_CACHE_DIR=$RUNNER_TEMP/tofu-plugin-cache" >> "$GITHUB_ENV"
       - name: Cache OpenTofu providers
@@ -682,6 +681,63 @@ jobs:
           pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox
       - name: Preview acceptance through every edge, in real browsers
         run: pnpm --filter @mend/api-server test:preview-acceptance
+  vscode-e2e:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.vscode != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
+      }}
+    timeout-minutes: 45
+    env:
+      MEND_TEST_VERSION: 0.0.0-ci
+      VSCODE_VERSION: 1.142.0
+      MEND_E2E_EVIDENCE: ${{ github.workspace }}/.ci-reports/vscode-e2e
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.head_sha }}
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Build the server image from this commit
+        run:
+          docker build -t "ghcr.io/sealant-sh/mend:$MEND_TEST_VERSION" --build-arg
+          "MEND_VERSION=$MEND_TEST_VERSION" .
+      - name: Pull the images the acceptance's world names
+        run: >
+          node --input-type=module -e 'const w = await import("./scripts/vscode-remote-world.mjs");
+          console.log([...w.SERVER_SUPPORT_IMAGES, w.WORKSPACE_BASE_IMAGE,
+          w.DIND_IMAGE].join("\n"));' |
+            xargs -n1 docker pull -q
+      - name: Install VS Code and Xvfb
+        run: >
+          sudo apt-get update -q && sudo apt-get install -y -q xvfb
+
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+          curl -fsSL "https://update.code.visualstudio.com/$VSCODE_VERSION/linux-x64/stable" -o
+          "$RUNNER_TEMP/vscode.tar.gz"
+
+          tar -xzf "$RUNNER_TEMP/vscode.tar.gz" -C "$RUNNER_TEMP"
+
+          echo "VSCODE_CLI=$RUNNER_TEMP/VSCode-linux-x64/bin/code" >> "$GITHUB_ENV"
+
+          # The Linux launcher detaches; the suite runs in the Electron binary itself.
+
+          echo "VSCODE_BIN=$RUNNER_TEMP/VSCode-linux-x64/code" >> "$GITHUB_ENV"
+      - name: VS Code against a Mend server on another address, over Remote-SSH
+        run: pnpm --filter ./apps/vscode test:e2e
+      - name: Archive the acceptance's evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: vscode-e2e-evidence
+          path: .ci-reports/vscode-e2e
+          if-no-files-found: ignore
+          retention-days: 14
   checks:
     needs:
       - changes
@@ -696,6 +752,7 @@ jobs:
       - formal
       - docker-suites
       - preview-acceptance
+      - vscode-e2e
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
     steps:
@@ -721,6 +778,7 @@ jobs:
             ["formal", "formal"],
             ["docker-suites", "docker"],
             ["preview-acceptance", "preview"],
+            ["vscode-e2e", "vscode"],
           ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {

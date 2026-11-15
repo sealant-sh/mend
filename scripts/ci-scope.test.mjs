@@ -6,7 +6,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 const script = new URL("./ci-scope.mjs", import.meta.url).pathname;
-const full = "mobile=true\npackaging=true\nstore=true\nformal=true\ndocker=true\npreview=true\n";
+const full =
+  "mobile=true\npackaging=true\nstore=true\nformal=true\ndocker=true\npreview=true\nvscode=true\n";
 const only = ({
   mobile = false,
   packaging = false,
@@ -14,8 +15,9 @@ const only = ({
   formal = false,
   docker = false,
   preview = false,
+  vscode = false,
 } = {}) =>
-  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\ndocker=${docker}\npreview=${preview}\n`;
+  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\ndocker=${docker}\npreview=${preview}\nvscode=${vscode}\n`;
 const fixture = (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "mend-ci-scope-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -59,6 +61,7 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["docs/operations/notes.md", only()],
     ["apps/api/src/route.ts", only({ packaging: true })],
     ["apps/web/src/view.tsx", only({ packaging: true })],
+    ["scripts/vscode-remote-acceptance.mjs", full],
     ["apps/mobile/src/view.tsx", only({ mobile: true, packaging: true })],
     ["packages/domain/src/id.ts", only({ mobile: true, packaging: true, store: true })],
     ["packages/store/src/git.ts", only({ mobile: true, packaging: true, store: true })],
@@ -102,6 +105,10 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["apps/api/test/fixtures/preview/apps.ts", only({ packaging: true, preview: true })],
     ["deploy/docker/Caddyfile", only({ packaging: true, preview: true })],
     ["apps/api/src/previews.ts", only({ packaging: true })],
+    // The VS Code extension, its unit tests and its e2e suite run the real-host acceptance.
+    ["apps/vscode/src/workspace-editor.ts", only({ packaging: true, vscode: true })],
+    ["apps/vscode/test/e2e/suite.ts", only({ packaging: true, vscode: true })],
+    ["apps/vscode/package.json", full],
   ]) {
     const base = f.git("rev-parse", "HEAD");
     f.write(path);
