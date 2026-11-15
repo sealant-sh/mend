@@ -523,13 +523,17 @@ Three things change once the server runs this sealant:
 
 - **Every Boat image is built once more.** This sealant runs workspaces on a newer sealantd, and
   every Boat image carries it. Each environment's next Boat session waits for its image to be built
-  again, once, as long as a first build takes. The old images keep their saved snapshot slots, so
-  the count on the Boat page rises by one for each image rebuilt, then drops as the hourly pass
-  removes each old one, a day after it was last used. Docker workspace images are built again once
-  too.
-- **A dropped connection while a VM boots no longer fails the session's start.** About twice in 150
-  launches, a session ended with `capture plan.get failed: transport: io: unexpected end of file`,
-  and starting it again worked. sealantd now asks again for about 20 seconds before giving up.
+  again, once, as long as a first build takes. An old image keeps its saved snapshot slot until the
+  hourly pass removes it, a day after it was last used. So on a server whose images were used in the
+  last day, the count on the Boat page rises by one for each image rebuilt and drops a day later; on
+  one whose images were not, the old ones go at the first pass after the upgrade, before the new
+  ones are built. Docker workspace images are built again once too.
+- **A connection that drops at once while a VM boots no longer fails the session's start.** About
+  twice in 150 launches, a session ended with
+  `capture plan.get failed: transport: io: unexpected end of file`, and starting it again worked.
+  sealantd now asks again for about 20 seconds before giving up. A connection that hangs for longer
+  than that before it drops still fails the start, with `capture plan.get failed after 1 attempts`;
+  start the session again.
 
 ## Remove or replace a key
 
