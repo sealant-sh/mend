@@ -11,6 +11,8 @@ import {
   sshRunner,
 } from "./box.mjs";
 import { runCheck } from "./check.mjs";
+import { drive, SURFACES } from "./drive.mjs";
+import { evidence } from "./evidence.mjs";
 import { health, VANTAGES } from "./health.mjs";
 import { planSteps } from "./plan.mjs";
 import {
@@ -37,6 +39,8 @@ const VERBS = {
   box: "Box-check setup: plan, prepare, cli, identity, release (--yes to change the box)",
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
+  drive: "Run a recipe against web, tui, desktop, mobile-web, vscode or t3: --recipe <name|path>",
+  evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
 };
 
 const STACK = ["up", "status", "down"];
@@ -45,8 +49,6 @@ const BOX = ["plan", "prepare", "cli", "identity", "release"];
 
 // Verbs the shared contract names that this repo does not have yet: they say so, never pretend.
 const PLANNED = {
-  drive: "Run a recipe against web, TUI, desktop, mobile-web, VS Code or T3",
-  evidence: "Gather screenshots and transcripts, scan for secrets, write the verdict file",
   formal: "Run the models whose covered paths the diff touches, and report drift",
 };
 
@@ -65,7 +67,16 @@ export const parseArgs = (argv) => {
     else if (arg === "--markdown") options.markdown = true;
     else if (arg === "--all") options.all = true;
     else if (arg === "--yes") options.yes = true;
-    else if (["--mend", "--sealant", "--sealantd"].includes(arg)) {
+    else if (arg === "--recipe") {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError("--recipe needs a name or a path");
+      options.recipe = value;
+    } else if (arg === "--timeout") {
+      const value = Number(argv[++index]);
+      if (!Number.isInteger(value) || value < 1)
+        throw new UsageError("--timeout needs milliseconds");
+      options.timeoutMs = value;
+    } else if (["--mend", "--sealant", "--sealantd"].includes(arg)) {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a source`);
       (options.sources ??= []).push(arg, value);
@@ -133,7 +144,7 @@ const help = () =>
     "--concurrency <n> (check: turbo tasks and Vitest workers), --markdown (status),",
     "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box), --url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
-    "--expect-mend|sealant|sealantd <sha> (stack). Results:",
+    "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
     ".verify/latest/<verb>.json. Exit: 0 passed, 1 failed, 2 usage, 3 blocked by a",
     "prerequisite, 4 any other status.",
   ].join("\n");
@@ -147,6 +158,35 @@ const stampOf = (date) =>
 /** Builds a verb's result without saving or printing it. */
 export const runVerb = async (root, verb, options, startedAt = new Date()) => {
   const head = readHead(root, options.base);
+  if (verb === "drive") {
+    const { steps, next, ...rest } = await drive(root, {
+      surface: options.subverb,
+      recipe: options.recipe,
+      timeoutMs: options.timeoutMs,
+      ...(options.env ? { env: options.env } : {}),
+      ...(options.exec ? { exec: options.exec } : {}),
+      ...(options.background ? { background: options.background } : {}),
+    });
+    return createResult({
+      verb: `drive ${options.subverb}`,
+      head,
+      startedAt,
+      steps,
+      next,
+      ...rest,
+    });
+  }
+  if (verb === "evidence") {
+    const receipt = statusSteps(root, { head, implemented: new Set(Object.keys(VERBS)) });
+    const statusLines = receipt.steps.map((step) => `- \`${step.id}\`: ${step.status}`);
+    const { steps, next, ...rest } = await evidence(root, {
+      head,
+      statusLines,
+      ...(options.env ? { env: options.env } : {}),
+      ...(options.exec ? { exec: options.exec } : {}),
+    });
+    return createResult({ verb, head, startedAt, steps, next, ...rest });
+  }
   if (verb === "stack") {
     const shared = {
       ...(options.exec ? { exec: options.exec } : {}),
@@ -306,6 +346,13 @@ export const main = async (argv, root = repoRoot) => {
   if (verb === "box") {
     if (!BOX.includes(words[1])) {
       process.stderr.write(`verify box needs one of: ${BOX.join(", ")}\n`);
+      return 2;
+    }
+    options.subverb = words[1];
+  }
+  if (verb === "drive") {
+    if (!SURFACES.includes(words[1]) || !options.recipe) {
+      process.stderr.write(`verify drive <${SURFACES.join("|")}> --recipe <name|path>\n`);
       return 2;
     }
     options.subverb = words[1];

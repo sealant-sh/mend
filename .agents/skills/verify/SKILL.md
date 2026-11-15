@@ -391,6 +391,11 @@ before it, the check reads `not run yet`.
 
 ## Drive
 
+`pnpm verify drive <web|desktop|mobile-web|vscode|t3> --recipe <name|path>` runs one recipe with
+that surface's driver below, against the run `verify stack up` started (a VS Code world for
+`vscode`), and keeps its output in `$E/<recipe>/<surface>`. A surface with no recipe answers
+`not_implemented`; `tui` always does (`drive-tui.sh` takes keys, not a recipe).
+
 **The map first.** It lands as `features/` beside this file with mend#614; the feature groups
 stacked on it (#625 to #631) add their files the same way. Until then, read it from #614's branch,
 and record which map the run used:
@@ -858,6 +863,11 @@ What differs from a `mend` on your own machine:
   yours the same way.
 
 ## Evidence
+
+`pnpm verify evidence` takes this head's drives (clean tree only), runs the scan below over the
+run's evidence (or reads the one `stack down` left), and writes
+`.verify/evidence/<sha12>/verdict.md` for the PR comment: build, what was driven and captured, the
+scan, the obligations. The observations and what was not checked are yours to write in it.
 
 Everything goes under `$E`, on this machine, outside any checkout and outside the stack's session.
 Cleanup removes neither. Name each directory for the feature file and the entry point:

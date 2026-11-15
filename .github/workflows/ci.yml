@@ -125,7 +125,7 @@ jobs:
           scripts/remove-package-tests.test.mjs scripts/ci-workflow.test.mjs
           scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs tooling/verify/plan.test.mjs
           tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
-          tooling/verify/health.test.mjs
+          tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
