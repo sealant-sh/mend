@@ -604,7 +604,9 @@ describe("SessionEngine files into a captured workspace", () => {
 
           yield* engine.launch(session.id, ["codex"]);
           const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
-          expect(placed.path).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-[0-9a-f]{8}\.png$/);
+          expect(placed.path).toMatch(
+            /^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-[0-9a-f]{8}\.png$/,
+          );
           expect(placed.mediaType).toBe("image/png");
           expect(new Uint8Array(writtenFiles(execCalls).get(placed.path) ?? [])).toEqual(PNG);
           expect(
