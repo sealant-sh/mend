@@ -119,6 +119,20 @@ export const testInputAudit = (repository, files, packages) => {
   const absoluteFiles = files.map((file) => path.join(repository, file));
   const tracked = new Set(absoluteFiles);
   const parsed = new Map();
+  // `path.matchesGlob` compiles its pattern on every call, so match each glob once, and only
+  // against the files under its literal prefix: no other file can match it.
+  const globbed = new Map();
+  const matching = (glob) => {
+    let matched = globbed.get(glob);
+    if (matched === undefined) {
+      const prefix = glob.slice(0, glob.search(/[*?[{]/));
+      matched = absoluteFiles.filter(
+        (candidate) => candidate.startsWith(prefix) && path.matchesGlob(candidate, glob),
+      );
+      globbed.set(glob, matched);
+    }
+    return matched;
+  };
   return packages.map((directory) => {
     const root = path.join(repository, directory);
     const manifest = JSON.parse(readFileSync(path.join(root, "package.json"), "utf8"));
@@ -171,8 +185,7 @@ export const testInputAudit = (repository, files, packages) => {
       for (const reference of result.paths) {
         if (tracked.has(reference)) enqueue(reference, file);
         else if (reference.includes("*")) {
-          for (const candidate of absoluteFiles)
-            if (path.matchesGlob(candidate, reference)) enqueue(candidate, file);
+          for (const candidate of matching(reference)) enqueue(candidate, file);
         }
       }
     }
