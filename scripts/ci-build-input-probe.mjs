@@ -46,6 +46,26 @@ export const VOLATILE = [
   },
 ];
 
+/** Outputs up to this size keep their bytes, to show where two builds part. */
+const KEPT_BYTES = 1024 * 1024;
+
+/** How one output differs between two builds: sizes, and the bytes around the first difference. */
+export const howDiffers = (before, after) => {
+  if (!before || !after) return before ? "absent from the second build" : "absent from the first";
+  const sizes = `${before.size} B, then ${after.size} B`;
+  if (!before.content || !after.content) return `${sizes}; too large to compare`;
+  let at = 0;
+  while (
+    at < before.content.length &&
+    at < after.content.length &&
+    before.content[at] === after.content[at]
+  )
+    at++;
+  const around = (bytes) =>
+    JSON.stringify(bytes.subarray(Math.max(0, at - 40), at + 80).toString("latin1"));
+  return `${sizes}; first difference at byte ${at}: ${around(before.content)}, then ${around(after.content)}`;
+};
+
 const markerBlock = (file, token, color) => {
   const ext = path.extname(file);
   if (ext === ".cjs")
@@ -116,15 +136,23 @@ export const probe = (
     return found.toSorted();
   };
   const unmatched = new Set();
+  // A file's normalized bytes are kept when small, so a difference can be shown, not only named.
   const digest = (file) => {
     const bytes = readFileSync(path.join(repository, file));
     const rule = VOLATILE.find((candidate) => path.matchesGlob(file, candidate.glob));
-    if (!rule) return createHash("sha256").update(bytes).digest("hex");
-    const text = bytes.toString("utf8");
-    const content = rule.normalize(text);
-    if (content === text)
-      unmatched.add(`the volatile rule for ${rule.glob} matched nothing in ${file}`);
-    return createHash("sha256").update(content).digest("hex");
+    let content = bytes;
+    if (rule) {
+      const text = bytes.toString("utf8");
+      const normalized = rule.normalize(text);
+      if (normalized === text)
+        unmatched.add(`the volatile rule for ${rule.glob} matched nothing in ${file}`);
+      content = Buffer.from(normalized);
+    }
+    return {
+      hash: createHash("sha256").update(content).digest("hex"),
+      size: content.length,
+      content: content.length <= KEPT_BYTES ? content : null,
+    };
   };
   // A run is read only from the one summary its own invocation wrote: a summary is never chosen by
   // time, and a run that failed or wrote none fails the probe instead of reusing an earlier run's.
@@ -178,7 +206,7 @@ export const probe = (
   const differences = (expected, actual) => {
     const found = [];
     for (const file of new Set([...Object.keys(expected), ...Object.keys(actual)]))
-      if (expected[file] !== actual[file]) found.push(file);
+      if (expected[file]?.hash !== actual[file]?.hash) found.push(file);
     return found.toSorted();
   };
 
@@ -206,7 +234,7 @@ export const probe = (
         violations.push(`${id}: the ${label} unchanged build exited ${run[id].exit}`);
     for (const file of differences(first[id].outputs, second[id].outputs))
       violations.push(
-        `${id}: ${file} differs between two unchanged builds, outside the known volatile fields`,
+        `${id}: ${file} differs between two unchanged builds, outside the known volatile fields (${howDiffers(first[id].outputs[file], second[id].outputs[file])})`,
       );
   }
   if (violations.length)

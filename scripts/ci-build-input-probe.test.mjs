@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { probe, VOLATILE } from "./ci-build-input-probe.mjs";
+import { howDiffers, probe, VOLATILE } from "./ci-build-input-probe.mjs";
 
 const repository = fileURLToPath(new URL("../", import.meta.url));
 
@@ -105,9 +105,26 @@ test("an output that varies between unchanged builds fails instead of hiding a c
       ),
     },
   });
-  assert.deepEqual(result.violations, [
-    "reader#build: packages/reader/dist/out differs between two unchanged builds, outside the known volatile fields",
-  ]);
+  assert.equal(result.violations.length, 1, result.violations.join("\n"));
+  assert.ok(
+    result.violations[0].startsWith(
+      "reader#build: packages/reader/dist/out differs between two unchanged builds, outside the known volatile fields (",
+    ),
+    result.violations[0],
+  );
+});
+
+test("a differing output names both sizes and the bytes where the two builds part", () => {
+  const output = (text) => ({ hash: text, size: text.length, content: Buffer.from(text) });
+  assert.equal(
+    howDiffers(output('{"hash":"en_c0685f2540"}'), output('{"hash":"en_c0685f25"}')),
+    '24 B, then 22 B; first difference at byte 20: "{\\"hash\\":\\"en_c0685f2540\\"}", then "{\\"hash\\":\\"en_c0685f25\\"}"',
+  );
+  assert.equal(howDiffers(output("a"), undefined), "absent from the second build");
+  assert.equal(
+    howDiffers({ hash: "x", size: 2_000_000, content: null }, output("short")),
+    "2000000 B, then 5 B; too large to compare",
+  );
 });
 
 test("a build that fails on its own is a failed probe, not a pass", (t) => {
