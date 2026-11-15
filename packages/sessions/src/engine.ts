@@ -637,6 +637,7 @@ import {
 } from "./opencode-state.ts";
 import {
   checkPastedImage,
+  workspacePasteNonce,
   PastedImageError,
   pastedImagePlacement,
   type PlacedPastedImage,
@@ -18828,7 +18829,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           return { path: stored.path, mediaType: stored.mediaType, bytes: stored.bytes };
         }
-        const checked = yield* checkPastedImage(bytes);
+        const checked = yield* checkPastedImage(bytes, { nonce: workspacePasteNonce() });
         const workspace = yield* workspaceForSupportingProcess(session);
         // A person executor (docs/adr/0016): the write runs as the sender, their user and home
         // ensured first, with a Mend token of this write's own that redeems its pickup and nothing

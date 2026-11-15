@@ -28,8 +28,8 @@ import { SessionEngine, WorkspaceGitHooks } from "@mend/sessions";
 import { DotfilesStore, DotfilesStoreError, harnessHomePathOf } from "@mend/store";
 import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
-import { Deferred, Effect, Exit, Layer } from "effect";
-import { describe, expect } from "vitest";
+import { Clock, Deferred, Effect, Exit, Layer } from "effect";
+import { describe, expect, vi } from "vitest";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import {
@@ -604,7 +604,9 @@ describe("SessionEngine files into a captured workspace", () => {
 
           yield* engine.launch(session.id, ["codex"]);
           const placed = yield* engine.storePastedImage(session.id, PNG, "user-fixture");
-          expect(placed.path).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
+          expect(placed.path).toMatch(
+            /^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-[0-9a-f]{8}\.png$/,
+          );
           expect(placed.mediaType).toBe("image/png");
           expect(new Uint8Array(writtenFiles(execCalls).get(placed.path) ?? [])).toEqual(PNG);
           expect(
@@ -615,6 +617,54 @@ describe("SessionEngine files into a captured workspace", () => {
             .storePastedImage(session.id, new TextEncoder().encode("not an image"), "user-fixture")
             .pipe(Effect.flip);
           expect(refused._tag).toBe("PastedImageError");
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: captureLayer(created, execCalls) },
+    );
+  });
+
+  it("keeps two images pasted in one second into a live workspace under their own names", async () => {
+    const created: CreateOptions[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const otherPng = new Uint8Array([...PNG, 0x00]);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            start: { kind: "base", base: null },
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          // Both pastes in the same second, and a draw that repeats: what made two names one.
+          const live = yield* Clock.Clock;
+          const second = 1_789_000_000_000;
+          const oneSecond: Clock.Clock = {
+            currentTimeMillisUnsafe: () => second,
+            currentTimeMillis: Effect.succeed(second),
+            currentTimeNanosUnsafe: () => BigInt(second) * 1_000_000n,
+            currentTimeNanos: Effect.succeed(BigInt(second) * 1_000_000n),
+            monotonicTimeNanosUnsafe: () => live.monotonicTimeNanosUnsafe(),
+            monotonicTimeNanos: live.monotonicTimeNanos,
+            sleep: (duration) => live.sleep(duration),
+          };
+          const random = vi.spyOn(Math, "random").mockReturnValue(0.5);
+          const [first, then] = yield* Effect.all([
+            engine.storePastedImage(session.id, PNG, "user-fixture"),
+            engine.storePastedImage(session.id, otherPng, "user-fixture"),
+          ]).pipe(
+            Effect.provideService(Clock.Clock, oneSecond),
+            Effect.ensuring(Effect.sync(() => random.mockRestore())),
+          );
+
+          expect(then.path).not.toBe(first.path);
+          const written = writtenFiles(execCalls);
+          expect(new Uint8Array(written.get(first.path) ?? [])).toEqual(PNG);
+          expect(new Uint8Array(written.get(then.path) ?? [])).toEqual(otherPng);
         }),
       { captured: makeMemoryCaptureStore(), sealantLayer: captureLayer(created, execCalls) },
     );

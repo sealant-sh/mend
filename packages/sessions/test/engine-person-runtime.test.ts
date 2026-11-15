@@ -597,8 +597,8 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         });
         if (seen === null) throw new Error("nothing pasted");
         const { holder, from, own, steered } = seen;
-        expect(own).toMatch(new RegExp(`^${P_LAUNCHER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
-        expect(steered).toMatch(new RegExp(`^${P_JOINER}/paste/\\d{8}-\\d{6}-\\w{4}\\.png$`));
+        expect(own).toMatch(new RegExp(`^${P_LAUNCHER}/paste/\\d{8}-\\d{6}-[0-9a-f]{8}\\.png$`));
+        expect(steered).toMatch(new RegExp(`^${P_JOINER}/paste/\\d{8}-\\d{6}-[0-9a-f]{8}\\.png$`));
         expect(pastes(run, from)).toEqual([
           { user: LAUNCHER, within: `C700:600:${P_LAUNCHER}`, path: own, session: holder },
           { user: JOINER, within: `C700:600:${P_JOINER}`, path: steered, session: holder },
@@ -752,7 +752,7 @@ describe("deliveries per person (docs/adr/0016, Delivery 15)", () => {
         });
         if (seen === null) throw new Error("nothing pasted");
         const { from, path: placed } = seen;
-        expect(placed).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
+        expect(placed).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-[0-9a-f]{8}\.png$/);
         expect(pastes(run, from)).toEqual([
           { user: null, within: "C755:644:/workspace/harness-home", path: placed, session: null },
         ]);
