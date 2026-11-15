@@ -131,7 +131,7 @@ export const usage = () =>
 
 const two = (n) => String(n).padStart(2, "0");
 
-/** `<MMDD-HHMM>-<4 hex>`, as the skill's Launch names a run. */
+/** `<MMDD-HHMM>-<4 hex>`, as `pnpm verify stack up` names a run. */
 export const newRunName = (now = new Date(), random = Math.random) => {
   const hex = Math.floor(random() * 0x10000)
     .toString(16)

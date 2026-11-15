@@ -13,6 +13,7 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
@@ -20,10 +21,10 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
 
+import { stackDown } from "../../../../tooling/verify/stack.mjs";
 import {
   here,
   tunnelTo,
-  skillMd,
   noBrowser,
   PASSWORD,
   TOKEN,
@@ -247,29 +248,36 @@ test("malformed account state is reported without its contents", () => {
   assert.ok(!`${seal.stdout}${seal.stderr}`.includes(PASSWORD), "the password was printed");
 });
 
-test("a planted hit fails Cleanup's last lines, deletes the leaking file and keeps the result", () => {
-  // The three lines of SKILL.md's Cleanup that close the private directory, as written there.
-  const lines = [
-    'node $skill/scripts/scan-evidence.mjs --dir "$E" --secrets "$P" --delete-hits; scan=$?',
-    'rm -rf "$P"',
-    '[ "$scan" -eq 0 ] || { echo "verify: the evidence scan found a secret; those files are deleted ($E/scan.json): this run FAILED" >&2; exit 1; }',
-  ];
-  for (const line of lines) assert.ok(skillMd.includes(line), `SKILL.md no longer says: ${line}`);
+test("a planted hit makes stack down withhold the evidence, delete the leaking file and drop the private directory", async () => {
+  // Cleanup is `pnpm verify stack down` (tooling/verify/stack.mjs): its last steps scan the run's
+  // evidence against the registry, then remove the registry. Run them for real on a recorded run.
   const P = privateWithAccount();
   const E = fresh("evidence");
   writeFileSync(join(E, "clean.txt"), "nothing here");
   writeFileSync(join(E, "leak.txt"), `oops ${PASSWORD}`);
-  const run = spawnSync("bash", ["-c", lines.join("\n")], {
-    encoding: "utf8",
-    env: { ...process.env, skill: join(here, ".."), E, P },
-  });
-  assert.equal(run.status, 1);
-  assert.match(run.stderr, /this run FAILED/);
+  const root = fresh("root");
+  symlinkSync(join(here, "..", "..", ".."), join(root, ".agents"));
+  mkdirSync(join(root, ".verify/stack"), { recursive: true });
+  writeFileSync(
+    join(root, ".verify/stack/current.json"),
+    JSON.stringify({
+      run: "r",
+      worktree: "st-verify-r",
+      project: "mend",
+      web: "http://localhost:1",
+      evidence: E,
+      private: P,
+      sessionId: null,
+      phase: "ready",
+    }),
+  );
+  const result = await stackDown(root, { env: process.env });
+  assert.equal(result.steps.find((step) => step.id === "scan").status, "evidence_withheld");
   assert.ok(!existsSync(P), "the private directory was kept");
   assert.ok(!existsSync(join(E, "leak.txt")), "the leaking file was kept");
   assert.ok(existsSync(join(E, "clean.txt")));
-  const result = JSON.parse(readFileSync(join(E, "scan.json"), "utf8"));
-  assert.deepEqual(result.deleted, ["leak.txt"]);
+  const scan = JSON.parse(readFileSync(join(E, "scan.json"), "utf8"));
+  assert.deepEqual(scan.deleted, ["leak.txt"]);
   assert.ok(!readFileSync(join(E, "scan.json"), "utf8").includes(PASSWORD));
 });
 

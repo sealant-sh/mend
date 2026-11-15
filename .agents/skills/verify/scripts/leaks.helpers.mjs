@@ -26,8 +26,6 @@ export const tunnelTo = (privateDir, port) =>
     }),
   );
 
-export const skillMd = readFileSync(join(here, "..", "SKILL.md"), "utf8");
-
 export const playwright =
   process.env.MEND_VERIFY_PLAYWRIGHT ?? join(homedir(), ".cache", "mend-verify", "playwright");
 

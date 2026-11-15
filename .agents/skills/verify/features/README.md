@@ -12,13 +12,13 @@ pass's results and evidence paths, and its corrections are in these files.
 
 ## Baseline preconditions
 
-- The stack under test comes from the `verify` skill's Launch section
-  ([`../SKILL.md`](../SKILL.md)): the full stack from source (sealantd, sealant and Mend), inside a
-  Mend session, its web tunnelled to this machine. The skill's Drive section maps this file's
-  placeholders to that stack and names its drivers for the web, the CLI, the terminal dashboard, the
-  desktop app and the mobile web build.
-- The instance has at least one account, and the web app answers at the URL Launch names (written
-  `<web>` below; the CLI's own default is `http://localhost:3105`).
+- The stack under test comes from `pnpm verify stack up` ([`../SKILL.md`](../SKILL.md)): the full
+  stack from source (sealantd, sealant and Mend), inside a Mend session, its web tunnelled to this
+  machine. [`../references/recipes.md`](../references/recipes.md) maps this file's placeholders to
+  that stack, and the skill's Drive section names its drivers for the web, the CLI, the terminal
+  dashboard, the desktop app and the mobile web build.
+- The instance has at least one account, and the web app answers at the URL `stack up` names
+  (written `<web>` below; the CLI's own default is `http://localhost:3105`).
 - The `mend` CLI under test is on `PATH` and signed in to that instance: `mend login --url <web>`,
   then `mend doctor` prints one line per fact with nothing left unfinished that the recipe needs.
 - Launch supplies a disposable Git repository the server can clone (written `<repo-url>`), and a
@@ -68,11 +68,11 @@ pass's results and evidence paths, and its corrections are in these files.
 - Mobile steps run the Expo app on the web (`pnpm --filter @mend/mobile web`) in Playwright at a
   390x844 viewport, and use ARIA roles and names as on the web. Native-only behavior (keychain,
   camera, push) is reported unreachable on the web build.
-- VS Code steps run in a real VS Code through the skill's `drive-vscode.mjs` (SKILL.md, Drive):
-  gestures on the workbench DOM over CDP, written as its helper calls
-  (`palette("Mend: New session")`, `treeItem(label).dblclick()`), with numbered screenshots and a
-  step log as evidence. Slack steps are `not drivable yet`: that file lists entry points and
-  observable end states only, and says why.
+- VS Code steps run in a real VS Code through the skill's `drive-vscode.mjs`
+  ([`../references/vscode.md`](../references/vscode.md)): gestures on the workbench DOM over CDP,
+  written as its helper calls (`palette("Mend: New session")`, `treeItem(label).dblclick()`), with
+  numbered screenshots and a step log as evidence. Slack steps are `not drivable yet`: that file
+  lists entry points and observable end states only, and says why.
 - Web sign-in goes through `/login`: the textbox `Email`, the password field labelled `Password`,
   and the button `Sign in`. Sign-in calls outside a browser must carry an `Origin` header naming the
   instance's own origin: the auth layer rejects requests from origins outside its trusted list
