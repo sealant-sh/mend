@@ -57,6 +57,8 @@ import {
   parseLayoutReport,
   personLayoutRefusal,
   UNCHECKED_IMAGE_REFUSAL,
+  usersNotMadeFallback,
+  usersNotMadeRefusal,
   personHomeEnsureScript,
   personHomeScript,
   personPrepareScript,
@@ -1579,11 +1581,16 @@ export const makeHarnessLayoutSteps = (deps: {
         confirmed: true,
       });
     }
+    // The probe passed and found nothing missing, yet the users were not made: not the image's
+    // (SLNT-1013), so the words say to start again, never to pick another image or worktree.
+    const usersNotMade = report.probed && report.missing.length === 0;
     if (layout.onMissing === "refuse") {
       return yield* layoutRefused(
-        layout.source === "operator"
-          ? `harnessLayout person was asked for, and this image cannot run per-person users (${missing.join(", ")}).`
-          : `This worktree's sessions are saved per person, and its image cannot run per-person users (${missing.join(", ")}). Pick an image that can, or start a new worktree.`,
+        usersNotMade
+          ? usersNotMadeRefusal(report.failed)
+          : layout.source === "operator"
+            ? `harnessLayout person was asked for, and this image cannot run per-person users (${missing.join(", ")}).`
+            : `This worktree's sessions are saved per person, and its image cannot run per-person users (${missing.join(", ")}). Pick an image that can, or start a new worktree.`,
       );
     }
     // A wrong prediction never leaves an agent without a login: the create-time home is released
@@ -1627,7 +1634,9 @@ export const makeHarnessLayoutSteps = (deps: {
         );
       }
     }
-    const reason = `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
+    const reason = usersNotMade
+      ? usersNotMadeFallback(report.failed)
+      : `this image cannot run per-person users (${missing.join(", ")}), so this workspace takes one person`;
     yield* repo.recordFallback(input.launchId, reason);
     layoutByLaunch.set(input.launchId, "shared");
     return {
@@ -1671,9 +1680,12 @@ export const makeHarnessLayoutSteps = (deps: {
     }
     // A fresh worktree: nothing ran, and it stays without a layout; the image is known now.
     if (input.launchId !== undefined) {
+      // An image sealant could not check is not one that cannot run per-person users.
       yield* repo.recordFallback(
         input.launchId,
-        `this image cannot run per-person users (${lacks})`,
+        unchecked
+          ? "sealant could not check whether this image runs per-person users"
+          : `this image cannot run per-person users (${lacks})`,
       );
       layoutByLaunch.set(input.launchId, "shared");
     }

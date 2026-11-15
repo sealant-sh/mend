@@ -1343,6 +1343,74 @@ describe("the workspace's own answer at prepare (sealant#343)", () => {
   });
 });
 
+describe("users that could not be made in an image that can run them (SLNT-1013)", () => {
+  /** A prepare on a worktree that ran per person (refused) or a fresh one (falls back). */
+  const settleWith = (worktree: "fresh" | "person", stdout: string) => {
+    const state = makeHarnessLayoutsMemoryState();
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        if (worktree === "person") {
+          state.worktrees.set(WorktreeId.make("wt-1"), { layout: "person", requested: null });
+        }
+        const { steps } = yield* stepsWith("person", state);
+        const layout = yield* steps.decide(decideInput("launch-users"));
+        const settled = yield* steps
+          .settlePrepare({ layout, ...settleInput("launch-users", stdout) })
+          .pipe(Effect.result);
+        return {
+          settled,
+          recorded: [...state.capabilities.values()].map((record) => [
+            record.person,
+            record.missing,
+          ]),
+        };
+      }),
+    );
+  };
+  const clash =
+    "mend-layout probed\nmend-layout failed mdflf76rx useradd: UID 40001 is not unique \n";
+
+  it("refuses with what failed and words to start again, never to pick another image", async () => {
+    const { settled, recorded } = await settleWith("person", clash);
+    const message = settled._tag === "Failure" ? settled.failure.message : null;
+    expect(message).toBe(
+      "This workspace could not make its per-person users (mdflf76rx: useradd: UID 40001 is not unique). Nothing was started; start the session again.",
+    );
+    expect(message).not.toContain("Pick an image");
+    expect(message).not.toContain("new worktree");
+    // A failure to make users is never the image's.
+    expect(recorded).toEqual([]);
+  });
+
+  it("says the users could not be made when the prepare named nobody", async () => {
+    const { settled } = await settleWith("person", "mend-layout probed\n");
+    expect(settled._tag === "Failure" ? settled.failure.message : null).toBe(
+      "This workspace could not make its per-person users. Nothing was started; start the session again.",
+    );
+  });
+
+  it("falls a fresh worktree back to one person saying the users could not be made, not that the image cannot", async () => {
+    const { settled, recorded } = await settleWith("fresh", clash);
+    expect(settled._tag === "Success" ? settled.success : null).toMatchObject({
+      layout: "shared",
+      fallback:
+        "the per-person users could not be made (mdflf76rx: useradd: UID 40001 is not unique), so this workspace takes one person",
+    });
+    expect(recorded).toEqual([]);
+  });
+
+  it("still says the image cannot, and records it, when the probe found something missing", async () => {
+    const { settled, recorded } = await settleWith(
+      "person",
+      "mend-layout missing no sudo\nmend-layout probed\n",
+    );
+    expect(settled._tag === "Failure" ? settled.failure.message : null).toBe(
+      "This worktree's sessions are saved per person, and its image cannot run per-person users (no sudo). Pick an image that can, or start a new worktree.",
+    );
+    expect(recorded).toEqual([[false, ["no sudo"]]]);
+  });
+});
+
 describe("a control plane that cannot run the person layout (review of mend#569, P3-4)", () => {
   const obstacle =
     "the Sealant control plane does not run processes as a user (it does not report processUser)";
