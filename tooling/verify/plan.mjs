@@ -8,7 +8,7 @@ import { extras } from "../../scripts/ci-scope.mjs";
 import { readCoverages, touches } from "../../scripts/formal-coverage.mjs";
 
 // What a change owes. Two sources, neither restating the other:
-// - obligations.json maps paths to local obligations (box check, screenshots, models, gated suites);
+// - obligations.json maps paths to local obligations (the judge and the run, screenshots, models, gated suites);
 // - CI's own scoping (scripts/ci-scope.mjs and the `if:` of each job in ci.yml) says which CI jobs
 //   run. obligations.json only names CI's lanes, so the two cannot disagree on paths;
 //   plan.test.mjs fails when a lane is added on one side and not the other.
@@ -16,7 +16,7 @@ import { readCoverages, touches } from "../../scripts/formal-coverage.mjs";
 export const loadMap = (root) =>
   JSON.parse(readFileSync(join(root, "tooling/verify/obligations.json"), "utf8"));
 
-const KINDS = ["tests", "formal", "stack", "screenshots", "box-check", "harness", "external"];
+const KINDS = ["tests", "formal", "stack", "screenshots", "harness", "external"];
 
 /** Every way the map departs from its shape; empty when it is usable. */
 export const validateMap = (map) => {
@@ -77,8 +77,8 @@ export const matchObligations = (map, files) =>
     );
     if (hit.length === 0) return [];
     return entry.owes.map((owe) => ({
-      id: entry.owes.length === 1 ? entry.id : `${entry.id}:${owe.kind}`,
       ...owe,
+      id: owe.id ?? (entry.owes.length === 1 ? entry.id : `${entry.id}:${owe.kind}`),
       why: entry.why,
       status: "owed",
       paths: hit.slice(0, 20),

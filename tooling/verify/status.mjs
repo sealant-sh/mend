@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import { judgementLine, readJudgement } from "./judge.mjs";
 import { computePlan } from "./plan.mjs";
 
 // The receipt: for each obligation the current head owes, whether a passing result exists for
@@ -15,14 +16,34 @@ const readLatest = (root, verb) => {
 /** One step per obligation. `implemented` is the set of verbs this repo has. */
 export const judgeObligation = (root, obligation, head, implemented) => {
   const base = { id: obligation.id, title: `${obligation.kind}: ${obligation.why}` };
-  if (obligation.kind === "box-check") {
-    return {
-      ...base,
-      status: "requires_external_observer",
-      detail: `Owed by a feature or fix: ${obligation.what}`,
-    };
+  // The run happens where the judge said: until there is a judgement nobody knows where, and a run
+  // on the box is proved by the box running a build that contains this change.
+  const verb = obligation.verb;
+  if (obligation.after === "judge") {
+    const judgement = readJudgement(root, head);
+    if (judgement === null) {
+      return {
+        ...base,
+        status: "skipped",
+        detail: "No judgement for this commit yet, so nobody has said where to run it",
+        command: "pnpm verify judge",
+      };
+    }
+    if (judgement.where === "box") {
+      const onBox = readLatest(root, "box-identity");
+      const contains =
+        onBox !== null && onBox.result.head.sha === head.sha && onBox.result.status === "passed";
+      return {
+        ...base,
+        status: contains ? "passed" : "skipped",
+        detail: contains
+          ? "box identity: passed"
+          : `The judge sent this to the box (${judgement.limit}); no passing box identity for this commit yet`,
+        ...(contains ? { log: onBox.path } : { command: "pnpm verify box plan" }),
+      };
+    }
   }
-  if (obligation.verb === undefined || !implemented.has(obligation.verb)) {
+  if (verb === undefined || !implemented.has(verb)) {
     return {
       ...base,
       status: "skipped",
@@ -31,16 +52,20 @@ export const judgeObligation = (root, obligation, head, implemented) => {
       } and cite the log.`,
     };
   }
-  const latest = readLatest(root, obligation.verb);
+  const latest = readLatest(root, verb);
   if (latest === null) {
-    return { ...base, status: "skipped", detail: `No ${obligation.verb} result yet` };
+    return {
+      ...base,
+      status: "skipped",
+      detail: `No ${verb} result yet${obligation.what ? `: ${obligation.what}` : ""}`,
+    };
   }
   const { result, path } = latest;
   if (result.head.sha !== head.sha) {
     return {
       ...base,
       status: "skipped",
-      detail: `Latest ${obligation.verb} result is for ${result.head.sha.slice(0, 10)}, not this head`,
+      detail: `Latest ${verb} result is for ${result.head.sha.slice(0, 10)}, not this head`,
       log: path,
     };
   }
@@ -56,11 +81,17 @@ export const judgeObligation = (root, obligation, head, implemented) => {
   const skipSummary = result.steps?.find((step) => step.skipSummary)?.skipSummary;
   // A file at risk of CI's per-file limit is a warning on the same line; it never fails it.
   const riskSummary = result.steps?.find((step) => step.riskSummary)?.riskSummary;
-  const note = [skipSummary, riskSummary && `Warning: ${riskSummary}`].filter(Boolean).join(". ");
+  const note = [
+    skipSummary,
+    riskSummary && `Warning: ${riskSummary}`,
+    result.judgement && judgementLine(result.judgement),
+  ]
+    .filter(Boolean)
+    .join(". ");
   return {
     ...base,
     status: result.status,
-    detail: `${obligation.verb}: ${result.status}`,
+    detail: `${verb}: ${result.status}`,
     log: path,
     ...(note ? { note } : {}),
   };
@@ -74,12 +105,10 @@ export const statusSteps = (root, { head, implemented }) => {
   const next = [
     ...new Set(
       plan.obligations.flatMap((obligation, index) =>
-        steps[index].status === "passed" || obligation.command === undefined
-          ? []
-          : [obligation.command],
+        steps[index].status === "passed" ? [] : [steps[index].command ?? obligation.command],
       ),
     ),
-  ];
+  ].filter(Boolean);
   return { plan, steps, next };
 };
 

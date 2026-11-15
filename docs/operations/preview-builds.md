@@ -70,9 +70,10 @@ which is signed in, so they can stay private. `ghcr.io/sealant-sh/mend` is alrea
 
 ## Deploy
 
-For a box check, `pnpm verify box prepare --yes` takes the database dump and holds the box first,
-and `pnpm verify box identity` proves afterwards that the running build contains the PR (AGENTS.md,
-Check Features on the Box).
+Before a deploy that checks a PR on the box, `pnpm verify box prepare --yes` takes the database dump
+and holds the box, and `pnpm verify box identity` proves afterwards that the running build contains
+the PR (AGENTS.md, The Box). A change is checked on the box only when its judge says a local stack
+can't show it, or when the owner asks.
 
 On the box, as root, with the `mend` CLI installed, run the command from the run's summary:
 
@@ -111,8 +112,8 @@ A preview of a branch is built by the workflow and deployed by hand, with the co
 
 ## The box
 
-Two Mend servers run as VMs on one Proxmox host. A box check uses VM 131, the preview server with
-Boat set up; either server is acceptable. Name the server with `MEND_VERIFY_BOX_SSH`, as below.
+Two Mend servers run as VMs on one Proxmox host. A check on the box uses VM 131, the preview server
+with Boat set up; either server is acceptable. Name the server with `MEND_VERIFY_BOX_SSH`, as below.
 
 Both are set up by hand. None of this is in a repository, so check it on the server before you rely
 on it.
@@ -154,7 +155,7 @@ on it.
   last. No deploy updates it.
 
 - **VM 131, `mend-boat-preview`** (`10.0.0.41`), the preview server made on 5 Nov 2026 for the Boat
-  work, where box checks run:
+  work, where checks on the box run:
   - 6 vCPU, 8 GB RAM, 116 GB disk, `onboot 1`;
   - sessions run on Boat by default and may run in Docker (`MEND_SESSION_RUNTIMES=docker,boat`,
     `MEND_SESSION_RUNTIME=boat`);
@@ -169,7 +170,7 @@ on it.
     reaches the server only through the session endpoint, and `pnpm verify health` says the app-URL
     probe from a workspace does not apply there;
   - deploys are by hand, with the command under [Deploy](#deploy);
-  - SSH: `ssh -J root@100.94.101.28 root@10.0.0.41`. For the box check,
+  - SSH: `ssh -J root@100.94.101.28 root@10.0.0.41`. For a check on it,
     `MEND_VERIFY_BOX_SSH='-J root@100.94.101.28 root@10.0.0.41'`.
 
 ## Limits

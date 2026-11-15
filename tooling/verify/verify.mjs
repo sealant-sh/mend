@@ -16,6 +16,7 @@ import { drive, SURFACES } from "./drive.mjs";
 import { evidence } from "./evidence.mjs";
 import { formalSteps } from "./formal.mjs";
 import { health, VANTAGES } from "./health.mjs";
+import { judge, readJudgement } from "./judge.mjs";
 import { changedFiles, planSteps } from "./plan.mjs";
 import {
   createResult,
@@ -38,7 +39,9 @@ const VERBS = {
   check:
     "The pre-PR gate: forced typecheck and lint, affected tests with no unallowed skip, format",
   status: "For each obligation, whether a passing result exists for this exact commit",
-  box: "Box-check setup: plan, prepare, cli, identity, release (--yes to change the box)",
+  judge:
+    "Write the brief another agent answers: where to run this change and what must be seen (--record <answer.json>, --self)",
+  box: "Set up the preview server for a check on it: plan, prepare, cli, identity, release (--yes to change it)",
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
   drive: "Run a recipe against web, tui, desktop, mobile-web, vscode or t3: --recipe <name|path>",
@@ -75,7 +78,12 @@ export const parseArgs = (argv) => {
     else if (arg === "--all") options.all = true;
     else if (arg === "--full") options.full = true;
     else if (arg === "--yes") options.yes = true;
-    else if (arg === "--recipe") {
+    else if (arg === "--self") options.self = true;
+    else if (arg === "--record") {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError("--record needs the answer file");
+      options.record = value;
+    } else if (arg === "--recipe") {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new UsageError("--recipe needs a name or a path");
       options.recipe = value;
@@ -150,6 +158,7 @@ const help = () =>
     "",
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
     "--concurrency <n> (check: turbo tasks and Vitest workers), --full (formal), --markdown (status),",
+    "--record <answer.json> and --self (judge),",
     "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box), --url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
     "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
@@ -210,10 +219,14 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
   }
   if (verb === "evidence") {
     const receipt = statusSteps(root, { head, implemented: new Set(Object.keys(VERBS)) });
-    const statusLines = receipt.steps.map((step) => `- \`${step.id}\`: ${step.status}`);
+    // Every obligation but the one this verb discharges: its line would describe the last run.
+    const statusLines = receipt.steps
+      .filter((_, index) => receipt.plan.obligations[index].verb !== verb)
+      .map((step) => `- \`${step.id}\`: ${step.status}`);
     const { steps, next, ...rest } = await evidence(root, {
       head,
       statusLines,
+      judgement: readJudgement(root, head),
       ...(options.env ? { env: options.env } : {}),
       ...(options.exec ? { exec: options.exec } : {}),
     });
@@ -271,6 +284,17 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
       release: () => boxRelease(context),
     }[options.subverb]();
     return createResult({ verb: `box ${options.subverb}`, head, startedAt, steps, next, ...rest });
+  }
+  if (verb === "judge") {
+    const { plan } = planSteps(root, { head, files: undefined });
+    const { steps, next, ...rest } = judge(root, {
+      head,
+      files: plan?.files ?? [],
+      owed: (plan?.obligations ?? []).some((obligation) => obligation.verb === "judge"),
+      record: options.record,
+      self: options.self === true,
+    });
+    return createResult({ verb, head, startedAt, steps, next, ...rest });
   }
   if (verb === "plan") {
     const { plan, steps, next } = planSteps(root, { head, files: options.files });

@@ -63,7 +63,7 @@ const scanHits = (dir) => {
 
 export const evidence = async (
   root,
-  { head, env = process.env, exec = runCommand, statusLines = [] },
+  { head, env = process.env, exec = runCommand, statusLines = [], judgement = null },
 ) => {
   const drives = driveResults(root, head);
   if (drives.length === 0) {
@@ -186,7 +186,16 @@ export const evidence = async (
           : `- ${result.verb} · ${result.status}`,
       ),
       "",
-      "**What I saw:** (write the observations here: the action, its result, and the side effect seen a second time)",
+      ...(judgement
+        ? [
+            "**What I saw:** (under each thing the judge asked for, what you did, what you saw and its evidence)",
+            "",
+            ...judgement.mustSee.map((line) => `- ${line}`),
+            `- If it did not work: ${judgement.ifBroken}`,
+          ]
+        : [
+            "**What I saw:** (write the observations here: the action, its result, and the side effect seen a second time)",
+          ]),
       "",
       "**Secret scan:**",
       ...scanStep.map((step) => `- ${step.title}: ${step.status} (${step.detail})`),
