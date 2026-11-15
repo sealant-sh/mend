@@ -16,3 +16,4 @@ export * from "./mend-proof-call.ts";
 export * from "./native-history.ts";
 
 export * from "./claude-task-tool-result.ts";
+export * from "./native-rewrite.ts";
