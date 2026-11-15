@@ -401,22 +401,59 @@ const startEdge = async (t) => {
       req.end();
     });
   let ready = false;
+  // What the last attempt saw, so a Caddy that never became ready says why (SLNT-984).
+  let caError;
+  let last = [];
   for (let attempt = 0; attempt < 200 && !ready; attempt++) {
     if (ca === undefined) {
       try {
         ca = (await docker("exec", edge, "cat", "/data/caddy/pki/authorities/local/root.crt"))
           .stdout;
-      } catch {}
+      } catch (error) {
+        caError = String(error.stderr || error.message).trim();
+      }
     }
     if (ca !== undefined) {
-      const answers = await Promise.all(
-        [MEND_HOST, GATEWAY_HOST, PREVIEW_HOST].map((host) => request({ host, target: "/ready" })),
-      );
+      const hosts = [MEND_HOST, GATEWAY_HOST, PREVIEW_HOST];
+      const answers = await Promise.all(hosts.map((host) => request({ host, target: "/ready" })));
+      last = answers.map((answer, index) => ({
+        host: hosts[index],
+        status: answer.status,
+        error: answer.error?.code ?? answer.error?.message,
+      }));
       ready = answers.every((answer) => answer.status === 200);
     }
     if (!ready) await new Promise((resolve) => setTimeout(resolve, 50));
   }
-  assert.ok(ready, "owned Caddy, its certificates and its upstream must become ready");
+  if (!ready) {
+    const seen = async (container) => {
+      const state = await docker("inspect", "--format", "{{json .State}}", container).then(
+        (result) => result.stdout.trim(),
+        (error) => String(error.message),
+      );
+      // Caddy's own lines: the readiness probes' access lines would crowd them out.
+      const logs = await docker("logs", container).then(
+        (result) =>
+          (result.stdout + result.stderr)
+            .split("\n")
+            .filter((line) => line !== "" && !line.includes('"msg":"handled request"'))
+            .slice(-40)
+            .join("\n"),
+        (error) => String(error.message),
+      );
+      return `state ${state}\n${logs}`;
+    };
+    assert.fail(
+      [
+        "owned Caddy, its certificates and its upstream must become ready",
+        ca === undefined
+          ? `Caddy's root certificate was never read: ${caError}`
+          : `last answers: ${JSON.stringify(last)}`,
+        `edge: ${await seen(edge)}`,
+        `upstream: ${await seen(stub)}`,
+      ].join("\n"),
+    );
+  }
   const logs = async () => {
     const result = await docker("logs", edge);
     const text = result.stdout + result.stderr;
