@@ -20,11 +20,27 @@ const SERVER_PATH =
 /** Any URL. Its credentials, query and fragment go; an internal host goes too. */
 const URL_LIKE = /\b([a-z][a-z0-9+.-]*):\/\/[^\s"'`<>()]+/gi;
 
-/** A value that names itself a credential: `token=…`, `password=…`. The name stays. */
+/**
+ * A value that names itself a credential, the name kept. A name that is a credential whatever
+ * precedes it (`DB_PASSWORD`, `PGPASSWORD`, `client_secret`, `X-Api-Key`) is taken with any
+ * prefix and any of the separators upstream text uses (`=`, `: `, `"name": "…"`, `'name': '…'`).
+ * A name that is also an ordinary word (`code`, `key`) is taken only alone and before a bare `=`,
+ * so `exit code: 128` and `exit_code=128` come through. A quoted value goes whole, quotes kept.
+ */
 const NAMED_SECRET =
-  /\b(token|ticket|code|password|passwd|secret|signature|api[-_]?key|access[-_]?key|key)=[^\s"'`&,;()<>]+/gi;
+  /(?<![\w.-])([\w.-]*?(?:password|passwd|passphrase|secret|token|api[-_]?key|access[-_]?key|private[-_]?key|credentials)["']?[ \t]*[:=][ \t]*)("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|[^\s"'`&,;()<>]+)/gi;
+const NAMED_VALUE =
+  /\b((?:ticket|code|signature|key)=)("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|[^\s"'`&,;()<>]+)/gi;
+/** A quoted value keeps its quotes, so the sentence or the JSON around it still reads. */
+const redactValue = (_match: string, named: string, value: string) => {
+  const quote = value.startsWith('"') || value.startsWith("'") ? value[0] : "";
+  return `${named}${quote}<redacted>${quote}`;
+};
 /** `Authorization` values, wherever they were echoed. */
 const AUTH_SCHEME = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{4,}/g;
+/** An `Authorization` header in any case, with GitHub's `token` scheme too. */
+const AUTH_HEADER =
+  /\b(authorization["']?[ \t]*[:=][ \t]*["']?)(bearer|basic|token)[ \t]+[A-Za-z0-9._~+/=-]{4,}/gi;
 /** A JWT: all of it. Its header and payload name the issuer, the subject and the audience. */
 const JWT = /\beyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}(?:\.[A-Za-z0-9_-]*)?/g;
 /** Bearers Mend, Sealant and the providers mint, then anything long enough to be a secret. */
@@ -63,7 +79,12 @@ export const redactDetail = (detail: string): string => {
   const scrubbed = detail
     .slice(0, MAX_INPUT)
     .replace(URL_LIKE, (match) => redactOneUrl(match))
-    .replace(NAMED_SECRET, (_match, name: string) => `${name}=<redacted>`)
+    .replace(
+      AUTH_HEADER,
+      (_match, header: string, scheme: string) => `${header}${scheme} <redacted>`,
+    )
+    .replace(NAMED_SECRET, redactValue)
+    .replace(NAMED_VALUE, redactValue)
     .replace(AUTH_SCHEME, (_match, scheme: string) => `${scheme} <redacted>`)
     .replace(JWT, "<redacted>")
     .replace(KNOWN_TOKEN, "<redacted>")
