@@ -1108,22 +1108,37 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   // big.mp4's keyframe at 5.12 s lies about 160 MB in (writeBig), far past what the opening
   // stream holds: a seek just after it must be fetched by range, and play on from there.
   const FAR = 100 * 2 ** 20;
-  await video.evaluate(
-    (element) =>
-      new Promise((resolve) => {
-        element.muted = true;
-        element.addEventListener("seeked", resolve, { once: true });
-        element.currentTime = 5.2;
-      }),
-  );
-  await video.evaluate((element) => element.play().catch(() => undefined));
-  const played = await until("big.mp4 plays on from 5.2 s", () =>
-    video.evaluate((element) =>
-      !element.paused && element.currentTime >= 6
-        ? { currentTime: element.currentTime, readyState: element.readyState }
-        : null,
-    ),
-  );
+  const videoState = () =>
+    video.evaluate((element) => ({
+      seeking: element.seeking,
+      paused: element.paused,
+      currentTime: element.currentTime,
+      readyState: element.readyState,
+      buffered: Array.from({ length: element.buffered.length }, (_, i) => [
+        element.buffered.start(i),
+        element.buffered.end(i),
+      ]),
+      error: element.error?.message ?? null,
+    }));
+  await video.evaluate((element) => {
+    element.muted = true;
+    element.currentTime = 5.2;
+  });
+  let played;
+  try {
+    await until("big.mp4 seeks to 5.2 s", async () => {
+      const now = await videoState();
+      return !now.seeking && now.currentTime >= 5.1;
+    });
+    await video.evaluate((element) => element.play().catch(() => undefined));
+    played = await until("big.mp4 plays on from 5.2 s", async () => {
+      const now = await videoState();
+      return !now.paused && now.currentTime >= 6 ? now : null;
+    });
+  } catch (error) {
+    note(`observed · big.mp4 · the video when the seek stalled: ${JSON.stringify(await videoState())}`);
+    throw error;
+  }
   note("window · big.mp4 · seeks · ends");
   await video.evaluate((element) => element.pause());
   const seeks = assets.slice(seekFrom).filter((entry) => entry.path.endsWith("/big.mp4"));
