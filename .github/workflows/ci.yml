@@ -733,6 +733,13 @@ jobs:
           node-version-file: .node-version
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
+      # As in the engine jobs: each DROP DATABASE waits on a checkpoint that flushes every file the
+      # server dirtied (SLNT-764), and nothing here outlives the job.
+      - name: Run the throwaway Postgres without durability
+        run: >-
+          docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
+          fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
+          full_page_writes = off" -c "SELECT pg_reload_conf()"
       - name: Install Chromium and Firefox for the preview browsers
         run:
           pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox

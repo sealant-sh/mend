@@ -9,12 +9,12 @@ import { migrations } from "../src/migrations.ts";
 import { UserAgentLoginsRepo, UserAgentLoginsRepoLive } from "../src/repos/user-agent-logins.ts";
 
 /**
- * Which of a person's own logins their Claude and Codex sessions receive, against the dev Postgres (`compose.dev.yaml`,
- * :5434) in a throwaway database. Without one reachable these skip rather than pretend; set
+ * Which of a person's own logins their Claude and Codex sessions receive, against the test Postgres (`compose.dev.yaml`,
+ * :5435) in a throwaway database. Without one reachable these skip rather than pretend; set
  * MEND_TEST_DATABASE_URL elsewhere.
  */
 const ADMIN_URL =
-  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5434/mend";
+  process.env["MEND_TEST_DATABASE_URL"] ?? "postgres://mend:mend@localhost:5435/mend";
 const SCRATCH_DB = `mend_user_agent_logins_test_${process.pid}_${Date.now()}`;
 const scratchUrl = (() => {
   const url = new URL(ADMIN_URL);

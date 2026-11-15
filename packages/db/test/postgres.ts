@@ -2,8 +2,8 @@ import { EffectDrizzleQueryError } from "drizzle-orm/effect-core/errors";
 
 /**
  * PostgreSQL tests are required by default and use isolated throwaway databases.
- * Set MEND_TEST_DATABASE_URL to a server whose account can create databases, or use the dev
- * server from compose.dev.yaml. Local runs can explicitly opt out with
+ * Set MEND_TEST_DATABASE_URL to a server whose account can create databases, or use the test
+ * server from compose.dev.yaml (`postgres-test`, without fsync). Local runs can explicitly opt out with
  * MEND_SKIP_POSTGRES_TESTS=1. A configured URL or CI run always requires the database.
  */
 export function postgresTestConfig(): { readonly adminUrl: string; readonly skip: boolean } {
@@ -16,7 +16,7 @@ export function postgresTestConfig(): { readonly adminUrl: string; readonly skip
     throw new Error("PostgreSQL tests cannot be skipped in CI or with MEND_TEST_DATABASE_URL");
   }
 
-  const adminUrl = configuredUrl ?? "postgres://mend:mend@localhost:5434/mend";
+  const adminUrl = configuredUrl ?? "postgres://mend:mend@localhost:5435/mend";
   let parsed: URL;
   try {
     parsed = new URL(adminUrl);

@@ -40,9 +40,12 @@ host-side dev server refuses it; the comment in `deploy/dev/executor.compose.yam
 
 ## Tests
 
-- Postgres tests use the dev Postgres (`postgres://mend:mend@localhost:5434/mend`, started by
-  `pnpm dev` or `docker compose -f compose.dev.yaml up -d`), or `MEND_TEST_DATABASE_URL`. For a
-  partial local run without Postgres, set `MEND_SKIP_POSTGRES_TESTS=1`; CI refuses it.
+- Postgres tests use their own Postgres (`postgres://mend:mend@localhost:5435/mend`, the
+  `postgres-test` service, started by `pnpm dev` or
+  `docker compose -f compose.dev.yaml up -d postgres-test`), or `MEND_TEST_DATABASE_URL`. It runs
+  without fsync and keeps no volume, so a test file's dropped database never waits on the dev data's
+  disk; the dev Postgres on 5434 keeps fsync. For a partial local run without Postgres, set
+  `MEND_SKIP_POSTGRES_TESTS=1`; CI refuses it.
 - `pnpm run test:s3-contract` runs the blob-store contracts against throwaway Garage and MinIO. It
   needs Docker.
 - The `scripts/*.test.mjs` suites run in CI's static job (`.github/workflows/ci.yml`). Run the one

@@ -10,9 +10,9 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("PostgreSQL test prerequisites", () => {
-  it("requires the local development database by default", () => {
+  it("requires the local test database by default", () => {
     expect(postgresTestConfig()).toEqual({
-      adminUrl: "postgres://mend:mend@localhost:5434/mend",
+      adminUrl: "postgres://mend:mend@localhost:5435/mend",
       skip: false,
     });
   });
