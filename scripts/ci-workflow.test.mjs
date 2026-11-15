@@ -37,8 +37,8 @@ const runGate = (results) => {
     timeout: 5_000,
   });
 };
-const completed = (mobile = "true", packaging = "true", store = "true") => ({
-  changes: { result: "success", outputs: { mobile, packaging, store } },
+const completed = (mobile = "true", packaging = "true", store = "true", formal = "true") => ({
+  changes: { result: "success", outputs: { mobile, packaging, store, formal } },
   static: { result: "success" },
   "test-engines": { result: "success" },
   "test-engines-b": { result: "success" },
@@ -47,16 +47,19 @@ const completed = (mobile = "true", packaging = "true", store = "true") => ({
   packaging: { result: packaging === "false" ? "skipped" : "success" },
   "mobile-web": { result: mobile === "false" ? "skipped" : "success" },
   "store-image-git": { result: store === "false" ? "skipped" : "success" },
+  formal: { result: formal === "false" ? "skipped" : "success" },
 });
 
 test("the actual required-check command accepts full evidence and intentional scope skips", () => {
   for (const mobile of ["true", "false"]) {
     for (const packaging of ["true", "false"]) {
       for (const store of ["true", "false"]) {
-        const result = runGate(completed(mobile, packaging, store));
-        assert.equal(result.error, undefined);
-        assert.equal(result.status, 0, result.stderr);
-        assert.match(result.stdout, /All required CI jobs passed/);
+        for (const formal of ["true", "false"]) {
+          const result = runGate(completed(mobile, packaging, store, formal));
+          assert.equal(result.error, undefined);
+          assert.equal(result.status, 0, result.stderr);
+          assert.match(result.stdout, /All required CI jobs passed/);
+        }
       }
     }
   }
@@ -73,6 +76,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
     "packaging",
     "mobile-web",
     "store-image-git",
+    "formal",
   ]) {
     for (const result of ["failure", "cancelled", "skipped", undefined]) {
       const results = completed();
@@ -87,7 +91,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
 });
 
 test("missing or malformed path classification is not permission to skip evidence", () => {
-  for (const output of ["mobile", "packaging", "store"]) {
+  for (const output of ["mobile", "packaging", "store", "formal"]) {
     for (const selected of [undefined, "", "yes", false]) {
       const results = completed();
       if (selected === undefined) delete results.changes.outputs[output];
@@ -97,7 +101,7 @@ test("missing or malformed path classification is not permission to skip evidenc
       assert.match(observed.stderr, /Missing or invalid/);
     }
   }
-  const results = completed("false", "false", "false");
+  const results = completed("false", "false", "false", "false");
   results.packaging.result = "failure";
   assert.equal(runGate(results).status, 1, "an optional job that ran and failed still fails CI");
   const store = completed("true", "true", "false");
@@ -115,6 +119,7 @@ test("static checks, all test shards and packaging can start without another exe
     "packaging",
     "mobile-web",
     "store-image-git",
+    "formal",
   ]) {
     assert.deepEqual(
       jobs[name].needs,
@@ -138,8 +143,26 @@ test("static checks, all test shards and packaging can start without another exe
   );
   assert.match(jobs.packaging.if, /needs\.changes\.outputs\.packaging != 'false'/);
   assert.match(jobs["mobile-web"].if, /needs\.changes\.outputs\.mobile != 'false'/);
+  assert.match(jobs.formal.if, /needs\.changes\.outputs\.formal != 'false'/);
   assert.match(jobs["store-image-git"].if, /needs\.changes\.outputs\.store != 'false'/);
   assert.equal(jobs.changes.outputs.store, "${{ steps.scope.outputs.store }}");
+});
+
+test("formal guards and quick-checks the models on a pull request, and runs every model's full bounds nightly", () => {
+  const run = commands("formal").join("\n");
+  assert.match(
+    run,
+    /pull_request.*\n.*node tooling\/verify\/formal\.mjs ci "\$BASE_SHA" "\$HEAD_SHA"$/m,
+  );
+  assert.match(run, /schedule.*\n.*node tooling\/verify\/formal\.mjs ci - "\$GITHUB_SHA" --full$/m);
+  assert.match(run, /else\n.*node tooling\/verify\/formal\.mjs ci - "\$GITHUB_SHA"$/m);
+  // The guard diffs the pull request against its base, so it needs the whole history.
+  assert.equal(
+    jobs.formal.steps.find((step) => step.uses?.startsWith("actions/checkout@")).with[
+      "fetch-depth"
+    ],
+    0,
+  );
 });
 
 test("store-image-git runs the store's handoff tests under the runtime stage's own git", () => {
@@ -618,6 +641,7 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
   }
   // The arm64 scope job and the aggregate gate stay where production runs them.
   assert.deepEqual(movable.toSorted(), [
+    "formal",
     "mobile-web",
     "packaging",
     "static",
@@ -1094,6 +1118,7 @@ test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatc
     "packaging",
     "mobile-web",
     "store-image-git",
+    "formal",
   ];
   const on = (event, job, inputs = {}) =>
     ci.find(

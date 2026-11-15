@@ -1,0 +1,15 @@
+# What the standby discard model stands for. .agents/skills/standby-discard says how to keep it true:
+# its Coverage record maps each model action to the code below.
+#
+# sync: the commit whose code the model was last confirmed to describe. 226ba0fbb7 is mend#1628's
+# squash on main; its covered files are byte for byte those of aa029659e3, the commit the skill's
+# full run was taken at. Move it only as the skill's step 1 and full run say.
+sync 226ba0fbb75d400d6a0435adfe7fa88c6f8cebe2
+
+model StandbyDiscard.tla
+model MCStandbyDiscard.tla
+model check.sh
+
+path packages/db/src/repos/hot-workspaces.ts
+path packages/sessions/src/engine.ts
+path packages/sessions/src/capture-channel.ts

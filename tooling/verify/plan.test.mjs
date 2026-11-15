@@ -5,7 +5,14 @@ import { fileURLToPath } from "node:url";
 
 import { full } from "../../scripts/ci-scope.mjs";
 import { loadAllowedSkips } from "./check.mjs";
-import { ciPlan, loadMap, matchObligations, readCiJobs, validateMap } from "./plan.mjs";
+import {
+  ciPlan,
+  formalObligations,
+  loadMap,
+  matchObligations,
+  readCiJobs,
+  validateMap,
+} from "./plan.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const map = loadMap(root);
@@ -69,7 +76,7 @@ test("product source owes a box check and screenshots; its tests and docs do not
 });
 
 test("code a model covers owes that model, and gated suites name their gate", () => {
-  const formal = matchObligations(map, ["packages/sessions/src/engine.ts"]).find(
+  const formal = formalObligations(root, ["packages/sessions/src/engine.ts"]).find(
     (obligation) => obligation.kind === "formal",
   );
   assert.equal(formal?.model, "standby-discard");

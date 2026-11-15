@@ -38,6 +38,7 @@ const fixture = (t) => {
     "tooling/verify/obligations.json",
     "tooling/verify/allowed-skips.json",
     ".github/workflows/ci.yml",
+    "docs/formal/standby-discard/COVERAGE",
   ]) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     copyFileSync(join(repo, path), join(root, path));
@@ -111,13 +112,13 @@ test("plan, status and an unbuilt verb each produce a valid result tied to the c
   const { root, commit, git } = fixture(t);
   commit("packages/sessions/src/engine.ts");
   const sha = git("rev-parse", "HEAD");
-  for (const verb of ["plan", "status", "formal"]) {
+  for (const verb of ["plan", "status", "db"]) {
     const result = await runVerb(root, verb, options());
     assert.deepEqual(validateResult(result), [], verb);
     assert.equal(result.head.sha, sha);
     assert.equal(result.head.dirty, false);
   }
-  assert.equal((await runVerb(root, "formal", options())).status, "not_implemented");
+  assert.equal((await runVerb(root, "db", options())).status, "not_implemented");
   const plan = await runVerb(root, "plan", options());
   assert.equal(plan.status, "passed");
   assert.ok(plan.obligations.every((obligation) => obligation.status === "owed"));

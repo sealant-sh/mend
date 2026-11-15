@@ -6,9 +6,9 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 const script = new URL("./ci-scope.mjs", import.meta.url).pathname;
-const full = "mobile=true\npackaging=true\nstore=true\n";
-const only = ({ mobile = false, packaging = false, store = false } = {}) =>
-  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\n`;
+const full = "mobile=true\npackaging=true\nstore=true\nformal=true\n";
+const only = ({ mobile = false, packaging = false, store = false, formal = false } = {}) =>
+  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\n`;
 const fixture = (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "mend-ci-scope-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -53,9 +53,13 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["apps/api/src/route.ts", only({ packaging: true })],
     ["apps/web/src/view.tsx", only({ packaging: true })],
     ["apps/mobile/src/view.tsx", only({ mobile: true, packaging: true })],
-    ["packages/domain/src/id.ts", full],
-    ["packages/store/src/git.ts", full],
-    ["packages/sessions/src/engine.ts", only({ mobile: true, packaging: true })],
+    ["packages/domain/src/id.ts", only({ mobile: true, packaging: true, store: true })],
+    ["packages/store/src/git.ts", only({ mobile: true, packaging: true, store: true })],
+    // Code a model's COVERAGE names runs that model; so does the model, but not its prose.
+    ["packages/sessions/src/engine.ts", only({ mobile: true, packaging: true, formal: true })],
+    ["docs/formal/standby-discard/StandbyDiscard.tla", only({ formal: true })],
+    ["docs/formal/standby-discard/COVERAGE", only({ formal: true })],
+    ["docs/formal/standby-discard/README.md", only()],
     ["packages/new-shared/src/value.ts", only({ mobile: true, packaging: true })],
     ["Dockerfile", full],
     ["apps/docs/package.json", full],
@@ -89,7 +93,10 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
 test("a package's test-only change skips the extras only when every other path does", (t) => {
   const f = fixture(t);
   for (const [paths, expected] of [
-    [["packages/sessions/test/engine-capture-joining.test.ts", "packages/domain/src/id.ts"], full],
+    [
+      ["packages/sessions/test/engine-capture-joining.test.ts", "packages/domain/src/id.ts"],
+      only({ mobile: true, packaging: true, store: true }),
+    ],
     [
       ["packages/sessions/test/engine-capture-joining.test.ts", "apps/api/src/route.ts"],
       only({ packaging: true }),
@@ -112,7 +119,10 @@ test("retains deleted and renamed origins when a source file moves into docs", (
   f.write("docs/placeholder.md");
   renameSync(join(f.cwd, "packages/domain/source.ts"), join(f.cwd, "docs/source.ts"));
   const renamed = f.commit();
-  assert.equal(f.select(base, renamed).stdout, full);
+  assert.equal(
+    f.select(base, renamed).stdout,
+    only({ mobile: true, packaging: true, store: true }),
+  );
   f.write("apps/mobile/removed.ts");
   const beforeDelete = f.commit();
   rmSync(join(f.cwd, "apps/mobile/removed.ts"));

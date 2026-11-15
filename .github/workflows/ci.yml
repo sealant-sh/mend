@@ -56,6 +56,7 @@ jobs:
       mobile: ${{ steps.scope.outputs.mobile }}
       packaging: ${{ steps.scope.outputs.packaging }}
       store: ${{ steps.scope.outputs.store }}
+      formal: ${{ steps.scope.outputs.formal }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -126,6 +127,7 @@ jobs:
           scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs tooling/verify/plan.test.mjs
           tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
           tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
+          tooling/verify/formal.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
@@ -614,6 +616,40 @@ jobs:
       - name: Store handoff tests under the server image's git
         run: bash scripts/store-image-git.sh
 
+  # Formal models (docs/formal/<area>): a pull request that reaches code a model's COVERAGE names
+  # runs the drift guard (that code moved the model or its sync commit) and the quick bounds; a push
+  # to main and the nightly run check every model, the nightly one at its full bounds. TLC needs
+  # Java, which the hosted runner has; check.sh fetches its pinned tla2tools and checks the sha256.
+  formal:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.formal != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
+      'ubuntu-24.04' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - name: Guard the models' coverage and check them
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            node tooling/verify/formal.mjs ci "$BASE_SHA" "$HEAD_SHA"
+          elif [ "$EVENT_NAME" = schedule ]; then
+            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --full
+          else
+            node tooling/verify/formal.mjs ci - "$GITHUB_SHA"
+          fi
+
   # Retain the required check name. A missing classifier or skipped required job
   # must fail, even when every job that did run passed.
   checks:
@@ -628,6 +664,7 @@ jobs:
         packaging,
         mobile-web,
         store-image-git,
+        formal,
       ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
@@ -648,6 +685,7 @@ jobs:
             ["packaging", "packaging"],
             ["mobile-web", "mobile"],
             ["store-image-git", "store"],
+            ["formal", "formal"],
           ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {

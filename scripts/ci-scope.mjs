@@ -1,9 +1,14 @@
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
-// Conservatively gate only the extra mobile-web, packaging and store-image-git jobs. Turbo,
+import { readCoverages, touches } from "./formal-coverage.mjs";
+
+// Conservatively gate only the extra mobile-web, packaging, store-image-git and formal jobs. Turbo,
 // PostgreSQL and S3 contracts still run for every change. Unknown paths and unavailable history
 // run every extra.
-export const full = { mobile: true, packaging: true, store: true };
+export const full = { mobile: true, packaging: true, store: true, formal: true };
+// The formal lane runs a model when a change reaches what its docs/formal/<area>/COVERAGE names.
+const coverages = readCoverages(fileURLToPath(new URL("../", import.meta.url)));
 const sha = /^[a-f0-9]{40,64}$/i;
 
 const changedPaths = (base, head) =>
@@ -34,9 +39,10 @@ export const testOnly = (path) =>
 
 export const extras = (paths) => {
   if (paths.length === 0) return full;
-  const scope = { mobile: false, packaging: false, store: false };
+  const scope = { mobile: false, packaging: false, store: false, formal: false };
   for (const path of paths) {
     if (path.includes("\n")) return full;
+    if (coverages.some((coverage) => touches(coverage, path))) scope.formal = true;
     // store-image-git runs the store's tests, so their own changes select it.
     if (path.startsWith("packages/store/")) scope.store = true;
     if (testOnly(path)) continue;
@@ -89,7 +95,9 @@ const main = () => {
     reason = "Missing or invalid commit IDs; running every extra";
   }
   console.error(reason);
-  console.log(`mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}`);
+  console.log(
+    `mobile=${scope.mobile}\npackaging=${scope.packaging}\nstore=${scope.store}\nformal=${scope.formal}`,
+  );
 };
 
 if (import.meta.main) main();

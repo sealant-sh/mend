@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -13,8 +14,9 @@ import {
 import { runCheck } from "./check.mjs";
 import { drive, SURFACES } from "./drive.mjs";
 import { evidence } from "./evidence.mjs";
+import { formalSteps } from "./formal.mjs";
 import { health, VANTAGES } from "./health.mjs";
-import { planSteps } from "./plan.mjs";
+import { changedFiles, planSteps } from "./plan.mjs";
 import {
   createResult,
   exitCode,
@@ -41,6 +43,7 @@ const VERBS = {
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
   drive: "Run a recipe against web, tui, desktop, mobile-web, vscode or t3: --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
+  formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
 
 const STACK = ["up", "status", "down"];
@@ -48,8 +51,12 @@ const STACK = ["up", "status", "down"];
 const BOX = ["plan", "prepare", "cli", "identity", "release"];
 
 // Verbs the shared contract names that this repo does not have yet: they say so, never pretend.
+// Verbs the shared contract names for the other Sealant repos: here they say so, never pretend.
 const PLANNED = {
-  formal: "Run the models whose covered paths the diff touches, and report drift",
+  db: "Throwaway Postgres with every gated suite switched on (sealant)",
+  runtime: "Drive a workspace runtime end to end (sealant)",
+  daemon: "A sealantd on a socket, driven by a script (sealantd)",
+  "boat-harness": "Preflight and status of the Boat harness (sealant)",
 };
 
 export const parseArgs = (argv) => {
@@ -66,6 +73,7 @@ export const parseArgs = (argv) => {
     if (arg === "--json") options.json = true;
     else if (arg === "--markdown") options.markdown = true;
     else if (arg === "--all") options.all = true;
+    else if (arg === "--full") options.full = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--recipe") {
       const value = argv[++index];
@@ -141,7 +149,7 @@ const help = () =>
     ),
     "",
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
-    "--concurrency <n> (check: turbo tasks and Vitest workers), --markdown (status),",
+    "--concurrency <n> (check: turbo tasks and Vitest workers), --full (formal), --markdown (status),",
     "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box), --url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
     "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
@@ -158,6 +166,30 @@ const stampOf = (date) =>
 /** Builds a verb's result without saving or printing it. */
 export const runVerb = async (root, verb, options, startedAt = new Date()) => {
   const head = readHead(root, options.base);
+  if (verb === "formal") {
+    const files =
+      options.files ?? (head.mergeBase === null ? [] : changedFiles(root, head.mergeBase));
+    const steps = await formalSteps(root, {
+      files,
+      base: head.mergeBase,
+      head: head.sha,
+      all: options.all,
+      full: options.full === true,
+      logs: join(root, ".verify/logs"),
+      ...(options.env ? { env: options.env } : {}),
+      ...(options.run ? { run: options.run } : {}),
+    });
+    return createResult({
+      verb,
+      head,
+      startedAt,
+      steps,
+      evidence: steps.flatMap((step) => (step.log ? [{ kind: "log", path: step.log }] : [])),
+      next: steps.some((step) => step.status === "blocked_by_prerequisite")
+        ? ["nix develop, or install java and curl (check.sh fetches its pinned tla2tools)"]
+        : [],
+    });
+  }
   if (verb === "drive") {
     const { steps, next, ...rest } = await drive(root, {
       surface: options.subverb,
