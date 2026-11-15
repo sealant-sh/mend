@@ -45,6 +45,18 @@ const RUNS = ["run-a", "run-b"] as const;
 type Run = (typeof RUNS)[number];
 type Answer = "taken" | "not-live" | "refused" | "unavailable";
 
+/**
+ * How many times one path may take each event that is not a step or an answer: the Session's Stop,
+ * a gateway restart, a take-back, a clock jump and a Mend turn opening.
+ */
+interface Bounds {
+  stops: number;
+  restarts: number;
+  takeBacks: number;
+  ticks: number;
+  turns: number;
+}
+
 interface View {
   agentLive: boolean;
   turnOpen: boolean;
@@ -68,14 +80,14 @@ interface World {
   /** Every POST of a message and how it was answered; "unknown" when its answer was lost. */
   posts: Record<Run, Array<Answer | "out" | "unknown">>;
   takenBack: Record<Run, boolean>;
-  budget: { stops: number; restarts: number; takeBacks: number; ticks: number; turns: number };
+  budget: Bounds;
   /** Whether a message sent after a relaunch is held to "never while a Mend turn is open". */
   checkTurnOpen: boolean;
 }
 
 const iso = (seconds: number) => new Date(seconds * 1000).toISOString();
 
-const initial = (checkTurnOpen: boolean): World => {
+const initial = (bounds: Bounds, checkTurnOpen: boolean): World => {
   const queue = emptyQueue();
   for (const run of RUNS)
     queue.entries.push(
@@ -97,7 +109,7 @@ const initial = (checkTurnOpen: boolean): World => {
     calls: [],
     posts: { "run-a": [], "run-b": [] },
     takenBack: { "run-a": false, "run-b": false },
-    budget: { stops: 1, restarts: 1, takeBacks: 1, ticks: 1, turns: 1 },
+    budget: { ...bounds },
     checkTurnOpen,
   };
 };
@@ -187,7 +199,27 @@ const answerLaunch = (world: World, run: Run, ok: boolean) => {
   else fail(world.queue, entry, "launch refused");
 };
 
-const clone = (world: World): World => structuredClone(world);
+/**
+ * A copy every event may change. The queue's entries are copied field by field: their strings,
+ * selections and image lists are never mutated in place, so they are shared.
+ */
+const clone = (world: World): World => ({
+  queue: {
+    ...world.queue,
+    entries: world.queue.entries.map((entry) => ({
+      ...entry,
+      post: entry.post === null ? null : { ...entry.post },
+    })),
+    preparation: world.queue.preparation === null ? null : { ...world.queue.preparation },
+  },
+  view: { ...world.view },
+  now: world.now,
+  calls: [...world.calls],
+  posts: { "run-a": [...world.posts["run-a"]], "run-b": [...world.posts["run-b"]] },
+  takenBack: { ...world.takenBack },
+  budget: { ...world.budget },
+  checkTurnOpen: world.checkTurnOpen,
+});
 
 /** A fresh read of the session from Mend: new evidence, and a newer row. */
 const read = (next: World) => {
@@ -309,15 +341,53 @@ const events = (world: World): Array<[string, (next: World) => void]> => {
   return out;
 };
 
+/** The fields of a world that can differ between two reachable worlds: its identity in the walk. */
+const keyOf = (world: World) =>
+  JSON.stringify([
+    world.queue.held,
+    world.queue.entries.map((entry) => [
+      entry.runId,
+      entry.state,
+      entry.error,
+      entry.historyHeld,
+      entry.post?.input ?? null,
+      entry.post?.uncertain ?? null,
+      entry.launches,
+      entry.launchAnsweredAt,
+      entry.launchDeadline,
+      entry.retryAt,
+      entry.retryEvidence,
+      entry.notLiveAnswers,
+      entry.sendDeadline,
+      entry.lastRefusal,
+      entry.takenBack,
+      entry.stoppedDuringSend,
+    ]),
+    world.view,
+    world.now,
+    world.calls,
+    world.posts,
+    world.takenBack,
+    world.budget,
+  ]);
+
+/** A path through the walk, kept as a link to the one before it. */
+interface Trail {
+  readonly name: string;
+  readonly before: Trail | null;
+}
+const names = (trail: Trail | null): Array<string> =>
+  trail === null ? [] : [...names(trail.before), trail.name];
+
 /** Every world reachable from the start, breadth first, until none is new or a promise breaks. */
-const explore = (checkTurnOpen: boolean) => {
+const explore = (bounds: Bounds, checkTurnOpen: boolean) => {
   const seen = new Set<string>();
-  let frontier: Array<{ world: World; path: ReadonlyArray<string> }> = [
-    { world: initial(checkTurnOpen), path: [] },
+  let frontier: Array<{ world: World; trail: Trail | null }> = [
+    { world: initial(bounds, checkTurnOpen), trail: null },
   ];
   while (frontier.length > 0) {
     const next: typeof frontier = [];
-    for (const { world, path } of frontier)
+    for (const { world, trail } of frontier)
       for (const [name, apply] of events(world)) {
         const after = clone(world);
         try {
@@ -331,29 +401,32 @@ const explore = (checkTurnOpen: boolean) => {
             );
         } catch (error) {
           if (error instanceof Broken)
-            return { states: seen.size, broken: [...path, name, `→ ${error.message}`] };
+            return { states: seen.size, broken: [...names(trail), name, `→ ${error.message}`] };
           throw error;
         }
-        const key = JSON.stringify(after);
+        const key = keyOf(after);
         if (seen.has(key)) continue;
         seen.add(key);
-        next.push({ world: after, path: [...path, name] });
+        next.push({ world: after, trail: { name, before: trail } });
       }
     frontier = next;
   }
   return { states: seen.size, broken: null };
 };
 
+/** One of each bounded event per path: about 400,000 worlds, the whole space within these bounds. */
+const FULL: Bounds = { stops: 1, restarts: 1, takeBacks: 1, ticks: 1, turns: 1 };
+
 const brokenPromise = (broken: ReadonlyArray<string> | null) =>
   broken === null ? null : `a promise broke:\n  ${broken.join("\n  ")}`;
 
 describe("the gateway queue under every interleaving (ADR 0012)", () => {
   it("sends one message at a time, only to a free live agent, and never twice unless Mend said not live", () => {
-    const { states, broken } = explore(false);
+    const { states, broken } = explore(FULL, false);
     expect(brokenPromise(broken)).toBeNull();
     // About 400,000 worlds: far fewer means the walk lost events, not that the queue got simpler.
     expect(states).toBeGreaterThan(100_000);
-  }, 120_000);
+  });
 
   // SLNT-1023: once a relaunched agent is live, the message the gateway launched it for is sent
   // even while a Mend turn is open. When that is decided, this test passes and loses its `fails`.
@@ -363,7 +436,7 @@ describe("the gateway queue under every interleaving (ADR 0012)", () => {
     "waits for an open Mend turn before sending a message it relaunched for",
     { retry: 0 },
     () => {
-      expect(brokenPromise(explore(true).broken)).toBeNull();
+      expect(brokenPromise(explore(FULL, true).broken)).toBeNull();
     },
   );
 });
