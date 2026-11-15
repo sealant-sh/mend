@@ -222,6 +222,10 @@ const main = async () => {
         // VS Code refuses dialogs in a test host, so an install that asks fails.
         "--sync",
         "on",
+        // A sign-in is a secret every window of the instance shares, as a keychain shares it. Under
+        // Xvfb Electron finds no keyring, and VS Code then keeps each window's secrets in its own
+        // memory: the Remote-SSH windows would start signed out.
+        "--password-store=basic",
         "--disable-gpu",
         "--ozone-platform=x11",
       ],
