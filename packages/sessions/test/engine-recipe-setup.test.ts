@@ -213,6 +213,13 @@ describe("[setup] in a recipe start", () => {
             "setup did not finish, so nothing was started · `pnpm install --frozen-lockfile` exited 1" +
               "\n--- output ---\nERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile",
           );
+          expect(error).toMatchObject({
+            setupFailed: {
+              step: "pnpm install --frozen-lockfile",
+              ended: { _tag: "Exited", exitCode: 1 },
+              output: "ERR_PNPM_OUTDATED_LOCKFILE  Cannot install with frozen-lockfile",
+            },
+          });
           expect(execs.map((exec) => exec.step)).toEqual(["pnpm install --frozen-lockfile"]);
           expect(opensOf(spawned, "postgres")).toEqual([]);
           expect(opensOf(spawned, "pnpm dev")).toEqual([]);
@@ -222,6 +229,7 @@ describe("[setup] in a recipe start", () => {
             .runServiceRecipe(session.id, "web", automaticStart)
             .pipe(Effect.flip);
           expect(automatic.message).toContain("an automatic start does not run it again");
+          expect(automatic, "no step ran this time").not.toHaveProperty("setupFailed");
           expect(execs).toHaveLength(1);
 
           fails = false;
@@ -441,6 +449,7 @@ describe("a long [setup]", () => {
             const error = yield* Fiber.join(request);
 
             expect(error.message).toBe("a Stop came before web started");
+            expect(error, "a Stop, though its step exited 143").not.toHaveProperty("setupFailed");
             expect(stops, "the run the step was started under").toEqual(stepRuns);
             expect(world.setupRuns, "the claim is given up, not stamped").toEqual([]);
             expect(opensOf(spawned, "postgres")).toEqual([]);
@@ -1038,6 +1047,13 @@ describe("stopping and reporting a first start's [setup]", () => {
           expect(error.message).toBe(
             "setup did not finish, so nothing was started · `pnpm install --frozen-lockfile` ran past 30 minutes, the longest one setup step may run, so it was stopped",
           );
+          expect(error).toMatchObject({
+            setupFailed: {
+              step: "pnpm install --frozen-lockfile",
+              ended: { _tag: "OverLimit", limitMinutes: 30 },
+              output: "",
+            },
+          });
           expect(stops).toHaveLength(1);
           expect(world.setupRuns).toMatchObject([{ state: "failed", exitCode: null }]);
           expect(opensOf(spawned, "pnpm dev")).toEqual([]);
@@ -1149,6 +1165,9 @@ describe("a [setup] run whose processes could not be confirmed stopped", () => {
 
             expect(error.message).toContain("ran past 30 minutes");
             expect(error.message).toContain("its processes could not be confirmed stopped");
+            expect(error).toMatchObject({
+              setupFailed: { ended: { _tag: "OverLimit", limitMinutes: 30 } },
+            });
             expect(world.setupRuns).toMatchObject([{ state: "running", exitCode: null }]);
           }),
         {

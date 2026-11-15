@@ -89,6 +89,30 @@ describe("RemovalInProgress", () => {
   });
 });
 
+describe("ServiceSetupFailed", () => {
+  it("is declared at 422 beside StoreFailure by the one start that runs [setup]", () => {
+    const tagsAt422 = new Map<string, ReadonlyArray<unknown>>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, errors }) => {
+        if (group.identifier !== "sessions") return;
+        tagsAt422.set(
+          endpoint.identifier,
+          [...(errors.get(422) ?? [])].map((schema) => tagOf(schema.ast)),
+        );
+      },
+    });
+    expect(tagsAt422.get("runServiceRecipe")).toEqual(
+      expect.arrayContaining(["StoreFailure", "ServiceSetupFailed"]),
+    );
+    // An argv start and a restart never run `[setup]`.
+    for (const name of ["runService", "restartService"]) {
+      expect(tagsAt422.get(name), name).toContain("StoreFailure");
+      expect(tagsAt422.get(name), name).not.toContain("ServiceSetupFailed");
+    }
+  });
+});
+
 describe("typed HTTP error contracts", () => {
   it("offers two source-free project creation endpoints alongside unchanged adoption", () => {
     const routes = new Map<string, string>();

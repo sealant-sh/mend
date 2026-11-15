@@ -2,11 +2,12 @@
 # its Coverage record maps each model action to the code below.
 #
 # sync: the commit whose code the model was last confirmed to describe. Move it only as the
-# skill's step 1 and full run say. 163a84a967 is main when mend#1698 (SLNT-507) moved it: since
-# 226ba0fbb7, mend#1628's squash, the covered files changed only in comments (ADR numbers) and, in
-# that pull request, the name of a paste written in a live workspace (storePastedImage), none of
-# them in code an action models. Full TLC run at mend#1698's head: every row as expected.
-sync 163a84a96765a0f21cb53b9a9d4557a6a7c1a3c3
+# skill's step 1 and full run say. 89636f33f7 is main when SLNT-1018 moved it. Since 226ba0fbb7,
+# mend#1628's squash, the covered files changed only in comments (ADR numbers), in the name of a
+# paste written in a live workspace (storePastedImage, mend#1698, SLNT-507) and in a recipe
+# start's setup refusal (ServiceStartError's setup facts, SLNT-1018), none of them in code an
+# action models. Full TLC run at SLNT-1018's head: every row as expected.
+sync 89636f33f793831f97ae7c6e13fe9980f5a4c65d
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

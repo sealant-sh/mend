@@ -247,6 +247,26 @@ export class ServiceStartSetup extends Schema.Class<ServiceStartSetup>("ServiceS
 }) {}
 
 /**
+ * How a `[setup]` step that did not finish ended: it exited non-zero, or it ran past the longest
+ * one step may run and was stopped.
+ */
+export const SetupStepEnd = Schema.Union([
+  Schema.TaggedStruct("Exited", { exitCode: Schema.Int }),
+  Schema.TaggedStruct("OverLimit", { limitMinutes: Schema.Int }),
+]);
+export type SetupStepEnd = typeof SetupStepEnd.Type;
+
+/**
+ * A `[setup]` step that did not finish, so nothing was started: the step as the file declares it,
+ * how it ended, and the end of what it wrote (empty when it wrote nothing, or ran past the limit).
+ */
+export class SetupStepFailure extends Schema.Class<SetupStepFailure>("SetupStepFailure")({
+  step: Schema.String,
+  ended: SetupStepEnd,
+  output: Schema.String,
+}) {}
+
+/**
  * A recipe start Mend runs to its end whatever its request does (ADR 0017, delivery 9): the
  * file's `[setup]` first, when it declares one, then each recipe of its plan, dependencies first
  * and the Service asked for last. `running` until that Service's start has finished (`started`),

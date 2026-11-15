@@ -1,5 +1,7 @@
-import { errorStatusByTag, MendApi } from "@mend/api-contracts";
+import { errorStatusByTag, MendApi, ServiceSetupFailed } from "@mend/api-contracts";
+import { SetupStepFailure } from "@mend/domain/workbench";
 import { TRPCError } from "@trpc/server";
+import { Schema } from "effect";
 import { FindMyWay, HttpClientError, type HttpClientRequest, type HttpRouter } from "effect/http";
 import { HttpApi } from "effect/http-api";
 
@@ -49,22 +51,27 @@ const operationOf = (request: HttpClientRequest.HttpClientRequest, apiUrl: strin
 const hasTag = (error: unknown): error is Refusal =>
   typeof error === "object" && error !== null && "_tag" in error && typeof error._tag === "string";
 
+/** A Service's `[setup]` step that did not finish (`ServiceSetupFailed`), as JSON carries it. */
+export type SetupFailureData = typeof SetupStepFailure.Encoded;
+
 /**
  * The tag of a refusal the API declared, carried as the tRPC error's cause so the error formatter
  * can put it in `data.tag` (routers/trpc.ts) for the pages that branch on it. Never in a message.
+ * The facts of the two refusals a page lays out from data ride beside it, so the page never reads
+ * them back out of the words.
  */
 export class ApiRefusal extends Error {
   readonly tag: string;
-  /**
-   * A refused removal's blockers (`RemovalRefused`), so the page lays out what stands in the way
-   * from the data and never reads it back out of the words. Null for every other refusal.
-   */
+  /** A refused removal's blockers (`RemovalRefused`). Null for every other refusal. */
   readonly removal: unknown;
-  constructor(tag: string, removal: unknown = null) {
+  /** The setup step that did not finish (`ServiceSetupFailed`). Null for every other refusal. */
+  readonly setup: SetupFailureData | null;
+  constructor(tag: string, removal: unknown = null, setup: SetupFailureData | null = null) {
     super(tag);
     this.name = "ApiRefusal";
     this.tag = tag;
     this.removal = removal;
+    this.setup = setup;
   }
 }
 
@@ -76,6 +83,11 @@ const removalOf = (refusal: Refusal): unknown =>
         forceWouldLift: refusal["forceWouldLift"],
       }
     : null;
+
+const encodeSetup = Schema.encodeSync(SetupStepFailure);
+
+const setupOf = (refusal: Refusal): SetupFailureData | null =>
+  refusal instanceof ServiceSetupFailed ? encodeSetup(refusal.setup) : null;
 
 /**
  * One translation from an API-call failure to the tRPC wire. Contract errors carry their status
@@ -96,7 +108,7 @@ export const toTRPCError = (error: unknown, apiUrl = ""): TRPCError => {
       return new TRPCError({
         code: codeForStatus(status),
         message: refusalWords(error),
-        cause: new ApiRefusal(error._tag, removalOf(error)),
+        cause: new ApiRefusal(error._tag, removalOf(error), setupOf(error)),
       });
     }
   }

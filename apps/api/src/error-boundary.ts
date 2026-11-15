@@ -63,6 +63,8 @@ const DETAIL_FIELDS: ReadonlySet<string> = new Set([
   "stderr",
   "stdout",
   "output",
+  // A failed setup's step (`ServiceSetupFailed`): the same text its message carries.
+  "step",
   "detail",
   "reason",
   "recordError",
