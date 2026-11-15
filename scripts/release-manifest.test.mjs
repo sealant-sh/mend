@@ -1373,6 +1373,11 @@ const SKIPPED_TOGETHER = new Map([
   ["preview.yml sealantd-image", "skipped exactly when there is no sealantd ref to preview"],
   ["preview.yml core", "plan skips only on a fork"],
   ["preview.yml core-images", "skipped exactly when there is no sealant ref to preview"],
+  // Version skips only on a fork, where it pushed nothing to approve.
+  [
+    "version.yml approve-checks",
+    "version skips only on a fork; nothing it did not push to approve",
+  ],
 ]);
 
 test("no workflow job is skipped behind a job its own path expected to skip, unless reviewed", () => {
