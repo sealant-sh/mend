@@ -856,10 +856,10 @@ const personLockFunctions = (lock: string): string =>
   [
     `p_lock=${shellQuote(lock)}`,
     // `p_id` is `<pid> <start time>` of process `$1` (`self`: this shell), from its stat line.
-    `mend_id() { p_id=; read -r lk_st < "/proc/$1/stat" 2>/dev/null || return 1; ` +
+    `mend_id() { p_id=; read -r lk_st 2>/dev/null < "/proc/$1/stat" || return 1; ` +
       `set -- \${lk_st##*') '}; [ -n "\${20:-}" ] || return 1; p_id="\${lk_st%% *} \${20}"; return 0; }`,
     // True when the lock's holder is gone; never for a lock that is not there.
-    `mend_stale() { [ -d "$1" ] || return 1; lk_h=; read -r lk_h < "$1/holder" 2>/dev/null || lk_h=; ` +
+    `mend_stale() { [ -d "$1" ] || return 1; lk_h=; read -r lk_h 2>/dev/null < "$1/holder" || lk_h=; ` +
       `if [ -n "$lk_h" ]; then if mend_id "\${lk_h%% *}" && [ "$p_id" = "$lk_h" ]; then return 1; fi; return 0; fi; ` +
       `lk_a=$(stat -c %Y "$1" 2>/dev/null) || return 1; ` +
       `if [ $(( $(date +%s) - lk_a )) -ge ${PERSON_LOCK_UNKNOWN_HOLDER_SECONDS} ]; then return 0; fi; return 1; }`,
@@ -872,7 +872,7 @@ const personLockFunctions = (lock: string): string =>
       `if [ "$(date +%s)" -ge "$lk_end" ]; then return 1; fi; ` +
       `sleep 0.05 2>/dev/null || sleep 1; done; ` +
       `mend_id self || p_id=; lk_me=$p_id; printf '%s\\n' "$lk_me" > "$1/holder" || :; return 0; }`,
-    `mend_unlock() { [ "$lk_me" != - ] || return 0; lk_h=; read -r lk_h < "$1/holder" 2>/dev/null || lk_h=; ` +
+    `mend_unlock() { [ "$lk_me" != - ] || return 0; lk_h=; read -r lk_h 2>/dev/null < "$1/holder" || lk_h=; ` +
       `if [ "$lk_h" = "$lk_me" ]; then rm -rf "$1"; fi; lk_me=-; return 0; }`,
   ].join("\n");
 
