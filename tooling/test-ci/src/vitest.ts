@@ -4,6 +4,8 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 
+import { CI_FILE_BUDGET_MS } from "./file-budget.ts";
+
 interface RuntimeCase {
   readonly id: string;
   readonly fullName: string;
@@ -73,7 +75,7 @@ export interface VitestCiPlugin {
 /** File execution is checked after completion; individual test deadlines are never changed. */
 export interface VitestCiGuardOptions {
   readonly packageName: string;
-  /** Fixtures may reduce this; ordinary package configurations use the 60-second default. */
+  /** Fixtures may reduce this; ordinary package configurations use CI_FILE_BUDGET_MS. */
   readonly fileBudgetMs?: number;
   /**
    * Gates the retry, retry records, timing evidence and the file budget; defaults to the
@@ -467,7 +469,7 @@ const quietGithubJobSummary = (reporters: RuntimeContext["config"]["reporters"])
 
 /** Append after CLI reporter resolution, retaining default reporters and explicit JSON output. */
 export const vitestCiGuard = (options: VitestCiGuardOptions): VitestCiPlugin => {
-  const budget = options.fileBudgetMs ?? 60_000;
+  const budget = options.fileBudgetMs ?? CI_FILE_BUDGET_MS;
   if (!Number.isFinite(budget) || budget <= 0)
     throw new RangeError("The CI file execution budget must be a positive finite number.");
   const ci = process.env["CI"];

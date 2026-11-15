@@ -54,12 +54,15 @@ export const judgeObligation = (root, obligation, head, implemented) => {
   }
   // A check that let tests skip says how many and where each group runs, on its receipt line.
   const skipSummary = result.steps?.find((step) => step.skipSummary)?.skipSummary;
+  // A file at risk of CI's per-file limit is a warning on the same line; it never fails it.
+  const riskSummary = result.steps?.find((step) => step.riskSummary)?.riskSummary;
+  const note = [skipSummary, riskSummary && `Warning: ${riskSummary}`].filter(Boolean).join(". ");
   return {
     ...base,
     status: result.status,
     detail: `${obligation.verb}: ${result.status}`,
     log: path,
-    ...(skipSummary ? { note: skipSummary } : {}),
+    ...(note ? { note } : {}),
   };
 };
 

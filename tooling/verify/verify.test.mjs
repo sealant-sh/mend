@@ -6,9 +6,11 @@ import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { CI_FILE_BUDGET_MS } from "../test-ci/src/file-budget.ts";
 import { exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
 import { ciGateProblems, loadAllowedSkips, readSkips, validateAllowedSkips } from "./skips.mjs";
 import { toMarkdown } from "./status.mjs";
+import { CI_TO_LOCAL_RATIO } from "./timing.mjs";
 import { main, runVerb } from "./verify.mjs";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -475,4 +477,59 @@ test("an allowed skip whose CI step stopped setting its gate is named", (t) => {
     1,
     "a local-only skip says where it runs",
   );
+});
+
+// SLNT-1032: a file whose time here puts it at risk of CI's per-file limit is named, not failed.
+const runnerTiming =
+  (root, files) =>
+  async (_root, command, args, { env }) => {
+    if (command === "pnpm" && args.includes("test")) {
+      mkdirSync(env.CI_TEST_REPORT_DIR, { recursive: true });
+      writeFileSync(
+        join(env.CI_TEST_REPORT_DIR, "vitest-apps-t3-gateway.json"),
+        JSON.stringify({
+          testResults: files.map(([file, ms]) => ({
+            name: join(root, file),
+            startTime: 1_000_000,
+            endTime: 1_000_000 + ms,
+            assertionResults: [{ fullName: "explores", status: "passed" }],
+          })),
+        }),
+      );
+    }
+    return 0;
+  };
+
+test("a file on course to break CI's per-file limit is a named warning, and a fast run has none", async (t) => {
+  const { root, commit } = fixture(t);
+  commit("apps/t3-gateway/src/queue.ts");
+  const threshold = CI_FILE_BUDGET_MS / CI_TO_LOCAL_RATIO;
+  const slow = "apps/t3-gateway/test/queue-explore.test.ts";
+  const run = (files) =>
+    runVerb(root, "check", options({ env: noPostgres, runner: runnerTiming(root, files) }));
+
+  const fast = await run([[slow, threshold - 1]]);
+  assert.equal(fast.status, "passed");
+  assert.deepEqual(fast.warnings, []);
+  saveResult(root, fast);
+  assert.doesNotMatch(toMarkdown(await runVerb(root, "status", options())), /Warning/);
+
+  const risky = await run([
+    ["apps/t3-gateway/test/quick.test.ts", 2000],
+    [slow, threshold],
+  ]);
+  assert.deepEqual(validateResult(risky), []);
+  assert.equal(risky.status, "passed", "a warning never fails a run that passed");
+  assert.equal(risky.warnings.length, 1);
+  assert.match(
+    risky.warnings[0],
+    new RegExp(`^${slow} took ${(threshold / 1000).toFixed(1)} s here`),
+  );
+  saveResult(root, risky);
+  const line = toMarkdown(await runVerb(root, "status", options()))
+    .split("\n")
+    .find((text) => text.includes("`pre-pr-checks`"));
+  assert.match(line, /^- \[x\] `pre-pr-checks`: passed/);
+  assert.match(line, /Warning: 1 test file at risk of CI's 60 s per-file limit: apps\/t3-gateway/);
+  assert.match(line, /stress-ng/);
 });

@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 
+import { CI_FILE_BUDGET_MS } from "../tooling/test-ci/src/file-budget.ts";
+
 const ciEnabled = () => {
   const ci = process.env["CI"];
   return ci !== undefined && ci !== "" && ci !== "false" && ci !== "0";
@@ -21,7 +23,7 @@ const failProcess = () => {
  * https://nodejs.org/api/test.html#event-testsummary
  */
 export const createCiNodeReporter = ({
-  fileBudgetMs = 60_000,
+  fileBudgetMs = CI_FILE_BUDGET_MS,
   enforceFileBudget = ciEnabled(),
   packageName = "<root>",
 } = {}) => {
