@@ -165,3 +165,31 @@ test("the runner reports a cold-cache HTTP failure as a download outage", async 
     },
   );
 });
+
+test("the runner reports a refused image pull as an infrastructure failure", async (t) => {
+  const scratch = await mkdtemp(path.join(tmpdir(), "mend-s3-pull-outage-"));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const docker = path.join(scratch, "docker");
+  await writeFile(
+    docker,
+    '#!/bin/sh\nif [ "$1" = pull ]; then echo "toomanyrequests: You have reached your pull rate limit." >&2; exit 1; fi\nexit 0\n',
+  );
+  await chmod(docker, 0o755);
+  await assert.rejects(
+    execute(process.execPath, [fileURLToPath(new URL("test-s3-contract.mjs", import.meta.url))], {
+      env: {
+        ...process.env,
+        HOME: scratch,
+        PATH: `${scratch}${path.delimiter}${process.env.PATH}`,
+      },
+      timeout: 10_000,
+    }),
+    (error) => {
+      assert.equal(error.code, 1);
+      assert.match(error.stderr, /S3 fixture image pull outage: mirror\.gcr\.io\/dxflrs\/garage:/);
+      assert.match(error.stderr, /infrastructure failure; S3 contract tests have not run/);
+      assert.match(error.stderr, /toomanyrequests/);
+      return true;
+    },
+  );
+});
