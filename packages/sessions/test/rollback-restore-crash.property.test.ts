@@ -26,6 +26,13 @@ import { rollbackFilesExec } from "../src/rollback-files.ts";
  *
  * Today the rule breaks in the ways `KNOWN` names (SLNT-1025, SLNT-1026). A crash outcome passes
  * only when it keeps the rule or matches one of those exactly; any other outcome fails.
+ *
+ * Two bounds, as the formal models have (SLNT-1029). Every run generates the same four trees and
+ * restores each one whole. The quick bound, which every pull request runs, crashes the first of
+ * them (a staged index) at each of its writes. The full sweep crashes all four at each of theirs;
+ * `MEND_TEST_ROLLBACK_CRASH_SWEEP=full` selects it, and scripts/docker-suites.mjs runs it alone on
+ * its runner. About 300 crashes are some 11,000 processes, which on a runner shared with the API
+ * suites took longer than a file may.
  */
 
 const exec = promisify(execFile);
@@ -33,6 +40,9 @@ const exec = promisify(execFile);
 const STUCK = "The previous execution lock contains unknown evidence";
 const SEED = 1017;
 const RUNS = 4;
+const FULL = process.env["MEND_TEST_ROLLBACK_CRASH_SWEEP"] === "full";
+/** How many of the RUNS cases the bound crashes at every write. */
+const SWEPT = FULL ? RUNS : 1;
 const PARALLEL = 4;
 /**
  * Where the cases live when the host has it. The helper fsyncs every write, and a SIGKILL never
@@ -333,7 +343,8 @@ const classify = async (input: {
 };
 
 describe("Undo's file restore under a crash at every step", () => {
-  it("leaves each path as before or as restored, and a second Undo finishes it", async () => {
+  const bound = FULL ? "full sweep" : "quick bound";
+  it(`leaves each path as before or as restored, and a second Undo finishes it (${bound})`, async () => {
     const scratch = await fs.access(TMPFS, fs.constants.W_OK).then(
       () => TMPFS,
       () => os.tmpdir(),
@@ -367,6 +378,10 @@ describe("Undo's file restore under a crash at every step", () => {
         const newIndex = await indexBytes(counted);
         const writes = Number(await fs.readFile(countFile, "utf8"));
         await fs.rm(counted, { recursive: true });
+        if (cases > SWEPT) {
+          await fs.rm(pristine, { recursive: true });
+          return;
+        }
 
         const crashAt = async (at: number) => {
           const root = `${pristine}-crash-${at}`;
@@ -414,8 +429,11 @@ describe("Undo's file restore under a crash at every step", () => {
       }),
       { seed: SEED, numRuns: RUNS, endOnFailure: true },
     );
-    expect(crashes).toBeGreaterThan(RUNS * 10);
-    for (const [kind, count] of Object.entries(seen))
-      expect(count, `${kind} no longer happens: remove it from KNOWN`).toBeGreaterThan(0);
+    expect(cases).toBe(RUNS);
+    expect(crashes).toBeGreaterThan(SWEPT * 10);
+    // Only the full sweep reaches every known outcome; the quick bound's case reaches two.
+    if (FULL)
+      for (const [kind, count] of Object.entries(seen))
+        expect(count, `${kind} no longer happens: remove it from KNOWN`).toBeGreaterThan(0);
   }, 600_000);
 });
