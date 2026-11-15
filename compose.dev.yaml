@@ -1,5 +1,6 @@
 # Dev-only Postgres, on 5434 so it fights neither a local install (5432)
-# nor the sealant dev Postgres (5433) on the same machine.
+# nor the sealant dev Postgres (5433) on the same machine. Tests use their
+# own Postgres on 5435 (`postgres-test`), which keeps nothing.
 # The product compose (mend + postgres + Sealant env) is compose.yaml; the
 # distinct project name keeps the two stacks from recreating each other.
 #
@@ -27,6 +28,33 @@ services:
     volumes:
       - mend-dev-pgdata:/var/lib/postgresql/data
     # `pnpm dev` runs `up -d --wait`; the healthcheck is what --wait gates on.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mend -d mend"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  # The tests' Postgres. Every test file makes and drops its own database, and
+  # Postgres waits on a checkpoint for each DROP DATABASE that flushes every
+  # file any other test dirtied: with fsync on, cleanup hooks ran past their
+  # 10 s under parallel files (SLNT-764). Without fsync and a volume, a crash
+  # loses only throwaway databases; the dev data above keeps its fsync.
+  postgres-test:
+    image: postgres:17-alpine
+    command:
+      - postgres
+      - -c
+      - fsync=off
+      - -c
+      - synchronous_commit=off
+      - -c
+      - full_page_writes=off
+    environment:
+      POSTGRES_USER: mend
+      POSTGRES_PASSWORD: mend
+      POSTGRES_DB: mend
+    ports:
+      - "5435:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mend -d mend"]
       interval: 2s
