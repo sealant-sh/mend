@@ -303,6 +303,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
         .flatMap((step) => (step.log ? [{ kind: "log", path: step.log }] : []))
         .concat(reportDir ? [{ kind: "test-reports", path: reportDir }] : []),
       next: [...new Set(next)],
+      warnings: steps.flatMap((step) => (step.atRisk ?? []).map((risk) => risk.warning)),
     });
   }
   if (verb === "status") {

@@ -45,8 +45,10 @@ check. A test that skips makes it `skipped` unless `tooling/verify/allowed-skips
 skip and the plan does not owe its gate. Each entry says where that test does run (a CI job and
 step, which a test holds to `ci.yml`, or no CI job), and the receipt's `pre-pr-checks` line counts
 the skips by where they run. A gate this machine can set safely, such as Doppler's when `doppler` is
-on PATH, it sets itself. With no Postgres it is blocked and names the compose command. **Done when**
-it passes on the commit you push.
+on PATH, it sets itself. A test file that took a quarter of CI's per-file limit here is a named
+warning (`warnings` in the result, and on the receipt line), never a failure: measure it under
+`stress-ng`, split it, or move a long exploration to its own job. With no Postgres it is blocked and
+names the compose command. **Done when** it passes on the commit you push.
 
 ## 3. Models
 

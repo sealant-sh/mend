@@ -13,6 +13,7 @@ import {
   readSkips,
   summarizeSkips,
 } from "./skips.mjs";
+import { atRisk, readFileTimes, summarizeRisk } from "./timing.mjs";
 
 // The pre-PR gate: exactly what AGENTS.md lists before a PR (forced typecheck and lint, the tests
 // of the packages the change affects, formatting), each a step. Tests run with
@@ -191,6 +192,8 @@ export const runCheck = async (
           plan.ci,
         );
         const unallowed = skipped.filter((skip) => !skip.allowed);
+        const risky = atRisk(readFileTimes(root, reportDir));
+        for (const risk of risky) process.stderr.write(`verify check: warning: ${risk.warning}\n`);
         const failed = code !== 0 || nodeCode !== 0;
         if (!failed && unallowed.length > 0) {
           for (const gate of new Set(unallowed.flatMap((skip) => (skip.gate ? [skip.gate] : []))))
@@ -211,6 +214,8 @@ export const runCheck = async (
             .join("; "),
           skipped: skipped.map(({ file: _file, ...skip }) => skip),
           ...(skipped.length > 0 ? { skipSummary: summarizeSkips(skipped) } : {}),
+          // A warning, never a failure: the file passed here and may still pass on CI.
+          ...(risky.length > 0 ? { atRisk: risky, riskSummary: summarizeRisk(risky) } : {}),
         };
       },
     ),
