@@ -1105,22 +1105,35 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.waitForTimeout(3000);
   const seekFrom = assets.length;
   note("window · big.mp4 · seeks · begins");
-  for (const at of [5, 9.2, 2])
-    await video.evaluate(
-      (element, seconds) =>
-        new Promise((resolve) => {
-          element.addEventListener("seeked", resolve, { once: true });
-          element.currentTime = seconds;
-        }),
-      at,
-    );
-  await page.waitForTimeout(2000);
-  note("window · big.mp4 · seeks · ends");
-  const seeks = assets.slice(seekFrom).filter((entry) => entry.path.endsWith("/big.mp4"));
-  ok(
-    seeks.length > 0 && seeks.every((entry) => entry.status === 206 && entry.range !== null),
-    `big.mp4 · the seeks' requests each answered 206: ${JSON.stringify(seeks)}`,
+  // big.mp4's keyframe at 5.12 s lies about 160 MB in (writeBig), far past what the opening
+  // stream holds: a seek just after it must be fetched by range, and play on from there.
+  const FAR = 100 * 2 ** 20;
+  await video.evaluate(
+    (element) =>
+      new Promise((resolve) => {
+        element.muted = true;
+        element.addEventListener("seeked", resolve, { once: true });
+        element.currentTime = 5.2;
+      }),
   );
+  await video.evaluate((element) => element.play().catch(() => undefined));
+  const played = await until("big.mp4 plays on from 5.2 s", () =>
+    video.evaluate((element) =>
+      !element.paused && element.currentTime >= 6
+        ? { currentTime: element.currentTime, readyState: element.readyState }
+        : null,
+    ),
+  );
+  note("window · big.mp4 · seeks · ends");
+  await video.evaluate((element) => element.pause());
+  const seeks = assets.slice(seekFrom).filter((entry) => entry.path.endsWith("/big.mp4"));
+  const rangeStart = (entry) => Number(/^bytes=(\d+)-/.exec(entry.range ?? "")?.[1] ?? -1);
+  ok(
+    seeks.some((entry) => entry.status === 206 && rangeStart(entry) >= FAR) &&
+      seeks.every((entry) => entry.status === 206 && entry.range !== null),
+    `big.mp4 · a seek past ${FAR} bytes fetched by range, every request answered 206: ${JSON.stringify(seeks)}`,
+  );
+  ok(true, `big.mp4 · played on from the seek · ${JSON.stringify(played)}`);
   await shot("19b-preview-big-video");
   const mintsFrom = rpc.mints.length;
   note("window · big.mp4 · reopened after a reload · begins");
@@ -1392,62 +1405,93 @@ const FREE_BOX =
   'const free = (n) => { const h = Buffer.alloc(16); h.writeUInt32BE(1, 0); h.write("free", 4); h.writeBigUInt64BE(BigInt(n + 16), 8); return h; };';
 
 /**
- * big.mp4 in the worktree: the clip's chunks spread through a 300 MiB `mdat`, random bytes between
- * them, each chunk offset moved to match. It plays as the clip does, and a seek lands far into the
- * file, past what the browser has read. Runs in the workspace's Node, from its source text.
+ * big.mp4 in the worktree: each of the clip's samples in a chunk of its own, spread through a
+ * 300 MiB `mdat` with random bytes between them, and the sample tables rewritten to match. It
+ * plays as the clip does, and a sample late in the clip lies hundreds of MiB in, past anything one
+ * opening stream holds. (ffmpeg writes the clip as a single chunk, so spacing chunks alone would
+ * leave every sample in the first megabyte.) Runs in the workspace's Node, from its source text.
  */
 function writeBig(fs, crypto, bytes) {
   const clip = fs.readFileSync("preview/clip.mp4");
   const top = {};
   for (let at = 0; at < clip.length; at += clip.readUInt32BE(at))
     top[clip.toString("latin1", at + 4, at + 8)] = { at, size: clip.readUInt32BE(at) };
-  const moov = Buffer.from(clip.subarray(top.moov.at, top.moov.at + top.moov.size));
-  const table = {};
-  const walk = (from, to) => {
-    for (let at = from; at < to; at += moov.readUInt32BE(at)) {
-      const type = moov.toString("latin1", at + 4, at + 8);
-      if (["moov", "trak", "mdia", "minf", "stbl"].includes(type))
-        walk(at + 8, at + moov.readUInt32BE(at));
-      if (["stsz", "stsc", "stco"].includes(type)) table[type] = at;
+  const parse = (buffer, from, to) => {
+    const boxes = [];
+    for (let at = from; at < to; at += buffer.readUInt32BE(at)) {
+      const size = buffer.readUInt32BE(at);
+      const type = buffer.toString("latin1", at + 4, at + 8);
+      boxes.push(
+        ["moov", "trak", "mdia", "minf", "stbl"].includes(type)
+          ? { type, children: parse(buffer, at + 8, at + size) }
+          : { type, body: Buffer.from(buffer.subarray(at + 8, at + size)) },
+      );
     }
+    return boxes;
   };
-  walk(8, moov.length);
+  const serialize = (box) => {
+    const body = box.children ? Buffer.concat(box.children.map(serialize)) : box.body;
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(body.length + 8, 0);
+    head.write(box.type, 4, "latin1");
+    return Buffer.concat([head, body]);
+  };
+  const find = (boxes, type) => {
+    for (const box of boxes) {
+      if (box.type === type) return box;
+      const inner = box.children ? find(box.children, type) : undefined;
+      if (inner) return inner;
+    }
+    return undefined;
+  };
+  const moov = parse(clip, top.moov.at, top.moov.at + top.moov.size)[0];
+  const stsz = find([moov], "stsz").body;
+  const stsc = find([moov], "stsc");
+  const stco = find([moov], "stco");
+  const count = stsz.readUInt32BE(8);
+  const uniform = stsz.readUInt32BE(4);
   const sizes = [];
-  const uniform = moov.readUInt32BE(table.stsz + 12);
-  for (let i = 0; i < moov.readUInt32BE(table.stsz + 16); i += 1)
-    sizes.push(uniform || moov.readUInt32BE(table.stsz + 20 + 4 * i));
-  const chunks = moov.readUInt32BE(table.stco + 12);
+  for (let i = 0; i < count; i += 1) sizes.push(uniform || stsz.readUInt32BE(12 + 4 * i));
+  // Where the clip keeps each sample now: walk its chunks with their samples-per-chunk runs.
   const runs = [];
-  for (let i = 0; i < moov.readUInt32BE(table.stsc + 12); i += 1)
-    runs.push([
-      moov.readUInt32BE(table.stsc + 16 + 12 * i),
-      moov.readUInt32BE(table.stsc + 20 + 12 * i),
-    ]);
-  const pad = Math.floor(bytes / chunks);
-  const out = fs.openSync("preview/big.mp4", "w");
-  let position = top.ftyp.size + moov.length + 16;
-  let sample = 0;
-  const body = [];
-  for (let chunk = 0; chunk < chunks; chunk += 1) {
+  for (let i = 0; i < stsc.body.readUInt32BE(4); i += 1)
+    runs.push([stsc.body.readUInt32BE(8 + 12 * i), stsc.body.readUInt32BE(12 + 12 * i)]);
+  const description = stsc.body.readUInt32BE(16);
+  const from = [];
+  for (let chunk = 0; chunk < stco.body.readUInt32BE(4); chunk += 1) {
+    let at = stco.body.readUInt32BE(8 + 4 * chunk);
     const perChunk = runs.filter(([first]) => first <= chunk + 1).at(-1)[1];
-    const length = sizes.slice(sample, sample + perChunk).reduce((sum, size) => sum + size, 0);
-    sample += perChunk;
-    const from = moov.readUInt32BE(table.stco + 16 + 4 * chunk);
-    moov.writeUInt32BE(position, table.stco + 16 + 4 * chunk);
-    body.push([from, length]);
-    position += length + pad;
+    for (let n = 0; n < perChunk; n += 1) {
+      from.push(at);
+      at += sizes[from.length - 1];
+    }
+  }
+  // One sample per chunk, one description for all.
+  stsc.body = Buffer.alloc(20);
+  stsc.body.writeUInt32BE(1, 4);
+  stsc.body.writeUInt32BE(1, 8);
+  stsc.body.writeUInt32BE(1, 12);
+  stsc.body.writeUInt32BE(description, 16);
+  stco.body = Buffer.alloc(8 + 4 * count);
+  stco.body.writeUInt32BE(count, 4);
+  const pad = Math.floor(bytes / count);
+  const header = top.ftyp.size + serialize(moov).length + 16;
+  let position = header;
+  for (let i = 0; i < count; i += 1) {
+    stco.body.writeUInt32BE(position, 8 + 4 * i);
+    position += sizes[i] + pad;
   }
   const mdat = Buffer.alloc(16);
   mdat.writeUInt32BE(1, 0);
   mdat.write("mdat", 4);
-  mdat.writeBigUInt64BE(BigInt(position - top.ftyp.size - moov.length), 8);
+  mdat.writeBigUInt64BE(BigInt(position - header + 16), 8);
+  const out = fs.openSync("preview/big.mp4", "w");
   fs.writeSync(out, clip.subarray(0, top.ftyp.size));
-  fs.writeSync(out, moov);
+  fs.writeSync(out, serialize(moov));
   fs.writeSync(out, mdat);
-  for (const [from, length] of body) {
-    fs.writeSync(out, clip.subarray(from, from + length));
-    for (let left = pad; left > 0; left -= 2 ** 20)
-      fs.writeSync(out, crypto.randomBytes(Math.min(left, 2 ** 20)));
+  for (let i = 0; i < count; i += 1) {
+    fs.writeSync(out, clip.subarray(from[i], from[i] + sizes[i]));
+    fs.writeSync(out, crypto.randomBytes(pad));
   }
   fs.closeSync(out);
 }
