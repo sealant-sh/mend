@@ -5616,13 +5616,21 @@ export const makePersonHub = (input: {
                 );
                 if (failed !== null)
                   return yield* new WorkspacePreparationFailed({ reason: failed });
+                // A read Mend did not answer is asked again on the next tick, until the launch
+                // deadline below; only a refused device or a missing session ends the wait. It
+                // only re-reads, so it never starts a second launch or opening turn.
                 const detail = yield* mend
                   .sessionDetail(preparation.session.deviceToken, preparation.sessionId)
                   .pipe(
+                    Effect.catchTag("MendUnavailable", () => Effect.succeed(null)),
                     Effect.mapError(
                       (error) => new WorkspacePreparationFailed({ reason: error.message }),
                     ),
                   );
+                if (detail === null) {
+                  yield* Effect.sleep("1 second");
+                  continue;
+                }
                 const agent = detail.currentAgent;
                 if (
                   detail.session.status === "running" &&
