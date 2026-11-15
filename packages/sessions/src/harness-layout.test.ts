@@ -133,10 +133,16 @@ const fakeRoot = () => {
     primaryGroup: (name: string, gid: number) =>
       fs.writeFileSync(path.join(users, `${name}.gid`), `${gid}\n`),
     log: () => (fs.existsSync(log) ? fs.readFileSync(log, "utf8") : ""),
+    // A prepare writes git's system config (GitHub's credential helper): here it writes the fake
+    // root's own file, never the machine's /etc/gitconfig, which a writable /etc would let it.
     run: (script: string) =>
       spawnSync("sh", ["-c", script], {
         encoding: "utf8",
-        env: { ...process.env, PATH: `${bin}:${process.env["PATH"] ?? ""}` },
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+          GIT_CONFIG_SYSTEM: path.join(dir, "gitconfig-system"),
+        },
       }),
   };
 };
