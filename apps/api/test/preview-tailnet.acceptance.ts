@@ -44,18 +44,37 @@ interface Seen {
 /** Mend's own API on the tailnet, as far as its origin policy goes: one probe, and sign-in. */
 const startMend = async () => {
   const seen: Array<Seen> = [];
+  const watchers = new Set<(entry: Seen) => void>();
   const server = createServer();
   server.on("request", (request, response) => {
-    response.on("finish", () =>
-      seen.push({
+    response.on("finish", () => {
+      const entry: Seen = {
         path: request.url ?? "",
         method: request.method ?? "",
         status: response.statusCode,
         cookie: (request.headers.cookie ?? "").includes(`${MEND_COOKIE}=`),
         site: request.headers["sec-fetch-site"]?.toString(),
-      }),
-    );
+      };
+      seen.push(entry);
+      for (const watch of watchers) watch(entry);
+    });
   });
+  /**
+   * The first request matching `match` that Mend has finished answering, once it has. A browser
+   * makes requests of its own (Firefox fetches /favicon.ico after a page), so the last one seen
+   * need not be the one a test caused.
+   */
+  const saw = (match: (entry: Seen) => boolean) =>
+    new Promise<Seen>((resolve) => {
+      const found = seen.find(match);
+      if (found !== undefined) return resolve(found);
+      const watch = (entry: Seen) => {
+        if (!match(entry)) return;
+        watchers.delete(watch);
+        resolve(entry);
+      };
+      watchers.add(watch);
+    });
   const port = await freePort();
   const holder: { origin: string | null } = { origin: null };
   const routes = HttpRouter.use((router) =>
@@ -71,6 +90,7 @@ const startMend = async () => {
   return {
     port,
     seen,
+    saw,
     serve: async (origin: string) => {
       holder.origin = origin;
       const network = makePublicNetwork(PublicOrigin.make(origin), []);
@@ -293,14 +313,13 @@ describe.each<BrowserKind>(["chromium", "firefox"])(
       ).toContain(`__Host-mend-preview-${at.ports[0]}=`);
       const signIn = await reachedMend;
       expect(signIn.status(), "the sign-in navigation passed Mend's sibling-site check").toBe(200);
-      const seen = at.mend.seen.at(-1);
-      expect(seen).toMatchObject({
-        path: expect.stringMatching(/^\/preview-auth\?/),
-        status: 200,
-        cookie: true,
-      });
+      const seen = await at.mend.saw((entry) => entry.path.startsWith("/preview-auth?"));
+      expect(
+        seen,
+        "Mend answered the sign-in, and the viewer's Mend cookie came with it",
+      ).toMatchObject({ status: 200, cookie: true });
       report(
-        `${kind}: ${docs} with only port ${at.ports[0]}'s grant went to Mend's sign-in (Sec-Fetch-Site ${seen?.site ?? "absent"})`,
+        `${kind}: ${docs} with only port ${at.ports[0]}'s grant went to Mend's sign-in (Sec-Fetch-Site ${seen.site ?? "absent"})`,
       );
     });
 
@@ -475,6 +494,7 @@ describe.each<BrowserKind>(["chromium", "firefox"])(
         at.mendOrigin,
       );
       expect((await navigated).status(), "a link to Mend still opens").toBe(200);
+      await at.mend.saw((entry) => entry.path === "/api/probe?navigation");
       const probes = at.mend.seen
         .slice(before)
         .filter((seen) => seen.path.startsWith("/api/probe"));
