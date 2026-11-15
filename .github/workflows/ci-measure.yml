@@ -350,6 +350,10 @@ jobs:
         env:
           CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
           CI_MEASUREMENT_RUNNER: ${{ inputs.runner }}
+      - name: The desktop window follows the connection the main process reports
+        run: |
+          pnpm exec turbo run build --filter=@mend/desktop
+          xvfb-run -a pnpm --filter @mend/desktop check:connection
       - name: AWS shell regression tests with local command fixtures
         run: pnpm run test:aws-shell
       - name: Identify the pinned MinIO fixture cache

@@ -217,6 +217,17 @@ test("every job that asks setup-node for the pnpm cache installs with pnpm", () 
   assert.deepEqual(offenders, []);
 });
 
+test("clients-a launches the built desktop app on a display after its tests", () => {
+  const run = commands("test-clients-a");
+  const shard = run.indexOf("node scripts/ci-shards.mjs clients-a");
+  const desktop = run.findIndex((command) =>
+    command.includes("pnpm --filter @mend/desktop check:connection"),
+  );
+  assert.ok(shard >= 0 && desktop > shard, "the desktop check runs after the shard");
+  assert.match(run[desktop], /turbo run build --filter=@mend\/desktop\n/);
+  assert.match(run[desktop], /xvfb-run -a pnpm --filter @mend\/desktop check:connection/);
+});
+
 test("clients-b loads the built web app in Chromium after its tests", () => {
   const run = commands("test-clients-b");
   const shard = run.indexOf("node scripts/ci-shards.mjs clients-b");
