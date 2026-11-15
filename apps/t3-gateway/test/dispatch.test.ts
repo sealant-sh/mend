@@ -139,9 +139,10 @@ describe("message.dispatch", () => {
           dispatchMode: { type: "start_immediately" },
           deliveryIntent: "auto",
         }).pipe(Effect.forkChild);
+        // The authorization read stays held until `detail` resolves below, so whatever the
+        // runner's speed, a starting run seen here was shown before that read answered.
         const starting = yield* thread.next(
           runEvent((run) => run.userMessageId === "message-instant" && run.status === "starting"),
-          "100 millis",
         );
         assert.lengthOf(posts(mend, "/turns"), 0);
         detail.resolve();
@@ -186,9 +187,10 @@ describe("message.dispatch", () => {
             message("session-1", "message-refused", "Start now"),
           ),
         ).pipe(Effect.forkChild);
+        // The authorization read stays held until `detail` resolves, so a starting run seen here
+        // was shown before the refusal answered.
         yield* thread.next(
           runEvent((run) => run.userMessageId === "message-refused" && run.status === "starting"),
-          "100 millis",
         );
         detail.resolve();
         assert.isTrue(Exit.isFailure(yield* Fiber.join(sending)));
