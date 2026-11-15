@@ -121,6 +121,8 @@ describe("a page by URL (docs/adr/0004, Agent pages)", () => {
     const framed = await frameUrl("alice", "shared-a");
     const token = new URL(framed.url, "http://api.internal").searchParams.get("view") ?? "";
     const [payload = "", signature = ""] = token.split(".");
+    // One character of the signature, always changed: its first character carries six whole bits.
+    const tampered = `${signature.startsWith("A") ? "B" : "A"}${signature.slice(1)}`;
     const claim = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     const forged = Buffer.from(JSON.stringify({ ...claim, page: ids("shared-b").page })).toString(
       "base64url",
@@ -135,7 +137,7 @@ describe("a page by URL (docs/adr/0004, Agent pages)", () => {
     const signedNextVersion = `${nextVersion}.${createHmac("sha256", KEY).update(nextVersion).digest("base64url")}`;
     for (const bad of [
       `${forged}.${signature}`,
-      `${payload}.${signature.slice(0, -2)}AA`,
+      `${payload}.${tampered}`,
       `${payload}.`,
       payload,
       Redacted.value(otherKey.token),
