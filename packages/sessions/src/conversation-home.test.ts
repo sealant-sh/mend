@@ -337,7 +337,13 @@ describe("Claude's settings (decision 6)", () => {
 
 describe("one shared Claude conversation, each turn on its sender's user (Delivery 17)", () => {
   it("Alice's transcript is created 0600, Bob's resume works, then Alice's again: five turns, two uids", () => {
-    const w = world();
+    // Each turn's staging looks for the old agent's leftover processes. Every fake harness here
+    // exits before the next turn, so its own process list is empty; reading the host's /proc
+    // instead made each turn scan every process on the machine.
+    const base = world();
+    const proc = path.join(base.dir, "proc");
+    fs.mkdirSync(proc);
+    const w = { ...base, places: { ...base.places, procRoot: proc } };
     const id = "8f14e45f-ceea-4e7a-9c2b-1f0a7e3d2c11";
     const senders = [alice, bob, alice, bob, alice];
     let mode: number | null = null;
