@@ -527,12 +527,26 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await shot("09-snoozed");
   await page.goto(threadUrl);
   await main.getByRole("heading", { name: opening, level: 2 }).waitFor();
-  await main.getByRole("button", { name: /^Thread actions for/ }).click();
-  const settlesBefore = rpc.settles.length;
-  await page
+  // The menu reads the environment's operate scope when it opens; right after the page loads the
+  // client may not hold it yet, and every action that needs it opens disabled until the menu is
+  // opened again.
+  const settleItem = page
     .getByRole("button", { name: "Settle thread" })
-    .filter({ hasText: "Settle thread" })
-    .click();
+    .filter({ hasText: "Settle thread" });
+  await until(
+    "the thread's menu offers Settle thread, enabled",
+    async () => {
+      await main.getByRole("button", { name: /^Thread actions for/ }).click();
+      await settleItem.waitFor();
+      if (await settleItem.isEnabled()) return true;
+      await page.keyboard.press("Escape");
+      await settleItem.waitFor({ state: "hidden" });
+      return false;
+    },
+    15_000,
+  );
+  const settlesBefore = rpc.settles.length;
+  await settleItem.click();
   // The gateway answers the settle, or refuses it (a turn running, a message waiting, a question
   // open): wait on that answer, then on the shell carrying it.
   const settleAnswer = await until(
@@ -729,7 +743,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       await main.getByRole("heading", { name: opening, level: 2 }).waitFor();
       await showFiles();
       await reveal(...trail);
-      return open(trail.at(-1));
+      // The tree opens a file only when its selection changes, and after a reload the panel may
+      // select the file whose tab it kept, so clicking that row opens nothing: use the tab.
+      const name = trail.at(-1);
+      const tab = main.getByRole("button", { name, exact: true });
+      if ((await tab.count()) === 0) return open(name);
+      const from = assets.length;
+      await tab.click();
+      return () => assets.slice(from).filter((entry) => entry.path.endsWith(`/${name}`));
     };
   const reopenByRetry = (name) => async () => {
     const from = assets.length;
