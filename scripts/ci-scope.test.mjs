@@ -6,9 +6,15 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 const script = new URL("./ci-scope.mjs", import.meta.url).pathname;
-const full = "mobile=true\npackaging=true\nstore=true\nformal=true\n";
-const only = ({ mobile = false, packaging = false, store = false, formal = false } = {}) =>
-  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\n`;
+const full = "mobile=true\npackaging=true\nstore=true\nformal=true\ndocker=true\n";
+const only = ({
+  mobile = false,
+  packaging = false,
+  store = false,
+  formal = false,
+  docker = false,
+} = {}) =>
+  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\ndocker=${docker}\n`;
 const fixture = (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "mend-ci-scope-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -80,6 +86,15 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["packages/sessions/test/package.json", full],
     ["packages/x/test/a\nb.test.ts", full],
     ["apps/api/src/route.test.ts", only({ packaging: true })],
+    // The code the Docker-engine suites drive, and those suites, run them.
+    ["apps/cli/src/server-docker-volumes.ts", only({ packaging: true, docker: true })],
+    ["apps/cli/src/server-postgres-bootstrap.test.ts", only({ packaging: true, docker: true })],
+    ["apps/cli/src/server-lifecycle.ts", only({ packaging: true })],
+    [
+      "packages/sessions/src/rollback-files.ts",
+      only({ mobile: true, packaging: true, docker: true }),
+    ],
+    ["packages/sessions/test/rollback-mounted-layout.test.ts", only({ docker: true })],
   ]) {
     const base = f.git("rev-parse", "HEAD");
     f.write(path);

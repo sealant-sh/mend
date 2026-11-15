@@ -58,7 +58,7 @@
         "apps/cli/src/server-store.ts",
         "apps/cli/src/server-postgres-bootstrap.test.ts"
       ],
-      "why": "First server setup on a real Docker engine: volume ownership and the official Postgres bootstrap. CI does not run these; they skip unless given a disposable Docker context",
+      "why": "First server setup on a real Docker engine: volume ownership and the official Postgres bootstrap. They skip unless given a disposable Docker context; CI's docker-suites job runs them when these paths change",
       "owes": [
         {
           "kind": "tests",
@@ -100,6 +100,11 @@
       "lane": "formal",
       "job": "formal",
       "command": "pnpm verify formal"
+    },
+    {
+      "lane": "docker",
+      "job": "docker-suites",
+      "command": "node scripts/docker-suites.mjs (needs Docker; pulls postgres:17-alpine and node:26-trixie)"
     },
     {
       "lane": "store",
