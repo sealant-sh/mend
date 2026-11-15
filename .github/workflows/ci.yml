@@ -561,6 +561,10 @@ jobs:
           .agents/skills/verify/scripts/doctor.test.mjs
           .agents/skills/verify/scripts/drive-vscode.test.mjs
           .agents/skills/verify/scripts/fingerprint.test.mjs
+      # The published tarball, installed from npm the way a person installs it: a CLI that packs
+      # and installs but cannot start fails here (apps/cli/scripts/test-package.mjs).
+      - name: Installed-CLI smoke from the packed tarball
+        run: pnpm --filter @sealant/mend test:package
 
       - name: Archive per-file test timings
         if: ${{ !cancelled() }}

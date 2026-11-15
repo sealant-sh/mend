@@ -59,6 +59,59 @@ async function main() {
         DOCKER_CONFIG: path.join(scratch, "docker-config"),
       },
     });
+  const runSuite = async (backend, env, suite) => {
+    const report = path.join(scratch, `${backend}-${suite.name}-report.json`);
+    abort.signal.throwIfAborted();
+    let suiteTimedOut = false;
+    const code = await new Promise((resolve, reject) => {
+      child = spawn(
+        "pnpm",
+        [
+          "exec",
+          "vitest",
+          "run",
+          suite.file,
+          "-t",
+          suite.pattern,
+          "--reporter=default",
+          "--reporter=json",
+          `--outputFile.json=${report}`,
+        ],
+        { cwd: suite.cwd, env, stdio: "inherit", detached: true },
+      );
+      const suiteTimeout = setTimeout(() => {
+        suiteTimedOut = true;
+        stopChild();
+      }, 120_000);
+      const settled = () => {
+        clearTimeout(suiteTimeout);
+        stopping = undefined;
+        child = undefined;
+      };
+      child.once("error", (error) => {
+        settled();
+        reject(error);
+      });
+      child.once("close", async (status) => {
+        await stopping;
+        settled();
+        resolve(status);
+      });
+    });
+    assert.ok(!suiteTimedOut, `${backend} ${suite.name} suite must finish within two minutes`);
+    abort.signal.throwIfAborted();
+    assert.equal(code, 0, `${backend} ${suite.name} S3 contract must pass`);
+    const result = JSON.parse(await readFile(report, "utf8"));
+    const assertions = result.testResults
+      .flatMap((file) => file.assertionResults)
+      .filter((entry) => entry.ancestorTitles.some(suite.ancestor));
+    assert.ok(assertions.length > 0, `required ${suite.name} S3 suite must contain actual cases`);
+    assert.ok(
+      assertions.every((entry) => entry.status === "passed"),
+      "every S3 case must execute and pass without skips",
+    );
+    console.log(`Observed ${assertions.length} executed ${suite.name} S3 cases on ${backend}.`);
+  };
   let originalFailure;
   try {
     assert.notEqual(process.platform, "win32", "the fixture runner requires POSIX process groups");
@@ -211,57 +264,23 @@ async function main() {
       console.log(
         `S3 contract: ${backend}, ${env.MEND_TEST_S3_MULTIPART_LISTING} multipart listing`,
       );
-      const report = path.join(scratch, `${backend}-report.json`);
-      abort.signal.throwIfAborted();
-      let suiteTimedOut = false;
-      const code = await new Promise((resolve, reject) => {
-        child = spawn(
-          "pnpm",
-          [
-            "exec",
-            "vitest",
-            "run",
-            "test/blob-store.test.ts",
-            "-t",
-            "BlobStore \\(s3\\)",
-            "--reporter=default",
-            "--reporter=json",
-            `--outputFile.json=${report}`,
-          ],
-          { cwd: path.join(root, "packages/store"), env, stdio: "inherit", detached: true },
-        );
-        const suiteTimeout = setTimeout(() => {
-          suiteTimedOut = true;
-          stopChild();
-        }, 120_000);
-        const settled = () => {
-          clearTimeout(suiteTimeout);
-          stopping = undefined;
-          child = undefined;
-        };
-        child.once("error", (error) => {
-          settled();
-          reject(error);
-        });
-        child.once("close", async (status) => {
-          await stopping;
-          settled();
-          resolve(status);
-        });
+      await runSuite(backend, env, {
+        name: "blob-store",
+        cwd: path.join(root, "packages/store"),
+        file: "test/blob-store.test.ts",
+        pattern: "BlobStore \\(s3\\)",
+        ancestor: (title) => title === "BlobStore (s3)",
       });
-      assert.ok(!suiteTimedOut, `${backend} S3 suite must finish within two minutes`);
-      abort.signal.throwIfAborted();
-      assert.equal(code, 0, `${backend} S3 contract must pass`);
-      const result = JSON.parse(await readFile(report, "utf8"));
-      const assertions = result.testResults
-        .flatMap((file) => file.assertionResults)
-        .filter((entry) => entry.ancestorTitles.includes("BlobStore (s3)"));
-      assert.ok(assertions.length > 0, "required S3 suite must contain actual cases");
-      assert.ok(
-        assertions.every((entry) => entry.status === "passed"),
-        "every S3 case must execute and pass without skips",
-      );
-      console.log(`Observed ${assertions.length} executed S3 cases on ${backend}.`);
+      // Capture seals against a bucket that ignores `If-None-Match`: only Garage is one.
+      if (backend === "garage") {
+        await runSuite(backend, env, {
+          name: "capture-verify",
+          cwd: path.join(root, "packages/sessions"),
+          file: "test/capture-verify.test.ts",
+          pattern: "on a real bucket \\(MEND_TEST_S3_URL\\)",
+          ancestor: (title) => title.endsWith("on a real bucket (MEND_TEST_S3_URL)"),
+        });
+      }
     }
   } catch (error) {
     originalFailure = error;

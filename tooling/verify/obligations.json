@@ -83,12 +83,6 @@
           "command": "pnpm --filter @mend/api-server test:preview-acceptance"
         }
       ]
-    },
-    {
-      "id": "cli-package",
-      "paths": ["apps/cli/package.json", "apps/cli/scripts/**"],
-      "why": "A CLI tarball can install and still fail to start; only the installed-CLI smoke sees it",
-      "owes": [{ "kind": "tests", "command": "pnpm --filter @sealant/mend test:package" }]
     }
   ],
   "ciLanes": [
@@ -100,7 +94,7 @@
     {
       "lane": "packaging",
       "job": "packaging",
-      "command": "the packaging job's node --test list in .github/workflows/ci.yml (needs Docker, Helm, OpenTofu and Chromium)"
+      "command": "the packaging job's node --test list in .github/workflows/ci.yml (needs Docker, Helm, OpenTofu and Chromium), then pnpm --filter @sealant/mend test:package"
     },
     {
       "lane": "formal",
