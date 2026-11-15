@@ -50,24 +50,6 @@
       ]
     },
     {
-      "id": "standby-discard",
-      "paths": [
-        "packages/db/src/repos/hot-workspaces.ts",
-        "packages/sessions/src/engine.ts",
-        "packages/sessions/src/capture-channel.ts",
-        "docs/formal/standby-discard/**"
-      ],
-      "why": "The standby discard model stands for this code: a discard never reaches a workspace a session holds or can still take",
-      "owes": [
-        {
-          "kind": "formal",
-          "model": "standby-discard",
-          "command": "docs/formal/standby-discard/check.sh --quick",
-          "how": ".agents/skills/standby-discard: decide whether the change touches the model, run it, keep it true to the code"
-        }
-      ]
-    },
-    {
       "id": "server-docker-setup",
       "paths": [
         "apps/cli/src/server-docker-volumes.ts",
@@ -119,6 +101,11 @@
       "lane": "packaging",
       "job": "packaging",
       "command": "the packaging job's node --test list in .github/workflows/ci.yml (needs Docker, Helm, OpenTofu and Chromium)"
+    },
+    {
+      "lane": "formal",
+      "job": "formal",
+      "command": "pnpm verify formal"
     },
     {
       "lane": "store",

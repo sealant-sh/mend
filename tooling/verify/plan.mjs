@@ -5,6 +5,7 @@ import { join, matchesGlob } from "node:path";
 import { parse } from "yaml";
 
 import { extras } from "../../scripts/ci-scope.mjs";
+import { readCoverages, touches } from "../../scripts/formal-coverage.mjs";
 
 // What a change owes. Two sources, neither restating the other:
 // - obligations.json maps paths to local obligations (box check, screenshots, models, gated suites);
@@ -85,6 +86,26 @@ export const matchObligations = (map, files) =>
     }));
   });
 
+/** A model's obligation, from its docs/formal/<area>/COVERAGE: the one record of what it covers. */
+export const formalObligations = (root, files) =>
+  readCoverages(root).flatMap((coverage) => {
+    const hit = files.filter((path) => touches(coverage, path));
+    if (hit.length === 0) return [];
+    return [
+      {
+        id: `formal-${coverage.area}`,
+        kind: "formal",
+        model: coverage.area,
+        verb: "formal",
+        command: "pnpm verify formal",
+        how: `.agents/skills/${coverage.area}`,
+        why: `The ${coverage.area} model stands for this code (${coverage.dir}/COVERAGE)`,
+        status: "owed",
+        paths: hit,
+      },
+    ];
+  });
+
 /** The `changes` output each job's `if:` reads, or null for a job every PR runs. */
 const laneOf = (job) => /needs\.changes\.outputs\.(\w+)/.exec(job.if ?? "")?.[1] ?? null;
 
@@ -110,7 +131,7 @@ export const computePlan = (root, { head, files }) => {
   const changed = files ?? changedFiles(root, head.mergeBase);
   return {
     files: changed,
-    obligations: matchObligations(map, changed),
+    obligations: [...matchObligations(map, changed), ...formalObligations(root, changed)],
     ci: ciPlan(root, changed, map),
   };
 };

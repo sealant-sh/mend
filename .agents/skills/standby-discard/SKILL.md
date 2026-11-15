@@ -131,10 +131,14 @@ it: use that commit in step 1, or fetch this one with `git fetch origin pull/162
 own key's standbys (SLNT-797), which `RDrain` already covers, and `setReady` stamps the standby's
 `boatKey`. The model was last confirmed to describe the recorded code at this commit. Move it
 forward only after step 1 finds every change to that code since it accounted for in the model, and a
-full `check.sh` run ends with every row as expected.
+full `check.sh` run ends with every row as expected; the sync line in `COVERAGE` is where it moves.
 
-## Running it in CI (not set up)
+## In CI and `verify formal`
 
-GitHub-hosted `ubuntu-latest` runners have Java, and `check.sh` downloads tla2tools 1.7.4 and checks
-its sha256 when Nix is absent. A job filtered on the files in the coverage record could run
-`check.sh --quick` on each pull request and the full run nightly.
+`docs/formal/standby-discard/COVERAGE` is the record CI reads: the sync commit, the model's files
+and the covered paths above. `pnpm verify formal` runs `check.sh --quick` when your diff touches any
+of them (`--full` for the full bounds) and reports drift: covered files changed since the sync
+commit. CI's `formal` job, part of the `checks` roll-up, does the same on each pull request that
+touches them, with a guard: a change to covered code fails unless the same pull request changes the
+model or moves COVERAGE's `sync` line. Move it only after step 1 and a full run, as above. The
+nightly run checks the full bounds.
