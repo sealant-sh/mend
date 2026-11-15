@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { readSkips } from "./check.mjs";
 import { exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
+import { ciGateProblems, loadAllowedSkips, readSkips, validateAllowedSkips } from "./skips.mjs";
+import { toMarkdown } from "./status.mjs";
 import { main, runVerb } from "./verify.mjs";
 
 const repo = fileURLToPath(new URL("../../", import.meta.url));
@@ -60,7 +61,8 @@ const fixture = (t) => {
 const options = (extra = {}) => ({ base: "main", files: undefined, all: false, ...extra });
 
 // Stands in for turbo, node --test and oxfmt: each succeeds, and the test run writes the report
-// CI_TEST_REPORT_DIR asks for, with the given tests skipped.
+// CI_TEST_REPORT_DIR asks for, with the given tests skipped: a file (its test is "real engine"),
+// or [file, test full name].
 const runnerSkipping =
   (root, skipped) =>
   async (_root, command, args, { env }) => {
@@ -75,10 +77,13 @@ const runnerSkipping =
               name: join(root, "apps/cli/src/a.test.ts"),
               assertionResults: [{ fullName: "runs", status: "passed" }],
             },
-            ...skipped.map((file) => ({
-              name: join(root, file),
-              assertionResults: [{ fullName: "real engine", status: "skipped" }],
-            })),
+            ...skipped.map((skip) => {
+              const [file, fullName] = Array.isArray(skip) ? skip : [skip, "real engine"];
+              return {
+                name: join(root, file),
+                assertionResults: [{ fullName, status: "skipped" }],
+              };
+            }),
           ],
         }),
       );
@@ -269,7 +274,11 @@ test("tests a failed file's hook skipped are its failure, not skips", (t) => {
     }),
   );
   assert.deepEqual(readSkips(root, root), [
-    { name: "packages/db/test/b.test.ts > gated", file: "packages/db/test/b.test.ts" },
+    {
+      name: "packages/db/test/b.test.ts > gated",
+      file: "packages/db/test/b.test.ts",
+      test: "gated",
+    },
   ]);
 });
 
@@ -293,4 +302,177 @@ test("--concurrency caps every turbo run and each Vitest run's workers", async (
   assert.equal(turbo.length, 3);
   for (const call of turbo) assert.ok(call.args.includes("--concurrency=2"), call.args.join(" "));
   assert.equal(turbo.find((call) => call.args.includes("test")).workers, "2");
+});
+
+// SLNT-1004: the skips a change to a file every package reads (pnpm-lock.yaml) met on the dev
+// machine, each named in allowed-skips.json with where it does run.
+const S3 = "packages/store/test/blob-store.test.ts";
+const S3_CAPTURE = [
+  "packages/sessions/test/capture-verify.test.ts",
+  "review 7 #8 on a real bucket (MEND_TEST_S3_URL) a recorded seal's stored pack is never handed an upload URL",
+];
+const MOUNTED = "packages/sessions/test/rollback-mounted-layout.test.ts";
+const DOCKER = "apps/cli/src/server-docker-protocol.test.ts";
+const CORPUS = [
+  "packages/sessions/src/native-convert.test.ts",
+  "corpus: real harvested claude session survives claude → codex → canonical",
+];
+
+test("a lockfile-only change passes when every skip is allowed, and the receipt says where each runs", async (t) => {
+  const { root, commit } = fixture(t);
+  commit("pnpm-lock.yaml");
+  const check = await runVerb(
+    root,
+    "check",
+    options({
+      env: noPostgres,
+      runner: runnerSkipping(root, [S3, S3, S3_CAPTURE, MOUNTED, DOCKER, CORPUS]),
+    }),
+  );
+  assert.deepEqual(validateResult(check), []);
+  assert.equal(check.status, "passed");
+  const tests = check.steps.find((step) => step.id === "tests");
+  assert.ok(tests.skipped.every((skip) => skip.allowed));
+  assert.equal(
+    tests.skipped.find((skip) => skip.name.startsWith(CORPUS[0])).kind,
+    "local-only",
+    "the corpus is never counted as run by CI",
+  );
+
+  saveResult(root, check);
+  const receipt = toMarkdown(await runVerb(root, "status", options()));
+  const line = receipt.split("\n").find((text) => text.includes("`pre-pr-checks`"));
+  assert.match(line, /^- \[x\] `pre-pr-checks`: passed/);
+  assert.match(line, /6 tests skipped here, all allowed: /);
+  assert.match(
+    line,
+    /3 in CI test-clients-a \(Live S3 contracts on disposable Garage and strict MinIO fixtures\)/,
+  );
+  assert.match(line, /2 in CI docker-suites \(Server Docker setup and mounted Undo/);
+  assert.match(line, /1 in no CI job, only on a machine whose Mend store holds a harvested claude/);
+});
+
+test("an entry naming a test covers only that test, and an unlisted skip still makes check skipped", async (t) => {
+  const { root, commit } = fixture(t);
+  commit("pnpm-lock.yaml");
+  const result = await runVerb(
+    root,
+    "check",
+    options({
+      env: noPostgres,
+      runner: runnerSkipping(root, [
+        S3,
+        ["packages/sessions/src/native-convert.test.ts", "converts a fixture"],
+        ["packages/sessions/test/capture-verify.test.ts", "review 3 a local pack"],
+      ]),
+    }),
+  );
+  assert.equal(result.status, "skipped");
+  const tests = result.steps.find((step) => step.id === "tests");
+  assert.deepEqual(
+    tests.skipped.filter((skip) => !skip.allowed).map((skip) => skip.name),
+    [
+      "packages/sessions/src/native-convert.test.ts > converts a fixture",
+      "packages/sessions/test/capture-verify.test.ts > review 3 a local pack",
+    ],
+  );
+  assert.match(tests.skipSummary, /^3 tests skipped here, 2 not allowed: 1 in CI test-clients-a/);
+});
+
+test("check sets the Doppler gate from a doppler on PATH, and names what to install without one", async (t) => {
+  const { root, commit, write } = fixture(t);
+  commit("pnpm-lock.yaml");
+  const bin = join(root, "fake-bin");
+  write("fake-bin/doppler", "#!/bin/sh\n");
+  chmodSync(join(bin, "doppler"), 0o755);
+  const seen = [];
+  const recording =
+    (skipped) =>
+    async (...call) => {
+      if (call[1] === "pnpm" && call[2].includes("test"))
+        seen.push(call[3].env.MEND_TEST_DOPPLER_BINARY);
+      return runnerSkipping(root, skipped)(...call);
+    };
+  const withPath = (path) => {
+    const env = { ...noPostgres, PATH: path };
+    delete env.MEND_TEST_DOPPLER_BINARY;
+    return env;
+  };
+
+  const found = await runVerb(
+    root,
+    "check",
+    options({ env: withPath(`${bin}${delimiter}/usr/bin`), runner: recording([]) }),
+  );
+  assert.equal(found.status, "passed");
+  assert.equal(seen.at(-1), join(bin, "doppler"));
+
+  const missing = await runVerb(
+    root,
+    "check",
+    options({
+      env: withPath("/nonexistent"),
+      runner: recording(["packages/sessions/test/doppler-helper.test.ts"]),
+    }),
+  );
+  assert.equal(seen.at(-1), undefined);
+  assert.equal(missing.status, "skipped");
+  assert.ok(
+    missing.next.some((command) => command.startsWith("nix profile install nixpkgs#doppler")),
+  );
+});
+
+test("every allowed skip names where it runs, and each CI step named still sets its gate", () => {
+  const allowed = loadAllowedSkips(repo);
+  assert.deepEqual(validateAllowedSkips(allowed), []);
+  assert.deepEqual(ciGateProblems(repo, allowed), []);
+});
+
+test("an allowed skip whose CI step stopped setting its gate is named", (t) => {
+  const root = mkdtempSync(join(tmpdir(), "mend-verify-gates-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const put = (path, text) => {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    writeFileSync(join(root, path), text);
+  };
+  put("package.json", JSON.stringify({ scripts: { "test:s3": "node scripts/s3.mjs" } }));
+  put(
+    ".github/workflows/ci.yml",
+    [
+      "jobs:",
+      "  clients:",
+      "    steps:",
+      "      - name: S3 by script",
+      "        run: pnpm run test:s3",
+      "      - name: Mount by env",
+      "        env: { MEND_TEST_ROLLBACK_MOUNT: '1' }",
+      "        run: pnpm --filter @mend/sessions exec vitest run",
+      "",
+    ].join("\n"),
+  );
+  const entry = (extra) => ({ kind: "ci", job: "clients", reason: "r", ...extra });
+  const s3 = entry({
+    file: "packages/store/test/blob-store.test.ts",
+    gate: "MEND_TEST_S3_URL",
+    step: "S3 by script",
+  });
+  const mount = entry({
+    file: "packages/sessions/test/rollback-mounted-layout.test.ts",
+    gate: "MEND_TEST_ROLLBACK_MOUNT",
+    step: "Mount by env",
+  });
+
+  put("scripts/s3.mjs", 'run("test/blob-store.test.ts", { MEND_TEST_S3_URL: url });\n');
+  assert.deepEqual(ciGateProblems(root, [s3, mount]), []);
+
+  put("scripts/s3.mjs", 'run("test/blob-store.test.ts", { MEND_TEST_S3_ENDPOINT: url });\n');
+  assert.match(ciGateProblems(root, [s3])[0], /no longer sets the gate/);
+  assert.match(ciGateProblems(root, [{ ...s3, step: "Renamed" }])[0], /has no step "Renamed"/);
+  assert.match(ciGateProblems(root, [{ ...mount, job: "gone" }])[0], /has no job gone/);
+  assert.deepEqual(validateAllowedSkips([{ ...s3, job: undefined }]).length, 1);
+  assert.deepEqual(
+    validateAllowedSkips([{ file: "a", gate: "g", reason: "r", kind: "local-only" }]).length,
+    1,
+    "a local-only skip says where it runs",
+  );
 });

@@ -42,8 +42,11 @@ pnpm verify check             # --concurrency 2 on a shared, busy machine
 
 AGENTS.md's gate before a PR: forced typecheck and lint, the affected packages' tests, the format
 check. A test that skips makes it `skipped` unless `tooling/verify/allowed-skips.json` allows that
-skip and the plan does not owe its gate. With no Postgres it is blocked and names the compose
-command. **Done when** it passes on the commit you push.
+skip and the plan does not owe its gate. Each entry says where that test does run (a CI job and
+step, which a test holds to `ci.yml`, or no CI job), and the receipt's `pre-pr-checks` line counts
+the skips by where they run. A gate this machine can set safely, such as Doppler's when `doppler` is
+on PATH, it sets itself. With no Postgres it is blocked and names the compose command. **Done when**
+it passes on the commit you push.
 
 ## 3. Models
 

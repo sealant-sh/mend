@@ -52,11 +52,14 @@ export const judgeObligation = (root, obligation, head, implemented) => {
       log: path,
     };
   }
+  // A check that let tests skip says how many and where each group runs, on its receipt line.
+  const skipSummary = result.steps?.find((step) => step.skipSummary)?.skipSummary;
   return {
     ...base,
     status: result.status,
     detail: `${obligation.verb}: ${result.status}`,
     log: path,
+    ...(skipSummary ? { note: skipSummary } : {}),
   };
 };
 
@@ -88,7 +91,7 @@ export const toMarkdown = (result) =>
       (step) =>
         `- [${MARK[step.status] ?? " "}] \`${step.id}\`: ${step.status}${step.log ? ` (${step.log})` : ""}${
           step.status === "passed" ? "" : `. ${step.detail}`
-        }`,
+        }${step.note ? `. ${step.note}` : ""}`,
     ),
     "",
   ].join("\n");

@@ -3,12 +3,51 @@
     {
       "file": "apps/cli/src/server-docker-protocol.test.ts",
       "gate": "MEND_DOCKER_TEST_CONTEXT",
+      "kind": "ci",
+      "job": "docker-suites",
+      "step": "Server Docker setup and mounted Undo on the runner's Docker engine",
       "reason": "Needs a disposable Docker context. Owed only when the server's Docker setup changes; verify plan says when"
     },
     {
       "file": "apps/cli/src/server-postgres-bootstrap.test.ts",
       "gate": "MEND_DOCKER_TEST_CONTEXT",
+      "kind": "ci",
+      "job": "docker-suites",
+      "step": "Server Docker setup and mounted Undo on the runner's Docker engine",
       "reason": "Starts the official Postgres image in a disposable Docker context. Owed only when the server's Docker setup changes; verify plan says when"
+    },
+    {
+      "file": "packages/sessions/test/rollback-mounted-layout.test.ts",
+      "gate": "MEND_TEST_ROLLBACK_MOUNT",
+      "kind": "ci",
+      "job": "docker-suites",
+      "step": "Server Docker setup and mounted Undo on the runner's Docker engine",
+      "reason": "Undo on a mixed-UID mounted workspace, built in containers on a Docker engine the run may own"
+    },
+    {
+      "file": "packages/store/test/blob-store.test.ts",
+      "gate": "MEND_TEST_S3_URL",
+      "kind": "ci",
+      "job": "test-clients-a",
+      "step": "Live S3 contracts on disposable Garage and strict MinIO fixtures",
+      "reason": "Needs an S3 bucket and AWS_* keys, which turbo does not pass to tests; pnpm run test:s3-contract runs it on disposable Garage and MinIO containers"
+    },
+    {
+      "file": "packages/sessions/test/capture-verify.test.ts",
+      "test": "on a real bucket (MEND_TEST_S3_URL)",
+      "gate": "MEND_TEST_S3_URL",
+      "kind": "ci",
+      "job": "test-clients-a",
+      "step": "Live S3 contracts on disposable Garage and strict MinIO fixtures",
+      "reason": "Its \"on a real bucket (MEND_TEST_S3_URL)\" cases need an S3 bucket and AWS_* keys; pnpm run test:s3-contract runs them on disposable Garage and MinIO containers"
+    },
+    {
+      "file": "packages/sessions/src/native-convert.test.ts",
+      "test": "corpus: real harvested claude session",
+      "gate": "a harvested claude session in ~/.mend/store",
+      "kind": "local-only",
+      "where": "on a machine whose Mend store holds a harvested claude session",
+      "reason": "Round-trips a transcript a real Claude session wrote. CI has none, and a machine whose store holds none cannot run it; nothing else checks this corpus"
     }
   ]
 }
