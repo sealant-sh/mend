@@ -24,7 +24,7 @@ const dockerSuites = [
   /^apps\/cli\/src\/server-(docker-volumes|runtime|setup|store)\.ts$/,
   /^apps\/cli\/src\/server-(docker-protocol|postgres-bootstrap)\.test\.ts$/,
   /^packages\/sessions\/src\/(rollback-files|pickup-tickets|workspace-files|session-channel)\.ts$/,
-  /^packages\/sessions\/test\/(rollback-mounted-layout\.test|pickup-channel|support\/rollback-files)\.ts$/,
+  /^packages\/sessions\/test\/(rollback-mounted-layout\.test|rollback-restore-crash\.property\.test|pickup-channel|support\/rollback-files)\.ts$/,
 ];
 // The preview gateway, its edges, and the acceptance suite that drives them in real browsers.
 const previewAcceptance = [

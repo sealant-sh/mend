@@ -99,6 +99,7 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
       only({ mobile: true, packaging: true, docker: true }),
     ],
     ["packages/sessions/test/rollback-mounted-layout.test.ts", only({ docker: true })],
+    ["packages/sessions/test/rollback-restore-crash.property.test.ts", only({ docker: true })],
     // The preview gateway, its edges and its acceptance suite run that suite.
     ["apps/api/src/preview-gateway.ts", only({ packaging: true, preview: true })],
     ["apps/api/test/preview-edge.acceptance.ts", only({ packaging: true, preview: true })],

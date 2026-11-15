@@ -1,5 +1,8 @@
 // The suites that need a real Docker engine and otherwise skip: the server's first setup on Docker
 // (volume ownership, the official Postgres bootstrap) and Undo on a mounted per-person workspace.
+// Beside them, the full sweep of Undo's restore crashed at every write: too many processes for a
+// test lane shared with other packages, so the lane runs its quick bound and this runner, one suite
+// at a time, the whole of it (SLNT-1029).
 // Each opts in through its own variable; this runner sets it, and fails when a case skips, so a
 // renamed gate cannot turn the job into a label.
 //   node scripts/docker-suites.mjs
@@ -37,6 +40,12 @@ const suites = [
     file: "test/rollback-mounted-layout.test.ts",
     env: { MEND_TEST_ROLLBACK_MOUNT: "1", MEND_TEST_ROLLBACK_IMAGE: rollbackImage },
     images: [rollbackImage],
+  },
+  {
+    filter: "@mend/sessions",
+    file: "test/rollback-restore-crash.property.test.ts",
+    env: { MEND_TEST_ROLLBACK_CRASH_SWEEP: "full" },
+    images: [],
   },
 ];
 
