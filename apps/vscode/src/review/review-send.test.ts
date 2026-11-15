@@ -197,22 +197,26 @@ describe("a third Send after one that pasted nothing", () => {
   it("pastes the comments the skipped Send never put in claude's input, onto what is there", async () => {
     const mend = new FakeMend();
     mend.answer = "pending";
-    const { store, pastes } = await window(keptIn(await storage()), mend);
+    // Three Sends make some 300 file reads and writes one after another, so on a real disk the
+    // test's time is the disk's: one window's reviews, on a disk in memory.
+    const { store, pastes } = await window(keptIn("/global-storage/reviews", memoryFiles()), mend);
     const told = failures(store);
     await store.comment(onLine(3, "Use the shared limiter"));
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
-    await sendComposed(store, first, first.text);
+    expect(await sendComposed(store, first, first.text)).toEqual({ sent: true });
     await pastedInto(store, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
-    await sendComposed(
-      store,
-      second,
-      second.text.replace("Use the shared limiter", "Use guard.ts"),
-    );
+    expect(
+      await sendComposed(
+        store,
+        second,
+        second.text.replace("Use the shared limiter", "Use guard.ts"),
+      ),
+    ).toEqual({ sent: true });
     await vi.waitFor(() => expect(told).toHaveLength(1), SETTLE);
     expect(pastes).toHaveLength(1);
     // Mend holds "Name the constant", and VS Code never pasted it: its thread says so once the
@@ -232,7 +236,7 @@ describe("a third Send after one that pasted nothing", () => {
     // Composed on top of what claude's input holds: the first review as it was pasted.
     expect(third.text).toContain("Use the shared limiter");
     expect(third.text).not.toContain("Use guard.ts");
-    await sendComposed(store, third, third.text);
+    expect(await sendComposed(store, third, third.text)).toEqual({ sent: true });
     await vi.waitFor(() => expect(pastes).toHaveLength(2), SETTLE);
     const input = pastes.join("");
     expect(input.split("Use the shared limiter")).toHaveLength(2);
