@@ -820,10 +820,27 @@ test(
     const of = (site) =>
       logs.entries.filter((entry) => hostOf(entry) === site.host && entry.request.uri !== "/ready");
     const isAccess = (entry) => entry.logger.startsWith("http.log.access");
+    const matrixOf = (site) => {
+      const count = (predicate) => of(site).filter(predicate).length;
+      return {
+        missing: count((e) => isAccess(e) && e.status === 404),
+        redirect: count((e) => isAccess(e) && e.status === 302),
+        cut: count((e) => e.msg === "aborting with incomplete response"),
+        http: count((e) => isAccess(e) && e.status === 308),
+        dial: count((e) => e.logger.startsWith("http.log.error") && e.status === 502),
+      };
+    };
+    // Access and error lines come from different Caddy loggers and reach `docker logs` apart, so
+    // wait for every line the matrix counts, not only the access lines.
+    const written = () =>
+      sites.flatMap(of).filter(isAccess).length >= 6 * requests &&
+      sites.every((site) =>
+        Object.values(matrixOf(site)).every((seen) => seen >= site.targets.length),
+      );
     let logs;
     for (let attempt = 0; attempt < 100; attempt++) {
       logs = await edge.logs();
-      if (sites.flatMap(of).filter(isAccess).length >= 6 * requests) break;
+      if (written()) break;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     assert.deepEqual(leaksIn(logs), []);
@@ -833,13 +850,7 @@ test(
       const n = site.targets.length;
       // Each mode reached the log: the matrix below is about lines Caddy really wrote.
       assert.deepEqual(
-        {
-          missing: count((e) => isAccess(e) && e.status === 404),
-          redirect: count((e) => isAccess(e) && e.status === 302),
-          cut: count((e) => e.msg === "aborting with incomplete response"),
-          http: count((e) => isAccess(e) && e.status === 308),
-          dial: count((e) => e.logger.startsWith("http.log.error") && e.status === 502),
-        },
+        matrixOf(site),
         { missing: n, redirect: n, cut: n, http: n, dial: n },
         site.name,
       );
