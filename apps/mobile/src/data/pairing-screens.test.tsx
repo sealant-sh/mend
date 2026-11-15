@@ -58,6 +58,13 @@ const messageSettings = {
   saved: { sendSteersRunningTurn: true },
   puts: [] as Array<unknown>,
 };
+const NOTIFICATIONS = { slackSessions: false, turnFinished: true, needsInput: true, failed: true };
+const notifications = {
+  saved: NOTIFICATIONS,
+  puts: [] as Array<unknown>,
+  /** The server refuses every save while set. */
+  refuse: false,
+};
 const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = requestUrl(input);
   if (network.down) throw new TypeError("Network request failed");
@@ -90,6 +97,19 @@ const serve = async (input: RequestInfo | URL, init?: RequestInit): Promise<Resp
       }
     }
     return json(messageSettings.saved);
+  }
+  if (url.pathname === "/api/me/notifications") {
+    if (init?.method === "PUT") {
+      notifications.puts.push(jsonBody(init));
+      if (notifications.refuse) {
+        return json({ _tag: "BadRequest", message: "notification settings not saved" }, 400);
+      }
+      const body: unknown = jsonBody(init);
+      if (typeof body === "object" && body !== null) {
+        notifications.saved = { ...notifications.saved, ...body };
+      }
+    }
+    return json(notifications.saved);
   }
   if (url.pathname === "/api/pages/page-1/frame") return json({ url: "/api/page-view?view=a" });
   return notFound();
@@ -128,6 +148,7 @@ beforeEach(async () => {
   vi.stubGlobal("fetch", vi.fn(serve));
   Object.assign(network, { down: false, pairClaims: 0 });
   Object.assign(messageSettings, { saved: { sendSteersRunningTurn: true }, puts: [] });
+  Object.assign(notifications, { saved: NOTIFICATIONS, puts: [], refuse: false });
   route.params = {};
   navigation.replaced = [];
   await clearConfig();
@@ -237,5 +258,39 @@ describe("the message setting in Settings", () => {
 
     expect(messageSettings.puts).toEqual([{ sendSteersRunningTurn: false }]);
     expect(toggle().checked).toBe(false);
+  });
+});
+
+describe("the notification switches in Settings", () => {
+  const failedSwitch = () => {
+    const element = host.querySelector<HTMLInputElement>('input[aria-label="Failed"]');
+    if (element === null) throw new Error("no Failed switch on screen");
+    return element;
+  };
+
+  it("go back to what they were when the server refuses the save", async () => {
+    notifications.refuse = true;
+    await pair("a.example");
+    show(<SettingsScreen />);
+    await settle();
+    expect(failedSwitch().checked).toBe(true);
+
+    act(() => failedSwitch().click());
+    await settle();
+
+    expect(notifications.puts).toEqual([{ ...NOTIFICATIONS, failed: false }]);
+    expect(failedSwitch().checked, "the refused change is not shown as saved").toBe(true);
+  });
+
+  it("stay where the person put them when the server saves", async () => {
+    await pair("a.example");
+    show(<SettingsScreen />);
+    await settle();
+
+    act(() => failedSwitch().click());
+    await settle();
+
+    expect(notifications.puts).toEqual([{ ...NOTIFICATIONS, failed: false }]);
+    expect(failedSwitch().checked).toBe(false);
   });
 });
