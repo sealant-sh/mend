@@ -34,7 +34,18 @@ import {
   workspaceProcessUserObstacleOf,
 } from "@mend/sealant";
 import type { Harness, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
-import { Clock, Config, Deferred, Duration, Effect, Layer, Schedule, Schema } from "effect";
+import {
+  Clock,
+  Config,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Layer,
+  Option,
+  Schedule,
+  Schema,
+} from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
 import * as Semaphore from "effect/Semaphore";
@@ -61,6 +72,7 @@ import {
   usersNotMadeRefusal,
   personHomeEnsureScript,
   personHomeScript,
+  PERSON_LOCK_WAIT_SECONDS,
   personPrepareScript,
   personProcessEnv,
   processUserOf,
@@ -948,6 +960,20 @@ const homeKey = (workspaceId: string, home: string) => `${workspaceId}\u0000${ho
 export const UNKNOWN_LAUNCH_REFUSAL =
   "Mend cannot tell which workspace launch this process belongs to, and this worktree runs each person as their own user, so nothing was started. Start the session again.";
 
+/**
+ * The longest a person's start waits for the prepare of the launch that made its executor
+ * (SLNT-1038). A prepare holds the person lock at most `PERSON_LOCK_WAIT_SECONDS` while it makes
+ * its people; twice that leaves room for the rest of its one exec.
+ */
+export const PREPARE_WAIT_SECONDS = 2 * PERSON_LOCK_WAIT_SECONDS;
+
+/** A start refused because its executor's prepare never settled (`PREPARE_WAIT_SECONDS`). */
+export const PREPARE_UNSETTLED_REFUSAL = `This workspace was still being prepared after ${PREPARE_WAIT_SECONDS} s, so nothing was started here. Try again.`;
+
+/** A start refused because the launch that made its executor ended inside its prepare. */
+export const PREPARE_ENDED_REFUSAL =
+  "This workspace's launch ended while it was being prepared, so nothing was started here. Start the session again.";
+
 /** DELETE is retried: a release that fails leaves a login where nobody runs any more. */
 const RELEASE_RETRY = Schedule.max([Schedule.exponential("200 millis"), Schedule.recurs(4)]);
 /** A re-POST after an authentication failure, at most this often per person and executor. */
@@ -1017,6 +1043,11 @@ export const makeHarnessLayoutSteps = (deps: {
 }): HarnessLayoutSteps => {
   const { flag, repo, platform, sealant } = deps;
   const layoutByLaunch = bounded<string, HarnessLayout>();
+  /**
+   * Person launches decided here whose prepare has not settled yet (SLNT-1038), by launch: told
+   * null once `settlePrepare` settled a layout, or the words of the launch's refusal.
+   */
+  const preparing = bounded<string, Deferred.Deferred<string | null>>();
   /** The people already made in an executor, per workspace. */
   const madeIn = bounded<string, Set<string>>();
   /** Whose process started last in an executor's worktree, per workspace. */
@@ -1251,6 +1282,9 @@ export const makeHarnessLayoutSteps = (deps: {
           confirmed: !decision.probe,
         });
         layoutByLaunch.set(input.launchId, "shared");
+        // The same create asked again, decided shared this time: nothing waits for a person
+        // prepare that will not run.
+        yield* prepareSettled(input.launchId, null);
         return {
           layout: "shared",
           source: decision.source,
@@ -1278,6 +1312,12 @@ export const makeHarnessLayoutSteps = (deps: {
       });
       layoutsRecorded = true;
       layoutByLaunch.set(input.launchId, "person");
+      // Nobody's user is made in this executor before its prepare settles (`awaitPrepare`). The
+      // same create asked again keeps the latch its first decide made while that is still open.
+      const open = preparing.get(input.launchId);
+      if (open === undefined || Deferred.isDoneUnsafe(open)) {
+        preparing.set(input.launchId, yield* Deferred.make<string | null>());
+      }
       return {
         layout: "person",
         source: decision.source,
@@ -1467,7 +1507,60 @@ export const makeHarnessLayoutSteps = (deps: {
       return deps.fork(resetSshUser(workspaceId));
     });
 
-  const settlePrepare: HarnessLayoutSteps["settlePrepare"] = Effect.fn(
+  /** Tells whoever waits on a launch's prepare (`awaitPrepare`) that it settled, and how. */
+  const prepareSettled = (launchId: string, refusal: string | null): Effect.Effect<void> =>
+    Effect.suspend(() => {
+      const latch = preparing.get(launchId);
+      return latch === undefined
+        ? Effect.void
+        : Deferred.succeed(latch, refusal).pipe(Effect.asVoid);
+    });
+
+  /**
+   * Waits, before anything makes a person's user in a person executor, until the launch that made
+   * it has settled its prepare (SLNT-1038). The prepare's probe reads `/etc/passwd`, and a user
+   * a shell made a few milliseconds earlier read as one the image ships: the launch fell back to
+   * shared, a confirmed "no" was recorded against the image, and the shell ran as a person where
+   * the session ran as root. Returns null to go on (the layout is settled, or nothing here is
+   * waiting: a shared launch, a launch settled already, or one this process did not decide, as
+   * after a restart, where no probe of this process is left to race), or the words a start is
+   * refused with: the launch's own refusal, or the bound reached.
+   */
+  const awaitPrepare = (launchId: string): Effect.Effect<string | null> =>
+    Effect.suspend(() => {
+      const latch = preparing.get(launchId);
+      if (latch === undefined) return Effect.succeed(null);
+      if (Deferred.isDoneUnsafe(latch)) return Deferred.await(latch);
+      return Deferred.await(latch).pipe(
+        Effect.timeoutOption(Duration.seconds(PREPARE_WAIT_SECONDS)),
+        Effect.flatMap((settled) => {
+          if (Option.isSome(settled)) return Effect.succeed(settled.value);
+          // A launch that ended without settling (its create failed, a defect): nobody waits on
+          // it again, and this start is refused once, having made nothing.
+          if (preparing.get(launchId) === latch) preparing.delete(launchId);
+          return Effect.logWarning(
+            "session engine: a launch's prepare did not settle; a start was refused",
+          ).pipe(Effect.annotateLogs({ launchId }), Effect.as(PREPARE_UNSETTLED_REFUSAL));
+        }),
+      );
+    });
+
+  const settlePrepare: HarnessLayoutSteps["settlePrepare"] = (input) =>
+    settlePrepareNow(input).pipe(
+      Effect.onExit((exit) =>
+        prepareSettled(
+          input.launchId,
+          Exit.isSuccess(exit)
+            ? null
+            : Option.match(Exit.findErrorOption(exit), {
+                onNone: () => PREPARE_ENDED_REFUSAL,
+                onSome: (error) => error.message,
+              }),
+        ),
+      ),
+    );
+
+  const settlePrepareNow: HarnessLayoutSteps["settlePrepare"] = Effect.fn(
     "HarnessLayoutSteps.settlePrepare",
   )(function* (input) {
     const { layout } = input;
@@ -1646,7 +1739,17 @@ export const makeHarnessLayoutSteps = (deps: {
     };
   });
 
-  const refusedOwnerMap: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fn(
+  const refusedOwnerMap: HarnessLayoutSteps["refusedOwnerMap"] = (input) =>
+    refusedOwnerMapNow(input).pipe(
+      // The create was refused, so this launch prepares nothing: a start waiting on it is told.
+      Effect.tap((refusal) =>
+        refusal === null || input.launchId === undefined
+          ? Effect.void
+          : prepareSettled(input.launchId, refusal.message),
+      ),
+    );
+
+  const refusedOwnerMapNow: HarnessLayoutSteps["refusedOwnerMap"] = Effect.fn(
     "HarnessLayoutSteps.refusedOwnerMap",
   )(function* (input) {
     const { layout } = input;
@@ -1831,6 +1934,9 @@ export const makeHarnessLayoutSteps = (deps: {
       return null;
     }
     const launchId = input.launchId;
+    // As `processAs`: their user is made only once the launch's prepare has read the image.
+    const unsettled = yield* awaitPrepare(launchId);
+    if (unsettled !== null) return yield* layoutRefused(unsettled);
     if ((yield* layoutOfLaunch(launchId)) !== "person") return null;
     const identity = yield* repo
       .ensureIdentity(input.accountId)
@@ -1891,6 +1997,9 @@ export const makeHarnessLayoutSteps = (deps: {
         return null;
       }
       const launchId = input.launchId;
+      // Nothing makes their user before the launch's prepare has read the image (SLNT-1038).
+      const unsettled = yield* awaitPrepare(launchId);
+      if (unsettled !== null) return yield* layoutRefused(unsettled);
       if ((yield* layoutOfLaunch(launchId)) !== "person") {
         // A fallback executor this process did not settle (a restart since): its reset to root
         // may be pending, so it is made pending again, from the store's record (decision 10).

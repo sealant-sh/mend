@@ -45,6 +45,8 @@ import { describe, expect, it } from "vitest";
 import {
   HarnessLayoutConfig,
   HarnessLayoutConfigLive,
+  PREPARE_UNSETTLED_REFUSAL,
+  PREPARE_WAIT_SECONDS,
   type PersonHome,
   UNKNOWN_LAUNCH_REFUSAL,
   loginLeftOutWords,
@@ -3332,4 +3334,213 @@ describe("a fallback's Remote-SSH reset (docs/adr/0016, decision 10)", () => {
       }),
     );
   });
+});
+
+/** The execs that made or ensured someone's user. */
+const userExecs = (execs: ReadonlyArray<{ readonly script: string }>) =>
+  execs.filter((exec) => exec.script.includes("mend_person "));
+
+describe("a start while its executor's prepare runs (SLNT-1038)", () => {
+  /**
+   * Alice's person launch on a fresh worktree, decided and not yet settled: its prepare's exec,
+   * whose probe reads `/etc/passwd`, is still running. Every exec the steps run is logged.
+   */
+  const preparing = (options: { readonly launchId?: string } = {}) =>
+    Effect.gen(function* () {
+      const launchId = options.launchId ?? "launch-1";
+      const execs: Array<{ readonly script: string; readonly user: string | null }> = [];
+      const log: Array<string> = [];
+      const state = makeHarnessLayoutsMemoryState();
+      const core = coreCalls();
+      const made = yield* stepsWith("person", state, {
+        platform: platformOf(core),
+        execs,
+        log,
+        grace: Duration.zero,
+      });
+      const layout = yield* made.steps.decide(decideInput(launchId));
+      const alice = yield* made.repo.ensureIdentity("user-alice");
+      const maria = yield* made.repo.ensureIdentity("user-maria");
+      return { ...made, layout, alice, maria, execs, log, state, core, launchId };
+    });
+
+  const startOf = (steps: HarnessLayoutSteps, accountId: string, launchId: string = "launch-1") =>
+    steps.processAs({
+      workspace,
+      launchId,
+      accountId,
+      sessionId: "sess-1",
+      worktreeId: "wt-1",
+      harness: "claude",
+      live: Effect.succeed(new Set<string>()),
+    });
+
+  effectIt.effect(
+    "makes nobody's user until the prepare settles, then makes the shell's person",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* preparing();
+        // Maria opens a shell while Alice's launch is still in its prepare.
+        const starting = yield* startOf(world.steps, "user-maria").pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.seconds(5));
+        expect(starting.pollUnsafe()).toBeUndefined();
+        expect(userExecs(world.execs)).toEqual([]);
+        yield* world.steps.settlePrepare({
+          layout: world.layout,
+          ...settleInput(
+            world.launchId,
+            `mend-layout probed\nmend-layout made ${world.alice.name}\nmend-layout ready\n`,
+          ),
+        });
+        const started = yield* Fiber.join(starting);
+        expect(started?.user.name).toBe(world.maria.name);
+        expect(userExecs(world.execs).map((exec) => exec.script)).toEqual([
+          expect.stringContaining(`mend_person ${world.maria.name} `),
+        ]);
+        // The image's answer is the prepare's own: yes, confirmed.
+        expect([...world.state.capabilities.values()].map((record) => record.person)).toEqual([
+          true,
+        ]);
+      }),
+  );
+
+  effectIt.effect(
+    "a prepare that falls back to shared: the waiting shell makes no user and runs as root, as the session does",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* preparing();
+        const starting = yield* startOf(world.steps, "user-alice").pipe(Effect.forkChild);
+        yield* TestClock.adjust(Duration.seconds(1));
+        expect(starting.pollUnsafe()).toBeUndefined();
+        const settled = yield* world.steps.settlePrepare({
+          layout: world.layout,
+          ...settleInput(
+            world.launchId,
+            "mend-layout missing no ACLs on /workspace\nmend-layout probed\n",
+          ),
+        });
+        expect(settled.layout).toBe("shared");
+        expect(yield* Fiber.join(starting)).toBeNull();
+        expect(userExecs(world.execs)).toEqual([]);
+        // And every start after it, as before.
+        expect(yield* startOf(world.steps, "user-maria")).toBeNull();
+        expect(userExecs(world.execs)).toEqual([]);
+      }),
+  );
+
+  effectIt.effect("a refused prepare refuses the waiting shell in the launch's words", () =>
+    Effect.gen(function* () {
+      const world = yield* preparing();
+      const starting = yield* startOf(world.steps, "user-maria").pipe(
+        Effect.result,
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(Duration.seconds(1));
+      const refusal = yield* world.steps
+        .settlePrepare({
+          layout: world.layout,
+          ...settleInput(
+            world.launchId,
+            `mend-layout probed\nmend-layout failed ${world.alice.name} identity: Mend did not answer\n`,
+          ),
+        })
+        .pipe(Effect.flip);
+      const result = yield* Fiber.join(starting);
+      expect(result._tag).toBe("Failure");
+      if (result._tag === "Failure") {
+        expect(result.failure.code).toBe("harness_layout_refused");
+        expect(result.failure.message).toBe(refusal.message);
+      }
+      expect(userExecs(world.execs)).toEqual([]);
+    }),
+  );
+
+  effectIt.effect(
+    "an owner map sealant refused at create releases the waiting shell, refused",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* preparing();
+        const starting = yield* startOf(world.steps, "user-maria").pipe(
+          Effect.result,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust(Duration.seconds(1));
+        const refused = yield* world.steps.refusedOwnerMap({
+          layout: world.layout,
+          launchId: world.launchId,
+          error: coreRefused("owner-map-unsupported"),
+        });
+        const result = yield* Fiber.join(starting);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") expect(result.failure.message).toBe(refused?.message);
+        expect(userExecs(world.execs)).toEqual([]);
+      }),
+  );
+
+  effectIt.effect(
+    "a prepare that never settles: the shell is refused once at the bound, having made nothing, and the next start does not wait",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* preparing();
+        const starting = yield* startOf(world.steps, "user-maria").pipe(
+          Effect.result,
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust(Duration.seconds(PREPARE_WAIT_SECONDS - 1));
+        expect(starting.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust(Duration.seconds(1));
+        const result = yield* Fiber.join(starting);
+        expect(result._tag).toBe("Failure");
+        if (result._tag === "Failure") {
+          expect(result.failure.message).toBe(PREPARE_UNSETTLED_REFUSAL);
+        }
+        expect(userExecs(world.execs)).toEqual([]);
+        const again = yield* startOf(world.steps, "user-maria");
+        expect(again?.user.name).toBe(world.maria.name);
+      }),
+  );
+
+  effectIt.effect(
+    "after a restart nothing waits: no probe of this process is left, and the store says person",
+    () =>
+      Effect.gen(function* () {
+        const world = yield* preparing();
+        const restarted = yield* stepsWith("person", world.state, {
+          platform: platformOf(world.core),
+          execs: world.execs,
+          log: world.log,
+          grace: Duration.zero,
+        });
+        const started = yield* startOf(restarted.steps, "user-maria");
+        expect(started?.user.name).toBe(world.maria.name);
+        expect(userExecs(world.execs)).toHaveLength(1);
+      }),
+  );
+
+  effectIt.effect("a paste into a person's home waits for the prepare as a shell does", () =>
+    Effect.gen(function* () {
+      const world = yield* preparing();
+      const writing = yield* Effect.scoped(
+        world.steps.homeForWrite({
+          workspace,
+          launchId: world.launchId,
+          accountId: "user-maria",
+          sessionId: "sess-1",
+          worktreeId: "wt-1",
+        }),
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust(Duration.seconds(1));
+      expect(writing.pollUnsafe()).toBeUndefined();
+      expect(world.execs).toEqual([]);
+      yield* world.steps.settlePrepare({
+        layout: world.layout,
+        ...settleInput(
+          world.launchId,
+          "mend-layout missing no ACLs on /workspace\nmend-layout probed\n",
+        ),
+      });
+      expect(yield* Fiber.join(writing)).toBeNull();
+      expect(world.execs).toEqual([]);
+    }),
+  );
 });
