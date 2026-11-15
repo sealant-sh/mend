@@ -1136,7 +1136,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       return !now.paused && now.currentTime >= 6 ? now : null;
     });
   } catch (error) {
-    note(`observed · big.mp4 · the video when the seek stalled: ${JSON.stringify(await videoState())}`);
+    note(
+      `observed · big.mp4 · the video when the seek stalled: ${JSON.stringify(await videoState())}`,
+    );
     throw error;
   }
   note("window · big.mp4 · seeks · ends");
