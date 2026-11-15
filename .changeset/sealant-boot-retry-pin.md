@@ -10,8 +10,7 @@ Update the bundled sealant SDK and images to 0.40.0-next.894, which runs workspa
   unexpected end of file", and starting it again worked. sealantd now asks again, waiting 0.25 s,
   0.5 s, 1 s, 2 s and then 4 s between tries, and gives up about 20 seconds after the first failure.
   If it still fails, the error says how many times it tried and for how long. A connection that
-  hangs for longer than those 20 seconds before it drops is not retried yet: the start fails with
-  "capture plan.get failed after 1 attempts", and starting the session again works.
+  hangs before it drops is asked again too, from sealant 0.40.0-next.918 on (see that entry).
 - **Every workspace image is built once more.** The workspace runtime changed, so after the upgrade
   the first session in each project on Boat waits for its image to be built again, as long as a
   first build takes. On Docker and Kubernetes, each blueprint's image is built again once; the steps
