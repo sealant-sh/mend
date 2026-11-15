@@ -2927,7 +2927,19 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           preReleaseMemory: yield* (yield* SessionEngine).preReleaseMemory(session.worktreeId),
           launchAdmission: LAUNCH_ADMISSION,
         });
-      }),
+      }).pipe(
+        // Clients poll this once a second while an agent starts; a read slower than that is
+        // logged, to find what holds it while several workspaces start together.
+        Effect.timed,
+        Effect.tap(([took]) =>
+          Duration.isGreaterThanOrEqualTo(took, Duration.seconds(1))
+            ? Effect.logWarning("session detail read was slow").pipe(
+                Effect.annotateLogs({ sessionId: params.id, ms: Duration.toMillis(took) }),
+              )
+            : Effect.void,
+        ),
+        Effect.map(([, detail]) => detail),
+      ),
     )
     .handle("wakeScreen", ({ params }) =>
       Effect.gen(function* () {

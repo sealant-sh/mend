@@ -331,6 +331,11 @@ export class FakeWorkbench {
   steerRefusal: { readonly status: number; readonly tag: string } | null = null;
   /** How many of the next steer POSTs answer 503 before anything is stored. */
   steerOutages = 0;
+  /**
+   * How many of the next `GET /api/sessions/:id` reads Mend drops unanswered, closing the
+   * connection, as a Mend too busy bringing up workspaces to answer one does.
+   */
+  sessionReadOutages = 0;
   interruptUnavailable = false;
   steerResponse: "normal" | "lost" | "malformed" | "mismatched" | "unavailable" = "normal";
   queuedDestination:
@@ -1606,6 +1611,11 @@ export class FakeWorkbench {
         return json(200, { removed: true, leftover: null });
       }
       if (method === "GET" && sub === undefined) {
+        if (this.sessionReadOutages > 0) {
+          this.sessionReadOutages -= 1;
+          response.destroy();
+          return true;
+        }
         const changeId = this.changes.get(id) || null;
         return json(200, {
           session,

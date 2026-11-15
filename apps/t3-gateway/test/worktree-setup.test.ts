@@ -251,6 +251,45 @@ describe("a new worktree's setup script", () => {
       ),
   );
 
+  it.live(
+    "asks Mend again when it drops a session read while the agent starts, and sends the opening message once",
+    () =>
+      withGateway((mend) =>
+        Effect.gen(function* () {
+          mend.workbench.addProject("project-1", "mend");
+          const agent = mend.workbench.holdNextAgent();
+          yield* Effect.addFinalizer(() => Effect.sync(agent.release));
+          const { rpc } = yield* pairAndConnect(mend, "SESSION-READ-DROPPED");
+          const card = yield* feed(rpc[WS_METHODS.subscribeWorktreeSetup]({ threadId: THREAD }));
+          yield* rpc[ORCHESTRATION_V2_WS_METHODS.launchThread](launchInput());
+          yield* card.next(
+            isSnapshot((snapshot) => stageOf(snapshot, "agent")?.status === "running"),
+          );
+          // Three workspaces coming up at once: Mend leaves the startup wait's reads unanswered.
+          mend.workbench.sessionReadOutages = 3;
+          yield* eventually(
+            () => mend.workbench.sessionReadOutages === 0,
+            "the dropped session reads",
+          );
+          assert.isTrue(
+            yield* card.quiet((snapshot) => snapshot?.phase === "failed", "1200 millis"),
+            "a read Mend did not answer does not fail the preparation",
+          );
+          agent.release();
+          const done = yield* card.next(isSnapshot((snapshot) => snapshot.phase === "done"));
+          assert.strictEqual(stageOf(done, "agent")?.status, "done");
+          yield* eventually(
+            () => calls(mend, "POST", "/turns").length === 1,
+            "the opening message",
+          );
+          // Asking again re-reads; it never launches the agent again or sends a second opening turn.
+          yield* Effect.sleep("300 millis");
+          assert.lengthOf(mend.workbench.launches, 1);
+          assert.lengthOf(calls(mend, "POST", "/turns"), 1);
+        }),
+      ),
+  );
+
   for (const withMessage of [true, false]) {
     it.live(
       `Stop cancels an unanswered launch refusal ${withMessage ? "with" : "without"} an opening message`,
