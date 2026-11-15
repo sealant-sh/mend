@@ -11,8 +11,13 @@ import { minioFixture, prepareMinio } from "./s3-contract-minio.mjs";
 
 // Owned interoperability fixtures only. MinIO deliberately omits prefix multipart listing.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// Docker Hub limits anonymous pulls per runner address, and CI has no login. Both images come by
+// digest from Google's Docker Hub mirror, which has no anonymous pull limit. Garage publishes only
+// to Docker Hub; its tag is the one compose declares, so a Garage bump there pins its digest here.
 const alpine =
-  "alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
+  "mirror.gcr.io/library/alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8";
+const garageTag = "v2.4.1";
+const garage = `mirror.gcr.io/dxflrs/garage:${garageTag}@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020`;
 const execute = promisify(execFile);
 
 async function main() {
@@ -115,13 +120,26 @@ async function main() {
   let originalFailure;
   try {
     assert.notEqual(process.platform, "win32", "the fixture runner requires POSIX process groups");
-    const garage = (await readFile(path.join(root, "deploy/docker/compose.v2.yaml"), "utf8")).match(
-      /^\s+image: (dxflrs\/garage:\S+)$/m,
-    )?.[1];
-    assert.ok(garage, "compose must declare its Garage image");
+    const declared = (
+      await readFile(path.join(root, "deploy/docker/compose.v2.yaml"), "utf8")
+    ).match(/^\s+image: (dxflrs\/garage:\S+)$/m)?.[1];
+    assert.equal(
+      declared,
+      `dxflrs/garage:${garageTag}`,
+      "the contract must run the Garage compose declares: pin the new tag's index digest in scripts/test-s3-contract.mjs",
+    );
     const fixture = minioFixture();
     await docker("info");
-    for (const image of [garage, alpine]) await docker("pull", image);
+    for (const image of [garage, alpine]) {
+      try {
+        await docker("pull", image);
+      } catch (error) {
+        throw new Error(
+          `S3 fixture image pull outage: ${image} could not be pulled. This is an infrastructure failure; S3 contract tests have not run. Retry when the registry recovers.`,
+          { cause: error },
+        );
+      }
+    }
     const binaryPath = await prepareMinio(fixture, abort.signal);
     for (const backend of ["garage", "minio"]) {
       abort.signal.throwIfAborted();
