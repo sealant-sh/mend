@@ -10,6 +10,7 @@ parentPort?.on("message", (request: WorkerRequest) => {
   if (request._tag !== "Decode") return;
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2_500);
   const channel = new BroadcastChannel(SLOW_DECODE_CHANNEL);
+  // oxlint-disable-next-line unicorn/require-post-message-target-origin -- a BroadcastChannel, which has no origin.
   channel.postMessage("finished");
   channel.close();
 });

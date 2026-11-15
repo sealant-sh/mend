@@ -106,7 +106,7 @@ const threadOf = (url: URL): Thread => {
     stopAsked = true;
     // Held until it exits, so that a wait for the exit is not cut short by an empty event loop.
     worker.ref();
-    worker.postMessage(STOP);
+    worker.postMessage(STOP, []);
   };
   const stop = Effect.suspend(() => {
     if (!alive) return Effect.void;
