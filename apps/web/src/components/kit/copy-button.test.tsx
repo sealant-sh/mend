@@ -36,6 +36,16 @@ const press = async () => {
   });
 };
 
+/** A press whose async copy settles on the fake clock. */
+const pressOnTestClock = async () => {
+  const button = document.querySelector("button");
+  if (button === null) throw new Error("no button");
+  await act(async () => {
+    button.click();
+    await vi.advanceTimersByTimeAsync(0);
+  });
+};
+
 const render = () => {
   const host = document.createElement("div");
   document.body.append(host);
@@ -65,16 +75,6 @@ describe("Copy over plain HTTP", () => {
 });
 
 describe("the Copied note's timer, on the test clock", () => {
-  /** A press whose async copy settles on the fake clock. */
-  const pressOnTestClock = async () => {
-    const button = document.querySelector("button");
-    if (button === null) throw new Error("no button");
-    await act(async () => {
-      button.click();
-      await vi.advanceTimersByTimeAsync(0);
-    });
-  };
-
   it("clears Copied after a second and a half", async () => {
     vi.useFakeTimers();
     plainHttp(true);
