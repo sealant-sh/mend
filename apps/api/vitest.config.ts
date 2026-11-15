@@ -3,4 +3,5 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   plugins: [vitestCiGuard({ packageName: "@mend/api-server" })],
+  test: { globalSetup: ["./test/docker-fixtures.setup.ts"] },
 });

@@ -15,4 +15,4 @@ export {
   type World,
 } from "./engine/fixture.ts";
 export { makeScreenWorld, screenSealantLayer } from "./screen-world.ts";
-export { connect, dockerReady, startXvnc, type Xvnc } from "./xvnc.ts";
+export { connect, dockerReady, fixtureImage, startXvnc, type Xvnc } from "./xvnc.ts";
