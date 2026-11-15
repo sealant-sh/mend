@@ -269,37 +269,75 @@ describe("outputTailOf", () => {
   });
 });
 
+/** A step run as the workspace runs it, with what a test reads of it. */
+const startStep = (step: string) => {
+  const runId = crypto.randomUUID();
+  const [command = "env", ...args] = setupStepArgv(runId, step, { MEND_SESSION_ID: "session-1" });
+  const child = spawn(command, args, { env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" } });
+  const exited = new Promise<number | null>((resolve) => child.once("exit", resolve));
+  let output = "";
+  /** Resolves once the step has printed `line`, which it does when its processes are running. */
+  const printed = (line: string) =>
+    new Promise<void>((resolve, reject) => {
+      const check = () => {
+        if (output.split("\n").includes(line)) resolve();
+      };
+      child.stdout.on("data", (chunk: Buffer) => {
+        output += chunk.toString("utf8");
+        check();
+      });
+      child.once("exit", () => reject(new Error(`the step exited before printing ${line}`)));
+      check();
+    });
+  const marked = () =>
+    fs
+      .readdirSync("/proc")
+      .filter((entry) => /^\d+$/.test(entry))
+      .filter((pid) => {
+        try {
+          return fs
+            .readFileSync(`/proc/${pid}/environ`, "utf8")
+            .split("\0")
+            .includes(`MEND_SETUP_RUN=${runId}`);
+        } catch {
+          return false;
+        }
+      });
+  const stop = () => {
+    const [stopCommand = "sh", ...stopArgs] = setupStopArgv(runId);
+    return spawnSync(stopCommand, stopArgs).status;
+  };
+  return { exited, printed, marked, stop };
+};
+
 describe("a setup step and its Stop, in a real shell", () => {
   it("ends the step and every process it started", { timeout: 15_000 }, async () => {
-    const runId = crypto.randomUUID();
-    const [command = "env", ...args] = setupStepArgv(runId, "sleep 30 & sleep 30; wait", {
-      MEND_SESSION_ID: "session-1",
-    });
-    const step = spawn(command, args, { env: { PATH: process.env["PATH"] ?? "/usr/bin:/bin" } });
-    const exited = new Promise<number | null>((resolve) => step.once("exit", resolve));
-    const marked = () =>
-      fs
-        .readdirSync("/proc")
-        .filter((entry) => /^\d+$/.test(entry))
-        .filter((pid) => {
-          try {
-            return fs
-              .readFileSync(`/proc/${pid}/environ`, "utf8")
-              .split("\0")
-              .includes(`MEND_SETUP_RUN=${runId}`);
-          } catch {
-            return false;
-          }
-        });
-    for (let waited = 0; marked().length < 3 && waited < 5000; waited += 50) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    expect(marked().length, "the step's shell and both sleeps").toBeGreaterThanOrEqual(3);
+    const step = startStep("sleep 30 & sleep 30 & echo started; wait");
+    await step.printed("started");
+    expect(step.marked().length, "the step's shell and both sleeps").toBeGreaterThanOrEqual(3);
 
-    const [stopCommand = "sh", ...stopArgs] = setupStopArgv(runId);
-    expect(spawnSync(stopCommand, stopArgs).status).toBe(0);
+    expect(step.stop()).toBe(0);
 
-    expect(await exited).not.toBe(0);
-    expect(marked()).toEqual([]);
+    expect(await step.exited).not.toBe(0);
+    expect(step.marked()).toEqual([]);
   });
+
+  it(
+    "runs none of the step's commands once a process it waits on is ended",
+    {
+      timeout: 15_000,
+    },
+    async () => {
+      // The reader comes after the sleep in the Stop's walk, so it sees the sleep end first.
+      const after = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-stop-")), "after");
+      const step = startStep(`sleep 30 | { echo started; read -r line; echo ran > '${after}'; }`);
+      await step.printed("started");
+
+      expect(step.stop()).toBe(0);
+
+      expect(await step.exited).not.toBe(0);
+      expect(step.marked()).toEqual([]);
+      expect(fs.existsSync(after), "the command after the read ran").toBe(false);
+    },
+  );
 });

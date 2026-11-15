@@ -81,19 +81,26 @@ export const setupStepArgv = (
   step,
 ];
 
-/** Exec has no cancel, so this finds a run's processes by the marker their environment carries. */
+/**
+ * Exec has no cancel, so this finds a run's processes by the marker their environment carries.
+ * It freezes them all before it ends any: `/proc` is walked in string order, not by age, so a
+ * step's shell can come after its children, and unfrozen it would run its next command once they
+ * ended. A process forked while the freeze walks is ended by the walks after it.
+ */
 export const setupStopArgv = (runId: string): ReadonlyArray<string> => [
   "sh",
   "-c",
   [
     "signal() {",
+    "  run=$1; shift",
     "  for dir in /proc/[0-9]*; do",
-    `    if tr '\\0' '\\n' < "$dir/environ" 2>/dev/null | grep -qxF "${SETUP_RUN_ENV}=$1"; then`,
-    '      kill -s "$2" "${dir#/proc/}" 2>/dev/null',
+    `    if tr '\\0' '\\n' < "$dir/environ" 2>/dev/null | grep -qxF "${SETUP_RUN_ENV}=$run"; then`,
+    '      for sig do kill -s "$sig" "${dir#/proc/}" 2>/dev/null; done',
     "    fi",
     "  done",
     "}",
-    'signal "$1" TERM',
+    'signal "$1" STOP',
+    'signal "$1" TERM CONT',
     "sleep 2",
     'signal "$1" KILL',
     "exit 0",
