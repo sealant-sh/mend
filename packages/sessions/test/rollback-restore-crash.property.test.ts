@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
 
@@ -33,6 +34,12 @@ const STUCK = "The previous execution lock contains unknown evidence";
 const SEED = 1017;
 const RUNS = 4;
 const PARALLEL = 4;
+/**
+ * Where the cases live when the host has it. The helper fsyncs every write, and a SIGKILL never
+ * needs one (the page cache outlives the killed process), so a disk adds only its latency: on a CI
+ * runner sharing its disk with other suites, that more than doubled the file's time (SLNT-1029).
+ */
+const TMPFS = "/dev/shm";
 
 const GIT_ENV = {
   PATH: process.env["PATH"],
@@ -327,8 +334,11 @@ const classify = async (input: {
 
 describe("Undo's file restore under a crash at every step", () => {
   it("leaves each path as before or as restored, and a second Undo finishes it", async () => {
-    const { stdout } = await exec("mktemp", ["-d", "-t", "mend-restore-crash.XXXXXX"]);
-    const base = stdout.trim();
+    const scratch = await fs.access(TMPFS, fs.constants.W_OK).then(
+      () => TMPFS,
+      () => os.tmpdir(),
+    );
+    const base = await fs.mkdtemp(path.join(scratch, "mend-restore-crash."));
     roots.push(base);
     await fs.writeFile(path.join(base, "crash-hook.cjs"), CRASH_HOOK);
     const seen: Record<Known, number> = { ...KNOWN };
