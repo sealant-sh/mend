@@ -39,6 +39,13 @@ Compose project yourself with the variable in an override file (see
   Nothing in the worktree changes on a refusal; fixing the image makes the next launch work. A Mend
   older than 0.36 cannot resume that worktree's sessions.
 
+  When the image can run per-person users but a launch still could not make them, the refusal says
+  what failed and asks you to start again, and nothing is held against the image:
+
+  ```text
+  This workspace could not make its per-person users (mdflf76rx: useradd: UID 40001 is not unique). Nothing was started; start the session again.
+  ```
+
 - With `MEND_HARNESS_LAYOUT=shared` and no layout recorded anywhere, Mend reads no layout from the
   store.
 - The default holds for every server on the capture store, a loopback `mend server setup` on one

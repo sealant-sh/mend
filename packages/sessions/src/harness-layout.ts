@@ -136,6 +136,20 @@ export const ownerMapRefusal = (found: string): string =>
 export const identityRefusal = (failed: ReadonlyArray<string>): string =>
   `This workspace could not give each person their Mend identity (${failed.join("; ")}). Nothing was started; the next launch tries again.`;
 
+/**
+ * A person launch whose image passed the probe, nothing missing, but whose people's users could
+ * not be made (SLNT-1013: two copies of the person script at once, before they were kept apart).
+ * Not the image's: the words name what failed and say to start again, never to change the image
+ * or the worktree, and nothing is recorded against the image.
+ */
+export const usersNotMadeRefusal = (failed: ReadonlyArray<string>): string =>
+  `This workspace could not make its per-person users` +
+  `${failed.length === 0 ? "" : ` (${failed.join("; ")})`}. Nothing was started; start the session again.`;
+
+/** Why a fresh worktree's launch ran as one person when its users could not be made. */
+export const usersNotMadeFallback = (failed: ReadonlyArray<string>): string =>
+  `the per-person users could not be made${failed.length === 0 ? "" : ` (${failed.join("; ")})`}, so this workspace takes one person`;
+
 /** A person launch sealant refused because it could not check the image (`owner-map-unverified`). */
 export const UNCHECKED_IMAGE_REFUSAL =
   "Sealant could not check whether this workspace's image runs per-person users, so nothing was started; the next launch tries again.";
@@ -791,11 +805,93 @@ export interface PersonHomeOptions {
 }
 
 /**
+ * The longest one copy of the person scripts waits while another copy that is still running
+ * makes or checks people in the same executor (`personLockFunctions`). At the bound it fails,
+ * saying so, and makes nothing.
+ */
+export const PERSON_LOCK_WAIT_SECONDS = 60;
+
+/**
+ * A lock with no holder written in it is taken as left behind once it is this old: a copy writes
+ * its holder right after it takes the lock, so only a copy killed between the two leaves none.
+ */
+export const PERSON_LOCK_UNKNOWN_HOLDER_SECONDS = 10;
+
+/**
+ * Where the person scripts take their lock: beside the runtime directories, in `/run` unless a
+ * test names another runtime root. One lock per executor, for every person: `useradd` and
+ * `groupadd` write the same `/etc` files whoever they make.
+ */
+const personLockOf = (options: Pick<PersonHomeOptions, "runRoot">): string => {
+  const runRoot = options.runRoot ?? "/run/user";
+  const parent = runRoot.slice(0, Math.max(runRoot.lastIndexOf("/"), 0));
+  return `${parent}/mend-person.lock`;
+};
+
+/**
+ * The lock that keeps two copies of the person scripts apart in one executor (SLNT-1013): the
+ * launch's prepare and a person's first shell, or two people's first processes, run at once,
+ * and each checks for a user and then makes it, so both could find none and both run `useradd`
+ * ("UID 40001 is not unique" for the one that lost). Only a POSIX shell's own tools, and
+ * `mkdir`, `rm`, `stat` and `date`, which the scripts already use: `flock` is not on every base.
+ *
+ * - `mend_lock <dir>` takes the lock by making `<dir>` (atomic), then writes its holder in it: its
+ *   pid and its start time, read from `/proc/self/stat`, so a pid used again by another process
+ *   is never taken for the holder. Uncontended, that is one `mkdir` and two builtin reads.
+ * - Another copy waits while the holder runs, polling every 50 ms, at most
+ *   `PERSON_LOCK_WAIT_SECONDS`; at the bound `mend_lock` returns 1 and its caller fails, saying
+ *   another copy is still making the person. A holder that is gone (its exec killed, a launch
+ *   cancelled, a server restart that took the executor's processes) is seen at once by its pid,
+ *   and its lock taken over; one with no holder written is taken over after
+ *   `PERSON_LOCK_UNKNOWN_HOLDER_SECONDS`.
+ * - Taking a lock over happens under a second lock, `<dir>.break`, and checks again inside it, so
+ *   two waiters never both remove one: the second finds the first's live lock. A copy killed
+ *   inside those few lines leaves `<dir>.break`, cleared after
+ *   `PERSON_LOCK_UNKNOWN_HOLDER_SECONDS`.
+ * - `mend_unlock <dir>` removes the lock only while it is still this copy's.
+ * - Where the lock cannot be made at all (a read-only `/run`), the scripts run without it, as they
+ *   did before.
+ */
+const personLockFunctions = (lock: string): string =>
+  [
+    `p_lock=${shellQuote(lock)}`,
+    // `p_id` is `<pid> <start time>` of process `$1` (`self`: this shell), from its stat line.
+    `mend_id() { p_id=; read -r lk_st 2>/dev/null < "/proc/$1/stat" || return 1; ` +
+      `set -- \${lk_st##*') '}; [ -n "\${20:-}" ] || return 1; p_id="\${lk_st%% *} \${20}"; return 0; }`,
+    // True when the lock's holder is gone; never for a lock that is not there.
+    `mend_stale() { [ -d "$1" ] || return 1; lk_h=; read -r lk_h 2>/dev/null < "$1/holder" || lk_h=; ` +
+      `if [ -n "$lk_h" ]; then if mend_id "\${lk_h%% *}" && [ "$p_id" = "$lk_h" ]; then return 1; fi; return 0; fi; ` +
+      `lk_a=$(stat -c %Y "$1" 2>/dev/null) || return 1; ` +
+      `if [ $(( $(date +%s) - lk_a )) -ge ${PERSON_LOCK_UNKNOWN_HOLDER_SECONDS} ]; then return 0; fi; return 1; }`,
+    `mend_lock() { lk_me=-; [ -d "\${1%/*}" ] || mkdir -p "\${1%/*}" 2>/dev/null || :; [ -w "\${1%/*}" ] || return 0; lk_end=; ` +
+      `until mkdir "$1" 2>/dev/null; do ` +
+      `[ -n "$lk_end" ] || lk_end=$(( $(date +%s) + ${PERSON_LOCK_WAIT_SECONDS} )); ` +
+      `if mend_stale "$1"; then ` +
+      `if mkdir "$1.break" 2>/dev/null; then if mend_stale "$1"; then rm -rf "$1"; fi; rmdir "$1.break" 2>/dev/null || :; continue; fi; ` +
+      `if lk_a=$(stat -c %Y "$1.break" 2>/dev/null) && [ $(( $(date +%s) - lk_a )) -ge ${PERSON_LOCK_UNKNOWN_HOLDER_SECONDS} ]; then rmdir "$1.break" 2>/dev/null || :; fi; fi; ` +
+      `if [ "$(date +%s)" -ge "$lk_end" ]; then return 1; fi; ` +
+      `sleep 0.05 2>/dev/null || sleep 1; done; ` +
+      `mend_id self || p_id=; lk_me=$p_id; printf '%s\\n' "$lk_me" > "$1/holder" || :; return 0; }`,
+    `mend_unlock() { [ "$lk_me" != - ] || return 0; lk_h=; read -r lk_h 2>/dev/null < "$1/holder" || lk_h=; ` +
+      `if [ "$lk_h" = "$lk_me" ]; then rm -rf "$1"; fi; lk_me=-; return 0; }`,
+  ].join("\n");
+
+/** What a copy that waited for another to the bound says (`personLockFunctions`). */
+const personLockTimeout = (name: string): string =>
+  `another copy was still making ${name} after ${PERSON_LOCK_WAIT_SECONDS} s`;
+
+/**
  * `personHomeScript`'s work as one shell function, `mend_person <name> <uid> <account id>
  * <home>`, defined once however many people a prepare makes (review of mend#582, finding 2: a
  * copy per person grew the exec past Linux's 128 KiB argument limit at about 13 people). The
  * person-side part rides once too, in `as_person`, which takes the home and saved directory as
  * its arguments.
+ *
+ * One copy at a time in an executor (`personLockFunctions`, SLNT-1013): `mend_person` takes the
+ * lock, runs the work (`mend_make`) in a subshell of its own under `set -e`, so a failure there
+ * ends only the subshell, gives the lock back, and returns the work's status. A copy that waited
+ * finds everything the first made, and every step is idempotent: it keeps the user, makes no
+ * skeleton copy, and finds the directories, owners and links already as it would make them.
  */
 export const personHomeFunction = (options: PersonHomeOptions): string => {
   const q = shellQuote;
@@ -804,7 +900,18 @@ export const personHomeFunction = (options: PersonHomeOptions): string => {
   const group = MEND_GROUP.gid;
   return [
     `as_person=${q(personHomeAsPerson())}`,
+    personLockFunctions(personLockOf(options)),
     `mend_person() {`,
+    `set -e`,
+    `mend_lock "$p_lock" || { printf 'mend: %s\\n' "${personLockTimeout("$1")}" >&2; return 1; }`,
+    `set +e`,
+    `( set -e; mend_make "$@" )`,
+    `lk_r=$?`,
+    `set -e`,
+    `mend_unlock "$p_lock"`,
+    `return "$lk_r"`,
+    `}`,
+    `mend_make() {`,
     `set -e`,
     `p_n=$1; p_u=$2; p_h=$4; p_p=${q(people)}; p_s="$p_p/$3"; p_o="$2:${group}"`,
     `p_t=${q(options.tmpRoot ?? "/tmp")}"/u-$2"; p_r=${q(options.runRoot ?? "/run/user")}"/$2"`,
@@ -898,6 +1005,13 @@ export const personHomeEnsureScript = (
     `fail() { printf 'mend: %s\\n' "$1" >&2; exit 1; }`,
     `[ -L "$h" ] && fail "unexpected link: $h"`,
     `root=0; [ "$(id -u)" = 0 ] && root=1`,
+    // Checked under the lock the whole script takes (`personLockFunctions`, SLNT-1013), so a copy
+    // making them at this moment is waited for: a home whose user exists may still be having its
+    // skeleton copied. The checks run in a subshell that exits 3 when the whole script is needed,
+    // which then takes the lock again itself.
+    personLockFunctions(personLockOf(options)),
+    `mend_lock "$p_lock" || fail ${shellQuote(personLockTimeout(person.name))}`,
+    `(`,
     // A user that is there is checked first, whether their home is there or not (review 3 of
     // mend#619, R4): only a user or home that is missing goes to the whole script.
     `known=0; [ "$root" = 1 ] && id -u "$n" >/dev/null 2>&1 && known=1`,
@@ -916,6 +1030,11 @@ export const personHomeEnsureScript = (
     `    exit 0`,
     `  fi`,
     `fi`,
+    `exit 3`,
+    `)`,
+    `ensured=$?`,
+    `mend_unlock "$p_lock"`,
+    `[ "$ensured" = 3 ] || exit "$ensured"`,
     personHomeScript(person, options),
   ].join("\n");
 };

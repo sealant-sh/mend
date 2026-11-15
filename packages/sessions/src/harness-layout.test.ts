@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -144,6 +144,27 @@ const fakeRoot = () => {
           GIT_CONFIG_SYSTEM: path.join(dir, "gitconfig-system"),
         },
       }),
+    /** `run`, started and not awaited: `done` says once it exited, `exited` resolves with it. */
+    start: (script: string) => {
+      const child = spawn("sh", ["-c", script], {
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env["PATH"] ?? ""}`,
+          GIT_CONFIG_SYSTEM: path.join(dir, "gitconfig-system"),
+        },
+      });
+      let stderr = "";
+      child.stderr.on("data", (chunk: Buffer) => (stderr += chunk.toString()));
+      const state = { done: false };
+      const exited = new Promise<{ readonly status: number | null; readonly stderr: string }>(
+        (resolve) =>
+          child.on("close", (status) => {
+            state.done = true;
+            resolve({ status, stderr });
+          }),
+      );
+      return { state, exited };
+    },
   };
 };
 
@@ -746,6 +767,108 @@ describe("a private TMPDIR someone else made first (review of mend#566, round 2 
 
 /** A path's permission bits, special bits included. */
 const modeOf = (target: string) => fs.statSync(target).mode & 0o7777;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const until = async (check: () => boolean) => {
+  for (let i = 0; i < 250 && !check(); i++) await sleep(20);
+  expect(check()).toBe(true);
+};
+/** Alice's places under a fake root: the lock is the root's own `mend-person.lock`. */
+const optionsOf = (root: ReturnType<typeof fakeRoot>) => ({
+  harnessHome: path.join(root.dir, "harness-home"),
+  home: path.join(root.dir, "home", alice.name),
+  tmpRoot: path.join(root.dir, "tmp"),
+  runRoot: path.join(root.dir, "run"),
+  skel: root.skel,
+});
+/**
+ * `useradd` that fails for a user who exists, as shadow-utils does ("UID … is not unique"), and
+ * otherwise says it started and waits for `go` before it makes the user: the first copy stops
+ * between its check and the making, holding whatever it holds.
+ */
+const slowUseradd = (root: ReturnType<typeof fakeRoot>) => {
+  const bin = path.join(root.dir, "bin");
+  fs.renameSync(path.join(bin, "useradd"), path.join(bin, "useradd-made"));
+  fs.writeFileSync(
+    path.join(bin, "useradd"),
+    `#!/bin/sh\nfor a in "$@"; do n=$a; done\n` +
+      `[ -f "${root.dir}/users/$n" ] && { echo "useradd: UID is not unique" >&2; exit 4; }\n` +
+      `echo "$n" >> "${root.dir}/useradd-started"\n` +
+      `while [ ! -e "${root.dir}/go" ]; do sleep 0.02; done\n` +
+      `exec "${bin}/useradd-made" "$@"\n`,
+    { mode: 0o755 },
+  );
+  const started = () =>
+    fs.existsSync(path.join(root.dir, "useradd-started"))
+      ? fs.readFileSync(path.join(root.dir, "useradd-started"), "utf8").trim().split("\n")
+      : [];
+  return { started, go: () => fs.writeFileSync(path.join(root.dir, "go"), "") };
+};
+const lockOf = (root: ReturnType<typeof fakeRoot>) => path.join(root.dir, "mend-person.lock");
+
+describe("two copies of the person script at once in one executor (SLNT-1013)", () => {
+  it.each([
+    ["the whole script", personHomeScript],
+    ["the ensure", personHomeEnsureScript],
+  ] as const)(
+    "a second copy (%s) waits for the first, then keeps the user it made: both succeed",
+    async (_, second) => {
+      const root = fakeRoot();
+      const options = optionsOf(root);
+      const useradd = slowUseradd(root);
+      // What root's `chown` makes of the home (the fake's changes nothing).
+      root.own(options.home, alice.uid, 40_000);
+      const first = root.start(personHomeScript(alice, options));
+      await until(() => useradd.started().length === 1);
+      const other = root.start(second(alice, options));
+      await sleep(300);
+      // Waiting on the lock: it has not reached its own check, let alone `useradd`.
+      expect(other.state.done).toBe(false);
+      expect(useradd.started()).toEqual([alice.name]);
+      useradd.go();
+      const [a, b] = await Promise.all([first.exited, other.exited]);
+      expect([a.status, a.stderr]).toEqual([0, expect.any(String)]);
+      expect([b.status, b.stderr]).toEqual([0, expect.any(String)]);
+      expect(b.stderr).not.toContain("not unique");
+      expect(useradd.started()).toEqual([alice.name]);
+      expect(fs.readlinkSync(path.join(options.home, ".claude", "projects"))).toBe(
+        path.join(options.harnessHome, "people", alice.accountId, ".claude", "projects"),
+      );
+      expect(fs.existsSync(path.join(options.home, ".mend", "displaced"))).toBe(false);
+      expect(fs.existsSync(lockOf(root))).toBe(false);
+    },
+  );
+
+  it("a copy whose exec was killed while holding the lock leaves nothing to wait for", () => {
+    const root = fakeRoot();
+    fs.mkdirSync(lockOf(root));
+    // A pid no process has: the holder is gone.
+    fs.writeFileSync(path.join(lockOf(root), "holder"), "999999999 1\n");
+    const started = Date.now();
+    const run = root.run(personHomeScript(alice, optionsOf(root)));
+    expect(run.status).toBe(0);
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(fs.existsSync(lockOf(root))).toBe(false);
+  });
+
+  it("waits while the copy holding the lock still runs, and goes on once it is gone", async () => {
+    const root = fakeRoot();
+    const holder = spawn("sleep", ["30"]);
+    const pid = holder.pid ?? 0;
+    // `<pid> <start time>`, the start time being the 20th field after the command's `)`.
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+    const startTime = stat.slice(stat.lastIndexOf(") ") + 2).split(" ")[19];
+    fs.mkdirSync(lockOf(root));
+    fs.writeFileSync(path.join(lockOf(root), "holder"), `${pid} ${startTime}\n`);
+    const copy = root.start(personHomeScript(alice, optionsOf(root)));
+    await sleep(400);
+    expect(copy.state.done).toBe(false);
+    holder.kill("SIGKILL");
+    const run = await copy.exited;
+    expect(run.status).toBe(0);
+    expect(fs.existsSync(lockOf(root))).toBe(false);
+  });
+});
 
 describe("a person ensured again while their deliveries run (review of mend#619, R1)", () => {
   /** Alice made by her first start's exec, as root: her home hers, `mend`'s, 0700. */
