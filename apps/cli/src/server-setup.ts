@@ -1330,6 +1330,7 @@ const resolveAppUrl = (
 
 const checkExposurePair = (
   bind: string,
+  appPort: number,
   appUrl: string,
   requireExplicitUrl: boolean,
   tailnet: TailnetObservation | undefined,
@@ -1340,17 +1341,25 @@ const checkExposurePair = (
   }
   const url = parseUrl(appUrl, "--url");
   const appHostIsLoopback = isLoopbackHost(url.hostname);
-  // tailscale serve --https=443 on this machine proxies its MagicDNS name to the loopback bind, so
-  // that https URL is the one non-loopback URL a loopback bind takes.
-  const self = tailnet?._tag === "Observed" ? tailnet.self : null;
-  const servedHere =
-    bindIsLoopback &&
-    url.protocol === "https:" &&
-    url.hostname.endsWith(".ts.net") &&
-    (self === null || url.hostname === self);
-  if (bindIsLoopback !== appHostIsLoopback && !servedHere) {
+  if (bindIsLoopback === appHostIsLoopback) return;
+  if (!bindIsLoopback) {
     throw setupError(
-      "--bind and --url must both describe localhost exposure or both describe non-local exposure.",
+      `--bind ${bind} publishes Mend beyond this machine, and --url ${url.origin} reaches it on this machine alone. Give --url the origin people reach Mend at.`,
+    );
+  }
+  // An https URL on a loopback bind is HTTPS this machine runs in front of Mend's port: tailscale
+  // serve, or the operator's own proxy (nginx, Caddy, a Cloudflare Tunnel). Plain http to a name
+  // beyond this machine has nothing in front of it, so nothing would answer there.
+  if (url.protocol !== "https:") {
+    throw setupError(
+      `--url ${url.origin} is reached beyond this machine, and --bind ${bind} answers on this machine alone. Run HTTPS on this machine in front of http://${publishedAddress(bind, appPort)} and give its https origin as --url, or publish Mend where ${url.hostname} points with --bind <address>.`,
+    );
+  }
+  // tailscale serve proxies this machine's own MagicDNS name only.
+  const self = tailnet?._tag === "Observed" ? tailnet.self : null;
+  if (url.hostname.endsWith(".ts.net") && self !== null && url.hostname !== self) {
+    throw setupError(
+      `--url ${url.origin} is another machine's name on the tailnet; this machine is ${self}. Use https://${self}, served by tailscale serve on this machine.`,
     );
   }
 };
@@ -1563,7 +1572,13 @@ const validateExposure = (
   const appUrl = resolveAppUrl(existing, options, appPort, edgeHost);
   // Behind the edge, loopback bind and https origin is the pair; everywhere else both must agree.
   if (edgeHost === undefined)
-    checkExposurePair(bind, appUrl, options.url === undefined && existing === null, tailnet);
+    checkExposurePair(
+      bind,
+      appPort,
+      appUrl,
+      options.url === undefined && existing === null,
+      tailnet,
+    );
   if (exposure === "loopback" && !isLoopbackHost(parseUrl(appUrl, "--url").hostname)) {
     throw setupError(
       `--exposure loopback contradicts --url ${appUrl}: Mend is reached at a name beyond this machine.`,
@@ -4663,6 +4678,20 @@ const setupServer = async (
   if (existing === null && publicBinds.web) {
     throw setupError(
       `A fresh install is not published on ${config.bind}, a public address, as ${config.exposure ?? "private"}: until the first account exists, registration is open to whoever reaches it first, and the internet reaches that address. Run mend server setup on this machine first and create the first account at http://localhost:${config.appPort}. Then publish it on a private address (a tailnet, a LAN or a VPN), or choose the public internet with --edge <host> --exposure public.`,
+    );
+  }
+  // HTTPS run on this machine in front of a loopback bind may well face the internet, and setup
+  // cannot see where it is reached from. A tailnet name is private by construction.
+  const servedOrigin = new URL(config.appUrl);
+  if (
+    existing === null &&
+    config.edgeHost === undefined &&
+    isLoopbackBind(config.bind) &&
+    !isLoopbackHost(servedOrigin.hostname) &&
+    !servedOrigin.hostname.endsWith(".ts.net")
+  ) {
+    throw setupError(
+      `A fresh install does not start at ${config.appUrl}: until the first account exists, registration is open to whoever reaches that origin first, and setup cannot tell whether the internet does. Run mend server setup without --url, create the first account at http://localhost:${config.appPort} (from another machine, through ssh -L ${config.appPort}:localhost:${config.appPort}), then run mend server setup --url ${config.appUrl}.`,
     );
   }
   for (const line of publicPublicationLines(config, publicBinds)) runtime.writeLine(line);

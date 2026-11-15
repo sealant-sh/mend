@@ -2248,7 +2248,9 @@ describe("mend server setup", () => {
     );
     expect(mismatchResult).toMatchObject({ _tag: "error" });
     if (mismatchResult._tag === "error")
-      expect(mismatchResult.message).toContain("must both describe");
+      expect(mismatchResult.message).toBe(
+        "--bind 0.0.0.0 publishes Mend beyond this machine, and --url http://localhost:3105 reaches it on this machine alone. Give --url the origin people reach Mend at.",
+      );
 
     const exposed = makeRuntime();
     expect(
@@ -2267,6 +2269,22 @@ describe("mend server setup", () => {
     ).toEqual({ _tag: "ok" });
     const env = readEnv(activeFile(exposed.runtime.configDir, "server.env"));
     expect(env.get("MEND_ALLOWED_ORIGINS")).toBe('["https://mend.example.test"]');
+  });
+
+  it("takes HTTPS this machine runs in front of a loopback bind once the install exists", async () => {
+    const configDir = temporaryDirectory("own-https");
+    const first = makeRuntime({ configDir });
+    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
+    const second = makeRuntime({ configDir, daemon: first.daemon });
+    expect(
+      await serverCommand(
+        ["setup", "--bind", "127.0.0.1", "--url", "https://mend.example.test"],
+        second.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    const env = readEnv(activeFile(configDir, "server.env"));
+    expect(env.get("APP_URL")).toBe("https://mend.example.test");
+    expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
   });
 
   it("a public address on an existing install is said as observed beside the declared exposure, and nothing on a private one", async () => {
@@ -2944,6 +2962,14 @@ describe("mend server setup", () => {
     [
       ["--bind", "2a01:4f8::1", "--url", "http://[2a01:4f8::1]:3105"],
       "A fresh install is not published on 2a01:4f8::1, a public address, as private",
+    ],
+    [
+      ["--url", "https://mend.example.test"],
+      "A fresh install does not start at https://mend.example.test: until the first account exists",
+    ],
+    [
+      ["--bind", "127.0.0.1", "--url", "http://mend.example.test:3105"],
+      "Run HTTPS on this machine in front of http://127.0.0.1:3105",
     ],
     [["--exposure", "sideways"], "--exposure must be one of"],
     [["--tenancy", "both"], "--tenancy must be one of"],
@@ -3944,22 +3970,18 @@ describe("mend server setup --preview-tailnet (ADR 0017, decision 6)", () => {
     expect(activeDirectory(configDir)).toBe(active);
   });
 
-  it("takes an https --url on a loopback bind only for this machine's own name on the tailnet", async () => {
+  it("takes a tailnet name on a loopback bind only for this machine", async () => {
     const { configDir, runtime } = await onTailnet("tailnet-url");
     const active = activeDirectory(configDir);
-    for (const url of ["https://mend.example.com", `https://other-box.${TAILNET}`]) {
-      expect(
-        await serverCommand(["setup", "--url", url, "--preview-tailnet"], runtime),
-        url,
-      ).toMatchObject({
-        _tag: "error",
-        message: expect.stringContaining("must both describe"),
-      });
-    }
     expect(
-      await serverCommand(["setup", "--url", "https://mend.example.com"], runtime),
-      "no tailnet to serve it",
-    ).toMatchObject({ _tag: "error", message: expect.stringContaining("must both describe") });
+      await serverCommand(
+        ["setup", "--url", `https://other-box.${TAILNET}`, "--preview-tailnet"],
+        runtime,
+      ),
+    ).toEqual({
+      _tag: "error",
+      message: `--url https://other-box.${TAILNET} is another machine's name on the tailnet; this machine is mend-box.${TAILNET}. Use https://mend-box.${TAILNET}, served by tailscale serve on this machine.`,
+    });
     expect(activeDirectory(configDir)).toBe(active);
   });
 

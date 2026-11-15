@@ -337,6 +337,22 @@ A proxy you run in place of either must do six things:
    invitation lasts up to thirty days. New links carry their secret after the `#`, which reaches no
    proxy.
 
+On an install made with `mend server setup`, a proxy on the server's own machine (nginx, Caddy, a
+Cloudflare Tunnel) forwards to Mend's port on loopback, and setup takes its https origin:
+
+```sh
+mend server setup --url https://mend.example.com
+```
+
+Mend's port stays on `127.0.0.1`. A fresh install is refused with this URL until the first account
+exists, because registration is open to whoever reaches the origin first: run setup without `--url`,
+create the account at `http://localhost:3105`, then run it with `--url`. Inside Docker, every
+request from such a proxy arrives from the Docker bridge's address, and Mend does not believe
+`X-Forwarded-For` from it, because any process on the host could then choose the address it is
+counted by. Every client then shares one address window, so item 4 stays open. A team that meets
+`MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE` or `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE` raises it in
+`server.env` ([Budgets](#budgets)); each person's account budgets still apply.
+
 ### Previews
 
 Live previews are served on hosts of their own, `https://<label>.<preview domain>`, apart from
