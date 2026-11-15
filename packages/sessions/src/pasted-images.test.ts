@@ -61,6 +61,20 @@ describe("storePastedImage", () => {
     expect(fs.statSync(stored.hostPath).mode & 0o044).toBe(0o044);
   });
 
+  it("keeps both of two pastes in the same second that drew the same name", async () => {
+    const home = tempHome();
+    const at = { now: new Date(2026, 8, 2, 14, 30, 12), nonce: "abcd" };
+    const otherPng = new Uint8Array([...PNG, 0x00]);
+    const first = await Effect.runPromise(storePastedImage(home, PNG, at));
+    const second = await Effect.runPromise(storePastedImage(home, otherPng, at));
+
+    expect(second.hostPath).not.toBe(first.hostPath);
+    expect(path.basename(second.hostPath)).toMatch(/^20260902-143012-[0-9a-f]{4}\.png$/);
+    expect(second.path).toBe(`${HARNESS_HOME_MOUNT_PATH}/paste/${path.basename(second.hostPath)}`);
+    expect(new Uint8Array(fs.readFileSync(first.hostPath))).toEqual(PNG);
+    expect(new Uint8Array(fs.readFileSync(second.hostPath))).toEqual(otherPng);
+  });
+
   it("creates the harness home when the session has not launched yet", async () => {
     const home = path.join(tempHome(), "sessions", "s1", "harness-home");
     const stored = await Effect.runPromise(storePastedImage(home, GIF));

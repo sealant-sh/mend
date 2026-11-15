@@ -139,6 +139,14 @@ export const pastedImagePlacement = (
   };
 };
 
+const drawNonce = () => Math.random().toString(16).slice(2, 6).padEnd(4, "0");
+
+/**
+ * How many names one paste tries. Two pastes in the same second share a name 1 time in 65,536; the
+ * second draws again rather than fail, so a run of names already taken is all that refuses it.
+ */
+const PASTED_IMAGE_NAME_TRIES = 4;
+
 /** Refuse what is too large or not an image, before any byte is written; name what is not. */
 export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
   bytes: Uint8Array,
@@ -160,7 +168,7 @@ export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
   const name = pastedImageName(
     mediaType,
     options.now ?? new Date(yield* Clock.currentTimeMillis),
-    options.nonce ?? Math.random().toString(16).slice(2, 6).padEnd(4, "0"),
+    options.nonce ?? drawNonce(),
   );
   return { mediaType, name } satisfies CheckedPastedImage;
 });
@@ -177,8 +185,9 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
   bytes: Uint8Array,
   options: { readonly now?: Date; readonly nonce?: string } = {},
 ) {
-  const { mediaType, name } = yield* checkPastedImage(bytes, options);
-  const hostPath = path.join(harnessHome, PASTED_IMAGE_DIR, name);
+  const now = options.now ?? new Date(yield* Clock.currentTimeMillis);
+  const checked = yield* checkPastedImage(bytes, { ...options, now });
+  const { mediaType } = checked;
   const failed = (message: string) =>
     new PastedImageError({
       reason: "write-failed",
@@ -193,17 +202,24 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
   // The workspace reads the file as whatever uid the harness runs under; the mode-keeper in
   // harness-state.ts widens the tree too, but only every 15 s — a paste must be readable the
   // instant the path lands.
-  const refused = yield* Effect.try({
-    try: () =>
-      writeContained(
-        { root: harnessHome, directoryMode: 0o755, fileMode: 0o644 },
-        [PASTED_IMAGE_DIR],
-        name,
-        bytes,
-      ),
-    catch: (cause) => failed(cause instanceof Error ? cause.message : String(cause)),
-  });
-  if (refused !== null) return yield* failed(refused);
+  // A name another paste took draws a fresh nonce; `options.nonce` names the first try only.
+  let name = checked.name;
+  for (let tries = 1; ; tries += 1) {
+    const refused = yield* Effect.try({
+      try: () =>
+        placeContained(
+          { root: harnessHome, directoryMode: 0o755, fileMode: 0o644 },
+          [PASTED_IMAGE_DIR],
+          name,
+          bytes,
+        ),
+      catch: (cause) => failed(cause instanceof Error ? cause.message : String(cause)),
+    });
+    if (refused === null) break;
+    if (!refused.taken || tries === PASTED_IMAGE_NAME_TRIES) return yield* failed(refused.reason);
+    name = pastedImageName(mediaType, now, drawNonce());
+  }
+  const hostPath = path.join(harnessHome, PASTED_IMAGE_DIR, name);
   return {
     hostPath,
     path: pastedImageWorkspacePath(name),
@@ -237,27 +253,42 @@ export const writeContained = (
   directories: ReadonlyArray<string>,
   name: string,
   bytes: Uint8Array,
-): string | null => {
+): string | null => placeContained(within, directories, name, bytes)?.reason ?? null;
+
+/** Why `writeContained` wrote nothing, and whether only because `name` was already there. */
+interface ContainedRefusal {
+  readonly reason: string;
+  readonly taken: boolean;
+}
+
+const refuse = (reason: string): ContainedRefusal => ({ reason, taken: false });
+
+const placeContained = (
+  within: ContainedPlacement,
+  directories: ReadonlyArray<string>,
+  name: string,
+  bytes: Uint8Array,
+): ContainedRefusal | null => {
   const c = fs.constants;
   if (
     name === "" ||
     name.includes("/") ||
     [name, ...directories].some((part) => part === "." || part === ".." || part.includes("/"))
   ) {
-    return "not a plain path";
+    return refuse("not a plain path");
   }
   let real: string;
   try {
     real = fs.realpathSync(within.root);
   } catch {
-    return `could not enter ${within.root}`;
+    return refuse(`could not enter ${within.root}`);
   }
   const enterFlags = c.O_RDONLY | c.O_DIRECTORY | c.O_NOFOLLOW;
   let dfd: number;
   try {
     dfd = fs.openSync(real, enterFlags);
   } catch {
-    return `could not enter ${within.root}`;
+    return refuse(`could not enter ${within.root}`);
   }
   const fdDir = descriptorDirectory(dfd);
   let shown = within.root;
@@ -272,25 +303,25 @@ export const writeContained = (
   let fd: number | undefined;
   try {
     if (fdDir === null) {
-      return `no /proc/self/fd or /dev/fd here to keep the write inside ${within.root}`;
+      return refuse(`no /proc/self/fd or /dev/fd here to keep the write inside ${within.root}`);
     }
     for (const part of directories) {
       let next: number;
       try {
         next = fs.openSync(at(part), enterFlags);
       } catch (error) {
-        if (codeOf(error) !== "ENOENT") return `${linkOrNot(part)}: ${shown}/${part}`;
+        if (codeOf(error) !== "ENOENT") return refuse(`${linkOrNot(part)}: ${shown}/${part}`);
         try {
           fs.mkdirSync(at(part), { mode: within.directoryMode });
         } catch (mkdirError) {
           if (codeOf(mkdirError) !== "EEXIST") {
-            return `could not make ${shown}/${part} (${codeOf(mkdirError)})`;
+            return refuse(`could not make ${shown}/${part} (${codeOf(mkdirError)})`);
           }
         }
         try {
           next = fs.openSync(at(part), enterFlags);
         } catch {
-          return `${linkOrNot(part)}: ${shown}/${part}`;
+          return refuse(`${linkOrNot(part)}: ${shown}/${part}`);
         }
       }
       fs.closeSync(dfd);
@@ -300,7 +331,11 @@ export const writeContained = (
     try {
       fd = fs.openSync(at(name), c.O_WRONLY | c.O_CREAT | c.O_EXCL | c.O_NOFOLLOW, 0o600);
     } catch (error) {
-      return `${codeOf(error) === "EEXIST" ? "already there" : "could not create"}: ${shown}/${name}`;
+      const taken = codeOf(error) === "EEXIST";
+      return {
+        reason: `${taken ? "already there" : "could not create"}: ${shown}/${name}`,
+        taken,
+      };
     }
     try {
       fs.writeFileSync(fd, bytes);
@@ -311,7 +346,7 @@ export const writeContained = (
       } catch {
         // Nothing more to take back.
       }
-      return `could not write (${codeOf(error)})`;
+      return refuse(`could not write (${codeOf(error)})`);
     }
     return null;
   } finally {
