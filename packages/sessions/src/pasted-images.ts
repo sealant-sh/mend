@@ -142,6 +142,13 @@ export const pastedImagePlacement = (
 const drawNonce = () => Math.random().toString(16).slice(2, 6).padEnd(4, "0");
 
 /**
+ * The nonce of a paste written inside a live workspace (capture mode), where a name already taken
+ * fails the write in the workspace and no fresh draw follows: 8 hex digits, so two pastes in one
+ * second share a name 1 time in 4 billion rather than 1 in 65,536.
+ */
+export const workspacePasteNonce = (): string => crypto.randomUUID().slice(0, 8);
+
+/**
  * How many names one paste tries. Two pastes in the same second share a name 1 time in 65,536; the
  * second draws again rather than fail, so a run of names already taken is all that refuses it.
  */
