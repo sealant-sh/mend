@@ -61,13 +61,18 @@ const unscopedTests = () =>
     .filter((job) => job.lane === null && !["changes", "static", "checks"].includes(job.job))
     .map((job) => job.job);
 
-test("product source owes a box check and screenshots; its tests and docs do not", () => {
+test("product source owes a judgement, a run and screenshots; its tests and docs do not", () => {
   assert.deepEqual(ids(["apps/web/src/routes/index.tsx"]), [
     "pre-pr-checks",
-    "box-check",
+    "judge",
+    "run-it",
     "screenshots",
   ]);
-  assert.deepEqual(ids(["packages/db/src/repos/sessions.ts"]), ["pre-pr-checks", "box-check"]);
+  assert.deepEqual(ids(["packages/db/src/repos/sessions.ts"]), [
+    "pre-pr-checks",
+    "judge",
+    "run-it",
+  ]);
   assert.deepEqual(ids(["packages/db/test/sessions.test.ts", "apps/web/src/a.test.tsx"]), [
     "pre-pr-checks",
   ]);

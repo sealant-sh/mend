@@ -1,0 +1,21 @@
+{
+  "limits": [
+    {
+      "id": "boat",
+      "what": "A session that runs on Boat. The verify stack has no Boat; the box (VM 131) does."
+    },
+    {
+      "id": "upgrade-real-data",
+      "what": "Upgrading or migrating an install that already holds people's data. A local stack starts with an empty database."
+    },
+    {
+      "id": "preview-deploy",
+      "what": "The preview deploy itself: the script only ever runs on the box.",
+      "paths": ["scripts/preview-deploy.sh"]
+    },
+    {
+      "id": "real-agent-turn",
+      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there."
+    }
+  ]
+}

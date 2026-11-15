@@ -7,7 +7,7 @@
       "owes": [{ "kind": "tests", "verb": "check", "command": "pnpm verify check" }]
     },
     {
-      "id": "box-check",
+      "id": "feature",
       "paths": [
         "apps/api/**",
         "apps/cli/**",
@@ -19,13 +19,24 @@
         "packages/**"
       ],
       "exclude": ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/*.md", "**/vitest*.config.*"],
-      "why": "A feature or fix merges only after an agent that did not write it has used it on the box as a signed-in person, and put the verdict on the PR (AGENTS.md, Check Features on the Box). Test, CI and docs PRs owe none",
+      "why": "A feature or fix merges only after an agent that did not write it has said where it must be run and what a person must see, and its author has run it and put that on the PR (AGENTS.md, Run a Feature Before It Merges). Test, CI and docs PRs owe none",
       "owes": [
         {
-          "kind": "box-check",
-          "what": "another agent uses the change on the box, on a build that contains this PR, and posts the verdict on the PR",
-          "how": "AGENTS.md, Check Features on the Box: pnpm verify box plan, prepare, cli, identity, then another agent's check",
-          "command": "pnpm verify box plan"
+          "id": "judge",
+          "kind": "external",
+          "verb": "judge",
+          "what": "an agent that did not write the change says where it must be run, a local stack or the box, and what a person must see",
+          "how": "the verify skill, Judge: pnpm verify judge writes the brief, another agent answers it, pnpm verify judge --record keeps the answer",
+          "command": "pnpm verify judge"
+        },
+        {
+          "id": "run-it",
+          "kind": "stack",
+          "verb": "evidence",
+          "after": "judge",
+          "what": "the author runs the change where the judge said, sees what the judge listed, and posts the verdict on the PR",
+          "how": "the verify skill: pnpm verify stack up, drive, evidence, stack down; on the box, pnpm verify box plan and the steps after it",
+          "command": "pnpm verify evidence"
         }
       ]
     },

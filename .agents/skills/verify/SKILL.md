@@ -3,9 +3,8 @@ name: verify
 description:
   "Prove a change to Mend works, with evidence: what it owes, the pre-PR gate, the models, a full
   stack (sealantd, sealant and Mend built from source) driven through its web, CLI and clients, and
-  the box check's setup. Use before a PR, to prove a change to Mend's web, CLI or clients works, to
-  verify a PR that spans Mend, sealant and sealantd, or to set up the box check before a feature
-  merges."
+  the preview server's setup. Use before a PR, to prove a change to Mend's web, CLI or clients
+  works, before a feature or fix merges, or to verify a PR that spans Mend, sealant and sealantd."
 ---
 
 # Verify Mend
@@ -29,10 +28,10 @@ pnpm verify plan              # or --files <paths…> to ask about paths without
 ```
 
 It reads the diff against `origin/main` (uncommitted files included) and says what it owes: the
-pre-PR checks, gated suites, models (`formal-<area>`), screenshots, a box check, and which CI jobs
-the PR will run. The map is `tooling/verify/obligations.json`; models come from
-`docs/formal/<area>/COVERAGE`. **Done when** you know each obligation's command. Climb only as far
-as they reach.
+pre-PR checks, gated suites, models (`formal-<area>`), for product source a judgement and a run of
+the change (`judge`, `run-it`), screenshots, and which CI jobs the PR will run. The map is
+`tooling/verify/obligations.json`; models come from `docs/formal/<area>/COVERAGE`. **Done when** you
+know each obligation's command. Climb only as far as they reach.
 
 ## 2. Check
 
@@ -61,7 +60,27 @@ covered code that moved neither the model nor `COVERAGE`'s sync commit, and repo
 sync. The area's skill (`.agents/skills/<area>`) says how to decide whether the model still
 describes the code, and how to move the sync. CI's `formal` job runs the same.
 
-## 4. Run it
+## 4. Judge
+
+```sh
+pnpm verify judge                         # writes .verify/judge/<sha12>/brief.md
+pnpm verify judge --record <answer.json>  # keeps the other agent's answer for this commit
+```
+
+Owed by a feature or fix, once the change is committed and before you run it. How it is proved is
+not yours to decide: start one agent that did not write the change, give it the brief and nothing
+else, and save the JSON it replies with. In Claude Code that is one `Agent` call whose prompt is
+"Read `<brief path>` and do what it asks"; in Codex, one `spawn_agent`. Any summary or opinion you
+add makes the judge agree with you.
+
+The answer says where to run it (`local`, or `box` with the limit from
+`tooling/verify/local-stack-limits.json` that applies), three to five things a person must see, and
+what they would see if it did not work. `--record` refuses an answer that is not in that shape, and
+a `local` answer for a file only the box can show. The receipt's `judge` line carries the answer's
+reason. With no way to start another agent, answer the brief yourself and add `--self`; the receipt
+says so. **Done when** `pnpm verify judge` reads `passed` for the commit you will push.
+
+## 5. Run it
 
 A stack is a real Mend, built from source, running in one Mend session (the **outer** session) on an
 outer server. The outer server is a `local-outer.sh` server on this machine, or the box when its
@@ -89,7 +108,7 @@ Why it is built this way, which you keep to when you go past the verbs:
 - **Only what the run made.** Drive the stack, tunnel and sessions this run recorded; never another
   verifier's `st-verify-` session.
 
-## 5. Drive
+## 6. Drive
 
 The feature map, `features/` beside this file (`features/README.md` its index), says per feature
 what to do on each surface and what proves it. Drive a recipe with the surface's own driver:
@@ -109,9 +128,9 @@ recipe answers `not_implemented`; the terminal always does, so drive it with `dr
   [references/surfaces.md](references/surfaces.md).
 - VS Code, which runs against a world of its own: [references/vscode.md](references/vscode.md).
 
-Capture the inner record (sessions, the session page) before step 7: it goes with the stack.
+Capture the inner record (sessions, the session page) before step 8: it goes with the stack.
 
-## 6. Evidence
+## 7. Evidence
 
 ```sh
 pnpm verify evidence
@@ -123,7 +142,13 @@ obligations. Write its "What I saw" and "Not checked" yourself, as observations.
 the file and the result is `evidence_withheld`: report it as such. The proof rules and why a
 screenshot is withheld: [references/evidence.md](references/evidence.md).
 
-## 7. Down
+The verdict file lists what the judge asked for under "What I saw": answer each line. Once
+`evidence` passes on the commit you push, the receipt's `run-it` line reads `passed` (AGENTS.md, Run
+a Feature Before It Merges). Post the verdict on the PR yourself. Nobody repeats the run. A change
+you could only drive with `drive-tui.sh` has no drive result, so its line stays `skipped`: name it
+under the receipt with the transcript.
+
+## 8. Down
 
 ```sh
 pnpm verify stack down
@@ -135,10 +160,11 @@ and removes the private registry. The outer worktree stays: it holds the record.
 saving, what the teardown leaves, and a retry in the same session:
 [references/cleanup.md](references/cleanup.md).
 
-## 8. The box check
+## 9. The box, when the judge says so
 
-A feature merges only after an agent that did not write it uses it on the box as a person
-(AGENTS.md, Check Features on the Box). The setup is commands; the check stays the other agent's:
+The box is our preview Mend server. A change goes there when its judge answered `box`, or when the
+owner asks (AGENTS.md, The Box). You run it there yourself, and see what the judge listed. The setup
+is commands:
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'
@@ -151,9 +177,11 @@ pnpm verify box identity            # by patch id, the running build contains th
 pnpm verify box release --pr <n> --yes
 ```
 
-A schema the box applied that this head lacks blocks `plan`: deploy a build that contains it. When
-the box's own health wait fails while `health` says the server answers from here, the box cannot
-resolve its own app URL; that is the fixture, not the change.
+`run-it` reads `passed` once `box identity` passes on the commit you push. Use the box through the
+`mend` CLI and browser already signed in there. Never sign that CLI in or out, and never read its
+token. A schema the box applied that this head lacks blocks `plan`: deploy a build that contains it.
+When the box's own health wait fails while `health` says the server answers from here, the box
+cannot resolve its own app URL; that is the fixture, not the change.
 
 ## Report
 

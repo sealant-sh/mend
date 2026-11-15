@@ -1,13 +1,23 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { CI_FILE_BUDGET_MS } from "../test-ci/src/file-budget.ts";
-import { exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
+import { floorOf, loadLimits, validateAnswer } from "./judge.mjs";
+import { createResult, exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
 import { ciGateProblems, loadAllowedSkips, readSkips, validateAllowedSkips } from "./skips.mjs";
 import { toMarkdown } from "./status.mjs";
 import { CI_TO_LOCAL_RATIO } from "./timing.mjs";
@@ -40,6 +50,7 @@ const fixture = (t) => {
   for (const path of [
     "tooling/verify/obligations.json",
     "tooling/verify/allowed-skips.json",
+    "tooling/verify/local-stack-limits.json",
     ".github/workflows/ci.yml",
     "docs/formal/standby-discard/COVERAGE",
   ]) {
@@ -240,12 +251,145 @@ test("status counts a passing check only for this exact commit with a clean tree
   assert.match(later.steps[0].detail, /not this head/);
 });
 
-test("a feature's box check is reported as needing another observer", async (t) => {
+const answerFile = (root, answer) => {
+  const path = join(root, ".verify/answer.json");
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, JSON.stringify(answer));
+  return path;
+};
+
+const LOCAL_ANSWER = {
+  where: "local",
+  reason: "It changes a web route; nothing in the diff needs Boat, old data or a real agent.",
+  mustSee: ["Open Projects and see the new row", "Rename it and see the name change", "Reload"],
+  ifBroken: "The row is missing",
+};
+
+test("a feature's run is owed until it is judged and verify evidence passes on this commit", async (t) => {
   const { root, commit } = fixture(t);
   commit("apps/web/src/routes/a.tsx");
-  const result = await runVerb(root, "status", options());
-  const box = result.steps.find((step) => step.id === "box-check");
-  assert.equal(box.status, "requires_external_observer");
+  const line = async (id) =>
+    (await runVerb(root, "status", options())).steps.find((step) => step.id === id);
+  assert.equal((await line("judge")).status, "skipped");
+  const unjudged = await line("run-it");
+  assert.equal(unjudged.status, "skipped");
+  assert.match(unjudged.detail, /nobody has said where to run it/);
+
+  // The brief is written from the commit; until another agent answers, the line waits on one.
+  const asked = await runVerb(root, "judge", options());
+  assert.deepEqual(validateResult(asked), []);
+  assert.equal(asked.status, "requires_external_observer");
+  const brief = readFileSync(join(root, asked.evidence[0].path), "utf8");
+  assert.match(brief, /apps\/web\/src\/routes\/a\.tsx/);
+  assert.match(brief, /`boat`:/);
+  saveResult(root, asked);
+  assert.equal((await line("judge")).status, "requires_external_observer");
+
+  const judged = await runVerb(root, "judge", options({ record: answerFile(root, LOCAL_ANSWER) }));
+  assert.equal(judged.status, "passed");
+  assert.equal(judged.judgement.judgedBy, "agent");
+  saveResult(root, judged);
+  const receipt = await runVerb(root, "status", options());
+  assert.match(
+    toMarkdown(receipt),
+    /`judge`: passed.*Run on a local stack, judged by another agent/,
+  );
+  assert.equal((await line("run-it")).status, "skipped", "judged, not yet run");
+
+  // Asking again keeps the judgement, and the verdict file asks for what the judge listed.
+  assert.equal((await runVerb(root, "judge", options())).status, "passed");
+  const undriven = await runVerb(root, "evidence", options());
+  assert.equal(undriven.status, "skipped");
+  saveResult(
+    root,
+    createResult({
+      verb: "evidence",
+      head: undriven.head,
+      startedAt: new Date(),
+      steps: [{ id: "verdict", title: "Write the verdict file", status: "passed" }],
+      next: [],
+    }),
+  );
+  assert.equal((await line("run-it")).status, "passed");
+
+  commit("apps/web/src/routes/b.tsx");
+  assert.equal((await line("judge")).status, "skipped", "a later commit is judged again");
+  assert.equal((await line("run-it")).status, "skipped");
+});
+
+test("a judgement for the box is discharged by the box running this change", async (t) => {
+  const { root, commit } = fixture(t);
+  commit("packages/sessions/src/boat-resume.ts");
+  const box = {
+    ...LOCAL_ANSWER,
+    where: "box",
+    limit: "boat",
+    reason: "It changes what a Boat guest does on resume; only Boat shows that.",
+  };
+  const judged = await runVerb(
+    root,
+    "judge",
+    options({ record: answerFile(root, box), self: true }),
+  );
+  assert.equal(judged.status, "passed");
+  saveResult(root, judged);
+  const receipt = await runVerb(root, "status", options());
+  const run = receipt.steps.find((step) => step.id === "run-it");
+  assert.equal(run.status, "skipped");
+  assert.match(run.detail, /sent this to the box \(boat\)/);
+  assert.ok(receipt.next.includes("pnpm verify box plan"));
+  assert.match(toMarkdown(receipt), /judged by the author/);
+
+  saveResult(
+    root,
+    createResult({
+      verb: "box identity",
+      head: judged.head,
+      startedAt: new Date(),
+      steps: [{ id: "identity", title: "The box runs this change", status: "passed" }],
+      next: [],
+    }),
+  );
+  const after = await runVerb(root, "status", options());
+  assert.equal(after.steps.find((step) => step.id === "run-it").status, "passed");
+});
+
+test("an answer the brief did not ask for is refused, and the deploy script only goes to the box", async (t) => {
+  const { root, commit, write } = fixture(t);
+  commit("apps/web/src/routes/a.tsx");
+  const refused = async (answer) => {
+    const result = await runVerb(root, "judge", options({ record: answerFile(root, answer) }));
+    assert.equal(result.status, "failed");
+    assert.equal(result.judgement, undefined);
+    return result.steps[0].detail;
+  };
+  assert.match(await refused({ ...LOCAL_ANSWER, where: "box" }), /names its limit/);
+  assert.match(await refused({ ...LOCAL_ANSWER, limit: "boat" }), /names no limit/);
+  assert.match(await refused({ ...LOCAL_ANSWER, mustSee: ["one"] }), /three to five/);
+  assert.match(await refused({ ...LOCAL_ANSWER, reason: " " }), /reason is required/);
+
+  write("apps/web/src/routes/a.tsx", "edited\n");
+  assert.equal((await runVerb(root, "judge", options())).status, "blocked_by_prerequisite");
+
+  const limits = loadLimits(repo);
+  const floor = floorOf(limits, ["scripts/preview-deploy.sh", "apps/web/src/a.tsx"]);
+  assert.deepEqual(floor, [{ id: "preview-deploy", files: ["scripts/preview-deploy.sh"] }]);
+  assert.match(validateAnswer(LOCAL_ANSWER, { limits, floor }).join(), /only be shown on the box/);
+  assert.deepEqual(
+    validateAnswer({ ...LOCAL_ANSWER, where: "box", limit: "preview-deploy" }, { limits, floor }),
+    [],
+  );
+  for (const limit of limits)
+    for (const path of limit.paths ?? [])
+      assert.ok(existsSync(join(repo, path)), `${limit.id} names missing ${path}`);
+});
+
+test("a change that owes no run has nothing to judge", async (t) => {
+  const { root, commit } = fixture(t);
+  commit("docs/a.md");
+  const result = await runVerb(root, "judge", options());
+  assert.equal(result.status, "passed");
+  assert.match(result.steps[0].detail, /nothing to judge/);
 });
 
 test("wrong usage exits 2 and writes no result", async (t) => {

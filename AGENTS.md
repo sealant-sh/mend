@@ -92,7 +92,7 @@ affects, and the format check (`pnpm format:fix` fixes it). A test that skips ma
 not `passed`, unless `tooling/verify/allowed-skips.json` allows that skip.
 
 ```sh
-pnpm verify plan     # what this change owes: gated suites, models, screenshots, box check, CI jobs
+pnpm verify plan     # what this change owes: gated suites, models, a judge and a run, screenshots, CI jobs
 pnpm verify check    # the gate above; add --concurrency 2 on a shared, busy machine
 pnpm verify status --markdown   # one line per obligation for this exact commit, for the PR body
 ```
@@ -112,20 +112,60 @@ you think it is wrong about an error, compare with `tsc` and report any differen
 TypeScript 6 (`@typescript/typescript6`, catalog `ts6`) is only for tools that load `typescript` as
 a library; never run `tsc6` yourself.
 
-## Check Features on the Box
+## Run a Feature Before It Merges
 
-A feature merges only after an agent that didn't write it has used it on the box, our preview Mend
-server, the way a person would. That means real logins, through a `mend` CLI and browser already
-signed in as a person, on a `-next` or preview build cut for the PR when the box doesn't run the
-code yet. Never sign that CLI in or out, and never read its token. The verdict goes on the PR. It
-names the build, the sessions it ran and what it saw. For a feature, a local stack with fake
-accounts, a unit test, green CI or reading the code is not a verdict. Test, CI and docs PRs don't
-need one.
+A feature or fix merges only after two things, both on the PR. An agent that didn't write it has
+said where it must be run and what a person must see. Its author has then run it there and seen
+exactly that. `pnpm verify plan` owes these as `judge` and `run-it` whenever a change touches
+product source. Test, CI and docs PRs owe neither.
 
-The box is VM 131, the preview server with Boat set up; VM 130 (`alpha.mend.run`) is also
-acceptable. `docs/operations/preview-builds.md` ("The box") says how to reach each. The setup around
-the check is commands. Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as
-root), then, in order:
+```sh
+pnpm verify judge                         # writes the brief: .verify/judge/<sha>/brief.md
+# start one agent that did not write the change; give it the brief and nothing else
+pnpm verify judge --record <answer.json>  # keeps its answer for this commit
+```
+
+The judge reads the diff and answers two questions. Where: a local stack, or the box when it can
+name which thing a local stack can't show (`tooling/verify/local-stack-limits.json` is that list;
+change it when a local stack gains or loses an ability). What: three to five things a person does
+and sees, and what they would see if the change didn't work. Hand over the brief unchanged. Your
+summary of the change, or your view of where it should run, makes the judge agree with you. When you
+can't start another agent, answer the brief yourself and record it with `--self`; the receipt then
+says the author judged it.
+
+Then run it where the judge said. On a local stack, as the `verify` skill (`.agents/skills/verify/`)
+says:
+
+```sh
+pnpm verify stack up                                # a real Mend built from this commit, on this machine
+pnpm verify drive <surface> --recipe <name|path>    # once per surface the change touches
+pnpm verify evidence                                # the secret scan, and the verdict file to post
+pnpm verify stack down
+```
+
+The verdict goes on the PR. It names the commit, each thing the judge asked for with what you did
+and saw, a screenshot of every state a person sees, and what you could not check. A unit test, green
+CI or reading the code is not a verdict. The receipt's `run-it` line reads `passed` once
+`verify evidence` passes on the commit you push, or, when the judge said the box, once
+`verify box identity` does. The terminal has no recipe format yet: drive a CLI change with
+`drive-tui.sh`, and name the `skipped` line under the receipt with the transcript.
+
+A judgement is about one commit. After a push that changes what the feature does, judge again; after
+one that doesn't, say so under the receipt.
+
+This is the feature's one check. Nobody repeats your run and no review panel follows it. Ask for a
+second, independent review (the home repo's `interrogate` skill) only when two designs a reviewer
+could defend are genuinely in dispute. Grade what the run finds by Fix Now or File in
+`../agent-home/AGENTS.md`.
+
+### The Box
+
+The box is our preview Mend server: VM 131, with Boat set up, or VM 130 (`alpha.mend.run`).
+`docs/operations/preview-builds.md` ("The box") says how to reach each. A change goes there when its
+judge says so, or when the owner asks; nothing else does. Use it as a person would, through a `mend`
+CLI and browser already signed in. Never sign that CLI in or out, and never read its token.
+
+Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as root), then, in order:
 
 ```sh
 pnpm verify box plan --pr <n>            # what it runs, whether another check holds it, schema, disk
@@ -134,15 +174,10 @@ pnpm verify box prepare --pr <n> --yes   # pg_dumpall to /root/backups, and hold
 pnpm verify box cli --pr <n> --yes       # a CLI packed from this commit, installed beside the global one
 # build and deploy the preview: docs/operations/preview-builds.md
 pnpm verify box identity                 # by patch id, the running build contains this change
-pnpm verify box release --pr <n> --yes   # after the verdict is posted
+pnpm verify box release --pr <n> --yes   # when you are done
 ```
 
 `plan` and `identity` only read; the others change the box only with `--yes`.
-
-Spend tokens on that check, not on review panels. Ask for a second, independent review (the home
-repo's `interrogate` skill) only when two designs a reviewer could defend are genuinely in dispute.
-Otherwise the box check is the feature's one review, graded by Fix Now or File in
-`../agent-home/AGENTS.md`.
 
 ## Dependencies
 
