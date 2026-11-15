@@ -44,8 +44,9 @@ const completed = (
   store = "true",
   formal = "true",
   docker = "true",
+  preview = "true",
 ) => ({
-  changes: { result: "success", outputs: { mobile, packaging, store, formal, docker } },
+  changes: { result: "success", outputs: { mobile, packaging, store, formal, docker, preview } },
   static: { result: "success" },
   "test-engines": { result: "success" },
   "test-engines-b": { result: "success" },
@@ -56,6 +57,7 @@ const completed = (
   "store-image-git": { result: store === "false" ? "skipped" : "success" },
   formal: { result: formal === "false" ? "skipped" : "success" },
   "docker-suites": { result: docker === "false" ? "skipped" : "success" },
+  "preview-acceptance": { result: preview === "false" ? "skipped" : "success" },
 });
 
 test("the actual required-check command accepts full evidence and intentional scope skips", () => {
@@ -64,10 +66,12 @@ test("the actual required-check command accepts full evidence and intentional sc
       for (const store of ["true", "false"]) {
         for (const formal of ["true", "false"]) {
           for (const docker of ["true", "false"]) {
-            const result = runGate(completed(mobile, packaging, store, formal, docker));
-            assert.equal(result.error, undefined);
-            assert.equal(result.status, 0, result.stderr);
-            assert.match(result.stdout, /All required CI jobs passed/);
+            for (const preview of ["true", "false"]) {
+              const result = runGate(completed(mobile, packaging, store, formal, docker, preview));
+              assert.equal(result.error, undefined);
+              assert.equal(result.status, 0, result.stderr);
+              assert.match(result.stdout, /All required CI jobs passed/);
+            }
           }
         }
       }
@@ -88,6 +92,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
     "store-image-git",
     "formal",
     "docker-suites",
+    "preview-acceptance",
   ]) {
     for (const result of ["failure", "cancelled", "skipped", undefined]) {
       const results = completed();
@@ -102,7 +107,7 @@ test("failed, cancelled, absent or skipped required jobs cannot produce a green 
 });
 
 test("missing or malformed path classification is not permission to skip evidence", () => {
-  for (const output of ["mobile", "packaging", "store", "formal", "docker"]) {
+  for (const output of ["mobile", "packaging", "store", "formal", "docker", "preview"]) {
     for (const selected of [undefined, "", "yes", false]) {
       const results = completed();
       if (selected === undefined) delete results.changes.outputs[output];
@@ -112,7 +117,7 @@ test("missing or malformed path classification is not permission to skip evidenc
       assert.match(observed.stderr, /Missing or invalid/);
     }
   }
-  const results = completed("false", "false", "false", "false", "false");
+  const results = completed("false", "false", "false", "false", "false", "false");
   results.packaging.result = "failure";
   assert.equal(runGate(results).status, 1, "an optional job that ran and failed still fails CI");
   const store = completed("true", "true", "false");
@@ -121,6 +126,9 @@ test("missing or malformed path classification is not permission to skip evidenc
   const docker = completed("true", "true", "true", "true", "false");
   docker["docker-suites"].result = "failure";
   assert.equal(runGate(docker).status, 1, "docker-suites that ran and failed still fails CI");
+  const preview = completed("true", "true", "true", "true", "true", "false");
+  preview["preview-acceptance"].result = "failure";
+  assert.equal(runGate(preview).status, 1, "preview-acceptance that ran and failed still fails CI");
 });
 
 test("static checks, all test shards and packaging can start without another execution job", () => {
@@ -135,6 +143,7 @@ test("static checks, all test shards and packaging can start without another exe
     "store-image-git",
     "formal",
     "docker-suites",
+    "preview-acceptance",
   ]) {
     assert.deepEqual(
       jobs[name].needs,
@@ -164,6 +173,12 @@ test("static checks, all test shards and packaging can start without another exe
   assert.match(jobs["docker-suites"].if, /needs\.changes\.outputs\.docker != 'false'/);
   assert.equal(jobs.changes.outputs.docker, "${{ steps.scope.outputs.docker }}");
   assert.deepEqual(commands("docker-suites").at(-1), "node scripts/docker-suites.mjs");
+  assert.match(jobs["preview-acceptance"].if, /needs\.changes\.outputs\.preview != 'false'/);
+  assert.equal(jobs.changes.outputs.preview, "${{ steps.scope.outputs.preview }}");
+  assert.deepEqual(
+    commands("preview-acceptance").at(-1),
+    "pnpm --filter @mend/api-server test:preview-acceptance",
+  );
 });
 
 test("formal guards and quick-checks the models on a pull request, and runs every model's full bounds nightly", () => {
@@ -688,6 +703,7 @@ test("dispatch measurements preserve the production jobs and cannot run on PRs o
     "formal",
     "mobile-web",
     "packaging",
+    "preview-acceptance",
     "static",
     "store-image-git",
     "test-clients-a",

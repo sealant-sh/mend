@@ -6,15 +6,16 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 
 const script = new URL("./ci-scope.mjs", import.meta.url).pathname;
-const full = "mobile=true\npackaging=true\nstore=true\nformal=true\ndocker=true\n";
+const full = "mobile=true\npackaging=true\nstore=true\nformal=true\ndocker=true\npreview=true\n";
 const only = ({
   mobile = false,
   packaging = false,
   store = false,
   formal = false,
   docker = false,
+  preview = false,
 } = {}) =>
-  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\ndocker=${docker}\n`;
+  `mobile=${mobile}\npackaging=${packaging}\nstore=${store}\nformal=${formal}\ndocker=${docker}\npreview=${preview}\n`;
 const fixture = (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "mend-ci-scope-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
@@ -95,6 +96,12 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
       only({ mobile: true, packaging: true, docker: true }),
     ],
     ["packages/sessions/test/rollback-mounted-layout.test.ts", only({ docker: true })],
+    // The preview gateway, its edges and its acceptance suite run that suite.
+    ["apps/api/src/preview-gateway.ts", only({ packaging: true, preview: true })],
+    ["apps/api/test/preview-edge.acceptance.ts", only({ packaging: true, preview: true })],
+    ["apps/api/test/fixtures/preview/apps.ts", only({ packaging: true, preview: true })],
+    ["deploy/docker/Caddyfile", only({ packaging: true, preview: true })],
+    ["apps/api/src/previews.ts", only({ packaging: true })],
   ]) {
     const base = f.git("rev-parse", "HEAD");
     f.write(path);

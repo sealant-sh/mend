@@ -170,13 +170,14 @@ const setupPreviewSite = async (): Promise<string> => {
 
 const packagedCaddy = async (dir: string, options: EdgeOptions, httpsPort: number) => {
   const packaged = await readFile(PACKAGED_CADDYFILE, "utf8");
-  const global = "{\n\tlog default {";
-  if (!packaged.includes(global)) throw new Error("the packaged Caddyfile's global options moved");
+  // The global options block is the one top-level block opened by a bare `{` line.
+  const global = /^\{\n/m;
+  if (!global.test(packaged)) throw new Error("the packaged Caddyfile has no global options");
   await writeFile(
     join(dir, "Caddyfile"),
     packaged.replace(
       global,
-      `{\n\tadmin off\n\tskip_install_trust\n\tdefault_bind 127.0.0.1 [::1]\n\thttp_port ${await freePort()}\n\thttps_port ${httpsPort}\n\tlog default {`,
+      `{\n\tadmin off\n\tskip_install_trust\n\tdefault_bind 127.0.0.1 [::1]\n\thttp_port ${await freePort()}\n\thttps_port ${httpsPort}\n`,
     ),
   );
   const site = await setupPreviewSite();

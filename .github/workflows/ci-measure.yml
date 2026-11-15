@@ -55,6 +55,7 @@ jobs:
       store: ${{ steps.scope.outputs.store }}
       formal: ${{ steps.scope.outputs.formal }}
       docker: ${{ steps.scope.outputs.docker }}
+      preview: ${{ steps.scope.outputs.preview }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -632,6 +633,41 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Server Docker setup and mounted Undo on the runner's Docker engine
         run: node scripts/docker-suites.mjs
+  preview-acceptance:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.outputs.preview != 'false' }}
+    runs-on:
+      ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
+      }}
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: mend
+          POSTGRES_PASSWORD: mend
+          POSTGRES_DB: mend
+        ports:
+          - 5432:5432
+        options:
+          --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
+          --health-retries 10
+    env:
+      MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.head_sha }}
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version-file: .node-version
+          cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - run: pnpm install --frozen-lockfile
+      - name: Install Chromium and Firefox for the preview browsers
+        run:
+          pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox
+      - name: Preview acceptance through every edge, in real browsers
+        run: pnpm --filter @mend/api-server test:preview-acceptance
   checks:
     needs:
       - changes
@@ -645,6 +681,7 @@ jobs:
       - store-image-git
       - formal
       - docker-suites
+      - preview-acceptance
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
     steps:
@@ -669,6 +706,7 @@ jobs:
             ["store-image-git", "store"],
             ["formal", "formal"],
             ["docker-suites", "docker"],
+            ["preview-acceptance", "preview"],
           ]) {
             const selected = jobs.changes.outputs?.[output];
             if (selected !== "true" && selected !== "false") {

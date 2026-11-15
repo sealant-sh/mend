@@ -361,11 +361,22 @@ describe.each(FRONTS)("through the preview gateway, %s", (front) => {
       await at.signIn.authUrl("carol", "web", "/held"),
       `${at.originOf("web")}/held`,
     );
+    // A navigation is answered at once with the starting page, whose status poll then reports
+    // the start that timed out in its one line (docs/operations/preview-gateway.md).
     expect(navigated?.status(), "the browser received the gateway's 503").toBe(503);
-    expect(await page.locator("p").textContent(), "and its one line").toBe(
-      "preview · web · did not start in 3 s · start timed out · your request was not delivered",
+    // The first, as the page's own script reads it; the game's controls follow it.
+    const line = page.locator("main > p").first();
+    expect(await line.textContent(), "the starting page's one line").toBe(
+      "preview · web · starting",
     );
-    expect(Date.now() - started, "after the hold").toBeGreaterThanOrEqual(3_000);
+    const timedOut =
+      "preview · web · did not start in 3 s · start timed out · your request was not delivered";
+    await page.waitForFunction(
+      (expected) => document.querySelector("main > p")?.textContent === expected,
+      timedOut,
+      { timeout: 30_000 },
+    );
+    expect(Date.now() - started, "the line changed after the hold").toBeGreaterThanOrEqual(3_000);
 
     const cookie = await at.cookieOf("dave", "web");
     const bytes = 256 * MiB;
