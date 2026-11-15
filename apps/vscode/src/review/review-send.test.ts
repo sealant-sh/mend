@@ -109,18 +109,22 @@ beforeEach(() => {
 });
 
 /**
- * Waits until claude's input got `count` pastes and the store keeps its newest review as pasted, or
- * as one that pasted nothing: a paste lands before the store keeps it, and a review composed between
- * the two is composed onto nothing.
+ * Waits until claude's input got `count` pastes, the store keeps its newest review as pasted, or as
+ * one that pasted nothing, and the store has read back the comments Mend holds. A paste lands before
+ * the store keeps it, and a review composed between the two is composed onto nothing. The drive's
+ * end reads the change again: a review composed before that read lands is composed without the
+ * comment Mend posted, and Send refuses it as one whose comments changed.
  */
 const pastedInto = async (
   store: ReviewStore,
+  mend: FakeMend,
   pastes: ReadonlyArray<unknown>,
   count: number,
 ): Promise<void> =>
   vi.waitFor(() => {
     expect(pastes).toHaveLength(count);
     expect(store.review().sends.at(-1)?.phase).toMatchObject({ paste: { kind: "done" } });
+    expect(store.ready()?.comments).toEqual(mend.serverComments);
   }, SETTLE);
 
 const failures = (store: ReviewStore): Array<ReviewFailure> => {
@@ -142,7 +146,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
       "Address each comment carefully",
     );
     expect(await sendComposed(store, first, edited)).toEqual({ sent: true });
-    await pastedInto(store, pastes, 1);
+    await pastedInto(store, mend, pastes, 1);
     expect(pastes[0]).toContain("Address each comment carefully");
 
     await store.comment(onLine(5, "Name the constant"));
@@ -173,7 +177,7 @@ describe("Send review twice before she presses Enter in claude's terminal", () =
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await sendComposed(store, first, first.text);
-    await pastedInto(store, pastes, 1);
+    await pastedInto(store, mend, pastes, 1);
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
@@ -205,7 +209,7 @@ describe("a third Send after one that pasted nothing", () => {
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     expect(await sendComposed(store, first, first.text)).toEqual({ sent: true });
-    await pastedInto(store, pastes, 1);
+    await pastedInto(store, mend, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
@@ -257,7 +261,7 @@ describe("a Send whose earlier part changed only its line endings", () => {
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await sendComposed(store, first, first.text);
-    await pastedInto(store, pastes, 1);
+    await pastedInto(store, mend, pastes, 1);
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
     if (second === null) throw new Error("nothing composed");
@@ -629,7 +633,7 @@ describe("claude exits after VS Code pasted the review into its input", () => {
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await sendComposed(store, first, first.text);
-    await pastedInto(store, pastes, 1);
+    await pastedInto(store, mend, pastes, 1);
     const [entered] = mend.delivered;
     const pasted = entered?.commentIds ?? [];
 
@@ -2468,7 +2472,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await sendComposed(store, first, first.text);
-    await pastedInto(store, pastes, 1);
+    await pastedInto(store, mend, pastes, 1);
     expect(pastes[0]?.processId).toBe("agent-1");
 
     world.replace(CLAUDE_2);
@@ -2519,16 +2523,7 @@ describe("claude is replaced between two Sends, before she pressed Enter", () =>
     const first = store.compose();
     if (first === null) throw new Error("nothing composed");
     await sendComposed(store, first, first.text);
-    await pastedInto(store, pastes, 1);
-    // The drive's end reads the change again: a review composed before that read lands is composed
-    // without the comment Mend posted, and Send refuses it as one whose comments changed.
-    await vi.waitFor(
-      () =>
-        expect(store.ready()?.comments.map(({ body }) => body)).toContainEqual(
-          expect.stringContaining("Use the shared limiter"),
-        ),
-      SETTLE,
-    );
+    await pastedInto(store, mend, pastes, 1);
 
     await store.comment(onLine(5, "Name the constant"));
     const second = store.compose();
