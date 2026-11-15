@@ -2271,20 +2271,20 @@ describe("mend server setup", () => {
     expect(env.get("MEND_ALLOWED_ORIGINS")).toBe('["https://mend.example.test"]');
   });
 
-  it("takes HTTPS this machine runs in front of a loopback bind once the install exists", async () => {
-    const configDir = temporaryDirectory("own-https");
-    const first = makeRuntime({ configDir });
-    expect(await serverCommand(["setup", "--yes"], first.runtime)).toEqual({ _tag: "ok" });
-    const second = makeRuntime({ configDir, daemon: first.daemon });
+  it("takes HTTPS this machine runs in front of a loopback bind, on a fresh install too", async () => {
+    const control = makeRuntime();
     expect(
       await serverCommand(
         ["setup", "--bind", "127.0.0.1", "--url", "https://mend.example.test"],
-        second.runtime,
+        control.runtime,
       ),
     ).toEqual({ _tag: "ok" });
-    const env = readEnv(activeFile(configDir, "server.env"));
+    const env = readEnv(activeFile(control.runtime.configDir, "server.env"));
     expect(env.get("APP_URL")).toBe("https://mend.example.test");
     expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
+    expect(control.lines).toContain(
+      "Until that first account exists, anyone who reaches https://mend.example.test can create it, so it is worth doing that soon.",
+    );
   });
 
   it("a public address on an existing install is said as observed beside the declared exposure, and nothing on a private one", async () => {
@@ -2962,10 +2962,6 @@ describe("mend server setup", () => {
     [
       ["--bind", "2a01:4f8::1", "--url", "http://[2a01:4f8::1]:3105"],
       "A fresh install is not published on 2a01:4f8::1, a public address, as private",
-    ],
-    [
-      ["--url", "https://mend.example.test"],
-      "A fresh install does not start at https://mend.example.test: until the first account exists",
     ],
     [
       ["--bind", "127.0.0.1", "--url", "http://mend.example.test:3105"],

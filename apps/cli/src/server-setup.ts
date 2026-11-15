@@ -4680,20 +4680,6 @@ const setupServer = async (
       `A fresh install is not published on ${config.bind}, a public address, as ${config.exposure ?? "private"}: until the first account exists, registration is open to whoever reaches it first, and the internet reaches that address. Run mend server setup on this machine first and create the first account at http://localhost:${config.appPort}. Then publish it on a private address (a tailnet, a LAN or a VPN), or choose the public internet with --edge <host> --exposure public.`,
     );
   }
-  // HTTPS run on this machine in front of a loopback bind may well face the internet, and setup
-  // cannot see where it is reached from. A tailnet name is private by construction.
-  const servedOrigin = new URL(config.appUrl);
-  if (
-    existing === null &&
-    config.edgeHost === undefined &&
-    isLoopbackBind(config.bind) &&
-    !isLoopbackHost(servedOrigin.hostname) &&
-    !servedOrigin.hostname.endsWith(".ts.net")
-  ) {
-    throw setupError(
-      `A fresh install does not start at ${config.appUrl}: until the first account exists, registration is open to whoever reaches that origin first, and setup cannot tell whether the internet does. Run mend server setup without --url, create the first account at http://localhost:${config.appPort} (from another machine, through ssh -L ${config.appPort}:localhost:${config.appPort}), then run mend server setup --url ${config.appUrl}.`,
-    );
-  }
   for (const line of publicPublicationLines(config, publicBinds)) runtime.writeLine(line);
   // Until the first account exists, registration is open to whoever arrives first, and the
   // server refuses `public` without an operator (ADR 0004, decision 16). Said before anything
@@ -4822,6 +4808,18 @@ const setupServer = async (
     runtime.writeLine(
       `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
     );
+    // HTTPS run on this machine in front of the loopback bind may face the internet; setup cannot
+    // see from where it is reached. A tailnet name is private.
+    const served = new URL(config.appUrl);
+    if (
+      config.edgeHost === undefined &&
+      isLoopbackBind(config.bind) &&
+      !isLoopbackHost(served.hostname) &&
+      !served.hostname.endsWith(".ts.net")
+    )
+      runtime.writeLine(
+        `Until that first account exists, anyone who reaches ${config.appUrl} can create it, so it is worth doing that soon.`,
+      );
   } else if (urlChanged) {
     // Said by followUrlChange.
   } else if (
