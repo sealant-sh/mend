@@ -370,6 +370,14 @@ jobs:
         run: node apps/marketing/scripts/sync-install-script.mjs
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-a
+      # The desktop app, built and launched under Xvfb, follows a terminal's `mend logout` and
+      # `mend login`: the main process sees the shared credential change and the window shows it
+      # (apps/desktop/scripts/check-connection.mjs). The Chromium install above brings Electron's
+      # system libraries.
+      - name: The desktop window follows the connection the main process reports
+        run: |
+          pnpm exec turbo run build --filter=@mend/desktop
+          xvfb-run -a pnpm --filter @mend/desktop check:connection
       - name: AWS shell regression tests with local command fixtures
         run: pnpm run test:aws-shell
       - name: Identify the pinned MinIO fixture cache

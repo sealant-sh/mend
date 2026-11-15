@@ -10,6 +10,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "build": "electron-vite build",
+    "check:connection": "node scripts/check-connection.mjs",
     "dev": "electron-vite dev",
     "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware .",
     "package": "electron-vite build && electron-builder --config electron-builder.config.ts",
