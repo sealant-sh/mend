@@ -581,12 +581,13 @@ it; the rest is this checklist.
 7. **Mend: pin sealant `vX'.Y'.Z'`** (`node scripts/sealant-pins.mjs pin X'.Y'.Z'`), merge, **cut a
    Mend next build of the release's version, and run it on the box.** This is the proof that counts:
    the whole stable stack, exactly as it will ship.
-8. **Mend: run required CI and packaged acceptance on the Version Packages pull request's head**
-   (`gh workflow run ci.yml --ref changeset-release/main` and
-   `gh workflow run release-acceptance.yml --ref changeset-release/main`), wait for `checks` and
-   acceptance to pass on that head, then **merge that pull request and tag `vA.B.C` on it.** Nothing
-   dispatches either automatically, and GitHub's own runs for the bot-authored pull request stop at
-   the contributor approval policy, so without the first command the pull request has no `checks`.
+8. **Mend: run packaged acceptance on the Version Packages pull request's head**
+   (`gh workflow run release-acceptance.yml --ref changeset-release/main`), wait for `checks` on the
+   pull request and for that acceptance run to pass on the same head, then **merge that pull request
+   and tag `vA.B.C` on it.** The Version workflow starts the pull request's CI itself: it approves
+   the held `pull_request` run (`docs/operations/ci.md`, "Concurrency"). If `checks` is missing,
+   click "Approve and run workflows" on the pull request. Acceptance is not a required check, and a
+   dispatched run does not show in the pull request's checks, so read its result from the run.
    _Enforced by the pins job:_ the commit is on main; no prerelease is pinned; the CLI package
    carries the version; no next tag of `A.B.C` sits on a commit the release leaves out; the newest
    next build of `A.B.C` it contains reached npm; and since that build only `.changeset/`,
