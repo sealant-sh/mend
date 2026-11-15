@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { copyTextChecked } from "#/lib/clipboard";
 
@@ -16,10 +16,12 @@ import { Button } from "./button";
  */
 export function CopyButton({ text, label }: { readonly text: string; readonly label?: string }) {
   const [outcome, setOutcome] = useState<"copied" | "failed" | null>(null);
+  const reset = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(reset.current), []);
   const copy = async () => {
     const copied = await copyTextChecked(text);
     setOutcome(copied ? "copied" : "failed");
-    if (copied) window.setTimeout(() => setOutcome(null), 1500);
+    if (copied) reset.current = window.setTimeout(() => setOutcome(null), 1500);
   };
   return (
     <span className="inline-flex shrink-0 items-center gap-2">
