@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { CopyButton } from "./copy-button";
 
@@ -9,6 +9,7 @@ Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
 
 let root: Root | null = null;
 afterEach(() => {
+  vi.useRealTimers();
   act(() => root?.unmount());
   document.body.replaceChildren();
   Reflect.deleteProperty(document, "execCommand");
@@ -60,5 +61,42 @@ describe("Copy over plain HTTP", () => {
     await press();
     expect(statuses()).toContain("Copy failed, select the text");
     expect(statuses()).not.toContain("Copied");
+  });
+});
+
+describe("the Copied note's timer, on the test clock", () => {
+  /** A press whose async copy settles on the fake clock. */
+  const pressOnTestClock = async () => {
+    const button = document.querySelector("button");
+    if (button === null) throw new Error("no button");
+    await act(async () => {
+      button.click();
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  };
+
+  it("clears Copied after a second and a half", async () => {
+    vi.useFakeTimers();
+    plainHttp(true);
+    render();
+    await pressOnTestClock();
+    expect(statuses()).toContain("Copied");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(statuses()).not.toContain("Copied");
+  });
+
+  it("leaves nothing to fire once the button is gone", async () => {
+    vi.useFakeTimers();
+    plainHttp(true);
+    render();
+    await pressOnTestClock();
+    expect(statuses()).toContain("Copied");
+    act(() => root?.unmount());
+    root = null;
+    // A timer left here would run after a test file's window is gone and fail the run (SLNT-993).
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(1600);
   });
 });
