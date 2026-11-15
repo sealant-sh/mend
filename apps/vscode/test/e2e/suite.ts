@@ -528,11 +528,16 @@ export async function run(): Promise<void> {
     120_000,
   );
   await sleep(2_000);
-  const names = [field(newSession, "label"), field(newSession, "worktree")].map(String);
+  // A toast names a session as its row does: its label, else its harness and short id.
+  const label = field(newSession, "label");
+  const name =
+    typeof label === "string"
+      ? label
+      : `${String(field(newSession, "harness"))} · ${newSessionId.slice(0, 8)}`;
   // The refused launch's toast is the one error this step expects.
   const shownSoFar = evidence["errorsShown"];
   evidence["errorsShown"] = (Array.isArray(shownSoFar) ? shownSoFar : []).filter(
-    (message) => !names.some((name) => String(message).startsWith(`${name} failed`)),
+    (message) => !String(message).startsWith(`${name} failed`),
   );
   record("newSession", {
     sessionId: newSessionId,
