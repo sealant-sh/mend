@@ -8,7 +8,7 @@
 // stack.mjs holds one stack per Docker daemon and cannot see any other session's daemon, so the
 // limit across the machine is counted here, from the outer Mend. `mend service list` names every
 // live Service in every project this account can see; a verify stack is one labelled `stack`
-// (`mend service stack`), `st-verify-<run>` (the skill's Launch) or `stack-<run>` (earlier runs). Whether it has finished building is
+// (`mend service stack`), `st-verify-<run>` (`pnpm verify stack up`) or `stack-<run>` (earlier runs). Whether it has finished building is
 // read from its own output (`mend service logs <id>`): `verify stack · ready in …` is printed once
 // every image is built and the inner server is set up. Until then it is building; a stack whose
 // output could not be read is counted as building and said to be unknown.

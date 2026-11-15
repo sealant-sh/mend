@@ -42,7 +42,7 @@
 # images this machine's Docker holds into the outer's daemon (`up` does this before setup), then
 # fills the Docker service of every session running in the outer from the outer's daemon, which
 # pulls a missing image once for all its sessions. Run it after an outer session starts and before
-# its stack does (SKILL.md, Launch). It loads only a tag the daemon lacks, and only a copy whose
+# its stack does (`pnpm verify stack up`). It loads only a tag the daemon lacks, and only a copy whose
 # digest Docker Hub still names for the tag: a stale copy is left to be pulled. When Docker Hub
 # refuses to say (its limit spent), the copy is loaded and its digest printed as unchecked. A copy a
 # daemon already holds is reused and reported (`held <ref> <digest> · Hub has <digest>`) unless
