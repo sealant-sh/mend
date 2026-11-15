@@ -59,12 +59,12 @@ export const atRisk = (times, budgetMs = CI_FILE_BUDGET_MS, ratio = CI_TO_LOCAL_
     .map(({ file, ms }) => ({
       file,
       ms,
-      warning: `${file} took ${(ms / 1000).toFixed(1)} s here, at least ${(thresholdMs / 1000).toFixed(0)} s (CI's ${budgetMs / 1000} s limit / ${ratio}); CI runs files up to ${ratio}x slower`,
+      warning: `${file} took ${(ms / 1000).toFixed(1)} s here, at least ${(thresholdMs / 1000).toFixed(0)} s (CI's ${budgetMs / 1000} s limit / ${ratio}); 1 file in 10 ran ${ratio}x slower or more on CI`,
     }));
 };
 
 export const AT_RISK_ADVICE =
-  "measure it under stress-ng (stress-ng --cpu 2 --iomix 2), split it, or move a long exploration to the formal or docker-suites job";
+  "for each, measure it under stress-ng (stress-ng --cpu 2 --iomix 2), split it, or move a long exploration to the formal or docker-suites job";
 
 /** One sentence for the receipt, or empty when no file is at risk. */
 export const summarizeRisk = (risky) =>
