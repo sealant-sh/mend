@@ -1,7 +1,6 @@
 import { execFileSync, spawn } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -53,31 +52,48 @@ const makeOrigin = (dir: string) => {
   run("commit", "-m", "initial");
 };
 
-const reservePort = async (): Promise<number> => {
-  const server = net.createServer();
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const address = server.address();
-  if (address === null || typeof address === "string") throw new Error("No test port available.");
-  server.close();
-  await once(server, "close");
-  return address.port;
-};
+/**
+ * The git:// server, run in its own process because tests clone from it synchronously. It listens
+ * on a port the kernel picks, serves each connection with `git daemon --inetd` on that socket, and
+ * prints the port only once it is listening.
+ */
+const gitServerSource = `
+const net = require("node:net");
+const { spawn } = require("node:child_process");
+const root = process.argv[1];
+const server = net.createServer({ pauseOnConnect: true }, (socket) => {
+  const child = spawn("git", ["daemon", "--inetd", "--export-all", "--base-path=" + root, root], {
+    stdio: [socket, socket, "ignore"],
+  });
+  child.once("exit", () => socket.destroy());
+});
+server.listen(0, "127.0.0.1", () => process.stdout.write(server.address().port + "\\n"));
+`;
 
-const waitForPort = async (port: number): Promise<void> => {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    const connected = await new Promise<boolean>((resolve) => {
-      const socket = net.createConnection({ host: "127.0.0.1", port });
-      socket.once("connect", () => {
-        socket.destroy();
-        resolve(true);
-      });
-      socket.once("error", () => resolve(false));
-    });
-    if (connected) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  throw new Error(`Git test server did not listen on ${port}.`);
+/**
+ * Serves `root` over git:// and resolves once the server is listening. Nothing reserves a port
+ * ahead of time or polls for a daemon to bind one (SLNT-990).
+ */
+const serveGit = async (root: string) => {
+  const server = spawn(process.execPath, ["-e", gitServerSource, root], {
+    stdio: ["ignore", "pipe", "inherit"],
+  });
+  const exited = once(server, "exit");
+  const [line]: ReadonlyArray<unknown> = await Promise.race([
+    once(server.stdout, "data"),
+    exited.then(([code]) => {
+      throw new Error(`Git test server exited with ${code} before it listened.`);
+    }),
+  ]);
+  return {
+    port: Number(String(line).trim()),
+    close: async () => {
+      if (server.exitCode === null && server.signalCode === null) {
+        server.kill();
+        await exited;
+      }
+    },
+  };
 };
 
 const withStore = async <A, E>(
@@ -90,23 +106,9 @@ const withStore = async <A, E>(
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-store-test-"));
   const origin = path.join(tmp, "origin");
   makeOrigin(origin);
-  const port = await reservePort();
-  const daemon = spawn(
-    "git",
-    [
-      "daemon",
-      "--reuseaddr",
-      "--export-all",
-      `--base-path=${tmp}`,
-      "--listen=127.0.0.1",
-      `--port=${port}`,
-      tmp,
-    ],
-    { stdio: "ignore" },
-  );
+  const daemon = await serveGit(tmp);
   try {
-    await waitForPort(port);
-    const source = RepositoryCloneUrl.make(`git://127.0.0.1:${port}/origin`);
+    const source = RepositoryCloneUrl.make(`git://127.0.0.1:${daemon.port}/origin`);
     const storeLayer = Store.layer.pipe(
       Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))),
     );
@@ -114,8 +116,7 @@ const withStore = async <A, E>(
       work(tmp, origin, source).pipe(Effect.provide(storeLayer), Effect.orDie),
     );
   } finally {
-    daemon.kill();
-    if (daemon.exitCode === null) await once(daemon, "exit");
+    await daemon.close();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 };
