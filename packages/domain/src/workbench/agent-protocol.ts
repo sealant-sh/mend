@@ -50,6 +50,13 @@ export const AgentTurnOrigin = Schema.Literals(["request", "harness"]);
 export type AgentTurnOrigin = typeof AgentTurnOrigin.Type;
 
 /**
+ * The process an imported turn names (`AgentTurn.imported`): an id no process row carries, since
+ * the turn ran on the person's machine before the session existed and nothing in Mend ran it.
+ */
+export const importedTurnProcessIdOf = (sessionId: SessionId): SessionProcessId =>
+  SessionProcessId.make(`imported:${sessionId}`);
+
+/**
  * Whose login a turn ran on (docs/adr/0013-whoever-sends-a-turn-pays.md, "Every turn records its
  * payer"): the person, and the connected account as sealant reported it, with the account's name as
  * it was then. Each part is null when Mend cannot say it.
@@ -64,7 +71,17 @@ export interface TurnPayer {
 export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   id: AgentTurnId,
   sessionId: SessionId,
+  /** For an imported turn, `importedTurnProcessIdOf(sessionId)`: no process of the session. */
   processId: SessionProcessId,
+  /**
+   * The turn came with a conversation the person imported (SLNT-895): it ran before the session
+   * existed, on their machine and login. Mend never ran it, nobody is billed for it here, and its
+   * usage is not counted.
+   */
+  imported: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
   /** Position within the session conversation. */
   ordinal: Schema.Int,
   /** Original membership interval, separate from terminal execution evidence. */

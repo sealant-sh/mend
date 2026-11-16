@@ -36,7 +36,9 @@ import { DevicePairingLive } from "./routes/devices.ts";
  * MEND-05 (docs/adr/0004, "Budgets"): every refusal here happens before the route runs, which the
  * `reached` counter proves. A refused request reaches nothing.
  */
-const SESSION_COOKIE = sessionCookiePolicy({ appUrl: "https://mend.example.com" }).name;
+const SESSION_COOKIE = sessionCookiePolicy({
+  appUrl: "https://mend.example.com",
+}).name;
 
 const disposers: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -478,6 +480,10 @@ describe("bodies are bounded before they are decoded", () => {
         message: "budget reached · 67108864 bytes in one git bundle · nothing running was stopped",
       },
     });
+    expect(await api.declare("/api/projects/p1/conversations", 64 * MiB + 1)).toMatchObject({
+      status: 413,
+      body: { budget: "conversationBytes", limit: 64 * MiB },
+    });
     expect(await api.declare("/api/sessions/s1/images", 24 * MiB + 1)).toMatchObject({
       status: 413,
       body: { budget: "uploadBodyBytes", limit: 24 * MiB },
@@ -504,6 +510,8 @@ describe("bodies are bounded before they are decoded", () => {
     expect(bodyBudgetFor("POST", "/api/projects/p1/handoffs")).toBe("bundleBytes");
     expect(bodyBudgetFor("POST", "/api/projects/p1/Handoffs/")).toBe("bodyBytes");
     expect(bodyBudgetFor("GET", "/api/projects/p1/handoffs")).toBe("bodyBytes");
+    expect(bodyBudgetFor("POST", "/api/projects/p1/conversations")).toBe("conversationBytes");
+    expect(bodyBudgetFor("GET", "/api/projects/p1/conversations")).toBe("bodyBytes");
     expect(bodyBudgetFor("GET", "/api/skills/sync")).toBe("bodyBytes");
     expect(bodyBudgetFor("POST", "/api/skills/sync/extra")).toBe("bodyBytes");
     expect(bodyBudgetFor("POST", "/api/sessions/s1/images/../turns")).toBe("bodyBytes");
@@ -597,7 +605,9 @@ describe("requests are counted per address and per credential", () => {
     });
     const visitor = (own: string) =>
       api.send("/api/projects", {
-        headers: { cookie: `better-auth.session_token=planted; ${SESSION_COOKIE}=${own}` },
+        headers: {
+          cookie: `better-auth.session_token=planted; ${SESSION_COOKIE}=${own}`,
+        },
       });
     expect((await visitor("alice")).status).toBe(200);
     expect((await visitor("bob")).status, "a second visitor has a window of their own").toBe(200);

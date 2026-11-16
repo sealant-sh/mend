@@ -302,6 +302,10 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "screens.rtc",
   "handoffs.receive",
   "handoffs.instanceTerms",
+  // The caller's own imports, in a project they can see, into a session of theirs or a new one:
+  // conversations.test.ts covers who may land a conversation where.
+  "conversations.lookup",
+  "conversations.import",
 ]);
 
 const project =
@@ -1271,6 +1275,7 @@ const ADMITTED: Readonly<
       "resources.ownDatabases",
       "resources.bindingRows",
       "sessions.launchersOf",
+      "importedConversations.undeliveredAmong",
       "engine.refreshCaptureStatus",
     ],
   },
@@ -1355,6 +1360,7 @@ const ADMITTED: Readonly<
       "processes.listForSessions",
       "services.liveCountsForSessions",
       "conversation.oldestPendingRequests",
+      "importedConversations.undeliveredAmong",
       "engine.launchUnderWay",
     ],
   },
@@ -1368,6 +1374,7 @@ const ADMITTED: Readonly<
       "resources.ownDatabases",
       "resources.bindingRows",
       "sessions.launchersOf",
+      "importedConversations.undeliveredAmong",
     ],
   },
   "sessions.resume": { status: 500, calls: ["engine.resumeSession"] },
@@ -1442,7 +1449,11 @@ const ADMITTED: Readonly<
   "handoffs.terms": {
     status: 200,
     calls: [],
-    body: { bundleBytes: 64 * 1024 * 1024, fileBytes: 8 * 1024 * 1024 },
+    body: {
+      bundleBytes: 64 * 1024 * 1024,
+      fileBytes: 8 * 1024 * 1024,
+      conversationBytes: 64 * 1024 * 1024,
+    },
   },
   "landings.checkGitHub": { status: 500, calls: ["landing.adoptPullRequest"] },
   "landings.gitOps": { status: 500, calls: ["gitOps.listForSession"] },

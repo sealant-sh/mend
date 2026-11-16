@@ -20,6 +20,9 @@ The gateway supports t3code's core workflow. The remaining T3 Code controls are 
 [support matrix](https://github.com/sealant-sh/mend/blob/main/docs/t3code-support-matrix.md) records
 each remaining gap and its source evidence, rechecked against main on 2026-11-05.
 
+If you have T3 Code threads on your machine, `mend import t3` brings them into Mend as sessions with
+their conversations. See [Import from T3 Code](/guides/import-from-t3-code/).
+
 Mend stays the only source of truth. To t3code the gateway is a t3code server; to Mend it is an
 ordinary client, calling Mend's API with the device token of the person who paired. Everything a
 thread does goes through Mend's own routes and its rules: a session started from t3code is yours,

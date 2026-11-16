@@ -354,7 +354,7 @@ export class SessionInboxMark extends Schema.Class<SessionInboxMark>("SessionInb
   markedAt: Timestamp,
 }) {}
 
-/** The session facts an inbox row shows, filters and acts on: thirteen of the session's fields. */
+/** The session facts an inbox row shows, filters and acts on: fourteen of the session's fields. */
 export const SessionInboxSession = Schema.Struct({
   id: Session.fields.id,
   projectId: Session.fields.projectId,
@@ -369,6 +369,7 @@ export const SessionInboxSession = Schema.Struct({
   settledAt: Session.fields.settledAt,
   createdAt: Session.fields.createdAt,
   updatedAt: Session.fields.updatedAt,
+  importedConversationWaiting: Session.fields.importedConversationWaiting,
 });
 export type SessionInboxSession = typeof SessionInboxSession.Type;
 

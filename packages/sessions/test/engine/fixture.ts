@@ -41,6 +41,7 @@ import {
   SessionNotFoundError,
   SessionPagesRepo,
   SessionProcessesRepo,
+  type ImportedConversationsRepo,
   type SessionHistoryRepo,
   SessionRunActiveError,
   SessionRunsRepo,
@@ -249,6 +250,7 @@ import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resource
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
 import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
+import { makeImportedConversationsMemory } from "../imported-conversations-memory.ts";
 import { makeHistoryMemory } from "../session-history-memory.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
@@ -3966,6 +3968,8 @@ interface EngineOptions {
   /** Hands a test the platform client exactly as the engine reaches it (`WorkspaceCaller` on). */
   readonly exposeSealant?: (client: SealantClientShape) => void;
   readonly history?: { readonly layer: Layer.Layer<SessionHistoryRepo> };
+  /** Conversations people imported (SLNT-895); none unless a test seeds one. */
+  readonly importedConversations?: { readonly layer: Layer.Layer<ImportedConversationsRepo> };
   readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
   readonly servicesLayer?: Layer.Layer<ServicesRepo>;
   readonly conversationLayer?: Layer.Layer<AgentConversationRepo>;
@@ -4323,6 +4327,7 @@ export const withPreparedEngineEffect = <B, A, E>(
         // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
         Layer.mergeAll(
           historyLayer,
+          (options.importedConversations ?? makeImportedConversationsMemory()).layer,
           options.mendKeysLayer ?? mendKeysStubLayer,
           options.agentBridgeLayer ?? agentBridgeStubLayer,
           options.gitOpsLayer ?? gitOpsStubLayer,

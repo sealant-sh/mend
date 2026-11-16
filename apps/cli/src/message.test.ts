@@ -30,6 +30,7 @@ const command = (
   overrides: Partial<MessageBoundary & MessageServer> = {},
 ) => {
   const calls: Array<{ route: string; body: unknown }> = [];
+  const launches: Array<{ sessionId: string; body: unknown }> = [];
   const resolved: Array<string> = [];
   const stdout: Array<string> = [];
   const stderr: Array<string> = [];
@@ -47,6 +48,13 @@ const command = (
       (async (route, body) => {
         calls.push({ route, body });
         return raw;
+      }),
+    session: overrides.session ?? (async () => ({ currentAgent: { kind: "agent-protocol" } })),
+    launchConversation:
+      overrides.launchConversation ??
+      (async (sessionId, body) => {
+        launches.push({ sessionId, body });
+        return { id: sessionId, harness: "claude", status: "starting" };
       }),
   };
   const boundary: MessageBoundary = {
@@ -71,6 +79,7 @@ const command = (
   return {
     run: (args: ReadonlyArray<string>) => messageCommand(args, boundary),
     calls,
+    launches,
     resolved,
     stdout,
     stderr,
@@ -395,6 +404,100 @@ const wordsCases = [
   "@",
   `see https://fake:${PASSWORD}@example.invalid/repo`,
 ];
+
+describe("mend message --resume on a session that never ran an agent", () => {
+  const notLive = refusedBy(
+    "ProtocolSessionNotLive",
+    409,
+    "This session has no live conversation; resume it first.",
+  );
+
+  it("starts its agent in conversation mode with the message as the first turn", async () => {
+    const world = command(undefined, {
+      post: notLive,
+      session: async () => ({ currentAgent: null }),
+    });
+    expect(await world.run(["s", "--resume", "carry on with the tests"])).toBe(0);
+    expect(world.launches).toEqual([
+      {
+        sessionId: messageSessionId,
+        body: {
+          mode: "protocol",
+          prompt: "carry on with the tests",
+          expected: { settledAt: null },
+        },
+      },
+    ]);
+    expect(world.stdout.join("")).toBe(
+      `Started claude on the session's conversation with this message · session ${messageSessionId.slice(0, 8)}\n`,
+    );
+  });
+
+  it("starts one a refused first message settled, over that settled attempt", async () => {
+    // A first message refused for a missing login settles the session before any agent ran.
+    const settledAt = "2026-11-16T08:10:39.368Z";
+    const world = command(undefined, {
+      post: notLive,
+      session: async () => ({ currentAgent: null, session: { settledAt } }),
+    });
+    expect(await world.run(["s", "--resume", "carry on"])).toBe(0);
+    expect(world.launches).toEqual([
+      {
+        sessionId: messageSessionId,
+        body: { mode: "protocol", prompt: "carry on", expected: { settledAt } },
+      },
+    ]);
+  });
+
+  it("leaves the refusal standing for a session whose agent ran, or without --resume", async () => {
+    const ran = command(undefined, { post: notLive });
+    expect(await ran.run(["s", "--resume", "words"])).toBe(1);
+    expect(ran.stderr.join("")).toContain("resume it first");
+    const unasked = command(undefined, {
+      post: notLive,
+      session: async () => ({ currentAgent: null }),
+    });
+    expect(await unasked.run(["s", "words"])).toBe(1);
+    expect(ran.launches).toEqual([]);
+    expect(unasked.launches).toEqual([]);
+  });
+
+  it("says the server's words when the start is refused", async () => {
+    const world = command(undefined, {
+      post: notLive,
+      session: async () => ({ currentAgent: null }),
+      launchConversation: () =>
+        Promise.reject(
+          new MendRequestError("http", "A launch of this session is already under way.", 409, {
+            call: "POST launch",
+            tag: "SessionMovedOn",
+          }),
+        ),
+    });
+    expect(await world.run(["s", "--resume", "words"])).toBe(1);
+    expect(world.stderr.join("")).toBe("mend: A launch of this session is already under way.\n");
+  });
+
+  it("says why the start was refused, so a missing login can be put right", async () => {
+    const refusedFor = (message: string) => ({
+      post: notLive,
+      session: async () => ({ currentAgent: null }),
+      launchConversation: () =>
+        Promise.reject(
+          new MendRequestError("http", message, 422, { call: "POST launch", tag: "StoreFailure" }),
+        ),
+    });
+    const login =
+      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.";
+    const world = command(undefined, refusedFor(login));
+    expect(await world.run(["s", "--resume", "carry on"])).toBe(1);
+    expect(world.stderr.join("")).toBe(`mend: ${login}\n`);
+    // A failure that quotes the message's words is not repeated.
+    const quoting = command(undefined, refusedFor("could not run claude -p carry on"));
+    expect(await quoting.run(["s", "--resume", "carry on"])).toBe(1);
+    expect(quoting.stderr.join("")).not.toContain("carry on");
+  });
+});
 
 /** What `request` throws for a POST whose connection was refused: the fetch error rides as its cause. */
 const refused = (message: string) =>

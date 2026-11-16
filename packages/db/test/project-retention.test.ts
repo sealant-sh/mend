@@ -575,6 +575,9 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           "proof_artifacts",
           // Personal selections remain removable by their holder or a Doppler disconnect.
           "user_doppler_projects",
+          // Its inserts and updates are fenced; removing its owner deletes it in a removed
+          // project too (member removal), and purging the project cascades.
+          "session_imported_conversations",
         ]);
         // tgtype bits: 4 INSERT, 8 DELETE, 16 UPDATE. A fence that misses one lets it through.
         const rows = yield* sql<{ readonly table: string; readonly fenced: boolean }>`

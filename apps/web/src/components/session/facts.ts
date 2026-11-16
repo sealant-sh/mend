@@ -3,6 +3,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 
 import type { Tone } from "#/components/kit/status";
 import { agentIsLive, type SessionStatusDto } from "#/lib/api";
+import { FIRST_MESSAGE_STATUS } from "#/lib/first-message";
 import { sessionTitle } from "#/lib/inbox";
 import { inboxQuery } from "#/lib/inbox-live";
 import { sessionDetailQuery } from "#/lib/session-queries";
@@ -13,11 +14,16 @@ import { useViewerState } from "#/lib/viewer";
 /** Who holds a screen's input has no event of its own, so a session whose screen runs reads it often. */
 const SCREEN_READ_MS = 3_000;
 
-/** The session's status as a dot and a word (DESIGN.md §4): what Mend observed, never a verdict. */
-export const sessionStatusWord = (
-  status: SessionStatusDto,
-): { readonly tone: Tone; readonly word: string } => {
-  switch (status) {
+/**
+ * The session's status as a dot and a word (DESIGN.md §4): what Mend observed, never a verdict.
+ * A session whose imported conversation waits for its first message says so, whatever its status.
+ */
+export const sessionStatusWord = (session: {
+  readonly status: SessionStatusDto;
+  readonly importedConversationWaiting: boolean;
+}): { readonly tone: Tone; readonly word: string } => {
+  if (session.importedConversationWaiting) return FIRST_MESSAGE_STATUS;
+  switch (session.status) {
     case "starting":
       return { tone: "off", word: "starting" };
     case "running":
@@ -132,7 +138,7 @@ export const useSessionFacts = (sessionId: string) => {
     agentPty,
     conversationLive,
     conversationResumes,
-    status: sessionStatusWord(session.status),
+    status: sessionStatusWord(session),
     nameOf: (userId: string) => names?.get(userId) ?? "a member",
   };
 };

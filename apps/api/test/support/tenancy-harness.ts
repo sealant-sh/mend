@@ -9,6 +9,9 @@ import {
   AgentConversationRepo,
   FolderNotFoundError,
   FoldersRepo,
+  type ImportedConversation,
+  type ImportedConversationFile,
+  ImportedConversationsRepo,
   InstanceRolesRepo,
   OrganizationsRepo,
   ProjectNotFoundError,
@@ -50,6 +53,7 @@ import { ConversationTurn, turnSteerSender } from "@mend/domain/workbench";
 import {
   AgentRequest,
   AgentTurn,
+  importedTurnProcessIdOf,
   Change,
   Folder,
   Organization,
@@ -91,7 +95,10 @@ export type HarnessProject = "shared-a" | "private-alice" | "private-carol" | "s
 export const USERS: Readonly<
   Record<
     HarnessUser,
-    ReadonlyArray<{ readonly organization: "A" | "B"; readonly role: OrganizationRole }>
+    ReadonlyArray<{
+      readonly organization: "A" | "B";
+      readonly role: OrganizationRole;
+    }>
   >
 > = {
   alice: [{ organization: "A", role: "owner" }],
@@ -117,9 +124,15 @@ const KEY_SUFFIX = "-key";
 export const accessKeyBearerOf = (user: HarnessUser) => `${user}${KEY_SUFFIX}`;
 const credentialOf = (token: string) =>
   token.endsWith(PHONE_SUFFIX)
-    ? { account: token.slice(0, -PHONE_SUFFIX.length), credential: `device:${token}` as const }
+    ? {
+        account: token.slice(0, -PHONE_SUFFIX.length),
+        credential: `device:${token}` as const,
+      }
     : token.endsWith(KEY_SUFFIX)
-      ? { account: token.slice(0, -KEY_SUFFIX.length), credential: `key:${token}` as const }
+      ? {
+          account: token.slice(0, -KEY_SUFFIX.length),
+          credential: `key:${token}` as const,
+        }
       : { account: token, credential: `session:${token}` as const };
 
 const PROJECTS: Readonly<
@@ -133,8 +146,16 @@ const PROJECTS: Readonly<
   >
 > = {
   "shared-a": { organization: "A", visibility: "shared", creator: "alice" },
-  "private-alice": { organization: "A", visibility: "private", creator: "alice" },
-  "private-carol": { organization: "A", visibility: "private", creator: "carol" },
+  "private-alice": {
+    organization: "A",
+    visibility: "private",
+    creator: "alice",
+  },
+  "private-carol": {
+    organization: "A",
+    visibility: "private",
+    creator: "carol",
+  },
   "shared-b": { organization: "B", visibility: "shared", creator: "bob" },
 };
 
@@ -278,9 +299,13 @@ export interface TenancyWorld {
   readonly skills: ReadonlyMap<SkillId, SkillWithFiles>;
   /** Every session's turns: a test may add one (a turn automatic landing decided about). */
   readonly turns: Map<AgentTurnId, AgentTurn>;
+  /** The session's first agent started over its imported conversation, as a launch marks it. */
+  readonly deliverImported: (sessionId: SessionId) => void;
   /** Flip a project's visibility, as an owner's `PUT /projects/:id/visibility` would. */
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   readonly addWorktree: (worktree: Worktree) => void;
+  /** A session written into the world, or one a test changed: as a create or an update lands. */
+  readonly addSession: (session: Session) => void;
   readonly addProject: (project: Project) => void;
   /** Repositories nested in a worktree, as migration 0166 keeps them past their session. */
   readonly nestedRepositories: Map<
@@ -304,6 +329,7 @@ export interface TenancyWorld {
     | ReferencesRepo
     | FoldersRepo
     | SessionPagesRepo
+    | ImportedConversationsRepo
   >;
   readonly pages: Map<PageId, SessionPage>;
   readonly dispose: () => Promise<void>;
@@ -426,6 +452,13 @@ export const createTenancyWorld = async (
   const requests = new Map<AgentRequestId, AgentRequest>();
   const skills = new Map<SkillId, SkillWithFiles>();
   const pages = new Map<PageId, SessionPage>();
+  const imported = new Map<
+    SessionId,
+    {
+      readonly row: ImportedConversation;
+      readonly bytes: ReadonlyArray<ImportedConversationFile>;
+    }
+  >();
 
   for (const [key, facts] of Object.entries(PROJECTS)) {
     if (!(key in PROJECTS)) continue;
@@ -605,7 +638,11 @@ export const createTenancyWorld = async (
   if (sharedAWorktree !== undefined) {
     worktrees.set(
       CAROL_WORKTREE_IN_SHARED_A,
-      new Worktree({ ...sharedAWorktree, id: CAROL_WORKTREE_IN_SHARED_A, name: "carol" }),
+      new Worktree({
+        ...sharedAWorktree,
+        id: CAROL_WORKTREE_IN_SHARED_A,
+        name: "carol",
+      }),
     );
   }
   sessions.set(
@@ -827,7 +864,10 @@ export const createTenancyWorld = async (
           Effect.gen(function* () {
             const membership = membershipIn(organizationId, signIn.userId);
             if (membership === null) {
-              return yield* new MemberNotFoundError({ organizationId, userId: signIn.userId });
+              return yield* new MemberNotFoundError({
+                organizationId,
+                userId: signIn.userId,
+              });
             }
             lastChosen.set(signIn.userId, organizationId);
             if (signIn.credential !== null) pins.set(signIn.credential, organizationId);
@@ -906,7 +946,9 @@ export const createTenancyWorld = async (
                   !retainedProjects.has(p.id) && p.scratchOwnerUserId === input.createdByUserId,
               )
             )
-              return yield* new ScratchProjectExistsError({ userId: input.createdByUserId });
+              return yield* new ScratchProjectExistsError({
+                userId: input.createdByUserId,
+              });
             const { headSha, purpose, ...row } = input;
             const created = new Project({
               ...makeProject({ ...row, visibility: "private" }),
@@ -1101,10 +1143,85 @@ export const createTenancyWorld = async (
           Effect.sync(() =>
             [...turns.values()]
               .filter((turn) => turn.sessionId === sessionId)
-              .map((turn) => new ConversationTurn({ ...turn, steerSender: turnSteerSender(turn) })),
+              .map(
+                (turn) =>
+                  new ConversationTurn({
+                    ...turn,
+                    steerSender: turnSteerSender(turn),
+                  }),
+              ),
           ),
         listTurns: (sessionId) =>
           Effect.sync(() => [...turns.values()].filter((turn) => turn.sessionId === sessionId)),
+      },
+      calls,
+    ),
+    // Imported conversations as the database keeps them: one per session and per native key,
+    // their turns landed as imported history beside the world's other turns.
+    recording(
+      ImportedConversationsRepo,
+      "importedConversations",
+      {
+        sessionOf: (input) =>
+          Effect.sync(
+            () =>
+              [...imported.values()].find(
+                ({ row }) =>
+                  row.ownerUserId === input.ownerUserId &&
+                  row.projectId === input.projectId &&
+                  row.harness === input.harness &&
+                  row.nativeId === input.nativeId,
+              )?.row.sessionId ?? null,
+          ),
+        bySession: (sessionId) => Effect.sync(() => imported.get(sessionId)?.row ?? null),
+        undeliveredAmong: (sessionIds) =>
+          Effect.sync(
+            () => new Set(sessionIds.filter((id) => imported.get(id)?.row.deliveredAt === null)),
+          ),
+        files: (sessionId) => Effect.sync(() => imported.get(sessionId)?.bytes ?? []),
+        save: (conversation, bytes, landed) =>
+          Effect.sync(() => {
+            if (imported.has(conversation.sessionId)) return { _tag: "SessionTaken" as const };
+            const earlier = [...imported.values()].find(
+              ({ row }) =>
+                row.ownerUserId === conversation.ownerUserId &&
+                row.projectId === conversation.projectId &&
+                row.harness === conversation.harness &&
+                row.nativeId === conversation.nativeId,
+            );
+            if (earlier !== undefined)
+              return {
+                _tag: "AlreadyImported" as const,
+                sessionId: earlier.row.sessionId,
+              };
+            imported.set(conversation.sessionId, {
+              row: { ...conversation, deliveredAt: null },
+              bytes,
+            });
+            for (const [ordinal, turn] of landed.entries()) {
+              const id = AgentTurnId.make(`${conversation.sessionId}-imported-${ordinal}`);
+              turns.set(
+                id,
+                new AgentTurn({
+                  id,
+                  sessionId: conversation.sessionId,
+                  processId: importedTurnProcessIdOf(conversation.sessionId),
+                  imported: true,
+                  ordinal,
+                  author: null,
+                  input: turn.input,
+                  status: "completed",
+                  providerTurnId: turn.providerTurnId,
+                  error: null,
+                  usage: null,
+                  createdAt: NOW,
+                  startedAt: NOW,
+                  endedAt: NOW,
+                }),
+              );
+            }
+            return { _tag: "Saved" as const, turns: landed.length };
+          }),
       },
       calls,
     ),
@@ -1167,7 +1284,11 @@ export const createTenancyWorld = async (
       const membership = membershipIn(organizationId, userId);
       return membership === null
         ? null
-        : { userId, organizationId: membership.organization.id, role: membership.role };
+        : {
+            userId,
+            organizationId: membership.organization.id,
+            role: membership.role,
+          };
     },
     purgeProject: (id) => {
       projects.delete(id);
@@ -1190,12 +1311,20 @@ export const createTenancyWorld = async (
     skills,
     turns,
     pages,
+    deliverImported: (sessionId) => {
+      const held = imported.get(sessionId);
+      if (held !== undefined && held.row.deliveredAt === null)
+        imported.set(sessionId, { ...held, row: { ...held.row, deliveredAt: NOW } });
+    },
     setVisibility: (key, visibility) => {
       const row = projects.get(ids(key).project);
       if (row !== undefined) projects.set(row.id, new Project({ ...row, visibility }));
     },
     addWorktree: (worktree) => {
       worktrees.set(worktree.id, worktree);
+    },
+    addSession: (session) => {
+      sessions.set(session.id, session);
     },
     authLayer,
     accessLayers,

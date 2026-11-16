@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { HANDOFF_FILE_BYTES_DEFAULT } from "@mend/domain/workbench";
+import { CONVERSATION_BYTES_DEFAULT, HANDOFF_FILE_BYTES_DEFAULT } from "@mend/domain/workbench";
 import { makeWindowLimiter, type WindowLimiter } from "@mend/network";
 import { Config, Effect, Layer, type Scope, Struct } from "effect";
 import * as Context from "effect/Context";
@@ -37,6 +37,12 @@ export interface BudgetLimits {
   readonly bundleBytes: number;
   /** Largest file `mend handoff` carries; the CLI names a larger one and leaves it behind. */
   readonly handoffFileBytes: number;
+  /**
+   * Largest imported conversation (SLNT-895): its archive, the header line and every file's bytes.
+   * `POST /projects/:id/conversations` refuses a body over it unread; the CLI names a larger one
+   * with its size and leaves it behind.
+   */
+  readonly conversationBytes: number;
   /** Handoffs one account may have admitted at once: each holds a bundle in memory and git work. */
   readonly accountHandoffsInFlight: number;
   /** Fetches of origin's branch one account asks for per minute ("Check origin"). */
@@ -83,6 +89,7 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountLaunchesInFlight: 4,
   bundleBytes: 64 * 1024 * 1024,
   handoffFileBytes: HANDOFF_FILE_BYTES_DEFAULT,
+  conversationBytes: CONVERSATION_BYTES_DEFAULT,
   accountHandoffsInFlight: 2,
   accountOriginChecksPerMinute: 30,
   accountEventStreams: 12,
@@ -113,6 +120,7 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountLaunchesInFlight: "MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT",
   bundleBytes: "MEND_BUDGET_BUNDLE_BYTES",
   handoffFileBytes: "MEND_BUDGET_HANDOFF_FILE_BYTES",
+  conversationBytes: "MEND_BUDGET_CONVERSATION_BYTES",
   accountHandoffsInFlight: "MEND_BUDGET_ACCOUNT_HANDOFFS_IN_FLIGHT",
   accountOriginChecksPerMinute: "MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE",
   accountEventStreams: "MEND_BUDGET_ACCOUNT_EVENT_STREAMS",
@@ -143,6 +151,7 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountLaunchesInFlight: "launches starting at once for one account",
   bundleBytes: "bytes in one git bundle",
   handoffFileBytes: "bytes in one handed-off file",
+  conversationBytes: "bytes in one imported conversation",
   accountHandoffsInFlight: "handoffs admitted at once for one account",
   accountOriginChecksPerMinute: "fetches of origin per minute for one account",
   accountEventStreams: "open event streams for one account",
@@ -315,6 +324,7 @@ export const budgetLimitsConfig = Config.all({
   accountLaunchesInFlight: limit("accountLaunchesInFlight"),
   bundleBytes: limit("bundleBytes"),
   handoffFileBytes: limit("handoffFileBytes"),
+  conversationBytes: limit("conversationBytes"),
   accountHandoffsInFlight: limit("accountHandoffsInFlight"),
   accountOriginChecksPerMinute: limit("accountOriginChecksPerMinute"),
   accountEventStreams: limit("accountEventStreams"),

@@ -8,27 +8,20 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
-/** A provider file cannot prove the selected native response. No approximate cutoff is used. */
-export class NativeHistoryError extends Schema.TaggedError<NativeHistoryError>()(
-  "NativeHistoryError",
-  { message: Schema.String },
-) {}
+import {
+  type JsonObject,
+  type NativeHistoryFile,
+  NativeHistoryError,
+  field,
+  isObject,
+  linesOf,
+  object,
+  refuse,
+} from "./native-records.ts";
 
-/** Private provider bytes. Callers supply only files from the authorized conversation home. */
-export interface NativeHistoryFile {
-  readonly relativePath: string;
-  readonly content: string;
-}
+export { NativeHistoryError, type NativeHistoryFile } from "./native-records.ts";
 
-type JsonObject = Readonly<Record<string, unknown>>;
-const isObject = (value: unknown): value is JsonObject =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-const object = (value: unknown): JsonObject | null => (isObject(value) ? value : null);
-const field = (value: unknown, key: string): unknown => object(value)?.[key];
 const digest = (content: string): string => createHash("sha256").update(content).digest("hex");
-const refuse = (message: string): never => {
-  throw new NativeHistoryError({ message });
-};
 
 const auxiliaryTools = {
   claude: new Set(["Task", "Agent", "TaskOutput", "TaskStop", "ListAgents", "SendMessage"]),
@@ -237,27 +230,6 @@ const claudeClosure = (
   return [...required];
 };
 
-interface Line {
-  readonly value: JsonObject;
-  readonly endByte: number;
-  readonly endChar: number;
-}
-const linesOf = (content: string): ReadonlyArray<Line> => {
-  if (!content.endsWith("\n")) return refuse("Native history ends with an incomplete record.");
-  let endChar = 0;
-  let endByte = 0;
-  return content
-    .slice(0, -1)
-    .split("\n")
-    .map((line) => {
-      endChar += line.length + 1;
-      endByte += Buffer.byteLength(line) + 1;
-      const parsed: unknown = JSON.parse(line);
-      const value = object(parsed);
-      if (value === null) return refuse("Native history contains a non-object record.");
-      return { value, endByte, endChar };
-    });
-};
 const fileRef = (file: NativeHistoryFile): NativeFileRef =>
   Schema.decodeUnknownSync(NativeFileRef)({
     relativePath: file.relativePath,

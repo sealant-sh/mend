@@ -92,6 +92,7 @@ import {
   CheckpointsRepo,
   FollowUpsRepo,
   HotWorkspacesRepo,
+  ImportedConversationsRepo,
   OrganizationsRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
@@ -2548,6 +2549,24 @@ const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: st
 type ResourceLines = "list" | "full" | "none";
 
 /**
+ * Which of `sessions` wait for their first message over an imported conversation
+ * (`Session.importedConversationWaiting`): one read by the imported conversations' key. None while
+ * a launch of the session is under way, so a session its first message is starting reads as
+ * starting, not as still waiting. A session that settled before any agent took the conversation (a
+ * first message refused for a missing login, a stop) still waits: nothing ran, and its first
+ * message, launched over that settled attempt, is the only way its conversation carries on.
+ */
+const importedWaitingOf = (sessions: ReadonlyArray<Session>) =>
+  Effect.gen(function* () {
+    const undelivered = yield* (yield* ImportedConversationsRepo).undeliveredAmong(
+      sessions.map((session) => session.id),
+    );
+    const engine = yield* SessionEngine;
+    return (session: Session): boolean =>
+      undelivered.has(session.id) && !engine.launchUnderWay(session.id);
+  });
+
+/**
  * Resource status lines for each worktree, and who launched each session's executor
  * (`Session.workspaceLauncherUserId`): the only person
  * Remote-SSH admits into it, in either harness layout. The view reads compute it in their own
@@ -2597,6 +2616,7 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>, lines: ResourceLines) 
       missing.length === 0
         ? new Map<string, string>()
         : yield* (yield* SessionsRepo).launchersOf(missing);
+    const importedWaiting = yield* importedWaitingOf(rows);
     return rows.map((row) => {
       const launcher =
         row.workspaceLauncherUserId === null && row.sealantWorkspaceId !== null
@@ -2606,6 +2626,7 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>, lines: ResourceLines) 
         ...row,
         workspaceLauncherUserId: launcher ?? row.workspaceLauncherUserId,
         resourceStatusLines: resourceLines.get(row.worktreeId) ?? [],
+        importedConversationWaiting: importedWaiting(row),
       });
     });
   });
@@ -2644,6 +2665,7 @@ const inboxRowsOf = (input: {
     const askOf = new Map(requests.map((request) => [request.sessionId, sessionAsk(request)]));
     const live = new Map<string, number>(liveServices);
     const launching = asLaunching((yield* SessionEngine).launchUnderWay);
+    const importedWaiting = yield* importedWaitingOf(input.sessions);
     return input.sessions.map((session) => {
       const annotation = annotationOf.get(session.id);
       const shown = launching(session);
@@ -2663,6 +2685,7 @@ const inboxRowsOf = (input: {
           settledAt: shown.settledAt,
           createdAt: shown.createdAt,
           updatedAt: shown.updatedAt,
+          importedConversationWaiting: importedWaiting(session),
         },
         projectName: projectName.get(session.projectId) ?? "",
         title: sessionTitle(

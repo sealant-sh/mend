@@ -134,6 +134,7 @@ import {
   usageOf,
 } from "./help.ts";
 import { useHttp1 } from "./http-client.ts";
+import { importT3Command } from "./import-t3.ts";
 import { type Download, landCommand, pickSession, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
@@ -396,6 +397,8 @@ interface SessionDto extends SessionCaptureLike {
   readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
+  /** It waits for its first message over an imported conversation; absent from older servers. */
+  readonly importedConversationWaiting?: boolean;
   /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
@@ -1842,12 +1845,21 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   return attachPicked(config, match, tunnels);
 };
 
+/**
+ * Words for a session that holds an imported conversation no agent has started over (SLNT-895):
+ * it has no terminal to attach or resume, and its first message is what starts its agent.
+ */
+const waitingForFirstMessage = (session: SessionDto): string =>
+  `session ${session.id.slice(0, 8)} is waiting for its first message · mend message ${session.id.slice(0, 8)} --resume "…" starts ${session.harness} on its imported conversation`;
+
 /** Attach to one resolved session — the tail both `mend attach` paths share. */
 const attachPicked = async (
   config: CliConfig,
   session: SessionDto,
   tunnels: AttachTunnels | null,
 ): Promise<never> => {
+  // Nothing would ever start it: following its `starting` would wait for good.
+  if (session.importedConversationWaiting === true) return fail(waitingForFirstMessage(session));
   say(
     `${green("✓")} attaching to ${sessionDisplayName(session)} · ${session.harness} ${dim(session.id.slice(0, 8))}${detachHint()}`,
   );
@@ -5674,6 +5686,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
         : `no session matches "${prefix}"`,
     );
   }
+  if (match.importedConversationWaiting === true) return fail(waitingForFirstMessage(match));
   if (agentLiveIn(detail, match)) {
     return fail(
       `session ${match.id.slice(0, 8)} is live — attach: mend attach ${match.id.slice(0, 8)}`,
@@ -6012,6 +6025,7 @@ const printSessionRow = (
   const hold = rowHold(row);
   if (hold !== null) facts.push(amber(hold));
   if (row.handedOffFrom !== undefined) facts.push(`handed off from ${row.handedOffFrom}`);
+  if (session.importedConversationWaiting === true) facts.push("waiting for a first message");
   // Which key the workspace was created on (SLNT-797); a steerer's turn never moves it. The owner
   // reads their own key as theirs, as the web app says it.
   if (session.boatKey !== null && session.boatKey !== undefined) {
@@ -6588,6 +6602,19 @@ const main = async () => {
             }),
           // A redirect after the POST is an answer: a follow-up hop's failure says nothing of the first.
           post: (route, body) => request<unknown>(config, "POST", route, body, "manual"),
+          session: (sessionId) =>
+            request<{
+              readonly currentAgent?: unknown;
+              readonly session?: { readonly settledAt?: string | null };
+            }>(config, "GET", `/sessions/${encodeURIComponent(sessionId)}`),
+          launchConversation: (sessionId, body) =>
+            request<{ readonly id: string; readonly harness?: string; readonly status?: string }>(
+              config,
+              "POST",
+              `/sessions/${encodeURIComponent(sessionId)}/launch`,
+              body,
+              "manual",
+            ),
         };
       },
       readStdin: () => streamText(process.stdin),
@@ -6996,6 +7023,24 @@ const main = async () => {
         },
         rest,
       );
+    case "import":
+      if (rest[0] !== "t3")
+        return fail(`unknown import command "${rest[0] ?? ""}" · mend help import t3`);
+      process.exitCode = await importT3Command(
+        {
+          // Thrown, not exited: one checkout's or thread's failure is recorded and the run goes on.
+          api: (method, route, body) => request(config, method, route, body),
+          download: download(config),
+          upload: upload(config),
+          serverVersion: async () => (await fetchServerVersion(config.url)).version,
+          spin: (label, work) => withSpinner(label, work),
+          serverUrl: config.url,
+          accountGitAuthMode: () => readGitAccessMode(config),
+          shareAgent: () => shareThisAgent(config),
+        },
+        rest.slice(1),
+      );
+      return;
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);

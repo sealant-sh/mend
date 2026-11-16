@@ -53,6 +53,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
 
 export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => ({
   boatKey: null,
+  importedConversationWaiting: false,
   historyRevision: 0,
   purpose: null,
   resourceStatusLines: [],
@@ -239,6 +240,7 @@ export const turnFixture = (patch: Partial<AgentTurnDto> = {}): AgentTurnDto => 
   id: "turn-1",
   sessionId: "session-1",
   processId: "process-1",
+  imported: false,
   ordinal: 1,
   bornHistoryRevision: 0,
   withdrawnHistoryRevision: null,

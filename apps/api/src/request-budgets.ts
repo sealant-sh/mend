@@ -48,7 +48,10 @@ export const addressWindowWait = (
   return limiter.take(address, limit, at);
 };
 
-export type BodyBudget = Extract<BudgetName, "bodyBytes" | "uploadBodyBytes" | "bundleBytes">;
+export type BodyBudget = Extract<
+  BudgetName,
+  "bodyBytes" | "uploadBodyBytes" | "bundleBytes" | "conversationBytes"
+>;
 
 const BODY_ROUTES: ReadonlyArray<readonly [method: string, path: RegExp, budget: BodyBudget]> = [
   ["POST", /^\/api\/sessions\/[^/]+\/images$/, "uploadBodyBytes"],
@@ -59,6 +62,7 @@ const BODY_ROUTES: ReadonlyArray<readonly [method: string, path: RegExp, budget:
   ["POST", /^\/api\/dotfiles\/snapshot$/, "uploadBodyBytes"],
   ["PUT", /^\/api\/projects\/[^/]+\/workspace-image$/, "uploadBodyBytes"],
   ["POST", /^\/api\/projects\/[^/]+\/handoffs$/, "bundleBytes"],
+  ["POST", /^\/api\/projects\/[^/]+\/conversations$/, "conversationBytes"],
 ];
 
 export const bodyBudgetFor = (method: string, pathname: string): BodyBudget => {

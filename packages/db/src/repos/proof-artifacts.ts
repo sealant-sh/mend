@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { AgentItemId, type ChangeId, type ProofArtifactId, type SessionId } from "@mend/domain";
 import {
+  importedTurnProcessIdOf,
   ProofArtifact,
   ProofCapture,
   ProofRef,
@@ -102,7 +103,7 @@ const writeItem = Effect.fn("ProofArtifactsRepo.writeItem")(function* (
       turnId: turn.id,
       seq,
       providerItemId: proofItemProviderId(artifact.id),
-      providerOutputProcessId: turn.processId,
+      providerOutputProcessId: turn.processId ?? importedTurnProcessIdOf(turn.sessionId),
       providerOutputSeq: 0n,
       providerEventIndex: 0,
       kind: "proof",
@@ -178,11 +179,16 @@ export const ProofArtifactsRepoLive: Layer.Layer<
                 source: Schema.encodeSync(ProofSource)(artifact.source),
                 capture: Schema.encodeSync(ProofCapture)(artifact.capture),
               })
-              .onConflictDoNothing({ target: [proofArtifacts.sessionId, proofArtifacts.callKey] })
+              .onConflictDoNothing({
+                target: [proofArtifacts.sessionId, proofArtifacts.callKey],
+              })
               .returning();
             if (row === undefined) return null;
             const saved = yield* decode(row);
-            return { artifact: saved, itemChanged: yield* writeItem(tx, saved) };
+            return {
+              artifact: saved,
+              itemChanged: yield* writeItem(tx, saved),
+            };
           }),
         )
         .pipe(Effect.mapError(storageFailed));
@@ -214,7 +220,10 @@ export const ProofArtifactsRepoLive: Layer.Layer<
           Effect.gen(function* () {
             const [row] = yield* tx
               .update(proofArtifacts)
-              .set({ capture: Schema.encodeSync(ProofCapture)(capture), observedTo: new Date() })
+              .set({
+                capture: Schema.encodeSync(ProofCapture)(capture),
+                observedTo: new Date(),
+              })
               .where(
                 and(
                   eq(proofArtifacts.id, id),
@@ -251,6 +260,13 @@ export const ProofArtifactsRepoLive: Layer.Layer<
         );
       },
     );
-    return { insert, byId, byCall, listForChange, settleVideo, settleStaleRecordings };
+    return {
+      insert,
+      byId,
+      byCall,
+      listForChange,
+      settleVideo,
+      settleStaleRecordings,
+    };
   }),
 );

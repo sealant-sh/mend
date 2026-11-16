@@ -438,11 +438,17 @@ of their own.
 Everything else in a session's harness home stays with that session: its conversations, and settings
 or plugins changed inside it. A conversation resumes in its own session, not from another.
 
-## Importing brings memory, not conversations
+## Only T3 Code's threads import with their conversations
 
-`mend memory import` brings the memory Claude Code keeps for the checkout on your machine. Your past
-conversations are not imported: a conversation needs its paths rewritten to resume in a session.
-`mend adopt` says when there is memory to import; it does not import it itself.
+`mend import t3` brings the Claude and Codex threads T3 Code ran on your machine into sessions, each
+holding its conversation with its paths rewritten
+([Import from T3 Code](/guides/import-from-t3-code/)). A conversation you ran with Claude Code or
+Codex outside T3 Code, in a terminal on your machine, has no import yet. T3 Code's own "Import your
+projects" step finds nothing on a Mend server.
+
+`mend memory import` brings the memory Claude Code keeps for the checkout on your machine, apart
+from any conversation. `mend adopt` says when there is memory to import; it does not import it
+itself.
 
 ## Agent memory is in the CLI only
 
