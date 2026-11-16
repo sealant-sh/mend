@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import { type DotfilesManager, WorkspaceImage } from "@mend/domain";
+import type { CapturePosition } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 /**
@@ -175,3 +176,29 @@ export const standbyWorktreeAlias = (hotWorkspaceId: string): string => `standby
 
 /** A standby's synthetic epoch: its creation time in ms; replaced by the claim's at replan. */
 export const standbyEpochOf = (createdAt: Date): number => createdAt.getTime();
+
+/**
+ * Where a claimed standby answered before its claim's re-plan took: its own launch, under its
+ * placeholder epoch (`standbyEpochOf`).
+ */
+export interface StandbyPlaceholder {
+  readonly launchId: string;
+  readonly epoch: number;
+}
+
+/**
+ * Whether an answer at `position` is one a claimed standby gave under its placeholder (SLNT-1044):
+ * about the base it booted on as `standby-<id>`, never about the worktree its claim re-planned it
+ * onto. The daemon takes the claim's epoch at the re-plan and never answers under the placeholder
+ * again, so every such answer was made before the session's worktree was on the executor and
+ * before anything of the session ran in it. An answer without a launch is matched by its epoch
+ * alone: a standby's creation time in ms, which no lease epoch is.
+ */
+export const isStandbyPlaceholderAnswer = (
+  position: CapturePosition | null | undefined,
+  placeholder: StandbyPlaceholder,
+): boolean =>
+  position !== null &&
+  position !== undefined &&
+  position.epoch === placeholder.epoch &&
+  (position.launchId === null || position.launchId === placeholder.launchId);

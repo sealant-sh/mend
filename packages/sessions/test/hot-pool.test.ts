@@ -1,7 +1,12 @@
 import type { FamilyWorkspaceImage } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
-import { hotFingerprint, type HotFingerprintInputs } from "../src/hot-pool.ts";
+import {
+  hotFingerprint,
+  type HotFingerprintInputs,
+  isStandbyPlaceholderAnswer,
+  standbyEpochOf,
+} from "../src/hot-pool.ts";
 
 /**
  * The default image before `bun` and `unzip` joined it, spelled out: the shared standby's golden
@@ -245,4 +250,40 @@ it("a Boat standby serves only launches that name its Boat account (SLNT-790)", 
   const acme = hotFingerprint({ ...boat, boatAccountId: "core-boat-acme" }, SHARED);
   const other = hotFingerprint({ ...boat, boatAccountId: "core-boat-other" }, SHARED);
   expect(new Set([server, acme, other]).size).toBe(3);
+});
+
+/** Where an answer was made: one daemon boot's first observation, under `epoch` and `launchId`. */
+const at = (epoch: number, launchId: string | null) => ({
+  epoch,
+  launchId,
+  bootId: "43031688",
+  bootGeneration: 1,
+  observation: 1,
+  headN: null,
+});
+
+describe("a claimed standby's placeholder answers (SLNT-1044)", () => {
+  const createdAt = new Date("2026-11-15T23:21:01.455Z");
+  const placeholder = { launchId: "standby:acc0621a", epoch: standbyEpochOf(createdAt) };
+
+  it("is an answer under the standby's own launch and synthetic epoch", () => {
+    expect(placeholder.epoch).toBe(1_794_784_861_455);
+    expect(isStandbyPlaceholderAnswer(at(placeholder.epoch, "standby:acc0621a"), placeholder)).toBe(
+      true,
+    );
+    // An older daemon that does not stamp its launch: the epoch, a creation time in ms, says it.
+    expect(isStandbyPlaceholderAnswer(at(placeholder.epoch, null), placeholder)).toBe(true);
+  });
+
+  it("is never an answer under the claim's epoch, another launch, or with no position", () => {
+    expect(isStandbyPlaceholderAnswer(at(2, "standby:acc0621a"), placeholder)).toBe(false);
+    expect(isStandbyPlaceholderAnswer(at(placeholder.epoch, "standby:other"), placeholder)).toBe(
+      false,
+    );
+    expect(isStandbyPlaceholderAnswer(at(placeholder.epoch, "launch:x:1:y"), placeholder)).toBe(
+      false,
+    );
+    expect(isStandbyPlaceholderAnswer(null, placeholder)).toBe(false);
+    expect(isStandbyPlaceholderAnswer(undefined, placeholder)).toBe(false);
+  });
 });
