@@ -3091,6 +3091,19 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
 
+  it("behind HTTPS run on this machine, says how the gateway on loopback is reached from other devices", async () => {
+    const control = makeRuntime({ gatewayLabel: "1" });
+    expect(
+      await serverCommand(
+        ["setup", "--t3-gateway", "--url", "https://mend.example.test"],
+        control.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "The t3code gateway answered at 127.0.0.1:3120, observed from this machine. It is published on 127.0.0.1:3120 only, as Mend's web port is. T3 Code on this machine uses http://127.0.0.1:3120. For T3 Code on your other devices, forward an HTTPS port of its own to it the way https://mend.example.test reaches Mend, such as https://mend.example.test:3120 to http://127.0.0.1:3120, and add that as the Remote link. Pair with a code from mend pair.",
+    );
+  });
+
   it("--t3-gateway writes its overlay on loopback for a loopback install, runs it every time, keeps it, and --no-t3-gateway takes it away", async () => {
     const control = makeRuntime({ gatewayLabel: "1" });
     expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });

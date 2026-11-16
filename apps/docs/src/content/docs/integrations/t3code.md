@@ -397,6 +397,12 @@ published, so who may use it does not change with where it listens.
 
   T3 Code's Remote link then takes `https://<this machine>.<tailnet>.ts.net:3120`.
 
+  HTTPS you run yourself in front of Mend (nginx, Caddy, a Cloudflare Tunnel, with
+  `mend server setup --url https://mend.example.com`) works the same way: it reaches Mend's port
+  alone, so forward the gateway too, on a port of its own, such as `https://mend.example.com:3120`
+  to `http://127.0.0.1:3120`, and use that as the Remote link. It cannot sit under a path of Mend's
+  origin, because a T3 Code client always uses a server's root path.
+
 - **The public internet, with the edge** (`--exposure public`): the gateway's own port stays on
   `127.0.0.1`; setup never publishes it on a public address. The edge serves it over HTTPS on a host
   of its own, never under a path of Mend's: a T3 Code client always uses a server's root path. Name
