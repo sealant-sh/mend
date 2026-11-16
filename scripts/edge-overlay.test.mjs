@@ -291,6 +291,19 @@ const startEdge = async (t) => {
     await import("../apps/cli/test-fixtures/packaged-edge.ts");
   const previewKey = path.join(scratch, "preview-key.pem");
   copyPreviewKey(preview.key, previewKey);
+  // The edge's Caddyfile, with Caddy's storage cleaner off. This edge starts with an empty store,
+  // so the cleaner has nothing to clean. Left on, it races the first certificate saves (SLNT-984):
+  // certmagic creates a site's folder and only then its first file, and the startup clean deletes
+  // any site folder it finds empty. When the delete lands in between, the save fails and Caddy
+  // only tries again 60 s later, so mend.internal answers no TLS while the readiness wait runs.
+  const edgeCaddyfile = readFileSync(path.join(directory, "Caddyfile"), "utf8");
+  assert.equal(
+    edgeCaddyfile.match(/^\{$/gm)?.length,
+    1,
+    "the edge's Caddyfile has one options block",
+  );
+  const edgeConfig = path.join(scratch, "Caddyfile");
+  writeFileSync(edgeConfig, edgeCaddyfile.replace(/^\{$/m, "{\n\tstorage_clean_interval off"));
   const create = async (name, mounts, extra) => {
     const container = (
       await docker(
@@ -328,7 +341,7 @@ const startEdge = async (t) => {
   const edge = await create(
     "edge",
     [
-      [path.join(directory, "Caddyfile"), "/etc/caddy/Caddyfile"],
+      [edgeConfig, "/etc/caddy/Caddyfile"],
       [gatewaySite, "/etc/caddy/sites/t3code-gateway.caddy"],
       [previewSite, "/etc/caddy/sites/preview.caddy"],
       [preview.certificate, "/etc/caddy/preview/certificate.pem"],
