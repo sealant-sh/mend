@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -18,6 +19,7 @@ import { formalSteps } from "./formal.mjs";
 import { health, VANTAGES } from "./health.mjs";
 import { judge, readJudgement } from "./judge.mjs";
 import { changedFiles, planSteps } from "./plan.mjs";
+import { readPullRequest, receiptSteps } from "./receipt.mjs";
 import {
   createResult,
   exitCode,
@@ -39,6 +41,7 @@ const VERBS = {
   check:
     "The pre-PR gate: forced typecheck and lint, affected tests with no unallowed skip, format",
   status: "For each obligation, whether a passing result exists for this exact commit",
+  receipt: "Read back the receipt a PR body carries: --pr <n>, or --body <file>",
   judge:
     "Write the brief another agent answers: where to run this change and what must be seen (--record <answer.json>, --self)",
   box: "Set up the preview server for a check on it: plan, prepare, cli, identity, release (--yes to change it)",
@@ -79,7 +82,11 @@ export const parseArgs = (argv) => {
     else if (arg === "--full") options.full = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--self") options.self = true;
-    else if (arg === "--record") {
+    else if (arg === "--body") {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError("--body needs a file");
+      options.body = value;
+    } else if (arg === "--record") {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new UsageError("--record needs the answer file");
       options.record = value;
@@ -158,7 +165,7 @@ const help = () =>
     "",
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
     "--concurrency <n> (check: turbo tasks and Vitest workers), --full (formal), --markdown (status),",
-    "--record <answer.json> and --self (judge),",
+    "--record <answer.json> and --self (judge), --pr <n> or --body <file> (receipt),",
     "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box), --url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
     "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
@@ -285,6 +292,22 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     }[options.subverb]();
     return createResult({ verb: `box ${options.subverb}`, head, startedAt, steps, next, ...rest });
   }
+  if (verb === "receipt") {
+    const pr = options.pr ? (options.readPr ?? readPullRequest)(root, options.pr) : null;
+    const { steps, next, receipts } = receiptSteps({
+      body: pr ? pr.body : readFileSync(options.body, "utf8"),
+      source: pr ? `#${pr.number}` : options.body,
+    });
+    return createResult({
+      verb,
+      head,
+      startedAt,
+      steps,
+      next,
+      receipts,
+      ...(pr ? { pullRequest: { number: pr.number, url: pr.url, headSha: pr.headRefOid } } : {}),
+    });
+  }
   if (verb === "judge") {
     const { plan } = planSteps(root, { head, files: undefined });
     const { steps, next, ...rest } = judge(root, {
@@ -331,7 +354,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     });
   }
   if (verb === "status") {
-    const { plan, steps, next } = statusSteps(root, {
+    const { plan, steps, next, judgement, productPatchId } = statusSteps(root, {
       head,
       implemented: new Set(Object.keys(VERBS)),
     });
@@ -346,6 +369,8 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
       })),
       evidence: steps.flatMap((step) => (step.log ? [{ kind: "result", path: step.log }] : [])),
       next,
+      judgement,
+      productPatchId,
     });
   }
   return createResult({
@@ -417,6 +442,10 @@ export const main = async (argv, root = repoRoot) => {
       return 2;
     }
     options.subverb = words[1];
+  }
+  if (verb === "receipt" && (options.pr === undefined) === (options.body === undefined)) {
+    process.stderr.write("verify receipt needs one of --pr <n> or --body <file>\n");
+    return 2;
   }
   if (verb === "stack") {
     if (!STACK.includes(words[1])) {

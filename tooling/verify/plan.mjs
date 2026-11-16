@@ -86,6 +86,17 @@ export const matchObligations = (map, files) =>
     }));
   });
 
+/** Every changed file that makes the change owe `verb`, not only the first twenty. */
+export const filesOwing = (map, files, verb) =>
+  files.filter((file) =>
+    map.obligations.some(
+      (entry) =>
+        entry.owes.some((owe) => owe.verb === verb) &&
+        matches(file, entry.paths) &&
+        !matches(file, entry.exclude ?? []),
+    ),
+  );
+
 /** A model's obligation, from its docs/formal/<area>/COVERAGE: the one record of what it covers. */
 export const formalObligations = (root, files) =>
   readCoverages(root).flatMap((coverage) => {

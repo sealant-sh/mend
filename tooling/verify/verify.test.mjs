@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import { CI_FILE_BUDGET_MS } from "../test-ci/src/file-budget.ts";
 import { floorOf, loadLimits, validateAnswer } from "./judge.mjs";
+import { readReceipts } from "./receipt.mjs";
 import { createResult, exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
 import { ciGateProblems, loadAllowedSkips, readSkips, validateAllowedSkips } from "./skips.mjs";
 import { toMarkdown } from "./status.mjs";
@@ -315,6 +316,65 @@ test("a feature's run is owed until it is judged and verify evidence passes on t
   commit("apps/web/src/routes/b.tsx");
   assert.equal((await line("judge")).status, "skipped", "a later commit is judged again");
   assert.equal((await line("run-it")).status, "skipped");
+});
+
+test("the receipt carries the judgement in a block a script reads back exactly", async (t) => {
+  const { root, commit, write, git } = fixture(t);
+  commit("apps/web/src/routes/a.tsx");
+  // Text that would close the block or open HTML if it were not escaped.
+  const answer = {
+    ...LOCAL_ANSWER,
+    reason: "It renders ```code``` and </details> <b>as text</b>.\nSecond line.",
+  };
+  saveResult(
+    root,
+    await runVerb(root, "judge", options({ record: answerFile(root, answer), self: true })),
+  );
+  const status = await runVerb(root, "status", options());
+  const body = `Intro.\n\n${toMarkdown(status)}\nMade by a test.\n`;
+  assert.match(body, /\*\*Where:\*\* a local stack/);
+  assert.match(body, /\*\*Judged by:\*\* the author/);
+  assert.match(body, /1\. Open Projects and see the new row/);
+
+  const [read, ...more] = readReceipts(body);
+  assert.deepEqual(more, []);
+  assert.deepEqual(read.receipt.judgement, {
+    ...answer,
+    reason: answer.reason.trim(),
+    judgedBy: "self",
+  });
+  assert.equal(read.receipt.sha, git("rev-parse", "HEAD"));
+  assert.deepEqual(
+    read.receipt.lines.map((line) => [line.id, line.status]),
+    [
+      ["pre-pr-checks", "skipped"],
+      ["judge", "passed"],
+      ["run-it", "skipped"],
+      ["screenshots", "skipped"],
+    ],
+  );
+
+  // The product patch id survives a commit of tests and docs only, and changes with product source.
+  const first = read.receipt.productPatchId;
+  assert.match(first, /^[0-9a-f]{40}$/);
+  const patchOf = async () => (await runVerb(root, "status", options())).productPatchId;
+  commit("apps/web/src/routes/a.test.tsx");
+  commit("docs/notes.md");
+  assert.equal(await patchOf(), first);
+  commit("apps/web/src/routes/b.tsx");
+  assert.notEqual(await patchOf(), first);
+
+  // `verify receipt` reads a body from a file; a damaged block is named, an absent one skipped.
+  write(".verify/body.md", body);
+  const verb = await runVerb(root, "receipt", options({ body: join(root, ".verify/body.md") }));
+  assert.deepEqual(validateResult(verb), []);
+  assert.equal(verb.status, "passed");
+  assert.deepEqual(verb.receipts, [read.receipt]);
+  const damaged = body.replace('"judgedBy": "self"', '"judgedBy": "nobody"');
+  assert.match(readReceipts(damaged)[0].errors.join(), /judgement is null or/);
+  write(".verify/body.md", "No receipt here.\n");
+  const none = await runVerb(root, "receipt", options({ body: join(root, ".verify/body.md") }));
+  assert.equal(none.status, "skipped");
 });
 
 test("a judgement for the box is discharged by the box running this change", async (t) => {

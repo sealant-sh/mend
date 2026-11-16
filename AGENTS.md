@@ -94,7 +94,7 @@ not `passed`, unless `tooling/verify/allowed-skips.json` allows that skip.
 ```sh
 pnpm verify plan     # what this change owes: gated suites, models, a judge and a run, screenshots, CI jobs
 pnpm verify check    # the gate above; add --concurrency 2 on a shared, busy machine
-pnpm verify status --markdown   # one line per obligation for this exact commit, for the PR body
+pnpm verify status --markdown   # the receipt for the PR body: one line per obligation for this commit
 ```
 
 Each prints one JSON result with `--json` and keeps it in `.verify/latest/`. Its `next` lists the
