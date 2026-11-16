@@ -52,12 +52,17 @@ concurrency:
   cancel-in-progress:
     ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
 
+# Every job has a time limit, so one hung step cannot hold a main run for GitHub's default six
+# hours (SLNT-1076). Each is about three times the job's slowest time on the 20 main runs before
+# 16 Nov, rounded up to five minutes and never under ten: room for a slow runner and for a bounded
+# install's retries (scripts/ci-bounded.sh). formal and vscode-e2e keep the limits they had.
 jobs:
   # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
   # repository, so neither waits for an x86 slot. On the box, run 38746126993's 10-second `checks`
   # waited 13.4 minutes behind sealant and sealantd runs.
   changes:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     outputs:
@@ -112,6 +117,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 15
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     steps:
@@ -203,6 +209,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 50
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -277,6 +284,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 30
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -351,6 +359,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 35
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -375,11 +384,14 @@ jobs:
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
       # Desktop's font-browser regression launches Chromium unconditionally in this job.
       - name: Install Chromium for desktop browser tests
-        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
-        # install the browser alone rather than fail the lane before a test runs.
+        # The runner image already carries Chromium's system libraries; when its apt mirror is down
+        # or stalls, install the browser alone rather than fail the lane before a test runs. Each
+        # part is bounded (scripts/ci-bounded.sh): a stall says so in minutes, not at the job's limit.
         run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       # The old checks build copied this tracked installer before marketing tests.
       - name: Prepare the marketing installer in this checkout
         run: node apps/marketing/scripts/sync-install-script.mjs
@@ -448,6 +460,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 30
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       # Two packages at once on 4 CPUs: two workers each, as in the engine lanes (SLNT-1040).
@@ -471,11 +484,14 @@ jobs:
       # The built web app loads in a real browser and renders its first screen: the sign-in page,
       # served by the production front with no API behind it (apps/web/scripts/check-browser.mjs).
       - name: Install Chromium for the web app's browser check
-        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
-        # install the browser alone rather than fail the lane before a test runs.
+        # The runner image already carries Chromium's system libraries; when its apt mirror is down
+        # or stalls, install the browser alone rather than fail the lane before a test runs. Each
+        # part is bounded (scripts/ci-bounded.sh): a stall says so in minutes, not at the job's limit.
         run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - name: The built web app renders its sign-in page in Chromium
         env:
           # The workspace's locked Playwright, as the packaging job's verify tests use it.
@@ -512,6 +528,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 20
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -572,11 +589,14 @@ jobs:
       # Leak-evidence tests must exercise Chromium instead of skipping for a missing browser.
       # Reuse the workspace's locked Playwright version, as the mobile-web job does.
       - name: Install Chromium for verification evidence tests
-        # The runner image already carries Chromium's system libraries; when its apt mirror is down,
-        # install the browser alone rather than fail the lane before a test runs.
+        # The runner image already carries Chromium's system libraries; when its apt mirror is down
+        # or stalls, install the browser alone rather than fail the lane before a test runs. Each
+        # part is bounded (scripts/ci-bounded.sh): a stall says so in minutes, not at the job's limit.
         run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - name: Require the packaging tools and Docker daemon
         run: |
           docker info > /dev/null
@@ -606,7 +626,8 @@ jobs:
           scripts/verify-stack/lifecycle.locking.e2e.test.mjs
           scripts/verify-stack/lifecycle.resources.e2e.test.mjs
           scripts/verify-stack/lifecycle.recording.e2e.test.mjs
-          scripts/vscode-acceptance-evidence.test.mjs .agents/skills/verify/scripts/leaks.test.mjs
+          scripts/vscode-acceptance-evidence.test.mjs scripts/ci-bounded.test.mjs
+          .agents/skills/verify/scripts/leaks.test.mjs
           .agents/skills/verify/scripts/leaks.closed-roots.test.mjs
           .agents/skills/verify/scripts/leaks.frames.test.mjs
           .agents/skills/verify/scripts/slots.test.mjs .agents/skills/verify/scripts/guard.test.mjs
@@ -641,6 +662,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 20
     env:
       # The tree no longer matches the commit once package tests are removed: never write a cache.
       TURBO_CACHE: local:r,remote:r
@@ -657,8 +679,10 @@ jobs:
       - name: Remove package tests this lane may not read
         run: node scripts/remove-package-tests.mjs
       - run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
 
   # The server image installs git from Debian bookworm (2.39). The runners' newer git refuses a
@@ -670,6 +694,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 10
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -740,6 +765,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 15
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -767,6 +793,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
+    timeout-minutes: 25
     # packages: read lets scripts/ci-images.mjs read CI's image copies on GHCR with the job's token.
     permissions:
       contents: read
@@ -788,9 +815,17 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-images.mjs postgres
       - run: pnpm install --frozen-lockfile
+      # Firefox needs system packages the runner image lacks, so apt and the downloads both run,
+      # each bounded and retried (scripts/ci-bounded.sh): on 16 Nov apt-get update in
+      # `install --with-deps` sat for two hours with nothing to stop it (SLNT-1076).
+      - name: Install Chromium's and Firefox's system packages for the preview browsers
+        run:
+          scripts/ci-bounded.sh "Chromium's and Firefox's system packages (apt-get)" 4 3 -- pnpm
+          --filter @mend/api-server exec playwright-core install-deps chromium firefox
       - name: Install Chromium and Firefox for the preview browsers
         run:
-          pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox
+          scripts/ci-bounded.sh "The Chromium and Firefox download" 4 3 -- pnpm --filter
+          @mend/api-server exec playwright-core install chromium firefox
       # The edges' images (apps/api/test/support/preview-edge.ts), through scripts/ci-images.mjs.
       - name: Pull the preview edges' images
         env:
@@ -892,6 +927,7 @@ jobs:
       ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -935,6 +971,7 @@ jobs:
       ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
       # The gate reads only `needs`: no checkout, and the runner image's Node runs it.
       - name: Require every selected CI job

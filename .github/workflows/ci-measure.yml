@@ -47,6 +47,7 @@ concurrency:
 jobs:
   changes:
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     outputs:
@@ -97,6 +98,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 15
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
     steps:
@@ -181,6 +183,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 50
     permissions:
       contents: read
       packages: read
@@ -247,6 +250,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 30
     permissions:
       contents: read
       packages: read
@@ -313,6 +317,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 35
     permissions:
       contents: read
       packages: read
@@ -336,8 +341,10 @@ jobs:
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
       - name: Install Chromium for desktop browser tests
         run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - name: Prepare the marketing installer in this checkout
         run: node apps/marketing/scripts/sync-install-script.mjs
       - name: CLI, client and shared-library tests
@@ -401,6 +408,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 30
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       VITEST_MAX_THREADS: "2"
@@ -426,8 +434,10 @@ jobs:
           CI_MEASUREMENT_RUNNER: ${{ inputs.runner }}
       - name: Install Chromium for the web app's browser check
         run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - name: The built web app renders its sign-in page in Chromium
         env:
           MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
@@ -460,6 +470,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 20
     permissions:
       contents: read
       packages: read
@@ -514,8 +525,10 @@ jobs:
             nginx:1.29-alpine registry:3.1 alpine:3.20 busybox:1.37
       - name: Install Chromium for verification evidence tests
         run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - name: Require the packaging tools and Docker daemon
         run: |
           docker info > /dev/null
@@ -545,7 +558,8 @@ jobs:
           scripts/verify-stack/lifecycle.locking.e2e.test.mjs
           scripts/verify-stack/lifecycle.resources.e2e.test.mjs
           scripts/verify-stack/lifecycle.recording.e2e.test.mjs
-          scripts/vscode-acceptance-evidence.test.mjs .agents/skills/verify/scripts/leaks.test.mjs
+          scripts/vscode-acceptance-evidence.test.mjs scripts/ci-bounded.test.mjs
+          .agents/skills/verify/scripts/leaks.test.mjs
           .agents/skills/verify/scripts/leaks.closed-roots.test.mjs
           .agents/skills/verify/scripts/leaks.frames.test.mjs
           .agents/skills/verify/scripts/slots.test.mjs .agents/skills/verify/scripts/guard.test.mjs
@@ -574,6 +588,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 20
     env:
       TURBO_CACHE: local:r,remote:r
     steps:
@@ -589,8 +604,10 @@ jobs:
       - name: Remove package tests this lane may not read
         run: node scripts/remove-package-tests.mjs
       - run:
-          pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
-          || pnpm --filter @mend/mobile exec playwright-core install --only-shell chromium
+          scripts/ci-bounded.sh "Chromium with its system packages" 4 1 -- pnpm --filter
+          @mend/mobile exec playwright-core install --with-deps --only-shell chromium ||
+          scripts/ci-bounded.sh "The Chromium download" 4 2 -- pnpm --filter @mend/mobile exec
+          playwright-core install --only-shell chromium
       - run: pnpm --filter @mend/mobile check:web
   store-image-git:
     needs: changes
@@ -598,6 +615,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: read
@@ -654,6 +672,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 15
     permissions:
       contents: read
       packages: read
@@ -677,6 +696,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    timeout-minutes: 25
     permissions:
       contents: read
       packages: read
@@ -696,9 +716,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-images.mjs postgres
       - run: pnpm install --frozen-lockfile
+      - name: Install Chromium's and Firefox's system packages for the preview browsers
+        run:
+          scripts/ci-bounded.sh "Chromium's and Firefox's system packages (apt-get)" 4 3 -- pnpm
+          --filter @mend/api-server exec playwright-core install-deps chromium firefox
       - name: Install Chromium and Firefox for the preview browsers
         run:
-          pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox
+          scripts/ci-bounded.sh "The Chromium and Firefox download" 4 3 -- pnpm --filter
+          @mend/api-server exec playwright-core install chromium firefox
       - name: Pull the preview edges' images
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -788,6 +813,7 @@ jobs:
       - vscode-e2e
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read
@@ -827,6 +853,7 @@ jobs:
       - receipt
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 10
     steps:
       - name: Require every selected CI job
         env:
