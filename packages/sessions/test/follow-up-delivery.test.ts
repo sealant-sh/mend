@@ -488,6 +488,7 @@ const testLayer = (world: TestWorld) => {
     listForSessions: () => Effect.succeed(world.process === null ? [] : [world.process]),
     listForService: () => Effect.succeed([]),
     listLiveForWorkspace: () => Effect.die("not in test"),
+    existsForWorkspace: () => Effect.die("not in test"),
     listLive: () => Effect.die("not in test"),
     listRecentServices: () => Effect.die("not in test"),
     setStatus: () => Effect.die("not in test"),

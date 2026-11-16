@@ -5,7 +5,10 @@
 (* `discardUnsaved: true` (packages/sessions/src/engine.ts).                *)
 (*                                                                          *)
 (* The promise checked: a discard is never sent for a workspace that holds, *)
-(* or can still come to hold, a session's work.                             *)
+(* or can still come to hold, a session's work. Since SLNT-1053 a second    *)
+(* call sends one too: a session's drain discards the claimed standby its   *)
+(* launch gave up on when its re-plan never took and nothing ran in it      *)
+(* (`discardStandbyNeverClaimed`).                                          *)
 (*                                                                          *)
 (* One step of this model is one SQL statement or one platform call in the  *)
 (* code, and every action names the code it stands for. Each statement is  *)
@@ -34,7 +37,10 @@ Mutants == {"none",
             "reread-before-retire",       \* the second session read is made before retire, not after
             "discard-before-retire",      \* the stop is sent before retire, whose answer goes unused
             "claim-leaves-ready",         \* claim selects FOR UPDATE but never sets 'claimed'
-            "reused-id"}                  \* a new standby may take the id of one that was drained
+            "reused-id",                  \* a new standby may take the id of one that was drained
+            "no-look",                    \* SLNT-1053's discard without looking for what ran in it
+            "look-live-only",             \* the look sees what holds it now, not what ran and ended
+            "agent-ignores-stop"}         \* a launch its owner stopped starts its agent anyway
 
 ASSUME Mutant \in Mutants
 ASSUME NoId \notin Standbys
@@ -62,8 +68,16 @@ VARIABLES
   session,     \* the agent_sessions row under the standby's id: "none", "live", "settled"
   \* What happened to each standby's sealant workspace.
   adopted,     \* a launch recorded it as its session's executor (acceptExecutor)
-  holdsWork,   \* the session's worktree was laid down in it (replan)
-  discardSent, \* stopWorkspace(…, { discardUnsaved: true }) was sent for it
+  holdsWork,   \* something a session made may be on it: its agent started there after the
+               \* re-plan, or a join ran there
+  discardSent, \* drainHotWorkspace's stopWorkspace(…, { discardUnsaved: true }) was sent for it
+  onWorktree,  \* sealantd's re-plan took: the standby captures as the session's worktree
+  ran,         \* a session_processes row names its workspace (anyone's, live or ended)
+  replanDiscard, \* discardStandbyNeverClaimed's discard was sent for it (SLNT-1053)
+  \* The session's durable drain intent (agent_sessions.capture_drain), set by
+  \* beginCaptureDrain; it outlives a restart.
+  ending,
+  stopped,     \* its owner pressed Stop while its launch was under way (stoppedDuringLaunch)
   \* reconcileHotPoolOnce: one pass per project at a time (scheduleHotReconcile).
   rpc, rWs, rTodo, rProv,
   \* hotPoolSweep: at boot and every 10 minutes.
@@ -73,7 +87,10 @@ VARIABLES
   \* launchSession's adoption of a claimed standby, one per session id.
   apc, aWs,
   \* drainHotWorkspace, one per caller.
-  dpc, dEntry, dWs, dKeep, dAdopted, dMatch, dDiscard
+  dpc, dEntry, dWs, dKeep, dAdopted, dMatch, dDiscard,
+  \* The session drain's look at a claimed standby (discardStandbyNeverClaimed),
+  \* and one join into each standby's executor (launchSession's join).
+  gpc, jpc
 
 db       == <<status, wsid, session>>
 platform == <<adopted, holdsWork, discardSent>>
@@ -82,7 +99,8 @@ sweep    == <<wpc, wWs, wTodo>>
 claims   == <<cpc, cCand, cOf>>
 launches == <<apc, aWs>>
 drains   == <<dpc, dEntry, dWs, dKeep, dAdopted, dMatch, dDiscard>>
-vars == <<db, platform, recon, sweep, claims, launches, drains>>
+replans  == <<onWorktree, ran, replanDiscard, ending, stopped, gpc, jpc>>
+vars == <<db, platform, recon, sweep, claims, launches, drains, replans>>
 
 NoWs == [s \in Standbys |-> FALSE]
 
@@ -103,7 +121,8 @@ TypeOK ==
   /\ cpc \in [Launches -> {"idle", "lock", "capture", "create", "wait", "done"}]
   /\ cCand \in [Launches -> SUBSET Standbys]
   /\ cOf \in [Launches -> Standbys \cup {NoId}]
-  /\ apc \in [Standbys -> {"idle", "byId", "check", "wait", "remove", "replan"}]
+  /\ apc \in [Standbys -> {"idle", "byId", "check", "wait", "remove", "replan",
+                             "identify"}]
   /\ aWs \in [Standbys -> BOOLEAN]
   /\ dpc \in [Slots -> {"idle", "adopt", "rscan", "rapply", "reread", "stop", "answered", "end"}]
   /\ dEntry \in [Slots -> Standbys \cup {NoId}]
@@ -112,6 +131,13 @@ TypeOK ==
   /\ dAdopted \in [Slots -> BOOLEAN]
   /\ dMatch \in [Slots -> BOOLEAN]
   /\ dDiscard \in [Slots -> BOOLEAN]
+  /\ onWorktree \in [Standbys -> BOOLEAN]
+  /\ ran \in [Standbys -> BOOLEAN]
+  /\ replanDiscard \subseteq Standbys
+  /\ ending \in [Standbys -> BOOLEAN]
+  /\ stopped \in [Standbys -> BOOLEAN]
+  /\ gpc \in [Standbys -> {"idle", "look", "identify", "discard"}]
+  /\ jpc \in [Standbys -> {"idle", "look", "done"}]
 
 Init ==
   /\ status = [s \in Standbys |-> "unborn"]
@@ -134,6 +160,10 @@ Init ==
   /\ dAdopted = [d \in Slots |-> FALSE]
   /\ dMatch = [d \in Slots |-> FALSE]
   /\ dDiscard = [d \in Slots |-> FALSE]
+  /\ onWorktree = NoWs /\ ran = NoWs /\ replanDiscard = {}
+  /\ ending = NoWs /\ stopped = NoWs
+  /\ gpc = [s \in Standbys |-> "idle"]
+  /\ jpc = [s \in Standbys |-> "idle"]
 
 -----------------------------------------------------------------------------
 (* drainHotWorkspace(entry, { keepWorktree })                               *)
@@ -175,6 +205,7 @@ DAdopt(d) ==
                 /\ dpc' = [dpc EXCEPT ![d] = IF dWs[d] THEN "stop" ELSE "end"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dMatch>>
+  /\ UNCHANGED replans
 
 \* HotWorkspacesRepo.retire: UPDATE hot_workspaces SET status = 'failed'
 \* WHERE id = ? AND status <> 'claimed' RETURNING id
@@ -188,6 +219,7 @@ DRetireScan(d) ==
   /\ dpc' = [dpc EXCEPT ![d] = "rapply"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dDiscard>>
+  /\ UNCHANGED replans
 
 \* ... then locks the row, waiting for any writer, and re-checks the WHERE on
 \* the row's newest version (EvalPlanQual). A row its snapshot did not match
@@ -210,6 +242,7 @@ DRetireApply(d) ==
                 /\ dpc' = [dpc EXCEPT ![d] = "stop"]
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dMatch>>
+  /\ UNCHANGED replans
 
 \* `adopted = adoptedBefore || (retired && sessions.byId(entry.id) found)`,
 \* `discard = retired && !adopted`: once retire took the row, the session is
@@ -220,6 +253,7 @@ DReread(d) ==
   /\ dpc' = [dpc EXCEPT ![d] = IF Mutant = "reread-before-retire" THEN "rscan" ELSE "stop"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dMatch>>
+  /\ UNCHANGED replans
 
 \* sealant.getWorkspace(id) then sealant.stopWorkspace(workspace,
 \* discard ? { discardUnsaved: true } : undefined). Counted as sent even if
@@ -232,6 +266,7 @@ DStop(d) ==
                  THEN "rscan" ELSE "answered"]
   /\ UNCHANGED <<db, adopted, holdsWork, recon, sweep, claims, launches,
                  dEntry, dWs, dKeep, dAdopted, dMatch, dDiscard>>
+  /\ UNCHANGED replans
 
 \* sealant did not confirm the end (kept, still draining, refused, not
 \* observed): HotWorkspacesRepo.setFailed, an UPDATE … WHERE id = ? with no
@@ -242,6 +277,7 @@ DNotEnded(d) ==
      IN status' = IF Exists(status[e]) THEN [status EXCEPT ![e] = "failed"] ELSE status
   /\ EndDrain(d)
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, launches>>
+  /\ UNCHANGED replans
 
 \* sealant confirmed the end, or the row had no workspace: tokens and socket go,
 \* then HotWorkspacesRepo.remove (DELETE … WHERE id = ?), and it returns true.
@@ -251,6 +287,7 @@ DEnded(d) ==
      IN status' = IF Exists(status[e]) THEN [status EXCEPT ![e] = "gone"] ELSE status
   /\ EndDrain(d)
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, launches>>
+  /\ UNCHANGED replans
 
 DrainStep(d) ==
   \/ DAdopt(d) \/ DRetireScan(d) \/ DRetireApply(d) \/ DReread(d)
@@ -272,11 +309,13 @@ RStart ==
   /\ rTodo' = {s \in Standbys : Exists(status[s]) /\ status[s] # "claimed"}
   /\ rpc' = "loop"
   /\ UNCHANGED <<db, platform, rProv, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 RSkip(e) ==
   /\ rpc = "loop" /\ e \in rTodo
   /\ rTodo' = rTodo \ {e}
   /\ UNCHANGED <<db, platform, rpc, rWs, rProv, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 RDrain(e) ==
   /\ rpc = "loop" /\ e \in rTodo /\ dpc[R] = "idle"
@@ -284,17 +323,20 @@ RDrain(e) ==
   /\ rTodo' = rTodo \ {e}
   /\ rpc' = "wait"
   /\ UNCHANGED <<db, platform, rWs, rProv, sweep, claims, launches>>
+  /\ UNCHANGED replans
 
 RDrainDone ==
   /\ rpc = "wait" /\ dpc[R] = "idle"
   /\ rpc' = "loop"
   /\ UNCHANGED <<db, platform, rWs, rTodo, rProv, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 RListDone ==
   /\ rpc = "loop" /\ rTodo = {}
   /\ rpc' = "prov"
   /\ rWs' = NoWs
   /\ UNCHANGED <<db, platform, rTodo, rProv, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 \* provisionHotWorkspace: hotWorkspaces.create inserts a `warming` row under
 \* a fresh crypto.randomUUID() ...
@@ -307,6 +349,7 @@ RProvCreate(s) ==
   /\ rProv' = s
   /\ rpc' = "provDone"
   /\ UNCHANGED <<session, platform, rWs, rTodo, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 \* ... then setReady (UPDATE … SET status = 'ready', sealant_workspace_id = …
 \* WHERE id = ?, no status condition) once the workspace is up ...
@@ -318,6 +361,7 @@ RProvReady ==
        ELSE UNCHANGED <<status, wsid>>
   /\ rpc' = "idle" /\ rProv' = NoId
   /\ UNCHANGED <<session, platform, rWs, rTodo, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 \* ... or setFailed when the plan or the create failed (no workspace on the row).
 RProvFailed ==
@@ -325,11 +369,13 @@ RProvFailed ==
   /\ status' = IF Exists(status[rProv]) THEN [status EXCEPT ![rProv] = "failed"] ELSE status
   /\ rpc' = "idle" /\ rProv' = NoId
   /\ UNCHANGED <<wsid, session, platform, rWs, rTodo, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 RPassEnd ==
   /\ rpc = "prov"
   /\ rpc' = "idle"
   /\ UNCHANGED <<db, platform, rWs, rTodo, rProv, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 -----------------------------------------------------------------------------
 (* hotPoolSweep: listAll, then for each entry `claimed` in that list,       *)
@@ -342,6 +388,7 @@ WStart ==
   /\ wTodo' = {s \in Standbys : status[s] = "claimed"}
   /\ wpc' = "loop"
   /\ UNCHANGED <<db, platform, recon, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 WCheck(e) ==
   /\ wpc = "loop" /\ e \in wTodo /\ dpc[W] = "idle"
@@ -353,16 +400,19 @@ WCheck(e) ==
        [] session[e] = "live" ->
             UNCHANGED <<drains, wpc>>
   /\ UNCHANGED <<db, platform, recon, wWs, claims, launches>>
+  /\ UNCHANGED replans
 
 WDrainDone ==
   /\ wpc = "wait" /\ dpc[W] = "idle"
   /\ wpc' = "loop"
   /\ UNCHANGED <<db, platform, recon, wWs, wTodo, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 WEnd ==
   /\ wpc = "loop" /\ wTodo = {}
   /\ wpc' = "idle" /\ wWs' = NoWs
   /\ UNCHANGED <<db, platform, recon, wTodo, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 -----------------------------------------------------------------------------
 (* claimHotSession                                                          *)
@@ -376,6 +426,7 @@ CScan(l) ==
   /\ cCand' = [cCand EXCEPT ![l] = {s \in Standbys : status[s] = "ready"}]
   /\ cpc' = [cpc EXCEPT ![l] = "lock"]
   /\ UNCHANGED <<db, platform, recon, sweep, cOf, launches, drains>>
+  /\ UNCHANGED replans
 
 \* ... and it takes one whose newest version is still `ready` once locked
 \* (EvalPlanQual). A row another statement holds locked is skipped, which
@@ -391,6 +442,7 @@ CTake(l, s) ==
   /\ cCand' = [cCand EXCEPT ![l] = {}]
   /\ cpc' = [cpc EXCEPT ![l] = "capture"]
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, launches, drains>>
+  /\ UNCHANGED replans
 
 \* Nothing taken: a cold launch under a new session id, outside this model.
 CNone(l) ==
@@ -398,12 +450,14 @@ CNone(l) ==
   /\ cCand' = [cCand EXCEPT ![l] = {}]
   /\ cpc' = [cpc EXCEPT ![l] = "done"]
   /\ UNCHANGED <<db, platform, recon, sweep, cOf, launches, drains>>
+  /\ UNCHANGED replans
 
 \* ensureCaptureZero, then capture.repo.claim of the worktree's lease.
 CCaptureOk(l) ==
   /\ cpc[l] = "capture"
   /\ cpc' = [cpc EXCEPT ![l] = "create"]
   /\ UNCHANGED <<db, platform, recon, sweep, cCand, cOf, launches, drains>>
+  /\ UNCHANGED replans
 
 \* Refused: drainHotWorkspace(entry), then a cold launch under a new id.
 CCaptureFail(l) ==
@@ -411,11 +465,13 @@ CCaptureFail(l) ==
   /\ StartDrain(C(l), cOf[l], wsid[cOf[l]], FALSE)
   /\ cpc' = [cpc EXCEPT ![l] = "wait"]
   /\ UNCHANGED <<db, platform, recon, sweep, cCand, cOf, launches>>
+  /\ UNCHANGED replans
 
 CDrainDone(l) ==
   /\ cpc[l] = "wait" /\ dpc[C(l)] = "idle"
   /\ cpc' = [cpc EXCEPT ![l] = "done"]
   /\ UNCHANGED <<db, platform, recon, sweep, cCand, cOf, launches, drains>>
+  /\ UNCHANGED replans
 
 \* requestHotReconcile (a pass may start at any time here anyway), then
 \* sessions.create({ id: entry.id, … }); the session's launch begins.
@@ -428,6 +484,7 @@ CCreate(l) ==
          ELSE UNCHANGED <<session, apc>>  \* the insert collides; cannot happen without a mutant
   /\ cpc' = [cpc EXCEPT ![l] = "done"]
   /\ UNCHANGED <<status, wsid, platform, recon, sweep, cCand, cOf, aWs, drains>>
+  /\ UNCHANGED replans
 
 -----------------------------------------------------------------------------
 (* launchSession for a session whose id is a pool row's                     *)
@@ -442,6 +499,7 @@ AById(s) ==
        ELSE /\ apc' = [apc EXCEPT ![s] = "idle"]
             /\ UNCHANGED aWs
   /\ UNCHANGED <<db, platform, recon, sweep, claims, drains>>
+  /\ UNCHANGED replans
 
 \* The claimed standby is not used: refuseWorkspaceRepositories refused,
 \* adoptClaimedWorkspace found it dead or half-stamped, or the layout or the
@@ -452,11 +510,13 @@ ADrop(s) ==
   /\ StartDrain(A(s), s, aWs[s], TRUE)
   /\ apc' = [apc EXCEPT ![s] = "wait"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, aWs>>
+  /\ UNCHANGED replans
 
 ADropDone(s) ==
   /\ apc[s] = "wait" /\ dpc[A(s)] = "idle"
   /\ apc' = [apc EXCEPT ![s] = "idle"] /\ aWs' = [aWs EXCEPT ![s] = FALSE]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, drains>>
+  /\ UNCHANGED replans
 
 \* Adopted: acceptExecutor records the standby's workspace on the session.
 AAccept(s) ==
@@ -464,6 +524,7 @@ AAccept(s) ==
   /\ adopted' = [adopted EXCEPT ![s] = TRUE]
   /\ apc' = [apc EXCEPT ![s] = "remove"]
   /\ UNCHANGED <<db, holdsWork, discardSent, recon, sweep, claims, aWs, drains>>
+  /\ UNCHANGED replans
 
 \* hotWorkspaces.remove(claimedEntry.id), before the replan.
 ARemove(s) ==
@@ -471,14 +532,154 @@ ARemove(s) ==
   /\ status' = IF Exists(status[s]) THEN [status EXCEPT ![s] = "gone"] ELSE status
   /\ apc' = [apc EXCEPT ![s] = "replan"]
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, aWs, drains>>
+  /\ UNCHANGED replans
 
-\* replanClaimedStandby lays the session's worktree down; the agent starts.
-\* A failed replan may still have left work on it, so it counts either way.
-AReplan(s) ==
+\* The launch starts the session's agent in its executor, unless its owner
+\* stopped it (refuseIfStoppedDuringLaunch, before the agent's terminal opens).
+AgentStarts(s) ==
+  LET starts == ~stopped[s] \/ Mutant = "agent-ignores-stop"
+  IN /\ holdsWork' = [holdsWork EXCEPT ![s] = holdsWork[s] \/ starts]
+     /\ ran' = [ran EXCEPT ![s] = ran[s] \/ starts]
+
+\* replanClaimedStandby (SLNT-1053). The launch starts nothing in a standby
+\* before its re-plan answers (e2e9 F-B): what a re-plan does by itself is lay
+\* the worktree's saved head down (`onWorktree`), never anything unsaved.
+\* Answered: the session's agent starts there.
+AReplanOk(s) ==
   /\ apc[s] = "replan"
-  /\ holdsWork' = [holdsWork EXCEPT ![s] = TRUE]
+  /\ onWorktree' = [onWorktree EXCEPT ![s] = TRUE]
+  /\ AgentStarts(s)
   /\ apc' = [apc EXCEPT ![s] = "idle"] /\ aWs' = [aWs EXCEPT ![s] = FALSE]
-  /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, drains>>
+  /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, drains,
+                 replanDiscard, ending, stopped, gpc, jpc>>
+
+\* At most one standby in a run goes down the failed path: two of them share
+\* no workspace, session or join, so a break of either needs only its own.
+\* The other standby still runs every other action, before and meanwhile.
+OnlyFailedReplan(s) ==
+  \A t \in Standbys \ {s} :
+    /\ apc[t] # "identify"
+    /\ ~ending[t]
+
+\* Refused or not answered: it may have taken and lost its answer, or never
+\* taken. Asked again (sealantd's re-plan is idempotent), or given up on (a
+\* timeout is never asked again). A re-plan that times out may still take in
+\* sealantd afterwards; that is not modelled: it lays down only the saved
+\* head, and in this model it could only turn GIdentify's discard into a
+\* drain, never add one.
+AReplanFail(s) ==
+  /\ apc[s] = "replan"
+  /\ OnlyFailedReplan(s)
+  /\ \E t \in {onWorktree[s], TRUE} : onWorktree' = [onWorktree EXCEPT ![s] = t]
+  \* A stopped launch asks nothing more.
+  /\ \E next \in IF stopped[s] THEN {"identify"} ELSE {"replan", "identify"} :
+       apc' = [apc EXCEPT ![s] = next]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, aWs, drains,
+                 ran, replanDiscard, ending, stopped, gpc, jpc>>
+
+\* Where a drain's look at a claimed standby begins: `no-look` skips it.
+LookStart == IF Mutant = "no-look" THEN "identify" ELSE "look"
+
+\* readClaimedStandby, from the launch: the standby's own status. One that
+\* answers as the session's (it took) is adopted and the agent starts; one
+\* that answers under its placeholder, or cannot be read, is given up on and
+\* drained (stopWorkspaceQuietly(…, { reason: "relaunch" })), whose first
+\* round writes the durable intent (runDrain's sessions.beginCaptureDrain)
+\* before it looks at anything. The read and the intent are one step here:
+\* nothing between them reads what the intent changes, and the read changes
+\* nothing a join reads. The launch goes cold or is refused once the drain
+\* returns; it starts nothing in the standby, so that is not modelled.
+AIdentify(s) ==
+  /\ apc[s] = "identify"
+  /\ \/ \* Stopped: the launch is cancelled; the Stop's own drain ends the standby.
+        /\ stopped[s]
+        /\ UNCHANGED <<holdsWork, ran, ending, gpc>>
+     \/ /\ ~stopped[s] /\ onWorktree[s]
+        /\ AgentStarts(s)
+        /\ UNCHANGED <<ending, gpc>>
+     \/ /\ ~stopped[s]
+        /\ ending' = [ending EXCEPT ![s] = TRUE]
+        /\ gpc' = [gpc EXCEPT ![s] = IF gpc[s] = "idle" THEN LookStart ELSE gpc[s]]
+        /\ UNCHANGED <<holdsWork, ran>>
+  /\ apc' = [apc EXCEPT ![s] = "idle"] /\ aWs' = [aWs EXCEPT ![s] = FALSE]
+  /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, drains,
+                 onWorktree, replanDiscard, stopped, jpc>>
+
+\* Its owner's Stop while the launch of a claimed standby is under way:
+\* stoppedDuringLaunch, then the Stop's drain of the session's executor, whose
+\* first round writes the intent and looks (one drain per workspace: a look
+\* already under way is the same one).
+Stop(s) ==
+  /\ adopted[s] /\ session[s] = "live"
+  \* One Stop in the whole model, of either standby, and not in a run with a join: the
+  \* breaks either shows need only it, and the look sees a join's process row whoever wrote
+  \* the intent before it.
+  /\ \A t \in Standbys : ~stopped[t] /\ jpc[t] = "idle"
+  /\ apc[s] \in {"replan", "identify"}
+  /\ stopped' = [stopped EXCEPT ![s] = TRUE]
+  /\ ending' = [ending EXCEPT ![s] = TRUE]
+  /\ gpc' = [gpc EXCEPT ![s] = IF gpc[s] = "idle" THEN LookStart ELSE gpc[s]]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, replanDiscard, jpc>>
+
+\* The capture reaper takes a kept drain up again (a drain no fiber runs),
+\* after a restart too: runDrain again, its intent already durable.
+KeptRetry(s) ==
+  /\ ending[s] /\ gpc[s] = "idle" /\ s \notin replanDiscard
+  /\ gpc' = [gpc EXCEPT ![s] = LookStart]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, replanDiscard, ending, stopped, jpc>>
+
+\* discardStandbyNeverClaimed: processes.existsForWorkspace, then
+\* workspaceInUse, which counts a join under way (workspaceHolds). One step:
+\* both read after the intent, so a join that looked before it is in one of
+\* them, whichever comes first, and a join that looks after it stays out.
+GLook(s) ==
+  /\ gpc[s] = "look"
+  /\ LET seen == IF Mutant = "look-live-only" THEN jpc[s] = "look"
+                 ELSE ran[s] \/ jpc[s] = "look"
+     IN gpc' = [gpc EXCEPT ![s] = IF seen THEN "idle" ELSE "identify"]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, replanDiscard, ending, stopped, jpc>>
+
+\* ... then readClaimedStandby: only an answer under its placeholder goes on to
+\* the discard; one as the session's, or none, drains as before (no discard).
+GIdentify(s) ==
+  /\ gpc[s] = "identify"
+  /\ \/ /\ ~onWorktree[s]
+        /\ gpc' = [gpc EXCEPT ![s] = "discard"]
+     \/ gpc' = [gpc EXCEPT ![s] = "idle"]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, replanDiscard, ending, stopped, jpc>>
+
+\* terminateWorkspace(…, { discardUnsaved: true }).
+GDiscard(s) ==
+  /\ gpc[s] = "discard"
+  /\ replanDiscard' = replanDiscard \cup {s}
+  /\ gpc' = [gpc EXCEPT ![s] = "idle"]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, ending, stopped, jpc>>
+
+\* A second session joins the standby's executor while it holds the
+\* worktree's lease: enterJoin counts it in workspaceHolds ... One join in
+\* the whole model, into either standby: the breaks it shows need only one.
+JEnter(s) ==
+  /\ adopted[s] /\ \A t \in Standbys : jpc[t] = "idle" /\ ~stopped[t]
+  /\ jpc' = [jpc EXCEPT ![s] = "look"]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, replanDiscard, ending, stopped, gpc>>
+
+\* ... then looks at its holder once more (leaseHolderWorkspace): a drain's
+\* intent keeps it out; otherwise its process row is written and it runs.
+JLook(s) ==
+  /\ jpc[s] = "look"
+  /\ IF ending[s]
+       THEN UNCHANGED <<holdsWork, ran>>
+       ELSE /\ holdsWork' = [holdsWork EXCEPT ![s] = TRUE]
+            /\ ran' = [ran EXCEPT ![s] = TRUE]
+  /\ jpc' = [jpc EXCEPT ![s] = "done"]
+  /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, launches, drains,
+                 onWorktree, replanDiscard, ending, stopped, gpc>>
 
 -----------------------------------------------------------------------------
 (* People and the process                                                   *)
@@ -488,6 +689,7 @@ Settle(s) ==
   /\ session[s] = "live"
   /\ session' = [session EXCEPT ![s] = "settled"]
   /\ UNCHANGED <<status, wsid, platform, recon, sweep, claims, launches, drains>>
+  /\ UNCHANGED replans
 
 \* A person resumes or wakes the session: launchSession runs again.
 Resume(s) ==
@@ -495,6 +697,7 @@ Resume(s) ==
   /\ session' = [session EXCEPT ![s] = "live"]
   /\ apc' = [apc EXCEPT ![s] = "byId"]
   /\ UNCHANGED <<status, wsid, platform, recon, sweep, claims, aWs, drains>>
+  /\ UNCHANGED replans
 
 \* The Mend process restarts between any two steps: every fiber is gone and
 \* every in-memory map with it; the database and sealant keep what they had.
@@ -513,7 +716,9 @@ Restart ==
   /\ dAdopted' = [d \in Slots |-> FALSE]
   /\ dMatch' = [d \in Slots |-> FALSE]
   /\ dDiscard' = [d \in Slots |-> FALSE]
-  /\ UNCHANGED <<db, platform, cOf>>
+  /\ gpc' = [s \in Standbys |-> "idle"]
+  /\ jpc' = [s \in Standbys |-> IF jpc[s] = "look" THEN "done" ELSE jpc[s]]
+  /\ UNCHANGED <<db, platform, cOf, onWorktree, ran, replanDiscard, ending, stopped>>
 
 -----------------------------------------------------------------------------
 Next ==
@@ -527,7 +732,10 @@ Next ==
        \/ CDrainDone(l) \/ CCreate(l)
        \/ \E s \in Standbys : CTake(l, s)
   \/ \E s \in Standbys :
-       AById(s) \/ ADrop(s) \/ ADropDone(s) \/ AAccept(s) \/ ARemove(s) \/ AReplan(s)
+       AById(s) \/ ADrop(s) \/ ADropDone(s) \/ AAccept(s) \/ ARemove(s)
+       \/ AReplanOk(s) \/ AReplanFail(s) \/ AIdentify(s)
+       \/ Stop(s) \/ KeptRetry(s) \/ GLook(s) \/ GIdentify(s) \/ GDiscard(s)
+       \/ JEnter(s) \/ JLook(s)
        \/ Settle(s) \/ Resume(s)
   \/ Restart
 
@@ -540,8 +748,11 @@ Spec == Init /\ [][Next]_vars
 \* taken as its executor or holds work in. Checked in every state, so a
 \* discard sent first and a session taking the workspace afterwards breaks it
 \* too ("can still come to hold").
+\* SLNT-1053's discard reaches a standby a launch adopted, so its half says
+\* less: nothing a session made is, or can come to be, on it.
 NoDiscardOfSessionWork ==
-  \A s \in discardSent : ~adopted[s] /\ ~holdsWork[s]
+  /\ \A s \in discardSent : ~adopted[s] /\ ~holdsWork[s]
+  /\ \A s \in replanDiscard : ~holdsWork[s]
 
 \* The reviewer's first property: a row is claimable only while no session
 \* has its id, has taken its workspace, or holds work in it.

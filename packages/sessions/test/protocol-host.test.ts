@@ -429,6 +429,7 @@ const processesLayer = (rows: ReadonlyArray<SessionProcess> = [agentProcess]) =>
     listForSessions: () => Effect.succeed(rows),
     listForService: () => Effect.succeed([]),
     listLiveForWorkspace: () => Effect.succeed([]),
+    existsForWorkspace: () => Effect.succeed(false),
     listLive: () => Effect.succeed([]),
     listRecentServices: () => Effect.succeed([]),
     setStatus: () => Effect.void,

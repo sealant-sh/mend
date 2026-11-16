@@ -511,6 +511,50 @@ describe.skipIf(postgres.skip)("a session's capture drain, in Postgres", () => {
     expect(result.keys).not.toContain("captureUnsavedAt");
   });
 
+  it("keeps a claimed standby's placeholder epoch, its creation in ms, wherever an epoch is kept (0223, SLNT-1053)", async () => {
+    // A standby whose re-plan never took answers its final flush complete under its placeholder:
+    // the epoch is its pool row's creation time in ms, past what an integer holds.
+    const placeholder = 1_794_790_112_556;
+    const at = new Date("2026-11-16T00:49:46.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sessions.recordCaptureSaved(STOPPING, {
+          workspaceId: "ws-standby",
+          at,
+          n: null,
+          epoch: placeholder,
+        });
+        yield* sessions.recordExecutorEvidence("ws-standby", {
+          worktreeId: WORKTREE,
+          launchId: "standby:s-stopping",
+          saved: {
+            workspaceId: "ws-standby",
+            at,
+            n: null,
+            epoch: placeholder,
+            position: { ...stampAt(1, 0), epoch: placeholder, launchId: "standby:s-stopping" },
+          },
+        });
+        yield* sql`
+          INSERT INTO agent_memory_homes (worktree_id, pending_epoch, pending_n)
+          VALUES (${WORKTREE}, ${placeholder}, 0)
+          ON CONFLICT (worktree_id) DO UPDATE SET pending_epoch = EXCLUDED.pending_epoch`;
+        const homes = yield* sql<{ readonly pending_epoch: string | number }>`
+          SELECT pending_epoch FROM agent_memory_homes WHERE worktree_id = ${WORKTREE}`;
+        return {
+          session: yield* sessions.captureSavedOf(STOPPING),
+          evidence: yield* sessions.executorEvidenceOf("ws-standby"),
+          home: Number(homes[0]?.pending_epoch),
+        };
+      }),
+    );
+    expect(result.session?.epoch).toBe(placeholder);
+    expect(result.evidence?.saved?.epoch).toBe(placeholder);
+    expect(result.home).toBe(placeholder);
+  });
+
   it("keeps what an executor answered per executor, whoever asked, the latest of each kind as the executor ordered them, past the session that asked (0086, 0087, review 2026-09-28 (5) #3, (6) #6)", async () => {
     const sealed = new Date("2026-09-28T00:01:00.000Z");
     const later = new Date("2026-09-28T00:01:30.000Z");
@@ -977,5 +1021,103 @@ describe.skipIf(postgres.skip)("migration 0090 over rows written before it", () 
       "unreadable tree/x",
       "incomplete · changed",
     ]);
+  });
+});
+
+// SLNT-1053: a launch that gave its claimed standby up before 0223 settled saying the standby
+// "may hold work not yet saved". Sessions with no drain left say what is known instead; one whose
+// drain is still kept keeps its words until that drain ends the standby.
+describe.skipIf(postgres.skip)("migration 0223 over sessions settled before it", () => {
+  const LEGACY_DB = `mend_capture_epochs_bigint_${process.pid}_${Date.now()}`;
+  const legacyUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${LEGACY_DB}`;
+    return url.toString();
+  })();
+  const legacyLayer = SessionsRepoLive.pipe(
+    Layer.provideMerge(
+      MendDBLive.pipe(Layer.provideMerge(PgClient.layer({ url: Redacted.make(legacyUrl) }))),
+    ),
+  );
+  const legacy = <A, E>(effect: Effect.Effect<A, E, SessionsRepo | SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(legacyLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${LEGACY_DB}`);
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LEGACY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("restates a failed claim's words once no drain is left, and leaves a kept drain's and anyone else's", async () => {
+    const oldWords =
+      "saving · the claimed standby may hold work not yet saved · start again once it saves, or discard unsaved and stop";
+    const result = await legacy(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessions = yield* SessionsRepo;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        for (const [name, migration] of ordered) {
+          if (name.localeCompare("0223") >= 0) continue;
+          yield* migration;
+        }
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES (${PROJECT}, 'web', '/store/p-web/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
+        const rows = [
+          { id: "s-gave-up", summary: oldWords, drain: null },
+          { id: "s-kept", summary: oldWords, drain: "relaunch" },
+          { id: "s-other", summary: "launch failed: setup command exited 1", drain: null },
+        ] as const;
+        for (const row of rows) {
+          yield* sessions.create({
+            id: SessionId.make(row.id),
+            projectId: PROJECT,
+            worktreeId: WORKTREE,
+            harness: "claude",
+            label: null,
+            worktree: "wt-1",
+            branch: "mend/wt-1",
+            baseSha: Sha.make("abc"),
+            baseRef: "main",
+            contextSnapshotId: null,
+            ownerUserId: "alice",
+            origin: "mend",
+          });
+          yield* sql`
+            UPDATE agent_sessions
+               SET status = 'failed', settled_at = now(), summary = ${row.summary},
+                   capture_drain = ${row.drain},
+                   capture_drain_requested_at = ${row.drain === null ? null : new Date()}
+             WHERE id = ${row.id}`;
+        }
+        const [, migration] = ordered.find(([name]) => name.startsWith("0223")) ?? [];
+        if (migration === undefined) return yield* Effect.die("no 0223");
+        yield* migration;
+        const after = yield* sql<{ readonly id: string; readonly summary: string | null }>`
+          SELECT id, summary FROM agent_sessions ORDER BY id`;
+        return Object.fromEntries(after.map((row) => [row.id, row.summary]));
+      }),
+    );
+    expect(result["s-gave-up"]).toBe(
+      "launch failed: the claimed standby was not confirmed on this session's worktree · this session's command never ran in it · start the session again",
+    );
+    expect(result["s-kept"]).toBe(oldWords);
+    expect(result["s-other"]).toBe("launch failed: setup command exited 1");
   });
 });

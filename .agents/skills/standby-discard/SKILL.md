@@ -23,8 +23,8 @@ The model stands for the code in the coverage record below. Diff that code from 
 your tree:
 
 ```sh
-git diff --stat aa029659e3 -- packages/db/src/repos/hot-workspaces.ts packages/sessions/src/engine.ts packages/sessions/src/capture-channel.ts
-git diff aa029659e3 -- packages/sessions/src/engine.ts packages/db/src/repos/hot-workspaces.ts | grep -nE '^[-+].*(hotWorkspaces\.|drainHotWorkspace|reconcileHotPoolOnce|hotPoolSweep|provisionHotWorkspace|claimHotSession|claimedEntry|adoptClaimedWorkspace|acceptExecutor|replanClaimedStandby|changingBoatKey|leavingBoatAccounts|discardUnsaved|retire|setFailed|setReady|sessions\.create)'
+git diff --stat aa029659e3 -- packages/db/src/repos/hot-workspaces.ts packages/db/src/repos/session-processes.ts packages/sessions/src/engine.ts packages/sessions/src/capture-channel.ts
+git diff aa029659e3 -- packages/sessions/src/engine.ts packages/db/src/repos/hot-workspaces.ts | grep -nE '^[-+].*(hotWorkspaces\.|drainHotWorkspace|reconcileHotPoolOnce|hotPoolSweep|provisionHotWorkspace|claimHotSession|claimedEntry|adoptClaimedWorkspace|acceptExecutor|replanClaimedStandby|readClaimedStandby|discardStandbyNeverClaimed|existsForWorkspace|changingBoatKey|leavingBoatAccounts|discardUnsaved|retire|setFailed|setReady|sessions\.create)'
 ```
 
 `engine.ts` changes often. Read every hunk inside a function the record lists. The step is done when
@@ -34,16 +34,16 @@ covered function changed, the model still describes the code and you are done.
 ## 2. Run the check
 
 ```sh
-docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~15 s
-docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~4 min on 32 cores
+docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~30 s
+docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~30 min on 32 cores
 ```
 
 TLC is the reference: the run you hand off with a change to the model or to the code it models is a
 TLC run. While iterating, `--engine tlx` (it composes with `--quick` and a row name) runs the same
-rows with tlx, a Rust checker about twelve times faster here: ~22 s for the full bounds, ~2 s with
-`--quick`. tlx is version 0.1, from github.com/tlaplus-x/tlx, measured at commit `8d5f082b0f`; it is
-not in the Nix flake or CI. README "TLC and tlx" says how to build it and has the measured table.
-`check.sh` takes it from `MEND_TLX`, else `tlx` on `PATH`, and exits 2 when there is none.
+rows with tlx, a Rust checker about twelve times faster here: ~2.5 min for the full bounds, ~5 s
+with `--quick`. tlx is version 0.1, from github.com/tlaplus-x/tlx, measured at commit `8d5f082b0f`;
+it is not in the Nix flake or CI. README "TLC and tlx" says how to build it and has the measured
+table. `check.sh` takes it from `MEND_TLX`, else `tlx` on `PATH`, and exits 2 when there is none.
 
 Each row prints `as expected` or `NOT AS EXPECTED`, and the script exits 0 only when every row is
 `as expected`: the verdict matches and the distinct-state count equals the one `ROWS` pins for those
@@ -119,7 +119,12 @@ guards allow it, and the value it acts on was read where and when the code reads
 | `ADrop`, `ADropDone`                                               | `launchSession`: the `refuseWorkspaceRepositories` refusal, `adoptClaimedWorkspace`'s `unusable()`, and the `standbyMismatch` drain, each `drainHotWorkspace(…, { keepWorktree: true })`                                          |
 | `AAccept`                                                          | `launchSession`: `acceptExecutor(provisioned.workspace, standbyLaunch)`                                                                                                                                                           |
 | `ARemove`                                                          | `launchSession`: `hotWorkspaces.remove(claimedEntry.id)` before `replanClaimedStandby`                                                                                                                                            |
-| `AReplan`                                                          | `replanClaimedStandby`                                                                                                                                                                                                            |
+| `AReplanOk`, `AReplanFail`                                         | `replanClaimedStandby`: `sealant.captureReplan`, answered, or refused or not answered and asked again up to `STANDBY_REPLAN_ASKS` (SLNT-1053)                                                                                     |
+| `AIdentify`                                                        | `replanClaimedStandby`'s `readClaimedStandby` after no ask answered: adopted as the session's, or `null`, then `runDrain`'s `beginCaptureDrain`                                                                                   |
+| `KeptRetry`                                                        | the capture reaper's kept drain (`a drain no fiber runs · taken up`), running `runDrain` again                                                                                                                                    |
+| `GLook`, `GIdentify`, `GDiscard`                                   | `discardStandbyNeverClaimed`: `processes.existsForWorkspace`, `workspaceInUse`, `readClaimedStandby`, `terminateWorkspace(…, { discardUnsaved: true })`                                                                           |
+| `JEnter`, `JLook`                                                  | `launchSession`'s join: `enterJoin` (`workspaceHolds`), `leaseHolderWorkspace`'s look at the holder's `captureDrain`, then the joined process's row                                                                               |
+| `Stop`, `AgentStarts`                                              | `stop`'s `stoppedDuringLaunch.add` and its drain of the session's executor; a stopped launch's `launchCancelled()` in `replanClaimedStandby` and `launchSession`, and `refuseIfStoppedDuringLaunch` before the agent starts       |
 | `Settle`, `Resume`, `Restart`                                      | `settleSession`; a person's resume or wake running `launchSession`; a process restart (`resume()`, then the boot sweep)                                                                                                           |
 | (relied on, not modelled)                                          | `standbyApiFor` and `captureApiFor` (`packages/sessions/src/capture-channel.ts`, `engine.ts`): a workspace with no session under its id uploads nothing, which is why discarding an unclaimed standby loses nothing               |
 

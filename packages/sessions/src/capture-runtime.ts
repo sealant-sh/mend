@@ -135,6 +135,11 @@ export interface CaptureDrainPolicyShape {
   readonly createPhaseInterval: Duration.Duration;
   /** How long a launch's harness warm-up may run before it is abandoned (`harnessWarmupArgv`). */
   readonly harnessWarmupTimeout: Duration.Duration;
+  /**
+   * Between two asks of a claimed standby whose re-plan did not answer: the re-plan asked again,
+   * or the standby's own status read again to learn whether the re-plan took (SLNT-1053).
+   */
+  readonly standbyRetryInterval: Duration.Duration;
 }
 
 export class CaptureDrainPolicy extends Context.Service<
@@ -162,6 +167,7 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   imageBuildAfter: Duration.seconds(20),
   createPhaseInterval: Duration.seconds(5),
   harnessWarmupTimeout: HARNESS_WARMUP_TIMEOUT,
+  standbyRetryInterval: Duration.seconds(2),
 };
 
 /** The defaults, with nothing read from the environment. */

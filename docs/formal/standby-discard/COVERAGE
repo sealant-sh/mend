@@ -2,21 +2,23 @@
 # its Coverage record maps each model action to the code below.
 #
 # sync: the commit whose code the model was last confirmed to describe. Move it only as the
-# skill's step 1 and full run say. c2cc782390 is main when SLNT-1044 moved it. Since 226ba0fbb7,
-# mend#1628's squash, the covered files changed only in comments (ADR numbers), in the name of a
-# paste written in a live workspace (storePastedImage, mend#1698, SLNT-507), in a recipe start's
-# setup refusal (ServiceStartError's setup facts, SLNT-1018), and in how a session's stop reads
-# its executor's capture evidence: an answer a claimed standby gave under its placeholder, before
-# its re-plan took, is left out of executorAnswersOf and executorEndOfSession and logged where
-# persistReading records it (SLNT-1044). None of them is code an action models: no drain of a
-# standby reads that evidence (drainHotWorkspace decides its discard from the pool row and the
-# session read alone). Full TLC run at SLNT-1044's head: every row as expected, counts unchanged.
-sync c2cc78239014a2dc2d445dad1ae829a7b90b7006
+# skill's step 1 and full run say. 38bd550c95 is main when SLNT-1053 moved it: mend#1727's squash,
+# whose covered changes (SLNT-1044) the line before already accounted for, and nothing else in the
+# covered files. SLNT-1053 changed the model with the code: the launch's re-plan is asked again
+# and, when no ask answered, the standby's own status decides adoption (AReplanOk, AReplanFail,
+# AIdentify); a session's drain discards a claimed standby whose re-plan never took and in which no
+# process ever ran (discardStandbyNeverClaimed: GLook, GIdentify,
+# GDiscard, KeptRetry), with joins modelled (JEnter, JLook). SessionProcessesRepo joins the
+# covered files for existsForWorkspace. Its second round (the box check of mend#1741) added the
+# owner's Stop during the asks (Stop, AgentStarts) and bound the session's channel again before
+# the cold launch, which no action models (the channel is not in the model).
+sync 38bd550c9561c68695522c486c25448b0c3dbed4
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
 model check.sh
 
 path packages/db/src/repos/hot-workspaces.ts
+path packages/db/src/repos/session-processes.ts
 path packages/sessions/src/engine.ts
 path packages/sessions/src/capture-channel.ts

@@ -5586,4 +5586,35 @@ export const migrations = {
       CHECK (boat_key IN ('person', 'organization', 'server'))`;
   }),
   "0221_mcp_apps": mcpAppsMigration,
+  // A claimed standby's answers carry its placeholder epoch, its pool row's creation in ms
+  // (`standbyEpochOf`), which an integer does not hold: a refused claim's drain recording the
+  // standby's completed final flush died on `integer out of range` (SLNT-1053). Epochs are bigint
+  // wherever else Mend keeps one (leases, seals, URL windows, packs).
+  "0223_capture_epochs_bigint": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_sessions ALTER COLUMN capture_saved_epoch TYPE bigint`;
+    yield* sql`ALTER TABLE executor_capture_evidence ALTER COLUMN saved_epoch TYPE bigint`;
+    yield* sql`ALTER TABLE agent_memory_homes ALTER COLUMN pending_epoch TYPE bigint`;
+    // A launch that gave its claimed standby up before SLNT-1053 settled saying the standby
+    // "may hold work not yet saved". Those words came only from that launch, before anything of
+    // the session started; a session with no drain left (capture_drain null) has no workspace
+    // Mend keeps for it, and no reaper pass will look at it again. It now says what is known.
+    // A session whose drain is still kept is restated by that drain when it ends the standby.
+    const restated =
+      "launch failed: the claimed standby was not confirmed on this session's worktree · this session's command never ran in it · start the session again";
+    const oldWords = [
+      "%the claimed standby may hold work not yet saved%",
+      "%the claimed standby's end is not observed yet · it may hold work not yet saved%",
+    ];
+    for (const words of oldWords) {
+      yield* sql`UPDATE session_runs SET summary = ${restated}
+        WHERE summary LIKE ${words}
+          AND session_id IN (SELECT id FROM agent_sessions
+            WHERE status = 'failed' AND settled_at IS NOT NULL AND capture_drain IS NULL
+              AND summary LIKE ${words})`;
+      yield* sql`UPDATE agent_sessions SET summary = ${restated}
+        WHERE status = 'failed' AND settled_at IS NOT NULL AND capture_drain IS NULL
+          AND summary LIKE ${words}`;
+    }
+  }),
 };

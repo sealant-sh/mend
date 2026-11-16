@@ -1832,6 +1832,10 @@ export const sessionProcessesLayer = (world: World) => {
           (process) => process.sealantWorkspaceId === workspaceId && process.exitedAt === null,
         ),
       ),
+    existsForWorkspace: (workspaceId) =>
+      Effect.succeed(
+        [...world.processes.values()].some((process) => process.sealantWorkspaceId === workspaceId),
+      ),
     listLive: () =>
       Effect.succeed([...world.processes.values()].filter((process) => process.exitedAt === null)),
     setStatus: (id, status) =>
@@ -3798,6 +3802,7 @@ export const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}
     imageBuildAfter: Duration.millis(40),
     createPhaseInterval: Duration.millis(10),
     harnessWarmupTimeout: Duration.seconds(60),
+    standbyRetryInterval: Duration.zero,
     ...overrides,
   });
 

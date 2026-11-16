@@ -92,13 +92,70 @@ condition also kept the promise in the model. It was not taken: a claim whose la
 creating its session would stay `claimed`, the sweep would keep sending saving stops that sealant
 keeps, and the VM would stay billed (the SLNT-803 leak, for that case).
 
+## A second discard: a claimed standby whose re-plan never took (SLNT-1053)
+
+Since SLNT-1053 one more call sends `discardUnsaved: true`: `discardStandbyNeverClaimed`, which a
+session's drain (`runDrain`) runs once before it asks a final flush. It reaches a standby a launch
+**did** adopt, so the promise is stated in two halves. `drainHotWorkspace`'s discard still never
+reaches a workspace a launch adopted or that holds work. The new discard never reaches a workspace
+that holds, or can still come to hold, anything a session made.
+
+**Why the new discard cannot reach a session's work.** It is sent only for a claimed standby whose
+own launch has already given it up, so that launch will start nothing there. Mend never started a
+process of anyone's in it, and the drain reads that only after its intent is durable, so a join that
+looks later stays out. The standby's own status must also still name its placeholder. A launch
+starts nothing in a standby before its re-plan answers (e2e9 F-B). The only other writer is a join,
+and the look rules a join out.
+
+What the model adds for it:
+
+- The launch's re-plan is answered (`AReplanOk`: the agent starts, so the workspace holds work), or
+  refused or not answered (`AReplanFail`: it may have taken with its answer lost, or not; it is
+  asked again or given up on).
+- `AIdentify` is the launch's read of the standby's status. One that took may be read as the
+  session's and adopted (the agent starts), or not read at all. Otherwise the launch gives the
+  standby up, and its drain writes its durable intent (`beginCaptureDrain`) in the same step: no
+  step in between reads what the intent changes.
+- `GLook` is the look's two reads, `processes.existsForWorkspace` and `workspaceInUse` (a join under
+  way is counted in `workspaceHolds`). They are one step because both come after the intent, so a
+  join that looked before the intent shows in one of them, whichever comes first. `GIdentify` is
+  `readClaimedStandby`, and `GDiscard` is the discard.
+- `KeptRetry` is the capture reaper taking a kept drain up again. Its intent outlives a restart, so
+  a session already kept this way is looked at again.
+- `JEnter` and `JLook` are one join into a standby's executor: counted, then a look at its holder's
+  intent, then its process row.
+- `Stop` is its owner's Stop while the launch is still asking (`stoppedDuringLaunch`, then the
+  Stop's own drain, which writes the intent and looks). A stopped launch asks nothing more, gives
+  the standby up without a drain of its own, and starts no agent (`AgentStarts`, the code's
+  `refuseIfStoppedDuringLaunch`).
+- A run has one join or one Stop, into either standby, not both: each break they show needs only
+  itself, and the look sees a join's process row whoever wrote the intent. At most one standby in a
+  run goes down the failed path (`OnlyFailedReplan`). Two standbys share no workspace, session or
+  join, so a break needs only one of them, and the other still runs every other action. Without
+  these restrictions the code rows reached 292 million states with tlx; TLC would take hours.
+
+`holdsWork` now means that something a session made may be on the workspace: its agent started
+there, or a join ran there. A re-plan by itself lays down only the worktree's saved head
+(`onWorktree`). A re-plan that times out and lands in sealantd later is not modelled: it lays down
+the same saved head, and in the model it could only turn a discard into a drain.
+
+Three mutants show what keeps the new half. Two are about the look. `no-look` discards without it,
+and `look-live-only` sees what holds the workspace now but not a join that ran and ended. Both fail
+the same way: a join runs in the standby during its failed re-plan, then the drain discards it. The
+third, `agent-ignores-stop`, starts the agent of a launch its owner stopped: the Stop's drain reads
+the placeholder while the re-plan is still unanswered, the re-plan then answers, the agent starts,
+and the discard goes out (17 steps). The identity read is not what keeps the promise; it is what
+tells an adoption from an end and makes the session's words true. A discard of a standby whose
+re-plan took but which nobody can read would lose only its saved head, so the code takes the
+cautious path there and drains it as before.
+
 ## Run it
 
 ```sh
-docs/formal/standby-discard/check.sh                # every row, full bounds, about 4 minutes on 32 cores
-docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 15 seconds
+docs/formal/standby-discard/check.sh                # every row, full bounds, about 30 minutes on 32 cores
+docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 30 seconds
 docs/formal/standby-discard/check.sh <row>          # one row with the checker's whole output and trace
-docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 22 seconds, 2 with --quick
+docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 3.5 minutes, 5 seconds with --quick
 ```
 
 A run ends with exit 0 only when every row of the table in `check.sh` ends with the verdict the
@@ -150,6 +207,9 @@ invariant, state count and depth matched:
 | `mutant-no-reread-no-sweep`              | 5.0 s         | 0.6 s        |                293,226 |
 | whole `check.sh` (all ten rows, wall)    | 214 s         | 22 s         |                        |
 | whole `check.sh --quick` (all ten, wall) | 16 s          | 2 s          |                        |
+
+On 2026-11-16, with SLNT-1053's actions and thirteen rows, the whole `check.sh` took about 30
+minutes with TLC; `--quick` took about 40 s with TLC.
 
 ## Files
 
@@ -263,9 +323,10 @@ E6 and E7 are the database half of the finding. Once the unconditional `setFaile
 
 ## The properties, and the reviewer's claims
 
-- `NoDiscardOfSessionWork` (the promise): no discard is ever sent for a workspace that a session has
-  taken as its executor (`acceptExecutor`) or laid its worktree down in (the replan). TLC checks it
-  in every state, so a discard sent first and an adoption afterwards break it too. That is the "can
+- `NoDiscardOfSessionWork` (the promise): no discard from `drainHotWorkspace` is ever sent for a
+  workspace that a session has taken as its executor (`acceptExecutor`) or holds work in, and no
+  discard from `discardStandbyNeverClaimed` for one that holds work (SLNT-1053). TLC checks it in
+  every state, so a discard sent first and an adoption afterwards break it too. That is the "can
   still come to hold" half. On the code it holds; without the second session read
   (`mutant-no-reread`) it fails, which was the finding.
 - `NoClaimableRowWithSession`, the reviewer's first property: a row is `ready` only while no session
@@ -302,6 +363,11 @@ is TLC's shortest, from `check.sh <row>`.
 - **`claim-leaves-ready`**: `claim` locks the row but never sets `claimed`. It breaks
   `NoClaimableRowWithSession` in 9 steps: s1 is ready, a launch claims it, and creates session s1.
   The row is still `ready`, so it can be claimed again while a session holds its id.
+- **`no-look`** and **`look-live-only`** (SLNT-1053): the never-took discard without looking for
+  what ran in the standby, or looking only at what holds it now. Each breaks
+  `NoDiscardOfSessionWork` in 18 and 19 steps: a launch claims s1, adopts it and its re-plan fails;
+  it gives the standby up. A join counts itself, looks before the drain's intent is written, runs
+  and ends. The drain writes its intent, does not see the join, reads the placeholder and discards.
 - **`reused-id`**: a new standby may take the id of one that was drained. It breaks
   `NoClaimableRowWithSession` in 16 steps:
   1. A launch claims s1, adopts its workspace and deletes the row.
@@ -316,20 +382,30 @@ stays in the code; the promise no longer rests on it alone.
 
 ## Last full run
 
-At `aa029659e3` (the SLNT-823 fix), Standbys = {s1, s2}, Launches = {l1, l2}, on 32 cores:
+At SLNT-1053's second round (on `fbcb560cb1`), with TLC (tla2tools 1.7.4), Standbys = {s1, s2},
+Launches = {l1, l2}, on 32 cores:
 
-| Row                              | Expected                             | Observed                             | Distinct states | Time |
-| -------------------------------- | ------------------------------------ | ------------------------------------ | --------------: | ---: |
-| `code-promise`                   | holds                                | holds                                |      18,141,305 |  69s |
-| `code-promise-atomic-retire`     | holds                                | holds                                |      13,959,504 |  55s |
-| `code-claimable`                 | holds                                | holds                                |      18,141,305 |  74s |
-| `mutant-no-reread`               | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         113,052 |   4s |
-| `mutant-no-reread-atomic-retire` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         104,484 |   4s |
-| `mutant-no-reread-no-sweep`      | holds                                | holds                                |         293,226 |   3s |
-| `mutant-reread-before-retire`    | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         166,239 |   5s |
-| `mutant-discard-before-retire`   | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |           4,509 |   1s |
-| `mutant-claim-leaves-ready`      | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |             188 |   0s |
-| `mutant-reused-id`               | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |           9,408 |   1s |
+| Row                              | Expected                             | Observed                             | Distinct states | `--quick` | Time |
+| -------------------------------- | ------------------------------------ | ------------------------------------ | --------------: | --------: | ---: |
+| `code-promise`                   | holds                                | holds                                |     129,386,795 | 1,632,702 | 570s |
+| `code-promise-atomic-retire`     | holds                                | holds                                |     101,431,308 | 1,401,689 | 526s |
+| `code-claimable`                 | holds                                | holds                                |     129,386,795 | 1,632,702 | 603s |
+| `mutant-no-reread`               | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         183,199 |    58,131 |   7s |
+| `mutant-no-reread-atomic-retire` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         172,787 |    54,647 |   6s |
+| `mutant-no-reread-no-sweep`      | holds                                | holds                                |       1,938,517 |    76,260 |  11s |
+| `mutant-reread-before-retire`    | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         297,173 |    89,958 |  10s |
+| `mutant-discard-before-retire`   | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |           4,630 |     2,226 |   1s |
+| `mutant-claim-leaves-ready`      | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |             188 |       125 |   1s |
+| `mutant-reused-id`               | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |          10,343 |     4,466 |   1s |
+| `mutant-no-look`                 | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          32,926 |    12,610 |   2s |
+| `mutant-look-live-only`          | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          54,740 |    20,019 |   2s |
+| `mutant-agent-ignores-stop`      | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          19,346 |     7,906 |   2s |
+
+Every verdict is the one `check.sh` expects, and tlx reached the same counts at both bounds. The
+mutants of SLNT-823 keep their shortest traces (22, 22, 23, 15 and 16 steps). Their counts and the
+code rows' grew with the new actions; before SLNT-1053 they were, in the same order, 18,141,305,
+13,959,504, 18,141,305, 113,052, 104,484, 293,226, 166,239, 4,509, 188 and 9,408, as reached at
+`aa029659e3`.
 
 The whole run exited 0. `check.sh` pins these counts, and a TLC run at `16abbc19c0` reached each of
 them again. The `mutant-no-reread` rows reach exactly the state counts the code rows reached at
