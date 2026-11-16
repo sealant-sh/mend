@@ -282,9 +282,7 @@ export const installServer = async ({
       // The daemon-side socket, as on Docker Desktop: the client reaches the daemon through a
       // socket of its own, and the containers mount the daemon's.
       "--docker-socket",
-      // SLNT-1077 demonstration only, reverted before merge: a socket the daemon does not have,
-      // so the server exits at boot and setup fails as it did in SLNT-1075.
-      "/var/run/slnt-1077-no-docker.sock",
+      "/var/run/docker.sock",
       "--bind",
       "0.0.0.0",
       "--url",
