@@ -4,6 +4,7 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import superjson, { parse, serialize } from "superjson";
 
+import { ModalDialog } from "#/components/kit/modal";
 import { TRPCProvider } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
 import { urlText } from "#/test-fixtures/fake-fetch";
@@ -21,9 +22,7 @@ export const renderWithTrpc = async (
   queryClient: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ): Promise<Root> => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  // A tab's dialogs load their code on first open (`kit/modal`). jsdom has no idle callback to
-  // preload it, so a test's first open would race a cold import against `settle`'s few ticks.
-  await import("#/components/kit/modal-popup");
+  await loadDialogs();
   const client = createTRPCClient<AppRouter>({
     links: [
       httpLink({
@@ -64,6 +63,31 @@ export const renderWithTrpc = async (
   );
   await settle();
   return root;
+};
+
+const WARM_UP = "Dialog code warm-up";
+
+/**
+ * Open one dialog and wait until it is on the page, so a tab's dialogs open as their parent opens
+ * them. A dialog's code loads on its first open (`kit/modal`) through imports that Vitest's module
+ * runner may answer from another thread; under load that outlasts `settle`'s few ticks.
+ */
+const loadDialogs = async () => {
+  const host = document.createElement("div");
+  document.body.append(host);
+  const root = createRoot(host);
+  await act(async () => root.render(<ModalDialog open title={WARM_UP} />));
+  const shown = () =>
+    [...document.querySelectorAll('[role="dialog"]')].some((dialog) =>
+      dialog.textContent.includes(WARM_UP),
+    );
+  while (!shown()) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  act(() => root.unmount());
+  host.remove();
 };
 
 /** Everything both caches still hold, as text: what a credential must not appear in. */
