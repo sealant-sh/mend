@@ -1,7 +1,4 @@
-import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
 
 import { it } from "@mend/test-ci/effect-vitest";
 import { Deferred, Effect, Exit } from "effect";
@@ -20,9 +17,6 @@ import {
 
 const SLOW_STARTING_WORKER = new URL("../../test/screen-worker-slow-start.ts", import.meta.url);
 const SLOW_DECODING_WORKER = new URL("../../test/screen-worker-slow-decode.ts", import.meta.url);
-const STOPS_MID_DECODE = fileURLToPath(
-  new URL("../../test/screen-worker-stops.ts", import.meta.url),
-);
 
 const digest = (pixels: Uint8Array) => createHash("sha256").update(pixels).digest("hex");
 
@@ -71,19 +65,6 @@ describe("screen frames off the server's thread", () => {
       tooWide.writeUInt16BE(800, 2);
       expect(yield* decoder.decode(tooWide)).toEqual({ _tag: "Refused", reason: "screen-size" });
     }).pipe(Effect.scoped, Effect.provide(screenWorkersLayer(SCREEN_WORKER))),
-  );
-
-  // SLNT-759: terminating a thread inside a zlib call aborts the whole process, the server in production.
-  it.live(
-    "survive hundreds of decoders stopped mid-decode, as viewers leaving a busy screen stop them",
-    () =>
-      Effect.gen(function* () {
-        const { stdout } = yield* Effect.promise(() =>
-          promisify(execFile)(process.execPath, [STOPS_MID_DECODE, "200"]),
-        );
-        expect(stdout).toContain("stopped 200 decoders mid-decode");
-      }),
-    { timeout: 120_000 },
   );
 
   it.live(

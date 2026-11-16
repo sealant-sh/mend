@@ -1239,13 +1239,9 @@ register(
 );
 
 export const commandSuites = {
-  onboarding: [
-    "help",
-    "agent install",
-    "server setup",
-    "server status",
-    "login",
-    "logout",
+  onboarding: ["help", "agent install", "server setup", "server status", "login", "logout"],
+  // Split from onboarding so neither file runs near CI's per-file limit (SLNT-1040).
+  connections: [
     "adopt",
     "git check",
     "connect status",
