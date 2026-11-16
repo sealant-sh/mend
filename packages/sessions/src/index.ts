@@ -23,6 +23,7 @@ export * from "./follow-up-delivery.ts";
 export * from "./git-transport.ts";
 export * from "./workspace-git-hooks.ts";
 export * from "./harness-state.ts";
+export { backfillFromNative } from "./native-backfill.ts";
 export * from "./pasted-images.ts";
 export * from "./pickup-tickets.ts";
 export * from "./resource-tables.ts";

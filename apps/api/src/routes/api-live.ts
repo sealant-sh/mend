@@ -69,6 +69,7 @@ import { TenancyConfig } from "../tenancy.ts";
 import { AccessKeysGroupLive } from "./access-keys.ts";
 import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { BoatKeyGroupLive, PersonBoatKeyGroupLive } from "./boat-key.ts";
+import { ConversationsGroupLive } from "./conversations.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { DopplerGroupLive } from "./doppler.ts";
 import { ExecutorGroupLive } from "./executor.ts";
@@ -140,7 +141,10 @@ const AuthenticationLive = Layer.effect(AuthMiddleware)(
               : "interactive",
           ),
           Effect.provideService(CurrentUser, session.value),
-          Effect.provideService(SealantPrincipal, { kind: "user", userId: session.value.user.id }),
+          Effect.provideService(SealantPrincipal, {
+            kind: "user",
+            userId: session.value.user.id,
+          }),
           Effect.provideService(CurrentAccessKey, accessKeyIdOf(session.value.credential) ?? null),
         );
       });
@@ -214,7 +218,9 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
         upgradeTickets: true,
         ...Option.match(authSecret, {
           onNone: () => ({}),
-          onSome: (secret) => ({ instance: instanceIdOf(Redacted.value(secret)) }),
+          onSome: (secret) => ({
+            instance: instanceIdOf(Redacted.value(secret)),
+          }),
         }),
         exposure: {
           declared: exposure.exposure,
@@ -281,7 +287,12 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
         return new SealantIdentity({ sealantUserId, accounts, apiKeys });
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) =>
-          Effect.fail(new SealantUnavailable({ code: error.code, message: error.message })),
+          Effect.fail(
+            new SealantUnavailable({
+              code: error.code,
+              message: error.message,
+            }),
+          ),
         ),
       ),
     )
@@ -331,7 +342,9 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       Effect.gen(function* () {
         const payload = yield* request.json.pipe(
           Effect.flatMap(
-            Schema.decodeUnknownEffect(MessageSettings, { onExcessProperty: "error" }),
+            Schema.decodeUnknownEffect(MessageSettings, {
+              onExcessProperty: "error",
+            }),
           ),
           Effect.mapError(
             () =>
@@ -355,7 +368,11 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
     .handleRaw("setSettleSettings", ({ request }) =>
       Effect.gen(function* () {
         const payload = yield* request.json.pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(SettleSettings, { onExcessProperty: "error" })),
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(SettleSettings, {
+              onExcessProperty: "error",
+            }),
+          ),
           Effect.mapError(
             () =>
               new InvalidSettleSettings({
@@ -481,7 +498,11 @@ export const BriefsGroupLive = HttpApiBuilder.group(MendApi, "briefs", (handlers
         yield* jobs
           .enqueue({
             name: "route-comment",
-            payload: { commentId: comment.id, changeId: change.id, issueId: params.id },
+            payload: {
+              commentId: comment.id,
+              changeId: change.id,
+              issueId: params.id,
+            },
             idempotencyKey: `route:${comment.id}`,
           })
           .pipe(Effect.orDie);
@@ -733,7 +754,10 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
             platform: payload.platform,
           })
           .pipe(Effect.catchTag("PushCredentialEndedError", () => Effect.fail(new Unauthorized())));
-        return new RegisteredDevice({ token: device.token, platform: device.platform });
+        return new RegisteredDevice({
+          token: device.token,
+          platform: device.platform,
+        });
       }),
     )
     .handle("unregister", () => forgetCallingDevice)
@@ -818,7 +842,14 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       ScreensGroupLive,
     ),
   ),
-  Layer.provide(Layer.mergeAll(SessionChangesGroupLive, LandingsGroupLive, HandoffsGroupLive)),
+  Layer.provide(
+    Layer.mergeAll(
+      SessionChangesGroupLive,
+      LandingsGroupLive,
+      HandoffsGroupLive,
+      ConversationsGroupLive,
+    ),
+  ),
   Layer.provide(Layer.mergeAll(GithubGroupLive, PullRequestMergeGroupLive, PullRequestsGroupLive)),
   Layer.provide(DevicesGroupLive),
   Layer.provide(

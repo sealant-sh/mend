@@ -3443,7 +3443,10 @@ const repositoryUrlCredentialsMigration = Effect.gen(function* () {
     if (redacted === row.url) continue;
     yield* sql`UPDATE projects SET origin_url = ${redacted} WHERE id = ${row.id}`;
   }
-  const referenceRows = yield* sql<{ readonly id: string; readonly url: string }>`
+  const referenceRows = yield* sql<{
+    readonly id: string;
+    readonly url: string;
+  }>`
     SELECT id, origin_url AS url FROM reference_repos WHERE origin_url LIKE '%://%@%'`;
   for (const row of referenceRows) {
     const redacted = redactRepositoryUrl(row.url);
@@ -5586,4 +5589,46 @@ export const migrations = {
       CHECK (boat_key IN ('person', 'organization', 'server'))`;
   }),
   "0221_mcp_apps": mcpAppsMigration,
+  // A person's own Claude or Codex conversation imported into a session (SLNT-895): its files
+  // until the session's first agent starts, and the turns it showed before any launch, which no
+  // process of the session ran. Gone with the session, its project and its owner.
+  "0222_imported_conversations": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS session_imported_conversations (
+      session_id text PRIMARY KEY REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      owner_user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      harness text NOT NULL CHECK (harness IN ('claude', 'codex')),
+      native_id text NOT NULL,
+      source_checkout text NOT NULL,
+      source_home text NOT NULL,
+      files jsonb NOT NULL,
+      byte_length bigint NOT NULL CHECK (byte_length >= 0),
+      permission_mode text CHECK (permission_mode IN ('bypass', 'ask')),
+      delivered_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT session_imported_conversations_native_key
+        UNIQUE (owner_user_id, project_id, harness, native_id)
+    )`;
+    yield* sql`CREATE TABLE IF NOT EXISTS session_imported_conversation_files (
+      session_id text NOT NULL
+        REFERENCES session_imported_conversations (session_id) ON DELETE CASCADE,
+      relative_path text NOT NULL,
+      content bytea NOT NULL,
+      PRIMARY KEY (session_id, relative_path)
+    )`;
+    // A removed project takes no import; removing its owner still deletes one (its deletes are
+    // not fenced), and purging the project cascades.
+    yield* sql`DROP TRIGGER IF EXISTS session_imported_conversations_project_retention
+      ON session_imported_conversations`;
+    yield* sql`CREATE TRIGGER session_imported_conversations_project_retention
+      BEFORE INSERT OR UPDATE ON session_imported_conversations
+      FOR EACH ROW EXECUTE FUNCTION project_retention_admit_content()`;
+    yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS imported boolean NOT NULL DEFAULT false`;
+    yield* sql`ALTER TABLE agent_turns ALTER COLUMN process_id DROP NOT NULL`;
+    yield* sql`ALTER TABLE agent_items ALTER COLUMN process_id DROP NOT NULL`;
+    yield* sql`ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_imported_process_check`;
+    yield* sql`ALTER TABLE agent_turns ADD CONSTRAINT agent_turns_imported_process_check
+      CHECK (imported = (process_id IS NULL))`;
+  }),
 };

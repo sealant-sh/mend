@@ -3,7 +3,7 @@
 #
 # sync: the commit whose code the model was last confirmed to describe (SLNT-1017's full run).
 # Move it only as the skill's step 1 and full run say.
-sync 163a84a96765a0f21cb53b9a9d4557a6a7c1a3c3
+sync 7e28d52aaa3d60f4b99491e479d50433d50283e7
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

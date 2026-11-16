@@ -123,6 +123,9 @@ describe("describeAudit", () => {
     expect(
       describeAudit(event("worktree.handed_off", { projectId: "p-1", sessionId: "s-1" })),
     ).toBe("handed off a checkout into worktree carol · session s-1");
+    expect(
+      describeAudit(event("session.conversation_imported", { harness: "claude", turns: 3 })),
+    ).toBe("imported a claude conversation into session carol");
     expect(describeAudit(event("member.removed", {}, "Carol Chen"))).toBe("removed Carol Chen");
     expect(
       describeAudit({

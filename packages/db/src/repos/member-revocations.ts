@@ -10,6 +10,7 @@ import { agentSessions, agentTurns, deviceTokens, projects } from "../schema/wor
 import { cancelOpenTurnRows } from "./agent-conversation.ts";
 import { disableOwnerSharedControl } from "./agent-sessions.ts";
 import { DevicesRepo } from "./devices.ts";
+import { deleteImportedConversationsOf } from "./imported-conversations.ts";
 import {
   deleteMembership,
   type LastOwnerError,
@@ -103,6 +104,9 @@ export const MemberRevocationsRepoLive: Layer.Layer<
                 )
                 .pipe(Effect.orDie);
             }
+            yield* deleteImportedConversationsOf(tx, input.userId, input.organizationId).pipe(
+              Effect.orDie,
+            );
             const unshared = yield* disableOwnerSharedControl(
               tx,
               input.userId,
@@ -110,7 +114,11 @@ export const MemberRevocationsRepoLive: Layer.Layer<
             );
             // A competing claim must see these turns cancelled once the locked rows are released.
             const queued = yield* tx
-              .select({ turnId: agentTurns.id, id: agentSessions.id, projectId: projects.id })
+              .select({
+                turnId: agentTurns.id,
+                id: agentSessions.id,
+                projectId: projects.id,
+              })
               .from(agentTurns)
               .innerJoin(agentSessions, eq(agentTurns.sessionId, agentSessions.id))
               .innerJoin(projects, eq(agentSessions.projectId, projects.id))
@@ -153,7 +161,11 @@ export const MemberRevocationsRepoLive: Layer.Layer<
         { type: "organization", organizationId: removed.organizationId },
         ...removed.unshared.flatMap(
           (session): ReadonlyArray<MendEvent> => [
-            { type: "session", sessionId: session.id, projectId: session.projectId },
+            {
+              type: "session",
+              sessionId: session.id,
+              projectId: session.projectId,
+            },
             {
               type: "shared-control-off",
               sessionId: session.id,

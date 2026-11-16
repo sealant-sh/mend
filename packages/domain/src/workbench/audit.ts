@@ -64,6 +64,9 @@ export const AuditAction = Schema.Literals([
   // A pull request opened outside Mend was read with the owner's `gh` and recorded.
   "change.pull_request_adopted",
   "worktree.handed_off",
+  // A person imported their own Claude or Codex conversation into a session (SLNT-895). The
+  // event names the session and how much arrived, never a path or a byte of the conversation.
+  "session.conversation_imported",
   // docs/WORKSPACE-SSH.md: a key the workspace SSH gateway accepts for an account was registered,
   // or archived so the gateway refuses it. The subject is the member who holds the key.
   "ssh_key.added",
@@ -95,7 +98,10 @@ export const AuditData = Schema.Record(
 export type AuditData = typeof AuditData.Type;
 
 /** The access key an action was taken with, by its name when it was read. */
-export const AuditAccessKey = Schema.Struct({ id: Schema.String, name: Schema.String });
+export const AuditAccessKey = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+});
 export type AuditAccessKey = typeof AuditAccessKey.Type;
 
 /** One recorded action: who did what to which subject, and when. */
