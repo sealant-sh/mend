@@ -41,6 +41,8 @@ SHA=$(git rev-parse HEAD); TAG=main-${SHA:0:12}; E=$STATE/runs/$TAG
   in `$KIT/cli`. Use that config as it is: never `mend login` or `mend logout`, and never read a
   token from it. The password file is read only into the private account file of step 4.
 - Never ssh to `acer-laptop`.
+- Run the shell steps in `bash`. zsh does not split an unquoted `$MEND_VERIFY_BOX_SSH` into
+  arguments, and it may alias `mend` to another checkout's CLI.
 
 ## State
 
@@ -193,18 +195,23 @@ pnpm verify box cli --tag $TAG --yes         # this commit's CLI, under /root/bo
 Record `cliDir` in the ledger from its result. Then set up this machine's side:
 
 ```sh
-mkdir -p $E && P=$(mktemp -d) && chmod 700 $P
-npm install --silent --prefix $P/cli .verify/box/cli-${SHA:0:12}/*.tgz
-M() { XDG_CONFIG_HOME=$KIT/cli $P/cli/node_modules/.bin/mend "$@"; }
+mkdir -p $E && P=$(mktemp -d) && C=$(mktemp -d) && chmod 700 $P
+npm install --silent --prefix $C .verify/box/cli-${SHA:0:12}/*.tgz
+M() { XDG_CONFIG_HOME=$KIT/cli $C/node_modules/.bin/mend "$@"; }
 jq -n --rawfile p $KIT/password '{email:"boat-check@example.test",password:($p|rtrimstr("\n"))}' \
   > $P/account.json
 export MEND_VERIFY_OUTER_URL=$WEB MEND_VERIFY_PRIVATE=$P
 ```
 
+`$P` holds credentials and nothing else: the evidence scan (step 7) treats every value in it as a
+secret, and `--delete-hits` deletes the evidence that contains one. The CLI lives in `$C`.
+
 `M doctor` must name `$WEB` as its server before any other `M` command: a different server means
 stop, release, and report the run as not started. Take the `before` listing of flow
-`server.data-intact` now. Check the load average again, then deploy, from the box, with the CLI
-`box cli` installed:
+`server.data-intact` now, and read `df -B1 --output=avail /` on the box. Check the load average
+again: over 24, wait in a shell loop that re-reads it every 2 minutes, for up to 30 minutes, then go
+on either way and say so in the report (you hold the box; giving it up costs more than a slow run).
+Then deploy, from the box, with the CLI `box cli` installed:
 
 ```sh
 ssh $MEND_VERIFY_BOX_SSH "export PATH=/root/box-$TAG-cli/node_modules/.bin:\$PATH; \
@@ -269,8 +276,8 @@ flow that needs an earlier flow's session and lacks it is `not run · <flow> fai
    else is deleted: no glob, no prune, nothing another check or the server made (the server's own
    upgrade backups under `/root/.config/mend/backups` keep the newest two by themselves).
 
-4. Read `df -B1 --output=avail /var/lib/docker` on the box; the report states it beside the `free`
-   that step 1's plan read.
+4. Read `df -B1 --output=avail /` on the box; the report states it beside the figure read before the
+   deploy (step 4).
 5. `rm -rf $P` once the evidence scan (step 7) has passed.
 
 **Done when** no session of this run is live, the hold is released (or kept for the reason in

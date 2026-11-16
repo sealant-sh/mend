@@ -21,7 +21,8 @@ driven by the run's agent from the feature file.
 
 Box facts the flows depend on: sessions run on Boat by default, and Docker is offered beside it; the
 runtime is chosen per organization and a worktree keeps the runtime it was made on. One organization
-(Default), one account, single tenancy. Provider logins: codex connected, claude and GitHub not.
+(Default), one account, single tenancy. Provider logins on 16 Nov: codex and claude connected,
+GitHub not. Flows use codex only until the owner says the run may spend Claude tokens (SLNT-1050).
 Exactly one flow, `start-session.boat-turn`, runs a real agent turn (codex, a one-line prompt):
 every turn spends the owner's tokens.
 
@@ -41,9 +42,10 @@ you hold the box (`verify box prepare`).
 - **The project** `<p>`: adopted by the owner account from its network origin. `M projects` lists
   it. To recreate: `M adopt <origin> --name boat-check-ubuntu` (adopt-project.md `adopt-cli`).
 - **The Docker worktree** `main-run-docker` in `<p>`. To make it: on the web as the owner, Settings
-  · Organization, switch the session runtime to Docker without moving anything; run
-  `M run --project <p> --name main-run-docker -- sh -c 'echo docker > MAIN-RUN-DOCKER.md'`; switch
-  the runtime back to Boat without moving anything. `M worktrees --project <p>` lists it.
+  · Organization · Defaults, `Where new sessions run`: note the current choice (it read
+  `Inherit · Boat` on 16 Nov), switch to Docker without moving anything; run
+  `M run --project <p> --name main-run-docker -- sh -c 'echo docker > MAIN-RUN-DOCKER.md'`; put the
+  noted choice back without moving anything. Made on 16 Nov. `M worktrees --project <p>` lists it.
 - **The serve command** `<serve-cmd>`: a command the Ubuntu workspace image runs that listens on TCP
   port 8000 and answers HTTP (services.md: "Launch must confirm which command the image supports").
   Confirm it once with `M shell` in any live session, and write the command here. Until it is
@@ -163,8 +165,8 @@ flows reuse what earlier ones made:
 - **Map:** review-change.md `review-open`, `review-diff`; start-session.md `session-page`
 - **Needs:** either (the turn's session); no turn; web; `start-session.boat-turn`
 - **Do:** Recipe `session-review` with `MAIN_RUN_SESSION` set to the turn's session.
-- **See:** the session page with its heading; `Review the change` opens `/changes/<id>`, whose diff
-  has the section `▶ MAIN-RUN.md` and the added line `seen`.
+- **See:** on the Now inbox, the session's row menu `Open review` opens `/changes/<id>`, whose diff
+  shows `MAIN-RUN.md` and the added line `seen`.
 - **Mode:** `scripted` (recipes/session-review.mjs)
 - **Box-only:** no
 - **Sample:** yes
@@ -260,8 +262,9 @@ flows reuse what earlier ones made:
 - **Needs:** no session; no turn; CLI and web; none
 - **Do:** `M accounts`; Settings → Connected accounts read only; `M agent-logins`, then
   `M agent-logins selected` and `M agent-logins all` to restore it in the same flow.
-- **See:** `codex   connected · …`, `claude   not connected`, `github   not connected`; the web rows
-  agree; `selected · …` after the change and `all · …` after the restore.
+- **See:** `codex   connected · …`, `claude` and `github` each `connected` or `not connected`,
+  recorded as found; the web rows agree; `selected · …` after the change and `all · …` after the
+  restore.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web/src/`
@@ -544,9 +547,9 @@ flows reuse what earlier ones made:
 - **Needs:** Boat; no turn (resume sends no prompt); CLI and web; `start-session.boat-turn`
 - **Do:** `M stop <id8>` on the turn's session, then recipe `resume` with `MAIN_RUN_SESSION` set to
   it, then `M stop <id8>` again.
-- **See:** `✓ stopped · codex · <id8> · …`; the page reads `Stopped`, its `resume with:` button for
-  `codex` brings it to `Running`; after the second stop, `M sessions --all --project <p> --json`
-  lists it settled with `MAIN-RUN.md` still in its change.
+- **See:** `✓ stopped · codex · <id8> · …`; the session's row menu on the Now inbox has
+  `Resume session`, which opens the session page and brings it to `running`; after the second stop,
+  `M sessions --all --project <p> --json` lists it settled with `MAIN-RUN.md` still in its change.
 - **Mode:** `scripted` (recipes/resume.mjs)
 - **Box-only:** `boat`
 - **Sample:** yes
@@ -755,8 +758,8 @@ flows reuse what earlier ones made:
 - **Needs:** no session; no turn; CLI; none
 - **Do:** `M doctor`.
 - **See:** `✓ server` naming `$WEB · mend <version>`; `✓ signed in  token accepted`; `✓ sealant` and
-  `✓ codex … connected`; `claude` and `github` read `○ … not connected → mend connect …`; no `✗`
-  line, exit `0`.
+  `✓ codex … connected`; the `claude` and `github` lines each read `connected` or
+  `· … not connected`, recorded as found (claude was connected on 16 Nov); no `✗` line, exit `0`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Sample:** yes
