@@ -2,11 +2,12 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID, X509Certificate } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as https from "node:https";
-import * as net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+
+import { freePort } from "./free-port.ts";
 
 const run = promisify(execFile);
 
@@ -63,20 +64,6 @@ const SETUP_EDGE = new URL("../../../cli/src/server-edge.ts", import.meta.url).h
 const PACKAGED_EDGE = new URL("../../../cli/test-fixtures/packaged-edge.ts", import.meta.url).href;
 
 const docker = async (args: ReadonlyArray<string>) => (await run("docker", [...args])).stdout;
-
-const freePort = (): Promise<number> =>
-  new Promise((resolve, reject) => {
-    const server = net.createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address !== null ? address.port : null;
-      server.close(() => {
-        if (port === null) reject(new Error("no port"));
-        else resolve(port);
-      });
-    });
-  });
 
 const rendered = async (template: string, values: Record<string, string | number>) => {
   let text = await readFile(join(FIXTURES, template), "utf8");
