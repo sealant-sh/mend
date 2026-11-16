@@ -18,7 +18,9 @@ import {
 //   commit, after the area's skill says the model still describes the code. Otherwise it fails.
 // - Drift (since the sync commit): which covered files changed since the model was last confirmed.
 //   It is reported, not failed: the guard holds each change to account as it lands.
-// - The check: `check.sh --quick`, or the full bounds with --full.
+// - The check: `check.sh --quick`, or the full bounds with --full, each within the area's budget
+//   (COVERAGE's budget-quick and budget-full, in minutes). A check that runs past it is stopped and
+//   fails naming the model, rather than running on to the CI job's limit.
 //
 // No dependency, so CI's `formal` job runs `node tooling/verify/formal.mjs ci …` without an install.
 
@@ -94,16 +96,53 @@ export const checkerMissing = (
   return missing.length === 0 ? null : `check.sh needs Nix, or ${missing.join(" and ")}`;
 };
 
-const runLogged = (command, args, { cwd, env, log }) =>
+/**
+ * Runs a command in its own process group, so a budget that runs out stops the checker it started
+ * (bash, then java or tlx) and not only bash. Resolves to the exit code, or "timeout".
+ */
+export const runBudgeted = (command, args, { cwd, env, stdio, budgetMs, onStart }) =>
   new Promise((resolve) => {
-    mkdirSync(join(log, ".."), { recursive: true });
-    const out = createWriteStream(log);
-    const child = spawn(command, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    child.stdout.pipe(out, { end: false });
-    child.stderr.pipe(out, { end: false });
-    child.once("error", () => resolve(127));
-    child.once("close", (code) => out.end(() => resolve(code ?? 1)));
+    const child = spawn(command, args, { cwd, env, stdio, detached: true });
+    onStart?.(child);
+    let timedOut = false;
+    let killer = null;
+    const signal = (name) => {
+      try {
+        process.kill(-child.pid, name);
+      } catch {
+        // The group has already gone.
+      }
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      signal("SIGTERM");
+      killer = setTimeout(() => signal("SIGKILL"), 10_000);
+    }, budgetMs);
+    child.once("error", () => {
+      clearTimeout(timer);
+      resolve(127);
+    });
+    child.once("close", (code) => {
+      clearTimeout(timer);
+      if (killer) clearTimeout(killer);
+      resolve(timedOut ? "timeout" : (code ?? 1));
+    });
   });
+
+const runLogged = (command, args, { cwd, env, log, budgetMs }) => {
+  mkdirSync(join(log, ".."), { recursive: true });
+  const out = createWriteStream(log);
+  return runBudgeted(command, args, {
+    cwd,
+    env,
+    budgetMs,
+    stdio: ["ignore", "pipe", "pipe"],
+    onStart: (child) => {
+      child.stdout.pipe(out, { end: false });
+      child.stderr.pipe(out, { end: false });
+    },
+  }).then((code) => new Promise((resolve) => out.end(() => resolve(code))));
+};
 
 /**
  * The steps for every area the files touch (or every area with `all`): its guard, with drift
@@ -111,11 +150,26 @@ const runLogged = (command, args, { cwd, env, log }) =>
  */
 export const formalSteps = async (
   root,
-  { files, base, head, all = false, full = false, env = process.env, run = runLogged, logs },
+  {
+    files,
+    base,
+    head,
+    all = false,
+    full = false,
+    area = null,
+    env = process.env,
+    run = runLogged,
+    logs,
+  },
 ) => {
   const steps = [];
-  const areas = readCoverages(root).filter(
-    (coverage) => all || files.some((path) => touches(coverage, path)),
+  const known = readCoverages(root);
+  if (area !== null && !known.some((coverage) => coverage.area === area))
+    throw new Error(`no model area ${area}: docs/formal/${area}/COVERAGE does not exist`);
+  const areas = known.filter(
+    (coverage) =>
+      (area === null || coverage.area === area) &&
+      (all || files.some((path) => touches(coverage, path))),
   );
   if (areas.length === 0) {
     return [
@@ -157,26 +211,33 @@ export const formalSteps = async (
     }
     const log = join(logs, `formal-${coverage.area}.log`);
     const args = [join(coverage.dir, "check.sh"), ...(full ? [] : ["--quick"])];
-    const code = await run("bash", args, { cwd: root, env, log });
+    const bounds = full ? "full" : "quick";
+    const minutes = coverage.budgets[bounds];
+    const code = await run("bash", args, { cwd: root, env, log, budgetMs: minutes * 60_000 });
     steps.push({
       id: `${coverage.area}-check`,
-      title: `${coverage.area}: model check, ${full ? "full" : "quick"} bounds`,
+      title: `${coverage.area}: model check, ${bounds} bounds`,
       status: code === 0 ? "passed" : "failed",
       command: `bash ${args.join(" ")}`,
       log,
       detail:
         code === 0
           ? "every row as expected"
-          : "a row is NOT AS EXPECTED; the log names it, and the skill's step 3 classifies it",
+          : code === "timeout"
+            ? `${coverage.area} ran past its ${minutes}-minute budget at ${bounds} bounds and was stopped, so nothing it had left was checked. Its state space has outgrown the budget: the log's last row and the checker's progress lines say where. Find what grew (README.md in ${coverage.dir}), and change the budget-${bounds} line in ${coverageFile(coverage)} only with what the model then gives up written down`
+            : "a row is NOT AS EXPECTED; the log names it, and the skill's step 3 classifies it",
     });
   }
   return steps;
 };
 
-// CI: `node tooling/verify/formal.mjs ci <base sha|-> <head sha> [--full]`. With `-` (a push to
-// main, the nightly run) there is no diff: every area runs and the guard is not asked.
+// CI: `node tooling/verify/formal.mjs ci <base sha|-> <head sha> [--full] [--area <area>]`. With
+// `-` (a push to main, the nightly run) there is no diff: every area runs and the guard is not
+// asked. `--area` keeps to one model: CI runs one job per model.
 const ci = async (argv) => {
   const [base, head, ...flags] = argv;
+  const areaAt = flags.indexOf("--area");
+  const area = areaAt === -1 ? null : (flags[areaAt + 1] ?? null);
   const root = fileURLToPath(new URL("../../", import.meta.url));
   const diffBase = base === "-" ? null : base;
   const files =
@@ -191,20 +252,19 @@ const ci = async (argv) => {
     head,
     all: diffBase === null,
     full: flags.includes("--full"),
+    area,
     logs: join(root, ".verify/logs"),
     run: (command, args, options) =>
-      new Promise((resolve) => {
-        const child = spawn(command, args, {
-          cwd: options.cwd,
-          env: options.env,
-          stdio: "inherit",
-        });
-        child.once("close", (code) => resolve(code ?? 1));
+      runBudgeted(command, args, {
+        cwd: options.cwd,
+        env: options.env,
+        stdio: "inherit",
+        budgetMs: options.budgetMs,
       }),
   });
   for (const step of steps) console.log(`${step.status.padEnd(24)} ${step.id}: ${step.detail}`);
   const bad = steps.filter((step) => step.status !== "passed");
-  if (bad.length > 0) console.log(`::error::${bad.map((step) => step.id).join(", ")} did not pass`);
+  for (const step of bad) console.log(`::error title=${step.id} did not pass::${step.detail}`);
   return bad.length === 0 ? 0 : 1;
 };
 
@@ -212,7 +272,7 @@ if (import.meta.main && process.argv[2] === "ci")
   process.exitCode = await ci(process.argv.slice(3));
 else if (import.meta.main) {
   process.stderr.write(
-    "usage: node tooling/verify/formal.mjs ci <base sha|-> <head sha> [--full]\n",
+    "usage: node tooling/verify/formal.mjs ci <base sha|-> <head sha> [--full] [--area <area>]\n",
   );
   process.exitCode = 2;
 }

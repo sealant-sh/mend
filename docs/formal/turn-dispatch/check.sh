@@ -145,11 +145,23 @@ else
     exit 2
   fi
   # TLC writes its standard modules into java.io.tmpdir: keep them in this run's scratch directory.
-  export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$scratch"
+  # The heap may take three quarters of the machine: Java's default quarter left TLC spilling its
+  # fingerprint set to disk on CI's 16 GB runner at standby-discard's 129 million states.
+  export JAVA_TOOL_OPTIONS="-Djava.io.tmpdir=$scratch -XX:MaxRAMPercentage=75.0"
 
   header="TLC (tla2tools $TLA2TOOLS_VERSION)"
   checker=("${tlc[@]}" -difftrace)
 fi
+
+# With MEND_FORMAL_PROGRESS set (CI sets it), the checker's memory line and its progress lines
+# reach stderr as they come, so a run stopped by its time budget shows how far it got and how fast.
+progress() {
+  if [[ -n "${MEND_FORMAL_PROGRESS:-}" ]]; then
+    grep --line-buffered -E '^(Progress|Running|Starting|Finished)' | sed -u "s/^/  $1: /" >&2
+  else
+    cat >/dev/null
+  fi
+}
 
 run_row() {
   local name=$1 mutant=$2 invariants=$3 constraint=$4 expected=$5 pinned=$6
@@ -174,7 +186,7 @@ run_row() {
   local started=$SECONDS
   (cd "$here" && "${checker[@]}" -workers "$workers" -config "$cfg" \
     -metadir "$scratch/meta-$name" MCTurnDispatch.tla) 2>&1 \
-    | grep -v '^Picked up JAVA_TOOL_OPTIONS' >"$log" || true
+    | grep --line-buffered -v '^Picked up JAVA_TOOL_OPTIONS' | tee "$log" | progress "$name" || true
   local seconds=$((SECONDS - started))
   local observed
   if grep -q '^Model checking completed. No error has been found.' "$log"; then

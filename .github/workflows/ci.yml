@@ -21,6 +21,14 @@ on:
         options:
           - ubuntu-24.04
           - box
+      formal:
+        description:
+          Bounds for the formal models (full is what the nightly run checks; it takes about an hour)
+        type: choice
+        default: quick
+        options:
+          - quick
+          - full
   schedule:
     - cron: "23 2 * * *"
 
@@ -652,11 +660,18 @@ jobs:
 
   # Formal models (docs/formal/<area>): a pull request that reaches code a model's COVERAGE names
   # runs the drift guard (that code moved the model or its sync commit) and the quick bounds; a push
-  # to main and the nightly run check every model, the nightly one at its full bounds. TLC needs
-  # Java, which the hosted runner has; check.sh fetches its pinned tla2tools and checks the sha256.
+  # to main and the nightly run check every model, the nightly one (or a dispatch with
+  # `formal: full`) at its full bounds. TLC needs Java, which the hosted runner has; check.sh fetches
+  # its pinned tla2tools and checks the sha256. One job per model, so each has the job's 90 minutes
+  # to itself; formal.mjs stops a model at its own budget (COVERAGE's budget-full) well before that.
+  # The matrix lists every docs/formal/<area> with a COVERAGE (scripts/ci-workflow.test.mjs).
   formal:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.formal != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        area: [standby-discard, turn-dispatch]
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
@@ -675,13 +690,17 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BOUNDS: ${{ inputs.formal }}
+          AREA: ${{ matrix.area }}
+          # TLC's progress lines in the job log, so a model its budget stopped shows how far it got.
+          MEND_FORMAL_PROGRESS: "1"
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then
-            node tooling/verify/formal.mjs ci "$BASE_SHA" "$HEAD_SHA"
-          elif [ "$EVENT_NAME" = schedule ]; then
-            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --full
+            node tooling/verify/formal.mjs ci "$BASE_SHA" "$HEAD_SHA" --area "$AREA"
+          elif [ "$EVENT_NAME" = schedule ] || [ "$BOUNDS" = full ]; then
+            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --full --area "$AREA"
           else
-            node tooling/verify/formal.mjs ci - "$GITHUB_SHA"
+            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --area "$AREA"
           fi
 
   # The suites that need a real Docker engine and skip without one: first server setup on Docker

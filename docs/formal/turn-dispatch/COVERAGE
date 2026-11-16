@@ -13,3 +13,8 @@ model check.sh
 path packages/sessions/src/protocol-host.ts
 path packages/db/src/repos/agent-conversation.ts
 path packages/agent-protocol/src/codex.ts
+
+# How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
+# naming this model (SLNT-1065). The full bounds are about 58 million states over every row.
+budget-quick 10
+budget-full 40

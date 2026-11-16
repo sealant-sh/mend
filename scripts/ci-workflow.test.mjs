@@ -4,11 +4,13 @@ import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 
 import { Evaluator, Lexer, Parser, data } from "@actions/expressions";
 import { parse } from "yaml";
 
 import { CI_RUNNER } from "./ci-measure-workflow.mjs";
+import { readCoverages } from "./formal-coverage.mjs";
 
 const root = new URL("../", import.meta.url);
 const workflow = parse(
@@ -203,10 +205,29 @@ test("formal guards and quick-checks the models on a pull request, and runs ever
   const run = commands("formal").join("\n");
   assert.match(
     run,
-    /pull_request.*\n.*node tooling\/verify\/formal\.mjs ci "\$BASE_SHA" "\$HEAD_SHA"$/m,
+    /pull_request.*\n.*node tooling\/verify\/formal\.mjs ci "\$BASE_SHA" "\$HEAD_SHA" --area "\$AREA"$/m,
   );
-  assert.match(run, /schedule.*\n.*node tooling\/verify\/formal\.mjs ci - "\$GITHUB_SHA" --full$/m);
-  assert.match(run, /else\n.*node tooling\/verify\/formal\.mjs ci - "\$GITHUB_SHA"$/m);
+  assert.match(
+    run,
+    /schedule.*"\$BOUNDS" = full.*\n.*node tooling\/verify\/formal\.mjs ci - "\$GITHUB_SHA" --full --area "\$AREA"$/m,
+  );
+  assert.match(
+    run,
+    /else\n.*node tooling\/verify\/formal\.mjs ci - "\$GITHUB_SHA" --area "\$AREA"$/m,
+  );
+  // One job per model, so one model's full bounds never shares the job limit with another's.
+  assert.deepEqual(
+    jobs.formal.strategy.matrix.area.toSorted(),
+    readCoverages(fileURLToPath(root))
+      .map((coverage) => coverage.area)
+      .toSorted(),
+  );
+  assert.equal(jobs.formal.strategy["fail-fast"], false);
+  const step = jobs.formal.steps.find((candidate) => candidate.env?.AREA !== undefined);
+  assert.equal(step.env.AREA, "${{ matrix.area }}");
+  assert.equal(step.env.BOUNDS, "${{ inputs.formal }}");
+  assert.deepEqual(workflow.on.workflow_dispatch.inputs.formal.options, ["quick", "full"]);
+  assert.equal(workflow.on.workflow_dispatch.inputs.formal.default, "quick");
   // The guard diffs the pull request against its base, so it needs the whole history.
   assert.equal(
     jobs.formal.steps.find((step) => step.uses?.startsWith("actions/checkout@")).with[
@@ -1328,7 +1349,9 @@ test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatc
       (run) =>
         run.event === event &&
         run.job === job &&
-        JSON.stringify(run.inputs) === JSON.stringify(inputs),
+        // A dispatch has other inputs too (formal's bounds); the runner is the one that matters.
+        Object.entries(inputs).every(([name, value]) => run.inputs?.[name] === value) &&
+        (Object.keys(inputs).length > 0 || Object.keys(run.inputs ?? {}).length === 0),
     )?.labels;
   for (const job of lanes) {
     for (const event of ["pull_request", "push", "schedule"]) {

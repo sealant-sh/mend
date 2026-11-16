@@ -603,6 +603,12 @@ jobs:
   formal:
     needs: changes
     if: ${{ !cancelled() && needs.changes.outputs.formal != 'false' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        area:
+          - standby-discard
+          - turn-dispatch
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
@@ -620,13 +626,16 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BOUNDS: ${{ inputs.formal }}
+          AREA: ${{ matrix.area }}
+          MEND_FORMAL_PROGRESS: "1"
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then
-            node tooling/verify/formal.mjs ci "$BASE_SHA" "$HEAD_SHA"
-          elif [ "$EVENT_NAME" = schedule ]; then
-            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --full
+            node tooling/verify/formal.mjs ci "$BASE_SHA" "$HEAD_SHA" --area "$AREA"
+          elif [ "$EVENT_NAME" = schedule ] || [ "$BOUNDS" = full ]; then
+            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --full --area "$AREA"
           else
-            node tooling/verify/formal.mjs ci - "$GITHUB_SHA"
+            node tooling/verify/formal.mjs ci - "$GITHUB_SHA" --area "$AREA"
           fi
   docker-suites:
     needs: changes

@@ -152,7 +152,7 @@ cautious path there and drains it as before.
 ## Run it
 
 ```sh
-docs/formal/standby-discard/check.sh                # every row, full bounds, about 30 minutes on 32 cores
+docs/formal/standby-discard/check.sh                # every row, full bounds, about 12 minutes on 32 cores
 docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 30 seconds
 docs/formal/standby-discard/check.sh <row>          # one row with the checker's whole output and trace
 docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 3.5 minutes, 5 seconds with --quick
@@ -160,10 +160,11 @@ docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: abo
 
 A run ends with exit 0 only when every row of the table in `check.sh` ends with the verdict the
 table expects and reaches the number of distinct states it pins, at the full bounds or at
-`--quick`'s. The pinned count is what makes a second checker safe to use: a checker that says
-"holds" over a different state space fails the run. A row that holds explores every reachable state,
-and a row expected to fail runs on one worker and stops at the same shortest trace, so both counts
-are the same on every run. TLC is tla2tools 1.7.4 (TLC 2.19), from the repository's pinned nixpkgs
+`--quick`'s. `MEND_FORMAL_WORKERS` caps the workers a row expected to hold uses (default: every
+core). The pinned count is what makes a second checker safe to use: a checker that says "holds" over
+a different state space fails the run. A row that holds explores every reachable state, and a row
+expected to fail runs on one worker and stops at the same shortest trace, so both counts are the
+same on every run. TLC is tla2tools 1.7.4 (TLC 2.19), from the repository's pinned nixpkgs
 (`flake.lock`) when Nix is installed. Otherwise it is the GitHub release, checked against its
 sha256; that path needs `java` and `curl`. To tell a counterexample as one line per step, pipe it
 through `trace.py`, which reads either checker's trace:
@@ -210,6 +211,30 @@ invariant, state count and depth matched:
 
 On 2026-11-16, with SLNT-1053's actions and thirteen rows, the whole `check.sh` took about 30
 minutes with TLC; `--quick` took about 40 s with TLC.
+
+### How long the full bounds take, and on CI
+
+Pull requests run `--quick`. The nightly run (and a dispatched CI run with `formal: full`) runs the
+full bounds on GitHub's four-core runner, in a job of this model's own, which `formal.mjs` stops
+after `budget-full` minutes (`COVERAGE`) with a message naming this model. SLNT-1053 grew the full
+state space 7.1 times, from 18,141,305 to 129,386,795 distinct states: the one join, the one Stop
+and the failed re-plan each multiply it, and each with the second launch. On CI one row of that size
+took 61 minutes, so the three rows that explored it then (`code-promise`, `code-claimable` and
+`code-promise-atomic-retire`) ran the nightly job into its 90-minute limit (SLNT-1065). Two changes
+cut that without giving up any state: `code` checks both promises in one run, since they are
+invariants of the same state space, and `code-promise-atomic-retire` runs at `--quick` only, since
+its action constraint only removes transitions and so `code` holding at the full bounds proves it.
+
+Java's default heap, a quarter of the runner's 16 GB, left TLC spilling its fingerprint set to disk
+at this size: `code` did not finish in 75 minutes. `check.sh` lets the heap take three quarters of
+the machine, and on CI the whole full check then took 57 minutes (`code`: 129,386,795 states in
+3,312 s, about 18 million states generated a minute throughout), at `b192d2e2`, run
+[43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641). With
+`MEND_FORMAL_PROGRESS` set, as CI sets it, TLC's memory and progress lines go to the job log as they
+come.
+
+A change that grows the full count should say on its ticket what the full run took, on four cores
+too (`MEND_FORMAL_WORKERS=4`), before it merges, so the budget is not found out at night.
 
 ## Files
 
@@ -330,8 +355,8 @@ E6 and E7 are the database half of the finding. Once the unconditional `setFaile
   still come to hold" half. On the code it holds; without the second session read
   (`mutant-no-reread`) it fails, which was the finding.
 - `NoClaimableRowWithSession`, the reviewer's first property: a row is `ready` only while no session
-  has its id, has taken its workspace, or holds work in it. On the code it holds (row
-  `code-claimable`).
+  has its id, has taken its workspace, or holds work in it. On the code it holds (row `code`, which
+  checks it with the promise).
 - The reviewer's second property is an **assumption** here, not a checked result: a workspace id
   that was a standby's is never reused by a different workspace while a discard for it can still be
   retried. The model gives each standby its own id and never reuses one (see "Assumptions"). What
