@@ -3219,8 +3219,10 @@ const t3GatewayReachLine = (placement: T3GatewayPlacement, appUrl: string): stri
   // HTTPS run on this machine in front of Mend's port reaches Mend alone: the gateway needs its
   // own forward, on a port of its own, since a T3 Code client uses a server's root path.
   const appHost = new URL(appUrl).hostname;
+  if (appHost.endsWith(".ts.net"))
+    return `It is published on ${published} only, as Mend's web port is, and tailscale serve in front of Mend does not reach it. T3 Code on this machine uses ${placement.url}. For T3 Code on your other devices, serve it the same way on a port of its own, tailscale serve --bg --https=${placement.port} ${placement.url}, and add https://${appHost}:${placement.port} as the Remote link. Pair with a code from mend pair.`;
   if (!isLoopbackHost(appHost))
-    return `It is published on ${published} only, as Mend's web port is. T3 Code on this machine uses ${placement.url}. For T3 Code on your other devices, forward an HTTPS port of its own to it the way ${appUrl} reaches Mend, such as https://${appHost}:${placement.port} to ${placement.url}, and add that as the Remote link. Pair with a code from mend pair.`;
+    return `It is published on ${published} only, as Mend's web port is, and the HTTPS in front of Mend does not reach it. T3 Code on this machine uses ${placement.url}. For T3 Code on your other devices, have that HTTPS serve a name of its own, such as https://t3.${appHost}, to ${placement.url} (a port of its own, https://${appHost}:${placement.port}, works too), and add that as the Remote link. Pair with a code from mend pair.`;
   return `It is published on ${published} only, as Mend's web port is. In T3 Code on this machine, add a Remote link to ${placement.url} and pair with a code from mend pair.`;
 };
 
@@ -3942,6 +3944,10 @@ const sshPublicationLine = async (
   runtime: ServerSetupRuntime,
   config: ServerConfig,
 ): Promise<string | null> => {
+  const sshBind = config.sshBind ?? config.bind;
+  // HTTPS in front of a loopback bind carries the web port alone; SSH is not HTTP.
+  if (isLoopbackBind(sshBind) && config.edgeHost === undefined && servedInFront(config))
+    return `Workspace SSH (mend ssh, VS Code Remote-SSH) is published on ${publishedAddress(sshBind, config.sshPort)} only, and the HTTPS in front of Mend does not carry it. To use it from your other devices, publish it on a private network with --ssh-bind <address>.`;
   if (config.sshBind === undefined || isLoopbackBind(config.sshBind)) return null;
   const published = publishedAddress(config.sshBind, config.sshPort);
   if (runtime.probeSsh === undefined) return null;
