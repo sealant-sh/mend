@@ -18,6 +18,7 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { pullImages } from "./ci-images.mjs";
+import { describeHealthProbes, describeServerState } from "./vscode-acceptance-evidence.mjs";
 
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -318,6 +319,75 @@ export const installServer = async ({
       throw new Error(`${inside} is published as ${JSON.stringify(bound)}, not 0.0.0.0:${outside}`);
   }
   return { mendContainer: mendId };
+};
+
+/** Lines of the server container's log a failed run prints; the whole log goes to `dir`. */
+const SERVER_LOG_TAIL_LINES = 150;
+
+/**
+ * What a failed run needs to say why the server did not come up, taken from the daemon before
+ * removeWorld deletes it: the Mend container's state (exit code, restarts, health and its
+ * probes), its log, and `docker compose ps -a`. The essentials go to `log`; the whole of each
+ * goes to `dir` when one is given (CI uploads it as the job's evidence). The state is
+ * `docker inspect`'s State only, never its Config, which carries the server's secrets. Never
+ * throws: a capture that fails says so, and the run's own failure stands.
+ */
+export const captureServerState = async ({ context, clientEnv, dir, log }) => {
+  const inner = (args) =>
+    run("docker", ["--context", context, ...args], {
+      env: clientEnv,
+      allowFailure: true,
+      timeout: 60_000,
+    });
+  const text = (result) => `${result.stdout}${result.stderr}`.trim();
+  const write = (name, content) => {
+    if (dir) fs.writeFileSync(path.join(dir, name), `${content}\n`);
+  };
+  try {
+    if (dir) fs.mkdirSync(dir, { recursive: true });
+    const compose = text(await inner(["compose", "-p", "mend", "ps", "-a"]));
+    write("server-compose-ps.txt", compose);
+    log(`server: docker compose ps -a\n${compose}`);
+    const [id] = lines(
+      (
+        await inner([
+          "ps",
+          "-aq",
+          "--filter",
+          "label=com.docker.compose.project=mend",
+          "--filter",
+          "label=com.docker.compose.service=mend",
+        ])
+      ).stdout,
+    );
+    if (id === undefined) {
+      log(describeServerState("the Mend server container", undefined, undefined));
+      return;
+    }
+    const inspected = await inner([
+      "inspect",
+      id,
+      "--format",
+      '{"name":{{json .Name}},"restartCount":{{json .RestartCount}},"state":{{json .State}}}',
+    ]);
+    const { name, restartCount, state } =
+      inspected.status === 0
+        ? JSON.parse(inspected.stdout)
+        : { name: id, restartCount: undefined, state: undefined };
+    const container = String(name).replace(/^\//, "");
+    write("server-state.json", JSON.stringify({ name: container, restartCount, state }, null, 2));
+    log(`server: ${describeServerState(container, state, restartCount)}`);
+    for (const probe of describeHealthProbes(state)) log(`server: health probe ${probe}`);
+    const output = text(await inner(["logs", "--timestamps", id]));
+    write("server-container.log", output);
+    const tail = output.split("\n").slice(-SERVER_LOG_TAIL_LINES).join("\n");
+    log(
+      `server: the last ${String(SERVER_LOG_TAIL_LINES)} lines of ${container}'s log` +
+        `${dir ? ` (all of it in ${path.join(dir, "server-container.log")})` : ""}\n${tail}`,
+    );
+  } catch (error) {
+    log(`server: could not capture the server's state: ${String(error)}`);
+  }
 };
 
 /**

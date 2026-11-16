@@ -47,6 +47,7 @@ import { assertEditorEvidence } from "./vscode-acceptance-evidence.mjs";
 import {
   adoptProject,
   buildExtension,
+  captureServerState,
   editorEnv,
   installExtension,
   installServer,
@@ -274,6 +275,9 @@ try {
 } catch (cause) {
   console.error(`[acceptance] FAIL ${cause instanceof Error ? cause.message : String(cause)}`);
   process.exitCode = 1;
+  // Before cleanup removes the daemon: the server's log, exit code and `docker compose ps`, so a
+  // server that never came up (SLNT-1075) says why in the job's log and its evidence.
+  if (dind !== null) await captureServerState({ context, clientEnv, dir: evidenceDir, log });
 } finally {
   if (evidenceDir) {
     fs.mkdirSync(evidenceDir, { recursive: true });

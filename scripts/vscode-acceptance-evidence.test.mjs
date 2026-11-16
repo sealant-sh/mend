@@ -1,7 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { assertEditorEvidence } from "./vscode-acceptance-evidence.mjs";
+import {
+  assertEditorEvidence,
+  describeHealthProbes,
+  describeServerState,
+} from "./vscode-acceptance-evidence.mjs";
 
 const complete = {
   signedOut: { projects: 0 },
@@ -88,4 +92,37 @@ test("explicitly disabled Remote-SSH does not require its optional steps", () =>
       { ...requested, remoteSsh: false },
     ),
   );
+});
+
+test("a bundle that exited and is restarting reads as exited, not only as unhealthy", () => {
+  const state = {
+    Status: "restarting",
+    ExitCode: 1,
+    OOMKilled: false,
+    Error: "",
+    Health: {
+      Status: "unhealthy",
+      FailingStreak: 0,
+      Log: [{ Start: "2026-11-16T14:36:50Z", ExitCode: 1, Output: "[health] fetch failed\n" }],
+    },
+  };
+  assert.equal(
+    describeServerState("mend-mend-1", state, 2),
+    "mend-mend-1: restarting, exit code 1, restarts 2, health unhealthy (failing streak 0)",
+  );
+  assert.deepEqual(describeHealthProbes(state), [
+    "2026-11-16T14:36:50Z exit 1: [health] fetch failed",
+  ]);
+});
+
+test("a container killed for memory, or never created, says so", () => {
+  assert.equal(
+    describeServerState("mend-mend-1", { Status: "exited", ExitCode: 137, OOMKilled: true }, 0),
+    "mend-mend-1: exited, exit code 137, restarts 0, killed for memory, no healthcheck",
+  );
+  assert.equal(
+    describeServerState("mend-mend-1", undefined, undefined),
+    "mend-mend-1: no state (no container was found)",
+  );
+  assert.deepEqual(describeHealthProbes(undefined), []);
 });
