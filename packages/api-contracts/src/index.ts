@@ -22,6 +22,7 @@ export * from "./local-worktrees.ts";
 export * from "./previews.ts";
 export * from "./screens.ts";
 export * from "./landing.ts";
+export * from "./conversations.ts";
 export * from "./handoffs.ts";
 export * from "./github.ts";
 export * from "./access-keys.ts";

@@ -5,6 +5,7 @@ import { accountsGroup } from "./accounts.ts";
 import { agentMemoryGroup } from "./agent-memory.ts";
 import { boatKeyGroup, personBoatKeyGroup, serverBoatKeyGroup } from "./boat-key.ts";
 import { sessionChangesGroup } from "./changes.ts";
+import { conversationsGroup } from "./conversations.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { dopplerGroup } from "./doppler.ts";
 import { executorGroup } from "./executor.ts";
@@ -108,6 +109,7 @@ export const MendApi = HttpApi.make("mend")
   .add(proofArtifactsGroup)
   .add(landingsGroup)
   .add(handoffsGroup)
+  .add(conversationsGroup)
   .add(githubGroup)
   .add(pullRequestMergeGroup)
   .add(pullRequestsGroup)

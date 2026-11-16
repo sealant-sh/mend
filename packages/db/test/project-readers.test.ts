@@ -28,7 +28,11 @@ const exceptions = new Map([
     "Only a removed project's purge mark authorizes the condemnation.",
   ],
   [
-    "packages/db/src/repos/member-revocations.ts:beginRemoval:8efe8152",
+    "packages/db/src/repos/imported-conversations.ts:deleteImportedConversationsOf:ca7ef293",
+    "Revocation deletes imported conversations in removed projects too.",
+  ],
+  [
+    "packages/db/src/repos/member-revocations.ts:beginRemoval:2ce0765b",
     "Revocation must include retained private content.",
   ],
   [

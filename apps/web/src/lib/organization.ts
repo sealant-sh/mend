@@ -216,6 +216,8 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `recorded pull request #${String(event.data["pullRequest"])} of change ${event.subjectId}, opened outside Mend · ${text(event.data["state"]) ?? "?"}`;
     case "worktree.handed_off":
       return `handed off a checkout into worktree ${event.subjectId}${text(event.data["sessionId"]) === null ? "" : ` · session ${text(event.data["sessionId"])}`}`;
+    case "session.conversation_imported":
+      return `imported a ${text(event.data["harness"]) ?? "harness"} conversation into session ${event.subjectId}`;
     case "ssh_key.added":
     case "ssh_key.removed": {
       const key = `workspace SSH key ${text(event.data["fingerprint"]) ?? "?"}${name === null ? "" : ` (${name})`}`;
