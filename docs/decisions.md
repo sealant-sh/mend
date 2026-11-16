@@ -13,6 +13,32 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-16: an imported conversation travels as the harness's own files and reaches the agent at
+  its session's first launch.** Yiannis, on SLNT-895, for someone moving from T3 Code to their own
+  Mend server: import their threads, adopt each project, carry each checkout without pushing it, and
+  rewrite paths so the conversation reads as if it had run in Mend. `mend import t3` hands off each
+  checkout once and sends each thread's conversation as the harness's own files: Claude's transcript
+  with its tool results, subagents, tasks, todos and the plans it names, or Codex's rollout and its
+  ancestors. The agent then resumes it natively, and Mend's history comes from the backfill of a
+  native transcript it already had. The server keeps the files in Postgres beside the session and
+  writes them into the harness home at the session's first launch in conversation mode, not at
+  import. The home a harness sees is settled per launch (per-person homes, ADR 0016), delivery works
+  the same on either store, and a bulk import of hundreds of threads boots no workspace. Paths are
+  rewritten at that delivery, for `/workspace/repo` and that launch's home. Claude's signed thinking
+  and Codex's encrypted reasoning are never changed, since the provider refuses a changed block on
+  resume, so paths inside them keep their old form; paths outside the checkout stay as written. The
+  rows cascade from the session, the project and the person, so an imported conversation is deleted
+  with its session and needs no cleanup code of its own. Not taken: writing the files into the
+  session's saved harness state at import (in capture mode the harness home comes from the session's
+  head capture and a saved archive is never restored, so the conversation would not appear); reusing
+  fork seeds (content-addressed and kept after their source session is deleted, by design, and they
+  refuse subagents and images); a plain copy of the folder in place of a handoff; uploading in parts
+  (the rewrite holds the whole conversation in memory anyway); importing T3 Code's own message
+  record, which a harness cannot resume from. T3 Code's own import step cannot reach this: it reads
+  paths on the server's machine (decision 9 of 2026-10-24) and shows no words from a refused import,
+  so the gateway's scan answers no candidates. Docs:
+  [Import from T3 Code](../apps/docs/src/content/docs/guides/import-from-t3-code.md).
+
 - **2026-11-08: one account, several organizations.** Yiannis: "add the concept of org switching ie
   one acc multiple orgs". An account holds a role in each organization it belongs to, and each
   sign-in or paired device acts in one of them, chosen with a switch; a request answers only for

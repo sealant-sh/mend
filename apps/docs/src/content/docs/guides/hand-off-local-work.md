@@ -160,3 +160,9 @@ ends with `nothing was handed off · <project> stays adopted` instead.
 When the connection ends without an answer, or a proxy answers 502, 503 or 504, the CLI sends the
 same bundle again, twice at most. The server recognises a bundle it already took and answers with
 the same session: `✓ already handed off as fix-login`.
+
+## Hand off T3 Code's threads
+
+`mend import t3` hands off each checkout your T3 Code threads ran in, the same way, and brings each
+thread's Claude or Codex conversation into a session there. See
+[Import from T3 Code](/guides/import-from-t3-code/).
