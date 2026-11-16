@@ -181,12 +181,18 @@ test("the runner reports a refused image pull as an infrastructure failure", asy
         ...process.env,
         HOME: scratch,
         PATH: `${scratch}${path.delimiter}${process.env.PATH}`,
+        CI_IMAGES_PULL_WAITS_MS: "0,0,0",
       },
       timeout: 10_000,
     }),
     (error) => {
       assert.equal(error.code, 1);
-      assert.match(error.stderr, /S3 fixture image pull outage: mirror\.gcr\.io\/dxflrs\/garage:/);
+      // Every source (CI's GHCR copy, then mirror.gcr.io, garage being on no ECR) refused.
+      assert.match(
+        error.stderr,
+        /S3 fixture image pull outage: dxflrs\/garage:v2\.4\.1 could not be pulled from any source/,
+      );
+      assert.match(error.stderr, /mirror\.gcr\.io\/dxflrs\/garage:v2\.4\.1@sha256:/);
       assert.match(error.stderr, /infrastructure failure; S3 contract tests have not run/);
       assert.match(error.stderr, /toomanyrequests/);
       return true;
