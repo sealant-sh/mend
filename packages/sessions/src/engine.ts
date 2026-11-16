@@ -577,7 +577,9 @@ import { WorkspaceHostUserNamespaces } from "./host-user-namespaces.ts";
 import {
   hotFingerprint,
   type HotFingerprintInputs,
+  isStandbyPlaceholderAnswer,
   standbyEpochOf,
+  type StandbyPlaceholder,
   standbyWorktreeAlias,
 } from "./hot-pool.ts";
 import {
@@ -4793,6 +4795,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
         // Published with its fence cleared in the same write: nothing after this reopens it.
         fence.published = true;
+        if (unsaved !== null) {
+          // Kept as received; every decision leaves it out (`executorAnswersOf`, SLNT-1044).
+          const placeholder = yield* standbyPlaceholderOf(
+            session,
+            SealantWorkspaceId.make(workspaceId),
+          );
+          if (placeholder !== null && isStandbyPlaceholderAnswer(position, placeholder)) {
+            yield* evidenceLog(
+              Effect.logInfo(
+                "session engine: capture evidence · the claimed standby answered under its placeholder, before its re-plan took · not this session's unsaved work",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: session.id,
+                  workspaceId,
+                  via: kind,
+                  epoch: placeholder.epoch,
+                  launchId: placeholder.launchId,
+                  words: unsaved.words,
+                }),
+              ),
+            );
+          }
+        }
         if (overdue !== null && before !== null && before.captureOverdueStep !== overdue.step) {
           yield* evidenceLog(
             Effect.logWarning("session engine: capture step overdue · observed").pipe(
@@ -5348,15 +5373,60 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * that orders them, so it is not consulted.
        */
       const executorAnswersOf = Effect.fn("SessionEngine.executorAnswersOf")(function* (
-        _session: Session,
+        session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
         const evidence = yield* sessions.executorEvidenceOf(workspaceId);
+        const kept = evidence?.unsaved ?? [];
+        // A claimed standby's answers under its placeholder are about the base it booted on, not
+        // the worktree its claim re-planned it onto (SLNT-1044): kept as received, never weighed
+        // as this executor's unsaved work. Left out here, where every decision reads them, so an
+        // executor that kept one before this rule reads by it too.
+        const placeholder =
+          kept.length === 0 ? null : yield* standbyPlaceholderOf(session, workspaceId);
         return {
           saved: evidence?.saved ?? null,
-          unsaved: evidence?.unsaved ?? [],
+          unsaved:
+            placeholder === null
+              ? kept
+              : kept.filter((answer) => !isStandbyPlaceholderAnswer(answer.position, placeholder)),
           version: evidence?.version ?? 0,
+          placeholder,
         };
+      });
+
+      /**
+       * The placeholder the executor in `workspaceId` answered under before its claim's re-plan
+       * took, when it is a claimed standby (`hot-pool.ts` "Capture-mode standby"): its launch, and
+       * the synthetic epoch it booted under — its pool row's creation, which its claim recorded as
+       * the executor's start. Null for any other executor, or when its start is not that one.
+       */
+      const standbyPlaceholderOf = Effect.fn("SessionEngine.standbyPlaceholderOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const launchId = yield* executorLaunchIdOf(session, workspaceId);
+        const prefix = standbyLaunchIdOf("");
+        if (launchId === null || !launchId.startsWith(prefix)) return null;
+        // The standby's launch names its pool row, whose id the claiming session took.
+        const holder =
+          launchId === standbyLaunchIdOf(session.id)
+            ? session
+            : yield* sessions
+                .byId(SessionId.make(launchId.slice(prefix.length)))
+                .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (
+          holder === null ||
+          launchId !== standbyLaunchIdOf(holder.id) ||
+          holder.sealantWorkspaceId !== workspaceId ||
+          holder.executorStartedAt === null
+        ) {
+          return null;
+        }
+        return {
+          launchId,
+          epoch: standbyEpochOf(holder.executorStartedAt),
+        } satisfies StandbyPlaceholder;
       });
 
       /**
@@ -11946,7 +12016,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // joined session's later unsaved answer revokes the holder's save as much as its own.
         const answers =
           workspaceId === null
-            ? { saved: null, unsaved: [], version: 0 }
+            ? { saved: null, unsaved: [], version: 0, placeholder: null }
             : yield* executorAnswersOf(session, workspaceId);
         // An answer asked and not yet published may revoke any save: until it is, none stands
         // and none is refuted — completion unknown (cross-repo decision 18, review 2026-09-28
@@ -11965,6 +12035,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const sealRecord =
           workspaceId === null ? null : yield* executorSealRecordOf(session, workspaceId);
         const unsaved = answers.unsaved;
+        const observedPosition = yield* sessions.captureObservedPositionOf(session.id);
+        // The row's queue reading, when a claimed standby made it under its placeholder, is no
+        // more this executor's unsaved work than the answers left out above (SLNT-1044).
+        const placeholder =
+          workspaceId === null || observedPosition === null
+            ? null
+            : (answers.placeholder ?? (yield* standbyPlaceholderOf(session, workspaceId)));
+        const placeholderReading =
+          placeholder !== null && isStandbyPlaceholderAnswer(observedPosition, placeholder);
         const end = executorEndOf({
           head:
             head === null
@@ -11982,12 +12061,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           executorStartedAt: session.executorStartedAt,
           // The queue reading with where the executor made it (review 2026-09-28 (7) #4): the
           // same answer the executor's evidence keeps, ordered against a seal the same way.
-          reading: {
-            pending: session.capturePending,
-            pendingBytes: session.capturePendingBytes,
-            observedAt: session.captureObservedAt,
-            position: yield* sessions.captureObservedPositionOf(session.id),
-          },
+          reading: placeholderReading
+            ? { pending: null, pendingBytes: null, observedAt: null, position: null }
+            : {
+                pending: session.capturePending,
+                pendingBytes: session.capturePendingBytes,
+                observedAt: session.captureObservedAt,
+                position: observedPosition,
+              },
           // This executor's own `complete: true`, under this executor's epoch when both are known.
           finalSaved:
             saved === null ||
