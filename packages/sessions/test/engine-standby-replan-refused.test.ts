@@ -65,6 +65,8 @@ interface Outcome {
   readonly stops: ReadonlyArray<{ readonly workspace: string; readonly kind: "drain" | "discard" }>;
   readonly creates: number;
   readonly sessionWorkspace: string | null;
+  /** The launch the session's workspace was created under: a standby's, or a cold launch's. */
+  readonly sessionLaunch: string | null;
   readonly status: string | null;
   readonly summary: string | null;
   readonly standbyEnded: boolean;
@@ -83,11 +85,14 @@ const drain = {
 
 /**
  * Each create gets its own workspace id (the standby `workspace-1`, a cold executor after it
- * `workspace-2`), and one the platform stopped reads stopped from then on.
+ * `workspace-2`), and one the platform stopped reads stopped from then on. `launches` keeps the
+ * launch each was created under: over a re-plan's whole budget the pool makes the claimed
+ * standby's replacement too, so the cold executor's id is not always the second.
  */
 const distinctWorkspaces = (
   layer: Layer.Layer<SealantClient>,
   stopped: Set<string>,
+  launches: Map<string, string>,
 ): Layer.Layer<SealantClient> =>
   Layer.effect(
     SealantClient,
@@ -105,6 +110,7 @@ const distinctWorkspaces = (
                 status: async () => (stopped.has(id) ? "stopped" : "ready"),
               };
               workspaces.set(id, created);
+              launches.set(id, launch?.launchId ?? "");
               return created;
             }),
           ),
@@ -160,6 +166,7 @@ const run = (
     const stopKinds: Array<"drain" | "discard"> = [];
     const stops: Array<{ workspace: string; kind: "drain" | "discard" }> = [];
     const stopped = new Set<string>();
+    const launches = new Map<string, string>();
     const logs: Array<string> = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
@@ -303,6 +310,7 @@ const run = (
             stops: [...stops],
             creates: created.length,
             sessionWorkspace: row?.sealantWorkspaceId ?? null,
+            sessionLaunch: launches.get(row?.sealantWorkspaceId ?? "") ?? null,
             status: settled?.status ?? null,
             summary: settled?.summary ?? null,
             standbyEnded: stopped.has("workspace-1"),
@@ -365,6 +373,7 @@ const run = (
             },
           }),
           stopped,
+          launches,
         ),
       },
     );
@@ -392,7 +401,8 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         // The session runs on a cold executor of its own.
         expect(outcome.launch).toBe("ran");
         expect(outcome.creates).toBe(2);
-        expect(outcome.sessionWorkspace).toBe("workspace-2");
+        expect(outcome.sessionWorkspace).not.toBe("workspace-1");
+        expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
         expect(outcome.status).toBe("running");
         expect(outcome.summary ?? "").not.toContain("not saved");
         expect(outcome.world.sessions.get(outcome.sessionId)?.captureNotSavedAt ?? null).toBeNull();
@@ -412,7 +422,10 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         expect(outcome.stops[0]).toEqual({ workspace: "workspace-1", kind: "discard" });
         expect(outcome.standbyEnded).toBe(true);
         expect(outcome.launch).toBe("ran");
-        expect(outcome.sessionWorkspace).toBe("workspace-2");
+        // Not `workspace-2`: this re-plan spends the launch's three minutes, in which the pool
+        // makes the claimed standby's replacement. The session's is the one a cold launch made.
+        expect(outcome.sessionWorkspace).not.toBe("workspace-1");
+        expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
       }),
     60_000,
   );
@@ -460,7 +473,8 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         expect(outcome.stops[0]).toEqual({ workspace: "workspace-1", kind: "drain" });
         expect(outcome.stops.some((stop) => stop.kind === "discard")).toBe(false);
         expect(outcome.launch).toBe("ran");
-        expect(outcome.sessionWorkspace).toBe("workspace-2");
+        expect(outcome.sessionWorkspace).not.toBe("workspace-1");
+        expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
       }),
     30_000,
   );
@@ -507,7 +521,8 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         ).toBe(true);
         expect(has(outcome.logs, "asking again")).toBe(false);
         expect(outcome.launch).toBe("ran");
-        expect(outcome.sessionWorkspace).toBe("workspace-2");
+        expect(outcome.sessionWorkspace).not.toBe("workspace-1");
+        expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
       }),
     30_000,
   );
