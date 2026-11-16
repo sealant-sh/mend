@@ -312,9 +312,14 @@ const startStep = (step: string) => {
 
 describe("a setup step and its Stop, in a real shell", () => {
   it("ends the step and every process it started", { timeout: 15_000 }, async () => {
-    const step = startStep("sleep 30 & sleep 30 & echo started; wait");
-    await step.printed("started");
-    expect(step.marked().length, "the step's shell and both sleeps").toBeGreaterThanOrEqual(3);
+    // A process in the middle of an exec reads an empty environ in /proc, so a child the step has
+    // just started can't be counted yet. Each child says it is up once its exec is done, and stays
+    // a shell from then on: the `exit 0` stops `sh` from exec'ing `sleep` in its place.
+    const step = startStep(
+      `for n in 1 2; do sh -c 'echo "up $1"; sleep 30; exit 0' child "$n" & done; wait`,
+    );
+    await Promise.all([step.printed("up 1"), step.printed("up 2")]);
+    expect(step.marked().length, "the step's shell and both children").toBeGreaterThanOrEqual(3);
 
     expect(step.stop()).toBe(0);
 
