@@ -29,6 +29,7 @@ import {
   AgentItem,
   AgentRequest,
   AgentTurn,
+  importedTurnProcessIdOf,
   AgentTurnSteer,
   AgentTurnSteerDelivery,
   AgentProtocolControl,
@@ -184,7 +185,10 @@ const harnessTurnRow = (tx: ConversationTx, sessionId: SessionId, providerTurnId
     .where(and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)))
     .limit(1);
 
-const recorded = (turn: AgentTurn): HarnessTurnOpening => ({ _tag: "Recorded", turn });
+const recorded = (turn: AgentTurn): HarnessTurnOpening => ({
+  _tag: "Recorded",
+  turn,
+});
 const SLOT_HELD: HarnessTurnOpening = { _tag: "SlotHeld" };
 
 const steerKeyLockKey = (author: string, clientSteerId: string): string =>
@@ -622,13 +626,18 @@ const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
     selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
   });
 
-const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
+export const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
   new AgentTurn({
     ...row,
+    processId: row.processId ?? importedTurnProcessIdOf(row.sessionId),
     mergeBack: Schema.decodeUnknownSync(Schema.Array(MergeBackContext))(row.mergeBack),
     selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
   });
-const toItem = (row: typeof agentItems.$inferSelect): AgentItem => new AgentItem(row);
+const toItem = (row: typeof agentItems.$inferSelect): AgentItem =>
+  new AgentItem({
+    ...row,
+    processId: row.processId ?? importedTurnProcessIdOf(row.sessionId),
+  });
 const toRequest = (row: typeof agentRequests.$inferSelect): AgentRequest => new AgentRequest(row);
 
 /** The turns of a history range, as a condition on `agent_turns`. */
@@ -694,6 +703,116 @@ export const nextAgentItemSeq = Effect.fn("AgentConversationRepo.nextAgentItemSe
     .from(agentItems)
     .where(eq(agentItems.sessionId, sessionId));
   return (position?.value ?? 0) + 1;
+});
+
+/**
+ * Land native history as completed turns, inside the caller's transaction: under the session's
+ * conversation lock, after the existing tail, skipping a turn whose provider turn id is already
+ * there. A mode switch's turns name the process whose transcript they came from; an imported
+ * conversation's turns name none (`imported`), since nothing in Mend ran them.
+ */
+export const landHistoryTurns = Effect.fn("AgentConversationRepo.landHistoryTurns")(function* (
+  tx: Pick<MendDatabase, "select" | "insert" | "execute">,
+  sessionId: SessionId,
+  source: { readonly processId: SessionProcessId } | { readonly imported: true },
+  turns: ReadonlyArray<BackfillTurnInput>,
+) {
+  const processId = "processId" in source ? source.processId : null;
+  const outputProcessId = processId ?? importedTurnProcessIdOf(sessionId);
+  yield* lockAgentConversation(tx, sessionId);
+  const existing = yield* tx
+    .select({ providerTurnId: agentTurns.providerTurnId })
+    .from(agentTurns)
+    .where(eq(agentTurns.sessionId, sessionId));
+  const seen = new Set(
+    existing.flatMap((row) => (row.providerTurnId === null ? [] : [row.providerTurnId])),
+  );
+  const [turnPosition] = yield* tx
+    .select({ value: max(agentTurns.ordinal) })
+    .from(agentTurns)
+    .where(eq(agentTurns.sessionId, sessionId));
+  let ordinal = (turnPosition?.value ?? -1) + 1;
+  let seq = yield* nextAgentItemSeq(tx, sessionId);
+  const now = yield* DateTime.nowAsDate;
+  // Mend's own pages are published by a process of the session; an imported turn has none.
+  const unshown = yield* pagesWithoutItems(
+    tx,
+    sessionId,
+    processId === null
+      ? []
+      : turns
+          .filter((turn) => !seen.has(turn.providerTurnId))
+          .flatMap((turn) => turn.items.flatMap((item) => publishedPageIdOf(item.data) ?? [])),
+  );
+  let count = 0;
+  for (const turn of turns) {
+    if (seen.has(turn.providerTurnId)) continue;
+    const [turnRow] = yield* tx
+      .insert(agentTurns)
+      .values({
+        id: AgentTurnId.make(crypto.randomUUID()),
+        sessionId,
+        processId,
+        imported: processId === null,
+        ordinal: ordinal++,
+        author: null,
+        input: turn.input,
+        status: "completed",
+        providerTurnId: turn.providerTurnId,
+        startedAt: now,
+        endedAt: now,
+      })
+      .returning();
+    if (turnRow === undefined) {
+      return yield* Effect.die("agent turn backfill returned no row");
+    }
+    yield* tx.insert(previewPreparations).values({
+      turnId: turnRow.id,
+      sessionId,
+      worktreeId: sql`(SELECT worktree_id FROM agent_sessions WHERE id = ${sessionId})`,
+      state: "skipped",
+      reason: processId === null ? "imported history" : "terminal history",
+      claimId: crypto.randomUUID(),
+      claimedAt: now,
+      leaseUntil: now,
+      decidedAt: now,
+    });
+    let eventIndex = 0;
+    for (const item of turn.items) {
+      yield* tx
+        .insert(agentItems)
+        .values({
+          id: AgentItemId.make(crypto.randomUUID()),
+          sessionId,
+          processId,
+          turnId: turnRow.id,
+          seq: seq++,
+          providerItemId: item.providerItemId,
+          providerOutputProcessId: outputProcessId,
+          providerOutputSeq: 0n,
+          providerEventIndex: eventIndex++,
+          kind: item.kind,
+          status: item.status,
+          title: item.title,
+          text: item.text,
+          data: item.data,
+        })
+        .onConflictDoNothing();
+      const page = unshown.get(publishedPageIdOf(item.data) ?? "");
+      if (page === undefined || processId === null) continue;
+      unshown.delete(page.id);
+      yield* tx.insert(agentItems).values(
+        pageItemRow(page, {
+          processId,
+          turnId: turnRow.id,
+          seq: seq++,
+          eventIndex: eventIndex++,
+        }),
+      );
+    }
+    count += 1;
+  }
+  return count;
 });
 
 export const notifyAgentConversation = Effect.fn("AgentConversationRepo.notify")(function* (
@@ -941,7 +1060,11 @@ export const AgentConversationRepoLive: Layer.Layer<
         return {
           binding,
           result: messageOutcome(
-            { _tag: "Turn", messageId: binding.id, turn: toTurn(row.agent_turns) },
+            {
+              _tag: "Turn",
+              messageId: binding.id,
+              turn: toTurn(row.agent_turns),
+            },
             binding.turnReason,
           ),
         };
@@ -949,7 +1072,11 @@ export const AgentConversationRepoLive: Layer.Layer<
         return {
           binding,
           result: messageOutcome(
-            { _tag: "Steer", messageId: binding.id, steer: toSteer(row.agent_turn_steers) },
+            {
+              _tag: "Steer",
+              messageId: binding.id,
+              steer: toSteer(row.agent_turn_steers),
+            },
             null,
           ),
         };
@@ -1030,7 +1157,9 @@ export const AgentConversationRepoLive: Layer.Layer<
             const replay = yield* replayUnderLock(tx, input);
             if (replay !== null) return replay;
             if (!(yield* lockOpenConversation(tx, input.sessionId, input.historyPosition)))
-              return yield* new SessionStoppingError({ sessionId: input.sessionId });
+              return yield* new SessionStoppingError({
+                sessionId: input.sessionId,
+              });
             const [turn] = yield* tx
               .select()
               .from(agentTurns)
@@ -1079,7 +1208,9 @@ export const AgentConversationRepoLive: Layer.Layer<
             const replay = yield* replayUnderLock(tx, input);
             if (replay !== null) return replay;
             if (!(yield* lockOpenConversation(tx, input.sessionId, input.historyPosition)))
-              return yield* new SessionStoppingError({ sessionId: input.sessionId });
+              return yield* new SessionStoppingError({
+                sessionId: input.sessionId,
+              });
             const turn = yield* insertQueuedTurn(tx, {
               sessionId: input.sessionId,
               processId,
@@ -1346,7 +1477,10 @@ export const AgentConversationRepoLive: Layer.Layer<
               .where(eq(agentTurns.id, turn.id))
               .for("update");
             if (target === undefined || target.withdrawnHistoryRevision !== null) return null;
-            const steer = yield* insertTurnSteer(tx, toTurn(target), { ...input, clientSteerId });
+            const steer = yield* insertTurnSteer(tx, toTurn(target), {
+              ...input,
+              clientSteerId,
+            });
             return { steer, created: true };
           }),
         )
@@ -1643,7 +1777,11 @@ export const AgentConversationRepoLive: Layer.Layer<
               if (mergeBack.length > 0)
                 yield* tx
                   .update(sessionMergeBacks)
-                  .set({ status: "consumed", targetTurnId: queued.id, consumedAt: now })
+                  .set({
+                    status: "consumed",
+                    targetTurnId: queued.id,
+                    consumedAt: now,
+                  })
                   .where(
                     and(
                       eq(sessionMergeBacks.targetSessionId, process.sessionId),
@@ -1725,7 +1863,10 @@ export const AgentConversationRepoLive: Layer.Layer<
             const [existing] = yield* harnessTurnRow(tx, sessionId, providerTurnId);
             if (existing !== undefined) {
               if (ended === undefined || existing.status !== "running")
-                return { opening: recorded(toTurn(existing)), changed: false };
+                return {
+                  opening: recorded(toTurn(existing)),
+                  changed: false,
+                };
               const [row] = yield* tx
                 .update(agentTurns)
                 .set({ ...ended, endedAt: yield* DateTime.nowAsDate })
@@ -1885,7 +2026,10 @@ export const AgentConversationRepoLive: Layer.Layer<
         .from(agentItems)
         .where(and(eq(agentItems.processId, processId), eq(agentItems.kind, "task")))
         .pipe(Effect.orDie);
-      return { running: row?.running ?? 0, lastUpdatedAt: row?.lastUpdatedAt ?? null };
+      return {
+        running: row?.running ?? 0,
+        lastUpdatedAt: row?.lastUpdatedAt ?? null,
+      };
     });
 
     const setTurnPayer = Effect.fn("AgentConversationRepo.setTurnPayer")(function* (
@@ -2007,7 +2151,13 @@ export const AgentConversationRepoLive: Layer.Layer<
     ) {
       const [row] = yield* db
         .update(agentTurns)
-        .set({ status, usage, error, unreachable, endedAt: yield* DateTime.nowAsDate })
+        .set({
+          status,
+          usage,
+          error,
+          unreachable,
+          endedAt: yield* DateTime.nowAsDate,
+        })
         .where(
           and(eq(agentTurns.sessionId, sessionId), eq(agentTurns.providerTurnId, providerTurnId)),
         )
@@ -2146,7 +2296,10 @@ export const AgentConversationRepoLive: Layer.Layer<
               .where(inArray(agentTurns.id, turnIds))
               .pipe(Effect.orDie)).map((row) => [row.id, row.ordinal] as const),
       );
-      const rows = itemRows.map((item) => ({ item, ordinal: ordinals.get(item.turnId) ?? 0 }));
+      const rows = itemRows.map((item) => ({
+        item,
+        ordinal: ordinals.get(item.turnId) ?? 0,
+      }));
       const held = rows.slice(0, limit);
       const oldest = held.at(-1);
       const to = before?.ordinal ?? null;
@@ -2158,7 +2311,12 @@ export const AgentConversationRepoLive: Layer.Layer<
       const feed = feedRow?.feed ?? 0;
       if (oldest === undefined) {
         // No items left: the turns that remain, which have none (a turn that failed to start).
-        return { items: [], range: { from: null, to, newest: ITEMLESS_TURNS }, next: null, feed };
+        return {
+          items: [],
+          range: { from: null, to, newest: ITEMLESS_TURNS },
+          next: null,
+          feed,
+        };
       }
       const from = Math.min(...held.map((row) => row.ordinal));
       const olderTurn =
@@ -2174,7 +2332,11 @@ export const AgentConversationRepoLive: Layer.Layer<
         items: held.map((row) => toItem(row.item)).toReversed(),
         range: { from, to, newest: null },
         next: olderTurn
-          ? { createdAt: oldest.item.createdAt, id: oldest.item.id, ordinal: oldest.ordinal }
+          ? {
+              createdAt: oldest.item.createdAt,
+              id: oldest.item.id,
+              ordinal: oldest.ordinal,
+            }
           : null,
         feed,
       } satisfies HistoryWindow;
@@ -2204,7 +2366,10 @@ export const AgentConversationRepoLive: Layer.Layer<
             .pipe(Effect.orDie),
           // A turn a steer started names that steer, wherever (in which turn) it was sent.
           db
-            .select({ id: agentTurnSteers.id, queuedTurnId: agentTurnSteers.queuedTurnId })
+            .select({
+              id: agentTurnSteers.id,
+              queuedTurnId: agentTurnSteers.queuedTurnId,
+            })
             .from(agentTurnSteers)
             .where(inArray(agentTurnSteers.queuedTurnId, ids))
             .pipe(Effect.orDie),
@@ -2555,102 +2720,7 @@ export const AgentConversationRepoLive: Layer.Layer<
     ) {
       if (turns.length === 0) return 0;
       const landed = yield* db
-        .transaction((tx) =>
-          Effect.gen(function* () {
-            yield* lockAgentConversation(tx, sessionId);
-            const existing = yield* tx
-              .select({ providerTurnId: agentTurns.providerTurnId })
-              .from(agentTurns)
-              .where(eq(agentTurns.sessionId, sessionId));
-            const seen = new Set(
-              existing.flatMap((row) => (row.providerTurnId === null ? [] : [row.providerTurnId])),
-            );
-            const [turnPosition] = yield* tx
-              .select({ value: max(agentTurns.ordinal) })
-              .from(agentTurns)
-              .where(eq(agentTurns.sessionId, sessionId));
-            let ordinal = (turnPosition?.value ?? -1) + 1;
-            let seq = yield* nextAgentItemSeq(tx, sessionId);
-            const now = yield* DateTime.nowAsDate;
-            const unshown = yield* pagesWithoutItems(
-              tx,
-              sessionId,
-              turns
-                .filter((turn) => !seen.has(turn.providerTurnId))
-                .flatMap((turn) =>
-                  turn.items.flatMap((item) => publishedPageIdOf(item.data) ?? []),
-                ),
-            );
-            let count = 0;
-            for (const turn of turns) {
-              if (seen.has(turn.providerTurnId)) continue;
-              const [turnRow] = yield* tx
-                .insert(agentTurns)
-                .values({
-                  id: AgentTurnId.make(crypto.randomUUID()),
-                  sessionId,
-                  processId,
-                  ordinal: ordinal++,
-                  author: null,
-                  input: turn.input,
-                  status: "completed",
-                  providerTurnId: turn.providerTurnId,
-                  startedAt: now,
-                  endedAt: now,
-                })
-                .returning();
-              if (turnRow === undefined) {
-                return yield* Effect.die("agent turn backfill returned no row");
-              }
-              yield* tx.insert(previewPreparations).values({
-                turnId: turnRow.id,
-                sessionId,
-                worktreeId: sql`(SELECT worktree_id FROM agent_sessions WHERE id = ${sessionId})`,
-                state: "skipped",
-                reason: "terminal history",
-                claimId: crypto.randomUUID(),
-                claimedAt: now,
-                leaseUntil: now,
-                decidedAt: now,
-              });
-              let eventIndex = 0;
-              for (const item of turn.items) {
-                yield* tx
-                  .insert(agentItems)
-                  .values({
-                    id: AgentItemId.make(crypto.randomUUID()),
-                    sessionId,
-                    processId,
-                    turnId: turnRow.id,
-                    seq: seq++,
-                    providerItemId: item.providerItemId,
-                    providerOutputProcessId: processId,
-                    providerOutputSeq: 0n,
-                    providerEventIndex: eventIndex++,
-                    kind: item.kind,
-                    status: item.status,
-                    title: item.title,
-                    text: item.text,
-                    data: item.data,
-                  })
-                  .onConflictDoNothing();
-                const page = unshown.get(publishedPageIdOf(item.data) ?? "");
-                if (page === undefined) continue;
-                unshown.delete(page.id);
-                yield* tx.insert(agentItems).values(
-                  pageItemRow(page, {
-                    processId,
-                    turnId: turnRow.id,
-                    seq: seq++,
-                    eventIndex: eventIndex++,
-                  }),
-                );
-              }
-              count += 1;
-            }
-            return count;
-          }),
-        )
+        .transaction((tx) => landHistoryTurns(tx, sessionId, { processId }, turns))
         .pipe(Effect.orDie);
       if (landed > 0) yield* notify(sessionId);
       return landed;

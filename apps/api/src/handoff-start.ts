@@ -119,6 +119,7 @@ export const makeHandoffStart = Effect.gen(function* () {
   const terms = new HandoffTerms({
     bundleBytes: termOf(budgets.limits.bundleBytes),
     fileBytes: termOf(budgets.limits.handoffFileBytes),
+    conversationBytes: termOf(budgets.limits.conversationBytes),
   });
 
   const capturedStore: Effect.Effect<void, HandoffRefused> =
@@ -198,7 +199,12 @@ export const makeHandoffStart = Effect.gen(function* () {
       .pipe(
         Effect.catchTags({
           HandoffRefusedError: (error) =>
-            Effect.fail(new HandoffRefused({ reason: error.reason, message: error.message })),
+            Effect.fail(
+              new HandoffRefused({
+                reason: error.reason,
+                message: error.message,
+              }),
+            ),
           HandoffFileOverBudgetError: (error) =>
             Effect.fail(
               new BudgetExceeded({
@@ -226,16 +232,17 @@ export const makeHandoffStart = Effect.gen(function* () {
       refused: budgetMessage("accountLaunchesInFlight", budgets.limits.accountLaunchesInFlight),
     };
     const fiber = yield* engine.detach(
-      engine
-        .holdWorkspace(session.id, slot)
-        .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("handoff: the hold failed").pipe(
-              Effect.annotateLogs({ sessionId: session.id, error: error.message }),
-              Effect.as(null),
-            ),
+      engine.holdWorkspace(session.id, slot).pipe(
+        Effect.catch((error) =>
+          Effect.logWarning("handoff: the hold failed").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              error: error.message,
+            }),
+            Effect.as(null),
           ),
         ),
+      ),
     );
     const answered = yield* Fiber.join(fiber).pipe(Effect.timeoutOption(LAUNCH_ANSWER_WINDOW));
     if (Option.isSome(answered) && answered.value !== null) return answered.value;
@@ -334,7 +341,12 @@ export const makeHandoffStart = Effect.gen(function* () {
           origin: "mend",
         })
         .pipe(
-          Effect.map((session): ProvisionOutcome => ({ kind: "made", session })),
+          Effect.map(
+            (session): ProvisionOutcome => ({
+              kind: "made",
+              session,
+            }),
+          ),
           Effect.catchTags({
             ProjectNotFoundError: () => Effect.fail(new NotFound({ id: project.id })),
             GitError: (error) => Effect.fail(new StoreFailure({ message: error.stderr })),

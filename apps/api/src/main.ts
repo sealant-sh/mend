@@ -13,6 +13,7 @@ import {
 import {
   AgentConversationRepoLive,
   SessionHistoryRepoLive,
+  ImportedConversationsRepoLive,
   McpAppsRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
@@ -302,6 +303,7 @@ import { AdoptionsLive } from "./adoptions.ts";
 import { AutomaticLandingLive } from "./automatic-landing.ts";
 import { Budgets, BudgetsLive } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
+import { ConversationImportLive } from "./conversation-import.ts";
 import { ErrorDetail, ErrorDetailLive } from "./error-boundary.ts";
 import { EventBusLive } from "./events-bus.ts";
 import { ExposureConfigLive } from "./exposure.ts";
@@ -381,6 +383,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   McpAppsRepoLive,
   AgentConversationRepoLive,
   SessionHistoryRepoLive,
+  ImportedConversationsRepoLive,
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
   UserGitAuthorRepoLive,
@@ -750,7 +753,10 @@ const InferenceWorkersLive = Layer.effectDiscard(
         Effect.tap((described) =>
           described._tag === "updated"
             ? Effect.logInfo("landing: the pull request gained its tour").pipe(
-                Effect.annotateLogs({ changeId, pullRequest: described.number }),
+                Effect.annotateLogs({
+                  changeId,
+                  pullRequest: described.number,
+                }),
               )
             : Effect.void,
         ),
@@ -860,7 +866,10 @@ const InferenceWorkersLive = Layer.effectDiscard(
         : yield* firstPromptFromTranscript(job, session);
       if (turns === null) {
         yield* Effect.logInfo("session left unnamed · it settled without a first prompt").pipe(
-          Effect.annotateLogs({ sessionId: job.sessionId, status: session.status }),
+          Effect.annotateLogs({
+            sessionId: job.sessionId,
+            status: session.status,
+          }),
         );
         return;
       }
@@ -1093,6 +1102,7 @@ const MainLive = Layer.unwrap(
           ProjectPullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive)),
           landing,
           HandoffStartLive.pipe(Layer.provide(captureStore)),
+          ConversationImportLive,
           ResourceLoadsLive.pipe(
             Layer.provide(ResourceScopesLive.pipe(Layer.provide(SealantEnv.layer))),
           ),

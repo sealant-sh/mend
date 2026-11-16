@@ -194,6 +194,7 @@ import {
   makeConnectionRegistry,
   type ConnectionKind,
 } from "../../src/connections.ts";
+import { ConversationImportLive } from "../../src/conversation-import.ts";
 import { errorBoundary, type ErrorDetail } from "../../src/error-boundary.ts";
 import { type BusSignal, EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { ExposureConfig, type ExposureOutcome } from "../../src/exposure.ts";
@@ -578,7 +579,10 @@ export const createTenancyApi = async (
               action: "project.purged",
               subjectType: "project",
               subjectId: id,
-              data: { name: kept.project.name, visibility: kept.project.visibility },
+              data: {
+                name: kept.project.name,
+                visibility: kept.project.visibility,
+              },
               createdAt: new Date(),
               accessKey: null,
             }),
@@ -870,7 +874,10 @@ export const createTenancyApi = async (
       recording(
         SettingsRepo,
         "settings",
-        { get: () => Effect.succeed(defaultSettings), ...options.implement?.settings },
+        {
+          get: () => Effect.succeed(defaultSettings),
+          ...options.implement?.settings,
+        },
         calls,
       ),
       recording(UserEvents, "userEvents", {}, calls),
@@ -972,7 +979,11 @@ export const createTenancyApi = async (
         {
           prepare: () => Effect.succeed({ env: {}, views: [] }),
           envOf: () => Effect.succeed({ env: {}, left: [] }),
-          start: () => Effect.succeed({ instance: { kind: "running" }, observedAt: new Date() }),
+          start: () =>
+            Effect.succeed({
+              instance: { kind: "running" },
+              observedAt: new Date(),
+            }),
           stop: (_definition, _worktree, by) =>
             Effect.succeed({
               instance: { kind: "stopped", reason: { kind: "person", by } },
@@ -1099,7 +1110,9 @@ export const createTenancyApi = async (
         gateWith: () => options.exposure?.gate ?? [],
         t3Gateway: options.exposure?.t3Gateway,
       }),
-      Layer.succeed(PreviewSetupConfig, { setup: options.previews ?? { _tag: "Off" } }),
+      Layer.succeed(PreviewSetupConfig, {
+        setup: options.previews ?? { _tag: "Off" },
+      }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(
         SourcePolicy,
@@ -1126,7 +1139,10 @@ export const createTenancyApi = async (
     Layer.succeed(InferenceProvider, {
       respond: () =>
         Effect.fail(
-          new InferenceError({ message: "No inference response configured", cause: null }),
+          new InferenceError({
+            message: "No inference response configured",
+            cause: null,
+          }),
         ),
     }),
     Layer.mock(SessionRepository, {}),
@@ -1177,6 +1193,7 @@ export const createTenancyApi = async (
     GithubIdentityLive,
     MemberRemovalLive,
     HandoffStartLive,
+    ConversationImportLive,
     ResourcesLive.pipe(
       Layer.provide(
         recording(
@@ -1363,7 +1380,9 @@ export const createTenancyApi = async (
           ...(options.requestSignal === undefined ? {} : { signal: options.requestSignal }),
           ...(body === undefined
             ? {}
-            : { body: body instanceof Uint8Array ? new Uint8Array(body) : JSON.stringify(body) }),
+            : {
+                body: body instanceof Uint8Array ? new Uint8Array(body) : JSON.stringify(body),
+              }),
         }),
         context,
       );

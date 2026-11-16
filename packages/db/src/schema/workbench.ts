@@ -73,7 +73,11 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
-import { MergeBackContext, type TurnSelection } from "@mend/domain/workbench";
+import {
+  type ConversationArchiveFile,
+  MergeBackContext,
+  type TurnSelection,
+} from "@mend/domain/workbench";
 import {
   BoundaryObservation,
   ForkProvenance,
@@ -192,6 +196,7 @@ import {
   bigint,
   bigserial,
   boolean,
+  bytea,
   foreignKey,
   index,
   integer,
@@ -450,7 +455,9 @@ export const auditEvents = pgTable(
       .default(sql`'{}'::jsonb`),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     /** The access key the actor acted with (docs/adr/0023-access-keys.md); null otherwise. */
-    accessKeyId: text().references(() => deviceTokens.id, { onDelete: "set null" }),
+    accessKeyId: text().references(() => deviceTokens.id, {
+      onDelete: "set null",
+    }),
   },
   (table) => [
     index("audit_events_org_created_idx").on(table.organizationId, table.createdAt.desc()),
@@ -1060,7 +1067,11 @@ export const agentMemoryVersions = pgTable(
     /** The only copy of some lines: the cap of twenty per file never takes it (0108). */
     pinned: boolean().notNull().default(false),
   },
-  (table) => [primaryKey({ columns: [table.userId, table.projectId, table.path, table.digest] })],
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.projectId, table.path, table.digest],
+    }),
+  ],
 );
 
 /**
@@ -1083,7 +1094,11 @@ export const agentMemoryImportBases = pgTable(
     contents: text(),
     importedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
-  (table) => [primaryKey({ columns: [table.userId, table.projectId, table.source, table.path] })],
+  (table) => [
+    primaryKey({
+      columns: [table.userId, table.projectId, table.source, table.path],
+    }),
+  ],
 );
 
 /**
@@ -1832,7 +1847,10 @@ export const agentSessions = pgTable(
     sealantSessionId: text(),
     workspaceExpiresAt: timestamp({ mode: "date", withTimezone: true }),
     workspaceTtlRenewedAt: timestamp({ mode: "date", withTimezone: true }),
-    workspaceTtlRenewalFailedAt: timestamp({ mode: "date", withTimezone: true }),
+    workspaceTtlRenewalFailedAt: timestamp({
+      mode: "date",
+      withTimezone: true,
+    }),
     workspaceTtlRenewalError: text(),
     /** Mode-switch backfill bookkeeping: how far the native transcript is ingested. */
     nativeIngestCursor: jsonb().$type<NativeIngestCursor | null>(),
@@ -2108,10 +2126,12 @@ export const agentTurns = pgTable(
       .$type<SessionId>()
       .notNull()
       .references(() => agentSessions.id, { onDelete: "cascade" }),
+    /** Null only for an imported turn (`imported`), which no process ran (0222). */
     processId: text()
       .$type<SessionProcessId>()
-      .notNull()
       .references(() => sessionProcesses.id, { onDelete: "cascade" }),
+    /** Came with a conversation the person imported (0222, SLNT-895): never run or billed here. */
+    imported: boolean().notNull().default(false),
     ordinal: integer().notNull(),
     bornHistoryRevision: bigint({ mode: "number" }).notNull().default(0),
     withdrawnHistoryRevision: bigint({ mode: "number" }),
@@ -2232,9 +2252,9 @@ export const agentItems = pgTable(
       .$type<SessionId>()
       .notNull()
       .references(() => agentSessions.id, { onDelete: "cascade" }),
+    /** Null only for an item of an imported turn (0222). */
     processId: text()
       .$type<SessionProcessId>()
-      .notNull()
       .references(() => sessionProcesses.id, { onDelete: "cascade" }),
     turnId: text()
       .$type<AgentTurnId>()
@@ -3529,6 +3549,60 @@ export const sessionNativeSeedFiles = pgTable(
   },
   (table) => [primaryKey({ columns: [table.seedId, table.relativePath] })],
 );
+/**
+ * A person's own Claude or Codex conversation imported into one session (0222, SLNT-895): kept
+ * until the session's first agent starts, when it is written into the workspace, and gone with
+ * the session. One per person, project and native conversation, so an import repeats as itself.
+ */
+export const sessionImportedConversations = pgTable(
+  "session_imported_conversations",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .primaryKey()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    /** A FK to "user"(id) ON DELETE CASCADE, declared in the migration. */
+    ownerUserId: text().notNull(),
+    harness: text().$type<"claude" | "codex">().notNull(),
+    nativeId: text().notNull(),
+    sourceCheckout: text().notNull(),
+    sourceHome: text().notNull(),
+    /** Each file's path, size and digest, in the order they arrived. */
+    files: jsonb().$type<ReadonlyArray<ConversationArchiveFile>>().notNull(),
+    byteLength: bigint({ mode: "number" }).notNull(),
+    permissionMode: text().$type<"bypass" | "ask">(),
+    /** When the session's first agent started over the delivered files; null until then. */
+    deliveredAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("session_imported_conversations_native_key").on(
+      table.ownerUserId,
+      table.projectId,
+      table.harness,
+      table.nativeId,
+    ),
+  ],
+);
+/** The imported conversation's bytes, sealed by the digests in its row. */
+export const sessionImportedConversationFiles = pgTable(
+  "session_imported_conversation_files",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => sessionImportedConversations.sessionId, {
+        onDelete: "cascade",
+      }),
+    relativePath: text().notNull(),
+    content: bytea().notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.relativePath] })],
+);
 /** Source identities are historical and deliberately survive deletion of the source session. */
 export const sessionTurnBoundaries = pgTable(
   "session_turn_boundaries",
@@ -3536,8 +3610,12 @@ export const sessionTurnBoundaries = pgTable(
     id: text().primaryKey(),
     sessionId: text().notNull(),
     turnId: text(),
-    checkpointId: text().references(() => checkpoints.id, { onDelete: "set null" }),
-    seedId: text().references(() => sessionNativeSeeds.id, { onDelete: "restrict" }),
+    checkpointId: text().references(() => checkpoints.id, {
+      onDelete: "set null",
+    }),
+    seedId: text().references(() => sessionNativeSeeds.id, {
+      onDelete: "restrict",
+    }),
     observation: jsonbOf(BoundaryObservation).notNull(),
   },
   (table) => [unique().on(table.sessionId, table.turnId)],

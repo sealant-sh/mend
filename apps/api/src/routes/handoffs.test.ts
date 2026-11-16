@@ -202,7 +202,11 @@ const worldWith = async (
                           }),
                         )
                       : Effect.succeed(
-                          new Session({ ...current(), id: sessionId, status: "idle" }),
+                          new Session({
+                            ...current(),
+                            id: sessionId,
+                            status: "idle",
+                          }),
                         ),
                   ),
                 ),
@@ -277,7 +281,10 @@ const earlierHandoff = (
   bundle: ReturnType<typeof buildHandoffBundle>,
   owner: string,
   localBranch: string | null = "fix/login",
-  answered: { readonly commitsAhead: number; readonly previous: string | null } = {
+  answered: {
+    readonly commitsAhead: number;
+    readonly previous: string | null;
+  } = {
     commitsAhead: 2,
     previous: null,
   },
@@ -355,6 +362,7 @@ describe("GET /handoffs", () => {
     expect(await terms.json()).toEqual({
       bundleBytes: 64 * 1024 * 1024,
       fileBytes: 8 * 1024 * 1024,
+      conversationBytes: 64 * 1024 * 1024,
     });
     expect(api.world.calls).toEqual([]);
     expect(worldSize(api)).toEqual(before);
@@ -365,12 +373,20 @@ describe("GET /handoffs", () => {
     const MAX = Number.MAX_SAFE_INTEGER;
     for (const [limits, expected] of [
       [
-        { bundleBytes: 3 * 1024 * 1024, handoffFileBytes: 512 * 1024 },
-        { bundleBytes: 3 * 1024 * 1024, fileBytes: 512 * 1024 },
+        {
+          bundleBytes: 3 * 1024 * 1024,
+          handoffFileBytes: 512 * 1024,
+          conversationBytes: 1024,
+        },
+        {
+          bundleBytes: 3 * 1024 * 1024,
+          fileBytes: 512 * 1024,
+          conversationBytes: 1024,
+        },
       ],
       [
-        { bundleBytes: 0, handoffFileBytes: 0 },
-        { bundleBytes: MAX, fileBytes: MAX },
+        { bundleBytes: 0, handoffFileBytes: 0, conversationBytes: 0 },
+        { bundleBytes: MAX, fileBytes: MAX, conversationBytes: MAX },
       ],
     ] satisfies ReadonlyArray<[Parameters<typeof createTenancyApi>[0], unknown]>) {
       api = await worldWith(limits, freshSeen());
@@ -416,13 +432,18 @@ describe("GET /projects/:id/handoffs", () => {
     expect(await terms.json()).toEqual({
       bundleBytes: 64 * 1024 * 1024,
       fileBytes: 8 * 1024 * 1024,
+      conversationBytes: 64 * 1024 * 1024,
     });
     await api.dispose();
-    api = await worldWith({ bundleBytes: 0, handoffFileBytes: 0 }, freshSeen());
+    api = await worldWith(
+      { bundleBytes: 0, handoffFileBytes: 0, conversationBytes: 0 },
+      freshSeen(),
+    );
     const open = await api.request("alice", "GET", `/api/projects/${sharedA.project}/handoffs`);
     expect(await open.json()).toEqual({
       bundleBytes: Number.MAX_SAFE_INTEGER,
       fileBytes: Number.MAX_SAFE_INTEGER,
+      conversationBytes: Number.MAX_SAFE_INTEGER,
     });
   });
 
@@ -452,7 +473,10 @@ describe("POST /projects/:id/handoffs", () => {
     api.world.calls.splice(0, api.world.calls.length);
     const response = await post(api, "bob", bundle.bytes);
     expect(response.status).toBe(404);
-    expect(await response.json()).toMatchObject({ _tag: "NotFound", id: sharedA.project });
+    expect(await response.json()).toMatchObject({
+      _tag: "NotFound",
+      id: sharedA.project,
+    });
     expect(api.world.calls).toEqual([]);
     expect(seen.provisions).toEqual([]);
   });
@@ -488,7 +512,9 @@ describe("POST /projects/:id/handoffs", () => {
     expect(seen.audits).toEqual(["worktree.handed_off:worktree"]);
 
     sh(world.checkout, ["commit", "-q", "-am", "more"]);
-    const later = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:00:00.000Z" });
+    const later = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T09:00:00.000Z",
+    });
     const second = await post(api, "alice", later.bytes, "harness=codex&hold=false");
     expect(second.status).toBe(200);
     expect(await second.json()).toMatchObject({
@@ -509,7 +535,9 @@ describe("POST /projects/:id/handoffs", () => {
     const seen = freshSeen();
     api = await worldWith({}, seen);
     const bundle = buildHandoffBundle(world.checkout);
-    const earlier = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T06:00:00.000Z" });
+    const earlier = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T06:00:00.000Z",
+    });
     api.world.addWorktree(earlierHandoff("worktree-carol", "fix-login", earlier, "carol"));
     api.world.addWorktree(
       earlierHandoff("worktree-other-branch", "fix-login-2", earlier, "alice", "Fix/Login"),
@@ -556,7 +584,9 @@ describe("POST /projects/:id/handoffs", () => {
   it("names the account's own handoff of the branch that took the name first as the previous one, and stores it so", async () => {
     const seen = freshSeen();
     api = await worldWith({}, seen);
-    const winner = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T11:00:00.000Z" });
+    const winner = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T11:00:00.000Z",
+    });
     seen.landsFirst.set(
       "fix-login",
       earlierHandoff("worktree-winner", "fix-login", winner, "alice"),
@@ -608,9 +638,16 @@ describe("POST /projects/:id/handoffs", () => {
     api = await worldWith({ handoffFileBytes: 64 * 1024 }, seen);
     fs.mkdirSync(path.join(world.checkout, "assets"));
     fs.writeFileSync(path.join(world.checkout, "assets", "demo.bin"), Buffer.alloc(100 * 1024, 7));
-    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:30:00.000Z" });
-    fs.rmSync(path.join(world.checkout, "assets"), { recursive: true, force: true });
-    const first = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:20:00.000Z" });
+    const bundle = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T09:30:00.000Z",
+    });
+    fs.rmSync(path.join(world.checkout, "assets"), {
+      recursive: true,
+      force: true,
+    });
+    const first = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T09:20:00.000Z",
+    });
     api.world.addWorktree(earlierHandoff("worktree-first", "fix-login", first, "alice"));
     api.world.addWorktree(
       earlierHandoff("worktree-second", "fix-login-2", bundle, "alice", "fix/login", {
@@ -633,7 +670,9 @@ describe("POST /projects/:id/handoffs", () => {
 
   it("returns and holds only the receiving account's own session on a replay: a teammate's session in the worktree is neither", async () => {
     const seen = freshSeen();
-    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:40:00.000Z" });
+    const bundle = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T09:40:00.000Z",
+    });
     const carols = unlaunched(
       SessionId.make("session-carol"),
       WorktreeId.make("worktree-earlier"),
@@ -654,7 +693,9 @@ describe("POST /projects/:id/handoffs", () => {
   it("provisions one session for two different uploads of the same W by one account at once", async () => {
     const seen = freshSeen();
     api = await worldWith({}, seen);
-    const bundle = buildHandoffBundle(world.checkout, { cutAt: "2026-10-18T09:50:00.000Z" });
+    const bundle = buildHandoffBundle(world.checkout, {
+      cutAt: "2026-10-18T09:50:00.000Z",
+    });
     const gate = Deferred.makeUnsafe<void>();
     seen.provisionGates.push(gate);
     const one = post(api, "alice", bundle.bytes);
@@ -844,7 +885,10 @@ describe("POST /projects/:id/handoffs", () => {
     fs.mkdirSync(path.join(world.checkout, "assets"));
     fs.writeFileSync(path.join(world.checkout, "assets", "demo.bin"), Buffer.alloc(100 * 1024, 7));
     const bundle = buildHandoffBundle(world.checkout);
-    fs.rmSync(path.join(world.checkout, "assets"), { recursive: true, force: true });
+    fs.rmSync(path.join(world.checkout, "assets"), {
+      recursive: true,
+      force: true,
+    });
     const response = await post(api, "alice", bundle.bytes);
     expect(response.status).toBe(429);
     expect(await response.json()).toMatchObject({

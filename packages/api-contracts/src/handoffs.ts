@@ -14,6 +14,12 @@ export class HandoffTerms extends Schema.Class<HandoffTerms>("HandoffTerms")({
   bundleBytes: Schema.Int,
   /** The largest file the client carries; larger ones stay in the checkout, named. */
   fileBytes: Schema.Int,
+  /**
+   * The largest conversation archive `POST /projects/:id/conversations` takes, its header line and
+   * its files' bytes; the client names a larger one with its size and leaves it behind. Absent from
+   * a server that takes no imported conversations.
+   */
+  conversationBytes: Schema.optionalKey(Schema.Int),
 }) {}
 
 export const HANDOFF_REFUSALS = [
