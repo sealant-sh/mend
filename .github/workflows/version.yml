@@ -6,18 +6,23 @@ on:
   push:
     branches:
       - main
+  # A second chance for approve-checks: GitHub can create the held run long after the push.
+  schedule:
+    - cron: "29 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# Grouped by event too, so an hourly run never waits behind, or cancels, a push's pending run.
 concurrency:
-  group: version-${{ github.ref }}
+  group: version-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: false
 
 jobs:
   version:
     name: Open version PR
-    if: github.repository == 'sealant-sh/Mend'
+    if: github.repository == 'sealant-sh/Mend' && github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
@@ -46,38 +51,58 @@ jobs:
   # GitHub holds the Version Packages PR's pull_request runs at `action_required` because
   # github-actions[bot] pushed its branch, so the required `checks` never reports on it. Runs
   # dispatched on the branch do not count either: the PR shows only its held runs. Approving the
-  # held run starts it as an ordinary pull_request run, which the PR counts. Only the run this
-  # workflow's own push created is approved: CI, the one workflow that reports `checks`, on the
-  # PR's head commit, triggered by github-actions[bot]. A job of its own, so the token that can push
+  # held run starts it as an ordinary pull_request run, which the PR counts. Only the run the version
+  # job's push created is approved: CI, the one workflow that reports `checks`, on the PR's head
+  # commit, triggered by github-actions[bot]. A job of its own, so the token that can push
   # cannot approve. Packaged acceptance is not a required check; the release still dispatches it
   # (docs/operations/next-channel.md, step 8).
+  #
+  # GitHub usually creates the held run seconds after the push, but when Actions is slow it can
+  # take longer than the push's run waits (seven minutes on 16 Nov 2026). The push's run then
+  # warns and leaves it to the hourly run, which finds the open Version Packages PR and approves
+  # its held run the same way. The hourly run fails only when the PR's head is over an hour old
+  # and still has no CI run, so a run GitHub never creates stays loud.
   approve-checks:
     name: Start the Version Packages PR's checks
     needs: version
-    if: needs.version.outputs.pull-request != ''
+    if: >-
+      !cancelled() && github.repository == 'sealant-sh/Mend' && (github.event_name != 'push' ||
+      needs.version.outputs.pull-request != '')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
       actions: write
+      contents: read
       pull-requests: read
     steps:
       - name: Approve its held CI run
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          # Empty on an hourly or dispatched run: the step looks the open PR up.
           PR: ${{ needs.version.outputs.pull-request }}
-          # GitHub creates the runs a few seconds after the push; give up after five minutes.
-          TRIES: "30"
+          # After a push, look for five minutes; an hourly run looks once.
+          TRIES: ${{ github.event_name == 'push' && '30' || '1' }}
           POLL_SECONDS: "10"
+          STALE_SECONDS: "3600"
         run: |
           set -euo pipefail
           branch=changeset-release/main
-          head=$(gh pr view "$PR" --json headRefName,headRefOid \
-            --jq "select(.headRefName == \"$branch\") | .headRefOid")
-          if [ -z "$head" ]; then
+          if [ -z "$PR" ]; then
+            PR=$(gh pr list --head "$branch" --state open --json number --jq '.[0].number // empty')
+            if [ -z "$PR" ]; then
+              echo "No Version Packages PR is open"
+              exit 0
+            fi
+          fi
+          pr=$(gh pr view "$PR" --json headRefName,headRefOid,commits \
+            --jq "select(.headRefName == \"$branch\") | [.headRefOid, .commits[-1].committedDate] | @tsv")
+          if [ -z "$pr" ]; then
             echo "::error::#$PR is not the Version Packages PR (head branch is not $branch)"
             exit 1
           fi
+          IFS=$'\t' read -r head committed <<<"$pr"
           pending="ci.yml"
           for try in $(seq "$TRIES"); do
             runs=$(gh api "repos/$GH_REPO/actions/runs?head_sha=$head&event=pull_request&per_page=50" \
@@ -85,7 +110,7 @@ jobs:
                 | [.path, .id, .conclusion // \"none\", .actor.login] | @tsv")
             left=""
             for workflow in $pending; do
-              # Newest first: the run this push created.
+              # Newest first: the run the latest push created.
               run=$(printf '%s\n' "$runs" | awk -F '\t' -v path=".github/workflows/$workflow" \
                 '$1 == path { print; exit }')
               if [ -z "$run" ]; then
@@ -107,5 +132,14 @@ jobs:
             [ -z "$pending" ] && exit 0
             [ "$try" -lt "$TRIES" ] && sleep "$POLL_SECONDS"
           done
-          echo "::error::No pull_request run of$pending appeared on $head"
+          if [ "$EVENT" = push ]; then
+            echo "::warning::No pull_request run of$pending appeared on $head yet; Version's hourly run approves it once GitHub creates it"
+            exit 0
+          fi
+          age=$(( $(date +%s) - $(date -d "$committed" +%s) ))
+          if [ "$age" -lt "$STALE_SECONDS" ]; then
+            echo "No pull_request run of$pending on $head yet, $((age / 60)) minutes after its commit; the next hourly run looks again"
+            exit 0
+          fi
+          echo "::error::No pull_request run of$pending appeared on $head in $((age / 60)) minutes"
           exit 1
