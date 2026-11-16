@@ -132,6 +132,7 @@ flows reuse what earlier ones made:
   lines and, at the end, `✓ exited · code 0 · recorded`; exit code `0`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
+- **Sample:** yes
 - **Areas:** `packages/sessions/`, `apps/api/src/machine-boat.ts`, `apps/cli/src/`
 
 ### start-session.docker-run

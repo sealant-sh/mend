@@ -128,7 +128,8 @@ gh run list --repo sealant-sh/mend --workflow ci.yml --event schedule --branch m
 gh run view <id> --repo sealant-sh/mend --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
 /home/yiannis/Developer/OSS/Sealant/agent-home/bin/ci failures --dry-run --json --repos mend \
   --since <createdAt>
-gh run view <id> --repo sealant-sh/mend --log --job <the formal job id> | grep -E '^\S+\s+\S+: '
+gh run view <id> --repo sealant-sh/mend --log --job <the formal job id> \
+  | cut -f3- | sed -E 's/^\S+Z //' | grep -E '^\S+\s+\S+: '
 ```
 
 From `ci failures` keep the entries whose `runUrl` is this run: each failed, retried, over-budget or
@@ -154,33 +155,42 @@ What else runs only on a schedule, and whether this check covers it:
 **Done when** the report's first block has the run, its commit, every job's result, each failed or
 retried test, each model's result, and the probe's conclusion, or says there was no run.
 
-## 3. Build
+## 3. Build and hold
+
+Another check can take the box while a build runs, so the hold comes right after the dispatch, not
+after the build:
 
 ```sh
 gh workflow run preview.yml --repo sealant-sh/mend --ref main
 gh run list --repo sealant-sh/mend --workflow preview.yml --branch main --event workflow_dispatch \
   --limit 1 --json databaseId,number,headSha,createdAt
+pnpm verify box prepare --tag $TAG --yes     # pg_dumpall to /root/backups, and the hold
 ```
 
 Take the run whose `createdAt` is after your dispatch. Its `headSha` is the commit you test: when it
 is not `$SHA` (main moved), `git checkout --detach <headSha>`, `pnpm install --frozen-lockfile`, and
-set `SHA`, `TAG` and `E` again. Wait with
-`timeout 45m gh run watch <id> --repo sealant-sh/mend --interval 60 --exit-status`. The version is
+set `SHA`, `TAG` and `E` again before `prepare`. A `prepare` that is not `passed` because the box is
+held, busy or full is a skip, as in step 1: `gh run cancel <id>`, remove the lock, and end with the
+skip line. A skip writes no `runs` entry: it made nothing on the box. Record `dump` in the ledger
+once `prepare` passes.
+
+Then wait for the build as background work, never in a polling loop of your own: start
+`timeout 45m gh run watch <id> --repo sealant-sh/mend --interval 60 --exit-status` in the background
+and wait for it to end. The version is
 `node scripts/next-version.mjs --package apps/cli --preview <number> --main origin/main $SHA`.
 
-A failed build is a failure of `main`: no flow runs. File it (step 7) naming the failed job, then go
-to step 8.
+A failed build is a failure of `main`: no flow runs. File it (step 7) naming the failed job, then
+wind down (step 6) and finish (step 8).
 
-**Done when** the build passed and you have `$SHA`, `$TAG` and the version.
+**Done when** you hold the box, the build passed, and you have `$SHA`, `$TAG` and the version.
 
-## 4. Hold and deploy
+## 4. Deploy
 
 ```sh
-pnpm verify box prepare --tag $TAG --yes     # pg_dumpall to /root/backups, and the hold
 pnpm verify box cli --tag $TAG --yes         # this commit's CLI, under /root/box-$TAG-cli
 ```
 
-Record `dump` and `cliDir` in the ledger from their results. Then set up this machine's side:
+Record `cliDir` in the ledger from its result. Then set up this machine's side:
 
 ```sh
 mkdir -p $E && P=$(mktemp -d) && chmod 700 $P
