@@ -5,6 +5,7 @@ import {
   chooseTidy,
   deployNeeds,
   describeTidy,
+  describeUsage,
   MEASURED_DEPLOY_BYTES,
   parseListing,
   parseTidyRun,
@@ -180,15 +181,15 @@ test("workspace images and other tagged images are never chosen", () => {
   assert.ok(!removed.some((ref) => ref.startsWith("postgres") || ref === id(600)));
 });
 
-test("build cache unused for two days goes; in use, internal or fresh stays", () => {
+test("build cache unused for two days goes, internal records included; in use or fresh stays", () => {
   const choice = chooseTidy({ listing: parseListing(boxListing()), hold, tag: "pr1755" });
   assert.deepEqual(
     choice.cache.map((record) => record.id),
-    ["old"],
+    ["old", "frontend"],
   );
   assert.match(
     describeTidy(choice),
-    /1 build cache records unused for 48 h \(5\.0 GiB, 5\.0 GiB of it shared/,
+    /2 build cache records unused for 48 h \(5\.0 GiB, 0\.0 GiB of it not shared with an image/,
   );
 });
 
@@ -211,9 +212,11 @@ test("the removal script re-checks the hold and removes only what was chosen", (
     script,
     /grep -q '"tag":"pr1755"' \/var\/lib\/mend-box-check\/hold.json 2>\/dev\/null \|\| \{/,
   );
-  assert.doesNotMatch(script, /system prune|image prune| -a\b|--all|rmi -f|image rm -f|rm -rf/);
+  assert.doesNotMatch(script, /system prune|image prune| -a\b|rmi -f|image rm -f|rm -rf/);
   assert.equal(script.match(/docker image rm /g).length, choice.images.length);
-  assert.match(script, /docker buildx prune --force --filter until=48h/);
+  // --all on the builder prune only: it removes build cache, never an image or a container.
+  assert.match(script, /docker buildx prune --all --force --filter until=48h/);
+  assert.equal(script.match(/--all/g).length, 1);
   assert.throws(() => tidyScript(choice, "pr1; reboot"), /unexpected tag/);
 });
 
@@ -225,7 +228,7 @@ test("the removal's output says what went, what failed, and free space before an
       "removed=image|ghcr.io/sealant-sh/mend:0.37.0-next.1.preview.211",
       `failed=image|${id(802)}|Error response from daemon: conflict`,
       "pruned=Total: 5GB",
-      `cacheafter=${JSON.stringify({ BuildCache: [{ ID: "fresh" }, { ID: "oldbusy" }, { ID: "frontend" }] })}`,
+      `cacheafter=${JSON.stringify({ BuildCache: [{ ID: "fresh" }, { ID: "oldbusy" }] })}`,
       "removed=dump|/root/backups/pre-1.sql",
       "after=21000000000",
     ].join("\n"),
@@ -233,7 +236,7 @@ test("the removal's output says what went, what failed, and free space before an
   );
   assert.equal(run.before, 6e9);
   assert.equal(run.after, 21e9);
-  assert.deepEqual(run.removed.cache, ["old"]);
+  assert.deepEqual(run.removed.cache, ["old", "frontend"]);
   assert.deepEqual(run.removed.dumps, ["/root/backups/pre-1.sql"]);
   assert.equal(run.failed[0].ref, id(802));
   assert.equal(
@@ -249,4 +252,15 @@ test("one deploy needs the box's newest preview image, dump and workspace image"
   assert.equal(need.parts.workspace, Math.trunc(7.3 * GB));
   assert.equal(need.bytes, need.parts.image + need.parts.dump + need.parts.workspace);
   assert.equal(deployNeeds(parseListing("")).bytes, MEASURED_DEPLOY_BYTES);
+});
+
+test("plan's usage line names the build cache, what no image shares, and the workspace images", () => {
+  assert.equal(
+    describeUsage(parseListing(boxListing())),
+    "build cache 7.0 GiB in 4 records (2.0 GiB not shared with an image), workspace images 15.3 GiB in 3",
+  );
+  assert.equal(
+    describeUsage(parseListing("")),
+    "build cache unknown, workspace images 0.0 GiB in 0",
+  );
 });
