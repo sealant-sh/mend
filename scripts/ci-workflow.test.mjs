@@ -56,6 +56,7 @@ const completed = (
   "test-engines-b": { result: "success" },
   "test-clients-a": { result: "success" },
   "test-clients-b": { result: "success" },
+  receipt: { result: "success" },
   packaging: { result: packaging === "false" ? "skipped" : "success" },
   "mobile-web": { result: mobile === "false" ? "skipped" : "success" },
   "store-image-git": { result: store === "false" ? "skipped" : "success" },

@@ -152,7 +152,9 @@ screenshot is withheld: [references/evidence.md](references/evidence.md).
 The verdict file lists what the judge asked for under "What I saw": answer each line. Once
 `evidence` passes on the commit you push, the receipt's `run-it` line reads `passed` (AGENTS.md, Run
 a Feature Before It Merges). Post the verdict on the PR yourself. Nobody repeats the run. A CLI-only
-change reaches `passed` the same way, through `drive cli` or `drive tui`.
+change reaches `passed` the same way, through `drive cli` or `drive tui`. Then print the receipt on
+that commit and put it in the PR body: CI's `receipt` job fails the PR until the body carries it,
+and it runs again by itself when you edit the body.
 
 ## 8. Down
 

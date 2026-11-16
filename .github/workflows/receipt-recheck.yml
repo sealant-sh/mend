@@ -1,0 +1,45 @@
+name: Receipt recheck
+
+# CI's `receipt` job (ci.yml) reads a pull request's body and labels from the API when it runs, and
+# the required `checks` waits for it. An author pushes first and pastes the receipt after, so an
+# edit of the body, or a person adding or removing the waiver label, must be enough to turn `checks`
+# green without a new commit. This re-runs `receipt`, and `checks` after it, in the head's CI run:
+# only once that run has finished, and only when `receipt` is the one job that failed, since any
+# other failure would fail `checks` again. When `receipt` has not started yet, it reads the new body
+# itself and nothing is re-run.
+#
+# pull_request_target runs this file, and the checkout below, from main, with a token that may
+# re-run jobs. Nothing from the pull request's branch is checked out or run: tooling/verify/recheck.mjs
+# reads the PR, its CI run and that run's jobs through the API, and asks for a re-run.
+on:
+  pull_request_target:
+    types: [edited, labeled, unlabeled]
+
+permissions:
+  actions: write
+  pull-requests: read
+
+# The newest edit wins: an older one's wait is cancelled.
+concurrency:
+  group: receipt-recheck-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  recheck:
+    # A title or base change is an edit too; only the body and the labels decide the receipt.
+    if: ${{ github.event.action != 'edited' || github.event.changes.body != null }}
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      # The base branch, as pull_request_target checks out by default; never the PR's head.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Re-run receipt when it already read an older body
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: node tooling/verify/recheck.mjs
