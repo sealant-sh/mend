@@ -187,6 +187,7 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+      MEND_TEST_RFB_XVNC_BASE: debian:trixie-slim
       VITEST_MAX_THREADS: "2"
       VITEST_MAX_FORKS: "2"
       VITEST_MAX_WORKERS: "2"
@@ -207,9 +208,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      - name: Pull the test fixtures' base images
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs pull alpine:3.22 debian:trixie-slim alpine:3.20
       - name: Build isolated zsh fixture for default shell-profile tests
         run:
-          docker build -t mend-shell-profile-test:alpine-3.22
+          docker build --build-arg BASE=alpine:3.22 -t mend-shell-profile-test:alpine-3.22
           packages/sessions/test/fixtures/shell-profile
       - name: Tests including required PostgreSQL repositories, migrations and jobs
         run: node scripts/ci-shards.mjs engines
@@ -248,6 +253,7 @@ jobs:
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
+      MEND_TEST_RFB_XVNC_BASE: debian:trixie-slim
       VITEST_MAX_THREADS: "2"
       VITEST_MAX_FORKS: "2"
       VITEST_MAX_WORKERS: "2"
@@ -268,9 +274,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
+      - name: Pull the test fixtures' base images
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs pull alpine:3.22 debian:trixie-slim alpine:3.20
       - name: Build isolated zsh fixture for default shell-profile tests
         run:
-          docker build -t mend-shell-profile-test:alpine-3.22
+          docker build --build-arg BASE=alpine:3.22 -t mend-shell-profile-test:alpine-3.22
           packages/sessions/test/fixtures/shell-profile
       - name: API server tests and sessions native shard 2/2
         run: node scripts/ci-shards.mjs engines-b
@@ -303,6 +313,9 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       VITEST_MAX_THREADS: "2"
@@ -353,6 +366,8 @@ jobs:
           --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/s3-contract-minio.test.mjs
       - name: Live S3 contracts on disposable Garage and strict MinIO fixtures
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: pnpm run test:s3-contract
       - name: CI shard process supervision regressions
         run:

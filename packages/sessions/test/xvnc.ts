@@ -11,10 +11,17 @@ export const XVNC_PASSWORD = "handpass";
 
 /** Builds a stage of the fixtures' Dockerfile, a cache hit once the global setup built it. */
 export const fixtureImage = (target: keyof typeof IMAGES): string => {
-  execFileSync("docker", ["build", "-q", "--target", target, "-t", IMAGES[target], CONTEXT], {
-    stdio: "ignore",
-    timeout: 600_000,
-  });
+  // CI pulls the base through scripts/ci-images.mjs and names its local tag here (SLNT-1071).
+  const base = process.env["MEND_TEST_RFB_XVNC_BASE"];
+  const args = base === undefined ? [] : ["--build-arg", `XVNC_BASE=${base}`];
+  execFileSync(
+    "docker",
+    ["build", "-q", ...args, "--target", target, "-t", IMAGES[target], CONTEXT],
+    {
+      stdio: "ignore",
+      timeout: 600_000,
+    },
+  );
   return IMAGES[target];
 };
 

@@ -86,6 +86,17 @@ export const CI_IMAGES = {
     digest: "sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
     official: true,
   },
+  // Every PR's fixtures: the shell-profile image's base and the S3 contract's helper (both pinned to
+  // the digest the fixtures always had; the tag has moved on), the rfb fixture's Xvnc base, and the
+  // sessions pre-release check's small image.
+  "alpine:3.22": {
+    digest: "sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8",
+    official: true,
+  },
+  "debian:trixie-slim": {
+    digest: "sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2",
+    official: true,
+  },
   // The package-mirror runtime test's clients (scripts/mirrors-runtime.test.mjs).
   "curlimages/curl:8.16.0": {
     digest: "sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
@@ -101,7 +112,10 @@ export const CI_IMAGES = {
   },
 };
 
-const PULL_BACKOFF_MS = [0, 10_000, 30_000];
+// CI_IMAGES_PULL_WAITS_MS (comma-separated) shortens the waits for a test that fakes a refusal.
+const PULL_BACKOFF_MS = process.env.CI_IMAGES_PULL_WAITS_MS
+  ? process.env.CI_IMAGES_PULL_WAITS_MS.split(",").map(Number)
+  : [0, 10_000, 30_000];
 // A copy that is not on GHCR yet (a digest changed in this PR, before ci-images.yml ran on main).
 const ABSENT = /manifest unknown|not found|denied|name unknown/i;
 

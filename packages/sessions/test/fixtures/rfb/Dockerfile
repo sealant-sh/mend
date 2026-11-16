@@ -1,6 +1,9 @@
 # Base images by digest from Docker's official-image mirror on ECR Public: Docker Hub limits
-# anonymous pulls per runner address, and CI has no login.
-FROM public.ecr.aws/docker/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS xvnc
+# anonymous pulls per runner address. CI pulls XVNC_BASE through scripts/ci-images.mjs (its GHCR
+# copy, then the public mirrors, with retries) and passes the local tag through
+# MEND_TEST_RFB_XVNC_BASE (test/xvnc.ts, SLNT-1071).
+ARG XVNC_BASE=public.ecr.aws/docker/library/debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
+FROM ${XVNC_BASE} AS xvnc
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     fonts-dejavu-core locales tigervnc-standalone-server tigervnc-tools x11-utils \
