@@ -21,6 +21,9 @@ export const renderWithTrpc = async (
   queryClient: QueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
 ): Promise<Root> => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
+  // A tab's dialogs load their code on first open (`kit/modal`). jsdom has no idle callback to
+  // preload it, so a test's first open would race a cold import against `settle`'s few ticks.
+  await import("#/components/kit/modal-popup");
   const client = createTRPCClient<AppRouter>({
     links: [
       httpLink({
