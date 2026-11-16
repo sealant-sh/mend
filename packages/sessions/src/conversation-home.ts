@@ -19,6 +19,8 @@ import { withMendMcp } from "./mend-mcp/launch.ts";
 import type { PersonalMcp } from "./mend-mcp/personal.ts";
 import { shellQuote } from "./workspace-files.ts";
 
+/** Claude names a project directory after the working directory: `/workspace/repo` → `-workspace-repo`. */
+export { claudeProjectDirOf } from "@mend/agent-protocol";
 export {
   CLAUDE_NEUTRAL_ENV,
   type ClaudeSettingsKind,
@@ -84,9 +86,6 @@ export type ConversationHarness = "claude" | "codex";
 
 export const isConversationHarness = (harness: string | null): harness is ConversationHarness =>
   harness === "claude" || harness === "codex";
-
-/** Claude names a project directory after the working directory: `/workspace/repo` → `-workspace-repo`. */
-export const claudeProjectDirOf = (cwd: string): string => cwd.replaceAll(/[^A-Za-z0-9]/g, "-");
 
 // ─── what a process gets ─────────────────────────────────────────────────────
 
