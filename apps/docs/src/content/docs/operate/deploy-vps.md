@@ -14,6 +14,10 @@ separately.
 
 ## Decide how the server is reached
 
+[How people reach the server](/getting-started/install/#how-people-reach-the-server) shows the four
+ways to reach a server, and what reaches each of Mend's ports in each. This page walks through a
+VPS.
+
 Mend asks the operator to state how an instance is reached, in `MEND_EXPOSURE`: `loopback` (this
 machine only), `private` (a network you control admission to, such as a tailnet, a LAN or a VPN) or
 `public`. The default is `private`. `mend server setup --exposure <value>` declares it and keeps it
@@ -141,6 +145,19 @@ npm install --global @sealant/mend
 mend login --url http://your-vps:3105
 mend doctor
 ```
+
+### Behind HTTPS you run
+
+If the VPS already runs a proxy such as nginx, Caddy or a Cloudflare Tunnel, keep Mend on
+`127.0.0.1` and point the proxy at `http://127.0.0.1:3105`:
+
+```sh
+mend server setup --url https://mend.example.com
+```
+
+The proxy reaches Mend's web port only. Give T3 Code a name of its own through the proxy, and
+publish workspace SSH with `--ssh-bind` if you use it from other devices.
+[HTTPS you run](/getting-started/install/#https-you-run) says how.
 
 Server lifecycle commands run on the server machine. A remote client URL does not turn
 `mend server setup` into a remote provisioning command.

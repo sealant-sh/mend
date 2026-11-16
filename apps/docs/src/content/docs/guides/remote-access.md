@@ -31,20 +31,12 @@ flowchart LR
 
 ## Reach the server
 
-Web and workspace SSH bind to localhost by default. Reaching the server from elsewhere is an
-explicit choice when you set up the server: `mend server setup` asks how people reach it (just this
-machine, your private network or Tailscale, or the public internet with HTTPS) and sets the
-addresses from the answer. With flags:
-
-```sh
-mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
-  --origin http://localhost:3105
-```
-
-Postgres publishes no port and no image registry is published. Binding `0.0.0.0` opens every IPv4
-interface. Registration closes after the first account and everyone else joins by invitation, so
-create that account before anyone else can reach the server. Read
-[Install Mend](/getting-started/install/#network-boundary).
+Mend's ports listen on localhost by default. Reaching the server from another device is a choice you
+make when you set it up: your network or Tailscale, Mend's edge, or HTTPS you run yourself. Each
+choice decides which of Mend's ports (web, workspace SSH, the T3 Code gateway) other devices reach.
+[How people reach the server](/getting-started/install/#how-people-reach-the-server) shows the four
+setups, their flags, and what reaches each port. Registration closes after the first account and
+everyone else joins by invitation, so create that account before anyone else can reach the server.
 
 A private network is one way to run Mend, not a requirement. Mend authenticates and authorizes every
 request itself, so a tailnet or a VPN in front of it is an extra gate you may add. Tell Mend how it

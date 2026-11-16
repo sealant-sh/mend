@@ -380,6 +380,8 @@ that authorization choice. Stop and background work use the existing session con
 The gateway follows the exposure Mend's web port has
 ([Exposure and the public gate](/operate/exposure/)). Every device pairs through Mend wherever it is
 published, so who may use it does not change with where it listens.
+[How people reach the server](/getting-started/install/#how-people-reach-the-server) shows where its
+port, 3120, listens in each setup, beside Mend's web and SSH ports.
 
 - **Just this machine** (`--exposure loopback`, or Mend on `127.0.0.1`): the gateway is published on
   `127.0.0.1:3120`. T3 Code on the same machine uses `http://127.0.0.1:3120`.
