@@ -397,9 +397,9 @@ interface SessionDto extends SessionCaptureLike {
   readonly baseRef: string | null;
   readonly status: string;
   readonly summary: string | null;
-  /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
   /** It waits for its first message over an imported conversation; absent from older servers. */
   readonly importedConversationWaiting?: boolean;
+  /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
   /**
@@ -1845,12 +1845,21 @@ const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   return attachPicked(config, match, tunnels);
 };
 
+/**
+ * Words for a session that holds an imported conversation no agent has started over (SLNT-895):
+ * it has no terminal to attach or resume, and its first message is what starts its agent.
+ */
+const waitingForFirstMessage = (session: SessionDto): string =>
+  `session ${session.id.slice(0, 8)} is waiting for its first message · mend message ${session.id.slice(0, 8)} --resume "…" starts ${session.harness} on its imported conversation`;
+
 /** Attach to one resolved session — the tail both `mend attach` paths share. */
 const attachPicked = async (
   config: CliConfig,
   session: SessionDto,
   tunnels: AttachTunnels | null,
 ): Promise<never> => {
+  // Nothing would ever start it: following its `starting` would wait for good.
+  if (session.importedConversationWaiting === true) return fail(waitingForFirstMessage(session));
   say(
     `${green("✓")} attaching to ${sessionDisplayName(session)} · ${session.harness} ${dim(session.id.slice(0, 8))}${detachHint()}`,
   );
@@ -5677,6 +5686,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
         : `no session matches "${prefix}"`,
     );
   }
+  if (match.importedConversationWaiting === true) return fail(waitingForFirstMessage(match));
   if (agentLiveIn(detail, match)) {
     return fail(
       `session ${match.id.slice(0, 8)} is live — attach: mend attach ${match.id.slice(0, 8)}`,

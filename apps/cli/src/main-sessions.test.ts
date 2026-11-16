@@ -452,3 +452,44 @@ describe("a long launch", spawning, () => {
     }
   }, 30_000);
 });
+
+describe("Mend CLI on a session waiting for its first message (SLNT-895)", spawning, () => {
+  // An imported conversation's session: provisioned, never launched, nothing will start it.
+  const waiting = { ...session, status: "starting", importedConversationWaiting: true };
+  const words =
+    'mend: session session- is waiting for its first message · mend message session- --resume "…" starts codex on its imported conversation\n';
+
+  it("refuses to attach, naming the message that starts it, instead of waiting for good", async () => {
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/sessions") json(response, [waiting]);
+      else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["attach", "session-"]);
+    try {
+      const { code } = await cli.exited;
+      expect(code).toBe(1);
+      expect(cli.stderr()).toBe(words);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("refuses to resume it the same way", async () => {
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/projects") json(response, [project]);
+      else if (request.url === `/api/projects/${project.id}`)
+        json(response, { project, sessions: [waiting], annotations: [], worktrees: [] });
+      else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["resume", "session-", "--project", project.name]);
+    try {
+      const { code } = await cli.exited;
+      expect(code).toBe(1);
+      expect(cli.stderr()).toBe(words);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+});
