@@ -153,6 +153,15 @@ CI or reading the code is not a verdict. The receipt's `run-it` line reads `pass
 A judgement is about one commit. After a push that changes what the feature does, judge again; after
 one that doesn't, say so under the receipt.
 
+CI holds the PR to it. The `receipt` job, which the required `checks` waits for, fails a PR whose
+diff owes `judge` and `run-it` unless its body carries the receipt for its head with both `passed`.
+Paste `pnpm verify status --markdown` as printed: CI reads its `json verify-receipt` block. A
+receipt for an earlier commit still counts when the product-source part of the change is the same by
+patch id (a rebase, or a push of only tests or docs). Editing the body is enough: the job runs again
+by itself. A judgement recorded with `--self` passes, and the job says the author judged it. The
+`verify: waived` label waives it on one PR. That label is a person's decision: agents never add it,
+and never remove it.
+
 This is the feature's one check. Nobody repeats your run and no review panel follows it. Ask for a
 second, independent review (the home repo's `interrogate` skill) only when two designs a reviewer
 could defend are genuinely in dispute. Grade what the run finds by Fix Now or File in

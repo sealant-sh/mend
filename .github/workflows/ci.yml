@@ -130,7 +130,7 @@ jobs:
           scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs scripts/ci-test-inputs.test.mjs
           tooling/verify/plan.test.mjs tooling/verify/verify.test.mjs tooling/verify/box.test.mjs
           tooling/verify/stack.test.mjs tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
-          tooling/verify/formal.test.mjs
+          tooling/verify/formal.test.mjs tooling/verify/gate.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
@@ -812,9 +812,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Retain the required check name. A missing classifier or skipped required job
-  # must fail, even when every job that did run passed.
-  checks:
+  # A pull request whose diff owes `judge` and `run-it` (tooling/verify/obligations.json) carries a
+  # receipt for its head in its body, with both passed (AGENTS.md, Run a Feature Before It Merges).
+  # It waits for every other job so that it reads the body as late as it can, and it reads the body
+  # and labels from the API, never the event payload: receipt-recheck.yml re-runs it, with `checks`
+  # after it, when the body is edited or the waiver label changes after this has run. Read-only:
+  # the PR's body and its diff, nothing else; no install.
+  receipt:
     needs:
       [
         changes,
@@ -833,6 +837,49 @@ jobs:
       ]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+      - if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Require a judged, passed verify receipt in the PR body
+        if: ${{ github.event_name == 'pull_request' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: node tooling/verify/gate.mjs
+
+  # Retain the required check name. A missing classifier or skipped required job
+  # must fail, even when every job that did run passed.
+  checks:
+    needs:
+      [
+        changes,
+        static,
+        test-engines,
+        test-engines-b,
+        test-clients-a,
+        test-clients-b,
+        packaging,
+        mobile-web,
+        store-image-git,
+        formal,
+        docker-suites,
+        preview-acceptance,
+        vscode-e2e,
+        receipt,
+      ]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04-arm
     steps:
       # The gate reads only `needs`: no checkout, and the runner image's Node runs it.
       - name: Require every selected CI job
@@ -841,7 +888,7 @@ jobs:
         run: |
           node --input-type=module <<'NODE'
           const jobs = JSON.parse(process.env.CI_JOB_RESULTS);
-          for (const name of ["changes", "static", "test-engines", "test-engines-b", "test-clients-a", "test-clients-b"]) {
+          for (const name of ["changes", "static", "test-engines", "test-engines-b", "test-clients-a", "test-clients-b", "receipt"]) {
             if (jobs[name]?.result !== "success") {
               throw new Error(`${name} must succeed, observed ${jobs[name]?.result ?? "missing"}`);
             }

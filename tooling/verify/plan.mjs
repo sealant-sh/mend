@@ -1,8 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, matchesGlob } from "node:path";
-
-import { parse } from "yaml";
 
 import { extras } from "../../scripts/ci-scope.mjs";
 import { readCoverages, touches } from "../../scripts/formal-coverage.mjs";
@@ -120,7 +119,9 @@ export const formalObligations = (root, files) =>
 /** The `changes` output each job's `if:` reads, or null for a job every PR runs. */
 const laneOf = (job) => /needs\.changes\.outputs\.(\w+)/.exec(job.if ?? "")?.[1] ?? null;
 
+// `yaml` is loaded only here: CI's receipt gate (gate.mjs) matches obligations with no install.
 export const readCiJobs = (root) => {
+  const { parse } = createRequire(import.meta.url)("yaml");
   const workflow = parse(readFileSync(join(root, ".github/workflows/ci.yml"), "utf8"));
   return Object.entries(workflow.jobs).map(([job, body]) => ({ job, lane: laneOf(body) }));
 };
