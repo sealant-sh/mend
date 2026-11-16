@@ -17,18 +17,18 @@ project, in [Environment variables](/guides/environment-variables/).
 
 ## Origins, secrets and processes
 
-| Variable                      | Default                    | What it does                                                                                                             |
-| ----------------------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `APP_URL`                     | `http://localhost:3105`    | The exact browser origin, with no path or trailing slash. Links use it, and cookies are `Secure` when it is `https`.     |
-| `MEND_ALLOWED_ORIGINS`        | `[]`                       | A JSON array of further exact browser origins. No wildcards.                                                             |
-| `MEND_TRUSTED_PROXIES`        | empty                      | Comma-separated CIDRs of the proxy hops whose `X-Forwarded-For` entries Mend believes.                                   |
-| `BETTER_AUTH_SECRET`          | a development value        | The secret sign-in sessions are signed with. Set it in every deployment.                                                 |
-| `BETTER_AUTH_TRUSTED_ORIGINS` | unset                      | Must stay unset or empty; any other value refuses to start. Origins come from `APP_URL` and `MEND_ALLOWED_ORIGINS` only. |
-| `MEND_MODE`                   | `all`                      | Which halves of the API process run: `all`, `api` (HTTP only) or `worker`. `web` is read as `api`.                       |
-| `PORT`                        | `3101` (API), `3105` (web) | The port the process listens on.                                                                                         |
-| `MEND_API_URL`                | `http://localhost:3101`    | Web tier: the API it proxies `/api` to.                                                                                  |
-| `MEND_APP_URL`                | unset                      | Web tier: an app server already running. Unset, the web tier starts its own on `127.0.0.1:3210`.                         |
-| `MEND_VERSION`                | `dev`                      | The version `/health` reports and the reassessment gate item compares. Release images set it.                            |
+| Variable                      | Default                    | What it does                                                                                                                                                   |
+| ----------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `APP_URL`                     | `http://localhost:3105`    | The exact browser origin, with no path or trailing slash. Links use it, cookies are `Secure` when it is `https`, and every workspace gets it as `MEND_ORIGIN`. |
+| `MEND_ALLOWED_ORIGINS`        | `[]`                       | A JSON array of further exact browser origins. No wildcards.                                                                                                   |
+| `MEND_TRUSTED_PROXIES`        | empty                      | Comma-separated CIDRs of the proxy hops whose `X-Forwarded-For` entries Mend believes.                                                                         |
+| `BETTER_AUTH_SECRET`          | a development value        | The secret sign-in sessions are signed with. Set it in every deployment.                                                                                       |
+| `BETTER_AUTH_TRUSTED_ORIGINS` | unset                      | Must stay unset or empty; any other value refuses to start. Origins come from `APP_URL` and `MEND_ALLOWED_ORIGINS` only.                                       |
+| `MEND_MODE`                   | `all`                      | Which halves of the API process run: `all`, `api` (HTTP only) or `worker`. `web` is read as `api`.                                                             |
+| `PORT`                        | `3101` (API), `3105` (web) | The port the process listens on.                                                                                                                               |
+| `MEND_API_URL`                | `http://localhost:3101`    | Web tier: the API it proxies `/api` to.                                                                                                                        |
+| `MEND_APP_URL`                | unset                      | Web tier: an app server already running. Unset, the web tier starts its own on `127.0.0.1:3210`.                                                               |
+| `MEND_VERSION`                | `dev`                      | The version `/health` reports and the reassessment gate item compares. Release images set it.                                                                  |
 
 ## Database
 

@@ -334,6 +334,7 @@ const stepsWith = (
         },
       },
       harnessHome: "/workspace/harness-home",
+      origin: "https://mend.example.com",
       fork: (effect) => Effect.sync(() => options.forks?.push(effect)),
       identityTicket: (input) =>
         Effect.sync(() => {
@@ -2908,6 +2909,7 @@ describe("homeForWrite", () => {
             ).pipe(Effect.map((result) => ({ ...result, run: execRun }))),
         },
         harnessHome: "/workspace/harness-home",
+        origin: "https://mend.example.com",
         fork: () => Effect.void,
         identityTicket: () => Effect.succeed("t".repeat(43)),
         discardTicket: () => {},

@@ -50,6 +50,8 @@ install that has not moved stays on chart 0.1.x until it follows "Upgrade" below
     replacement and hot-pool drain. Every request, including the git `CONNECT` tunnel, is
     authenticated before the session is resolved; unknown and revoked tokens are a uniform `401`, a
     valid token for a session this instance no longer serves is `409`.
+  - `MEND_ORIGIN` (plain env), the server's `APP_URL`. Every workspace gets it, with or without the
+    channel, so its agent can link people to Mend's web app.
 - **Helper and git shim.** `/run/mend/bin/mend` and `/run/mend/bin/mend-git-ssh` are unchanged in
   behaviour and pick the transport at runtime: the socket when `/run/mend/mend.sock` exists, else
   the endpoint. All helper commands and the full-duplex pack-byte tunnel work over both. The token

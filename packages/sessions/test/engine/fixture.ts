@@ -154,6 +154,7 @@ import type {
   HarnessLayout,
   ServiceLaunch,
 } from "@mend/domain/workbench";
+import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import {
   type CaptureFlushKind,
   PersonLayoutPlatform,
@@ -275,6 +276,13 @@ export const captureAnswer = (
 });
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
+/** The server's `APP_URL` in every engine fixture: what a workspace gets as `MEND_ORIGIN`. */
+export const FIXTURE_ORIGIN = PublicOrigin.make("https://mend.test");
+export const networkConfigLayer = Layer.succeed(
+  NetworkConfig,
+  makePublicNetwork(FIXTURE_ORIGIN, []),
+);
+
 export const sealantDeadLayer = Layer.succeed(SealantClient, {
   createWorkspace: () => Effect.die("not in test"),
   getWorkspace: () => Effect.die("not in test"),
@@ -4338,6 +4346,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.seals ?? CaptureSealsNone,
           options.hostUserNamespaces ?? WorkspaceHostUserNamespacesUnobserved,
           options.previewUrls ?? PreviewUrlsNone,
+          networkConfigLayer,
           Layer.succeed(ScreensRepo, world.screens),
         ),
       ),

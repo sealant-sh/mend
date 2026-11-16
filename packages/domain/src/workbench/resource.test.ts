@@ -13,6 +13,7 @@ import {
   ImageDigest,
   imageDigestOf,
   imageReference,
+  MEND_PROCESS_ENV_NAMES,
   parseImageReference,
   pinImage,
   presetDefinition,
@@ -109,6 +110,14 @@ describe("resource names", () => {
       expect(resourceDefinitionRefusals(define({ name })).map((refusal) => refusal.key)).toEqual([
         "name",
       ]);
+    },
+  );
+
+  it.each(["app", "origin", "web"])(
+    "still accepts %s, which MEND_ORIGIN reserves no prefix of",
+    (name) => {
+      expect(MEND_PROCESS_ENV_NAMES).toContain("MEND_ORIGIN");
+      expect(resourceNameIssue(name)).toBeNull();
     },
   );
 

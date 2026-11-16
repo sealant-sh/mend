@@ -326,7 +326,7 @@ import {
   type WorktreeBranchAction,
   type WorktreeBranchResult,
 } from "@mend/domain/workbench";
-import { makeWindowLimiter } from "@mend/network";
+import { makeWindowLimiter, NetworkConfig } from "@mend/network";
 import {
   asSealantUser,
   forkSealantBackground,
@@ -874,6 +874,7 @@ import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
 import {
   resourcesNote,
   parseWorkspaceNoteOutcomes,
+  MEND_WEB_APP_NOTE,
   PREVIEWS_NOTE,
   WORKSPACE_NOTE_NOT_WRITTEN,
   workspaceNoteExec,
@@ -3805,7 +3806,8 @@ type SessionEngineRequirements =
   | PersonLayoutPlatform
   | HarnessLayoutConfig
   | WorkspaceHostUserNamespaces
-  | PreviewUrls;
+  | PreviewUrls
+  | NetworkConfig;
 
 /**
  * The executor answered an ask: its evidence fence now clears only with a publication (review
@@ -3925,6 +3927,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const channelTokens = yield* SessionChannelTokensRepo;
       const deployment = yield* DeploymentConfig;
       const runtimeOffer = sessionRuntimeOfferOf(deployment);
+      // The server's own address (`APP_URL`): every workspace process gets it as `MEND_ORIGIN`, so
+      // an agent can link the person to Mend. One value for every session, whoever started it.
+      const origin = (yield* NetworkConfig).appUrl;
       const organizationSettings = yield* OrganizationSettingsRepo;
       /**
        * Where a new worktree in the organization runs: the organization's choice of what the
@@ -9508,6 +9513,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         organizations,
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
+        origin,
         fork: (effect) => effect.pipe(forkSealantBackground(scope), Effect.asVoid),
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
@@ -13899,6 +13905,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ...Object.fromEntries(
             environment.variables.map((variable) => [variable.name, variable.value] as const),
           ),
+          // Every process in the workspace, with or without a session channel: launch, standby
+          // and resume all create through here.
+          MEND_ORIGIN: origin,
           ...channel.env,
         };
         Object.assign(secretEnv, channel.secretEnv);
@@ -14595,6 +14604,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? ""
             : resourcesNote(yield* resourceStatus.forWorktree(project.id, resourceWorktreeId));
         const note =
+          MEND_WEB_APP_NOTE +
           `## Mend mounts\n\nMounted beside the repo:\n\n` +
           referencesSection +
           linkedSection +
