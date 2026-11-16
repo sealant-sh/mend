@@ -3210,12 +3210,19 @@ const t3GatewayOriginLine = async (
 };
 
 /** Where the gateway is reached, as setup and status say it after what they observed. */
-const t3GatewayReachLine = (placement: T3GatewayPlacement): string => {
+const t3GatewayReachLine = (placement: T3GatewayPlacement, appUrl: string): string => {
   const published = publishedAddress(placement.bind, placement.port);
   if (placement.edgeHost !== undefined)
     return `Its port is published on ${published} only; the edge serves it at ${placement.url} once ${placement.edgeHost} resolves to this machine and Caddy holds its certificate. In T3 Code, add a Remote link to ${placement.url} and pair with a code from mend pair.`;
   if (t3GatewayBeyondMachine(placement))
     return `It is published on ${published}, where Mend's web port is: T3 Code on a machine that reaches Mend reaches it too, with no tunnel. In T3 Code, add a Remote link to ${placement.url} and pair with a code from mend pair.`;
+  // HTTPS run on this machine in front of Mend's port reaches Mend alone: the gateway needs its
+  // own forward, on a port of its own, since a T3 Code client uses a server's root path.
+  const appHost = new URL(appUrl).hostname;
+  if (appHost.endsWith(".ts.net"))
+    return `It is published on ${published} only, as Mend's web port is, and tailscale serve in front of Mend does not reach it. T3 Code on this machine uses ${placement.url}. For T3 Code on your other devices, serve it the same way on a port of its own, tailscale serve --bg --https=${placement.port} ${placement.url}, and add https://${appHost}:${placement.port} as the Remote link. Pair with a code from mend pair.`;
+  if (!isLoopbackHost(appHost))
+    return `It is published on ${published} only, as Mend's web port is, and the HTTPS in front of Mend does not reach it. T3 Code on this machine uses ${placement.url}. For T3 Code on your other devices, have that HTTPS serve a name of its own, such as https://t3.${appHost}, to ${placement.url} (a port of its own, https://${appHost}:${placement.port}, works too), and add that as the Remote link. Pair with a code from mend pair.`;
   return `It is published on ${published} only, as Mend's web port is. In T3 Code on this machine, add a Remote link to ${placement.url} and pair with a code from mend pair.`;
 };
 
@@ -3227,13 +3234,14 @@ const t3GatewayReachLine = (placement: T3GatewayPlacement): string => {
 const observeT3Gateway = async (
   runtime: ServerSetupRuntime,
   placement: T3GatewayPlacement,
+  appUrl: string,
 ): Promise<string> => {
   const url = `${placement.probeUrl}/.well-known/t3/environment`;
   const at = new URL(placement.probeUrl).host;
   for (let attempt = 0; attempt < T3_GATEWAY_OBSERVE_ATTEMPTS; attempt += 1) {
     const response = await runtime.fetchText(url, 2_000);
     if (response.error === undefined && response.status === 200) {
-      return `The t3code gateway answered at ${at}, observed from this machine. ${t3GatewayReachLine(placement)}`;
+      return `The t3code gateway answered at ${at}, observed from this machine. ${t3GatewayReachLine(placement, appUrl)}`;
     }
     if (attempt < T3_GATEWAY_OBSERVE_ATTEMPTS - 1) await runtime.sleep(2_000);
   }
@@ -3936,6 +3944,10 @@ const sshPublicationLine = async (
   runtime: ServerSetupRuntime,
   config: ServerConfig,
 ): Promise<string | null> => {
+  const sshBind = config.sshBind ?? config.bind;
+  // HTTPS in front of a loopback bind carries the web port alone; SSH is not HTTP.
+  if (isLoopbackBind(sshBind) && config.edgeHost === undefined && servedInFront(config))
+    return `Workspace SSH (mend ssh, VS Code Remote-SSH) is published on ${publishedAddress(sshBind, config.sshPort)} only, and the HTTPS in front of Mend does not carry it. To use it from your other devices, publish it on a private network with --ssh-bind <address>.`;
   if (config.sshBind === undefined || isLoopbackBind(config.sshBind)) return null;
   const published = publishedAddress(config.sshBind, config.sshPort);
   if (runtime.probeSsh === undefined) return null;
@@ -4765,7 +4777,7 @@ const setupServer = async (
   const sshPublication = await sshPublicationLine(runtime, config);
   if (sshPublication !== null) runtime.writeLine(sshPublication);
   if (t3Gateway !== undefined) {
-    runtime.writeLine(await observeT3Gateway(runtime, t3Gateway));
+    runtime.writeLine(await observeT3Gateway(runtime, t3Gateway, config.appUrl));
     const origin = await t3GatewayOriginLine(runtime, config);
     if (origin !== null) runtime.writeLine(origin);
   }

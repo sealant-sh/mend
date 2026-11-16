@@ -3091,6 +3091,22 @@ describe("mend server setup", () => {
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(2);
   });
 
+  it("behind HTTPS run on this machine, says how the gateway on loopback is reached from other devices", async () => {
+    const control = makeRuntime({ gatewayLabel: "1" });
+    expect(
+      await serverCommand(
+        ["setup", "--t3-gateway", "--url", "https://mend.example.test"],
+        control.runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      "The t3code gateway answered at 127.0.0.1:3120, observed from this machine. It is published on 127.0.0.1:3120 only, as Mend's web port is, and the HTTPS in front of Mend does not reach it. T3 Code on this machine uses http://127.0.0.1:3120. For T3 Code on your other devices, have that HTTPS serve a name of its own, such as https://t3.mend.example.test, to http://127.0.0.1:3120 (a port of its own, https://mend.example.test:3120, works too), and add that as the Remote link. Pair with a code from mend pair.",
+    );
+    expect(control.lines).toContain(
+      "Workspace SSH (mend ssh, VS Code Remote-SSH) is published on 127.0.0.1:2222 only, and the HTTPS in front of Mend does not carry it. To use it from your other devices, publish it on a private network with --ssh-bind <address>.",
+    );
+  });
+
   it("--t3-gateway writes its overlay on loopback for a loopback install, runs it every time, keeps it, and --no-t3-gateway takes it away", async () => {
     const control = makeRuntime({ gatewayLabel: "1" });
     expect(await serverCommand(["setup", "--t3-gateway"], control.runtime)).toEqual({ _tag: "ok" });
@@ -3987,6 +4003,17 @@ describe("mend server setup --preview-tailnet (ADR 0017, decision 6)", () => {
       message: `--url https://other-box.${TAILNET} is another machine's name on the tailnet; this machine is mend-box.${TAILNET}. Use https://mend-box.${TAILNET}, served by tailscale serve on this machine.`,
     });
     expect(activeDirectory(configDir)).toBe(active);
+  });
+
+  it("behind tailscale serve, says to serve the gateway on a port of its own", async () => {
+    const { configDir, tailscale } = await onTailnet("tailnet-gateway");
+    const control = makeRuntime({ configDir, tailscale, gatewayLabel: "1" });
+    expect(
+      await serverCommand(["setup", "--t3-gateway", "--url", SERVED_ORIGIN], control.runtime),
+    ).toEqual({ _tag: "ok" });
+    expect(control.lines).toContain(
+      `The t3code gateway answered at 127.0.0.1:3120, observed from this machine. It is published on 127.0.0.1:3120 only, as Mend's web port is, and tailscale serve in front of Mend does not reach it. T3 Code on this machine uses http://127.0.0.1:3120. For T3 Code on your other devices, serve it the same way on a port of its own, tailscale serve --bg --https=3120 http://127.0.0.1:3120, and add ${SERVED_ORIGIN}:3120 as the Remote link. Pair with a code from mend pair.`,
+    );
   });
 
   it("refuses --exposure loopback with Mend's URL on the tailnet", async () => {
