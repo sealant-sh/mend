@@ -558,6 +558,32 @@ This applies whether the server ran 0.40.0-next.894 or an older build before the
   just been stopped as still running until its next pass, and so stop it a second time or restart a
   crashed one a pass late.
 
+### After upgrading to sealant 0.40.0-next.923
+
+This applies whichever of the builds above the server ran before the upgrade.
+
+- **Every Boat image is built once more.** sealantd changed again, so each environment's next Boat
+  session waits for its image to be built again, once, as long as a first build takes. The saved
+  snapshot count on the Boat page rises and then drops as described for 0.40.0-next.894. Docker
+  workspace images are built again once too.
+- **A session that claimed a standby saves at its stop.** With [hot sessions](#hot-sessions) on, a
+  session that started from a waiting standby could fail to save when stopped: the stop read
+  `stopping`, then after 10 minutes `not saved · … pending · workspace kept`, and the VM stayed up
+  and billed until its owner discarded the session and its work. It happened when the standby's
+  sealantd was shipping its own queued save at the moment of the claim. sealantd no longer merges
+  the session's first save with that leftover.
+- **A session already kept this way stays kept.** The upgrade does not repair it, and Mend cannot
+  open a shell in its VM, read its files or resume it. Discarding it is the only way to end it and
+  stop the VM's billing, and it discards the session's unsaved work; see
+  [A session that claimed a standby can stay not saved at its stop](/reference/known-issues/#a-session-that-claimed-a-standby-can-stay-not-saved-at-its-stop).
+- **A standby already waiting keeps the sealantd it started with.** A new sealantd reaches a VM only
+  when it starts from the rebuilt image, and the upgrade does not replace standbys: one that was
+  waiting before it is claimed as it is, and its session can still meet the old behaviour. To
+  replace them, set the project's hot sessions to 0, wait until its standbys are gone, then set the
+  count back. The new standbys start from the rebuilt image.
+- **A save registered just before a VM's sealantd restarts is acknowledged.** Before, the next save
+  after such a restart could be refused as a conflict, and nothing in that worktree saved again.
+
 ## Remove or replace a key
 
 **Replace the organization's key.** Connect the new key on the Boat page or with

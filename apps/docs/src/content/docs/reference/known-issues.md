@@ -39,6 +39,43 @@ AWS S3, Cloudflare R2 and MinIO refuse a conditional overwrite, and a Stop there
 Only AWS MicroVM executors have a time limit, and they use S3. Docker and Kubernetes executors have
 no time limit.
 
+## A session that claimed a standby can stay not saved at its stop
+
+Applies to servers whose sealant is older than 0.40.0-next.923 (sealantd older than
+0.21.0-next.201), on Docker, Kubernetes and Boat, in projects with
+[hot sessions](/guides/project-environment/#hot-sessions) on.
+
+A session that started from a waiting standby could fail to save when stopped. The stop read
+`stopping`, then after 10 minutes `not saved · … pending · workspace kept`, and stayed there; on
+Boat the VM stayed up and billed. It happened when the standby's sealantd was shipping its own
+queued save at the moment of the claim (2 of 13 claimed standbys on our test server). The session's
+first save merged with that leftover and could never be uploaded, and none of what the session did
+after that was saved: not its files, and not commits it made that were not pushed elsewhere.
+
+sealant 0.40.0-next.923 never merges the two. The upgrade does not repair a session already kept
+this way, and it does not reach a standby that was waiting before it: that standby keeps the
+sealantd it started with until it is replaced (set the project's hot sessions to 0, wait until its
+standbys are gone, then set the count back).
+
+Mend has no way into a kept workspace once its stop has begun saving. A shell, the web terminal,
+reading its files and resuming the session are all refused, and a resume says
+`the previous workspace holds captures not yet saved · resume again once it saves, or discard unsaved and stop`;
+for these sessions it never saves. **Discard unsaved and stop** is the only way to end it, and it
+throws the unsaved work away. Before you discard:
+
+1. On Docker or Kubernetes, ask the server's operator to copy the work out. The workspace keeps
+   running, and the session's repository is at `/workspace/repo` inside it. On Docker, the operator
+   lists the workspace containers with `docker ps --filter name=sealant-`, finds the one on the
+   session's branch with
+   `docker exec <container> git -c safe.directory=/workspace/repo -C /workspace/repo branch --show-current`
+   (it runs as root), and copies the repository out with
+   `mkdir saved-repo && docker exec <container> tar -C /workspace/repo -cf - . | tar -C saved-repo -xf -`.
+   `docker cp` does not work here: it fails on a file of the container's that is gone after its
+   start. On Kubernetes, `kubectl cp` from the workspace pod copies the same directory.
+2. On Boat, nothing in Mend reaches the VM, so the unsaved work cannot be copied out through Mend.
+3. Then, as the session's owner, choose **Discard unsaved and stop** on the session. The workspace
+   and, on Boat, the VM go.
+
 ## Sessions cannot start on Ubuntu 23.10 and later until user namespaces are allowed
 
 Each workspace runs its own rootless Docker, which Ubuntu's default AppArmor setting refuses. Mend
@@ -557,6 +594,9 @@ is used by the other person's `git push`.
 - A standby keeps the image answer it started on. When Mend learns something new about the image (a
   new digest, or that it cannot run per person), ready standbys of the old answer are replaced, and
   one already claimed runs the launch in the layout it started in.
+- On a sealant older than 0.40.0-next.923, a session that claimed a standby can stay not saved at
+  its stop, in any layout; see
+  [A session that claimed a standby can stay not saved at its stop](#a-session-that-claimed-a-standby-can-stay-not-saved-at-its-stop).
 
 ### There is no way back from per-person
 
