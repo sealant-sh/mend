@@ -24,7 +24,7 @@ path packages/sessions/src/engine.ts
 path packages/sessions/src/capture-channel.ts
 
 # How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
-# naming this model (SLNT-1065). The full bounds took 61 minutes there for one 129M-state row at
-# 8dbb6f6f, before `code` merged the two rows that explored those states twice.
+# naming this model (SLNT-1065). The full bounds took 57 minutes there at b192d2e2 (`code`, 129M
+# states, 3,312 s); the budget leaves room for a slower runner inside the job's 90 minutes.
 budget-quick 10
 budget-full 75

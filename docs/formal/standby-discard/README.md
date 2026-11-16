@@ -225,6 +225,14 @@ cut that without giving up any state: `code` checks both promises in one run, si
 invariants of the same state space, and `code-promise-atomic-retire` runs at `--quick` only, since
 its action constraint only removes transitions and so `code` holding at the full bounds proves it.
 
+Java's default heap, a quarter of the runner's 16 GB, left TLC spilling its fingerprint set to disk
+at this size: `code` did not finish in 75 minutes. `check.sh` lets the heap take three quarters of
+the machine, and on CI the whole full check then took 57 minutes (`code`: 129,386,795 states in
+3,312 s, about 18 million states generated a minute throughout), at `b192d2e2`, run
+[43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641). With
+`MEND_FORMAL_PROGRESS` set, as CI sets it, TLC's memory and progress lines go to the job log as they
+come.
+
 A change that grows the full count should say on its ticket what the full run took, on four cores
 too (`MEND_FORMAL_WORKERS=4`), before it merges, so the budget is not found out at night.
 
