@@ -29,11 +29,13 @@ export const takesFirstMessage = (
 
 /**
  * The launch a first message makes: the session's agent in conversation mode, the message its
- * first turn, over an attempt that never ran. A second start of the same session (another tab,
- * the CLI) is refused by the server, never run twice.
+ * first turn, over the attempt the page shows (`settledAt`): never settled, or settled before any
+ * agent took the conversation (a first message refused for a missing login). A second start of
+ * the same session (another tab, the CLI) moves that attempt on, so the server refuses this one,
+ * never running it twice.
  */
-export const firstMessageLaunch = (prompt: string) =>
-  ({ mode: "protocol", prompt, expected: { settledAt: null } }) as const;
+export const firstMessageLaunch = (prompt: string, settledAt: Date | null) =>
+  ({ mode: "protocol", prompt, expected: { settledAt } }) as const;
 
 export type FirstMessageLaunch = ReturnType<typeof firstMessageLaunch>;
 
@@ -58,9 +60,10 @@ export const FIRST_MESSAGE_UNCONFIRMED =
 export const sendFirstMessage = async (
   launch: (request: FirstMessageLaunch) => Promise<unknown>,
   prompt: string,
+  settledAt: Date | null,
 ): Promise<FirstMessageOutcome> => {
   try {
-    await launch(firstMessageLaunch(prompt));
+    await launch(firstMessageLaunch(prompt, settledAt));
     return { _tag: "Started" };
   } catch (cause) {
     return refusalTagOf(cause) === null

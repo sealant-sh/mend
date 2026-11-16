@@ -433,6 +433,22 @@ describe("mend message --resume on a session that never ran an agent", () => {
     );
   });
 
+  it("starts one a refused first message settled, over that settled attempt", async () => {
+    // A first message refused for a missing login settles the session before any agent ran.
+    const settledAt = "2026-11-16T08:10:39.368Z";
+    const world = command(undefined, {
+      post: notLive,
+      session: async () => ({ currentAgent: null, session: { settledAt } }),
+    });
+    expect(await world.run(["s", "--resume", "carry on"])).toBe(0);
+    expect(world.launches).toEqual([
+      {
+        sessionId: messageSessionId,
+        body: { mode: "protocol", prompt: "carry on", expected: { settledAt } },
+      },
+    ]);
+  });
+
   it("leaves the refusal standing for a session whose agent ran, or without --resume", async () => {
     const ran = command(undefined, { post: notLive });
     expect(await ran.run(["s", "--resume", "words"])).toBe(1);

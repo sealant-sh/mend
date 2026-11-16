@@ -120,15 +120,21 @@ export interface MessageServer {
       readonly resume?: true;
     },
   ) => Promise<unknown>;
-  /** `GET /sessions/:id`: the session and its current agent, null when none ever ran. */
-  readonly session: (sessionId: string) => Promise<{ readonly currentAgent?: unknown }>;
+  /**
+   * `GET /sessions/:id`: the session, with when its last attempt settled (null when none did), and
+   * its current agent, null when none ever ran.
+   */
+  readonly session: (sessionId: string) => Promise<{
+    readonly currentAgent?: unknown;
+    readonly session?: { readonly settledAt?: string | null };
+  }>;
   /** `POST /sessions/:id/launch` in conversation mode, its first turn `prompt`. */
   readonly launchConversation: (
     sessionId: string,
     body: {
       readonly mode: "protocol";
       readonly prompt: string;
-      readonly expected: { readonly settledAt: null };
+      readonly expected: { readonly settledAt: string | null };
     },
   ) => Promise<{ readonly id: string; readonly harness?: string; readonly status?: string }>;
 }
@@ -194,7 +200,9 @@ const isRefusal = (error: unknown): error is MendRequestError =>
 /**
  * Starts the agent of a session that never ran one, in conversation mode, with `input` as its
  * first turn; null when the session has run an agent, for the refusal to stand. The launch names
- * the attempt as never settled, so a second start of the same session is refused, never doubled.
+ * the attempt the session reads now: never settled, or settled before any agent ran (a first
+ * message refused for a missing login), so it can still start. A second start of the same session
+ * moves that attempt on and this one is refused, never doubled.
  */
 const startNeverLaunched = async (
   server: MessageServer,
@@ -203,7 +211,7 @@ const startNeverLaunched = async (
   json: boolean,
   boundary: MessageBoundary,
 ): Promise<MessageExitCode | null> => {
-  let detail: { readonly currentAgent?: unknown };
+  let detail: Awaited<ReturnType<MessageServer["session"]>>;
   try {
     detail = await server.session(sessionId);
   } catch {
@@ -226,7 +234,7 @@ const startNeverLaunched = async (
     started = await server.launchConversation(sessionId, {
       mode: "protocol",
       prompt: input,
-      expected: { settledAt: null },
+      expected: { settledAt: detail.session?.settledAt ?? null },
     });
   } catch (error) {
     return isRefusal(error)

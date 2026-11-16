@@ -25,7 +25,12 @@ export function Composer({ facts }: { readonly facts: SessionFacts }) {
   // An imported conversation waiting for its first message: sending it starts the agent.
   if (takesFirstMessage(session, facts.detail.currentAgent, control.steer))
     return viewer == null ? null : (
-      <FirstMessageInput key={session.id} sessionId={session.id} agent={facts.agent} />
+      <FirstMessageInput
+        key={session.id}
+        sessionId={session.id}
+        settledAt={session.settledAt}
+        agent={facts.agent}
+      />
     );
   if ((facts.conversationLive || facts.conversationResumes) && control.steer && viewer != null) {
     // "Steer" while a turn is under way: the words go into it, as the sender's setting says. A

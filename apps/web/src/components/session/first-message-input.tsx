@@ -25,9 +25,12 @@ import { messageInputId } from "../session-message-input";
  */
 export function FirstMessageInput({
   sessionId,
+  settledAt,
   agent,
 }: {
   readonly sessionId: string;
+  /** The attempt the page shows; a first message refused before (no login) left it settled. */
+  readonly settledAt: Date | null;
   readonly agent: string;
 }) {
   const queryClient = useQueryClient();
@@ -57,6 +60,7 @@ export function FirstMessageInput({
     const answered = await sendFirstMessage(
       (request) => launchFirstMessage(sessionId, request),
       text,
+      settledAt,
     );
     setOutcome(answered);
     if (answered._tag === "Started") setText("");

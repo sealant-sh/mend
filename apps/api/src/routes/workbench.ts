@@ -2550,9 +2550,11 @@ type ResourceLines = "list" | "full" | "none";
 
 /**
  * Which of `sessions` wait for their first message over an imported conversation
- * (`Session.importedConversationWaiting`): one read by the imported conversations' key. None that
- * ended, and none while a launch of the session is under way, so a session its first message is
- * starting reads as starting, not as still waiting.
+ * (`Session.importedConversationWaiting`): one read by the imported conversations' key. None while
+ * a launch of the session is under way, so a session its first message is starting reads as
+ * starting, not as still waiting. A session that settled before any agent took the conversation (a
+ * first message refused for a missing login, a stop) still waits: nothing ran, and its first
+ * message, launched over that settled attempt, is the only way its conversation carries on.
  */
 const importedWaitingOf = (sessions: ReadonlyArray<Session>) =>
   Effect.gen(function* () {
@@ -2561,9 +2563,7 @@ const importedWaitingOf = (sessions: ReadonlyArray<Session>) =>
     );
     const engine = yield* SessionEngine;
     return (session: Session): boolean =>
-      undelivered.has(session.id) &&
-      session.settledAt === null &&
-      !engine.launchUnderWay(session.id);
+      undelivered.has(session.id) && !engine.launchUnderWay(session.id);
   });
 
 /**

@@ -353,13 +353,17 @@ describe("an imported conversation waiting for its first message", () => {
     expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(false));
   });
 
-  it("does not read a session stopped before its first message as waiting", async () => {
+  it("still reads a session that settled before any agent took its conversation as waiting", async () => {
+    // A first message refused for a missing login settles the session as failed; nothing ran,
+    // so its next first message is still the way on.
     const { api } = await worldWith();
     await post(api, "alice", archive(claudeFiles), `session=${HANDED_OFF}`);
     const row = api.world.sessions.get(HANDED_OFF);
     if (row === undefined) throw new Error("the world holds the handed-off session");
-    api.world.addSession(new Session({ ...row, status: "stopped", settledAt: new Date() }));
-    expect(await waitingAsRead(api, HANDED_OFF)).toEqual({ list: false, inbox: false });
+    api.world.addSession(new Session({ ...row, status: "failed", settledAt: new Date() }));
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(true));
+    api.world.deliverImported(HANDED_OFF);
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(false));
   });
 });
 

@@ -6603,11 +6603,10 @@ const main = async () => {
           // A redirect after the POST is an answer: a follow-up hop's failure says nothing of the first.
           post: (route, body) => request<unknown>(config, "POST", route, body, "manual"),
           session: (sessionId) =>
-            request<{ readonly currentAgent?: unknown }>(
-              config,
-              "GET",
-              `/sessions/${encodeURIComponent(sessionId)}`,
-            ),
+            request<{
+              readonly currentAgent?: unknown;
+              readonly session?: { readonly settledAt?: string | null };
+            }>(config, "GET", `/sessions/${encodeURIComponent(sessionId)}`),
           launchConversation: (sessionId, body) =>
             request<{ readonly id: string; readonly harness?: string; readonly status?: string }>(
               config,
