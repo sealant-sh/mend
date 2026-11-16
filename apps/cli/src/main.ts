@@ -134,6 +134,7 @@ import {
   usageOf,
 } from "./help.ts";
 import { useHttp1 } from "./http-client.ts";
+import { importT3Command } from "./import-t3.ts";
 import { type Download, landCommand, pickSession, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { throwawayLoginDir } from "./login-dir.ts";
@@ -6588,6 +6589,20 @@ const main = async () => {
             }),
           // A redirect after the POST is an answer: a follow-up hop's failure says nothing of the first.
           post: (route, body) => request<unknown>(config, "POST", route, body, "manual"),
+          session: (sessionId) =>
+            request<{ readonly currentAgent?: unknown }>(
+              config,
+              "GET",
+              `/sessions/${encodeURIComponent(sessionId)}`,
+            ),
+          launchConversation: (sessionId, body) =>
+            request<{ readonly id: string; readonly harness?: string; readonly status?: string }>(
+              config,
+              "POST",
+              `/sessions/${encodeURIComponent(sessionId)}/launch`,
+              body,
+              "manual",
+            ),
         };
       },
       readStdin: () => streamText(process.stdin),
@@ -6996,6 +7011,24 @@ const main = async () => {
         },
         rest,
       );
+    case "import":
+      if (rest[0] !== "t3")
+        return fail(`unknown import command "${rest[0] ?? ""}" · mend help import t3`);
+      process.exitCode = await importT3Command(
+        {
+          // Thrown, not exited: one checkout's or thread's failure is recorded and the run goes on.
+          api: (method, route, body) => request(config, method, route, body),
+          download: download(config),
+          upload: upload(config),
+          serverVersion: async () => (await fetchServerVersion(config.url)).version,
+          spin: (label, work) => withSpinner(label, work),
+          serverUrl: config.url,
+          accountGitAuthMode: () => readGitAccessMode(config),
+          shareAgent: () => shareThisAgent(config),
+        },
+        rest.slice(1),
+      );
+      return;
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);
