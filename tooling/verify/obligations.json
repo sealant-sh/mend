@@ -63,7 +63,17 @@
         "apps/vscode/src/**",
         "apps/web/src/**"
       ],
-      "exclude": ["**/*.test.*", "**/*.spec.*", "**/test/**"],
+      "exclude": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/test/**",
+        "**/test-*",
+        "**/test-*/**",
+        "**/*-test-*",
+        "**/*-test.*",
+        "**/*fixture*",
+        "**/*fixture*/**"
+      ],
       "why": "A change a person can see (a screen, a dialog, copy, styling, a CLI's output) carries screenshots of every state it touches, with main beside it when it alters an existing screen",
       "owes": [
         {

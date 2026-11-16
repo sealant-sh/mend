@@ -109,6 +109,11 @@ test("a test helper, fake or fixture under a product path owes no judge; the cod
   ];
   for (const file of helpers) assert.ok(existsSync(join(root, file)), `${file} still exists`);
   assert.deepEqual(filesOwing(map, helpers, "judge"), []);
+  assert.deepEqual(
+    matchObligations(map, helpers).map((obligation) => obligation.id),
+    ["pre-pr-checks"],
+    "no judge, no run, no screenshots",
+  );
   const product = [
     "apps/web/src/components/settings/sessions.tsx",
     "apps/cli/src/server-setup.ts",
