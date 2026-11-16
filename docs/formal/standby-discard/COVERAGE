@@ -17,7 +17,12 @@
 # engine.ts only outside the covered functions: every workspace create's env and each person's
 # process env carry MEND_ORIGIN, and the workspace note names it; no action models either. The
 # full TLC run on its head, dde8b8acd6, had every row as expected.
-sync c34dea602e7e01fa00cc326dea823e7a289611a3
+# 591a9e6e3b is the SLNT-895 feature branch on main after SLNT-1063, when it moved the line. Its
+# covered changes deliver an imported conversation at a session's first protocol launch:
+# conversationOf's home, launchProtocol's resume id and prepareImportedConversation. They make no
+# hot-pool, claim, retire, drain or session-process call, so no action models them. Full TLC run at
+# 591a9e6e3b: every row as expected.
+sync 591a9e6e3b859d6959f848a2853df3aa04ab8a83
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
