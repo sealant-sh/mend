@@ -60,7 +60,8 @@ redacting ordinary text, so keep such a value off every captured page.
 **CLI.** The inner `mend` runs in the session, signed in as the stack's first account, on a machine
 of its own: the inner account's home, kept in the stack's state volume, with `mend`, `git` and a
 shell. Write a feature's CLI steps as one list, and `steps.mjs` runs them all in one sibling
-session:
+session. `pnpm verify drive cli --recipe <steps.json>` runs it for you into `$E/<name>/cli` and
+records it as this commit's drive; by hand it is:
 
 ```sh
 node $skill/scripts/steps.mjs "$E/<feature>/cli" <batch> --worktree "$wt" <<'STEPS'

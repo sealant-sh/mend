@@ -47,7 +47,8 @@ const VERBS = {
   box: "Set up the preview server for a check on it: plan, prepare, cli, identity, release (--yes to change it)",
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
-  drive: "Run a recipe against web, tui, desktop, mobile-web, vscode or t3: --recipe <name|path>",
+  drive:
+    "Run a recipe against web, desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
@@ -210,6 +211,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     const { steps, next, ...rest } = await drive(root, {
       surface: options.subverb,
       recipe: options.recipe,
+      head,
       timeoutMs: options.timeoutMs,
       ...(options.env ? { env: options.env } : {}),
       ...(options.exec ? { exec: options.exec } : {}),

@@ -118,10 +118,15 @@ what to do on each surface and what proves it. Drive a recipe with the surface's
 ```sh
 pnpm verify drive web --recipe web-projects        # a checked-in recipe, or a path to yours
 pnpm verify drive <desktop|mobile-web|vscode|t3> --recipe <name|path>
+pnpm verify drive cli --recipe <steps.json>        # a CLI batch: steps.mjs runs it on the stack
+pnpm verify drive tui --recipe <name>              # records drive-tui.sh's captures in <evidence>/<name>/tui
 ```
 
 Output goes to the run's evidence directory, `<evidence>/<recipe>/<surface>`. A surface with no
-recipe answers `not_implemented`; the terminal always does, so drive it with `drive-tui.sh`.
+recipe answers `not_implemented`. The dashboard is driven by hand with `drive-tui.sh`
+([references/surfaces.md](references/surfaces.md)); capture into `<evidence>/<name>/tui`, then
+`drive tui` records it. It passes only when `drive-tui.sh build` bundled this commit from a clean
+tree and every capture is newer than that build, so build again after each commit.
 
 - Writing a web recipe or a CLI batch (`steps.mjs`), credentials and fake logins, the map's
   placeholders, and the steps this skill does not run:
@@ -146,9 +151,8 @@ screenshot is withheld: [references/evidence.md](references/evidence.md).
 
 The verdict file lists what the judge asked for under "What I saw": answer each line. Once
 `evidence` passes on the commit you push, the receipt's `run-it` line reads `passed` (AGENTS.md, Run
-a Feature Before It Merges). Post the verdict on the PR yourself. Nobody repeats the run. A change
-you could only drive with `drive-tui.sh` has no drive result, so its line stays `skipped`: name it
-under the receipt with the transcript.
+a Feature Before It Merges). Post the verdict on the PR yourself. Nobody repeats the run. A CLI-only
+change reaches `passed` the same way, through `drive cli` or `drive tui`.
 
 ## 8. Down
 

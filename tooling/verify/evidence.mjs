@@ -44,7 +44,7 @@ export const artifacts = (dir) => {
         found.screenshots.push(path);
       else if (entry.name.endsWith(".png.withheld")) found.withheld.push(path);
       else if (entry.name.endsWith(".aria.yml")) found.snapshots.push(path);
-      else if (/\.(log|stdout|stderr|cmd|exit|jsonl)$/.test(entry.name))
+      else if (/\.(log|stdout|stderr|cmd|exit|jsonl|txt)$/.test(entry.name))
         found.transcripts.push(path);
     }
   };

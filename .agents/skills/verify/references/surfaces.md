@@ -11,12 +11,17 @@ at the commit under test, signed in to the stack through the tunnel as the stack
 (the token stays in `$P`), in a detached tmux session on a tmux server of its own:
 
 ```sh
-$skill/scripts/drive-tui.sh build <a Mend checkout at the commit under test>   # once per run
+$skill/scripts/drive-tui.sh build .            # this checkout, committed; again after each commit
 $skill/scripts/drive-tui.sh start ui-1 "$web" -- mend ui
 $skill/scripts/drive-tui.sh wait ui-1 'projects' 30 && $skill/scripts/drive-tui.sh keys ui-1 j Enter
 $skill/scripts/drive-tui.sh capture ui-1 "$E/<feature>/tui" 01-selected
 $skill/scripts/drive-tui.sh stop ui-1
+pnpm verify drive tui --recipe <feature>        # records those captures as this commit's drive
 ```
+
+`build` stamps the bundle with the checkout's commit and whether its tree was clean (`source.json`).
+`drive tui` passes only for a clean bundle of the head, with every capture in `$E/<feature>/tui`
+taken after that build.
 
 `build` is needed because the dashboard cannot run from the CLI's TypeScript source; it bundles with
 the checkout's own esbuild, so the checkout needs its dependencies installed (`pnpm install`).

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,6 +23,7 @@ const world = (t, { phase = "ready" } = {}) => {
   const state = {
     run: "1115-0000-abcd",
     worktree: "st-verify-1115-0000-abcd",
+    project: "mend",
     web: "http://localhost:3373",
     evidence: join(root, "evidence"),
     private: join(root, "private"),
@@ -32,7 +33,7 @@ const world = (t, { phase = "ready" } = {}) => {
   writeFileSync(join(root, ".verify/stack/current.json"), JSON.stringify(state));
   const calls = [];
   const exec = async (command, args, options) => {
-    calls.push({ line: [command, ...args].join(" "), env: options.env });
+    calls.push({ line: [command, ...args].join(" "), env: options.env, input: options.input });
     return { code: 0, stdout: "" };
   };
   return { root, state, exec, calls };
@@ -58,7 +59,6 @@ test("a surface with no recipe, or a name from another surface, is not_implement
   const { root, exec } = world(t);
   assert.match(resolveRecipe(root, "web", "vscode-open").missing, /these are: web-projects/);
   for (const [surface, recipe] of [
-    ["tui", "anything"],
     ["desktop", "web-projects"],
     ["web", "vscode-open"],
   ]) {
@@ -82,6 +82,67 @@ test("web drives the run's own stack through drive-web, as its first account", a
   ])
     assert.ok(call.includes(part), part);
   assert.ok(calls[0].env.PATH.includes(".agents/skills/verify/scripts/guard"));
+});
+
+test("cli runs a steps.json batch with steps.mjs in the run's own worktree", async (t) => {
+  const { root, state, exec, calls } = world(t);
+  const batch = join(root, "login-flow.json");
+  writeFileSync(batch, '[{"name": "01-whoami", "run": ["mend", "whoami"]}]');
+  const result = await drive(root, { surface: "cli", recipe: batch, exec });
+  assert.equal(result.steps[0].status, "passed");
+  assert.deepEqual(result.drive, {
+    surface: "cli",
+    recipe: "login-flow",
+    out: join(state.evidence, "login-flow/cli"),
+  });
+  const call = calls[0];
+  assert.ok(call.line.includes(`steps.mjs ${state.evidence}/login-flow/cli session`));
+  assert.ok(call.line.includes(`--worktree ${state.worktree} --project mend`));
+  assert.match(String(call.input), /01-whoami/);
+
+  const failing = async () => ({ code: 1, stdout: "" });
+  const lost = await drive(root, { surface: "cli", recipe: batch, exec: failing });
+  assert.equal(lost.steps[0].status, "failed");
+  const missing = await drive(root, { surface: "cli", recipe: "./nope.json", exec });
+  assert.equal(missing.steps[0].status, "failed");
+});
+
+test("tui records drive-tui.sh's captures only from a clean bundle of this head", async (t) => {
+  const { root, state, exec, calls } = world(t);
+  const head = { sha: "d".repeat(40), dirty: false };
+  const env = { XDG_CACHE_HOME: join(root, "cache") };
+  const bundle = join(root, "cache/mend-verify/tui-cli-bundle");
+  const out = join(state.evidence, "dashboard/tui");
+  const tui = () => drive(root, { surface: "tui", recipe: "dashboard", head, env, exec });
+  const stamp = (sha, dirty) => {
+    mkdirSync(bundle, { recursive: true });
+    writeFileSync(join(bundle, "source.json"), JSON.stringify({ sha, dirty }));
+    utimesSync(join(bundle, "source.json"), 1000, 1000);
+  };
+  const capture = (name, seconds) => {
+    mkdirSync(out, { recursive: true });
+    writeFileSync(join(out, name), "projects\n");
+    utimesSync(join(out, name), seconds, seconds);
+  };
+
+  assert.equal((await tui()).steps[0].status, "blocked_by_prerequisite", "never built");
+  stamp("e".repeat(40), false);
+  assert.match((await tui()).steps[0].detail, /not this clean head/);
+  stamp(head.sha, true);
+  assert.match((await tui()).steps[0].detail, /uncommitted changes/);
+  stamp(head.sha, false);
+  assert.match((await tui()).steps[0].detail, /no drive-tui.sh capture/);
+
+  capture("01-projects.txt", 2000);
+  const passed = await tui();
+  assert.equal(passed.steps[0].status, "passed");
+  assert.deepEqual(passed.drive, { surface: "tui", recipe: "dashboard", out });
+
+  capture("00-before.txt", 500);
+  const stale = await tui();
+  assert.equal(stale.steps[0].status, "failed");
+  assert.match(stale.steps[0].detail, /00-before\.txt/);
+  assert.equal(calls.length, 0, "recording runs nothing");
 });
 
 test("without a ready stack, or a VS Code world, a drive is blocked and says what to start", async (t) => {

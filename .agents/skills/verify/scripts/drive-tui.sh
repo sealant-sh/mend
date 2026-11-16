@@ -63,7 +63,13 @@ if [ "$cmd" = build ]; then
   printf '#!/bin/sh\nexec node "%s/dist/main.js" "$@"\n' "$bundle" > "$bundle/real/mend"
   printf '#!/bin/sh\necho "drive-tui: xdg-open not run (a browser would have opened)" >&2\nexit 0\n' > "$bundle/bin/xdg-open"
   chmod +x "$bundle/real/mend" "$bundle/bin/xdg-open"
-  echo "drive-tui · CLI of $src bundled in $bundle"
+  # The commit the bundle is of: `pnpm verify drive tui` records captures only from a bundle of the
+  # head it judges, built from a clean tree, and taken after this stamp.
+  sha=$(git -C "$src" rev-parse HEAD)
+  dirty=false
+  [ -z "$(git -C "$src" status --porcelain --untracked-files=normal)" ] || dirty=true
+  printf '{"sha":"%s","dirty":%s}\n' "$sha" "$dirty" > "$bundle/source.json"
+  echo "drive-tui · CLI of $src ($sha, dirty: $dirty) bundled in $bundle"
   exit 0
 fi
 tmux() { command tmux -L st-verify-tui "$@"; }
