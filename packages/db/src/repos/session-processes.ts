@@ -88,6 +88,11 @@ export class SessionProcessesRepo extends Context.Service<
     readonly listLiveForWorkspace: (
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<ReadonlyArray<SessionProcess>>;
+    /**
+     * Whether any process, live or ended, was ever recorded in the workspace: what Mend started in
+     * it, by any session (a join's included).
+     */
+    readonly existsForWorkspace: (workspaceId: SealantWorkspaceId) => Effect.Effect<boolean>;
     /** Every live row across all workspaces — boot re-attaches watchers from this. */
     readonly listLive: () => Effect.Effect<ReadonlyArray<SessionProcess>>;
     /** Services newest-first, live AND recently ended — post-mortem logs address the dead. */
@@ -354,6 +359,18 @@ export const SessionProcessesRepoLive: Layer.Layer<
       return rows.map(toSessionProcess);
     });
 
+    const existsForWorkspace = Effect.fn("SessionProcessesRepo.existsForWorkspace")(function* (
+      workspaceId: SealantWorkspaceId,
+    ) {
+      const rows = yield* db
+        .select({ id: sessionProcesses.id })
+        .from(sessionProcesses)
+        .where(eq(sessionProcesses.sealantWorkspaceId, workspaceId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
     const listRecentServices = Effect.fn("SessionProcessesRepo.listRecentServices")(function* () {
       const rows = yield* db
         .select()
@@ -566,6 +583,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       listForSessions,
       listForService,
       listLiveForWorkspace,
+      existsForWorkspace,
       listLive,
       listRecentServices,
       setStatus,

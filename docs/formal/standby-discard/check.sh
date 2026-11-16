@@ -35,16 +35,18 @@ TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 # row expected to fail runs on one worker and stops at the same shortest trace every time. When a
 # change to the model moves a count, take the new one from a TLC run.
 ROWS=(
-  "code-promise|none|NoDiscardOfSessionWork||holds|18141305|421021"
-  "code-promise-atomic-retire|none|NoDiscardOfSessionWork|RetireIsAtomic|holds|13959504|354953"
-  "code-claimable|none|NoClaimableRowWithSession||holds|18141305|421021"
-  "mutant-no-reread|no-reread|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|113052|31106"
-  "mutant-no-reread-atomic-retire|no-reread|NoDiscardOfSessionWork|RetireIsAtomic|violated NoDiscardOfSessionWork|104484|28637"
-  "mutant-no-reread-no-sweep|no-reread|NoDiscardOfSessionWork|NoSweep|holds|293226|20238"
-  "mutant-reread-before-retire|reread-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|166239|42735"
-  "mutant-discard-before-retire|discard-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|4509|2136"
+  "code-promise|none|NoDiscardOfSessionWork||holds|94174677|1256442"
+  "code-promise-atomic-retire|none|NoDiscardOfSessionWork|RetireIsAtomic|holds|74046940|1080627"
+  "code-claimable|none|NoClaimableRowWithSession||holds|94174677|1256442"
+  "mutant-no-reread|no-reread|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|162261|49906"
+  "mutant-no-reread-atomic-retire|no-reread|NoDiscardOfSessionWork|RetireIsAtomic|violated NoDiscardOfSessionWork|152398|46750"
+  "mutant-no-reread-no-sweep|no-reread|NoDiscardOfSessionWork|NoSweep|holds|1434117|59464"
+  "mutant-reread-before-retire|reread-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|257514|75300"
+  "mutant-discard-before-retire|discard-before-retire|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|4615|2213"
   "mutant-claim-leaves-ready|claim-leaves-ready|NoClaimableRowWithSession||violated NoClaimableRowWithSession|188|125"
-  "mutant-reused-id|reused-id|NoClaimableRowWithSession||violated NoClaimableRowWithSession|9408|3926"
+  "mutant-reused-id|reused-id|NoClaimableRowWithSession||violated NoClaimableRowWithSession|10145|4338"
+  "mutant-no-look|no-look|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|30522|11425"
+  "mutant-look-live-only|look-live-only|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|50003|17822"
 )
 
 # The help is the comment block at the top of this file.

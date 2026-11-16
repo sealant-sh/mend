@@ -384,6 +384,7 @@ import type {
   Harness,
   Run as SdkRun,
   Workspace,
+  WorkspaceCaptureReplanned,
   WorkspaceCaptureSource,
   WorkspaceCredentialsOptions,
   WorkspaceExecResult,
@@ -2149,6 +2150,28 @@ const LANDING_FLUSH_PAUSE = Duration.seconds(2);
  * materialise of the head over the project base (the base itself is already on disk).
  */
 const STANDBY_REPLAN_TIMEOUT = Duration.minutes(3);
+/**
+ * How many times a claim asks its standby to re-plan, inside `STANDBY_REPLAN_TIMEOUT` (SLNT-1053).
+ * sealantd's re-plan is idempotent: one that failed before it acted changed nothing on the disk or
+ * its identity, and one asked again after it took answers what it has (`unchanged`).
+ */
+const STANDBY_REPLAN_ASKS = 3;
+/** How many times a claim reads its standby's status to learn whether a re-plan took. */
+const STANDBY_IDENTITY_READS = 3;
+/**
+ * What a launch that gave its claimed standby up says of it (SLNT-1053): its command never ran
+ * there, and Mend could not confirm the standby took this session's worktree.
+ */
+const CLAIMED_STANDBY_NEVER_RAN =
+  "the claimed standby was not confirmed on this session's worktree · this session's command never ran in it";
+/** What a launch that gave its claimed standby up said before SLNT-1053, and says now. */
+const CLAIMED_STANDBY_WORDS = [
+  "the claimed standby may hold work not yet saved",
+  CLAIMED_STANDBY_NEVER_RAN,
+] as const;
+/** A session whose launch gave its claimed standby up, once that standby ended with nothing. */
+const CLAIMED_STANDBY_ENDED =
+  "launch failed: the claimed standby never took this session's worktree · this session's command never ran · the standby ended with nothing of the session on it · start the session again";
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay(({ duration }) =>
@@ -4869,6 +4892,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const observeCaptureStatus = (session: Session, workspace: Workspace) =>
         fencedObservation(workspace.id, (fence) =>
           observeCaptureStatusFenced(session, workspace, fence),
+        ).pipe(Effect.map((answer) => answer?.reading ?? null));
+      /**
+       * The same status read, with the worktree the executor answered about: its own word on which
+       * identity it captures under (`readClaimedStandby`).
+       */
+      const observeCaptureIdentity = (session: Session, workspace: Workspace) =>
+        fencedObservation(workspace.id, (fence) =>
+          observeCaptureStatusFenced(session, workspace, fence),
         );
       const observeCaptureStatusFenced = Effect.fn("SessionEngine.observeCaptureStatus")(function* (
         session: Session,
@@ -4895,7 +4926,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (Option.isNone(outcome.success) || outcome.success.value === null) return null;
         const reading = readCaptureReport(outcome.success.value);
         yield* recordReading(session, workspace.id, reading, "status", fence);
-        return reading;
+        return { reading, worktreeId: outcome.success.value.worktreeId };
       });
 
       /**
@@ -5427,6 +5458,51 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           launchId,
           epoch: standbyEpochOf(holder.executorStartedAt),
         } satisfies StandbyPlaceholder;
+      });
+
+      /** The pause between two asks of a claimed standby (`standbyRetryInterval`). */
+      const pauseBetweenStandbyAsks = Effect.suspend(() =>
+        Duration.isZero(drainPolicy.standbyRetryInterval)
+          ? Effect.void
+          : Effect.sleep(drainPolicy.standbyRetryInterval),
+      );
+
+      /**
+       * Whether a claimed standby's re-plan took, in the executor's own words (SLNT-1053): its
+       * status names the worktree and the epoch it captures under, never inferred from how a
+       * re-plan failed. `standby`: still its `standby-<id>` placeholder under its synthetic epoch,
+       * so the re-plan never took and nothing of a session was laid down by it. `session`: the
+       * session's worktree under `claimEpoch`; sealantd sets that identity as the re-plan's last
+       * step, after the head, sources and remotes are down, so the re-plan took and only its
+       * answer was lost. `unknown`: no answer in `STANDBY_IDENTITY_READS` asks, or one that names
+       * neither. Each answer is recorded as any status answer is.
+       */
+      const readClaimedStandby = Effect.fn("SessionEngine.readClaimedStandby")(function* (
+        session: Session,
+        workspace: Workspace,
+        placeholder: StandbyPlaceholder,
+        claimEpoch: number | null,
+      ) {
+        const alias = standbyWorktreeAlias(
+          placeholder.launchId.slice(standbyLaunchIdOf("").length),
+        );
+        for (let ask = 1; ask <= STANDBY_IDENTITY_READS; ask++) {
+          if (ask > 1) yield* pauseBetweenStandbyAsks;
+          const answer = yield* observeCaptureIdentity(session, workspace);
+          if (answer === null) continue;
+          if (answer.worktreeId === alias && answer.reading.epoch === placeholder.epoch) {
+            return "standby" as const;
+          }
+          if (
+            claimEpoch !== null &&
+            answer.worktreeId === session.worktreeId &&
+            answer.reading.epoch === claimEpoch
+          ) {
+            return "session" as const;
+          }
+          return "unknown" as const;
+        }
+        return "unknown" as const;
       });
 
       /**
@@ -6906,6 +6982,73 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* sessions.markCaptureNotSaved(sessionId, new Date(clock.currentTimeMillisUnsafe()));
       });
 
+      /**
+       * A drain's look at a claimed standby whose re-plan never took (SLNT-1053), before it asks
+       * a final flush that cannot save: such a standby captures only under its placeholder, whose
+       * every upload Mend's capture route refuses (`standbyApiFor`), and on the box its final
+       * flush never answered and the drain kept it for good. It holds nothing of any session when
+       * all of these hold, each read with the drain's intent already durable, so a join that looks
+       * after it stays out (`leaseHolderWorkspace`) and one that looked before is seen here:
+       * - the executor is a claimed standby (`standbyPlaceholderOf`);
+       * - Mend never started a process in it, live or ended, and nothing holds it now
+       *   (`workspaceInUse`): a launch starts nothing in a standby before its re-plan answers
+       *   (e2e9 F-B), so only a join could have;
+       * - its own status names its placeholder (`readClaimedStandby`): the re-plan never took.
+       * Then it is discarded, as an unclaimed standby is, and the drain reads `terminated` once
+       * the end is observed. Null: not such a standby, or one Mend could not read, and the drain
+       * goes on as before.
+       */
+      const discardStandbyNeverClaimed = Effect.fn("SessionEngine.discardStandbyNeverClaimed")(
+        function* (session: Session, workspace: Workspace, reason: CaptureDrainReason) {
+          const workspaceId = SealantWorkspaceId.make(workspace.id);
+          const placeholder = yield* standbyPlaceholderOf(session, workspaceId);
+          if (placeholder === null) return null;
+          if (yield* processes.existsForWorkspace(workspaceId)) return null;
+          if ((yield* workspaceInUse(workspaceId)) > 0) return null;
+          const identity = yield* readClaimedStandby(session, workspace, placeholder, null);
+          if (identity !== "standby") return null;
+          const annotations = { sessionId: session.id, workspaceId, reason };
+          yield* Effect.logInfo(
+            "session engine: capture drain · the claimed standby never took this session's worktree and nothing ran in it · discarding it",
+          ).pipe(Effect.annotateLogs({ ...annotations, epoch: placeholder.epoch }));
+          // What a Stop put off has no capture of this executor's to read: none was registered.
+          yield* runDeferred(workspaceId, "refused", null, true);
+          const terminated = yield* terminateWorkspace(session.id, workspace, {
+            discardUnsaved: true,
+          });
+          if (!terminated.ended) {
+            yield* recordKept(
+              session.id,
+              workspaceId,
+              terminated.retained?.reason ??
+                "the claimed standby's discard is asked · its end is not observed yet",
+              terminated.retained !== null,
+            );
+            return "kept" as const;
+          }
+          yield* Effect.logInfo(
+            "session engine: capture drain · the claimed standby ended · nothing of the session was on it",
+          ).pipe(Effect.annotateLogs(annotations));
+          yield* endDrain(session.id);
+          // A launch that gave up on it before this rule settled with words of a standby that
+          // may hold work: they now say what it was.
+          const settled = yield* sessions
+            .byId(session.id)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (
+            settled !== null &&
+            settled.settledAt !== null &&
+            settled.status === "failed" &&
+            settled.summary !== null &&
+            CLAIMED_STANDBY_WORDS.some((words) => settled.summary?.includes(words) === true)
+          ) {
+            yield* sessions.restate(session.id, "failed", CLAIMED_STANDBY_ENDED);
+          }
+          yield* removeIfRequested(session.id);
+          return "terminated" as const;
+        },
+      );
+
       const runDrain = Effect.fn("SessionEngine.runDrain")(function* (
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
@@ -6916,6 +7059,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let previous: CaptureReading | null = null;
         let progressAtMs = clock.currentTimeMillisUnsafe();
         let begun = false;
+        let standbyLooked = false;
         while (true) {
           if (discards.has(workspaceId)) return "discarded" as const;
           const lookup = yield* lookupWorkspace(workspaceId);
@@ -7055,6 +7199,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               false,
             );
             return "kept" as const;
+          }
+          // A claimed standby whose re-plan never took is discarded, never flushed: its final
+          // flush cannot save (SLNT-1053). Looked at once per drain; the reaper taking a kept
+          // drain up again looks again.
+          if (capture !== null && lookup.kind === "found" && !standbyLooked) {
+            standbyLooked = true;
+            const discarded = yield* discardStandbyNeverClaimed(session, lookup.workspace, reason);
+            if (discarded !== null) return discarded;
           }
           // Recorded before it is sent: from here on this executor is ending, whatever the
           // answer, and nothing is started in it again.
@@ -14555,6 +14707,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * capture it laid the worktree down from (`restoredFrom`, null when fresh) when the daemon
        * answered with this session's worktree under the lease epoch the claim took, the delta
        * report logged as observed. Anything else is null and the caller goes cold.
+       *
+       * A re-plan that failed is asked again, up to `STANDBY_REPLAN_ASKS` times inside
+       * `STANDBY_REPLAN_TIMEOUT` (SLNT-1053: a dropped connection on sealantd's `plan.get` was the
+       * usual cause on the box). sealantd's re-plan is idempotent: its `plan.get` comes first and
+       * a failure there changes neither the disk nor its identity, and one asked again after it
+       * took answers the identity it has (`unchanged`). A refusal of the owner map is not asked
+       * again: it is the standby's boot, not the connection. A re-plan that timed out is not asked
+       * again behind itself either: the budget is spent. When no ask answered, the executor's own
+       * status says whether the re-plan took (`readClaimedStandby`): one that took is adopted.
        */
       const replanClaimedStandby = Effect.fn("SessionEngine.replanClaimedStandby")(function* (
         session: Session,
@@ -14566,39 +14727,93 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         // Read under the claim's lease: the head this replan plans, unless the daemon names it.
         const headBefore = yield* restoredCaptureOf(session.worktreeId);
-        // sealantd reads the owner map only at boot (sealant#333) and its replan restores under
-        // that map (`materialize_delta`), so the claim names the map it expects: none for a
-        // shared standby, its owner's for a person one. sealant refuses any other
-        // (`owner-map-mismatch`) before its daemon is reached, and the launch goes cold.
-        const outcome = yield* sealant
-          .captureReplan(workspace, { expectedOwnerMap })
-          .pipe(Effect.timeoutOption(STANDBY_REPLAN_TIMEOUT), Effect.result);
         const annotations = {
           sessionId: session.id,
           worktreeId: session.worktreeId,
           workspaceId: workspace.id,
         };
-        if (Result.isFailure(outcome)) {
-          const ownerMapRefused =
-            outcome.failure.code === "owner-map-mismatch" ||
-            outcome.failure.code === "owner-map-unsupported";
-          yield* Effect.logWarning(
-            ownerMapRefused
-              ? "session engine: standby replan · the standby booted with another owner map · cold launch"
-              : "session engine: standby replan · refused · cold launch",
-          ).pipe(Effect.annotateLogs({ ...annotations, error: outcome.failure.message }));
-          return null;
+        const deadline =
+          clock.currentTimeMillisUnsafe() + Duration.toMillis(STANDBY_REPLAN_TIMEOUT);
+        let answered: WorkspaceCaptureReplanned | null = null;
+        for (let ask = 1; answered === null && ask <= STANDBY_REPLAN_ASKS; ask++) {
+          const left = deadline - clock.currentTimeMillisUnsafe();
+          if (left <= 0) break;
+          // sealantd reads the owner map only at boot (sealant#333) and its replan restores under
+          // that map (`materialize_delta`), so the claim names the map it expects: none for a
+          // shared standby, its owner's for a person one. sealant refuses any other
+          // (`owner-map-mismatch`) before its daemon is reached, and the launch goes cold.
+          const outcome = yield* sealant
+            .captureReplan(workspace, { expectedOwnerMap })
+            .pipe(Effect.timeoutOption(Duration.millis(left)), Effect.result);
+          if (Result.isFailure(outcome)) {
+            const ownerMapRefused =
+              outcome.failure.code === "owner-map-mismatch" ||
+              outcome.failure.code === "owner-map-unsupported";
+            if (ownerMapRefused) {
+              yield* Effect.logWarning(
+                "session engine: standby replan · the standby booted with another owner map · cold launch",
+              ).pipe(Effect.annotateLogs({ ...annotations, error: outcome.failure.message }));
+              return null;
+            }
+            const again = ask < STANDBY_REPLAN_ASKS && clock.currentTimeMillisUnsafe() < deadline;
+            yield* Effect.logWarning(
+              again
+                ? "session engine: standby replan · refused · asking again"
+                : "session engine: standby replan · refused",
+            ).pipe(Effect.annotateLogs({ ...annotations, ask, error: outcome.failure.message }));
+            if (again) yield* pauseBetweenStandbyAsks;
+            continue;
+          }
+          if (Option.isNone(outcome.success)) {
+            yield* Effect.logWarning("session engine: standby replan · timed out").pipe(
+              Effect.annotateLogs({
+                ...annotations,
+                ask,
+                timeoutMs: Duration.toMillis(STANDBY_REPLAN_TIMEOUT),
+              }),
+            );
+            break;
+          }
+          answered = outcome.success.value;
         }
-        if (Option.isNone(outcome.success)) {
-          yield* Effect.logWarning("session engine: standby replan · timed out · cold launch").pipe(
-            Effect.annotateLogs({
-              ...annotations,
-              timeoutMs: Duration.toMillis(STANDBY_REPLAN_TIMEOUT),
-            }),
+        if (answered === null) {
+          // No ask answered: the executor says whether the re-plan took. Its identity is set as
+          // the re-plan's last step, so an executor that answers as this session's worktree
+          // under the claim's live epoch is exactly what an answered re-plan leaves: adopted, its
+          // head the one read under the claim (as an SDK that does not name it leaves it).
+          // The row as the claim's acceptance left it: the standby on it, under its own launch.
+          const accepted = yield* sessions.byId(session.id);
+          const placeholder = yield* standbyPlaceholderOf(
+            accepted,
+            SealantWorkspaceId.make(workspace.id),
           );
+          const claim = yield* capture.repo.leaseOf(session.worktreeId);
+          const claimEpoch =
+            claim !== null &&
+            claim.live &&
+            claim.executorId === session.id &&
+            placeholder !== null &&
+            claim.launchId === placeholder.launchId
+              ? claim.epoch
+              : null;
+          const identity =
+            placeholder === null
+              ? ("unknown" as const)
+              : yield* readClaimedStandby(accepted, workspace, placeholder, claimEpoch);
+          if (identity === "session") {
+            yield* Effect.logInfo(
+              "session engine: capture mode · standby re-planned onto the worktree · its answer was lost · the executor answers as this session's · adopted",
+            ).pipe(Effect.annotateLogs({ ...annotations, epoch: claimEpoch }));
+            return { restoredFrom: headBefore };
+          }
+          yield* Effect.logWarning(
+            identity === "standby"
+              ? "session engine: standby replan · the standby answers under its placeholder · the re-plan never took · cold launch"
+              : "session engine: standby replan · the standby's own status could not be read · drained as a relaunch drains · cold launch",
+          ).pipe(Effect.annotateLogs(annotations));
           return null;
         }
-        const report = outcome.success.value;
+        const report = answered;
         if (
           report.worktreeId !== session.worktreeId ||
           (lease !== null && lease.live && report.epoch !== lease.epoch)
@@ -20136,10 +20351,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The standby is this session's executor before it is asked anything (review 2026-09-28
         // (3) #1): on the row under its own launch, its pool row gone, so it is drained, kept or
         // recovered like any executor and keeps its token while its end is not confirmed. A
-        // replan that fails, times out or answers another identity may still have left work on
-        // it (a lost answer): it is drained as a relaunch drains, and only once its end is
-        // observed does a cold executor start — under a fresh epoch and its own launch, never
-        // the standby's. Kept: the launch is refused and nothing else starts.
+        // replan that never answered is asked again, and one that took and lost its answer is
+        // adopted on the executor's own word (`replanClaimedStandby`). Otherwise the standby
+        // ends as a relaunch ends it, and only once its end is observed does a cold executor
+        // start — under a fresh epoch and its own launch, never the standby's. A standby that
+        // still answers under its placeholder, in which nothing ever ran, is discarded rather
+        // than drained: it holds nothing of any session and can never save (`runDrain`,
+        // SLNT-1053). Kept: the launch is refused and nothing else starts.
         if (capture !== null && adopted !== null && claimedEntry !== null) {
           const standbyLaunch = standbyLaunchIdOf(claimedEntry.id);
           launchId = standbyLaunch;
@@ -20170,7 +20388,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const error = new SealantPlatformError({
                 code: "capture_not_saved",
                 status: 409,
-                message: `${captureStatusLine(drained) ?? "not saved · workspace kept"} · the claimed standby may hold work not yet saved · start again once it saves, or discard unsaved and stop`,
+                // True whatever the drain found (SLNT-1053): the launch ran nothing in the standby,
+                // and Mend could not confirm it took this session's worktree.
+                message: `${captureStatusLine(drained) ?? "not saved · workspace kept"} · ${CLAIMED_STANDBY_NEVER_RAN} · start again once it has ended, or discard unsaved and stop`,
                 cause: null,
               });
               yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
@@ -20185,8 +20405,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const error = new SealantPlatformError({
                 code: "capture_not_saved",
                 status: 409,
-                message:
-                  "the claimed standby's end is not observed yet · it may hold work not yet saved · nothing else started · start again once it has ended",
+                message: `the claimed standby's end is not observed yet · ${CLAIMED_STANDBY_NEVER_RAN} · nothing else started · start again once it has ended`,
                 cause: null,
               });
               yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
