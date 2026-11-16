@@ -7,7 +7,7 @@
 # paste written in a live workspace (storePastedImage, mend#1698, SLNT-507) and in a recipe
 # start's setup refusal (ServiceStartError's setup facts, SLNT-1018), none of them in code an
 # action models. Full TLC run at SLNT-1018's head: every row as expected.
-sync 89636f33f793831f97ae7c6e13fe9980f5a4c65d
+sync 4c019beeb2e3bee5a09de42c83ef3f79ab610a2c
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
