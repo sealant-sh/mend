@@ -3929,7 +3929,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const runtimeOffer = sessionRuntimeOfferOf(deployment);
       // The server's own address (`APP_URL`): every workspace process gets it as `MEND_ORIGIN`, so
       // an agent can link the person to Mend. One value for every session, whoever started it.
-      const origin = (yield* NetworkConfig).appUrl;
+      const mendOrigin = (yield* NetworkConfig).appUrl;
       const organizationSettings = yield* OrganizationSettingsRepo;
       /**
        * Where a new worktree in the organization runs: the organization's choice of what the
@@ -9513,7 +9513,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         organizations,
         sealant: yield* SealantClient,
         harnessHome: HARNESS_HOME_MOUNT_PATH,
-        origin,
+        origin: mendOrigin,
         fork: (effect) => effect.pipe(forkSealantBackground(scope), Effect.asVoid),
         anyRecorded: yield* harnessLayouts.anyRecorded(),
         identityTicket: (input) => mintIdentityTicket(input),
@@ -13907,7 +13907,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           // Every process in the workspace, with or without a session channel: launch, standby
           // and resume all create through here.
-          MEND_ORIGIN: origin,
+          MEND_ORIGIN: mendOrigin,
           ...channel.env,
         };
         Object.assign(secretEnv, channel.secretEnv);
