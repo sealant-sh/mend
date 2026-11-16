@@ -33,6 +33,33 @@ export const SERVER_SUPPORT_IMAGES = [
 ];
 /** The workspace base the fresh-worktree session builds its image from. */
 export const WORKSPACE_BASE_IMAGE = "node:26-bookworm";
+/** The base the server image builds from: the Dockerfile's `FROM`, checked by pullWorldImages. */
+export const SERVER_BUILD_BASE_IMAGE = "node:26-bookworm-slim";
+
+// Where CI pulls each Docker Hub image above: by digest from a registry with no anonymous pull
+// limit, then tagged with the name setup and the Dockerfile use, so neither changes. Each digest is
+// the index Docker Hub serves for that tag. Official images come from Docker's own mirror on ECR
+// Public; Garage has no home there, so it comes from Google's Docker Hub mirror.
+export const DOCKER_HUB_SOURCES = {
+  "postgres:17-alpine":
+    "public.ecr.aws/docker/library/postgres:17-alpine@sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7",
+  "dxflrs/garage:v2.4.1":
+    "mirror.gcr.io/dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
+  "nginx:1.29-alpine":
+    "public.ecr.aws/docker/library/nginx:1.29-alpine@sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
+  "registry:3.1":
+    "public.ecr.aws/docker/library/registry:3.1@sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c",
+  "node:26-bookworm":
+    "public.ecr.aws/docker/library/node:26-bookworm@sha256:b7087bc4d973034b30854b378ba107f9fab622b47514cb7e2592e41b8bab8d49",
+  "node:26-bookworm-slim":
+    "public.ecr.aws/docker/library/node:26-bookworm-slim@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1",
+};
+// The daemon inside the world pulls the network guard image by digest, a reference `docker tag`
+// cannot make, so its Docker Hub pulls go through Google's mirror, which serves Hub's digests.
+const DIND_REGISTRY_MIRROR = "https://mirror.gcr.io";
+// CI sets this so a Docker Hub pull fails at once instead of on Docker Hub's pull limit.
+const DOCKER_HUB_HOSTS = ["registry-1.docker.io", "auth.docker.io", "index.docker.io"];
+const refuseDockerHub = process.env.MEND_E2E_REFUSE_DOCKER_HUB === "1";
 
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -90,6 +117,31 @@ export const docker = async (args, options) => (await run("docker", args, option
 
 export const lines = (text) => text.split("\n").filter((line) => line.trim() !== "");
 
+/**
+ * Every image the world needs, and the server build's base, pulled without Docker Hub: each from
+ * its DOCKER_HUB_SOURCES entry and tagged with its Docker Hub name.
+ */
+export const pullWorldImages = async () => {
+  const dockerfile = fs.readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
+  const bases = new Set(
+    [...dockerfile.matchAll(/^FROM (\S+)/gm)]
+      .map((match) => match[1])
+      .filter((base) => !base.startsWith("$")),
+  );
+  if (bases.size !== 1 || !bases.has(SERVER_BUILD_BASE_IMAGE))
+    throw new Error(
+      `The Dockerfile builds from ${[...bases].join(", ")}, not ${SERVER_BUILD_BASE_IMAGE}: update SERVER_BUILD_BASE_IMAGE and its DOCKER_HUB_SOURCES digest`,
+    );
+  await docker(["pull", "-q", DIND_IMAGE], { timeout: 600_000 });
+  for (const name of [...SERVER_SUPPORT_IMAGES, WORKSPACE_BASE_IMAGE, SERVER_BUILD_BASE_IMAGE]) {
+    const source = DOCKER_HUB_SOURCES[name];
+    if (source === undefined) throw new Error(`${name} has no DOCKER_HUB_SOURCES entry`);
+    console.log(`${name} ← ${source}`);
+    await docker(["pull", "-q", source], { timeout: 600_000 });
+    await docker(["tag", source, name]);
+  }
+};
+
 /** Every image the world needs is on this machine's Docker; the first missing one is named. */
 export const requireImages = async (serverImage) => {
   for (const needed of [serverImage, ...SERVER_SUPPORT_IMAGES, WORKSPACE_BASE_IMAGE, DIND_IMAGE]) {
@@ -144,9 +196,13 @@ export const startDind = async ({ name, scratch, home, context, clientEnv }) => 
     `${socketDir}:/var/run`,
     "-v",
     `${home}:${home}`,
+    ...(refuseDockerHub
+      ? DOCKER_HUB_HOSTS.flatMap((host) => ["--add-host", `${host}:0.0.0.0`])
+      : []),
     DIND_IMAGE,
     "dockerd",
     "--host=unix:///var/run/docker.sock",
+    `--registry-mirror=${DIND_REGISTRY_MIRROR}`,
   ]);
   const host = await docker([
     "inspect",
