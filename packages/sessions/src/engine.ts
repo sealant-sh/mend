@@ -17272,13 +17272,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return [...argv, "--settings", JSON.stringify({ ...settings, ...hooks })];
         });
 
-      /**
-       * Whether a protocol agent of `session` runs in its conversation home in the executor of
-       * `launchId` (docs/adr/0016, decision 6): a Claude or Codex conversation in a person-layout
-       * executor that shared control is on for now, or that moved into `C` before (once shared
-       * from the move on, until the session ends, also once control is turned off). Null
-       * otherwise; with the flag off and nothing recorded, nothing is read.
-       */
       /** The session's imported conversation (SLNT-895) while its first agent has not started over it. */
       const undeliveredImportOf = (session: Session) =>
         importedConversations
@@ -17293,6 +17286,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
 
+      /**
+       * Whether a protocol agent of `session` runs in its conversation home in the executor of
+       * `launchId` (docs/adr/0016, decision 6): a Claude or Codex conversation in a person-layout
+       * executor that shared control is on for now, or that moved into `C` before (once shared
+       * from the move on, until the session ends, also once control is turned off). Null
+       * otherwise; with the flag off and nothing recorded, nothing is read.
+       */
       const conversationOf = Effect.fn("SessionEngine.conversationOf")(function* (
         session: Session,
         launchId: string | null,
