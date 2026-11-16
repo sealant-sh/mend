@@ -11,9 +11,10 @@ import {
   prepareNativeHistorySeed,
   nativeBootstrapArgv,
   nativeHistoryPaths,
+  rewriteNativeConversation,
   type AgentStartOptions,
 } from "@mend/agent-protocol";
-import { DopplerRepo, SessionHistoryRepo } from "@mend/db";
+import { DopplerRepo, ImportedConversationsRepo, SessionHistoryRepo } from "@mend/db";
 import {
   InstanceRolesRepo,
   RemovalFencesRepo,
@@ -119,6 +120,7 @@ import {
 } from "@mend/domain/workbench";
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type { BoatLaunchKey } from "@mend/domain/workbench";
+import { isConversationTranscript, isTextConversationFile } from "@mend/domain/workbench";
 import {
   BOAT_LAUNCH_REFUSAL_CODES,
   type BoatProblem,
@@ -3754,6 +3756,7 @@ type SessionEngineRequirements =
   | WorktreesRepo
   | CheckpointsRepo
   | SessionHistoryRepo
+  | ImportedConversationsRepo
   | ReferencesRepo
   | ProjectMountsRepo
   | ProjectLinksRepo
@@ -9243,6 +9246,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const removalFences = yield* RemovalFencesRepo;
       const checkpoints = yield* CheckpointsRepo;
       const history = yield* SessionHistoryRepo;
+      const importedConversations = yield* ImportedConversationsRepo;
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
       const projectLinks = yield* ProjectLinksRepo;
@@ -16957,6 +16961,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * from the move on, until the session ends, also once control is turned off). Null
        * otherwise; with the flag off and nothing recorded, nothing is read.
        */
+      /** The session's imported conversation (SLNT-895) while its first agent has not started over it. */
+      const undeliveredImportOf = (session: Session) =>
+        importedConversations
+          .bySession(session.id)
+          .pipe(
+            Effect.map((imported) =>
+              imported === null ||
+              imported.deliveredAt !== null ||
+              imported.harness !== session.harness
+                ? null
+                : imported,
+            ),
+          );
+
       const conversationOf = Effect.fn("SessionEngine.conversationOf")(function* (
         session: Session,
         launchId: string | null,
@@ -16977,10 +16995,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if ((yield* layoutSteps.layoutOfLaunch(launchId)) !== "person") return null;
         const record = yield* harnessLayouts.sharedConversationOf(session.id);
         const fork = yield* history.fork(session.id);
+        // An imported conversation is delivered into `C` at its first launch, as a fork's is.
+        const imported = yield* undeliveredImportOf(session);
         if (
           record === null &&
           (terminal || session.sharedControlEnabledAt === null) &&
-          fork === null
+          fork === null &&
+          imported === null
         )
           return null;
         return {
@@ -17314,6 +17335,113 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           as,
         );
       });
+
+      /**
+       * A person's imported conversation (SLNT-895), written into this launch's harness home before
+       * its first agent starts, rewritten with every path for `/workspace/repo` and this home: the
+       * session's conversation home (`C`, seen as `H`) in the person layout, else the shared
+       * home. The agent then resumes the conversation by its own id. Undefined when the session
+       * holds none, or its first agent already started over it; a later launch resumes through
+       * the ordinary saved state.
+       */
+      const prepareImportedConversation = Effect.fn("SessionEngine.prepareImportedConversation")(
+        function* (
+          session: Session,
+          workspace: Workspace,
+          protocol: boolean,
+          conversationOwner: string | null,
+        ) {
+          const imported = yield* undeliveredImportOf(session);
+          if (imported === null) return undefined;
+          if (!protocol)
+            return yield* nativeBootstrapRefused(
+              "Send a message to this imported conversation before opening it in a terminal.",
+            );
+          const root =
+            conversationOwner === null
+              ? HARNESS_HOME_MOUNT_PATH
+              : conversationDirOf(HARNESS_HOME_MOUNT_PATH, conversationOwner, session.id);
+          const home =
+            conversationOwner === null ? HARNESS_HOME_MOUNT_PATH : conversationHomeOf(session.id);
+          const person =
+            conversationOwner === null
+              ? null
+              : yield* harnessLayouts
+                  .ensureIdentity(conversationOwner)
+                  .pipe(Effect.mapError((error) => nativeBootstrapRefused(error.message)));
+          const as: PersonExec | undefined =
+            person === null
+              ? undefined
+              : {
+                  person,
+                  user: processUserOf(person),
+                  sessionId: session.id,
+                  places: personPlacesOf(HARNESS_HOME_MOUNT_PATH, person),
+                };
+          const stored = yield* importedConversations.files(session.id);
+          const utf8 = new TextDecoder("utf-8", { fatal: true });
+          // Text the rewrite reads as UTF-8 (checked on the way in); a screenshot as its bytes.
+          const asText = (file: (typeof stored)[number]) =>
+            isTextConversationFile(file.relativePath)
+              ? utf8.decode(file.bytes)
+              : Buffer.from(file.bytes).toString("latin1");
+          const rewritten = yield* Effect.try({
+            try: () =>
+              stored.map((file) => ({ relativePath: file.relativePath, content: asText(file) })),
+            catch: () => nativeBootstrapRefused("The imported conversation is no longer readable."),
+          }).pipe(
+            Effect.flatMap((files) =>
+              rewriteNativeConversation({
+                provider: imported.harness,
+                files,
+                source: imported.source,
+                target: { checkout: "/workspace/repo", home },
+              }).pipe(
+                Effect.mapError((error) =>
+                  nativeBootstrapRefused(
+                    `The imported conversation could not be prepared for this workspace: ${error.message}`,
+                  ),
+                ),
+              ),
+            ),
+          );
+          yield* writeWorkspaceFiles(
+            session,
+            workspace,
+            rewritten.files.map((file) => ({
+              path: `${root}/${file.relativePath}`,
+              bytes: isTextConversationFile(file.relativePath)
+                ? new TextEncoder().encode(file.content)
+                : new Uint8Array(Buffer.from(file.content, "latin1")),
+              within: { root, directoryMode: 0o700, fileMode: 0o600 },
+            })),
+            "workspace-files",
+            as,
+          ).pipe(
+            Effect.mapError(() =>
+              nativeBootstrapRefused(
+                "The imported conversation could not be written into this workspace.",
+              ),
+            ),
+          );
+          // Counts only: the conversation's paths are the person's, and never logged.
+          yield* Effect.logInfo("session engine: imported conversation delivered").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              files: rewritten.files.length,
+              rewritten: rewritten.report.rewritten,
+              leftovers: rewritten.report.leftovers.length,
+            }),
+          );
+          const transcript = rewritten.files.find((file) =>
+            isConversationTranscript(imported.harness, imported.nativeId, file.relativePath),
+          );
+          return {
+            providerSessionId: imported.nativeId,
+            resumePath: transcript === undefined ? null : `${home}/${transcript.relativePath}`,
+          };
+        },
+      );
 
       /** The same native plan scope on launch, resume and surviving-pipe reattachment. */
       const claudePlanFileFor = Effect.fn("SessionEngine.claudePlanFileFor")(function* (
@@ -20732,6 +20860,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           (startAs !== null || replacement !== null) && launchId !== null && !interactiveShell
             ? yield* conversationOf(session, launchId, protocolStart === null)
             : null;
+        // Its files reach the home only after the hand-over below, so the hand-over starts fresh.
+        const pendingImport =
+          interactiveShell || plan.role !== "agent" ? null : yield* undeliveredImportOf(session);
         const inConversation =
           conversation === null || launchId === null
             ? null
@@ -20743,10 +20874,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sender: ownerUserId,
                 personEnv: startAs?.env ?? {},
                 providerSessionId:
-                  protocolResumeId ??
-                  (manifest !== null && manifest.harness === session.harness
-                    ? manifest.providerSessionId
-                    : null),
+                  pendingImport !== null
+                    ? null
+                    : (protocolResumeId ??
+                      (manifest !== null && manifest.harness === session.harness
+                        ? manifest.providerSessionId
+                        : null)),
                 model: protocolStart?.model ?? null,
                 stop: null,
               }).pipe(
@@ -20779,6 +20912,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           conversation?.owner ?? null,
           inConversation?.resumePath ?? null,
         ).pipe(Effect.onError(() => releaseTake));
+        const importedDelivery =
+          nativeBootstrap === undefined && pendingImport !== null
+            ? yield* prepareImportedConversation(
+                session,
+                workspace,
+                protocolStart !== null,
+                conversation?.owner ?? null,
+              ).pipe(Effect.onError(() => releaseTake))
+            : undefined;
         const startedArgv =
           nativeBootstrap === undefined ? homeArgv : nativeBootstrapArgv(homeArgv, nativeBootstrap);
         // After restore, deliveries and conversation-home selection, immediately before the agent.
@@ -20960,12 +21102,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               permissionMode: protocolStart.permissionMode ?? "bypass",
               hooks: protocolHooksFor(
                 launchedProcess,
-                session.providerSessionId === null && inConversation?.resumePath == null,
+                session.providerSessionId === null &&
+                  inConversation?.resumePath == null &&
+                  importedDelivery === undefined,
               ),
               // The session's own workspace, created or claimed with its owner's login.
               launchedWithLoginOf: session.ownerUserId,
               nativeBootstrap,
-              resumePath: inConversation?.resumePath ?? null,
+              resumePath: inConversation?.resumePath ?? importedDelivery?.resumePath ?? null,
               runsAs: launchedProcess.runsAs,
               login: protocolLoginOf(session.harness, startAs?.logins, inConversation),
             })
@@ -21004,6 +21148,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* records.opened(sessionId);
+        // The agent runs over the delivered files: a later launch resumes its saved state, and
+        // the import is never delivered again.
+        if (importedDelivery !== undefined) yield* importedConversations.markDelivered(sessionId);
         if (onScreen !== null) yield* screenBesideAgent(sessionId);
         yield* clearStaleStartSummary(sessionId);
         // After the stale words go, as the setup line does: said before, it went with them.
@@ -22060,7 +22207,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ...(session.effort === null ? {} : { effort: session.effort }),
               }
             : requested;
-        const recordedPermissionMode = lastPermissionMode(rows);
+        // A first agent over an imported conversation (SLNT-895) resumes it by its own id, in
+        // the permission mode it ran in, unless the start names one.
+        const pendingImport = previous === null ? yield* undeliveredImportOf(session) : null;
+        const recordedPermissionMode =
+          lastPermissionMode(rows) ?? pendingImport?.permissionMode ?? undefined;
         const start: LaunchStart =
           requested.permissionMode === undefined && recordedPermissionMode !== undefined
             ? { ...withModel, permissionMode: recordedPermissionMode }
@@ -22073,7 +22224,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           binding?.providerSessionId ??
           (previous !== null && previous.harness === session.harness
             ? (previous.providerSessionId ?? undefined)
-            : undefined);
+            : (pendingImport?.nativeId ?? undefined));
         const composed = composeProtocolArgv(session.harness, start, providerSessionId);
         if (composed instanceof ProtocolHarnessUnsupportedError) {
           return yield* Effect.fail(composed);
@@ -23265,6 +23416,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             executorLaunch === null
               ? null
               : yield* conversationOf(session, executorLaunch, protocolStart === null);
+          // Its files reach the home only after the hand-over below, so the hand-over starts fresh.
+          const pendingImport = interactiveShell ? null : yield* undeliveredImportOf(session);
           const inConversation =
             conversation === null || executorLaunch === null || sender === null
               ? null
@@ -23275,7 +23428,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   conversation,
                   sender,
                   personEnv: personStart?.env ?? {},
-                  providerSessionId,
+                  providerSessionId: pendingImport !== null ? null : providerSessionId,
                   model: protocolStart?.model ?? null,
                   stop: handOver?.stop ?? null,
                   replacing: handOver?.replacing ?? null,
@@ -23320,6 +23473,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             conversation?.owner ?? null,
             inConversation?.resumePath ?? null,
           ).pipe(Effect.onError(() => releaseRetainedTake));
+          const importedDelivery =
+            nativeBootstrap === undefined && pendingImport !== null
+              ? yield* prepareImportedConversation(
+                  session,
+                  workspace,
+                  protocolStart !== null,
+                  conversation?.owner ?? null,
+                ).pipe(Effect.onError(() => releaseRetainedTake))
+              : undefined;
           const startedArgv =
             nativeBootstrap === undefined
               ? homeArgv
@@ -23522,11 +23684,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 permissionMode: protocolStart.permissionMode ?? "bypass",
                 hooks: protocolHooksFor(
                   agentProcess,
-                  session.providerSessionId === null && inConversation?.resumePath == null,
+                  session.providerSessionId === null &&
+                    inConversation?.resumePath == null &&
+                    importedDelivery === undefined,
                 ),
                 launchedWithLoginOf,
                 nativeBootstrap,
-                resumePath: inConversation?.resumePath ?? null,
+                resumePath: inConversation?.resumePath ?? importedDelivery?.resumePath ?? null,
                 // The payer of every turn the process runs: the person it runs as (decision 6).
                 runsAs: agentProcess.runsAs,
                 login: protocolLoginOf(session.harness, personStart?.logins, inConversation),
@@ -23558,6 +23722,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // See launchInternal: reopen unconditionally so a retried row settles again, and before
           // the TTL renewal asks the platform anything.
           yield* records.opened(sessionId);
+          // The agent runs over the delivered files: a later launch resumes its saved state, and
+          // the import is never delivered again.
+          if (importedDelivery !== undefined) yield* importedConversations.markDelivered(sessionId);
           if (onScreen !== null) yield* screenBesideAgent(sessionId);
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
