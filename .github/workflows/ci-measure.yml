@@ -121,9 +121,10 @@ jobs:
           --test-reporter=./scripts/ci-test-report.mjs --test-reporter-destination=stdout
           scripts/ci-scope.test.mjs scripts/test-only-imports.test.mjs
           scripts/remove-package-tests.test.mjs scripts/ci-workflow.test.mjs
-          scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs scripts/ci-test-inputs.test.mjs
-          tooling/verify/plan.test.mjs tooling/verify/verify.test.mjs tooling/verify/box.test.mjs
-          tooling/verify/stack.test.mjs tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
+          scripts/ci-images.test.mjs scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs
+          scripts/ci-test-inputs.test.mjs tooling/verify/plan.test.mjs
+          tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
+          tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
           tooling/verify/formal.test.mjs tooling/verify/gate.test.mjs
       - name: Verify timing analysis against source budgets
         run:
@@ -180,18 +181,9 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
-        env:
-          POSTGRES_USER: mend
-          POSTGRES_PASSWORD: mend
-          POSTGRES_DB: mend
-        ports:
-          - 5432:5432
-        options:
-          --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
-          --health-retries 10
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
@@ -208,6 +200,10 @@ jobs:
         with:
           node-version-file: .node-version
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - name: Start the throwaway Postgres
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs postgres
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
@@ -215,11 +211,6 @@ jobs:
         run:
           docker build -t mend-shell-profile-test:alpine-3.22
           packages/sessions/test/fixtures/shell-profile
-      - name: Run the throwaway Postgres without durability
-        run:
-          docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
-          fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
-          full_page_writes = off" -c "SELECT pg_reload_conf()"
       - name: Tests including required PostgreSQL repositories, migrations and jobs
         run: node scripts/ci-shards.mjs engines
         env:
@@ -251,18 +242,9 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
-        env:
-          POSTGRES_USER: mend
-          POSTGRES_PASSWORD: mend
-          POSTGRES_DB: mend
-        ports:
-          - 5432:5432
-        options:
-          --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
-          --health-retries 10
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
@@ -279,6 +261,10 @@ jobs:
         with:
           node-version-file: .node-version
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - name: Start the throwaway Postgres
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs postgres
       - run: pnpm install --frozen-lockfile
       - name: Configure Turbo cache and runtime identity
         run: node scripts/ci-turbo.mjs configure >> "$GITHUB_ENV"
@@ -286,11 +272,6 @@ jobs:
         run:
           docker build -t mend-shell-profile-test:alpine-3.22
           packages/sessions/test/fixtures/shell-profile
-      - name: Run the throwaway Postgres without durability
-        run:
-          docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
-          fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
-          full_page_writes = off" -c "SELECT pg_reload_conf()"
       - name: API server tests and sessions native shard 2/2
         run: node scripts/ci-shards.mjs engines-b
         env:
@@ -661,18 +642,9 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
-    services:
-      postgres:
-        image: public.ecr.aws/docker/library/postgres:17@sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac
-        env:
-          POSTGRES_USER: mend
-          POSTGRES_PASSWORD: mend
-          POSTGRES_DB: mend
-        ports:
-          - 5432:5432
-        options:
-          --health-cmd "pg_isready -U mend -d mend" --health-interval 5s --health-timeout 5s
-          --health-retries 10
+    permissions:
+      contents: read
+      packages: read
     env:
       MEND_TEST_DATABASE_URL: postgres://mend:mend@localhost:5432/mend
     steps:
@@ -684,12 +656,11 @@ jobs:
         with:
           node-version-file: .node-version
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
+      - name: Start the throwaway Postgres
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs postgres
       - run: pnpm install --frozen-lockfile
-      - name: Run the throwaway Postgres without durability
-        run:
-          docker exec ${{ job.services.postgres.id }} psql -U mend -d mend -c "ALTER SYSTEM SET
-          fsync = off" -c "ALTER SYSTEM SET synchronous_commit = off" -c "ALTER SYSTEM SET
-          full_page_writes = off" -c "SELECT pg_reload_conf()"
       - name: Install Chromium and Firefox for the preview browsers
         run:
           pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox

@@ -1,0 +1,64 @@
+# Keeps a copy of every third-party image CI pulls under ghcr.io/sealant-sh (ci-mirror-<name>), the
+# whole index at the digest scripts/ci-images.mjs pins (SLNT-1071). CI pulls the copy first, with
+# its own token, then ECR Public and mirror.gcr.io, so a public registry's anonymous limit on the
+# runners' shared addresses no longer fails a job. A copy already at its digest is left alone; a
+# digest a PR changes is copied when that PR lands, and until then CI takes the next source.
+#
+# The packages are public, as packages this public repository's workflows publish are, and linked
+# to this repository, so its own GITHUB_TOKEN writes them: no secret, no setting.
+name: CI images
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/ci-images.mjs
+      - .github/workflows/ci-images.yml
+  # Weekly, so a copy someone deleted comes back without waiting for a digest change.
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Say what would be copied, and copy nothing"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-images
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Copy CI's images to GHCR
+    # Hosted, as every job holding a write token: the box's runner VMs keep state between jobs.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            .node-version
+            scripts/ci-images.mjs
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version-file: .node-version
+      - name: Copy each image that is not on GHCR at its digest
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITHUB_ACTOR: ${{ github.actor }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          flags=()
+          if [[ ${DRY_RUN:-false} == true ]]; then flags+=(--dry-run); fi
+          node scripts/ci-images.mjs sync "${flags[@]}"

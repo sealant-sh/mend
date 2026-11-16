@@ -305,22 +305,35 @@ test("store-image-git runs the store's handoff tests under the runtime stage's o
   assert.match(script, /vitest run test\/handoff\.test\.ts/);
 });
 
+// Postgres comes from scripts/ci-images.mjs, which pulls it from CI's GHCR copy, then the public
+// mirrors, with retries (SLNT-1071), and starts it without durability: never a `services:`
+// container, whose single pull a registry's anonymous limit fails.
+const assertPostgresStep = (name, before) => {
+  const job = jobs[name];
+  assert.equal(job.services, undefined, `${name} takes no services: container`);
+  assert.equal(job.permissions?.packages, "read", `${name} reads CI's GHCR copies`);
+  const start = job.steps.findIndex((step) => step.run === "node scripts/ci-images.mjs postgres");
+  assert.ok(start !== -1, `${name} starts Postgres through scripts/ci-images.mjs`);
+  assert.equal(job.steps[start].env?.GITHUB_TOKEN, "${{ github.token }}");
+  assert.ok(
+    start < job.steps.findIndex((step) => step.run === before),
+    `${name} starts Postgres before ${before}`,
+  );
+};
+
+test("no CI job pulls a services: container", () => {
+  for (const [name, job] of Object.entries(jobs)) assert.equal(job.services, undefined, name);
+  assertPostgresStep(
+    "preview-acceptance",
+    "pnpm --filter @mend/api-server test:preview-acceptance",
+  );
+});
+
 test("both engines lanes keep required database and live-adapter preparation and worker caps", () => {
   for (const lane of ["engines", "engines-b"]) {
     const engines = jobs[`test-${lane}`];
-    // Postgres 17, by digest from a registry with no anonymous pull limit (not Docker Hub).
-    assert.match(
-      engines.services.postgres.image,
-      /^public\.ecr\.aws\/docker\/library\/postgres:17@sha256:[0-9a-f]{64}$/,
-    );
     assert.equal(engines.env.MEND_TEST_DATABASE_URL, "postgres://mend:mend@localhost:5432/mend");
-    const durability = engines.steps.findIndex((step) => step.run?.includes("fsync = off"));
-    assert.ok(
-      durability !== -1 &&
-        durability <
-          engines.steps.findIndex((step) => step.run === `node scripts/ci-shards.mjs ${lane}`),
-      "the throwaway Postgres runs without a flush per commit before the database tests",
-    );
+    assertPostgresStep(`test-${lane}`, `node scripts/ci-shards.mjs ${lane}`);
     assert.ok(
       commands(`test-${lane}`).some((command) =>
         command.includes("mend-shell-profile-test:alpine-3.22"),
