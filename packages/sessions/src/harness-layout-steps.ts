@@ -986,6 +986,8 @@ export const makeHarnessLayoutSteps = (deps: {
   readonly organizations: OrganizationsRepo["Service"];
   readonly sealant: Pick<SealantClientShape, "exec">;
   readonly harnessHome: string;
+  /** The server's `APP_URL`, every person process's `MEND_ORIGIN` (`personProcessEnv`). */
+  readonly origin: string;
   /**
    * An identity pickup ticket (purpose `session-token`) for `person` in `launchId`, bound to them:
    * redeemed, it answers their Mend token, minted then, and their git author.
@@ -2176,7 +2178,7 @@ export const makeHarnessLayoutSteps = (deps: {
       lastIn.set(workspaceId, identity.accountId);
       return {
         user: processUserOf(identity),
-        env: personProcessEnv(deps.harnessHome, identity, input.sessionId),
+        env: personProcessEnv(deps.harnessHome, identity, input.sessionId, deps.origin),
         logins: loginsIn.get(workspaceId)?.people.get(identity.accountId)?.placed ?? {},
         loginsLeftOut: leftOut.flatMap((skip) => {
           const words = loginLeftOutWords(

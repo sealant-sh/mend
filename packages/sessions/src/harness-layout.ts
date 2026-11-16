@@ -447,16 +447,20 @@ export const sessionTokenFileOf = (identity: LinuxIdentity): string =>
  * identity the SSH shim and the `mend` helper present (decision 4): the session the process
  * belongs to, and the file holding its person's token. The file is named, not found through
  * `$HOME`, because a process may run with another `HOME` (a shared Codex conversation's
- * app-server runs with `HOME` at its conversation home).
+ * app-server runs with `HOME` at its conversation home). And `MEND_ORIGIN`, the server's `APP_URL`,
+ * which the workspace's create env carries too; set here as well so a process started in a
+ * standby booted before the server learned it still gets it.
  */
 export const personProcessEnv = (
   harnessHome: string,
   identity: LinuxIdentity,
   sessionId: string,
+  origin: string,
 ): Readonly<Record<string, string>> => ({
   CODEX_SQLITE_HOME: codexDatabaseDirOf(harnessHome, identity.accountId),
   TMPDIR: privateTmpOf(identity.uid),
   XDG_RUNTIME_DIR: privateRuntimeOf(identity.uid),
+  MEND_ORIGIN: origin,
   MEND_SESSION_ID: sessionId,
   MEND_SESSION_TOKEN_FILE: sessionTokenFileOf(identity),
   // Never another person's login through the container's environment (decision 5): until sealant

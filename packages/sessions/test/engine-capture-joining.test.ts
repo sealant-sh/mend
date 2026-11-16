@@ -41,6 +41,7 @@ import {
   agentMemoryLayerOf,
   captureAnswer,
   drawnLine,
+  FIXTURE_ORIGIN,
   isPickupExec,
   now,
   recordingProtocolHostLayer,
@@ -1973,6 +1974,8 @@ describe("SessionEngine capture mode", () => {
               if (entry === undefined) throw new Error("no standby");
               const alias = `standby-${entry.id}`;
               expect(created).toHaveLength(1);
+              // A standby carries the server's address before any session claims it.
+              expect(created[0]?.env).toMatchObject({ MEND_ORIGIN: FIXTURE_ORIGIN });
               // No worktree id on a standby's source: the daemon takes the placeholder from the plan
               // answer, while the harness root stays fixed across the later replan.
               expect(created[0]?.source).toEqual({

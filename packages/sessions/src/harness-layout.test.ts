@@ -1890,8 +1890,11 @@ describe("a person's Mend identity in their home (decision 4)", () => {
     );
   });
 
-  it("names the process's session and its person's token file, and blanks shared logins", () => {
-    expect(personProcessEnv("/workspace/harness-home", alice, "sess-1")).toMatchObject({
+  it("names Mend's address, the process's session and its person's token file, and blanks shared logins", () => {
+    expect(
+      personProcessEnv("/workspace/harness-home", alice, "sess-1", "https://mend.example.com"),
+    ).toMatchObject({
+      MEND_ORIGIN: "https://mend.example.com",
       MEND_SESSION_ID: "sess-1",
       MEND_SESSION_TOKEN_FILE: "/home/m3kq7xj2a/.mend/session-token",
       GH_TOKEN: "",

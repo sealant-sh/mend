@@ -66,6 +66,7 @@ import {
   emptyEnvironment,
   emptySecrets,
   agentLoginsLayerOf,
+  FIXTURE_ORIGIN,
   foldersEmptyLayer,
   gitAuthorStubLayer,
   gitOpsStubLayer,
@@ -74,6 +75,7 @@ import {
   hotWorkspacesEmptyLayer,
   makeWorld,
   mendKeysStubLayer,
+  networkConfigLayer,
   now,
   organizationsLayer,
   piProfilesLayerOf,
@@ -134,11 +136,13 @@ describe("SessionEngine", () => {
           // Configuration rides `env`, secrets are unsealed into `secretEnv` — exactly once. The
           // project's own PAGER wins over Mend's.
           expect(created).toHaveLength(1);
+          // No session channel here: the server's address rides the create all the same.
           expect(created[0]?.env).toEqual({
             ...HARNESS_UPDATES_OFF_ENV,
             APP_MODE: "review",
             PAGER: "less -R",
             PORT: "3000",
+            MEND_ORIGIN: FIXTURE_ORIGIN,
           });
           expect(created[0]?.secretEnv).toEqual({
             DATABASE_URL: "postgres://u:hunter2@h/db",
@@ -290,7 +294,11 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
           // The harnesses' self-updaters are off in every workspace, whatever the project sets, and
           // nothing pages: the images carry no `less`.
-          expect(created[0]?.env).toEqual({ ...HARNESS_UPDATES_OFF_ENV, PAGER: "cat" });
+          expect(created[0]?.env).toEqual({
+            ...HARNESS_UPDATES_OFF_ENV,
+            PAGER: "cat",
+            MEND_ORIGIN: FIXTURE_ORIGIN,
+          });
           expect(created[0]?.secretEnv).toBeUndefined();
           expect(created[0]?.envFrom).toBeUndefined();
           expect(created[0]?.kubernetes).toBeUndefined();
@@ -347,6 +355,7 @@ describe("SessionEngine", () => {
               ...HARNESS_UPDATES_OFF_ENV,
               ...NO_PAGER_ENV,
               APP_MODE: "review",
+              MEND_ORIGIN: FIXTURE_ORIGIN,
             });
             expect(created[0]?.secretEnv).toEqual({ API_KEY: "old" });
 
@@ -375,6 +384,7 @@ describe("SessionEngine", () => {
               ...NO_PAGER_ENV,
               APP_MODE: "prod",
               NEW_VAR: "1",
+              MEND_ORIGIN: FIXTURE_ORIGIN,
             });
             expect(created[1]?.secretEnv).toEqual({ API_KEY: "new" });
             // The fake PTY reuses one run id, so the world holds the LATEST run only — enough to
@@ -1063,7 +1073,7 @@ describe("SessionEngine", () => {
         Layer.mergeAll(agentConversationStubLayer, protocolHostStubLayer, serviceStateLayer(world)),
       ),
       Layer.provide(Layer.merge(serviceHostStubLayer, forwardAdapterReadyLayer)),
-      Layer.provide(PreviewUrlsNone),
+      Layer.provide(Layer.merge(PreviewUrlsNone, networkConfigLayer)),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(SessionChannelTokensRepoMemory),
       Layer.provide(DeploymentConfigColocated),

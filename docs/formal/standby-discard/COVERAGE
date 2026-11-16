@@ -12,7 +12,12 @@
 # covered files for existsForWorkspace. Its second round (the box check of mend#1741) added the
 # owner's Stop during the asks (Stop, AgentStarts) and bound the session's channel again before
 # the cold launch, which no action models (the channel is not in the model).
-sync 38bd550c9561c68695522c486c25448b0c3dbed4
+# c34dea602e is main when SLNT-1063 moved it: SLNT-1053's squash (d1039eaf1d), which changed the
+# model with the code, and nothing else in the covered files. SLNT-1063 (mend#1756) then changed
+# engine.ts only outside the covered functions: every workspace create's env and each person's
+# process env carry MEND_ORIGIN, and the workspace note names it; no action models either. The
+# full TLC run on its head, dde8b8acd6, had every row as expected.
+sync c34dea602e7e01fa00cc326dea823e7a289611a3
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

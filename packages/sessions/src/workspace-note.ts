@@ -79,6 +79,16 @@ export const WORKSPACE_NOTE_FILES = [
 ] as const;
 
 /**
+ * The note's first section: where Mend's web app is (`MEND_ORIGIN`, the server's `APP_URL`, in
+ * every workspace process's environment), so an agent asked for something only Mend's app does,
+ * such as adopting a project, can link the person there.
+ */
+export const MEND_WEB_APP_NOTE =
+  `## Mend web app\n\n` +
+  `Mend's web app is at \`$MEND_ORIGIN\` (\`echo $MEND_ORIGIN\`). When the person needs to do ` +
+  `something in Mend itself, link them there.\n\n`;
+
+/**
  * The note's section on previews: what `[preview]` is, how to scaffold `.mend/mend.toml`, and where people
  * open the preview, since its address is not visible from inside the workspace.
  */

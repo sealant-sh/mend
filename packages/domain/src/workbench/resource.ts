@@ -42,8 +42,12 @@ export const resourceNameIssue = (raw: string): string | null => {
   return null;
 };
 
-/** Process env names Mend itself supplies, excluding resource exports. */
+/**
+ * Process env names Mend itself supplies, excluding resource exports. A name with no `_` after its
+ * first word, such as `MEND_ORIGIN`, reserves no resource name (`resourceNameIssue`).
+ */
 export const MEND_PROCESS_ENV_NAMES: ReadonlyArray<string> = [
+  "MEND_ORIGIN",
   "MEND_PREVIEW_URL",
   "MEND_SESSION_ID",
   "MEND_SESSION_ENDPOINT",

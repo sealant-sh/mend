@@ -54,6 +54,7 @@ import { makeEngineClock } from "./engine/clock-fixture.ts";
 import {
   agentMemoryLayerOf,
   captureAnswer,
+  FIXTURE_ORIGIN,
   makeWorld,
   now,
   recordingProtocolHostLayer,
@@ -765,6 +766,15 @@ describe("SessionEngine capture mode", () => {
             argv.some((part) => part.includes("<!-- mend:mounts -->")),
           );
           expect(note?.at(-1)).toContain("## Mend Services");
+          // It says where Mend's web app is, by the variable every process carries, and the
+          // create carries it beside the session channel's own.
+          expect(note?.at(-1)).toContain(
+            "Mend's web app is at `$MEND_ORIGIN` (`echo $MEND_ORIGIN`). When the person needs to do something in Mend itself, link them there.",
+          );
+          expect(created[0]?.env).toMatchObject({
+            MEND_ORIGIN: FIXTURE_ORIGIN,
+            MEND_SESSION_ENDPOINT: "http://mend.test:3106",
+          });
           expect(note?.at(-1)).toContain("[--http|--https]");
           expect(note?.at(-1)).toContain("Declared Services (mend.toml + project): web");
           // It says what a preview is and where people open it: the agent cannot see its address.
