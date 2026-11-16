@@ -120,6 +120,17 @@ export interface MessageServer {
       readonly resume?: true;
     },
   ) => Promise<unknown>;
+  /** `GET /sessions/:id`: the session and its current agent, null when none ever ran. */
+  readonly session: (sessionId: string) => Promise<{ readonly currentAgent?: unknown }>;
+  /** `POST /sessions/:id/launch` in conversation mode, its first turn `prompt`. */
+  readonly launchConversation: (
+    sessionId: string,
+    body: {
+      readonly mode: "protocol";
+      readonly prompt: string;
+      readonly expected: { readonly settledAt: null };
+    },
+  ) => Promise<{ readonly id: string; readonly harness?: string; readonly status?: string }>;
 }
 
 export interface MessageBoundary {
@@ -139,6 +150,16 @@ const FIXED_SENTENCE_TAGS: ReadonlySet<string> = new Set([
   "MessageTargetAmbiguous",
   "TurnSteerForbidden",
 ]);
+
+/** The launch route's refusals whose sentences speak of the session and never quote the prompt. */
+const LAUNCH_SENTENCE_TAGS: ReadonlySet<string> = new Set(["SessionMovedOn", "SessionAgentLive"]);
+
+const launchRefusalWordsOf = (error: MendRequestError): string =>
+  error.refused?.tag !== null &&
+  error.refused?.tag !== undefined &&
+  LAUNCH_SENTENCE_TAGS.has(error.refused.tag)
+    ? printable(error.message)
+    : failureWords(error.status ?? 0, { _tag: error.refused?.tag }).words;
 
 const printable = (text: string): string => redactCredentials(stripVTControlCharacters(text));
 
@@ -169,6 +190,71 @@ const isRefusal = (error: unknown): error is MendRequestError =>
   error.status !== null &&
   error.status >= 400 &&
   error.status < 500;
+
+/**
+ * Starts the agent of a session that never ran one, in conversation mode, with `input` as its
+ * first turn; null when the session has run an agent, for the refusal to stand. The launch names
+ * the attempt as never settled, so a second start of the same session is refused, never doubled.
+ */
+const startNeverLaunched = async (
+  server: MessageServer,
+  sessionId: string,
+  input: string,
+  json: boolean,
+  boundary: MessageBoundary,
+): Promise<MessageExitCode | null> => {
+  let detail: { readonly currentAgent?: unknown };
+  try {
+    detail = await server.session(sessionId);
+  } catch {
+    return null;
+  }
+  if (detail.currentAgent !== null) return null;
+  const failed = (code: string, message: string): MessageExitCode =>
+    json
+      ? writeCommandResult(
+          {
+            status: "failed",
+            data: { clientMessageId: null },
+            error: { code, message, fix: "Read the session before sending again." },
+          },
+          boundary.stdout,
+        )
+      : (boundary.stderr(`mend: ${message}\n`), 1);
+  let started: { readonly id: string; readonly harness?: string; readonly status?: string };
+  try {
+    started = await server.launchConversation(sessionId, {
+      mode: "protocol",
+      prompt: input,
+      expected: { settledAt: null },
+    });
+  } catch (error) {
+    return isRefusal(error)
+      ? failed(error.refused?.tag ?? "LaunchRefused", launchRefusalWordsOf(error))
+      : failed(
+          "LaunchOutcomeUnconfirmed",
+          `Start not confirmed · ${ownWordsOf(error) ?? "this CLI could not read the server's answer"} · check the session before sending again`,
+        );
+  }
+  const explanation = `Started ${started.harness ?? "the agent"} on the session's conversation with this message`;
+  if (json)
+    return writeCommandResult(
+      {
+        status: "done",
+        data: {
+          clientMessageId: null,
+          result: {
+            _tag: "Launched",
+            explanation,
+            session: { id: started.id, status: started.status ?? null },
+          },
+        },
+      },
+      boundary.stdout,
+    );
+  boundary.stdout(`${printable(`${explanation} · session ${started.id.slice(0, 8)}`)}\n`);
+  return 0;
+};
 
 export const messageCommand = async (
   args: ReadonlyArray<string>,
@@ -246,6 +332,12 @@ export const messageCommand = async (
       ...(options.resume ? { resume: true } : {}),
     });
   } catch (error) {
+    // A session that never ran an agent (an imported conversation, a handoff) has nothing to
+    // resume: --resume starts its agent in conversation mode, the message as its first turn.
+    if (isRefusal(error) && options.resume && error.refused?.tag === "ProtocolSessionNotLive") {
+      const started = await startNeverLaunched(server, session.id, input, json, boundary);
+      if (started !== null) return started;
+    }
     if (isRefusal(error))
       return fail(
         error.refused?.tag ?? "MessageRefused",

@@ -41,8 +41,8 @@ export class T3StateUnreadable extends Schema.TaggedError<T3StateUnreadable>()(
 export type T3ImportError = T3StateMissing | T3StateSchemaUnknown | T3StateUnreadable;
 
 export interface T3ImportFilter {
-  /** A project's id, title or root directory. */
-  readonly project?: string;
+  /** Projects by id, title or root directory; a thread of any of them is kept. */
+  readonly projects?: ReadonlyArray<string>;
   readonly threadIds?: ReadonlyArray<string>;
 }
 
@@ -85,11 +85,8 @@ export interface ImportCheckout {
   readonly originUrl: string;
 }
 
-export interface ReadyCandidate {
-  readonly _tag: "ready";
-  readonly thread: T3ImportThread;
-  readonly checkout: ImportCheckout;
-  readonly branch: string | null;
+/** A thread's own native conversation on this machine, as an import carries it. */
+export interface NativeConversation {
   readonly harness: ImportHarness;
   /** The harness's home on this machine that `files` are relative to (`~/.claude`, `~/.codex`). */
   readonly harnessHome: string;
@@ -109,6 +106,28 @@ export interface ReadyCandidate {
   readonly permissionMode: PermissionMode;
   /** T3 Code's own runtime mode, for saying so when it is neither of Mend's. */
   readonly runtimeMode: string;
+}
+
+export interface ReadyCandidate extends NativeConversation {
+  readonly _tag: "ready";
+  readonly thread: T3ImportThread;
+  readonly checkout: ImportCheckout;
+  readonly branch: string | null;
+}
+
+/**
+ * A thread whose checkout T3 Code removed, while its project's root is still a checkout with an
+ * origin: its conversation can land in a new worktree cut from origin, though not on its own
+ * uncommitted work, which went with the checkout.
+ */
+export interface GoneCandidate extends NativeConversation {
+  readonly _tag: "gone";
+  readonly thread: T3ImportThread;
+  /** The directory the thread ran in, as T3 Code recorded it, which no longer exists. */
+  readonly workingDirectory: string;
+  readonly branch: string | null;
+  /** The project's root checkout, which the new worktree's origin comes from. */
+  readonly projectCheckout: { readonly root: string; readonly originUrl: string };
 }
 
 export type SkipReason =
@@ -138,7 +157,7 @@ export interface SkippedCandidate {
   readonly skip: SkipReason;
 }
 
-export type ImportCandidate = ReadyCandidate | SkippedCandidate;
+export type ImportCandidate = ReadyCandidate | GoneCandidate | SkippedCandidate;
 
 type Environment = Readonly<Record<string, string | undefined>>;
 
@@ -543,7 +562,7 @@ const openReadOnly = (databasePath: string) =>
   Effect.gen(function* () {
     if (regularSize(databasePath) === null) return yield* new T3StateMissing({ databasePath });
     // Loaded here, not at the top: on Node 22 node:sqlite warns that it is experimental as it
-    // loads, and only this command reads a database (main filters that warning out).
+    // loads, and only this command reads a database.
     const { DatabaseSync } = yield* Effect.tryPromise({
       try: () => import("node:sqlite"),
       catch: (cause) => new T3StateUnreadable({ path: databasePath, message: String(cause) }),
@@ -676,20 +695,24 @@ const cached = <K, V>(cache: Map<K, V>, key: K, make: () => V): V => {
 const matchesFilter = (record: ThreadRecord, filter: T3ImportFilter, homeDirectory: string) => {
   if (filter.threadIds !== undefined && !filter.threadIds.includes(record.row.thread_id))
     return false;
-  const wanted = filter.project;
-  if (wanted === undefined) return true;
+  const wanted = filter.projects ?? [];
+  if (wanted.length === 0) return true;
   const { project_id: id, project_title: title, workspace_root: root } = record.row;
-  if (wanted === id || wanted === title) return true;
-  if (root === null) return false;
-  const wantedDir = path.resolve(expandHome(wanted, homeDirectory));
-  if (wantedDir === path.resolve(root)) return true;
-  const real = realDirectory(wantedDir);
-  return real !== null && real === realDirectory(root);
+  return wanted.some((one) => {
+    if (one === id || one === title) return true;
+    if (root === null) return false;
+    const wantedDir = path.resolve(expandHome(one, homeDirectory));
+    if (wantedDir === path.resolve(root)) return true;
+    const real = realDirectory(wantedDir);
+    return real !== null && real === realDirectory(root);
+  });
 };
 
 /**
  * T3 Code's top-level threads on this machine as import candidates, in a stable order (project
- * title, then creation time). Deleted threads are left out; archived ones are included and marked.
+ * title, then creation time): ready, gone (its checkout removed, its project's root still a
+ * checkout with an origin) or skipped. Deleted threads are left out; archived ones are included
+ * and marked.
  * Subagents and side chats are not candidates: their conversations live inside their parent's.
  * Reads T3 Code's database, settings, the harnesses' homes and each checkout's git; writes nothing.
  */
@@ -765,20 +788,6 @@ export const readT3ImportCandidates = (
         });
       }
       const { home: harnessHome, conversation } = found;
-
-      const real = workingDirectory === null ? null : realDirectory(workingDirectory);
-      if (workingDirectory === null || real === null)
-        return skipped({ reason: "checkout-gone", workingDirectory });
-      const checkout = cached(checkouts, real, () => checkCheckout(workingDirectory, real));
-      if (checkout._tag === "skip") {
-        // A cached skip names the first thread's recorded path; name this thread's own.
-        return skipped(
-          "workingDirectory" in checkout.skip
-            ? { ...checkout.skip, workingDirectory }
-            : checkout.skip,
-        );
-      }
-
       const selection = payload.modelSelection ?? null;
       const ownSelection =
         selection !== null && selection.instanceId === native.providerThread.instanceId
@@ -787,11 +796,7 @@ export const readT3ImportCandidates = (
       const effort = ownSelection?.options?.find(
         (option) => option.id === EFFORT_OPTION[harness],
       )?.value;
-      return {
-        _tag: "ready",
-        thread,
-        checkout: { workingDirectory, root: checkout.root, originUrl: checkout.originUrl },
-        branch: payload.branch?.trim() || null,
+      const ownConversation: NativeConversation = {
         harness,
         harnessHome,
         nativeId: native.nativeId,
@@ -803,6 +808,44 @@ export const readT3ImportCandidates = (
         effort: typeof effort === "string" ? effort : null,
         permissionMode: row.runtime_mode === "full-access" ? "bypass" : "ask",
         runtimeMode: row.runtime_mode,
+      };
+      const branch = payload.branch?.trim() || null;
+
+      const real = workingDirectory === null ? null : realDirectory(workingDirectory);
+      if (workingDirectory === null || real === null) {
+        // The project's root may still be a checkout with an origin to cut a new worktree from.
+        const rootDir = row.workspace_root?.trim() || null;
+        const realRoot = rootDir === null ? null : realDirectory(rootDir);
+        const rootCheckout =
+          workingDirectory === null || rootDir === null || realRoot === null
+            ? null
+            : cached(checkouts, realRoot, () => checkCheckout(rootDir, realRoot));
+        return rootCheckout?._tag === "checkout" && workingDirectory !== null
+          ? {
+              _tag: "gone",
+              thread,
+              workingDirectory,
+              branch,
+              projectCheckout: { root: rootCheckout.root, originUrl: rootCheckout.originUrl },
+              ...ownConversation,
+            }
+          : skipped({ reason: "checkout-gone", workingDirectory });
+      }
+      const checkout = cached(checkouts, real, () => checkCheckout(workingDirectory, real));
+      if (checkout._tag === "skip") {
+        // A cached skip names the first thread's recorded path; name this thread's own.
+        return skipped(
+          "workingDirectory" in checkout.skip
+            ? { ...checkout.skip, workingDirectory }
+            : checkout.skip,
+        );
+      }
+      return {
+        _tag: "ready",
+        thread,
+        checkout: { workingDirectory, root: checkout.root, originUrl: checkout.originUrl },
+        branch,
+        ...ownConversation,
       };
     };
 

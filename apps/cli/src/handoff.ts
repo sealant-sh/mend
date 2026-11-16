@@ -25,6 +25,7 @@ import {
   type CaptureSummary,
   checkoutOf,
   type LeftOut,
+  type LocalCheckout,
   machineName,
   preflightIssue,
   type Refused,
@@ -68,7 +69,7 @@ const refuse = (words: string): never => {
   throw new Refusal(words);
 };
 
-interface ProjectDto {
+export interface ProjectDto {
   readonly id: string;
   readonly name: string;
   readonly originUrl: string | null;
@@ -82,13 +83,14 @@ interface HandoffTerms {
   readonly fileBytes: number;
 }
 
-interface HandoffReceived {
+export interface HandoffReceived {
   readonly session: {
     readonly id: string;
     readonly status: string;
     readonly summary: string | null;
   };
-  readonly worktree: { readonly name: string };
+  /** `id` is null from a server whose answer names none. */
+  readonly worktree: { readonly id: string | null; readonly name: string };
   readonly replayed: boolean;
   readonly previous: { readonly name: string } | null;
 }
@@ -121,6 +123,9 @@ export interface HandoffDeps {
   /** Shares this machine's ssh-agent with the server until closed; null when it has none. */
   readonly shareAgent: () => Pick<AgentShareHandle, "ready" | "close"> | null;
 }
+
+/** What a handoff without a prompt needs of the server: everything but a launch. */
+export type HandoffServer = Omit<HandoffDeps, "launch">;
 
 export interface HandoffIo {
   readonly interactive: boolean;
@@ -258,6 +263,7 @@ const receivedOf = (body: unknown): HandoffReceived | null => {
   const status = field(session, "status");
   const summary = field(session, "summary") ?? null;
   const name = field(field(body, "worktree"), "name");
+  const worktreeId = field(field(body, "worktree"), "id");
   const replayed = field(body, "replayed");
   const previous = field(body, "previous") ?? null;
   const previousName = field(previous, "name");
@@ -269,7 +275,7 @@ const receivedOf = (body: unknown): HandoffReceived | null => {
     (previous === null || typeof previousName === "string")
     ? {
         session: { id, status, summary },
-        worktree: { name },
+        worktree: { id: typeof worktreeId === "string" ? worktreeId : null, name },
         replayed,
         previous: typeof previousName === "string" ? { name: previousName } : null,
       }
@@ -294,11 +300,11 @@ const answerOf = (reply: Downloaded | Uploaded): WireAnswer =>
     ? { status: reply.status, body: parseJson(reply.bytes) }
     : { status: null, body: null };
 
-const serverTakesHandoffs = async (deps: HandoffDeps): Promise<boolean> =>
+const serverTakesHandoffs = async (deps: HandoffServer): Promise<boolean> =>
   takesHandoffs(answerOf(await deps.download(`/projects/${HANDOFF_PROBE_PROJECT}/handoffs`))) !==
   false;
 
-const oldServer = async (deps: HandoffDeps): Promise<never> => {
+const oldServer = async (deps: HandoffServer): Promise<never> => {
   const version = await deps.serverVersion();
   return refuse(
     `this Mend server${version === null ? "" : ` (${version})`} does not take handoffs · upgrade it, then hand off again · nothing was created`,
@@ -313,7 +319,7 @@ const refusal = (call: string, answer: WireAnswer): never => {
   return refuse(noteRefusal(call, status, failureWords(status, answer.body)).words);
 };
 
-const termsFor = async (deps: HandoffDeps, projectId: string): Promise<HandoffTerms> => {
+const termsFor = async (deps: HandoffServer, projectId: string): Promise<HandoffTerms> => {
   const route = `/projects/${projectId}/handoffs`;
   const terms = readTermsAnswer(answerOf(await deps.download(route)));
   switch (terms._tag) {
@@ -329,7 +335,7 @@ const termsFor = async (deps: HandoffDeps, projectId: string): Promise<HandoffTe
 };
 
 const send = async (
-  deps: HandoffDeps,
+  deps: HandoffServer,
   route: string,
   bytes: Uint8Array<ArrayBuffer>,
 ): Promise<Exclude<ReceiveAnswer, { readonly _tag: "noAnswer" }>> => {
@@ -354,23 +360,31 @@ const send = async (
   }
 };
 
-const SHARE_READY_MS = 15_000;
+export const SHARE_READY_MS = 15_000;
 
 const CO_LOCATED =
   "this server keeps worktrees in the co-located store, which takes no handoffs · the operator can unset MEND_SESSION_STORE to run the capture store · nothing was created";
 
-type Target =
+export type HandoffTarget =
   | { readonly kind: "project"; readonly project: ProjectDto }
-  | { readonly kind: "adopt"; readonly name: string; readonly source: string };
+  | {
+      readonly kind: "adopt";
+      readonly name: string;
+      readonly source: string;
+      /** Origin as a person reads it, credentials and `.git` dropped. */
+      readonly repository: string;
+    };
 
-const targetFor = async (
-  deps: HandoffDeps,
-  args: ReadonlyArray<string>,
+/**
+ * The project a checkout hands off into: `explicit` by name, else the one adopted from its origin
+ * (or path), else an adoption of its origin. Refused with words when the named or matched project
+ * has another origin, or there is nothing to adopt.
+ */
+export const handoffTargetOf = (
+  projects: ReadonlyArray<ProjectDto>,
   explicit: string | null,
   checkout: { readonly top: string; readonly originUrl: string | null },
-  io: HandoffIo,
-): Promise<Target | null> => {
-  const projects = await deps.api<ReadonlyArray<ProjectDto>>("GET", "/projects");
+): HandoffTarget | { readonly kind: "refused"; readonly words: string } => {
   const found =
     explicit === null
       ? matchProjectByCwd(projects, {
@@ -380,46 +394,71 @@ const targetFor = async (
         })
       : projects.find((project) => project.name === explicit);
   if (explicit !== null && found === undefined) {
-    return refuse(`no adopted project named "${explicit}"`);
+    return { kind: "refused", words: `no adopted project named "${explicit}"` };
   }
   const origin = checkout.originUrl;
   if (found !== undefined) {
     if (origin === null || !originMatches(origin, found.originUrl, checkout.top)) {
-      return refuse(
-        `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
-      );
+      return {
+        kind: "refused",
+        words: `this checkout's origin is ${origin ?? "not set"} · ${found.name}'s is ${found.originUrl ?? "not set"} · nothing was created`,
+      };
     }
     return { kind: "project", project: found };
   }
   if (origin === null) {
-    return refuse(
-      "no adopted project matches this checkout, and it has no origin to adopt · nothing was created",
-    );
+    return {
+      kind: "refused",
+      words:
+        "no adopted project matches this checkout, and it has no origin to adopt · nothing was created",
+    };
   }
   const issue = repositoryCloneUrlIssue(origin);
-  if (issue !== null) return refuse(`${issue} · nothing was created`);
+  if (issue !== null) return { kind: "refused", words: `${issue} · nothing was created` };
+  return {
+    kind: "adopt",
+    name: normalizeProjectName(path.basename(origin.replace(/\/+$/u, ""), ".git")),
+    source: origin,
+    repository: normalizeRemoteUrl(origin) ?? origin,
+  };
+};
+
+/** Refuses, in words, a handoff that would adopt but cannot: locally, or on this server. */
+const refuseUnadoptable = async (deps: HandoffServer, checkoutTop: string): Promise<void> => {
   const local = await withSignalsHeld(() =>
-    preflightIssue({ checkout: checkout.top, scratchParent: os.tmpdir() }),
+    preflightIssue({ checkout: checkoutTop, scratchParent: os.tmpdir() }),
   );
   if (local._tag !== "clear") return refuse(wordsOf(local));
   if (!(await serverTakesHandoffs(deps))) return oldServer(deps);
   // The terms answer for a project; before one is adopted the organization says the same store.
   const organization = await deps.api<{ readonly mountDelivery?: string }>("GET", "/organization");
   if (organization.mountDelivery === "bind") return refuse(CO_LOCATED);
-  const repository = normalizeRemoteUrl(origin) ?? origin;
-  const name = normalizeProjectName(path.basename(origin.replace(/\/+$/u, ""), ".git"));
-  const question = `adopt ${repository} as ${name} and hand off?`;
+};
+
+const targetFor = async (
+  deps: HandoffDeps,
+  args: ReadonlyArray<string>,
+  explicit: string | null,
+  checkout: { readonly top: string; readonly originUrl: string | null },
+  io: HandoffIo,
+): Promise<HandoffTarget | null> => {
+  const projects = await deps.api<ReadonlyArray<ProjectDto>>("GET", "/projects");
+  const target = handoffTargetOf(projects, explicit, checkout);
+  if (target.kind === "refused") return refuse(target.words);
+  if (target.kind === "project") return target;
+  await refuseUnadoptable(deps, checkout.top);
+  const question = `adopt ${target.repository} as ${target.name} and hand off?`;
   const plan = confirmPlan(args, io.interactive);
   if (plan === "refuse") {
     return refuse(
-      `non-interactive · pass --yes to adopt ${repository} and hand off · nothing was created`,
+      `non-interactive · pass --yes to adopt ${target.repository} and hand off · nothing was created`,
     );
   }
   if (plan === "ask" && !(await io.ask(question))) {
     say(dim("nothing was adopted or handed off"));
     return null;
   }
-  return { kind: "adopt", name, source: origin };
+  return target;
 };
 
 const SIGNALS: ReadonlyArray<readonly [NodeJS.Signals, number]> = [
@@ -495,13 +534,18 @@ const cutBundle = async (
   return "refused" in outcome ? refuse(outcome.refused) : outcome;
 };
 
-const sendFrom = async (
-  deps: HandoffDeps,
+/**
+ * Cuts the checkout's bundle and sends it, the session made for it as `harness`, held with no agent
+ * when `hold`. Says each step; refuses in words when the bundle cannot go or the server will not
+ * take it.
+ */
+const deliver = async (
+  deps: HandoffServer,
   project: ProjectDto,
   checkout: { readonly top: string },
-  args: HandoffArgs,
-): Promise<void> => {
-  const { prompt, harness } = args;
+  harness: string,
+  hold: boolean,
+): Promise<{ readonly summary: CaptureSummary; readonly received: HandoffReceived }> => {
   say(`${green("✓")} project ${project.name} ${dim(`· ${project.defaultBranch} · from origin`)}`);
   const terms = await termsFor(deps, project.id);
   const { summary, bundle } = await cutBundle({
@@ -517,7 +561,7 @@ const sendFrom = async (
   }
   say(progressLine(summary, bundle.byteLength));
 
-  const route = `/projects/${project.id}/handoffs?harness=${encodeURIComponent(harness)}&hold=${prompt === null}`;
+  const route = `/projects/${project.id}/handoffs?harness=${encodeURIComponent(harness)}&hold=${hold}`;
   const answer = await send(deps, route, bundle);
   switch (answer._tag) {
     case "oldServer":
@@ -538,6 +582,17 @@ const sendFrom = async (
     );
   }
   for (const line of receivedLines(received, summary)) say(line);
+  return { summary, received };
+};
+
+const sendFrom = async (
+  deps: HandoffDeps,
+  project: ProjectDto,
+  checkout: { readonly top: string },
+  args: HandoffArgs,
+): Promise<void> => {
+  const { prompt, harness } = args;
+  const { received } = await deliver(deps, project, checkout, harness, prompt === null);
   const sessionId = received.session.id;
   const id8 = sessionId.slice(0, 8);
   const watch = `${dim("  watch")} · ${deps.serverUrl}/sessions/${sessionId}`;
@@ -578,6 +633,80 @@ const sendFrom = async (
   say(watch);
 };
 
+/** Adopts the target's origin when it is not a project yet, then runs `work` in the project. */
+const inProject = async <T>(
+  deps: HandoffServer,
+  target: HandoffTarget,
+  work: (project: ProjectDto) => Promise<T>,
+): Promise<T> => {
+  if (target.kind === "project") return work(target.project);
+  const adopted = await deps.api<ProjectDto>("POST", "/projects", {
+    name: target.name,
+    source: target.source,
+  });
+  say(`${green("✓")} adopted · ${adopted.name} · ${dim(adopted.storePath)}`);
+  try {
+    return await work(adopted);
+  } catch (error) {
+    if (!(error instanceof Refusal)) throw error;
+    throw new Refusal(
+      error.words.replace(
+        / · nothing was created$/u,
+        ` · nothing was handed off · ${adopted.name} stays adopted`,
+      ),
+      error.code,
+    );
+  }
+};
+
+/** Whether a handoff into `target` signs its git through this machine's ssh-agent. */
+export const handoffTargetNeedsAgent = async (
+  deps: Pick<HandoffDeps, "accountGitAuthMode">,
+  target: HandoffTarget,
+): Promise<boolean> =>
+  handoffNeedsAgentShare(
+    target.kind === "project"
+      ? { kind: "project", gitAuthMode: target.project.gitAuthMode }
+      : { kind: "adopt", accountMode: await deps.accountGitAuthMode() },
+  );
+
+export type ImportHandoff =
+  | {
+      readonly _tag: "handed-off";
+      readonly project: ProjectDto;
+      readonly received: HandoffReceived;
+    }
+  | { readonly _tag: "refused"; readonly words: string }
+  | { readonly _tag: "interrupted"; readonly words: string; readonly code: number };
+
+/**
+ * The handoff `mend import t3` makes of one checkout: what `mend handoff` runs, adopting origin
+ * when `target` says to, with the session made as `harness`, no workspace held and no agent
+ * started. The checkout is not written to. Never asks, and never exits: a refusal comes back in
+ * its words. The caller shares the ssh-agent when `handoffTargetNeedsAgent` says so.
+ */
+export const handOffForImport = async (
+  deps: HandoffServer,
+  checkout: LocalCheckout,
+  target: HandoffTarget,
+  harness: string,
+): Promise<ImportHandoff> => {
+  try {
+    const scratchIssue = scratchParentIssue(os.tmpdir(), checkout);
+    if (scratchIssue !== null) return refuse(scratchIssue);
+    if (target.kind === "adopt") await refuseUnadoptable(deps, checkout.top);
+    return await inProject(deps, target, async (project) => {
+      const { received } = await deliver(deps, project, checkout, harness, false);
+      return { _tag: "handed-off", project, received };
+    });
+  } catch (error) {
+    if (!(error instanceof Refusal)) throw error;
+    return error.code === 1
+      ? { _tag: "refused", words: error.words }
+      : { _tag: "interrupted", words: error.words, code: error.code };
+  }
+};
+
 const handOff = async (
   deps: HandoffDeps,
   args: ReadonlyArray<string>,
@@ -593,33 +722,10 @@ const handOff = async (
   if (scratchIssue !== null) return refuse(scratchIssue);
   const target = await targetFor(deps, args, parsed.args.project, checkout, io);
   if (target === null) return;
-  const needsAgent = handoffNeedsAgentShare(
-    target.kind === "project"
-      ? { kind: "project", gitAuthMode: target.project.gitAuthMode }
-      : { kind: "adopt", accountMode: await deps.accountGitAuthMode() },
-  );
-  const share = needsAgent ? deps.shareAgent() : null;
+  const share = (await handoffTargetNeedsAgent(deps, target)) ? deps.shareAgent() : null;
   try {
     await share?.ready(SHARE_READY_MS);
-    if (target.kind === "project")
-      return await sendFrom(deps, target.project, checkout, parsed.args);
-    const adopted = await deps.api<ProjectDto>("POST", "/projects", {
-      name: target.name,
-      source: target.source,
-    });
-    say(`${green("✓")} adopted · ${adopted.name} · ${dim(adopted.storePath)}`);
-    try {
-      await sendFrom(deps, adopted, checkout, parsed.args);
-    } catch (error) {
-      if (!(error instanceof Refusal)) throw error;
-      throw new Refusal(
-        error.words.replace(
-          / · nothing was created$/u,
-          ` · nothing was handed off · ${adopted.name} stays adopted`,
-        ),
-        error.code,
-      );
-    }
+    await inProject(deps, target, (project) => sendFrom(deps, project, checkout, parsed.args));
   } finally {
     await share?.close();
   }
