@@ -3,7 +3,8 @@
 // tested without one; the box only lists, and then removes exactly what the choice printed.
 //
 // Removed: Mend preview images older than the newest three; untagged images that no container uses
-// and no Mend image left on the box names in a label; build cache unused for two days; dumps in
+// and no Mend image left on the box names in a label; build cache unused for two days, internal
+// records included (SLNT-1057: without --all, BuildKit's prune keeps all but dangling ones); dumps in
 // /root/backups beyond the newest ten. Kept, always: any image a container uses (running or
 // stopped), the newest three previews, the image the hold's own deploy pulled or built from its
 // head, any image a kept Mend image pins by digest (the network guard every session launch runs,
@@ -208,11 +209,7 @@ export const chooseTidy = ({ listing, hold, tag }) => {
 
   const cutoff = listing.now - CACHE_UNUSED_HOURS * 3_600_000;
   const cache = (listing.cache ?? []).filter(
-    (record) =>
-      !record.inUse &&
-      !["internal", "frontend"].includes(record.type) &&
-      record.lastUsed !== null &&
-      record.lastUsed < cutoff,
+    (record) => !record.inUse && record.lastUsed !== null && record.lastUsed < cutoff,
   );
 
   const dumps = (listing.dumps ?? [])
@@ -225,6 +222,21 @@ export const chooseTidy = ({ listing, hold, tag }) => {
 
 const gib = (bytes) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
+/**
+ * What fills the box besides previews and dumps, for `plan`: the build cache, the part of it no
+ * image shares (all a prune can free), and the workspace images sealant's worker keeps.
+ */
+export const describeUsage = (listing) => {
+  const sum = (items) => items.reduce((total, item) => total + item.size, 0);
+  const workspace = (listing?.images ?? []).filter(isWorkspace);
+  return [
+    listing?.cache
+      ? `build cache ${gib(sum(listing.cache))} in ${listing.cache.length} records (${gib(sum(listing.cache.filter((record) => !record.shared)))} not shared with an image)`
+      : "build cache unknown",
+    `workspace images ${gib(sum(workspace))} in ${workspace.length}`,
+  ].join(", ");
+};
+
 /** One line for a step's detail: what the choice removes. */
 export const describeTidy = (choice) => {
   if (choice.refused) return `nothing removed: ${choice.refused}`;
@@ -234,7 +246,7 @@ export const describeTidy = (choice) => {
       ? `${choice.images.length} images (${gib(sum(choice.images))}): ${choice.images.map((image) => image.ref.replace(/^sha256:([0-9a-f]{12})[0-9a-f]+$/, "sha256:$1")).join(", ")}`
       : "no images",
     choice.cache.length > 0
-      ? `${choice.cache.length} build cache records unused for ${CACHE_UNUSED_HOURS} h (${gib(sum(choice.cache))}, ${gib(sum(choice.cache.filter((record) => record.shared)))} of it shared with images)`
+      ? `${choice.cache.length} build cache records unused for ${CACHE_UNUSED_HOURS} h (${gib(sum(choice.cache))}, ${gib(sum(choice.cache.filter((record) => !record.shared)))} of it not shared with an image, which is what removing them frees)`
       : "no build cache",
     choice.dumps.length > 0
       ? `${choice.dumps.length} dumps (${gib(sum(choice.dumps))}): ${choice.dumps.map((dump) => dump.path.slice(BACKUPS.length + 1)).join(", ")}`
@@ -265,7 +277,7 @@ export const tidyScript = (choice, tag) => {
   }
   if (choice.cache.length > 0)
     lines.push(
-      `if out=$(docker buildx prune --force --filter until=${CACHE_UNUSED_HOURS}h 2>&1); then echo "pruned=$(printf '%s' "$out" | tail -1)"; else echo "failed=cache|buildx prune|$(printf '%s' "$out" | tail -1)"; fi`,
+      `if out=$(docker buildx prune --all --force --filter until=${CACHE_UNUSED_HOURS}h 2>&1); then echo "pruned=$(printf '%s' "$out" | tail -1)"; else echo "failed=cache|buildx prune|$(printf '%s' "$out" | tail -1)"; fi`,
       `echo "cacheafter=$(curl -sf --unix-socket /var/run/docker.sock 'http://localhost/system/df?type=build-cache' | tr -d '\\n')"`,
     );
   for (const dump of choice.dumps) {

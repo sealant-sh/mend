@@ -81,10 +81,14 @@ plan builds one at its first session); on 16 Nov 2026 a deploy took 10.8 GB. `pr
 box no other check holds takes the hold and tidies first, and refuses only if that did not make
 room. `release --yes` tidies before it lifts the hold. A tidy removes Mend preview images older than
 the newest three; untagged images no container uses and no Mend image left on the box names in a
-label (the network guard and Boat's gateway are pinned that way); build cache unused for two days;
-and dumps in `/root/backups` beyond the newest ten. It never removes an image a container uses, the
-image the hold's own deploy pulled, the hold's own dump, or a workspace image: sealant's worker
-reaps those itself.
+label (the network guard and Boat's gateway are pinned that way); build cache unused for two days
+(`docker buildx prune --all --filter until=48h`, which removes build cache only; without `--all`
+BuildKit keeps all but dangling records); and dumps in `/root/backups` beyond the newest ten. It
+never removes an image a container uses, the image the hold's own deploy pulled, the hold's own
+dump, or a workspace image: sealant's worker reaps those itself, keeping the newest ten plans and
+any built in the last seven days. Most of the build cache backs those workspace images, so pruning
+it frees only the part no image shares; `plan` prints both beside free space, with the workspace
+images' total.
 
 On the box, as root, with the `mend` CLI installed, run the command from the run's summary:
 

@@ -9,6 +9,7 @@ import {
   chooseTidy,
   deployNeeds,
   describeTidy,
+  describeUsage,
   parseListing,
   parseTidyRun,
   tidyScript,
@@ -298,6 +299,7 @@ const stateSteps = (root, state, { head, tag, listing }) => {
         ? "free space unknown"
         : [
             `${gib(state.free)} free under /var/lib/docker; one deploy needs ${gib(need.bytes)} (image ${gib(need.parts.image)}, dump ${gib(need.parts.dump)}, workspace image ${gib(need.parts.workspace)}; measured from ${need.measured})`,
+            describeUsage(listing),
             ...(preview ? [`a tidy would remove ${describeTidy(preview)}`] : []),
           ].join("; "),
   });
