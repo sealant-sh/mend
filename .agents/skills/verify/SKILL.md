@@ -76,9 +76,11 @@ add makes the judge agree with you.
 The answer says where to run it (`local`, or `box` with the limit from
 `tooling/verify/local-stack-limits.json` that applies), three to five things a person must see, and
 what they would see if it did not work. `--record` refuses an answer that is not in that shape, and
-a `local` answer for a file only the box can show. The receipt's `judge` line carries the answer's
-reason. With no way to start another agent, answer the brief yourself and add `--self`; the receipt
-says so. **Done when** `pnpm verify judge` reads `passed` for the commit you will push.
+a `local` answer for a file only the box can show. The receipt (`pnpm verify status --markdown`)
+prints the whole answer under its lines, and a `json verify-receipt` block with the same facts that
+`pnpm verify receipt --pr <n>` (or `--body <file>`) reads back; paste it as printed. With no way to
+start another agent, answer the brief yourself and add `--self`; the receipt says so. **Done when**
+`pnpm verify judge` reads `passed` for the commit you will push.
 
 ## 5. Run it
 

@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { judgementLine, readJudgement } from "./judge.mjs";
-import { computePlan } from "./plan.mjs";
+import { computePlan, filesOwing, loadMap } from "./plan.mjs";
+import { judgementMarkdown, productPatchId, receiptBlock } from "./receipt.mjs";
 
 // The receipt: for each obligation the current head owes, whether a passing result exists for
 // this exact commit with a clean tree.
@@ -109,12 +110,24 @@ export const statusSteps = (root, { head, implemented }) => {
       ),
     ),
   ].filter(Boolean);
-  return { plan, steps, next };
+  // The receipt names the product-source part of the change by patch id, so a later commit with
+  // the same product diff (a rebase, a push of tests or docs) can be matched to it.
+  const judged = filesOwing(loadMap(root), plan.files, "judge");
+  return {
+    plan,
+    steps,
+    next,
+    judgement: readJudgement(root, head),
+    productPatchId: productPatchId(root, head.mergeBase, head.sha, judged),
+  };
 };
 
 const MARK = { passed: "x" };
 
-/** The section a PR body or verdict comment carries: one line per obligation. */
+/**
+ * The section a PR body carries: one line per obligation, the judgement in full when there is one,
+ * and the same facts as a JSON block a script reads back (receipt.mjs).
+ */
 export const toMarkdown = (result) =>
   [
     `### Verify status for ${result.head.sha.slice(0, 10)}${result.head.dirty ? " (dirty tree)" : ""}`,
@@ -126,4 +139,6 @@ export const toMarkdown = (result) =>
         }${step.note ? `. ${step.note}` : ""}`,
     ),
     "",
+    ...(result.judgement ? judgementMarkdown(result.judgement) : []),
+    ...receiptBlock(result),
   ].join("\n");
