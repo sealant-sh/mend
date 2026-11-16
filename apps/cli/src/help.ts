@@ -2766,7 +2766,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "this CLI's version, and the server's when it answers",
     synopsis: [],
     description: [
-      "Two lines: the version of this CLI, then the server's from its health route. A server that does not answer within two seconds prints as unreachable. --version and -v do the same.",
+      "Two lines, in this order: the version of this CLI, then the server's from its health route. A server that does not answer within two seconds prints as unreachable. --version and -v do the same.",
     ],
     see: ["doctor"],
   },
