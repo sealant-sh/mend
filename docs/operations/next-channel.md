@@ -585,16 +585,16 @@ it; the rest is this checklist.
    (`gh workflow run release-acceptance.yml --ref changeset-release/main`), wait for `checks` on the
    pull request and for that acceptance run to pass on the same head, then **merge that pull request
    and tag `vA.B.C` on it.** The Version workflow starts the pull request's CI itself: it approves
-   the held `pull_request` run (`docs/operations/ci.md`, "Concurrency"). If `checks` is missing,
-   click "Approve and run workflows" on the pull request. Acceptance is not a required check, and a
-   dispatched run does not show in the pull request's checks, so read its result from the run.
-   _Enforced by the pins job:_ the commit is on main; no prerelease is pinned; the CLI package
-   carries the version; no next tag of `A.B.C` sits on a commit the release leaves out; the newest
-   next build of `A.B.C` it contains reached npm; and since that build only `.changeset/`,
-   `CHANGELOG.md` files, the CLI package's `version` line, the chart's `version`/`appVersion` lines
-   (`appVersion` must be the release), `docs/`, `apps/docs/`, `apps/marketing/` and top-level
-   Markdown changed, never a `package.json` (a move counts as a deletion and an addition). In effect
-   Mend main is frozen from step 7 to the tag too.
+   the held `pull_request` run after each push, and again every hour (`docs/operations/ci.md`,
+   "Concurrency"). If `checks` is missing, click "Approve and run workflows" on the pull request.
+   Acceptance is not a required check, and a dispatched run does not show in the pull request's
+   checks, so read its result from the run. _Enforced by the pins job:_ the commit is on main; no
+   prerelease is pinned; the CLI package carries the version; no next tag of `A.B.C` sits on a
+   commit the release leaves out; the newest next build of `A.B.C` it contains reached npm; and
+   since that build only `.changeset/`, `CHANGELOG.md` files, the CLI package's `version` line, the
+   chart's `version`/`appVersion` lines (`appVersion` must be the release), `docs/`, `apps/docs/`,
+   `apps/marketing/` and top-level Markdown changed, never a `package.json` (a move counts as a
+   deletion and an addition). In effect Mend main is frozen from step 7 to the tag too.
 
 If anything fails after a tag, the fix is a patch release through the same order.
 
