@@ -75,7 +75,16 @@ const startMend = async () => {
       };
       watchers.add(watch);
     });
-  const port = await freePort();
+  // Listening now, on a port the OS picks: the edge in front needs the port before Mend's origin
+  // (the edge's) is known, and a port picked and released could be taken while the edge starts.
+  const listener = ManagedRuntime.make(
+    NodeHttpServer.layer(() => server, { port: 0, host: "127.0.0.1" }),
+  );
+  disposers.push(() => listener.dispose());
+  const listening = await listener.context();
+  const address = server.address();
+  if (address === null || typeof address === "string") throw new Error("no TCP address");
+  const port = address.port;
   const holder: { origin: string | null } = { origin: null };
   const routes = HttpRouter.use((router) =>
     Effect.gen(function* () {
@@ -98,7 +107,7 @@ const startMend = async () => {
         HttpRouter.serve(Layer.mergeAll(routes, publicNetworkPolicy(network)), {
           disableLogger: true,
           disableListenLog: true,
-        }).pipe(Layer.provide(NodeHttpServer.layer(() => server, { port, host: "127.0.0.1" }))),
+        }).pipe(Layer.provide(Layer.succeedContext(listening))),
       );
       await runtime.runPromise(Effect.void);
       disposers.push(() => runtime.dispose());

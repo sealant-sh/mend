@@ -1,5 +1,4 @@
 import { subscribe, unsubscribe } from "node:diagnostics_channel";
-import { once } from "node:events";
 import * as http from "node:http";
 import * as net from "node:net";
 
@@ -64,6 +63,7 @@ import {
   type PreviewRouting,
 } from "../../src/preview-routing.ts";
 import { type PreviewStartFailed, PreviewTargets } from "../../src/preview-targets.ts";
+import { freePort } from "./free-port.ts";
 import { makeProject } from "./tenancy-harness.ts";
 
 const noResourceStop = (): { readonly name: string; readonly by: string } | null => null;
@@ -211,15 +211,7 @@ export interface GatewayWorldOptions {
 
 const noGate = (): Deferred.Deferred<void> | null => null;
 
-export const freePort = async (): Promise<number> => {
-  const probe = net.createServer();
-  probe.listen(0, "127.0.0.1");
-  await once(probe, "listening");
-  const address = probe.address();
-  probe.close();
-  if (address === null || typeof address === "string") throw new Error("no TCP address");
-  return address.port;
-};
+export { freePort };
 
 const platformRefusal = () =>
   new SealantPlatformError({
