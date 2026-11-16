@@ -477,6 +477,26 @@ describe("mend message --resume on a session that never ran an agent", () => {
     expect(await world.run(["s", "--resume", "words"])).toBe(1);
     expect(world.stderr.join("")).toBe("mend: A launch of this session is already under way.\n");
   });
+
+  it("says why the start was refused, so a missing login can be put right", async () => {
+    const refusedFor = (message: string) => ({
+      post: notLive,
+      session: async () => ({ currentAgent: null }),
+      launchConversation: () =>
+        Promise.reject(
+          new MendRequestError("http", message, 422, { call: "POST launch", tag: "StoreFailure" }),
+        ),
+    });
+    const login =
+      "Connect Claude to start a session here. Connect it in Settings → Connected accounts, or run mend connect claude.";
+    const world = command(undefined, refusedFor(login));
+    expect(await world.run(["s", "--resume", "carry on"])).toBe(1);
+    expect(world.stderr.join("")).toBe(`mend: ${login}\n`);
+    // A failure that quotes the message's words is not repeated.
+    const quoting = command(undefined, refusedFor("could not run claude -p carry on"));
+    expect(await quoting.run(["s", "--resume", "carry on"])).toBe(1);
+    expect(quoting.stderr.join("")).not.toContain("carry on");
+  });
 });
 
 /** What `request` throws for a POST whose connection was refused: the fetch error rides as its cause. */

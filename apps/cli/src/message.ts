@@ -160,12 +160,18 @@ const FIXED_SENTENCE_TAGS: ReadonlySet<string> = new Set([
 /** The launch route's refusals whose sentences speak of the session and never quote the prompt. */
 const LAUNCH_SENTENCE_TAGS: ReadonlySet<string> = new Set(["SessionMovedOn", "SessionAgentLive"]);
 
-const launchRefusalWordsOf = (error: MendRequestError): string =>
-  error.refused?.tag !== null &&
-  error.refused?.tag !== undefined &&
-  LAUNCH_SENTENCE_TAGS.has(error.refused.tag)
-    ? printable(error.message)
-    : failureWords(error.status ?? 0, { _tag: error.refused?.tag }).words;
+/**
+ * The words of a refused start. A store failure says why the launch could not begin ("Connect
+ * Claude to start a session here…"), which the person needs to act on; it is printed unless it
+ * carries the message's own words, which these diagnostics never repeat.
+ */
+const launchRefusalWordsOf = (error: MendRequestError, input: string): string => {
+  const tag = error.refused?.tag ?? null;
+  if (tag !== null && LAUNCH_SENTENCE_TAGS.has(tag)) return printable(error.message);
+  if (tag === "StoreFailure" && !error.message.includes(input.trim()))
+    return printable(error.message);
+  return failureWords(error.status ?? 0, { _tag: tag ?? undefined }).words;
+};
 
 const printable = (text: string): string => redactCredentials(stripVTControlCharacters(text));
 
@@ -238,7 +244,7 @@ const startNeverLaunched = async (
     });
   } catch (error) {
     return isRefusal(error)
-      ? failed(error.refused?.tag ?? "LaunchRefused", launchRefusalWordsOf(error))
+      ? failed(error.refused?.tag ?? "LaunchRefused", launchRefusalWordsOf(error, input))
       : failed(
           "LaunchOutcomeUnconfirmed",
           `Start not confirmed · ${ownWordsOf(error) ?? "this CLI could not read the server's answer"} · check the session before sending again`,
