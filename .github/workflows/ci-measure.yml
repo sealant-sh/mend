@@ -628,6 +628,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BOUNDS: ${{ inputs.formal }}
           AREA: ${{ matrix.area }}
+          MEND_FORMAL_PROGRESS: "1"
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then
             node tooling/verify/formal.mjs ci "$BASE_SHA" "$HEAD_SHA" --area "$AREA"
