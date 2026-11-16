@@ -286,7 +286,10 @@ test("clients-b loads the built web app in Chromium after its tests", () => {
 });
 
 test("store-image-git runs the store's handoff tests under the runtime stage's own git", () => {
-  assert.deepEqual(commands("store-image-git"), ["bash scripts/store-image-git.sh"]);
+  assert.deepEqual(commands("store-image-git"), [
+    'node scripts/ci-images.mjs pull "$(bash scripts/store-image-git.sh --image)"',
+    "bash scripts/store-image-git.sh",
+  ]);
   const script = readFileSync(new URL("store-image-git.sh", import.meta.url), "utf8");
   const dockerfile = readFileSync(new URL("Dockerfile", root), "utf8");
   const runtime = dockerfile.match(/^FROM (\S+) AS runtime$/m)?.[1];
@@ -467,7 +470,8 @@ test("packaging retains browser, Docker, OpenTofu and acceptance contracts in it
   assert.ok(
     commands("packaging").some(
       (command) =>
-        command.includes("compose.edge.yaml") && command.includes('docker pull "$image"'),
+        command.includes("compose.edge.yaml") &&
+        command.includes('node scripts/ci-images.mjs pull "$caddy"'),
     ),
   );
   const suite = commands("packaging").find((command) =>

@@ -33,8 +33,70 @@ export const GHCR_OWNER = "ghcr.io/sealant-sh";
  * `official` images are on ECR Public's docker/library; the rest only on mirror.gcr.io.
  */
 export const CI_IMAGES = {
+  // The engine lanes' and preview acceptance's database (startPostgres).
   "postgres:17": {
     digest: "sha256:0d938e975177bef9f1f61f3f9dbcf2e0aa0a139568f66d3415ed8892eb97f6ac",
+    official: true,
+  },
+  // Setup's own images beside the server, which docker-suites and vscode-e2e run.
+  "postgres:17-alpine": {
+    digest: "sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7",
+    official: true,
+  },
+  "dxflrs/garage:v2.4.1": {
+    digest: "sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
+    official: false,
+  },
+  "nginx:1.29-alpine": {
+    digest: "sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
+    official: true,
+  },
+  "registry:3.1": {
+    digest: "sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c",
+    official: true,
+  },
+  // The edge overlay's proxy (deploy/docker/compose.edge.yaml), and the preview edges' stand-ins.
+  "caddy:2.10-alpine": {
+    digest: "sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d",
+    official: true,
+  },
+  // The Dockerfile's base, which the server build, store-image-git and the bundle tests run.
+  "node:26-bookworm-slim": {
+    digest: "sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1",
+    official: true,
+  },
+  // The workspace base vscode-e2e's fresh-worktree session builds from.
+  "node:26-bookworm": {
+    digest: "sha256:b7087bc4d973034b30854b378ba107f9fab622b47514cb7e2592e41b8bab8d49",
+    official: true,
+  },
+  // docker-suites' mounted rollback workspace.
+  "node:26-trixie": {
+    digest: "sha256:e18c3ccdf7d71619990b0e85639f506e2028a95410999cab24cc373cbd10e0ac",
+    official: true,
+  },
+  // vscode-e2e's outer machine.
+  "docker:27.5.1-dind": {
+    digest: "sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce",
+    official: true,
+  },
+  // The server image's network guard (the Dockerfile's MEND_NETWORK_GUARD_IMAGE), which the
+  // upgrade-window and Docker protocol tests also run as a small stand-in.
+  "busybox:1.37": {
+    digest: "sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e",
+    official: true,
+  },
+  // The package-mirror runtime test's clients (scripts/mirrors-runtime.test.mjs).
+  "curlimages/curl:8.16.0": {
+    digest: "sha256:463eaf6072688fe96ac64fa623fe73e1dbe25d8ad6c34404a669ad3ce1f104b6",
+    official: false,
+  },
+  "node:24-alpine": {
+    digest: "sha256:116b800c3754b440ee0aa3ed2f20f5bf3d99a554bfd9adeea09ea8017f6e85f5",
+    official: true,
+  },
+  "alpine:3.20": {
+    digest: "sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc",
     official: true,
   },
 };
