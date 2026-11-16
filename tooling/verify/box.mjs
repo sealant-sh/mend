@@ -44,12 +44,21 @@ export const sshRunner =
     };
   };
 
-/** The name a check goes by on the box: its PR, else its commit. */
-export const checkTag = (pr, head) =>
-  pr === undefined ? `sha-${head.sha.slice(0, 12)}` : `pr${pr}`;
+/**
+ * The name a check goes by on the box, in its hold, its dump and its CLI directory: the --tag it
+ * gave (the scheduled main run's `main-<sha12>`), else its PR, else its commit.
+ */
+export const checkTag = (pr, head, tag) =>
+  tag ?? (pr === undefined ? `sha-${head.sha.slice(0, 12)}` : `pr${pr}`);
 
-const rerun = (subverb, tag) =>
-  `pnpm verify box ${subverb} --yes${tag.startsWith("pr") ? ` --pr ${tag.slice(2)}` : ""}`;
+const rerun = (subverb, tag) => {
+  const named = /^pr\d+$/.test(tag)
+    ? ` --pr ${tag.slice(2)}`
+    : tag.startsWith("sha-")
+      ? ""
+      : ` --tag ${tag}`;
+  return `pnpm verify box ${subverb} --yes${named}`;
+};
 
 // One read of everything plan needs, as `key=value` lines and `migration=<id>|<name>` rows.
 const READ_STATE = `

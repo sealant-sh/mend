@@ -183,6 +183,9 @@ pnpm verify box identity            # by patch id, the running build contains th
 pnpm verify box release --pr <n> --yes
 ```
 
+A check with no PR names itself with `--tag <name>` in place of `--pr <n>`; the scheduled run of
+`main` (`.agents/skills/box-main-run/`) holds the box as `main-<sha12>`.
+
 `run-it` reads `passed` once `box identity` passes on the commit you push. Use the box through the
 `mend` CLI and browser already signed in there. Never sign that CLI in or out, and never read its
 token. A schema the box applied that this head lacks blocks `plan`: deploy a build that contains it.
