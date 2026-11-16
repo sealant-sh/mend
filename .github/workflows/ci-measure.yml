@@ -697,26 +697,30 @@ jobs:
       MEND_TEST_VERSION: 0.0.0-ci
       VSCODE_VERSION: 1.142.0
       MEND_E2E_EVIDENCE: ${{ github.workspace }}/.ci-reports/vscode-e2e
+      MEND_E2E_REFUSE_DOCKER_HUB: "1"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.head_sha }}
+      - name: Refuse Docker Hub on this runner
+        if: ${{ inputs.runner != 'box' }}
+        run:
+          echo "0.0.0.0 registry-1.docker.io auth.docker.io index.docker.io" | sudo tee -a
+          /etc/hosts
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version-file: .node-version
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
+      - name: Pull the images the server build and the acceptance's world name
+        run:
+          node --input-type=module -e 'await (await
+          import("./scripts/vscode-remote-world.mjs")).pullWorldImages();'
       - name: Build the server image from this commit
         run:
           docker build -t "ghcr.io/sealant-sh/mend:$MEND_TEST_VERSION" --build-arg
           "MEND_VERSION=$MEND_TEST_VERSION" .
-      - name: Pull the images the acceptance's world names
-        run: >
-          node --input-type=module -e 'const w = await import("./scripts/vscode-remote-world.mjs");
-          console.log([...w.SERVER_SUPPORT_IMAGES, w.WORKSPACE_BASE_IMAGE,
-          w.DIND_IMAGE].join("\n"));' |
-            xargs -n1 docker pull -q
       - name: Install VS Code and Xvfb
         run: >
           sudo apt-get update -q && sudo apt-get install -y -q xvfb
