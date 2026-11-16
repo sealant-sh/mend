@@ -2,8 +2,9 @@
 # its Coverage record maps each model action to the code below.
 #
 # sync: the commit whose code the model was last confirmed to describe (SLNT-1017's full run).
-# Move it only as the skill's step 1 and full run say.
-sync 6c5c39774ea6f567d24b4150eb77805ef234ad25
+# Move it only as the skill's step 1 and full run say. 34912afd61 is mend#1739's commit on the
+# SLNT-895 feature branch rebased on main; its covered files are the ones SLNT-1017's run checked.
+sync 34912afd61bb320dfe4d9bccffc5cf06a5a0eae5
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
