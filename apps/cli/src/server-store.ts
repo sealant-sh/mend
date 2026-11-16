@@ -44,6 +44,8 @@ export interface ServerFiles {
   readonly caddyfile?: string;
   /** compose.mirrors.yaml: the package and image mirrors (server-mirrors.ts). */
   readonly mirrors?: string;
+  /** compose.workspace-images.yaml: how many workspace images the bundled worker keeps. */
+  readonly workspaceImages?: string;
   /** npm-mirror.conf: the npm mirror's nginx configuration, mounted read-only. */
   readonly npmMirrorConf?: string;
   /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
@@ -244,6 +246,7 @@ const optionalFileKeys = [
   "edge",
   "caddyfile",
   "mirrors",
+  "workspaceImages",
   "npmMirrorConf",
   "dockerMirrorGuard",
   "t3Gateway",
@@ -266,6 +269,7 @@ const fileNames = {
   edge: "compose.edge.yaml",
   caddyfile: "Caddyfile",
   mirrors: "compose.mirrors.yaml",
+  workspaceImages: "compose.workspace-images.yaml",
   npmMirrorConf: "npm-mirror.conf",
   dockerMirrorGuard: "docker-mirror-guard.sh",
   t3Gateway: "compose.t3.yaml",
@@ -299,6 +303,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   edge: 0o600,
   caddyfile: 0o644,
   mirrors: 0o600,
+  workspaceImages: 0o600,
   npmMirrorConf: 0o644,
   dockerMirrorGuard: 0o644,
   t3Gateway: 0o600,
@@ -488,6 +493,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const edge = optional("edge");
   const caddyfile = optional("caddyfile");
   const mirrors = optional("mirrors");
+  const workspaceImages = optional("workspaceImages");
   const npmMirrorConf = optional("npmMirrorConf");
   const dockerMirrorGuard = optional("dockerMirrorGuard");
   const t3Gateway = optional("t3Gateway");
@@ -509,6 +515,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(edge === undefined ? {} : { edge }),
     ...(caddyfile === undefined ? {} : { caddyfile }),
     ...(mirrors === undefined ? {} : { mirrors }),
+    ...(workspaceImages === undefined ? {} : { workspaceImages }),
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),
