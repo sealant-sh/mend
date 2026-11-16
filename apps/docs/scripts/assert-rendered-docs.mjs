@@ -6,10 +6,10 @@ const installPage = await readFile(
   "utf8",
 );
 
-const networkBoundary = installPage.indexOf('id="network-boundary"');
+const networkBoundary = installPage.indexOf('id="how-people-reach-the-server"');
 const createAccount = installPage.indexOf('id="create-your-mend-account"');
 
-assert.notEqual(networkBoundary, -1, "Install page must explain its network boundary");
+assert.notEqual(networkBoundary, -1, "Install page must explain how people reach the server");
 assert.notEqual(createAccount, -1, "Install page must explain account creation");
 assert.ok(networkBoundary < createAccount, "Install page must state network risk before sign-up");
 for (const section of ["install-only-the-cli", "set-up-the-server", "operate-and-upgrade"]) {

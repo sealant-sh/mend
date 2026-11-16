@@ -338,7 +338,9 @@ A proxy you run in place of either must do six things:
    proxy.
 
 On an install made with `mend server setup`, a proxy on the server's own machine (nginx, Caddy, a
-Cloudflare Tunnel) forwards to Mend's port on loopback, and setup takes its https origin:
+Cloudflare Tunnel) forwards to Mend's port on loopback, and setup takes its https origin. It reaches
+the web port only: [HTTPS you run](/getting-started/install/#https-you-run) says what to do for the
+T3 Code gateway and workspace SSH.
 
 ```sh
 mend server setup --url https://mend.example.com

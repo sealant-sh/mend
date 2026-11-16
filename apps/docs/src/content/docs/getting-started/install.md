@@ -205,47 +205,144 @@ With no terminal and no flags, setup refuses a fresh install instead of guessing
 reached, and names the flags that say it. `mend server setup --yes` takes the defaults: this machine
 only, at `http://localhost:3105`.
 
-## Network boundary
+## How people reach the server
 
-Web and SSH bind to localhost by default. Postgres has no published host port, and no image registry
-is published. Private access must be configured explicitly: answer "my private network or Tailscale"
-to setup's first question, or pass the flags yourself:
+Setup decides two things, and its flags keep them apart:
+
+- `--bind` is where Mend listens on the server. It decides who can connect at all.
+- `--url` is the address people type. Browsers, `mend login`, pairing and every link Mend sends use
+  it. Mend does not listen on it. Something has to lead from that address to where Mend listens: the
+  network itself, Mend's edge, or HTTPS you run.
+
+Setup's first question, "How will people reach this Mend?", sets both for you. The flags are for
+scripts, and for HTTPS you run yourself, which the questions don't offer yet.
+
+### Where Mend listens
+
+| `--bind`                                              | Who can connect                                                                               |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| `127.0.0.1`, the default                              | Programs on the server itself, a proxy running there included                                 |
+| A tailnet, LAN or VPN address, such as `100.70.80.90` | Every device on that network                                                                  |
+| `0.0.0.0`                                             | Every network the server is on. On a server with a public address, that is the whole internet |
+
+Setup never configures a firewall. A fresh install refuses a public address for `--bind`.
+
+### Mend's ports
+
+| Port   | What uses it                                                 | Where it listens                         |
+| ------ | ------------------------------------------------------------ | ---------------------------------------- |
+| `3105` | The web app and API: browsers, the `mend` CLI, the phone app | `--bind`                                 |
+| `2222` | Workspace SSH: `mend ssh` and VS Code Remote-SSH             | `--ssh-bind`, which defaults to `--bind` |
+| `3120` | The [T3 Code gateway](/integrations/t3code/), when it is on  | `--bind`, or `127.0.0.1` behind the edge |
+
+Postgres, Garage and the mirrors publish no port. `--port` and `--ssh-port` move the first two.
+
+So `--bind 127.0.0.1` keeps all three ports on the server. Whatever leads people to `--url` reaches
+the web port only, unless you give the other two a way in as well.
+
+### Four ways to set it up
+
+| Setup                     | Flags                                            |
+| ------------------------- | ------------------------------------------------ |
+| Just this machine         | `--yes`                                          |
+| Your network or Tailscale | `--bind 100.70.80.90 --url http://mend-box:3105` |
+| Mend's edge               | `--edge mend.example.com`                        |
+| HTTPS you run             | `--url https://mend.example.com`                 |
+
+#### Just this machine
+
+Everything stays on `127.0.0.1`. Use it when the server and the person using it share a machine, or
+reach it over an SSH tunnel: `ssh -L 3105:127.0.0.1:3105 your-server`, then open
+`http://localhost:3105`.
+
+- The web app: `http://localhost:3105`, on the server.
+- Workspace SSH: `127.0.0.1:2222`, on the server.
+- T3 Code: `http://127.0.0.1:3120`, on the server.
+
+#### Your network or Tailscale
+
+All three ports listen on the server's address on that network, so every device on it reaches all
+three with no tunnel. Answer "my private network or Tailscale", or pass the flags:
 
 ```sh
-mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
+mend server setup --bind 100.70.80.90 --url http://mend-box:3105 \
   --origin http://localhost:3105
 ```
 
-Use your server's reachable private hostname. The primary URL and additional exact origins govern
-authentication, CORS, WebSockets, pairing, and advertised URLs. Incoming forwarding headers and
-interface discovery cannot add trust.
+Use the server's private address and a name your devices resolve. `--origin` adds another exact
+browser origin, here localhost on the server itself. Mend's URL and its origins decide sign-in,
+CORS, WebSockets, pairing and the links Mend sends. Forwarded headers and the addresses Mend finds
+on the machine never add to them. Plain HTTP doesn't protect sign-ins from others on the same
+network, so prefer an encrypted network such as a tailnet.
 
-> Binding `0.0.0.0` exposes web and SSH on every IPv4 interface. Registration closes after the first
-> account, so create that account before anyone else can reach Mend. The application has
-> administrative Docker socket access. Configure your firewall or private network yourself; setup
-> does not do it for you.
+- The web app: `http://mend-box:3105`.
+- Workspace SSH: `mend-box:2222`.
+- T3 Code: `http://mend-box:3120`.
 
-Plain HTTP does not protect credentials on an untrusted network. Use an encrypted private network or
-a TLS edge. Setup runs the edge for you once the first account exists: answer "the public internet,
-with HTTPS", or pass the flag:
+#### Mend's edge
+
+Mend runs Caddy for you. Caddy listens on ports 80 and 443 of every interface, gets and renews a
+certificate for your domain, and forwards to Mend on `127.0.0.1`. The domain's DNS must point at the
+server, and both ports must reach it from the internet. Answer "the public internet, with HTTPS", or
+pass the flag:
 
 ```sh
 mend server setup --edge mend.example.com
 ```
 
-Caddy then listens on ports 80 and 443 of every interface, obtains and renews a certificate for
-`mend.example.com` and proxies to Mend, whose own port stays on loopback. The browser origin becomes
-`https://mend.example.com`. For a certificate to be issued, the name's DNS must point at this
-machine and both ports must reach it from the Internet. `mend server status` says whether Caddy
-holds one. A fresh install refuses `--edge`: until the first account exists, registration is open to
-whoever reaches the origin first, so set up on localhost, create the account, then add the edge. The
-questions say the same on a fresh install and set up on this machine first.
+A fresh install refuses `--edge`, because until the first account exists anyone who reaches the
+domain can create it. Set up on this machine first, create the account over an SSH tunnel, then add
+the edge ([deploy on a VPS](/operate/deploy-vps/#behind-a-tls-edge) shows the order). The edge
+serves T3 Code only on a name of its own (`--t3-gateway-origin t3.mend.example.com`), and it never
+carries workspace SSH.
 
-Setup also takes the posture the server declares, `--exposure loopback|private|public` and
-`--tenancy single|multi`, and keeps the edge and the posture across reruns and upgrades. Without the
-flags a server it installs runs as `private` and `single`. `public` needs the edge and an existing
-first account. Read [Exposure](/operate/exposure/) for the modes, the public exposure gate, and what
-Mend observes beside what you declare.
+- The web app: `https://mend.example.com`.
+- Workspace SSH: `127.0.0.1:2222` on the server, unless you publish it with `--ssh-bind <address>`.
+- T3 Code: `https://t3.mend.example.com` with `--t3-gateway-origin t3.mend.example.com`, otherwise
+  `http://127.0.0.1:3120` on the server.
+
+#### HTTPS you run
+
+You run the proxy yourself on the server, such as nginx, Caddy or a Cloudflare Tunnel. It holds the
+certificate and forwards to Mend's port on `127.0.0.1`:
+
+```sh
+mend server setup --url https://mend.example.com
+```
+
+Point the proxy at `http://127.0.0.1:3105`, and pass WebSockets through. The full list of what it
+must do is in [your own reverse proxy](/operate/exposure/#your-own-reverse-proxy). Until the first
+account exists, anyone who reaches the URL can create it, so create yours soon after setup.
+Tailscale Serve is the same setup: `tailscale serve --bg --https=443 http://127.0.0.1:3105`, with
+`--url https://<this machine>.<tailnet>.ts.net`.
+
+- The web app: `https://mend.example.com`, through your proxy.
+- Workspace SSH: `127.0.0.1:2222` on the server, until you give it a way in.
+- T3 Code: `http://127.0.0.1:3120` on the server, until you give it a way in.
+
+Your proxy reaches the web port only. For the other two:
+
+- **T3 Code.** Forward a name of its own, such as `https://t3.mend.example.com`, to
+  `http://127.0.0.1:3120`, and use it as the Remote link in T3 Code. It can't go under a path of
+  Mend's URL, because T3 Code always uses a server's root path. A port of its own
+  (`https://mend.example.com:3120`) works too, but it has to be open in the firewall, and
+  Cloudflare's proxy doesn't carry port 3120. With Tailscale Serve, use the port:
+  `tailscale serve --bg --https=3120 http://127.0.0.1:3120`.
+- **Workspace SSH.** An HTTPS proxy can't carry SSH. To use `mend ssh` or VS Code Remote-SSH from
+  other devices, publish it on a private network with `--ssh-bind <tailnet or LAN address>`, or
+  carry it with `cloudflared access ssh` through a Cloudflare Tunnel.
+
+Inside Docker, every request from your proxy comes from the Docker bridge's address, so Mend counts
+every client in one address budget. A team that runs into it raises the budgets
+([budgets](/operate/exposure/#budgets)).
+
+### Exposure
+
+Setup also records how the server is reached, `--exposure loopback|private|public`, and how many
+organizations it holds, `--tenancy single|multi`. Both stay across reruns and upgrades. A server
+setup installs runs as `private` and `single` unless you say otherwise. `public` needs the edge and
+an existing first account. [Exposure](/operate/exposure/) explains the modes, the public exposure
+gate, and what Mend checks beside what you declare.
 
 ## Create your Mend account
 

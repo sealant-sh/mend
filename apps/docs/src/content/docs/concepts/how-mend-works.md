@@ -57,9 +57,9 @@ application container, Postgres in a second, and Garage, the object store that h
 captures, in a third. An npm mirror and a Docker Hub mirror run in two more unless you turn them
 off, and sessions pull packages and images through them. Web and workspace SSH bind to localhost by
 default and Postgres publishes no port. Binding another address is an explicit setup choice; read
-[Install Mend](/getting-started/install/#network-boundary). How the instance is reached (loopback, a
-private network, or public behind an edge) is its exposure; read [Exposure](/operate/exposure/). On
-Kubernetes, Sealant is installed separately; read
+[Install Mend](/getting-started/install/#how-people-reach-the-server). How the instance is reached
+(loopback, a private network, or public behind an edge) is its exposure; read
+[Exposure](/operate/exposure/). On Kubernetes, Sealant is installed separately; read
 [Deploy on Kubernetes](/operate/deploy-kubernetes/).
 
 ## Project store
