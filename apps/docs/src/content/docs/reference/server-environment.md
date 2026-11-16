@@ -162,6 +162,18 @@ The mirrors' own settings live in the install's `server.env`: `MEND_NPM_MIRROR_M
 `MEND_DOCKER_HUB_TOKEN` when the Docker mirror has a Docker Hub login. Only the mirrors' containers
 read them.
 
+## Workspace images
+
+Read by the Sealant worker that runs inside the Mend container, which removes workspace images no
+workspace runs from once an hour. `mend server setup --workspace-image-keep` and
+`--workspace-image-min-age` set them; see
+[How long the server keeps workspace images](/guides/workspace-images/#how-long-the-server-keeps-workspace-images).
+
+| Variable                         | Default | What it does                                                                                           |
+| -------------------------------- | ------- | ------------------------------------------------------------------------------------------------------ |
+| `WORKSPACE_IMAGE_RETAINED_PLANS` | `10`    | How many of the most recently built image definitions keep their newest image with no workspace on it. |
+| `WORKSPACE_IMAGE_MIN_AGE_HOURS`  | `168`   | An image built within this many hours is never removed, whatever the count says.                       |
+
 ## Exposure
 
 See [Exposure and the public gate](/operate/exposure/) for what each item means.
@@ -368,7 +380,10 @@ business: `--edge <host>` writes the edge overlay and its Caddyfile into the gen
 their variables to the container, reading each value from `server.env`; the mirrors are
 `compose.mirrors.yaml`, which also hands the container `MEND_NPM_MIRROR_URL`,
 `SEALANT_DOCKER_REGISTRY_MIRRORS` and `SEALANT_DOCKER_REGISTRY_MIRROR_CONTAINER` for each mirror
-that runs; and `--t3-gateway` writes `compose.t3.yaml`, which sets `MEND_T3_GATEWAY_ENABLED=true`.
+that runs; `--t3-gateway` writes `compose.t3.yaml`, which sets `MEND_T3_GATEWAY_ENABLED=true`; and
+`--workspace-image-keep` and `--workspace-image-min-age` write `compose.workspace-images.yaml`,
+which sets `WORKSPACE_IMAGE_RETAINED_PLANS` and `WORKSPACE_IMAGE_MIN_AGE_HOURS` with the values
+written in the overlay itself, not in `server.env`.
 
 What `server.env` holds, all read by the compose files:
 

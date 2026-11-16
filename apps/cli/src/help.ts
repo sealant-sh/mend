@@ -2249,7 +2249,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "install or change the local Mend server, guided",
     synopsis: [
       "",
-      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] [--t3-gateway-origin <host> | --no-t3-gateway-origin] | --no-t3-gateway] [--preview-domain <domain> --preview-certificate <file> --preview-key <file> | --no-preview-domain] [--preview-tailnet [--preview-tailnet-ports <list>] | --no-preview-tailnet] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline] [--allow-userns | --no-allow-userns]",
+      "[--yes] [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--undeclare <item>...] [--t3-gateway [--t3-gateway-port <n>] [--t3-gateway-origin <host> | --no-t3-gateway-origin] | --no-t3-gateway] [--preview-domain <domain> --preview-certificate <file> --preview-key <file> | --no-preview-domain] [--preview-tailnet [--preview-tailnet-ports <list>] | --no-preview-tailnet] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--workspace-image-keep <n|default>] [--workspace-image-min-age <hours|default>] [--docker-socket <path>] [--assets-dir <dir>] [--offline] [--allow-userns | --no-allow-userns]",
     ],
     description: [
       "On a terminal with no flags, setup asks its questions in plain words, one at a time: on a fresh install with more than one Docker engine answering here (Docker Desktop beside OrbStack, colima, Rancher Desktop, a rootless Docker), which one Mend runs in, the current context in brackets; then how people reach this Mend (just this machine, your private network or Tailscale, or the public internet with HTTPS), whether VS Code Remote-SSH reaches it from other machines, the T3 Code gateway, the mirrors, and one organization or several. It looks before it asks and says what it observed: Tailscale's name and address and what Tailscale Serve forwards, where your domain resolves, and whether ports 80 and 443 are taken. It never asks for an address to bind: that follows from the answers. On an existing install it shows what is saved and lets you keep it, change one thing, or go through every question. It ends with what changes, in words, and the same command with flags; nothing applies until you say yes.",
@@ -2461,6 +2461,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "required with a login: you state the token is scoped Public Repo Read-only, since every session can pull what it can read",
       },
       { flag: "--no-docker-hub-login", text: "the Docker mirror pulls anonymously again" },
+      {
+        flag: "--workspace-image-keep <n|default>",
+        text: "how many of the most recently built workspace images, one per image definition, the bundled worker keeps with no workspace on them; kept across reruns and upgrades. Default: 10",
+      },
+      {
+        flag: "--workspace-image-min-age <hours|default>",
+        text: "the worker never removes a workspace image built within this many hours. Default: 168",
+      },
       {
         flag: "--assets-dir <dir>",
         text: "copy compose.v2.yaml and postgres-init.sh from a release directory; fresh setup requires --version",

@@ -10,6 +10,10 @@ import {
   type ServerRemoteEndpoints,
 } from "./server-remote-endpoints.ts";
 import { storeFileGroup } from "./server-store.ts";
+import {
+  type ServerWorkspaceImages,
+  WORKSPACE_IMAGES_COMPOSE_FILE,
+} from "./server-workspace-images.ts";
 
 /**
  * The edge and the posture of a packaged install (docs/adr/0004-access-without-a-private-network.md
@@ -489,6 +493,7 @@ export const PREVIEW_CADDYFILE = [
 export const composeOverlays = (
   posture: ServerPosture & {
     readonly mirrors?: ServerMirrors;
+    readonly workspaceImages?: ServerWorkspaceImages;
     readonly remoteEndpoints?: ServerRemoteEndpoints;
     readonly boat?: ServerBoat;
   },
@@ -496,6 +501,7 @@ export const composeOverlays = (
   ...(posture.edgeHost === undefined ? [] : [EDGE_COMPOSE_FILE]),
   ...(renderPostureOverlay(posture) === undefined ? [] : [POSTURE_COMPOSE_FILE]),
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
+  ...(posture.workspaceImages === undefined ? [] : [WORKSPACE_IMAGES_COMPOSE_FILE]),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
   ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),

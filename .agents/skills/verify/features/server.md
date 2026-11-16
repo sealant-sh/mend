@@ -17,6 +17,9 @@ same way, and an old-style preview moves to the `next` channel once with `--from
 - `server-edge` adds a Caddy TLS edge with `--edge <host>`, and removes it with `--no-edge`.
 - `server-posture` declares `--exposure` and `--tenancy` and keeps them across reruns and upgrades.
 - `server-offline` installs from `--assets-dir` and preloaded images with `--offline`.
+- `server-workspace-images` sets how many workspace images the bundled worker keeps
+  (`--workspace-image-keep`) and for how long (`--workspace-image-min-age`), kept across reruns and
+  upgrades; `default` returns either to sealant's own.
 - `server-status` prints the pin, the generation, the containers, the edge and the posture.
 - `server-lifecycle` stops, starts and restarts the installation without touching its volumes.
 - `server-logs` prints a bounded tail of every container's log.
@@ -28,7 +31,7 @@ same way, and an old-style preview moves to the `next` channel once with `--from
 ## How to get to it (user POV)
 
 - CLI:
-  `mend server setup [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--docker-socket <path>] [--assets-dir <dir>] [--offline]`,
+  `mend server setup [--context <name>] [--version <version|latest>] [--bind <ip>] [--ssh-bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--edge <host> | --no-edge] [--exposure <loopback|private|public>] [--tenancy <single|multi>] [--declare <item>...] [--npm-mirror | --no-npm-mirror] [--npm-mirror-max-size <size>] [--docker-mirror | --no-docker-mirror] [--docker-mirror-max-size <size>] [--docker-hub-username <name> --docker-hub-token-stdin --docker-hub-public-only | --no-docker-hub-login] [--workspace-image-keep <n|default>] [--workspace-image-min-age <hours|default>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]`,
   the usage block of `mend help server setup`.
 - CLI: `mend server status`, `mend server start [--offline]`, `mend server stop`,
   `mend server restart [--offline]`, `mend server logs [--tail <n>]`.
@@ -115,6 +118,15 @@ Preconditions:
   with `Mend <v> is reachable at <url>`. Run `mend server status`. The declared line now reads
   `exposure · declared loopback` with no "default" suffix, and the observed line reads
   `exposure · observed loopback`.
+- **Workspace images.** `mend server status` on a fresh install reads
+  `workspace images · the worker keeps the newest 10 with no workspace on them, and any built in the last 168 hours · sealant's defaults, not set on this install`.
+  Run `mend server setup --workspace-image-keep 3 --workspace-image-min-age 24`. It repairs in place
+  and prints the same line with `newest 3`, `last 24 hours` and `set on this install`, then
+  `The worker sweeps half a minute after Mend starts, then hourly.` The generation holds
+  `compose.workspace-images.yaml` with `WORKSPACE_IMAGE_RETAINED_PLANS: "3"` and
+  `WORKSPACE_IMAGE_MIN_AGE_HOURS: "24"`, and `server.env` has neither. In the `mend` container,
+  `printenv WORKSPACE_IMAGE_RETAINED_PLANS` prints `3`. A rerun with neither flag, and an upgrade,
+  keep both.
 - **Repair keeps the pin.** Run `mend server setup --version 0.0.1`. Stderr reads
   `mend: Setup retains Mend <v>. Use mend server upgrade --version 0.0.1 to change the server pin.`,
   exit code `1`.

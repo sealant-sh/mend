@@ -224,3 +224,33 @@ configuration, or the image reference.
 The public docs do not yet define a supported registry-credential setup path. Treat a private-image
 failure as a platform configuration issue and verify it outside Mend before depending on it for
 sessions.
+
+## How long the server keeps workspace images
+
+Each image definition a session launches with builds its own workspace image, and each can take
+several gigabytes. On the Docker install, the Sealant worker inside the Mend container removes the
+images no workspace runs from, half a minute after Mend starts and then once an hour. It keeps:
+
+- the newest image of each of the ten most recently built image definitions, so a session that
+  launches with one of them again reuses its image instead of rebuilding it;
+- every image built in the last week, whatever the count says.
+
+On a small server that is often every image it has built. The operator sets both with
+`mend server setup`; a rerun without them keeps what was saved, and so does `mend server upgrade`:
+
+```sh
+mend server setup --workspace-image-keep 3 --workspace-image-min-age 24
+mend server setup --workspace-image-keep default    # back to sealant's ten
+```
+
+`--workspace-image-keep` is how many image definitions keep their newest image, from 0 to 1000.
+`--workspace-image-min-age` is in hours, from 0 to 87600. `default` takes either back to sealant's
+own value. A lower count frees disk sooner, and the cost is a slower next launch with a definition
+whose image was removed: it builds again. `mend server status` prints the values in force:
+
+```text
+workspace images · the worker keeps the newest 3 with no workspace on them, and any built in the last 24 hours · set on this install
+```
+
+Setup restarts the Mend container to hand the worker the new values. An image a workspace runs from
+is never removed, whatever the settings say.
