@@ -75,6 +75,17 @@ and holds the box, and `pnpm verify box identity` proves afterwards that the run
 the PR (AGENTS.md, The Box). A change is checked on the box only when its judge says a local stack
 can't show it, or when the owner asks.
 
+`plan` and `prepare` refuse a box with less free space than one deploy needs: the box's newest Mend
+preview image, its newest dump and its newest workspace image (a deploy that changes the workspace
+plan builds one at its first session); on 16 Nov 2026 a deploy took 10.8 GB. `prepare --yes` on a
+box no other check holds takes the hold and tidies first, and refuses only if that did not make
+room. `release --yes` tidies before it lifts the hold. A tidy removes Mend preview images older than
+the newest three; untagged images no container uses and no Mend image left on the box names in a
+label (the network guard and Boat's gateway are pinned that way); build cache unused for two days;
+and dumps in `/root/backups` beyond the newest ten. It never removes an image a container uses, the
+image the hold's own deploy pulled, the hold's own dump, or a workspace image: sealant's worker
+reaps those itself.
+
 On the box, as root, with the `mend` CLI installed, run the command from the run's summary:
 
 ```sh
