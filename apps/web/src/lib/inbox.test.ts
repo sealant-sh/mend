@@ -62,6 +62,7 @@ const session = (
   resourceStatusLines: [],
   workspaceRetirement: null,
   workspaceLauncherUserId: null,
+  importedConversationWaiting: false,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,
@@ -197,6 +198,27 @@ describe("inbox places", () => {
     expect(rows.map((row) => [row.title, row.place])).toEqual([
       ["Session this-week", "review"],
       ["Session last-week", "settled"],
+    ]);
+  });
+
+  it("words an imported session waiting for its first message as that, whatever its status says", () => {
+    const rows = place(
+      [
+        session("made-in-worktree", "starting", { importedConversationWaiting: true }),
+        session("handed-off", "idle", { importedConversationWaiting: true }),
+        session("never-imported", "starting"),
+        session("stopped-before", "stopped", {
+          settledAt: minutesAgo(2),
+          updatedAt: minutesAgo(2),
+        }),
+      ],
+      [],
+    );
+    expect(rows.map((row) => [row.title, rowStatus(row, now).word])).toEqual([
+      ["Session made-in-worktree", "waiting for a first message"],
+      ["Session handed-off", "waiting for a first message"],
+      ["Session never-imported", "starting"],
+      ["Session stopped-before", "stopped 2 min ago"],
     ]);
   });
 

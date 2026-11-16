@@ -8,7 +8,7 @@ import {
   Session,
 } from "@mend/domain/workbench";
 import type { SessionEngine } from "@mend/sessions";
-import { Effect, Result } from "effect";
+import { Effect, Result, Schema } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
@@ -246,6 +246,8 @@ const unlaunched = (id: SessionId, owner: string, harness = "claude"): Session =
 
 const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}) => {
   const seen = { made: new Array<string>(), audits: new Array<string>() };
+  // The sessions a launch is under way for, as the engine answers it.
+  const launching = new Set<SessionId>();
   let count = 0;
   const provisionSessionIn: SessionEngine["Service"]["provisionSessionIn"] = (worktreeId, input) =>
     Effect.sync(() => {
@@ -277,7 +279,7 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}) =>
         setLaunchOptions: (id, options) => update(id, options),
       },
       engine: {
-        launchUnderWay: () => false,
+        launchUnderWay: (id) => launching.has(id),
         provisionSessionIn,
         detach: (effect) => Effect.forkDetach(effect),
       },
@@ -290,7 +292,7 @@ const worldWith = async (limits: Parameters<typeof createTenancyApi>[0] = {}) =>
     },
   });
   opened = made;
-  return { api: made, seen };
+  return { api: made, seen, launching };
 };
 
 const post = (on: TenancyApi, user: "alice" | "carol" | "dave", body: Uint8Array, query: string) =>
@@ -306,6 +308,60 @@ const lookup = (on: TenancyApi, user: "alice" | "carol") =>
     "GET",
     `/api/projects/${sharedA.project}/conversations?harness=claude&nativeId=${CLAUDE_ID}`,
   );
+
+const WaitingRow = Schema.Struct({
+  id: Schema.String,
+  importedConversationWaiting: Schema.Boolean,
+});
+const WaitingRows = Schema.Array(WaitingRow);
+const InboxRows = Schema.Array(Schema.Struct({ session: WaitingRow }));
+
+/**
+ * What the session list and the inbox say of the session's imported conversation. The session's
+ * own view and its project's view take the fact from the same read as the list
+ * (`withWorkspaceFacts`); this world answers neither in full.
+ */
+const waitingAsRead = async (on: TenancyApi, id: SessionId) => {
+  const list = Schema.decodeUnknownSync(WaitingRows)(
+    await (await on.request("alice", "GET", "/api/sessions")).json(),
+  );
+  const inbox = Schema.decodeUnknownSync(InboxRows)(
+    await (await on.request("alice", "GET", "/api/session-inbox")).json(),
+  );
+  return {
+    list: list.find((row) => row.id === id)?.importedConversationWaiting,
+    inbox: inbox.find((row) => row.session.id === id)?.session.importedConversationWaiting,
+  };
+};
+
+/** Both reads say the same. */
+const all = (waiting: boolean) => ({ list: waiting, inbox: waiting });
+
+describe("an imported conversation waiting for its first message", () => {
+  it("reads as waiting in the session list and the inbox until a launch takes it", async () => {
+    const { api, launching } = await worldWith();
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(false));
+    await post(api, "alice", archive(claudeFiles), `session=${HANDED_OFF}`);
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(true));
+    // The first message is starting the agent: the session reads as starting, not as waiting.
+    launching.add(HANDED_OFF);
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(false));
+    // The launch failed before the agent took the conversation: it waits again.
+    launching.delete(HANDED_OFF);
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(true));
+    api.world.deliverImported(HANDED_OFF);
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual(all(false));
+  });
+
+  it("does not read a session stopped before its first message as waiting", async () => {
+    const { api } = await worldWith();
+    await post(api, "alice", archive(claudeFiles), `session=${HANDED_OFF}`);
+    const row = api.world.sessions.get(HANDED_OFF);
+    if (row === undefined) throw new Error("the world holds the handed-off session");
+    api.world.addSession(new Session({ ...row, status: "stopped", settledAt: new Date() }));
+    expect(await waitingAsRead(api, HANDED_OFF)).toEqual({ list: false, inbox: false });
+  });
+});
 
 describe("POST /projects/:id/conversations", () => {
   it("lands a conversation in the session a handoff made, its history shown and its options kept", async () => {

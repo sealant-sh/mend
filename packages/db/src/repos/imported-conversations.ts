@@ -62,6 +62,10 @@ export class ImportedConversationsRepo extends Context.Service<
       readonly nativeId: string;
     }) => Effect.Effect<SessionId | null>;
     readonly bySession: (sessionId: SessionId) => Effect.Effect<ImportedConversation | null>;
+    /** Which of `sessionIds` hold an imported conversation no agent has started over yet. */
+    readonly undeliveredAmong: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlySet<SessionId>>;
     /** The files' bytes, in arrival order. */
     readonly files: (
       sessionId: SessionId,
@@ -163,6 +167,24 @@ export const ImportedConversationsRepoLive: Layer.Layer<
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toConversation(row);
+    });
+
+    const undeliveredAmong = Effect.fn("ImportedConversationsRepo.undeliveredAmong")(function* (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) {
+      if (sessionIds.length === 0) return new Set<SessionId>();
+      // By the primary key: one row per session, whatever the list holds.
+      const rows = yield* db
+        .select({ sessionId: sessionImportedConversations.sessionId })
+        .from(sessionImportedConversations)
+        .where(
+          and(
+            inArray(sessionImportedConversations.sessionId, [...sessionIds]),
+            isNull(sessionImportedConversations.deliveredAt),
+          ),
+        )
+        .pipe(Effect.orDie);
+      return new Set(rows.map((row) => row.sessionId));
     });
 
     const files = Effect.fn("ImportedConversationsRepo.files")(function* (sessionId: SessionId) {
@@ -297,6 +319,7 @@ export const ImportedConversationsRepoLive: Layer.Layer<
     return ImportedConversationsRepo.of({
       sessionOf,
       bySession,
+      undeliveredAmong,
       files,
       save,
       markDelivered,

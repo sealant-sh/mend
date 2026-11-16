@@ -30,6 +30,10 @@ export const makeImportedConversationsMemory = () => {
             )?.row.sessionId ?? null,
         ),
       bySession: (sessionId) => Effect.sync(() => rows.get(sessionId)?.row ?? null),
+      undeliveredAmong: (sessionIds) =>
+        Effect.sync(
+          () => new Set(sessionIds.filter((id) => rows.get(id)?.row.deliveredAt === null)),
+        ),
       files: (sessionId) => Effect.sync(() => rows.get(sessionId)?.bytes ?? []),
       save: (conversation, bytes) =>
         Effect.sync(() => {

@@ -398,6 +398,8 @@ interface SessionDto extends SessionCaptureLike {
   readonly status: string;
   readonly summary: string | null;
   /** False = settled without a conversation: nothing to resume, hidden by the dashboard. */
+  /** It waits for its first message over an imported conversation; absent from older servers. */
+  readonly importedConversationWaiting?: boolean;
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
   /**
@@ -6013,6 +6015,7 @@ const printSessionRow = (
   const hold = rowHold(row);
   if (hold !== null) facts.push(amber(hold));
   if (row.handedOffFrom !== undefined) facts.push(`handed off from ${row.handedOffFrom}`);
+  if (session.importedConversationWaiting === true) facts.push("waiting for a first message");
   // Which key the workspace was created on (SLNT-797); a steerer's turn never moves it. The owner
   // reads their own key as theirs, as the web app says it.
   if (session.boatKey !== null && session.boatKey !== undefined) {

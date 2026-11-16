@@ -7,6 +7,7 @@ import {
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
+import type { FirstMessageLaunch } from "./first-message.ts";
 import { browserTrpcClient, orLogin, type TrpcClient } from "./trpc.ts";
 
 /**
@@ -475,6 +476,9 @@ export const launchSessionStart = (id: string, harness: string, start: LaunchSta
       request: { ...start, ...startMode(harness) },
     }),
   );
+/** An imported session's first message: its agent starts in conversation mode on it (lib/first-message). */
+export const launchFirstMessage = (id: string, request: FirstMessageLaunch) =>
+  orLogin(browserTrpcClient().sessions.launch.mutate({ id, request }));
 export const stopSession = (id: string) =>
   orLogin(browserTrpcClient().sessions.stop.mutate({ id }));
 /** Stop every live Service of the session; the workspace ends once nothing is live. */

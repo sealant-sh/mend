@@ -299,6 +299,8 @@ export interface TenancyWorld {
   readonly skills: ReadonlyMap<SkillId, SkillWithFiles>;
   /** Every session's turns: a test may add one (a turn automatic landing decided about). */
   readonly turns: Map<AgentTurnId, AgentTurn>;
+  /** The session's first agent started over its imported conversation, as a launch marks it. */
+  readonly deliverImported: (sessionId: SessionId) => void;
   /** Flip a project's visibility, as an owner's `PUT /projects/:id/visibility` would. */
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   readonly addWorktree: (worktree: Worktree) => void;
@@ -1172,6 +1174,10 @@ export const createTenancyWorld = async (
               )?.row.sessionId ?? null,
           ),
         bySession: (sessionId) => Effect.sync(() => imported.get(sessionId)?.row ?? null),
+        undeliveredAmong: (sessionIds) =>
+          Effect.sync(
+            () => new Set(sessionIds.filter((id) => imported.get(id)?.row.deliveredAt === null)),
+          ),
         files: (sessionId) => Effect.sync(() => imported.get(sessionId)?.bytes ?? []),
         save: (conversation, bytes, landed) =>
           Effect.sync(() => {
@@ -1305,6 +1311,11 @@ export const createTenancyWorld = async (
     skills,
     turns,
     pages,
+    deliverImported: (sessionId) => {
+      const held = imported.get(sessionId);
+      if (held !== undefined && held.row.deliveredAt === null)
+        imported.set(sessionId, { ...held, row: { ...held.row, deliveredAt: NOW } });
+    },
     setVisibility: (key, visibility) => {
       const row = projects.get(ids(key).project);
       if (row !== undefined) projects.set(row.id, new Project({ ...row, visibility }));

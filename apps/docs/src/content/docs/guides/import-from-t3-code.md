@@ -179,8 +179,11 @@ Opening an imported session in a terminal before its first message is refused:
 `Send a message to this imported conversation before opening it in a terminal.` Send the first
 message, then open it in a terminal if you want one.
 
-In the web app the session shows its imported history. Its composer reads "Claude is starting. Write
-to it here once it runs." and does not send the first message yet, so send it from the CLI.
+In the web app the session shows its imported history and reads "waiting for a first message" in the
+inbox, on the project page and in its own header. Its composer sends that message. Write it and
+press Send, and the agent starts in conversation mode on the imported conversation, with your
+message as its first turn. If someone started the session first, from another tab or the CLI, the
+composer shows the server's reason and keeps your words.
 
 ## In T3 Code, paired with Mend
 

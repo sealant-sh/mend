@@ -50,6 +50,7 @@ const session: SessionDto = {
   resourceStatusLines: [],
   workspaceRetirement: null,
   workspaceLauncherUserId: null,
+  importedConversationWaiting: false,
   hasTranscript: null,
   idleStoppedAt: null,
   capturePending: null,
