@@ -67,6 +67,8 @@ export interface SessionDto extends SessionCaptureLike {
   readonly status: string;
   readonly summary: string | null;
   /** False = settled without a conversation: nothing to resume; hidden. Absent on older servers. */
+  /** It waits for its first message over an imported conversation; absent from older servers. */
+  readonly importedConversationWaiting?: boolean;
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
   /** When the session ended and its workspace went; absent on older servers. */
@@ -656,6 +658,7 @@ const agoWords = (elapsed: string): string => (elapsed === "<1m" ? "just now" : 
 export const sessionStateWords = (item: SessionItem, now: number = Date.now()): string | null => {
   const hold = sessionHold(item);
   if (hold !== null) return hold;
+  if (item.session.importedConversationWaiting === true) return "waiting for a first message";
   if (item.session.status === "starting") return startingWordsOf(item.session);
   return sessionTimeWords(item, now);
 };

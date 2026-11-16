@@ -1,13 +1,15 @@
 import type { Tone } from "#/components/kit/status";
 import type { SessionDto } from "#/lib/api";
+import { FIRST_MESSAGE_STATUS } from "#/lib/first-message";
 
 /**
  * A session's dot and mono word as a worktree row shows it: what was observed, never a verdict.
  * `recorded` (a Sealant run behind it) is what lets "completed" say "observed".
  */
 export const sessionStatusWord = (
-  session: Pick<SessionDto, "status" | "sealantRunId">,
+  session: Pick<SessionDto, "status" | "sealantRunId" | "importedConversationWaiting">,
 ): { readonly tone: Tone; readonly word: string } => {
+  if (session.importedConversationWaiting) return FIRST_MESSAGE_STATUS;
   switch (session.status) {
     case "starting":
       return { tone: "off", word: "starting" };

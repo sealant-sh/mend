@@ -274,6 +274,18 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**
+   * The session holds a conversation the person imported (SLNT-895) that no agent has started
+   * over yet, it has not ended, and no launch of it is under way: it waits for its first message,
+   * which starts the agent in conversation mode on that conversation. The session's status says nothing of this
+   * (a session made in a worktree reads `starting`, one a handoff made reads `idle`). Filled on
+   * the API reads that hand sessions out (as `workspaceLauncherUserId`) and the inbox's rows;
+   * false everywhere else and from older servers.
+   */
+  importedConversationWaiting: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
+  /**
    * Whether the harness left a conversation behind — a transcript Mend captured at settle or
    * found in the live harness home. False is a dead end: nothing to resume, nothing to hand
    * off, so the dashboard hides such settled sessions. Null until settle (or for rows the

@@ -6,10 +6,12 @@ import { Link } from "@tanstack/react-router";
 import { focusRing } from "#/components/kit/button";
 import { SessionMessageInput } from "#/components/session-message-input";
 import { latestAgentText } from "#/lib/conversation-rows";
+import { takesFirstMessage } from "#/lib/first-message";
 import { useTRPC } from "#/lib/trpc";
 
 import { useConversation } from "./conversation";
 import type { SessionFacts } from "./facts";
+import { FirstMessageInput } from "./first-message-input";
 import { StartingComposer } from "./starting-session";
 
 /**
@@ -20,6 +22,11 @@ import { StartingComposer } from "./starting-session";
 export function Composer({ facts }: { readonly facts: SessionFacts }) {
   const { session, control, viewer } = facts;
   const conversation = useConversation(session.id);
+  // An imported conversation waiting for its first message: sending it starts the agent.
+  if (takesFirstMessage(session, facts.detail.currentAgent, control.steer))
+    return viewer == null ? null : (
+      <FirstMessageInput key={session.id} sessionId={session.id} agent={facts.agent} />
+    );
   if ((facts.conversationLive || facts.conversationResumes) && control.steer && viewer != null) {
     // "Steer" while a turn is under way: the words go into it, as the sender's setting says. A
     // stopped conversation takes the same words: sending resumes it.

@@ -1471,6 +1471,13 @@ describe("dashboard status stories", () => {
     expect(sessionRowFacts(preparing, 20, NOW)).toBe("preparing the wor… …");
   });
 
+  it("an imported session waiting for its first message says so, not that it is launching", () => {
+    const waiting = itemOf({ id: "s", status: "starting", importedConversationWaiting: true });
+    expect(sessionRowFacts(waiting, 60, NOW)).toBe("waiting for a first message · claude");
+    const launching = itemOf({ id: "s", status: "starting" });
+    expect(sessionRowFacts(launching, 60, NOW)).toBe("launching · claude");
+  });
+
   it("rule 1: a number always says what it counts", () => {
     expect(elapsedWords(minutesAgo(0), NOW)).toBe("<1m");
     expect(elapsedWords(minutesAgo(59), NOW)).toBe("59m");

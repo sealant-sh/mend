@@ -825,12 +825,17 @@ type SessionBookkeepingColumns =
   | "terminalActiveAt"
   | "stopSummary";
 // `livePeople`, `workspaceRetirement` and `workspaceLauncherUserId` are read with the API's
-// session list and view (`sessionViewColumns`), not columns.
+// session list and view (`sessionViewColumns`), not columns; `importedConversationWaiting` by
+// the API from the imported conversations' rows.
 const sessionSeamIntact: ExactKeys<
   Omit<SessionRow, SessionBookkeepingColumns>,
   Omit<
     Session,
-    "livePeople" | "workspaceRetirement" | "workspaceLauncherUserId" | "resourceStatusLines"
+    | "livePeople"
+    | "workspaceRetirement"
+    | "workspaceLauncherUserId"
+    | "resourceStatusLines"
+    | "importedConversationWaiting"
   >
 > = true;
 void sessionSeamIntact;

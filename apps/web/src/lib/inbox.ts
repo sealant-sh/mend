@@ -10,6 +10,7 @@ import type {
   SessionInboxMarkDto,
   SessionInboxRowDto,
 } from "./api.ts";
+import { FIRST_MESSAGE_STATUS } from "./first-message.ts";
 
 /**
  * A person's mark on a session, as the server holds it or as a mark still on its way lays over
@@ -261,6 +262,7 @@ export const rowStatus = (row: InboxRow, now: Date): { tone: Tone | null; word: 
           ? { tone: "ok", word: "completed" }
           : { tone: session.status === "failed" ? "bad" : "off", word: session.status };
     case "running":
+      if (session.importedConversationWaiting) return FIRST_MESSAGE_STATUS;
       if (session.status === "running") {
         const since = session.startedAt ?? session.createdAt;
         return { tone: "run", word: `running · ${duration(now.getTime() - since.getTime())}` };

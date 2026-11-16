@@ -269,6 +269,30 @@ describe.skipIf(postgres.skip)("imported conversations against PostgreSQL", () =
     expect(marks).toEqual({ first: true, second: false, delivered: true });
   });
 
+  it("names the listed sessions whose conversation still waits for its first launch", async () => {
+    const waiting = await run(
+      Effect.gen(function* () {
+        for (const id of ["s1", "s2", "s3"]) yield* addSession(id);
+        const imports = yield* ImportedConversationsRepo;
+        yield* imports.save(conversationOf("s1"), bytes, turns);
+        yield* imports.save(
+          conversationOf("s2", { nativeId: "9e8d7c6b-5a49-4382-a716-151413121110" }),
+          bytes,
+          turns,
+        );
+        yield* imports.markDelivered(SessionId.make("s2"));
+        // s3 holds no import; s4 is not a session at all.
+        const ids = ["s1", "s2", "s3", "s4"].map((id) => SessionId.make(id));
+        return {
+          all: [...(yield* imports.undeliveredAmong(ids))],
+          others: [...(yield* imports.undeliveredAmong(ids.slice(1)))],
+          none: [...(yield* imports.undeliveredAmong([]))],
+        };
+      }),
+    );
+    expect(waiting).toEqual({ all: ["s1"], others: [], none: [] });
+  });
+
   it("goes when the session is removed", async () => {
     const left = await run(
       Effect.gen(function* () {

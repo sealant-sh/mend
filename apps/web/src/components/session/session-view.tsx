@@ -257,7 +257,7 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
   }).data;
   const launch = launchForSession(usePendingLaunches(), sessionId);
   const owner = useOwnerName(row?.session.ownerUserId ?? null);
-  const status = row === undefined ? null : sessionStatusWord(row.session.status);
+  const status = row === undefined ? null : sessionStatusWord(row.session);
   if (launch !== undefined) return <StartedSession launch={launch} />;
   return (
     <main

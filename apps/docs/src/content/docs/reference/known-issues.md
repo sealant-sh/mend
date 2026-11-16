@@ -409,9 +409,6 @@ holding its conversation with its paths rewritten
 Codex outside T3 Code, in a terminal on your machine, has no import yet. T3 Code's own "Import your
 projects" step finds nothing on a Mend server.
 
-An imported session's first message goes from the CLI, with `mend message <session> --resume`. The
-web app shows the imported history but does not send that first message yet.
-
 `mend memory import` brings the memory Claude Code keeps for the checkout on your machine, apart
 from any conversation. `mend adopt` says when there is memory to import; it does not import it
 itself.

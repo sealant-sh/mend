@@ -9,6 +9,7 @@ import { Auth } from "@mend/auth";
 import {
   AuditEventsRepo,
   HotWorkspacesRepo,
+  ImportedConversationsRepo,
   InstanceRolesRepo,
   OrganizationSettingsRepo,
   OrganizationsRepo,
@@ -309,6 +310,7 @@ type ProjectRouteServices =
   | ServiceForwardsRepo
   | SessionEngine
   | HotWorkspacesRepo
+  | ImportedConversationsRepo
   | SealantClient
   | JobRunner
   | WorktreeReads
@@ -366,6 +368,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
     personLayoutPossible: () => Effect.succeed(false),
   }),
   Layer.mock(HotWorkspacesRepo, {}),
+  Layer.mock(ImportedConversationsRepo, { undeliveredAmong: () => Effect.succeed(new Set()) }),
   Layer.mock(SealantClient, {}),
   Layer.mock(SettingsRepo, {}),
   workspaceRuntimesReportOf(UNREAD),
