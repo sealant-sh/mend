@@ -1102,7 +1102,7 @@ export const agentMemoryHomes = pgTable("agent_memory_homes", {
   pendingUserId: text(),
   pendingSessionId: text(),
   pendingWorkspaceId: text(),
-  pendingEpoch: integer(),
+  pendingEpoch: bigint({ mode: "number" }),
   pendingN: integer(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
@@ -1902,7 +1902,7 @@ export const agentSessions = pgTable(
     captureSavedWorkspaceId: text(),
     captureSavedAt: timestamp({ mode: "date", withTimezone: true }),
     captureSavedN: integer(),
-    captureSavedEpoch: integer(),
+    captureSavedEpoch: bigint({ mode: "number" }),
     // The latest answer of an executor that said it held unsaved work: which executor, when Mend
     // took it, and its words (0084). Taken after a save, it revokes that save.
     captureUnsavedWorkspaceId: text(),
@@ -3177,7 +3177,7 @@ export const executorCaptureEvidence = pgTable(
     launchId: text(),
     savedAt: timestamp({ mode: "date", withTimezone: true }),
     savedN: integer(),
-    savedEpoch: integer(),
+    savedEpoch: bigint({ mode: "number" }),
     unsavedAt: timestamp({ mode: "date", withTimezone: true }),
     unsavedDetail: text(),
     /** Where the executor made each kept answer (0087); what orders them, never `*_at`. */

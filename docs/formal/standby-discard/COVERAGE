@@ -9,7 +9,9 @@
 # AIdentify); a session's drain discards a claimed standby whose re-plan never took and in which no
 # process ever ran (discardStandbyNeverClaimed: GLook, GIdentify,
 # GDiscard, KeptRetry), with joins modelled (JEnter, JLook). SessionProcessesRepo joins the
-# covered files for existsForWorkspace.
+# covered files for existsForWorkspace. Its second round (the box check of mend#1741) added the
+# owner's Stop during the asks (Stop, AgentStarts) and bound the session's channel again before
+# the cold launch, which no action models (the channel is not in the model).
 sync 38bd550c9561c68695522c486c25448b0c3dbed4
 
 model StandbyDiscard.tla

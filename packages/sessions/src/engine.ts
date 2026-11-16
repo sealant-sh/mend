@@ -14755,13 +14755,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ).pipe(Effect.annotateLogs({ ...annotations, error: outcome.failure.message }));
               return null;
             }
-            const again = ask < STANDBY_REPLAN_ASKS && clock.currentTimeMillisUnsafe() < deadline;
+            // Its owner's Stop beats the asks: nothing more is asked of a standby the Stop's own
+            // drain now ends (SLNT-1053, box check of mend#1741: asked twice more, then cold).
+            const again =
+              ask < STANDBY_REPLAN_ASKS &&
+              clock.currentTimeMillisUnsafe() < deadline &&
+              !stoppedDuringLaunch.has(session.id);
             yield* Effect.logWarning(
               again
                 ? "session engine: standby replan · refused · asking again"
                 : "session engine: standby replan · refused",
             ).pipe(Effect.annotateLogs({ ...annotations, ask, error: outcome.failure.message }));
-            if (again) yield* pauseBetweenStandbyAsks;
+            if (!again) break;
+            yield* pauseBetweenStandbyAsks;
             continue;
           }
           if (Option.isNone(outcome.success)) {
@@ -14775,6 +14781,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             break;
           }
           answered = outcome.success.value;
+        }
+        if (answered === null && stoppedDuringLaunch.has(session.id)) {
+          yield* Effect.logInfo(
+            "session engine: standby replan · stopped while it was asked · nothing more asked or started",
+          ).pipe(Effect.annotateLogs(annotations));
+          return null;
         }
         if (answered === null) {
           // No ask answered: the executor says whether the re-plan took. Its identity is set as
@@ -19839,7 +19851,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The in-workspace control surface: the session's socket + helper,
         // bound AFTER old-workspace teardown but before the replacement exists
         // so the newly created directory is the one provisioning mounts.
-        const socketDir = yield* socketHost
+        let socketDir = yield* socketHost
           .start(sessionId, socketApiFor(sessionId))
           .pipe(withSealantRequestPriority("normal"));
         // A failed provision settles the session — fire-and-forget launchers
@@ -20378,6 +20390,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             provisioned.workspace,
             launchLayout.layout === "person" ? standbyOwnerMapOf(launchLayout.launcher) : null,
           );
+          // Stopped while it was asked: the Stop ends the standby with its own drain, and the
+          // launch starts nothing (SLNT-1053).
+          if (replanned === null && stoppedDuringLaunch.has(sessionId)) {
+            return yield* launchCancelled();
+          }
           if (replanned === null) {
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
@@ -20411,7 +20428,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* settleSession(sessionId, "failed", error.message).pipe(Effect.ignore);
               return yield* error;
             }
+            // Stopped while the standby ended: no cold executor for a session its owner stopped.
+            if (stoppedDuringLaunch.has(sessionId)) return yield* launchCancelled();
             executorCreated = false;
+            // The standby's observed end took the session's channel with it (`terminateWorkspace`
+            // stops the socket host: the network channel stops serving the session and its
+            // socket directory goes). Bound again before the cold executor exists, as at the
+            // launch's start: unbound, its boot's `plan.get` was answered "this session is not
+            // live on this Mend instance", a bare 409 sealantd reads as `wrong parent` (box
+            // check of mend#1741, SLNT-1053: 5 of 5 cold launches refused).
+            socketDir = yield* socketHost
+              .start(sessionId, socketApiFor(sessionId))
+              .pipe(withSealantRequestPriority("normal"));
             const fallbackKey = executorCreateKeyFor(
               sessionId,
               new Date(clock.currentTimeMillisUnsafe()),
@@ -20436,6 +20464,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             executorStartedAt = new Date(clock.currentTimeMillisUnsafe());
             provisioned = yield* provisionCold(fallbackKey);
           } else {
+            // Stopped while it was asked, and it answered after: nothing runs in it now, setup
+            // included; the Stop's own drain ends it (SLNT-1053).
+            if (stoppedDuringLaunch.has(sessionId)) return yield* launchCancelled();
             // Claimed: what a cold launch runs right after its create runs now, and not before
             // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker). A
             // replan onto a saved head runs no setup command (review 2026-09-28 (15) #1).

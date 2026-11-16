@@ -35,7 +35,7 @@ covered function changed, the model still describes the code and you are done.
 
 ```sh
 docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~30 s
-docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~21 min on 32 cores
+docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~30 min on 32 cores
 ```
 
 TLC is the reference: the run you hand off with a change to the model or to the code it models is a
@@ -124,6 +124,7 @@ guards allow it, and the value it acts on was read where and when the code reads
 | `KeptRetry`                                                        | the capture reaper's kept drain (`a drain no fiber runs · taken up`), running `runDrain` again                                                                                                                                    |
 | `GLook`, `GIdentify`, `GDiscard`                                   | `discardStandbyNeverClaimed`: `processes.existsForWorkspace`, `workspaceInUse`, `readClaimedStandby`, `terminateWorkspace(…, { discardUnsaved: true })`                                                                           |
 | `JEnter`, `JLook`                                                  | `launchSession`'s join: `enterJoin` (`workspaceHolds`), `leaseHolderWorkspace`'s look at the holder's `captureDrain`, then the joined process's row                                                                               |
+| `Stop`, `AgentStarts`                                              | `stop`'s `stoppedDuringLaunch.add` and its drain of the session's executor; a stopped launch's `launchCancelled()` in `replanClaimedStandby` and `launchSession`, and `refuseIfStoppedDuringLaunch` before the agent starts       |
 | `Settle`, `Resume`, `Restart`                                      | `settleSession`; a person's resume or wake running `launchSession`; a process restart (`resume()`, then the boot sweep)                                                                                                           |
 | (relied on, not modelled)                                          | `standbyApiFor` and `captureApiFor` (`packages/sessions/src/capture-channel.ts`, `engine.ts`): a workspace with no session under its id uploads nothing, which is why discarding an unclaimed standby loses nothing               |
 

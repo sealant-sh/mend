@@ -39,7 +39,8 @@ Mutants == {"none",
             "claim-leaves-ready",         \* claim selects FOR UPDATE but never sets 'claimed'
             "reused-id",                  \* a new standby may take the id of one that was drained
             "no-look",                    \* SLNT-1053's discard without looking for what ran in it
-            "look-live-only"}             \* the look sees what holds it now, not what ran and ended
+            "look-live-only",             \* the look sees what holds it now, not what ran and ended
+            "agent-ignores-stop"}         \* a launch its owner stopped starts its agent anyway
 
 ASSUME Mutant \in Mutants
 ASSUME NoId \notin Standbys
@@ -76,6 +77,7 @@ VARIABLES
   \* The session's durable drain intent (agent_sessions.capture_drain), set by
   \* beginCaptureDrain; it outlives a restart.
   ending,
+  stopped,     \* its owner pressed Stop while its launch was under way (stoppedDuringLaunch)
   \* reconcileHotPoolOnce: one pass per project at a time (scheduleHotReconcile).
   rpc, rWs, rTodo, rProv,
   \* hotPoolSweep: at boot and every 10 minutes.
@@ -97,7 +99,7 @@ sweep    == <<wpc, wWs, wTodo>>
 claims   == <<cpc, cCand, cOf>>
 launches == <<apc, aWs>>
 drains   == <<dpc, dEntry, dWs, dKeep, dAdopted, dMatch, dDiscard>>
-replans  == <<onWorktree, ran, replanDiscard, ending, gpc, jpc>>
+replans  == <<onWorktree, ran, replanDiscard, ending, stopped, gpc, jpc>>
 vars == <<db, platform, recon, sweep, claims, launches, drains, replans>>
 
 NoWs == [s \in Standbys |-> FALSE]
@@ -133,6 +135,7 @@ TypeOK ==
   /\ ran \in [Standbys -> BOOLEAN]
   /\ replanDiscard \subseteq Standbys
   /\ ending \in [Standbys -> BOOLEAN]
+  /\ stopped \in [Standbys -> BOOLEAN]
   /\ gpc \in [Standbys -> {"idle", "look", "identify", "discard"}]
   /\ jpc \in [Standbys -> {"idle", "look", "done"}]
 
@@ -158,7 +161,7 @@ Init ==
   /\ dMatch = [d \in Slots |-> FALSE]
   /\ dDiscard = [d \in Slots |-> FALSE]
   /\ onWorktree = NoWs /\ ran = NoWs /\ replanDiscard = {}
-  /\ ending = NoWs
+  /\ ending = NoWs /\ stopped = NoWs
   /\ gpc = [s \in Standbys |-> "idle"]
   /\ jpc = [s \in Standbys |-> "idle"]
 
@@ -531,6 +534,13 @@ ARemove(s) ==
   /\ UNCHANGED <<wsid, session, platform, recon, sweep, claims, aWs, drains>>
   /\ UNCHANGED replans
 
+\* The launch starts the session's agent in its executor, unless its owner
+\* stopped it (refuseIfStoppedDuringLaunch, before the agent's terminal opens).
+AgentStarts(s) ==
+  LET starts == ~stopped[s] \/ Mutant = "agent-ignores-stop"
+  IN /\ holdsWork' = [holdsWork EXCEPT ![s] = holdsWork[s] \/ starts]
+     /\ ran' = [ran EXCEPT ![s] = ran[s] \/ starts]
+
 \* replanClaimedStandby (SLNT-1053). The launch starts nothing in a standby
 \* before its re-plan answers (e2e9 F-B): what a re-plan does by itself is lay
 \* the worktree's saved head down (`onWorktree`), never anything unsaved.
@@ -538,11 +548,10 @@ ARemove(s) ==
 AReplanOk(s) ==
   /\ apc[s] = "replan"
   /\ onWorktree' = [onWorktree EXCEPT ![s] = TRUE]
-  /\ holdsWork' = [holdsWork EXCEPT ![s] = TRUE]
-  /\ ran' = [ran EXCEPT ![s] = TRUE]
+  /\ AgentStarts(s)
   /\ apc' = [apc EXCEPT ![s] = "idle"] /\ aWs' = [aWs EXCEPT ![s] = FALSE]
   /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, drains,
-                 replanDiscard, ending, gpc, jpc>>
+                 replanDiscard, ending, stopped, gpc, jpc>>
 
 \* At most one standby in a run goes down the failed path: two of them share
 \* no workspace, session or join, so a break of either needs only its own.
@@ -562,9 +571,11 @@ AReplanFail(s) ==
   /\ apc[s] = "replan"
   /\ OnlyFailedReplan(s)
   /\ \E t \in {onWorktree[s], TRUE} : onWorktree' = [onWorktree EXCEPT ![s] = t]
-  /\ \E next \in {"replan", "identify"} : apc' = [apc EXCEPT ![s] = next]
+  \* A stopped launch asks nothing more.
+  /\ \E next \in IF stopped[s] THEN {"identify"} ELSE {"replan", "identify"} :
+       apc' = [apc EXCEPT ![s] = next]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, aWs, drains,
-                 ran, replanDiscard, ending, gpc, jpc>>
+                 ran, replanDiscard, ending, stopped, gpc, jpc>>
 
 \* Where a drain's look at a claimed standby begins: `no-look` skips it.
 LookStart == IF Mutant = "no-look" THEN "identify" ELSE "look"
@@ -580,16 +591,36 @@ LookStart == IF Mutant = "no-look" THEN "identify" ELSE "look"
 \* returns; it starts nothing in the standby, so that is not modelled.
 AIdentify(s) ==
   /\ apc[s] = "identify"
-  /\ \/ /\ onWorktree[s]
-        /\ holdsWork' = [holdsWork EXCEPT ![s] = TRUE]
-        /\ ran' = [ran EXCEPT ![s] = TRUE]
+  /\ \/ \* Stopped: the launch is cancelled; the Stop's own drain ends the standby.
+        /\ stopped[s]
+        /\ UNCHANGED <<holdsWork, ran, ending, gpc>>
+     \/ /\ ~stopped[s] /\ onWorktree[s]
+        /\ AgentStarts(s)
         /\ UNCHANGED <<ending, gpc>>
-     \/ /\ ending' = [ending EXCEPT ![s] = TRUE]
-        /\ gpc' = [gpc EXCEPT ![s] = LookStart]
+     \/ /\ ~stopped[s]
+        /\ ending' = [ending EXCEPT ![s] = TRUE]
+        /\ gpc' = [gpc EXCEPT ![s] = IF gpc[s] = "idle" THEN LookStart ELSE gpc[s]]
         /\ UNCHANGED <<holdsWork, ran>>
   /\ apc' = [apc EXCEPT ![s] = "idle"] /\ aWs' = [aWs EXCEPT ![s] = FALSE]
   /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, drains,
-                 onWorktree, replanDiscard, jpc>>
+                 onWorktree, replanDiscard, stopped, jpc>>
+
+\* Its owner's Stop while the launch of a claimed standby is under way:
+\* stoppedDuringLaunch, then the Stop's drain of the session's executor, whose
+\* first round writes the intent and looks (one drain per workspace: a look
+\* already under way is the same one).
+Stop(s) ==
+  /\ adopted[s] /\ session[s] = "live"
+  \* One Stop in the whole model, of either standby, and not in a run with a join: the
+  \* breaks either shows need only it, and the look sees a join's process row whoever wrote
+  \* the intent before it.
+  /\ \A t \in Standbys : ~stopped[t] /\ jpc[t] = "idle"
+  /\ apc[s] \in {"replan", "identify"}
+  /\ stopped' = [stopped EXCEPT ![s] = TRUE]
+  /\ ending' = [ending EXCEPT ![s] = TRUE]
+  /\ gpc' = [gpc EXCEPT ![s] = IF gpc[s] = "idle" THEN LookStart ELSE gpc[s]]
+  /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
+                 onWorktree, ran, replanDiscard, jpc>>
 
 \* The capture reaper takes a kept drain up again (a drain no fiber runs),
 \* after a restart too: runDrain again, its intent already durable.
@@ -597,7 +628,7 @@ KeptRetry(s) ==
   /\ ending[s] /\ gpc[s] = "idle" /\ s \notin replanDiscard
   /\ gpc' = [gpc EXCEPT ![s] = LookStart]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
-                 onWorktree, ran, replanDiscard, ending, jpc>>
+                 onWorktree, ran, replanDiscard, ending, stopped, jpc>>
 
 \* discardStandbyNeverClaimed: processes.existsForWorkspace, then
 \* workspaceInUse, which counts a join under way (workspaceHolds). One step:
@@ -609,7 +640,7 @@ GLook(s) ==
                  ELSE ran[s] \/ jpc[s] = "look"
      IN gpc' = [gpc EXCEPT ![s] = IF seen THEN "idle" ELSE "identify"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
-                 onWorktree, ran, replanDiscard, ending, jpc>>
+                 onWorktree, ran, replanDiscard, ending, stopped, jpc>>
 
 \* ... then readClaimedStandby: only an answer under its placeholder goes on to
 \* the discard; one as the session's, or none, drains as before (no discard).
@@ -619,7 +650,7 @@ GIdentify(s) ==
         /\ gpc' = [gpc EXCEPT ![s] = "discard"]
      \/ gpc' = [gpc EXCEPT ![s] = "idle"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
-                 onWorktree, ran, replanDiscard, ending, jpc>>
+                 onWorktree, ran, replanDiscard, ending, stopped, jpc>>
 
 \* terminateWorkspace(…, { discardUnsaved: true }).
 GDiscard(s) ==
@@ -627,16 +658,16 @@ GDiscard(s) ==
   /\ replanDiscard' = replanDiscard \cup {s}
   /\ gpc' = [gpc EXCEPT ![s] = "idle"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
-                 onWorktree, ran, ending, jpc>>
+                 onWorktree, ran, ending, stopped, jpc>>
 
 \* A second session joins the standby's executor while it holds the
 \* worktree's lease: enterJoin counts it in workspaceHolds ... One join in
 \* the whole model, into either standby: the breaks it shows need only one.
 JEnter(s) ==
-  /\ adopted[s] /\ \A t \in Standbys : jpc[t] = "idle"
+  /\ adopted[s] /\ \A t \in Standbys : jpc[t] = "idle" /\ ~stopped[t]
   /\ jpc' = [jpc EXCEPT ![s] = "look"]
   /\ UNCHANGED <<db, platform, recon, sweep, claims, launches, drains,
-                 onWorktree, ran, replanDiscard, ending, gpc>>
+                 onWorktree, ran, replanDiscard, ending, stopped, gpc>>
 
 \* ... then looks at its holder once more (leaseHolderWorkspace): a drain's
 \* intent keeps it out; otherwise its process row is written and it runs.
@@ -648,7 +679,7 @@ JLook(s) ==
             /\ ran' = [ran EXCEPT ![s] = TRUE]
   /\ jpc' = [jpc EXCEPT ![s] = "done"]
   /\ UNCHANGED <<db, adopted, discardSent, recon, sweep, claims, launches, drains,
-                 onWorktree, replanDiscard, ending, gpc>>
+                 onWorktree, replanDiscard, ending, stopped, gpc>>
 
 -----------------------------------------------------------------------------
 (* People and the process                                                   *)
@@ -687,7 +718,7 @@ Restart ==
   /\ dDiscard' = [d \in Slots |-> FALSE]
   /\ gpc' = [s \in Standbys |-> "idle"]
   /\ jpc' = [s \in Standbys |-> IF jpc[s] = "look" THEN "done" ELSE jpc[s]]
-  /\ UNCHANGED <<db, platform, cOf, onWorktree, ran, replanDiscard, ending>>
+  /\ UNCHANGED <<db, platform, cOf, onWorktree, ran, replanDiscard, ending, stopped>>
 
 -----------------------------------------------------------------------------
 Next ==
@@ -703,7 +734,7 @@ Next ==
   \/ \E s \in Standbys :
        AById(s) \/ ADrop(s) \/ ADropDone(s) \/ AAccept(s) \/ ARemove(s)
        \/ AReplanOk(s) \/ AReplanFail(s) \/ AIdentify(s)
-       \/ KeptRetry(s) \/ GLook(s) \/ GIdentify(s) \/ GDiscard(s)
+       \/ Stop(s) \/ KeptRetry(s) \/ GLook(s) \/ GIdentify(s) \/ GDiscard(s)
        \/ JEnter(s) \/ JLook(s)
        \/ Settle(s) \/ Resume(s)
   \/ Restart

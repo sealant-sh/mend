@@ -1,7 +1,7 @@
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import { HotWorkspace, Project, Session, SessionProcess } from "@mend/domain/workbench";
 import { SealantClient, type SealantClientShape, SealantPlatformError } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
+import { SessionEngine, SessionSocketHost, type SessionSocketApi } from "@mend/sessions";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import type {
   CreateOptions,
@@ -55,6 +55,8 @@ interface Scenario {
   readonly status: "answers" | "unreadable" | { value: "answers" | "unreadable" };
   /** A session joined the standby and ran a process there while its re-plan was asked. */
   readonly joined?: boolean;
+  /** Its owner presses Stop while this ask (1 for the first) is being answered. */
+  readonly stopAtAsk?: number;
 }
 
 interface Outcome {
@@ -67,6 +69,10 @@ interface Outcome {
   readonly sessionWorkspace: string | null;
   /** The launch the session's workspace was created under: a standby's, or a cold launch's. */
   readonly sessionLaunch: string | null;
+  /** Each cold executor's boot `plan.get`: `answered`, or the channel's refusal reason. */
+  readonly coldPlans: ReadonlyArray<string>;
+  /** How many cold launches the platform was asked for (each under a `launch:` key). */
+  readonly coldCreates: number;
   readonly status: string | null;
   readonly summary: string | null;
   readonly standbyEnded: boolean;
@@ -93,6 +99,8 @@ const distinctWorkspaces = (
   layer: Layer.Layer<SealantClient>,
   stopped: Set<string>,
   launches: Map<string, string>,
+  /** What the executor's daemon does at boot, before the platform answers its create. */
+  boot: (options: CreateOptions, launchId: string) => Effect.Effect<void, SealantPlatformError>,
 ): Layer.Layer<SealantClient> =>
   Layer.effect(
     SealantClient,
@@ -101,19 +109,21 @@ const distinctWorkspaces = (
       return {
         ...client,
         createWorkspace: (options, launch, watch) =>
-          client.createWorkspace(options, launch, watch).pipe(
-            Effect.map((workspace) => {
-              const id = `workspace-${workspaces.size + 1}`;
-              const created: Workspace = {
-                ...workspace,
-                id,
-                status: async () => (stopped.has(id) ? "stopped" : "ready"),
-              };
-              workspaces.set(id, created);
-              launches.set(id, launch?.launchId ?? "");
-              return created;
-            }),
-          ),
+          boot(options, launch?.launchId ?? "")
+            .pipe(Effect.andThen(client.createWorkspace(options, launch, watch)))
+            .pipe(
+              Effect.map((workspace) => {
+                const id = `workspace-${workspaces.size + 1}`;
+                const created: Workspace = {
+                  ...workspace,
+                  id,
+                  status: async () => (stopped.has(id) ? "stopped" : "ready"),
+                };
+                workspaces.set(id, created);
+                launches.set(id, launch?.launchId ?? "");
+                return created;
+              }),
+            ),
         getWorkspace: (id) => {
           const workspace = workspaces.get(id);
           return workspace === undefined ? client.getWorkspace(id) : Effect.succeed(workspace);
@@ -179,6 +189,7 @@ const run = (
     let took = false;
     let asks = 0;
     let executor: SessionId | null = null;
+    let engineRef: SessionEngine["Service"] | null = null;
     let world: World | null = null;
     let observation = 0;
     const stamped = (epoch: number) => ({
@@ -211,6 +222,14 @@ const run = (
       Effect.gen(function* () {
         const ask = scenario.asks[Math.min(asks, scenario.asks.length - 1)] ?? "drop";
         asks++;
+        if (scenario.stopAtAsk === asks && engineRef !== null && executor !== null) {
+          // The person's `mend stop`, on its own request: the launch carries on meanwhile.
+          const stopping = executor;
+          const owner = engineRef;
+          yield* Effect.forkDetach(owner.stop(stopping).pipe(Effect.ignore));
+          // The Stop marks the launch it finds under way before it ends anything.
+          for (let look = 0; look < 50; look++) yield* Effect.yieldNow;
+        }
         if (scenario.joined === true && world !== null) {
           world.processes.set("joined-process", joinedProcess("workspace-1"));
         }
@@ -257,6 +276,68 @@ const run = (
           unchanged: asks > 1,
         } satisfies WorkspaceCaptureReplanned;
       });
+    /**
+     * The sessions the network channel serves now: registered when the engine starts a session's
+     * socket host and unregistered when it stops it, as `SessionSocketHostLive` does.
+     */
+    const live = new Map<SessionId, SessionSocketApi>();
+    const socketHostLayer: Layer.Layer<SessionSocketHost> = Layer.succeed(SessionSocketHost, {
+      start: (sessionId, api) =>
+        Effect.sync(() => {
+          live.set(sessionId, api);
+          servedSocketApis.set(sessionId, api);
+          return "/tmp/mend-test-socket-dir";
+        }),
+      stop: (sessionId) =>
+        Effect.sync(() => {
+          live.delete(sessionId);
+        }),
+    });
+    /** Each cold executor's boot `plan.get`, as the channel answered it: `answered`, or its refusal. */
+    const coldPlans: Array<string> = [];
+    /**
+     * A cold executor's daemon at boot (sealantd `boot/capture.rs`): it names its worktree and
+     * launch and asks the session channel's `plan.get` at epoch 0, over the routes its launch's
+     * token reaches (`captureAs`, what the network channel serves). A refusal fails its boot, and
+     * sealant answers the create as it did on the box: the runtime is retained before it is ready.
+     */
+    const boot = (options: CreateOptions, launchId: string) =>
+      Effect.gen(function* () {
+        const source = options.source;
+        if (source?.kind !== "capture" || source.worktreeId === undefined) return;
+        if (executor === null) throw new Error("a cold create with no session");
+        // The network channel serves a session only while its socket host has it registered
+        // (`SessionChannelRegistry`); a token of one it does not is answered a bare 409, which
+        // sealantd reads as `wrong parent: chain head is n=0` (box check of mend#1741).
+        const served = live.get(executor);
+        if (served === undefined) {
+          coldPlans.push("not live on this Mend instance");
+          return yield* new SealantPlatformError({
+            code: "workspace_retained",
+            status: 422,
+            message:
+              'the workspace reached terminal status "retained" before becoming ready: capture plan.get failed: wrong parent: chain head is n=0',
+            cause: null,
+          });
+        }
+        const routes = served.captureAs?.(launchId);
+        if (routes === undefined)
+          throw new Error("the cold executor's launch serves no capture routes");
+        const answer = yield* routes
+          .planGet({ worktree_id: source.worktreeId, epoch: 0, launch: launchId })
+          .pipe(Effect.result);
+        if (answer._tag === "Success") {
+          coldPlans.push("answered");
+          return;
+        }
+        coldPlans.push(answer.failure.reason);
+        return yield* new SealantPlatformError({
+          code: "workspace_retained",
+          status: 422,
+          message: `the workspace reached terminal status "retained" before becoming ready: capture plan.get failed: ${answer.failure.reason}`,
+          cause: null,
+        });
+      });
     const result: { outcome: Outcome | null } = { outcome: null };
     yield* withPreparedEngineEffect(
       (testWorld, tmp) => setup(tmp, testWorld),
@@ -265,6 +346,7 @@ const run = (
           world = testWorld;
           testWorld.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
           const engine = yield* SessionEngine;
+          engineRef = engine;
           yield* engine.reconcileHotSessions(project.id);
           yield* clock.untilReady(
             () => pool.entries.some((entry) => entry.status === "ready"),
@@ -311,6 +393,8 @@ const run = (
             creates: created.length,
             sessionWorkspace: row?.sealantWorkspaceId ?? null,
             sessionLaunch: launches.get(row?.sealantWorkspaceId ?? "") ?? null,
+            coldPlans: [...coldPlans],
+            coldCreates: [...launches.values()].filter((key) => key.startsWith("launch:")).length,
             status: settled?.status ?? null,
             summary: settled?.summary ?? null,
             standbyEnded: stopped.has("workspace-1"),
@@ -322,6 +406,7 @@ const run = (
       {
         captured: memory,
         logs,
+        socketHostLayer,
         hotWorkspacesLayer: clock.poolLayer,
         wrapCaptureChannel: clock.wrapCaptureChannel,
         drainPolicy: drain,
@@ -333,7 +418,8 @@ const run = (
               // never saves and is kept; a discard ends it. The cold executor's stop ends it.
               stopAnswer: (discard) => {
                 const kind = discard ? "discard" : "drain";
-                const workspace = stopped.has("workspace-1") ? "workspace-2" : "workspace-1";
+                // The standby is `workspace-1`; a stop after it ended is a later workspace's.
+                const workspace = stopped.has("workspace-1") ? "a later workspace" : "workspace-1";
                 stops.push({ workspace, kind });
                 return discard || took || workspace !== "workspace-1" ? "stopped" : "draining";
               },
@@ -374,6 +460,7 @@ const run = (
           }),
           stopped,
           launches,
+          boot,
         ),
       },
     );
@@ -400,9 +487,11 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         expect(has(outcome.logs, "capture flush · timed out")).toBe(false);
         // The session runs on a cold executor of its own.
         expect(outcome.launch).toBe("ran");
-        expect(outcome.creates).toBe(2);
+        expect(outcome.coldCreates).toBe(1);
         expect(outcome.sessionWorkspace).not.toBe("workspace-1");
         expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
+        // The cold executor's own boot asked the channel for its plan, and was answered.
+        expect(outcome.coldPlans).toEqual(["answered"]);
         expect(outcome.status).toBe("running");
         expect(outcome.summary ?? "").not.toContain("not saved");
         expect(outcome.world.sessions.get(outcome.sessionId)?.captureNotSavedAt ?? null).toBeNull();
@@ -426,6 +515,8 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         // makes the claimed standby's replacement. The session's is the one a cold launch made.
         expect(outcome.sessionWorkspace).not.toBe("workspace-1");
         expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
+        // The cold executor's own boot asked the channel for its plan, and was answered.
+        expect(outcome.coldPlans).toEqual(["answered"]);
       }),
     60_000,
   );
@@ -437,7 +528,7 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         const outcome = yield* run({ asks: ["drop", "ok"], status: "answers" });
         expect(outcome.asks).toBe(2);
         expect(outcome.launch).toBe("ran");
-        expect(outcome.creates).toBe(1);
+        expect(outcome.coldCreates).toBe(0);
         expect(outcome.stops).toEqual([]);
         expect(outcome.sessionWorkspace).toBe("workspace-1");
         expect(outcome.status).toBe("running");
@@ -456,7 +547,7 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
           has(outcome.logs, "its answer was lost · the executor answers as this session's"),
         ).toBe(true);
         expect(outcome.launch).toBe("ran");
-        expect(outcome.creates).toBe(1);
+        expect(outcome.coldCreates).toBe(0);
         expect(outcome.stops).toEqual([]);
         expect(outcome.sessionWorkspace).toBe("workspace-1");
         expect(outcome.status).toBe("running");
@@ -475,6 +566,8 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         expect(outcome.launch).toBe("ran");
         expect(outcome.sessionWorkspace).not.toBe("workspace-1");
         expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
+        // The cold executor's own boot asked the channel for its plan, and was answered.
+        expect(outcome.coldPlans).toEqual(["answered"]);
       }),
     30_000,
   );
@@ -523,6 +616,8 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         expect(outcome.launch).toBe("ran");
         expect(outcome.sessionWorkspace).not.toBe("workspace-1");
         expect(outcome.sessionLaunch?.startsWith("launch:")).toBe(true);
+        // The cold executor's own boot asked the channel for its plan, and was answered.
+        expect(outcome.coldPlans).toEqual(["answered"]);
       }),
     30_000,
   );
@@ -569,6 +664,71 @@ describe("a claim whose re-plan is refused (SLNT-1053)", () => {
         expect(outcome.status).toBe("failed");
         expect(outcome.summary).toContain("the claimed standby never took this session's worktree");
         expect(outcome.summary).not.toContain("may hold work not yet saved");
+      }),
+    30_000,
+  );
+  it.effect(
+    "a Stop while the re-plan is asked: nothing more is asked, no cold executor starts, and the session reads stopped with no unsaved words",
+    () =>
+      Effect.gen(function* () {
+        const outcome = yield* run(
+          { asks: ["drop"], status: "answers", stopAtAsk: 1 },
+          (world, sessionId) =>
+            Effect.gen(function* () {
+              // The Stop's own drain ends the standby; give it its polls.
+              for (
+                let look = 0;
+                look < 200 && world.sessions.get(sessionId)?.settledAt == null;
+                look++
+              ) {
+                yield* TestClock.adjust(drain.pollInterval);
+              }
+            }),
+        );
+        expect(outcome.asks).toBe(1);
+        expect(has(outcome.logs, "asking again")).toBe(false);
+        expect(has(outcome.logs, "stopped while it was asked")).toBe(true);
+        expect(outcome.launch).toBe("refused");
+        expect(outcome.refusal).toContain("stopped while starting");
+        expect(outcome.coldCreates).toBe(0);
+        expect(outcome.coldPlans).toEqual([]);
+        // The standby ends, discarded by the Stop's drain: nothing ever ran in it.
+        expect(outcome.standbyEnded).toBe(true);
+        expect(outcome.stops.some((stop) => stop.kind === "discard")).toBe(true);
+        expect(outcome.status).toBe("stopped");
+        expect(outcome.summary ?? "").not.toContain("not saved");
+        expect(outcome.summary ?? "").not.toContain("pending");
+      }),
+    30_000,
+  );
+  it.effect(
+    "a Stop while the re-plan is asked, and the re-plan answers after it: nothing runs on the standby, it ends, and the session reads stopped",
+    () =>
+      Effect.gen(function* () {
+        const outcome = yield* run(
+          { asks: ["ok"], status: "answers", stopAtAsk: 1 },
+          (world, sessionId) =>
+            Effect.gen(function* () {
+              for (
+                let look = 0;
+                look < 200 && world.sessions.get(sessionId)?.settledAt == null;
+                look++
+              ) {
+                yield* TestClock.adjust(drain.pollInterval);
+              }
+            }),
+        );
+        expect(outcome.asks).toBe(1);
+        expect(outcome.launch).toBe("refused");
+        expect(outcome.refusal).toContain("stopped while starting");
+        expect(outcome.coldCreates).toBe(0);
+        // The Stop's drain looked while the re-plan was still unanswered and read the placeholder:
+        // it discards the standby, and nothing of the session ever runs there (the model's
+        // `agent-ignores-stop` row is this schedule with the agent started anyway).
+        expect(outcome.standbyEnded).toBe(true);
+        expect(outcome.status).toBe("stopped");
+        expect(outcome.summary ?? "").not.toContain("not saved");
+        expect(has(outcome.logs, "codex is starting")).toBe(false);
       }),
     30_000,
   );

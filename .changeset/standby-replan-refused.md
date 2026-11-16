@@ -15,8 +15,16 @@ running.
   instead of trying to save it, and the session starts on a fresh workspace. Before this change the
   session sat at `starting · relaunch`, its stop read "not saved · workspace kept" after ten
   minutes, and on Boat its VM ran until someone pressed "Discard unsaved and stop".
-- **A session already stuck this way ends after the upgrade.** The capture reaper takes its stop up
-  again, discards the standby, and the session reads that its command never ran.
-- **The words are true when Mend cannot tell.** A launch that gives up on its standby no longer says
-  "the claimed standby may hold work not yet saved". It says that Mend could not confirm the standby
-  had this session's worktree and that the session's command never ran there.
+- **The fresh workspace can reach Mend.** Ending the standby also took the session's channel to Mend
+  with it, so the fresh workspace's first request was refused and the launch failed
+  (`wrong parent: chain head is n=0`). Mend now opens the channel again before it creates the fresh
+  workspace.
+- **A Stop during the re-plan stops the launch.** Mend asks nothing more, starts nothing, and the
+  Stop ends the standby. Before, the launch went on to a fresh workspace for a session its owner had
+  stopped.
+- **A refused claim's drain no longer fails on `integer out of range`.** A standby's placeholder
+  epoch is a time in milliseconds; the columns that keep an epoch are now `bigint`.
+- **Sessions that failed this way before the upgrade read what is known.** A failed session whose
+  words said "the claimed standby may hold work not yet saved", and that has no drain left, now says
+  that Mend could not confirm the standby had its worktree and that its command never ran. A session
+  already kept this way ends at the capture reaper's next pass.

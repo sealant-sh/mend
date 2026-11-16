@@ -123,31 +123,39 @@ What the model adds for it:
 - `KeptRetry` is the capture reaper taking a kept drain up again. Its intent outlives a restart, so
   a session already kept this way is looked at again.
 - `JEnter` and `JLook` are one join into a standby's executor: counted, then a look at its holder's
-  intent, then its process row. The model has one join in a run, into either standby.
-- At most one standby in a run goes down the failed path (`OnlyFailedReplan`). Two standbys share no
-  workspace, session or join, so a break needs only one of them, and the other still runs every
-  other action. Without these restrictions the code rows reached 195 million states with tlx; TLC
-  would take hours.
+  intent, then its process row.
+- `Stop` is its owner's Stop while the launch is still asking (`stoppedDuringLaunch`, then the
+  Stop's own drain, which writes the intent and looks). A stopped launch asks nothing more, gives
+  the standby up without a drain of its own, and starts no agent (`AgentStarts`, the code's
+  `refuseIfStoppedDuringLaunch`).
+- A run has one join or one Stop, into either standby, not both: each break they show needs only
+  itself, and the look sees a join's process row whoever wrote the intent. At most one standby in a
+  run goes down the failed path (`OnlyFailedReplan`). Two standbys share no workspace, session or
+  join, so a break needs only one of them, and the other still runs every other action. Without
+  these restrictions the code rows reached 292 million states with tlx; TLC would take hours.
 
 `holdsWork` now means that something a session made may be on the workspace: its agent started
 there, or a join ran there. A re-plan by itself lays down only the worktree's saved head
 (`onWorktree`). A re-plan that times out and lands in sealantd later is not modelled: it lays down
 the same saved head, and in the model it could only turn a discard into a drain.
 
-Two mutants show the look is what keeps the new half. `no-look` discards without it, and
-`look-live-only` sees what holds the workspace now but not a join that ran and ended. Both fail the
-same way: a join runs in the standby during its failed re-plan, then the drain discards it. The
-identity read is not what keeps the promise; it is what tells an adoption from an end and makes the
-session's words true. A discard of a standby whose re-plan took but which nobody can read would lose
-only its saved head, so the code takes the cautious path there and drains it as before.
+Three mutants show what keeps the new half. Two are about the look. `no-look` discards without it,
+and `look-live-only` sees what holds the workspace now but not a join that ran and ended. Both fail
+the same way: a join runs in the standby during its failed re-plan, then the drain discards it. The
+third, `agent-ignores-stop`, starts the agent of a launch its owner stopped: the Stop's drain reads
+the placeholder while the re-plan is still unanswered, the re-plan then answers, the agent starts,
+and the discard goes out (17 steps). The identity read is not what keeps the promise; it is what
+tells an adoption from an end and makes the session's words true. A discard of a standby whose
+re-plan took but which nobody can read would lose only its saved head, so the code takes the
+cautious path there and drains it as before.
 
 ## Run it
 
 ```sh
-docs/formal/standby-discard/check.sh                # every row, full bounds, about 21 minutes on 32 cores
+docs/formal/standby-discard/check.sh                # every row, full bounds, about 30 minutes on 32 cores
 docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 30 seconds
 docs/formal/standby-discard/check.sh <row>          # one row with the checker's whole output and trace
-docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 2.5 minutes, 5 seconds with --quick
+docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 3.5 minutes, 5 seconds with --quick
 ```
 
 A run ends with exit 0 only when every row of the table in `check.sh` ends with the verdict the
@@ -200,8 +208,8 @@ invariant, state count and depth matched:
 | whole `check.sh` (all ten rows, wall)    | 214 s         | 22 s         |                        |
 | whole `check.sh --quick` (all ten, wall) | 16 s          | 2 s          |                        |
 
-On 2026-11-16, with SLNT-1053's actions and twelve rows, the whole `check.sh` took about 21 minutes
-with TLC and 142 s with tlx; `--quick` took 32 s with TLC.
+On 2026-11-16, with SLNT-1053's actions and thirteen rows, the whole `check.sh` took about 30
+minutes with TLC; `--quick` took about 40 s with TLC.
 
 ## Files
 
@@ -374,23 +382,24 @@ stays in the code; the promise no longer rests on it alone.
 
 ## Last full run
 
-At SLNT-1053's branch (on `38bd550c95`), with TLC (tla2tools 1.7.4), Standbys = {s1, s2}, Launches =
-{l1, l2}, on 32 cores; the times are with a forced typecheck sharing the machine:
+At SLNT-1053's second round (on `fbcb560cb1`), with TLC (tla2tools 1.7.4), Standbys = {s1, s2},
+Launches = {l1, l2}, on 32 cores:
 
 | Row                              | Expected                             | Observed                             | Distinct states | `--quick` | Time |
 | -------------------------------- | ------------------------------------ | ------------------------------------ | --------------: | --------: | ---: |
-| `code-promise`                   | holds                                | holds                                |      94,174,677 | 1,256,442 | 494s |
-| `code-promise-atomic-retire`     | holds                                | holds                                |      74,046,940 | 1,080,627 | 367s |
-| `code-claimable`                 | holds                                | holds                                |      94,174,677 | 1,256,442 | 399s |
-| `mutant-no-reread`               | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         162,261 |    49,906 |   5s |
-| `mutant-no-reread-atomic-retire` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         152,398 |    46,750 |   6s |
-| `mutant-no-reread-no-sweep`      | holds                                | holds                                |       1,434,117 |    59,464 |   7s |
-| `mutant-reread-before-retire`    | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         257,514 |    75,300 |   8s |
-| `mutant-discard-before-retire`   | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |           4,615 |     2,213 |   0s |
+| `code-promise`                   | holds                                | holds                                |     129,386,795 | 1,632,702 | 570s |
+| `code-promise-atomic-retire`     | holds                                | holds                                |     101,431,308 | 1,401,689 | 526s |
+| `code-claimable`                 | holds                                | holds                                |     129,386,795 | 1,632,702 | 603s |
+| `mutant-no-reread`               | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         183,199 |    58,131 |   7s |
+| `mutant-no-reread-atomic-retire` | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         172,787 |    54,647 |   6s |
+| `mutant-no-reread-no-sweep`      | holds                                | holds                                |       1,938,517 |    76,260 |  11s |
+| `mutant-reread-before-retire`    | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |         297,173 |    89,958 |  10s |
+| `mutant-discard-before-retire`   | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |           4,630 |     2,226 |   1s |
 | `mutant-claim-leaves-ready`      | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |             188 |       125 |   1s |
-| `mutant-reused-id`               | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |          10,145 |     4,338 |   1s |
-| `mutant-no-look`                 | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          30,522 |    11,425 |   2s |
-| `mutant-look-live-only`          | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          50,003 |    17,822 |   2s |
+| `mutant-reused-id`               | violated `NoClaimableRowWithSession` | violated `NoClaimableRowWithSession` |          10,343 |     4,466 |   1s |
+| `mutant-no-look`                 | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          32,926 |    12,610 |   2s |
+| `mutant-look-live-only`          | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          54,740 |    20,019 |   2s |
+| `mutant-agent-ignores-stop`      | violated `NoDiscardOfSessionWork`    | violated `NoDiscardOfSessionWork`    |          19,346 |     7,906 |   2s |
 
 Every verdict is the one `check.sh` expects, and tlx reached the same counts at both bounds. The
 mutants of SLNT-823 keep their shortest traces (22, 22, 23, 15 and 16 steps). Their counts and the
