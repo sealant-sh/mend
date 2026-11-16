@@ -18,7 +18,20 @@
         "apps/web/**",
         "packages/**"
       ],
-      "exclude": ["**/*.test.*", "**/*.spec.*", "**/test/**", "**/*.md", "**/vitest*.config.*"],
+      "exclude": [
+        "**/*.test.*",
+        "**/*.spec.*",
+        "**/test/**",
+        "**/*.md",
+        "**/vitest*.config.*",
+        "**/test-*",
+        "**/test-*/**",
+        "**/*-test-*",
+        "**/*-test.*",
+        "**/*fixture*",
+        "**/*fixture*/**"
+      ],
+      "excludeWhy": "Tests and what only tests use: a file or directory whose name starts with test-, holds -test- or -test., or says fixture. Product code is never named that way, and plan.test.mjs fails when product code imports one",
       "why": "A feature or fix merges only after an agent that did not write it has said where it must be run and what a person must see, and its author has run it and put that on the PR (AGENTS.md, Run a Feature Before It Merges). Test, CI and docs PRs owe none",
       "owes": [
         {

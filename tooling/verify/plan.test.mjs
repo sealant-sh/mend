@@ -1,11 +1,14 @@
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join, matchesGlob, normalize } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { full } from "../../scripts/ci-scope.mjs";
 import {
   ciPlan,
+  filesOwing,
   formalObligations,
   loadMap,
   matchObligations,
@@ -90,4 +93,77 @@ test("code a model covers owes that model, and gated suites name their gate", ()
   );
   assert.equal(gated?.gate, "MEND_DOCKER_TEST_CONTEXT");
   assert.equal(gated?.verb, "check");
+});
+
+test("a test helper, fake or fixture under a product path owes no judge; the code beside it does", () => {
+  const helpers = [
+    "apps/web/src/components/settings/sessions-test-trpc.tsx",
+    "apps/web/src/test-fixtures/fake-fetch.ts",
+    "apps/web/src/isomorphic-test-setup.ts",
+    "apps/cli/src/server-lifecycle-test-fixtures.ts",
+    "apps/cli/src/dashboard.fixture.ts",
+    "apps/cli/test-fixtures/docker/compose.v2.yaml",
+    "apps/vscode/src/test-servers.ts",
+    "packages/inference/src/change-pass.test-fixtures.ts",
+    "packages/t3-contracts/types/vite-plus-test.d.ts",
+  ];
+  for (const file of helpers) assert.ok(existsSync(join(root, file)), `${file} still exists`);
+  assert.deepEqual(filesOwing(map, helpers, "judge"), []);
+  const product = [
+    "apps/web/src/components/settings/sessions.tsx",
+    "apps/cli/src/server-setup.ts",
+    "packages/sessions/src/setup.ts",
+    "apps/api/src/routes/harness-models.ts",
+  ];
+  assert.deepEqual(filesOwing(map, product, "judge"), product);
+});
+
+// The rule is a name, so it holds only while product code never imports a file named like a test
+// helper: such a file would be product code that changes without a judge.
+test("no product file imports a file the feature entry excludes as a test helper", () => {
+  const feature = map.obligations.find((entry) => entry.id === "feature");
+  const files = execFileSync(
+    "git",
+    ["ls-files", ...feature.paths.map((path) => path.replace("/**", ""))],
+    {
+      cwd: root,
+      encoding: "utf8",
+    },
+  )
+    .split("\n")
+    .filter(Boolean);
+  const known = new Set(files);
+  const excluded = (file) => feature.exclude.some((glob) => matchesGlob(file, glob));
+  const product = files.filter(
+    (file) => /\.(ts|tsx|mts|mjs|js|jsx)$/.test(file) && !excluded(file),
+  );
+  const resolve = (from, spec) => {
+    const base = normalize(join(dirname(from), spec));
+    const stem = base.replace(/\.(js|mjs)$/, "");
+    return [
+      base,
+      `${stem}.ts`,
+      `${stem}.tsx`,
+      `${base}.ts`,
+      `${base}.tsx`,
+      `${base}.mjs`,
+      `${base}/index.ts`,
+    ].find((candidate) => known.has(candidate));
+  };
+  const offenders = [];
+  for (const file of product) {
+    const text = readFileSync(join(root, file), "utf8");
+    for (const [, spec] of text.matchAll(
+      /(?:from\s+|import\s*\(\s*|import\s+)["'](\.[^"']+)["']/g,
+    )) {
+      const target = resolve(file, spec);
+      if (target && excluded(target) && !matchesGlob(target, "**/*.md"))
+        offenders.push(`${file} imports ${target}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "rename the import's target, or the importer is a test helper too",
+  );
 });
