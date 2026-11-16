@@ -18,24 +18,52 @@ const migrations = execFileSync("node", [join(root, "scripts/mend-migrations.mjs
   .split("\n");
 
 // What READ_STATE prints on a box running `revision`, with every migration this head has.
-const boxSays = ({ live = "0", hold = "", revision = "a".repeat(40), applied = migrations } = {}) =>
+const boxSays = ({
+  live = "0",
+  hold = "",
+  revision = "a".repeat(40),
+  applied = migrations,
+  free = 40 * 1024 ** 3,
+} = {}) =>
   [
     "version=0.37.0-next.1.preview.1",
     `revision=${revision}`,
     "started=2026-11-14T20:00:00Z",
     `live=${live}`,
-    `free=${40 * 1024 ** 3}`,
+    `free=${free}`,
     `hold=${hold}`,
     "now=2026-11-14T22:00:00Z",
     ...applied.map((name) => `migration=${Number(name.slice(0, 4))}|${name.slice(5)}`),
   ].join("\n");
 
-// A box that answers the read and records every script it was sent.
-const fakeBox = (text) => {
+const GB = 1024 ** 3;
+const sha = (n) => `sha256:${String(n).padStart(64, "0")}`;
+// What LIST_BOX prints: previews 1 to 5 with 5 running, a 7 GB workspace image, and two dumps.
+const boxLists = ({ free = 40 * GB } = {}) =>
+  [
+    `free=${free}`,
+    "now=2026-11-14T22:00:00Z",
+    ...[1, 2, 3, 4, 5].map(
+      (run) =>
+        `image=${sha(run)}|["ghcr.io/sealant-sh/mend:0.37.0-next.1.preview.${run}"]|[]|2026-11-1${run}T00:00:00Z|2026-11-1${run}T00:00:00Z|${3 * GB}|{}`,
+    ),
+    `image=${sha(9)}|["sealant-workspace-ubuntu:latest"]|[]|2026-11-14T00:00:00Z|2026-11-14T00:00:00Z|${7 * GB}|null`,
+    `container=${sha(5)}|/mend-mend-1|running`,
+    'cache={"BuildCache":[]}',
+    "dump=1794700000|300000000|/root/backups/pre-pr1600.sql",
+  ].join("\n");
+
+// A box that answers the read, the listing and a tidy, and records every script it was sent.
+const fakeBox = (text, { listing = boxLists(), after = 40 * GB } = {}) => {
   const scripts = [];
   const ssh = (script) => {
     scripts.push(script);
     if (script.includes("pg_dumpall")) return { code: 0, stdout: "141557760\n", stderr: "" };
+    if (script.includes("# tidy-listing")) return { code: 0, stdout: listing, stderr: "" };
+    if (script.includes("exit 9")) {
+      const removed = [...script.matchAll(/echo "removed=([^"]+)"/g)].map((m) => `removed=${m[1]}`);
+      return { code: 0, stdout: ["before=1", ...removed, `after=${after}`].join("\n"), stderr: "" };
+    }
     return { code: 0, stdout: text, stderr: "" };
   };
   return { ssh, scripts };
@@ -252,4 +280,98 @@ test("identity finds this change by commit, by descent, or by patch id, and says
   const absent = relate(cwd, { head, revision: unrelated });
   assert.equal(absent.relation, "none");
   assert.equal(absent.contains, false);
+});
+
+const ours = JSON.stringify({ tag: "pr1700", head: "b".repeat(40), at: "2026-11-14T21:00:00Z" });
+const tidies = (scripts) => scripts.filter((script) => script.includes("exit 9"));
+
+test("release tidies while it still holds the box, then lifts the hold", async () => {
+  const real = fakeBox(boxSays({ hold: ours }));
+  const done = await box("release", { sshRunner: real.ssh, yes: true });
+  assert.deepEqual(validateResult(done), []);
+  assert.equal(done.status, "passed");
+  const tidy = tidies(real.scripts);
+  assert.equal(tidy.length, 1);
+  assert.match(tidy[0], /docker image rm 'ghcr.io\/sealant-sh\/mend:0.37.0-next.1.preview.1'/);
+  assert.doesNotMatch(
+    tidy[0],
+    /preview\.[345]'|workspace/,
+    "never the newest three or a workspace image",
+  );
+  const lift = real.scripts.findIndex((script) =>
+    script.includes("rm -f /var/lib/mend-box-check/hold.json"),
+  );
+  assert.ok(real.scripts.indexOf(tidy[0]) < lift, "the tidy runs before the hold is lifted");
+  assert.deepEqual(
+    done.tidy.removed.images.map((image) => image.ref),
+    [
+      "ghcr.io/sealant-sh/mend:0.37.0-next.1.preview.2",
+      "ghcr.io/sealant-sh/mend:0.37.0-next.1.preview.1",
+    ],
+  );
+  assert.equal(done.tidy.after, 40 * GB);
+  assert.match(done.steps[0].detail, /free .* before, 40\.0 GiB after/);
+});
+
+test("release removes nothing without its own hold, nor without --yes", async () => {
+  const theirs = fakeBox(
+    boxSays({ hold: JSON.stringify({ tag: "pr1600", at: "2026-11-14T21:00:00Z" }) }),
+  );
+  await box("release", { sshRunner: theirs.ssh, yes: true });
+  assert.deepEqual(tidies(theirs.scripts), []);
+  const dry = fakeBox(boxSays({ hold: ours }));
+  const plan = await box("release", { sshRunner: dry.ssh });
+  assert.equal(plan.status, "skipped");
+  assert.match(plan.steps[0].detail, /Would remove 2 images/);
+  assert.deepEqual(tidies(dry.scripts), []);
+  assert.ok(!dry.scripts.some((script) => script.includes("rm -f")));
+});
+
+test("plan refuses, with the reason, a box short of room for one deploy", async () => {
+  const short = fakeBox(boxSays({ free: 8 * GB }), { listing: boxLists({ free: 8 * GB }) });
+  const plan = await box("plan", { sshRunner: short.ssh });
+  const disk = plan.steps.find((step) => step.id === "disk");
+  assert.equal(disk.status, "blocked_by_prerequisite");
+  assert.match(
+    disk.detail,
+    /8\.0 GiB free .* one deploy needs 10\.3 GiB \(image 3\.0 GiB, dump 0\.3 GiB, workspace image 7\.0 GiB/,
+  );
+  assert.match(disk.detail, /a tidy would remove 2 images/);
+  assert.deepEqual(tidies(short.scripts), [], "plan only reads");
+});
+
+test("prepare on a short box holds it and tidies; it goes on only when that made room", async () => {
+  const roomy = fakeBox(boxSays({ free: 8 * GB }), {
+    listing: boxLists({ free: 8 * GB }),
+    after: 14 * GB,
+  });
+  const done = await box("prepare", { sshRunner: roomy.ssh, yes: true });
+  assert.deepEqual(validateResult(done), []);
+  assert.equal(done.status, "passed");
+  const held = roomy.scripts.findIndex((script) => /printf '%s' '\{"tag":"pr1700"/.test(script));
+  const tidy = roomy.scripts.indexOf(tidies(roomy.scripts)[0]);
+  const dump = roomy.scripts.findIndex((script) => script.includes("pg_dumpall"));
+  assert.ok(held >= 0 && held < tidy && tidy < dump, "hold, then tidy, then dump");
+
+  const still = fakeBox(boxSays({ free: 8 * GB }), {
+    listing: boxLists({ free: 8 * GB }),
+    after: 9 * GB,
+  });
+  const refused = await box("prepare", { sshRunner: still.ssh, yes: true });
+  assert.equal(refused.status, "blocked_by_prerequisite");
+  assert.match(
+    refused.steps.find((step) => step.id === "disk").detail,
+    /after tidying, 9\.0 GiB; one deploy needs 10\.3 GiB/,
+  );
+  assert.ok(!still.scripts.some((script) => script.includes("pg_dumpall")));
+  assert.ok(
+    still.scripts.at(-1).includes("rm -f /var/lib/mend-box-check/hold.json"),
+    "its hold is lifted",
+  );
+
+  const busy = fakeBox(boxSays({ free: 8 * GB, live: "1" }), {
+    listing: boxLists({ free: 8 * GB }),
+  });
+  await box("prepare", { sshRunner: busy.ssh, yes: true });
+  assert.deepEqual(tidies(busy.scripts), [], "a box in use by another check is never tidied");
 });

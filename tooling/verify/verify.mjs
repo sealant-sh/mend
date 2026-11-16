@@ -44,7 +44,7 @@ const VERBS = {
   receipt: "Read back the receipt a PR body carries: --pr <n>, or --body <file>",
   judge:
     "Write the brief another agent answers: where to run this change and what must be seen (--record <answer.json>, --self)",
-  box: "Set up the preview server for a check on it: plan, prepare, cli, identity, release (--yes to change it)",
+  box: "Set up the preview server for a check on it: plan, prepare, cli, identity, release, which tidies it (--yes to change it)",
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
   drive:

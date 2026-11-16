@@ -3,19 +3,28 @@ import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { migrationNames } from "../../scripts/mend-migrations.mjs";
+import {
+  HOLD,
+  LIST_BOX,
+  chooseTidy,
+  deployNeeds,
+  describeTidy,
+  parseListing,
+  parseTidyRun,
+  tidyScript,
+} from "./box-tidy.mjs";
 
 // The box-check setup (AGENTS.md, Check Features on the Box; docs/operations/preview-builds.md):
 // what the box runs and whether another check holds it, the database dump before a deploy, a CLI
 // packed from the same commit, and proof by patch id that the running build contains the change.
 // The check itself stays a person-shaped run by another agent. `plan` and `identity` only read;
-// `prepare`, `cli` and `release` change the box only with --yes.
+// `prepare`, `cli` and `release` change the box only with --yes. `release` tidies the box first, and
+// `prepare` tidies it when it is short of room for one deploy (box-tidy.mjs says what goes).
 //
 // The box is named by MEND_VERIFY_BOX_SSH (or --ssh): the ssh arguments that reach it as root, such
 // as `-J root@<proxmox host> root@<vm>`. preview-builds.md, "The box", says what is on it.
 
-const HOLD = "/var/lib/mend-box-check/hold.json";
 const HOLD_HOURS = 6;
-const MIN_FREE_BYTES = 10 * 1024 ** 3;
 
 export const SSH_HINT = "export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'";
 
@@ -155,10 +164,82 @@ const readState = (ssh) => {
       error: unreachable(`ssh exited ${read.code}: ${read.stderr.trim().split("\n").at(-1) ?? ""}`),
     };
   }
-  return { state: parseState(read.stdout) };
+  const listed = ssh(LIST_BOX);
+  return {
+    state: parseState(read.stdout),
+    listing: parseListing(listed.code === 0 ? listed.stdout : ""),
+  };
 };
 
-const stateSteps = (root, state, { head, tag }) => {
+const gib = (bytes) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
+
+/**
+ * Tidies the box for `hold`, which must be this check's: lists it, chooses, removes exactly that,
+ * and measures free space before and after. Returns the step and what to keep in the result file.
+ */
+const runTidy = (ssh, { hold, tag }) => {
+  const listed = ssh(LIST_BOX);
+  const listing = parseListing(listed.code === 0 ? listed.stdout : "");
+  const choice = chooseTidy({ listing, hold, tag });
+  const title = "Tidy the box (changes the box)";
+  if (choice.refused)
+    return {
+      // Only a check that holds the box tidies, so any refusal here is a fault.
+      step: { id: "tidy", title, status: "failed", detail: describeTidy(choice) },
+      tidy: { refused: choice.refused },
+      after: listing.free,
+    };
+  if (choice.images.length + choice.cache.length + choice.dumps.length === 0)
+    return {
+      step: {
+        id: "tidy",
+        title,
+        status: "passed",
+        detail: `nothing to remove; ${listing.free === null ? "free space unknown" : `${gib(listing.free)} free`}`,
+      },
+      tidy: {
+        before: listing.free,
+        after: listing.free,
+        removed: { images: [], cache: [], dumps: [] },
+        failed: [],
+        kept: choice.kept,
+      },
+      after: listing.free,
+    };
+  const run = parseTidyRun(ssh(tidyScript(choice, tag)).stdout, listing);
+  const gone = {
+    images: choice.images.filter((image) => run.removed.images.includes(image.ref)),
+    cache: (listing.cache ?? []).filter((record) => run.removed.cache.includes(record.id)),
+    dumps: choice.dumps.filter((dump) => run.removed.dumps.includes(dump.path)),
+  };
+  const ok = run.refused === null && run.failed.length === 0 && run.after !== null;
+  return {
+    step: {
+      id: "tidy",
+      title,
+      status: ok ? "passed" : "failed",
+      detail: [
+        run.refused ? `refused: ${run.refused}` : `removed ${describeTidy(gone)}`,
+        ...run.failed.map((failure) => `could not remove ${failure.ref}: ${failure.why}`),
+        `free ${run.before === null ? "unknown" : gib(run.before)} before, ${run.after === null ? "unknown" : gib(run.after)} after`,
+      ].join("; "),
+    },
+    tidy: {
+      before: run.before,
+      after: run.after,
+      removed: {
+        images: gone.images.map(({ ref, size, why }) => ({ ref, size, why })),
+        cache: { records: gone.cache.length, bytes: gone.cache.reduce((t, r) => t + r.size, 0) },
+        dumps: gone.dumps.map(({ path, size }) => ({ path, size })),
+      },
+      failed: run.failed,
+      kept: choice.kept,
+    },
+    after: run.after,
+  };
+};
+
+const stateSteps = (root, state, { head, tag, listing }) => {
   const steps = [];
   const next = [];
   steps.push({
@@ -203,37 +284,67 @@ const stateSteps = (root, state, { head, tag }) => {
           ? `${problems.join("; ")}. Deploy a build that contains them (a preview branch of this head merged with what the box runs)`
           : `${state.migrations.length} applied, all in this head`,
   });
+  const need = deployNeeds(listing);
+  const short = state.free !== null && state.free < need.bytes;
+  const preview = short
+    ? chooseTidy({ listing, hold: { tag, head: head.sha, at: state.now }, tag })
+    : null;
   steps.push({
     id: "disk",
-    title: "Free space for a dump and images",
-    status:
-      state.free === null
-        ? "failed"
-        : state.free < MIN_FREE_BYTES
-          ? "blocked_by_prerequisite"
-          : "passed",
+    title: "Room for one deploy",
+    status: state.free === null ? "failed" : short ? "blocked_by_prerequisite" : "passed",
     detail:
       state.free === null
-        ? "unknown"
-        : `${Math.floor(state.free / 1024 ** 3)} GiB free under /var/lib/docker`,
+        ? "free space unknown"
+        : [
+            `${gib(state.free)} free under /var/lib/docker; one deploy needs ${gib(need.bytes)} (image ${gib(need.parts.image)}, dump ${gib(need.parts.dump)}, workspace image ${gib(need.parts.workspace)}; measured from ${need.measured})`,
+            ...(preview ? [`a tidy would remove ${describeTidy(preview)}`] : []),
+          ].join("; "),
   });
-  return { steps, next };
+  if (short) next.push(`${rerun("prepare", tag)}  # takes the hold and tidies first`);
+  return { steps, next, need };
 };
 
 export const boxPlan = (root, { head, ssh, tag }) => {
-  const { state, error } = readState(ssh);
+  const { state, listing, error } = readState(ssh);
   if (error) return error;
-  return { ...stateSteps(root, state, { head, tag }), box: state };
+  const { steps, next } = stateSteps(root, state, { head, tag, listing });
+  return { steps, next, box: state };
 };
 
 /** prepare: with the box free, take the database dump and hold the box for this check. */
 export const boxPrepare = (root, { head, ssh, tag, yes, stamp }) => {
-  const { state, error } = readState(ssh);
+  const { state, listing, error } = readState(ssh);
   if (error) return error;
-  const { steps, next } = stateSteps(root, state, { head, tag });
+  const { steps, next, need } = stateSteps(root, state, { head, tag, listing });
   const dump = `/root/backups/pre-${tag}-${stamp}.sql`;
   const blocking = steps.filter((step) => step.status !== "passed" && step.id !== "deployed");
-  if (blocking.length > 0) return { steps, next, box: state };
+  const onlyShort =
+    blocking.length === 1 && blocking[0].id === "disk" && blocking[0].status !== "failed";
+  if (blocking.length > 0 && !(yes && onlyShort)) return { steps, next, box: state };
+  let tidy;
+  if (onlyShort) {
+    // Short of room, and free of other checks: hold the box, tidy it, and measure again.
+    const hold = { tag, head: head.sha, at: state.now };
+    const held = ssh(`set -euo pipefail
+mkdir -p "$(dirname ${HOLD})"
+printf '%s' '${JSON.stringify(hold)}' > ${HOLD}`);
+    const disk = steps.find((step) => step.id === "disk");
+    if (held.code !== 0) {
+      disk.detail += `; could not hold the box to tidy it: ${held.stderr.trim().split("\n").at(-1)}`;
+      return { steps, next, box: state };
+    }
+    const tidied = runTidy(ssh, { hold, tag });
+    tidy = tidied.tidy;
+    steps.push(tidied.step);
+    if (tidied.after === null || tidied.after < need.bytes) {
+      ssh(`grep -q '"tag":"${tag}"' ${HOLD} && rm -f ${HOLD}`);
+      disk.detail = `after tidying, ${tidied.after === null ? "free space unknown" : gib(tidied.after)}; one deploy needs ${gib(need.bytes)}, so the box is refused and its hold lifted. Remove more by hand, or raise the box's disk`;
+      return { steps, next: [], box: state, tidy };
+    }
+    disk.status = "passed";
+    disk.detail = `after tidying, ${gib(tidied.after)} free; one deploy needs ${gib(need.bytes)}`;
+  }
   if (!yes) {
     return {
       steps: [
@@ -273,12 +384,13 @@ printf '%s' '${hold}' > ${HOLD}
     next: run.code === 0 ? [rerun("cli", tag), "pnpm verify box identity"] : next,
     box: state,
     cleanup: { status: "left", left: run.code === 0 ? [`box:${dump}`, `box:${HOLD}`] : [] },
+    ...(tidy ? { tidy } : {}),
   };
 };
 
-/** release: lift this check's own hold. */
+/** release: tidy the box while this check still holds it, then lift the hold. */
 export const boxRelease = ({ ssh, tag, yes }) => {
-  const { state, error } = readState(ssh);
+  const { state, listing, error } = readState(ssh);
   if (error) return error;
   const ours = state.hold?.tag === tag;
   if (!ours) {
@@ -297,8 +409,15 @@ export const boxRelease = ({ ssh, tag, yes }) => {
     };
   }
   if (!yes) {
+    const choice = chooseTidy({ listing, hold: state.hold, tag });
     return {
       steps: [
+        {
+          id: "tidy",
+          title: "Tidy the box (changes the box)",
+          status: "skipped",
+          detail: `Would remove ${describeTidy(choice)}`,
+        },
         {
           id: "release",
           title: "Lift this check's hold (changes the box)",
@@ -309,9 +428,11 @@ export const boxRelease = ({ ssh, tag, yes }) => {
       next: [rerun("release", tag)],
     };
   }
+  const tidied = runTidy(ssh, { hold: state.hold, tag });
   const run = ssh(`rm -f ${HOLD}`);
   return {
     steps: [
+      tidied.step,
       {
         id: "release",
         title: "Lift this check's hold",
@@ -319,6 +440,7 @@ export const boxRelease = ({ ssh, tag, yes }) => {
       },
     ],
     next: [],
+    tidy: tidied.tidy,
   };
 };
 
