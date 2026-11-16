@@ -69,8 +69,9 @@ throws the unsaved work away. Before you discard:
    session's branch with
    `docker exec <container> git -c safe.directory=/workspace/repo -C /workspace/repo branch --show-current`
    (it runs as root), and copies the repository out with
-   `docker cp <container>:/workspace/repo ./saved-repo`. On Kubernetes, `kubectl cp` from the
-   workspace pod does the same.
+   `mkdir saved-repo && docker exec <container> tar -C /workspace/repo -cf - . | tar -C saved-repo -xf -`.
+   `docker cp` does not work here: it fails on a file of the container's that is gone after its
+   start. On Kubernetes, `kubectl cp` from the workspace pod copies the same directory.
 2. On Boat, nothing in Mend reaches the VM, so the unsaved work cannot be copied out through Mend.
 3. Then, as the session's owner, choose **Discard unsaved and stop** on the session. The workspace
    and, on Boat, the VM go.
