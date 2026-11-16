@@ -1,13 +1,18 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 
 import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 
 // `verify drive <surface> --recipe <name|path>`: run an existing recipe with the verify skill's own
 // driver for that surface (Drive in .agents/skills/verify/SKILL.md). It adds no driver and no
-// recipe format: a surface without recipes, or without a recipe module format (the terminal's
-// drive-tui.sh takes keys), returns not_implemented.
+// recipe format: a surface without recipes returns not_implemented.
+//
+// The terminal has two drivers, and each is recorded as it already works. `cli` runs a CLI batch, the
+// steps.json that `steps.mjs` reads, against the stack's inner `mend`. `tui` runs nothing: the
+// dashboard is driven by hand with drive-tui.sh's keys, so it records the captures drive-tui.sh
+// wrote under <evidence>/<recipe>/tui, and only when drive-tui.sh's bundle was built from this
+// commit with a clean tree and every capture was taken after that build.
 //
 // web, desktop and mobile-web drive the stack `verify stack up` started, as its first account;
 // t3 drives the t3code client serve-t3-client.mjs serves for that stack; vscode drives the world
@@ -15,7 +20,7 @@ import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 // directory, <evidence>/<recipe>/<surface>.
 
 const SKILL = ".agents/skills/verify";
-export const SURFACES = ["web", "tui", "desktop", "mobile-web", "vscode", "t3"];
+export const SURFACES = ["web", "cli", "tui", "desktop", "mobile-web", "vscode", "t3"];
 const PREFIX = {
   "vscode-": "vscode",
   "g4-": "vscode",
@@ -85,11 +90,83 @@ const waitFor = async (check, timeoutMs, wait) => {
 
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
+const blocked = (id, title, detail, next) => ({
+  steps: [{ id, title, status: "blocked_by_prerequisite", detail }],
+  next,
+});
+
+/** drive-tui.sh's bundle, where `build` writes it, and the commit `build` stamped it with. */
+export const tuiBundle = (env) => {
+  const dir = join(
+    env.XDG_CACHE_HOME || join(env.HOME ?? "", ".cache"),
+    "mend-verify/tui-cli-bundle",
+  );
+  const stamp = join(dir, "source.json");
+  return existsSync(stamp)
+    ? { dir, stamp, source: JSON.parse(readFileSync(stamp, "utf8")) }
+    : { dir, stamp, source: null };
+};
+
+/** The terminal's captures drive-tui.sh wrote for this recipe, judged against its bundle. */
+const recordTui = ({ recipe, env, head, state }) => {
+  const title = `${recipe} on tui`;
+  const bundle = tuiBundle(env);
+  const build = `${SKILL}/scripts/drive-tui.sh build .`;
+  if (bundle.source === null)
+    return blocked("bundle", "drive-tui.sh's bundle of this checkout", `no ${bundle.stamp}`, [
+      build,
+    ]);
+  if (bundle.source.sha !== head.sha || bundle.source.dirty)
+    return blocked(
+      "bundle",
+      "drive-tui.sh's bundle of this checkout",
+      `the bundle is of ${bundle.source.sha.slice(0, 12)}${bundle.source.dirty ? " with uncommitted changes" : ""}, not this clean head ${head.sha.slice(0, 12)}`,
+      [build, "then drive the dashboard again"],
+    );
+  const out = join(state.evidence, recipe, "tui");
+  const built = statSync(bundle.stamp).mtimeMs;
+  const captures = existsSync(out) ? readdirSync(out).filter((name) => name.endsWith(".txt")) : [];
+  const stale = captures.filter((name) => statSync(join(out, name)).mtimeMs < built);
+  const ok = captures.length > 0 && stale.length === 0;
+  return {
+    steps: [
+      {
+        id: "drive",
+        title,
+        status: ok ? "passed" : "failed",
+        command: `drive-tui.sh capture <name> ${out} <step>`,
+        log: join(out, "steps.log"),
+        detail: ok
+          ? `${captures.length} captures from the bundle of ${head.sha.slice(0, 12)}`
+          : captures.length === 0
+            ? `no drive-tui.sh capture in ${out}`
+            : `taken before the bundle was built, so of another build: ${stale.join(", ")}`,
+      },
+    ],
+    next: ok ? ["pnpm verify evidence"] : [],
+    evidence: [{ kind: "drive", path: out }],
+    drive: { surface: "tui", recipe, out },
+  };
+};
+
+/** A CLI batch: a steps.json path, or the name of one checked in under recipes/. */
+const cliBatch = (root, recipe) => {
+  const path = recipe.includes("/")
+    ? isAbsolute(recipe)
+      ? recipe
+      : resolve(root, recipe)
+    : join(root, SKILL, "recipes", `${recipe}.json`);
+  return existsSync(path)
+    ? { path, name: basename(path, ".json") }
+    : { error: `no CLI batch (steps.json) at ${path}` };
+};
+
 export const drive = async (
   root,
   {
     surface,
     recipe,
+    head,
     env = process.env,
     exec = runCommand,
     background = spawn,
@@ -97,13 +174,13 @@ export const drive = async (
     timeoutMs,
   },
 ) => {
-  if (surface === "tui") {
-    return notImplemented(
-      "tui",
-      "drive-tui.sh takes keys and captures, not a recipe module; there is no terminal recipe format yet",
-    );
-  }
-  const found = resolveRecipe(root, surface, recipe);
+  // The terminal's recipe is the name of its captures' directory: there is no module to resolve.
+  const found =
+    surface === "tui"
+      ? { name: recipe }
+      : surface === "cli"
+        ? cliBatch(root, recipe)
+        : resolveRecipe(root, surface, recipe);
   if (found.missing) return notImplemented(surface, found.missing);
   if (found.error) {
     return {
@@ -161,6 +238,7 @@ export const drive = async (
       next: ["pnpm verify stack up"],
     };
   }
+  if (surface === "tui") return recordTui({ recipe, env, head, state });
   const stepEnv = runEnv(root, env, state);
   const out = join(state.evidence, found.name, surface);
   mkdirSync(out, { recursive: true });
@@ -182,6 +260,29 @@ export const drive = async (
       ],
       { cwd: root, env: stepEnv, log: join(out, "drive.log") },
     );
+
+  if (surface === "cli") {
+    const result = await exec(
+      "node",
+      [
+        join(skill, "steps.mjs"),
+        out,
+        "session",
+        "--worktree",
+        state.worktree,
+        "--project",
+        state.project ?? "mend",
+      ],
+      { cwd: root, env: stepEnv, log: join(out, "drive.log"), input: readFileSync(found.path) },
+    );
+    return finished(
+      surface,
+      found,
+      out,
+      result.code,
+      "steps.mjs did not bring back every step's result in full",
+    );
+  }
 
   if (surface === "web") {
     const result = await web(state.web, [

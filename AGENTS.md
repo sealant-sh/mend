@@ -147,8 +147,8 @@ The verdict goes on the PR. It names the commit, each thing the judge asked for 
 and saw, a screenshot of every state a person sees, and what you could not check. A unit test, green
 CI or reading the code is not a verdict. The receipt's `run-it` line reads `passed` once
 `verify evidence` passes on the commit you push, or, when the judge said the box, once
-`verify box identity` does. The terminal has no recipe format yet: drive a CLI change with
-`drive-tui.sh`, and name the `skipped` line under the receipt with the transcript.
+`verify box identity` does. A CLI change is driven like any other surface: `verify drive cli` runs a
+`steps.mjs` batch, and `verify drive tui` records what `drive-tui.sh` captured.
 
 A judgement is about one commit. After a push that changes what the feature does, judge again; after
 one that doesn't, say so under the receipt.
