@@ -334,6 +334,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "handoff.ts parseHandoffArgs": { pages: ["handoff"] },
   // The `mend <harness>` command a handoff prints when its launch did not start.
   "handoff.ts sendFrom": { pages: ["codex"] },
+  "import-t3.ts parseImportT3Args": { pages: ["import t3"] },
   "run-scripts.ts interactiveShellIssue": CHILD,
   "run-scripts.ts parseLogsArgs": { pages: ["logs"] },
   "run-scripts.ts parseWaitArgs": { pages: ["wait"] },

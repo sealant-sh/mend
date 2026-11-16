@@ -608,7 +608,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     parsesOwnFlags: true,
     description: [
       "Sends words to a live conversation. Send steers your running turn by default. The per-person setting Send steers the running turn turns that off; then Send creates a turn that waits behind work already running.",
-      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. Pass --resume to bring back a stopped conversation. A terminal-mode session is refused; resume it first in conversation mode.",
+      "A message during another person's turn becomes a new turn. --queue always creates a new turn. Neither changes who may control the session. Pass --resume to bring back a stopped conversation. With --resume, a session that never ran an agent (one mend import t3 made, or a handoff) starts its agent in conversation mode, the message as its first turn. A terminal-mode session is refused; resume it first in conversation mode.",
       "The session is an id, an unambiguous id prefix, or the worktree name accepted by mend logs. Both arguments are required. Use - to read all text from stdin, or -- before text beginning with a dash. Whitespace and newlines are preserved.",
       "Prints what Mend observed and returns without waiting for the agent to finish. Exit 0 means accepted or recorded as a turn; 1 means refused, not sent, or an observed failed, cancelled or interrupted turn; 2 means usage, and 124 means the request timed out. An unconfirmed outcome exits 1, or 124 on a timeout, and prints the request key. A new invocation sends a new message. The command does not retry or poll.",
     ],
@@ -616,7 +616,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--queue", text: "create a new turn instead of steering the running turn" },
       {
         flag: "--resume",
-        text: "resume a stopped conversation before sending; uses your own login",
+        text: "resume a stopped conversation, or start one that never ran, before sending; uses your own login",
       },
       { flag: "--json", text: "print the versioned receipt or error as JSON" },
     ],
@@ -1170,6 +1170,39 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { command: "mend handoff", text: "a workspace held with no agent; mend attach opens it" },
     ],
     see: ["attach", "pull", "adopt"],
+  },
+
+  {
+    name: "import t3",
+    section: "sessions",
+    summary: "bring T3 Code's threads into Mend as sessions",
+    synopsis: ["[--project <p>]... [--thread <id>]... [--archived] [--dry-run] [--yes]"],
+    description: [
+      "Run it on the machine that holds your T3 Code data (T3CODE_HOME, else ~/.t3). Each Claude or Codex thread whose conversation is on this machine becomes a Mend session holding that conversation, its history shown, ready for your next message. The command reads T3 Code's state and the harnesses' files and writes nothing to them.",
+      "It prints its plan first: per project, each thread it would import with its harness and size, whether it was imported before, which projects it would adopt and which checkouts it would hand off, then each thread it leaves behind and why. With --dry-run it stops there and sends nothing. Otherwise it asks once before sending; --yes skips the question, and without a terminal it refuses unless --yes is given.",
+      "Each checkout is handed off once, the way mend handoff does it: its branch as it is, uncommitted and untracked files included, with no workspace held and no agent started. Your checkout is not written to. Threads that ran in the same checkout land in the same worktree, each as its own session. A thread whose checkout T3 Code removed lands in a new worktree from origin, on its branch when origin has it, else on the default branch; its uncommitted work went with the checkout.",
+      "Each conversation goes as its harness's own files: the transcript, its tool results, subagents, tasks, todo list and the plan files it names, or the Codex rollout and its ancestors. Mend rewrites its paths for the session when its agent first starts. A conversation over the server's limit (64 MiB by default, MEND_BUDGET_CONVERSATION_BYTES on the server) stays here and is named. A conversation in a harness home not named .claude or .codex (a CLAUDE_CONFIG_DIR of ~/.config/claude-work) stays here too: Mend cannot rewrite its paths yet.",
+      "Running it again imports only what is new: a thread imported before is passed over before anything is sent, and a checkout whose threads were all imported is not handed off again. If a checkout changed between two runs, it is handed off again as it is now for its new threads, which land in a new worktree; the threads imported before stay where they are. A refusal, a conversation over the limit or a failed handoff is recorded against its thread or checkout and the run goes on; the end of the run names each one with the server's words, and the command then exits 1. Threads left behind for a reason printed in the plan are not failures.",
+      'Each session starts its agent on the imported conversation with your first message: mend message <session> --resume "…", which the end of the run prints for each.',
+    ],
+    options: [
+      {
+        flag: "--project <p>",
+        text: "only this T3 Code project, by id, title or folder; repeatable",
+      },
+      { flag: "--thread <id>", text: "only this T3 Code thread, by id; repeatable" },
+      {
+        flag: "--archived",
+        text: "include archived threads. A thread named by --thread always is",
+      },
+      { flag: "--dry-run", text: "print the plan and send nothing" },
+      { flag: "--yes, -y", text: "send without asking; required without a terminal" },
+    ],
+    examples: [
+      { command: "mend import t3 --dry-run", text: "what a run would import, and what stays" },
+      { command: "mend import t3 --project app --yes", text: "import one project's threads" },
+    ],
+    see: ["handoff", "message", "memory import"],
   },
 
   // ── services ───────────────────────────────────────────────────────────
