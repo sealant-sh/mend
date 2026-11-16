@@ -7,6 +7,10 @@
 #   check.sh <row>          one row, printing the checker's whole output and its trace
 #   check.sh --engine tlx   any of the above with tlx instead of TLC (MEND_FORMAL_ENGINE=tlx too)
 #
+# MEND_FORMAL_WORKERS caps the workers a row expected to hold uses (default: every core). At the
+# full bounds TLC explores 129 million states for `code`: about 10 minutes on 32 cores, and about an
+# hour on CI's four, which is why COVERAGE gives this model a budget-full of its own.
+#
 # TLC is the reference: the run that goes with a change to the model or to the code it models uses
 # TLC. It is tla2tools 1.7.4 (TLC 2.19), checked against its sha256 before it runs. It comes from
 # the repository's pinned nixpkgs when Nix is installed, else from the GitHub release (needs java
@@ -25,7 +29,8 @@ TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 
 # row | mutant | invariants | action constraint | expected outcome | distinct states | at --quick
 #
-# The code rows hold. Each mutant breaks one check or one order of the code, so a row expected to
+# The code rows hold. `code` checks both of the model's promises in one run: they are invariants of
+# the same state space, so two runs would explore it twice for nothing. Each mutant breaks one check or one order of the code, so a row expected to
 # fail shows that its property can fail. `no-reread` is the drain as it was before SLNT-823 (the
 # finding in README.md); its two restricted rows say what that finding needed.
 #
@@ -34,10 +39,13 @@ TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 # over a different state space fails the run. A row that holds explores every reachable state; a
 # row expected to fail runs on one worker and stops at the same shortest trace every time. When a
 # change to the model moves a count, take the new one from a TLC run.
+#
+# A full count of `-` runs the row at --quick only. `code-promise-atomic-retire` adds an action
+# constraint, which only removes transitions: its states are a subset of `code`'s, so at the full
+# bounds `code` holding proves it, and running it again would cost CI half an hour for nothing.
 ROWS=(
-  "code-promise|none|NoDiscardOfSessionWork||holds|129386795|1632702"
-  "code-promise-atomic-retire|none|NoDiscardOfSessionWork|RetireIsAtomic|holds|101431308|1401689"
-  "code-claimable|none|NoClaimableRowWithSession||holds|129386795|1632702"
+  "code|none|NoDiscardOfSessionWork NoClaimableRowWithSession||holds|129386795|1632702"
+  "code-promise-atomic-retire|none|NoDiscardOfSessionWork|RetireIsAtomic|holds|-|1401689"
   "mutant-no-reread|no-reread|NoDiscardOfSessionWork||violated NoDiscardOfSessionWork|183199|58131"
   "mutant-no-reread-atomic-retire|no-reread|NoDiscardOfSessionWork|RetireIsAtomic|violated NoDiscardOfSessionWork|172787|54647"
   "mutant-no-reread-no-sweep|no-reread|NoDiscardOfSessionWork|NoSweep|holds|1938517|76260"
@@ -164,8 +172,9 @@ run_row() {
     echo "CHECK_DEADLOCK FALSE"
   } >"$cfg"
   # A row expected to fail runs on one worker, so the breadth-first search stops at the same
-  # shortest trace and the same count every time; a row expected to hold uses every core.
-  local workers=auto
+  # shortest trace and the same count every time; a row expected to hold uses every core, or
+  # MEND_FORMAL_WORKERS of them.
+  local workers=${MEND_FORMAL_WORKERS:-auto}
   [[ "$expected" == holds ]] || workers=1
   local started=$SECONDS
   (cd "$here" && "${checker[@]}" -workers "$workers" -config "$cfg" \
@@ -207,6 +216,10 @@ for row in "${ROWS[@]}"; do
   matched=1
   pinned=$full_states
   [[ $quick -eq 1 ]] && pinned=$quick_states
+  if [[ "$pinned" == - ]]; then
+    printf '%-30s %s\n' "$name" "skipped at the full bounds: code holding proves it (see ROWS)"
+    continue
+  fi
   run_row "$name" "$mutant" "$invariants" "$constraint" "$expected" "$pinned" || failed=1
 done
 if [[ $matched -eq 0 ]]; then

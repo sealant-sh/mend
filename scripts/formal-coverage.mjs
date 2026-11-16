@@ -10,9 +10,22 @@ import { join } from "node:path";
 //   sync <full commit id>
 //   model <file in the area's directory>      (a change to one is a change to the model)
 //   path <repository path>                    (code the model stands for)
+//   budget-quick <minutes>                    (optional: how long `check.sh --quick` may run)
+//   budget-full <minutes>                     (optional: how long `check.sh` may run, on CI's
+//                                              four-core runner; past it the check is stopped)
+
+/** The budgets an area without its own gets, in minutes. */
+export const defaultBudgets = { quick: 10, full: 40 };
 
 export const parseCoverage = (text, area) => {
-  const coverage = { area, dir: `docs/formal/${area}`, sync: null, model: [], paths: [] };
+  const coverage = {
+    area,
+    dir: `docs/formal/${area}`,
+    sync: null,
+    model: [],
+    paths: [],
+    budgets: { ...defaultBudgets },
+  };
   for (const raw of text.split("\n")) {
     const line = raw.trim();
     if (line === "" || line.startsWith("#")) continue;
@@ -25,7 +38,11 @@ export const parseCoverage = (text, area) => {
       coverage.sync = value;
     } else if (key === "model") coverage.model.push(`${coverage.dir}/${value}`);
     else if (key === "path") coverage.paths.push(value);
-    else throw new Error(`${area}/COVERAGE: unknown key ${key}`);
+    else if (key === "budget-quick" || key === "budget-full") {
+      if (!/^[1-9][0-9]*$/.test(value))
+        throw new Error(`${area}/COVERAGE: ${key} must be a whole number of minutes`);
+      coverage.budgets[key === "budget-quick" ? "quick" : "full"] = Number(value);
+    } else throw new Error(`${area}/COVERAGE: unknown key ${key}`);
   }
   if (coverage.sync === null || coverage.model.length === 0 || coverage.paths.length === 0)
     throw new Error(`${area}/COVERAGE needs a sync, a model and a path`);

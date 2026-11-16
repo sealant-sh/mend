@@ -42,6 +42,11 @@ docs/formal/turn-dispatch/check.sh                        # full bounds (two mes
 MEND_FORMAL_WORKERS=4 docs/formal/turn-dispatch/check.sh  # the same on a shared machine
 ```
 
+The full bounds take about 4½ minutes on 32 cores. Pull requests run only `--quick`; the nightly run
+checks the full bounds on CI's four cores within this model's `budget-full` (`COVERAGE`), and a
+dispatched CI run with `formal: full` does the same on a branch. When a change grows the full count,
+write the new count and the full run's time on the ticket before it merges.
+
 TLC is the reference, as in the standby-discard skill. `--engine tlx` composes with `--quick` and a
 row name, and runs about ten times faster for iterating. Each row prints `as expected` or
 `NOT AS EXPECTED`, and the script exits 0 only when every row's verdict and distinct-state count

@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseCoverage, readCoverages } from "../../scripts/formal-coverage.mjs";
-import { checkerMissing, drift, formalSteps, guard } from "./formal.mjs";
+import { checkerMissing, drift, formalSteps, guard, runBudgeted } from "./formal.mjs";
 
 // A repository with one model, `demo`, that covers src/covered.ts, synced at its first commit.
 const repo = (t) => {
@@ -174,6 +174,98 @@ test("a touched model is checked at quick bounds, or full with --full; untouched
   assert.deepEqual(
     failing.map((step) => step.status),
     ["failed", "failed"],
+  );
+});
+
+test("COVERAGE's budgets default, and an area may set its own in whole minutes", () => {
+  const head = `sync ${"a".repeat(40)}\nmodel M.tla\npath p.ts\n`;
+  assert.deepEqual(parseCoverage(head, "demo").budgets, { quick: 10, full: 40 });
+  assert.deepEqual(parseCoverage(`${head}budget-full 25\nbudget-quick 3\n`, "demo").budgets, {
+    quick: 3,
+    full: 25,
+  });
+  assert.throws(() => parseCoverage(`${head}budget-full 1.5\n`, "demo"), /whole number/);
+  for (const coverage of readCoverages(fileURLToPath(new URL("../../", import.meta.url))))
+    assert.ok(
+      coverage.budgets.full <= 80,
+      `${coverage.area}: CI's formal job for one model stops at 90 minutes, setup included`,
+    );
+});
+
+test("a check that runs past its budget is stopped and fails naming the model and the budget", async (t) => {
+  const r = repo(t);
+  r.write(
+    "docs/formal/demo/COVERAGE",
+    `${readFileSync(join(r.root, "docs/formal/demo/COVERAGE"), "utf8")}budget-full 7\n`,
+  );
+  const budgets = [];
+  const steps = await formalSteps(r.root, {
+    files: [],
+    base: null,
+    head: "HEAD",
+    all: true,
+    full: true,
+    env: { TLA2TOOLS_JAR: "/jar" },
+    run: async (_command, _args, { budgetMs }) => {
+      budgets.push(budgetMs);
+      return "timeout";
+    },
+    logs: r.root,
+  });
+  assert.deepEqual(budgets, [7 * 60_000]);
+  const check = steps.find((step) => step.id === "demo-check");
+  assert.equal(check.status, "failed");
+  assert.match(check.detail, /^demo ran past its 7-minute budget at full bounds and was stopped/);
+  assert.match(check.detail, /budget-full line in docs\/formal\/demo\/COVERAGE/);
+});
+
+test("--area keeps a run to one model, and names one that does not exist", async (t) => {
+  const r = repo(t);
+  r.write("docs/formal/other/COVERAGE", `sync ${r.first}\nmodel O.tla\npath src/other.ts\n`);
+  const runs = [];
+  const options = {
+    files: [],
+    base: null,
+    head: "HEAD",
+    all: true,
+    full: true,
+    env: { TLA2TOOLS_JAR: "/jar" },
+    run: async (_command, args) => {
+      runs.push(args[0]);
+      return 0;
+    },
+    logs: r.root,
+  };
+  await formalSteps(r.root, { ...options, area: "other" });
+  assert.deepEqual(runs, ["docs/formal/other/check.sh"]);
+  await assert.rejects(formalSteps(r.root, { ...options, area: "nope" }), /no model area nope/);
+});
+
+test("the budget stops the whole process group, not only the shell that started it", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "mend-verify-budget-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const pidFile = join(dir, "child.pid");
+  const started = Date.now();
+  // bash starts a long sleep as its child, the way check.sh starts java or tlx.
+  const code = await runBudgeted("bash", ["-c", `sleep 30 & echo $! > ${pidFile}; wait`], {
+    cwd: dir,
+    env: process.env,
+    stdio: "ignore",
+    budgetMs: 300,
+  });
+  assert.equal(code, "timeout");
+  assert.ok(Date.now() - started < 10_000, "stopped by the budget, not by the sleep ending");
+  const child = Number(readFileSync(pidFile, "utf8"));
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.throws(() => process.kill(child, 0), /ESRCH/, "the checker under bash is gone too");
+  assert.equal(
+    await runBudgeted("bash", ["-c", "exit 3"], {
+      cwd: dir,
+      env: process.env,
+      stdio: "ignore",
+      budgetMs: 10_000,
+    }),
+    3,
   );
 });
 

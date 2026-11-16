@@ -35,8 +35,16 @@ covered function changed, the model still describes the code and you are done.
 
 ```sh
 docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~30 s
-docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~30 min on 32 cores
+docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~12 min on 32 cores
+MEND_FORMAL_WORKERS=4 docs/formal/standby-discard/check.sh   # on a shared machine; about an hour
 ```
+
+Pull requests run only `--quick`; the full bounds run each night and on a dispatched CI run with
+`formal: full` (`gh workflow run ci.yml --ref <branch> -f formal=full`). The nightly run gives this
+model `budget-full` minutes (`COVERAGE`) on CI's four cores and stops it there. When a change grows
+the full count, write the new count and its full-run time on the ticket, and if the time on four
+cores comes near that budget, say on the ticket what to give up before CI finds out at night: that
+is how SLNT-1065 started.
 
 TLC is the reference: the run you hand off with a change to the model or to the code it models is a
 TLC run. While iterating, `--engine tlx` (it composes with `--quick` and a row name) runs the same
@@ -51,7 +59,10 @@ bounds. A wrong count from either checker fails the row even when the verdict ma
 intended model change moves a count, take the new count from a TLC run, full and `--quick`. The rows
 and their expected outcomes are the `ROWS` table in `check.sh`:
 
-- `code-promise`, `code-promise-atomic-retire` and `code-claimable` are the code, expected to hold.
+- `code` is the code, expected to hold both `NoDiscardOfSessionWork` and `NoClaimableRowWithSession`
+  (one run: both are invariants of the same state space). `code-promise-atomic-retire` is the code
+  with `retire` made atomic, expected to hold; it runs at `--quick` only, because at the full bounds
+  `code` holding proves it (its constraint only removes transitions).
 - `mutant-no-reread` is the drain as it was before SLNT-823, with no session read after `retire`. It
   is expected to be **violated**: the finding (README, "The finding, fixed"). Its `-atomic-retire`
   row is expected violated and its `-no-sweep` row to hold; together they say what the finding

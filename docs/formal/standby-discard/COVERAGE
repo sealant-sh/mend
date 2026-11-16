@@ -22,3 +22,9 @@ path packages/db/src/repos/hot-workspaces.ts
 path packages/db/src/repos/session-processes.ts
 path packages/sessions/src/engine.ts
 path packages/sessions/src/capture-channel.ts
+
+# How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
+# naming this model (SLNT-1065). The full bounds took 61 minutes there for one 129M-state row at
+# 8dbb6f6f, before `code` merged the two rows that explored those states twice.
+budget-quick 10
+budget-full 75
