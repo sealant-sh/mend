@@ -718,6 +718,21 @@ is refused before it is sent, with its size. A connection that ends without an a
 502, 503 or 504, sends the same bundle again, twice at most. A server older than handoffs is named
 with its version, and nothing is created. Read [Hand off local work](/guides/hand-off-local-work/).
 
+## Import from T3 Code
+
+```text
+mend import t3 [--project <p>]... [--thread <id>]... [--archived] [--dry-run] [--yes]
+```
+
+`mend import t3` turns the T3 Code threads on this machine into sessions. Each Claude or Codex
+thread whose conversation is on the machine becomes a session holding that conversation, its history
+shown. The command prints its plan first and sends nothing with `--dry-run`. It hands off each
+checkout once, as `mend handoff` does, and sends each conversation as the harness's own files. A
+conversation over the server's `MEND_BUDGET_CONVERSATION_BYTES` limit, 64 MiB by default, stays on
+the machine and is named. Running it again imports only new threads.
+`mend message <session> --resume "…"` starts an imported session's agent on its conversation. Read
+[Import from T3 Code](/guides/import-from-t3-code/).
+
 ## Dashboard keys
 
 The session pane takes three quarters of the screen: a read-only detail of the selected session with
