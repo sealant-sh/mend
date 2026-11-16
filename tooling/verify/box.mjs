@@ -301,7 +301,8 @@ const stateSteps = (root, state, { head, tag, listing }) => {
             ...(preview ? [`a tidy would remove ${describeTidy(preview)}`] : []),
           ].join("; "),
   });
-  if (short) next.push(`${rerun("prepare", tag)}  # takes the hold and tidies first`);
+  if (short && steps.every((step) => step.id === "disk" || step.status === "passed"))
+    next.push(`${rerun("prepare", tag)}  # takes the hold and tidies first`);
   return { steps, next, need };
 };
 
