@@ -134,6 +134,11 @@ export const parseArgs = (argv) => {
       const value = argv[++index];
       if (!/^\d+$/.test(value ?? "")) throw new UsageError("--pr needs a pull request number");
       options.pr = value;
+    } else if (arg === "--tag") {
+      const value = argv[++index];
+      if (!/^[a-z][a-z0-9-]{0,39}$/.test(value ?? "") || /^(pr\d|sha-)/.test(value))
+        throw new UsageError("--tag needs a name such as main-<sha12>, not pr<n> or sha-<sha>");
+      options.tag = value;
     } else if (arg === "--concurrency") {
       const value = Number(argv[++index]);
       if (!Number.isInteger(value) || value < 1)
@@ -151,6 +156,8 @@ export const parseArgs = (argv) => {
     } else if (arg.startsWith("--")) throw new UsageError(`Unknown option ${arg}`);
     else words.push(arg);
   }
+  if (options.pr !== undefined && options.tag !== undefined)
+    throw new UsageError("--pr and --tag both name the check: pass one");
   return { words, options };
 };
 
@@ -166,7 +173,7 @@ const help = () =>
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
     "--concurrency <n> (check: turbo tasks and Vitest workers), --full (formal), --markdown (status),",
     "--record <answer.json> and --self (judge), --pr <n> or --body <file> (receipt),",
-    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n>, --yes (box), --url, --from,",
+    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n> or --tag <name>, --yes (box), --url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
     "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
     ".verify/latest/<verb>.json. Exit: 0 passed, 1 failed, 2 usage, 3 blocked by a",
@@ -281,7 +288,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
   if (verb === "box") {
     const sshArgs = options.ssh ?? process.env.MEND_VERIFY_BOX_SSH;
     const ssh = options.sshRunner ?? (sshArgs ? sshRunner(sshArgs.trim().split(/\s+/)) : null);
-    const tag = checkTag(options.pr, head);
+    const tag = checkTag(options.pr, head, options.tag);
     const context = { head, ssh, tag, yes: options.yes === true, stamp: stampOf(startedAt) };
     const { steps, next, ...rest } = {
       plan: () => boxPlan(root, context),

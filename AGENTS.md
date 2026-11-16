@@ -162,8 +162,8 @@ could defend are genuinely in dispute. Grade what the run finds by Fix Now or Fi
 
 The box is our preview Mend server: VM 131, with Boat set up, or VM 130 (`alpha.mend.run`).
 `docs/operations/preview-builds.md` ("The box") says how to reach each. A change goes there when its
-judge says so, or when the owner asks; nothing else does. Use it as a person would, through a `mend`
-CLI and browser already signed in. Never sign that CLI in or out, and never read its token.
+judge says so, when the owner asks, or in the scheduled run below. Use it as a person would, through
+a `mend` CLI and browser already signed in. Never sign that CLI in or out, and never read its token.
 
 Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as root), then, in order:
 
@@ -178,6 +178,15 @@ pnpm verify box release --pr <n> --yes   # when you are done
 ```
 
 `plan` and `identity` only read; the others change the box only with `--yes`.
+
+Every 12 hours, when `main` has product commits since the last run, a scheduled run puts a preview
+of `main` on VM 131 and uses it as a person through a list of flows that covers every feature in the
+verify skill's feature map, after reporting `main`'s full CI run. Its skill is
+`.agents/skills/box-main-run/`, the flows in `flows.md` there, each with a stable id. So the feature
+you proved on a local stack is used again on the real server by an agent that wrote none of it. Each
+failure becomes a ticket in "CI follow-ups" naming the merged PR that most likely caused it; when it
+names yours, pick it up. While it runs it holds the box as `main-<sha12>`: wait, as for any other
+hold.
 
 ## Dependencies
 

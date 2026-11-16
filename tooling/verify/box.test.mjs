@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { holdBy, parseState, relate, schemaProblems } from "./box.mjs";
 import { exitCode, validateResult } from "./result.mjs";
-import { runVerb } from "./verify.mjs";
+import { parseArgs, runVerb } from "./verify.mjs";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const migrations = execFileSync("node", [join(root, "scripts/mend-migrations.mjs")], {
@@ -131,6 +131,57 @@ test("prepare changes nothing without --yes, and with it dumps and holds", async
   assert.match(dump, /dump complete/);
   assert.match(dump, /"tag":"pr1700"/);
   assert.equal(done.cleanup.status, "left");
+});
+
+test("a --tag names the check in its hold, its dump and the command to rerun", async () => {
+  const dry = fakeBox(boxSays());
+  const plan = await box("prepare", {
+    sshRunner: dry.ssh,
+    pr: undefined,
+    tag: "main-c374a10430f2",
+  });
+  assert.deepEqual(plan.next, ["pnpm verify box prepare --yes --tag main-c374a10430f2"]);
+
+  const real = fakeBox(boxSays());
+  const done = await box("prepare", {
+    sshRunner: real.ssh,
+    pr: undefined,
+    tag: "main-c374a10430f2",
+    yes: true,
+  });
+  assert.equal(done.status, "passed");
+  const dump = real.scripts.find((script) => script.includes("pg_dumpall"));
+  assert.match(dump, /\/root\/backups\/pre-main-c374a10430f2-/);
+  assert.match(dump, /"tag":"main-c374a10430f2"/);
+
+  const ours = fakeBox(
+    boxSays({ hold: JSON.stringify({ tag: "main-c374a10430f2", at: "2026-11-14T20:00:00Z" }) }),
+  );
+  const released = await box("release", {
+    sshRunner: ours.ssh,
+    pr: undefined,
+    tag: "main-c374a10430f2",
+    yes: true,
+  });
+  assert.equal(released.status, "passed");
+  assert.ok(
+    ours.scripts.some((script) => script.includes("rm -f /var/lib/mend-box-check/hold.json")),
+  );
+});
+
+test("--tag takes a name no PR or commit check uses, and not beside --pr", () => {
+  assert.equal(
+    parseArgs(["box", "plan", "--tag", "main-c374a10430f2"]).options.tag,
+    "main-c374a10430f2",
+  );
+  for (const argv of [
+    ["box", "plan", "--tag", "pr1700"],
+    ["box", "plan", "--tag", "sha-c374a10430f2"],
+    ["box", "plan", "--tag", "Main Run"],
+    ["box", "plan", "--tag"],
+    ["box", "plan", "--tag", "main-x", "--pr", "1700"],
+  ])
+    assert.throws(() => parseArgs(argv), /--tag|--pr/, argv.join(" "));
 });
 
 test("cli stages nothing without --yes, and refuses a tree that is not the commit", async (t) => {
