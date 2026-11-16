@@ -124,7 +124,11 @@ describe.skipIf(context === undefined)("real Docker ownership and registry proto
     let containerId: string | undefined;
     let networkId: string | undefined;
     // Test infrastructure only. The stopped container needs neither ports nor persistent storage.
-    await docker("image", "pull", "busybox:1.37");
+    // CI pulls it beforehand through scripts/ci-images.mjs; pull only when it is missing, since a
+    // pull always asks Docker Hub, which limits anonymous pulls per address.
+    await docker("image", "inspect", "busybox:1.37").catch(() =>
+      docker("image", "pull", "busybox:1.37"),
+    );
     try {
       containerId = await docker(
         "container",

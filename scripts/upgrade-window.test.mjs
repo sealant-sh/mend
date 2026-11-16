@@ -406,9 +406,11 @@ test(
   { skip: !dockerUsable && "needs a Docker daemon" },
   async (t) => {
     // busybox stands for the old Mend image here: like it, it has no /fixture.
-    const image =
-      "busybox:1.37@sha256:bdf57e528e45e4433820e045b29b4597825a1c9e38353532d90a01445013f82e";
-    await docker(["pull", image]);
+    // CI pulls it beforehand, by digest, through scripts/ci-images.mjs; pull only when it is
+    // missing, since a pull always asks Docker Hub, which limits anonymous pulls per address.
+    const image = "busybox:1.37";
+    if (spawnSync("docker", ["image", "inspect", image], { stdio: "ignore" }).status !== 0)
+      await docker(["pull", image]);
     assert.notEqual(
       spawnSync("docker", ["run", "--rm", image, "test", "-d", "/fixture"]).status,
       0,

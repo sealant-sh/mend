@@ -445,6 +445,9 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    permissions:
+      contents: read
+      packages: read
     env:
       CI_TEST_REPORT_DIR: ${{ github.workspace }}/.ci-reports/test
       MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
@@ -481,14 +484,19 @@ jobs:
           key:
             ${{ runner.os }}-${{ runner.arch }}-tofu-providers-v2-${{
             hashFiles('deploy/aws/tofu/.terraform.lock.hcl') }}
-      - name: Install the declared Caddy image for edge access-log tests
+      - name: Pull the images the packaging tests run
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: >
-          image=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const image =
+          caddy=$(node --input-type=module -e 'import {readFileSync} from "node:fs"; const image =
           readFileSync("deploy/docker/compose.edge.yaml", "utf8").match(/^\s+image:
           (caddy:\S+)$/m)?.[1]; if (!image) throw new Error("Missing Caddy image");
           console.log(image);')
 
-          docker pull "$image"
+          base=$(sed -n 's/^FROM \([^ ]*\) AS runtime$/\1/p' Dockerfile)
+
+          node scripts/ci-images.mjs pull "$caddy" "$base" curlimages/curl:8.16.0 node:24-alpine \
+            nginx:1.29-alpine registry:3.1 alpine:3.20 busybox:1.37
       - name: Install Chromium for verification evidence tests
         run:
           pnpm --filter @mend/mobile exec playwright-core install --with-deps --only-shell chromium
@@ -575,10 +583,17 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           ref: ${{ inputs.head_sha }}
+      - name: Pull the server image's base
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs pull "$(bash scripts/store-image-git.sh --image)"
       - name: Store handoff tests under the server image's git
         run: bash scripts/store-image-git.sh
   formal:
@@ -624,6 +639,9 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
+    permissions:
+      contents: read
+      packages: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -635,6 +653,8 @@ jobs:
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       - name: Server Docker setup and mounted Undo on the runner's Docker engine
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/docker-suites.mjs
   preview-acceptance:
     needs: changes
@@ -664,6 +684,10 @@ jobs:
       - name: Install Chromium and Firefox for the preview browsers
         run:
           pnpm --filter @mend/api-server exec playwright-core install --with-deps chromium firefox
+      - name: Pull the preview edges' images
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci-images.mjs pull caddy:2.10-alpine nginx:1.29-alpine
       - name: Preview acceptance through every edge, in real browsers
         run: pnpm --filter @mend/api-server test:preview-acceptance
   vscode-e2e:
@@ -673,6 +697,9 @@ jobs:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
     timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: read
     env:
       MEND_TEST_VERSION: 0.0.0-ci
       VSCODE_VERSION: 1.142.0
@@ -694,6 +721,8 @@ jobs:
           cache: ${{ inputs.runner != 'box' && 'pnpm' || '' }}
       - run: pnpm install --frozen-lockfile
       - name: Pull the images the server build and the acceptance's world name
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run:
           node --input-type=module -e 'await (await
           import("./scripts/vscode-remote-world.mjs")).pullWorldImages();'

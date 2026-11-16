@@ -17,6 +17,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pullImages } from "./ci-images.mjs";
+
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 // The test world's outer machine, a CI fixture rather than an image Mend ships.
@@ -33,47 +35,9 @@ export const WORKSPACE_BASE_IMAGE = "node:26-bookworm";
 /** The base the server image builds from: the Dockerfile's `FROM`, checked by pullWorldImages. */
 export const SERVER_BUILD_BASE_IMAGE = "node:26-bookworm-slim";
 
-/** A Docker official image by digest: Docker's own mirror on ECR Public, then Google's. */
-const official = (tag, digest) => [
-  `public.ecr.aws/docker/library/${tag}@${digest}`,
-  `mirror.gcr.io/library/${tag}@${digest}`,
-];
-// Where CI pulls each Docker Hub image above, in order: by digest from registries with no Docker
-// Hub pull limit, then tagged with the name setup and the Dockerfile use, so neither changes. Each
-// digest is the index Docker Hub serves for that tag, and every source serves it. ECR Public
-// limits anonymous pulls per address, and GitHub's runners share addresses, so one source is not
-// enough. Garage is not on ECR; Google's mirror is its only source.
-export const DOCKER_HUB_SOURCES = {
-  "docker:27.5.1-dind": official(
-    "docker:27.5.1-dind",
-    "sha256:aa3df78ecf320f5fafdce71c659f1629e96e9de0968305fe1de670e0ca9176ce",
-  ),
-  "postgres:17-alpine": official(
-    "postgres:17-alpine",
-    "sha256:a77aa70e641402a21411b92b721c58d10f23b50ae5fdd2333efd22d166e1e5f7",
-  ),
-  "dxflrs/garage:v2.4.1": [
-    "mirror.gcr.io/dxflrs/garage:v2.4.1@sha256:9c96caa2612d3411acc5b0e6701fb238dbfba33e533a6d7d3d811a4b12d0d020",
-  ],
-  "nginx:1.29-alpine": official(
-    "nginx:1.29-alpine",
-    "sha256:5616878291a2eed594aee8db4dade5878cf7edcb475e59193904b198d9b830de",
-  ),
-  "registry:3.1": official(
-    "registry:3.1",
-    "sha256:82f6ff4a7f982960c8aa51617fea3aabc485df6e55cce80d22deb1de36f1bc3c",
-  ),
-  "node:26-bookworm": official(
-    "node:26-bookworm",
-    "sha256:b7087bc4d973034b30854b378ba107f9fab622b47514cb7e2592e41b8bab8d49",
-  ),
-  "node:26-bookworm-slim": official(
-    "node:26-bookworm-slim",
-    "sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1",
-  ),
-};
-/** Tries of each source before the next, and the waits between them. */
-const PULL_BACKOFF_MS = [0, 10_000, 30_000];
+// CI pulls each image above by digest through scripts/ci-images.mjs (its GHCR copy, then ECR Public,
+// then mirror.gcr.io, with retries) and tags it with the name setup and the Dockerfile use, so
+// neither changes (SLNT-1046, SLNT-1071).
 // The daemon inside the world pulls the network guard image by digest, a reference `docker tag`
 // cannot make, so its Docker Hub pulls go through Google's mirror, which serves Hub's digests.
 const DIND_REGISTRY_MIRROR = "https://mirror.gcr.io";
@@ -137,34 +101,9 @@ export const docker = async (args, options) => (await run("docker", args, option
 
 export const lines = (text) => text.split("\n").filter((line) => line.trim() !== "");
 
-/** The first of `sources` that serves `name`, each tried a few times; every failure is logged. */
-const pullFirst = async (name, sources) => {
-  const failures = [];
-  for (const source of sources) {
-    for (const [index, wait] of PULL_BACKOFF_MS.entries()) {
-      if (wait > 0) await sleep(wait);
-      const pulled = await run("docker", ["pull", "-q", source], {
-        allowFailure: true,
-        timeout: 600_000,
-      });
-      const attempt = `${source} (try ${index + 1} of ${PULL_BACKOFF_MS.length})`;
-      if (pulled.status === 0) {
-        console.log(
-          `${name} ← ${attempt}${failures.length === 0 ? "" : `, after ${failures.length} failed`}`,
-        );
-        return source;
-      }
-      const reason = (pulled.stderr || pulled.stdout).trim().split("\n").at(-1) ?? "";
-      failures.push(`${attempt}: ${reason}`);
-      console.log(`${name}: ${attempt} failed: ${reason}`);
-    }
-  }
-  throw new Error(`${name} could not be pulled from any source:\n${failures.join("\n")}`);
-};
-
 /**
- * Every image the world needs, and the server build's base, pulled without Docker Hub: each from
- * its DOCKER_HUB_SOURCES entry and tagged with its Docker Hub name.
+ * Every image the world needs, and the server build's base, pulled without Docker Hub, through
+ * scripts/ci-images.mjs, and tagged with its Docker Hub name.
  */
 export const pullWorldImages = async () => {
   const dockerfile = fs.readFileSync(path.join(repoRoot, "Dockerfile"), "utf8");
@@ -175,19 +114,14 @@ export const pullWorldImages = async () => {
   );
   if (bases.size !== 1 || !bases.has(SERVER_BUILD_BASE_IMAGE))
     throw new Error(
-      `The Dockerfile builds from ${[...bases].join(", ")}, not ${SERVER_BUILD_BASE_IMAGE}: update SERVER_BUILD_BASE_IMAGE and its DOCKER_HUB_SOURCES digest`,
+      `The Dockerfile builds from ${[...bases].join(", ")}, not ${SERVER_BUILD_BASE_IMAGE}: update SERVER_BUILD_BASE_IMAGE and its CI_IMAGES digest (scripts/ci-images.mjs)`,
     );
-  for (const name of [
+  await pullImages([
     DIND_IMAGE,
     ...SERVER_SUPPORT_IMAGES,
     WORKSPACE_BASE_IMAGE,
     SERVER_BUILD_BASE_IMAGE,
-  ]) {
-    const sources = DOCKER_HUB_SOURCES[name];
-    if (sources === undefined) throw new Error(`${name} has no DOCKER_HUB_SOURCES entry`);
-    const served = await pullFirst(name, sources);
-    await docker(["tag", served, name]);
-  }
+  ]);
 };
 
 /** Every image the world needs is on this machine's Docker; the first missing one is named. */

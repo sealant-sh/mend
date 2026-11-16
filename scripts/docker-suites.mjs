@@ -13,21 +13,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { pullImages } from "./ci-images.mjs";
+
 const root = fileURLToPath(new URL("../", import.meta.url));
 
-// The rollback suite's workspace is a test fixture. Docker Hub limits anonymous pulls per runner
-// address and CI has no login, so it comes by digest from Docker's official-image mirror on ECR
-// Public. The bootstrap suite's Postgres is the official image the server ships, and stays as the
-// product names it.
-const rollbackImage =
-  "public.ecr.aws/docker/library/node:26-trixie@sha256:e18c3ccdf7d71619990b0e85639f506e2028a95410999cab24cc373cbd10e0ac";
+// Every image here comes through scripts/ci-images.mjs (CI's GHCR copy, then the public mirrors,
+// with retries) under its Docker Hub name, since Docker Hub limits anonymous pulls per address. The
+// rollback suite's workspace is a test fixture; the bootstrap suite's Postgres is the official image
+// the server ships, under the name the product uses; busybox is the protocol suite's stand-in.
+const rollbackImage = "node:26-trixie";
 
 const suites = [
   {
     filter: "@sealant/mend",
     file: "src/server-docker-protocol.test.ts",
     env: { MEND_DOCKER_TEST_CONTEXT: "default" },
-    images: [],
+    images: ["busybox:1.37"],
   },
   {
     filter: "@sealant/mend",
@@ -56,9 +57,7 @@ const run = (command, args, options = {}) => {
 };
 
 // Each suite runs its containers with --pull=never.
-for (const image of new Set(suites.flatMap((suite) => suite.images))) {
-  run("docker", ["pull", "--quiet", image]);
-}
+await pullImages([...new Set(suites.flatMap((suite) => suite.images))]);
 const scratch = mkdtempSync(join(tmpdir(), "mend-docker-suites-"));
 try {
   for (const [index, suite] of suites.entries()) {
