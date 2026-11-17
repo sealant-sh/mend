@@ -263,9 +263,6 @@ const carriedOf = (report: unknown): ReadonlyArray<string> => {
  * Sync from asking, which the test host refuses; Mend still sees a person's install.
  */
 const pickInWorkspace = async () => {
-  // DELIBERATE BREAK (SLNT-1088), reverted by the next commit: VS Code's gallery error for a
-  // network failure, to see the first window name this step and cause.
-  if (pickedExtension !== "") throw Object.assign(new Error("Failed to fetch"), { name: "Failed" });
   const installed = Date.now();
   await vscode.commands.executeCommand("workbench.extensions.installExtension", pickedExtension, {
     donotSync: true,
