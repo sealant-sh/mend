@@ -82,6 +82,7 @@ export const parseArgs = (argv) => {
     else if (arg === "--all") options.all = true;
     else if (arg === "--full") options.full = true;
     else if (arg === "--yes") options.yes = true;
+    else if (arg === "--no-restore") options.noRestore = true;
     else if (arg === "--self") options.self = true;
     else if (arg === "--body") {
       const value = argv[++index];
@@ -174,7 +175,8 @@ const help = () =>
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
     "--concurrency <n> (check: turbo tasks and Vitest workers), --full (formal), --markdown (status),",
     "--record <answer.json> and --self (judge), --pr <n> or --body <file> (receipt),",
-    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n> or --tag <name>, --yes (box), --url, --from,",
+    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n> or --tag <name>, --yes and --no-restore (box),",
+    "--url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
     "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
     ".verify/latest/<verb>.json. Exit: 0 passed, 1 failed, 2 usage, 3 blocked by a",
@@ -297,7 +299,13 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
       prepare: () => boxPrepare(root, context),
       cli: () => boxCli(root, { ...context, ...(options.run ? { run: options.run } : {}) }),
       identity: () => boxIdentity(root, context),
-      release: () => boxRelease(context),
+      release: () =>
+        boxRelease({
+          ...context,
+          root,
+          noRestore: options.noRestore === true,
+          ...(options.readMain ? { readMain: options.readMain } : {}),
+        }),
     }[options.subverb]();
     return createResult({ verb: `box ${options.subverb}`, head, startedAt, steps, next, ...rest });
   }

@@ -54,10 +54,20 @@ const boxLists = ({ free = 40 * GB } = {}) =>
   ].join("\n");
 
 // A box that answers the read, the listing and a tidy, and records every script it was sent.
-const fakeBox = (text, { listing = boxLists(), after = 40 * GB } = {}) => {
+const fakeBox = (
+  text,
+  { listing = boxLists(), after = 40 * GB, restored = "restore=done\n", afterRestore = text } = {},
+) => {
   const scripts = [];
+  let restoredYet = false;
   const ssh = (script) => {
     scripts.push(script);
+    if (script.includes("# restore-dump")) {
+      restoredYet = true;
+      return { code: 0, stdout: restored, stderr: "" };
+    }
+    if (restoredYet && script.includes("mend_migrations"))
+      return { code: 0, stdout: afterRestore, stderr: "" };
     if (script.includes("pg_dumpall")) return { code: 0, stdout: "141557760\n", stderr: "" };
     if (script.includes("# tidy-listing")) return { code: 0, stdout: listing, stderr: "" };
     if (script.includes("exit 9")) {
@@ -69,8 +79,15 @@ const fakeBox = (text, { listing = boxLists(), after = 40 * GB } = {}) => {
   return { ssh, scripts };
 };
 
+// Main carries every migration this head has unless a test says otherwise: no git fetch in tests.
 const box = (subverb, extra) =>
-  runVerb(root, "box", { base: "origin/main", subverb, pr: "1700", ...extra });
+  runVerb(root, "box", {
+    base: "origin/main",
+    subverb,
+    pr: "1700",
+    readMain: () => migrations,
+    ...extra,
+  });
 
 test("the box's state is read with unknowns kept unknown", () => {
   const state = parseState(boxSays({ live: "" }));
@@ -310,7 +327,10 @@ test("release tidies while it still holds the box, then lifts the hold", async (
     ],
   );
   assert.equal(done.tidy.after, 40 * GB);
-  assert.match(done.steps[0].detail, /free .* before, 40\.0 GiB after/);
+  assert.match(
+    done.steps.find((step) => step.id === "tidy").detail,
+    /free .* before, 40\.0 GiB after/,
+  );
 });
 
 test("release removes nothing without its own hold, nor without --yes", async () => {
@@ -322,7 +342,7 @@ test("release removes nothing without its own hold, nor without --yes", async ()
   const dry = fakeBox(boxSays({ hold: ours }));
   const plan = await box("release", { sshRunner: dry.ssh });
   assert.equal(plan.status, "skipped");
-  assert.match(plan.steps[0].detail, /Would remove 2 images/);
+  assert.match(plan.steps.find((step) => step.id === "tidy").detail, /Would remove 2 images/);
   assert.deepEqual(tidies(dry.scripts), []);
   assert.ok(!dry.scripts.some((script) => script.includes("rm -f")));
 });
@@ -374,4 +394,88 @@ test("prepare on a short box holds it and tidies; it goes on only when that made
   });
   await box("prepare", { sshRunner: busy.ssh, yes: true });
   assert.deepEqual(tidies(busy.scripts), [], "a box in use by another check is never tidied");
+});
+
+const heldWithDump = JSON.stringify({
+  tag: "pr1700",
+  head: "b".repeat(40),
+  at: "2026-11-14T21:00:00Z",
+  dump: "/root/backups/pre-pr1700-20261114T210000Z.sql",
+});
+const fromPr = [...migrations, "9999_from_a_pr"];
+const onMain = () => migrations;
+const restores = (scripts) => scripts.filter((script) => script.includes("# restore-dump"));
+const lifts = (scripts) =>
+  scripts.filter((script) => script.includes("rm -f /var/lib/mend-box-check/hold.json"));
+
+test("release puts back the data when the check left a migration main lacks", async () => {
+  const dry = fakeBox(boxSays({ hold: heldWithDump, applied: fromPr }));
+  const plan = await box("release", { sshRunner: dry.ssh, readMain: onMain });
+  assert.equal(plan.steps[0].id, "restore");
+  assert.equal(plan.steps[0].status, "skipped");
+  assert.match(plan.steps[0].detail, /Would restore \/root\/backups\/pre-pr1700-.*9999_from_a_pr/);
+  assert.deepEqual(restores(dry.scripts), [], "nothing restored without --yes");
+
+  const real = fakeBox(boxSays({ hold: heldWithDump, applied: fromPr }), {
+    afterRestore: boxSays({ hold: heldWithDump }),
+  });
+  const done = await box("release", { sshRunner: real.ssh, readMain: onMain, yes: true });
+  assert.deepEqual(validateResult(done), []);
+  assert.equal(done.status, "passed");
+  assert.match(done.steps[0].detail, /9999_from_a_pr undone; Mend is stopped/);
+  const [restore] = restores(real.scripts);
+  assert.match(restore, /dump='\/root\/backups\/pre-pr1700-20261114T210000Z\.sql'/);
+  assert.ok(
+    real.scripts.indexOf(restore) < real.scripts.indexOf(tidies(real.scripts)[0]),
+    "the data goes back before the tidy",
+  );
+  assert.equal(lifts(real.scripts).length, 1);
+});
+
+test("a restore that fails or leaves the migration keeps the hold", async () => {
+  for (const options of [
+    { restored: "restore=could not stop mend-mend-1\n" },
+    { restored: 'error=ERROR:  relation "x" does not exist\nrestore=done\n' },
+    { restored: "restore=done\n" },
+  ]) {
+    const real = fakeBox(boxSays({ hold: heldWithDump, applied: fromPr }), options);
+    const done = await box("release", { sshRunner: real.ssh, readMain: onMain, yes: true });
+    assert.equal(done.status, "failed", options.restored);
+    assert.match(done.steps[0].detail, /the hold stays/);
+    assert.deepEqual(lifts(real.scripts), [], "the hold is not lifted");
+    assert.deepEqual(tidies(real.scripts), [], "nothing is tidied");
+  }
+});
+
+test("release restores nothing when main has every migration, or with --no-restore", async () => {
+  const plain = fakeBox(boxSays({ hold: heldWithDump }));
+  const done = await box("release", { sshRunner: plain.ssh, readMain: onMain, yes: true });
+  assert.equal(done.steps[0].status, "passed");
+  assert.match(done.steps[0].detail, /no migration main lacks/);
+  assert.deepEqual(restores(plain.scripts), []);
+
+  const kept = fakeBox(boxSays({ hold: heldWithDump, applied: fromPr }));
+  const left = await box("release", {
+    sshRunner: kept.ssh,
+    readMain: onMain,
+    yes: true,
+    noRestore: true,
+  });
+  assert.equal(left.steps[0].status, "skipped");
+  assert.match(left.steps[0].detail, /--no-restore: the box applied 9999_from_a_pr/);
+  assert.deepEqual(restores(kept.scripts), []);
+  assert.equal(lifts(kept.scripts).length, 1);
+});
+
+test("release refuses to restore from a dump the hold does not name", async () => {
+  const bare = fakeBox(boxSays({ hold: ours, applied: fromPr }));
+  const done = await box("release", { sshRunner: bare.ssh, readMain: onMain, yes: true });
+  assert.equal(done.status, "failed");
+  assert.match(done.steps[0].detail, /names no dump/);
+  assert.deepEqual(restores(bare.scripts), []);
+  assert.deepEqual(lifts(bare.scripts), []);
+});
+
+test("--no-restore parses", () => {
+  assert.equal(parseArgs(["box", "release", "--no-restore"]).options.noRestore, true);
 });

@@ -391,8 +391,141 @@ printf '%s' '${hold}' > ${HOLD}
   };
 };
 
-/** release: tidy the box while this check still holds it, then lift the hold. */
-export const boxRelease = ({ ssh, tag, yes }) => {
+/**
+ * The Mend migrations `origin/main` carries, fetched fresh: what a deploy of plain main can run
+ * over. Null when they cannot be read.
+ */
+export const mainMigrations = (root) => {
+  spawnSync("git", ["fetch", "--quiet", "origin", "main"], { cwd: root, stdio: "ignore" });
+  try {
+    return migrationNames(git(root, ["show", "origin/main:packages/db/src/migrations.ts"]));
+  } catch {
+    return null;
+  }
+};
+
+const DUMP_PATH = /^\/root\/backups\/[A-Za-z0-9._-]+\.sql$/;
+
+/**
+ * Puts the box's databases back to `dump`, prepare's pg_dumpall: stops the app, drops every
+ * database but the templates and `postgres`, and replays the dump. Roles already exist, so their
+ * CREATE ROLE errors are expected; any other error is printed. The app stays stopped: the image
+ * the check deployed would apply its migrations again on start, and Mend refuses a downgrade, so
+ * the next deploy is what starts Mend again.
+ */
+export const restoreScript = (dump) => `# restore-dump
+set -uo pipefail
+dump='${dump}'
+[ -s "$dump" ] || { echo "restore=no dump at $dump"; exit 1; }
+tail -c 200 "$dump" | grep -q 'dump complete' || { echo "restore=$dump has no pg_dumpall trailer"; exit 1; }
+docker stop --time 60 mend-mend-1 >/dev/null 2>&1 || { echo "restore=could not stop mend-mend-1"; exit 1; }
+q() { docker exec -i mend-postgres-1 psql -U postgres "$@"; }
+for db in $(q -At -c "select datname from pg_database where not datistemplate and datname <> 'postgres'"); do
+  q -v ON_ERROR_STOP=1 -q -c "drop database \\"$db\\" with (force)" >/dev/null || { echo "restore=could not drop $db"; exit 1; }
+done
+err=$(mktemp)
+q -d postgres -q < "$dump" >/dev/null 2>"$err"
+grep 'ERROR:' "$err" | grep -v 'role ".*" already exists' | head -5 | sed 's/^/error=/'
+rm -f "$err"
+echo "restore=done"
+`;
+
+/**
+ * restore: when the check left migrations main lacks on the box, put its data back to the hold's
+ * dump, so the next run of plain main is not refused. Null means release may go on.
+ */
+const restoreStep = (ssh, { state, yes, noRestore, main }) => {
+  const title = "Put back the data a migration main lacks changed (changes the box)";
+  if (main === null)
+    return {
+      step: {
+        id: "restore",
+        title,
+        status: "failed",
+        detail: "origin/main's migrations could not be read",
+      },
+      stop: true,
+    };
+  const extra = state.migrations.filter((name) => !main.includes(name));
+  if (extra.length === 0)
+    return {
+      step: {
+        id: "restore",
+        title,
+        status: "passed",
+        detail: "the box applied no migration main lacks; its data stays as the check left it",
+      },
+    };
+  const dump = state.hold?.dump ?? "";
+  const which = `the box applied ${extra.join(", ")}, which main lacks`;
+  if (noRestore)
+    return {
+      step: {
+        id: "restore",
+        title,
+        status: "skipped",
+        detail: `--no-restore: ${which}, so the box refuses a preview of main until they merge`,
+      },
+    };
+  if (!DUMP_PATH.test(dump))
+    return {
+      step: {
+        id: "restore",
+        title,
+        status: "failed",
+        detail: `${which}, and the hold names no dump to restore`,
+      },
+      stop: true,
+    };
+  if (!yes)
+    return {
+      step: {
+        id: "restore",
+        title,
+        status: "skipped",
+        detail: `Would restore ${dump} (${which}) and leave Mend stopped until the next deploy`,
+      },
+    };
+  const run = ssh(restoreScript(dump));
+  const lines = run.stdout.split("\n");
+  const errors = lines.filter((line) => line.startsWith("error=")).map((line) => line.slice(6));
+  const done = lines.includes("restore=done");
+  const after = readState(ssh).state;
+  const left = (after?.migrations ?? extra).filter((name) => !main.includes(name));
+  const ok = done && errors.length === 0 && left.length === 0;
+  return {
+    step: {
+      id: "restore",
+      title,
+      status: ok ? "passed" : "failed",
+      detail: ok
+        ? `restored ${dump}: ${extra.join(", ")} undone; Mend is stopped on the restored data until the next deploy starts it`
+        : [
+            lines.find((line) => line.startsWith("restore=") && line !== "restore=done") ??
+              `restore exited ${run.code}`,
+            ...errors.map((error) => `psql: ${error}`),
+            left.length > 0 ? `still applied: ${left.join(", ")}` : null,
+            "the hold stays: put the box right by hand (docs/operations/preview-builds.md), then release again",
+          ]
+            .filter(Boolean)
+            .join("; "),
+    },
+    stop: !ok,
+  };
+};
+
+/**
+ * release: put back the data a migration main lacks changed, tidy the box while this check still
+ * holds it, then lift the hold.
+ */
+export const boxRelease = ({
+  root,
+  ssh,
+  tag,
+  yes,
+  noRestore = false,
+  readMain = mainMigrations,
+}) => {
   const { state, listing, error } = readState(ssh);
   if (error) return error;
   const ours = state.hold?.tag === tag;
@@ -411,10 +544,13 @@ export const boxRelease = ({ ssh, tag, yes }) => {
       next: [],
     };
   }
+  const restore = restoreStep(ssh, { state, yes, noRestore, main: readMain(root) });
+  if (restore.stop) return { steps: [restore.step], next: [] };
   if (!yes) {
     const choice = chooseTidy({ listing, hold: state.hold, tag });
     return {
       steps: [
+        restore.step,
         {
           id: "tidy",
           title: "Tidy the box (changes the box)",
@@ -435,6 +571,7 @@ export const boxRelease = ({ ssh, tag, yes }) => {
   const run = ssh(`rm -f ${HOLD}`);
   return {
     steps: [
+      restore.step,
       tidied.step,
       {
         id: "release",
