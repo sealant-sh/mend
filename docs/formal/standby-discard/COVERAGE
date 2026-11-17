@@ -34,7 +34,9 @@ path packages/sessions/src/engine.ts
 path packages/sessions/src/capture-channel.ts
 
 # How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
-# naming this model (SLNT-1065). The full bounds took 57 minutes there at b192d2e2 (`code`, 129M
-# states, 3,312 s); the budget leaves room for a slower runner inside the job's 90 minutes.
+# naming this model (SLNT-1065). GitHub's four-core runner is not one speed: the full bounds took
+# 57 minutes on a fast host (b192d2e2, `code` at 18M states generated a minute), and a slow host
+# (nightly 44068746119, 12M a minute throughout) would have needed about 85. The budget is about 30%
+# over the slow host, and CI's formal job allows 10 minutes more for setup.
 budget-quick 10
-budget-full 75
+budget-full 110

@@ -223,6 +223,13 @@ test("formal guards and quick-checks the models on a pull request, and runs ever
       .toSorted(),
   );
   assert.equal(jobs.formal.strategy["fail-fast"], false);
+  // formal.mjs stops a model at its own budget, so it fails naming the model before the job's
+  // limit cancels it with nothing said; ten minutes cover checkout, setup and fetching TLC.
+  for (const coverage of readCoverages(fileURLToPath(root)))
+    assert.ok(
+      coverage.budgets.full + 10 <= jobs.formal["timeout-minutes"],
+      `${coverage.area}: budget-full ${coverage.budgets.full} does not fit CI's formal job (${jobs.formal["timeout-minutes"]} minutes, setup included)`,
+    );
   const step = jobs.formal.steps.find((candidate) => candidate.env?.AREA !== undefined);
   assert.equal(step.env.AREA, "${{ matrix.area }}");
   assert.equal(step.env.BOUNDS, "${{ inputs.formal }}");
