@@ -23,8 +23,13 @@ worktree is `<worktree path>`; run every command from there.
   as the checker account; `…/bin/web2` as the second account. `<recipe>` is the flow's recipe in
   `.agents/skills/box-main-run/recipes/`, or a module you write into `<evidence dir>/<flow id>/` for
   a flow with none (default export `async ({ page, web, capture, note }) => {}`; `capture(name)`
-  saves the screen).
-- The box's web: `<web>`. The project: `boat-check-ubuntu`, written `<p>`. `<sha8>`: `<sha8>`.
+  saves the screen). A recipe that reads a session takes it from the environment:
+  `MAIN_RUN_SESSION=<id> ~/.local/state/mend-main-run/bin/web <out dir> <recipe>`.
+- A flow whose Mode is `scripted (recipes/cli-reads.sh <id>)` runs
+  `E=<evidence dir> SHA8=<the commit's first 8 characters> .agents/skills/box-main-run/recipes/cli-reads.sh <id>`,
+  which writes its own `cli.log` and `result.txt`.
+- The box's web: `<web>`. The project: `boat-check-ubuntu`, written `<p>`. Where flows.md writes
+  `<sha8>`, use `<the commit's first 8 characters>`.
 - Sessions earlier flows made: <name = session id, one per line, or "none">
 - Evidence: `<evidence dir>/<flow id>/` per flow.
 
@@ -50,6 +55,10 @@ carry on. A flow is `seen` when every part of its See line was seen, `failed` wh
 not, after you reached the step where it should show. Mark it `not run · <why>` only when it could
 not start. Add no check of your own to a flow, and do not try another way to make a part of the See
 line appear.
+
+**Wait for what you read.** A page fills some of its parts in after it renders (on 17 Nov the
+account popover drew its machine and exposure lines a moment after it opened). Before you capture a
+state or call a part of the See line missing, wait for that part to appear, up to 20 seconds.
 
 **Restore what a flow changed, even when it failed.** When a flow's Do line restores something
 (removes what it made, sets a setting back), do that part before you move on, whatever the flow's

@@ -278,8 +278,8 @@ Start a subagent with T3's `delegate_task`: `target`
 `{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
 `isolation: "shared"` (it works in this worktree), and as `task` the text of
 [sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, this worktree's path,
-`$WEB`, `<sha8>`, `$E`, and the session ids earlier flows made (from their `result.txt` or your own
-notes). Wait for its completion, then read its evidence.
+`$WEB`, the commit's first 8 characters, `$E`, and the session ids earlier flows made (from their
+`result.txt` or your own notes). Wait for its completion, then read its evidence.
 
 **Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
 driver's `steps.log` and its screenshots show every part of the flow's See line. Read them for every

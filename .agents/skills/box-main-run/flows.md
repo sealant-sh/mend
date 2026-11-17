@@ -854,10 +854,11 @@ flows reuse what earlier ones made:
 - **Do:** `M members`, `M org`; `M invite --email main-run@example.invalid --days 1`; on Settings →
   Invitations choose `Revoke` on that link's row, which restores the list in the same flow; read the
   audit log.
-- **See:** `<org> · 1 member` with the `▸` row `owner`; `M org` marks Default; the link, then the
-  row gone from `Open invitations` and the fold `Used and closed <n> links` one higher (it appears
-  as `1 link` when absent before), its summary naming `main-run@example.invalid · revoked`; the
-  audit log's newest lines name the invite and the revoke.
+- **See:** `<org> · 2 members` (the owner and `fixtures.sh`'s second account) with the `▸` row
+  `owner`; `M org` marks Default; the link, then the row gone from `Open invitations` and the fold
+  `Used and closed <n> links` one higher (it appears as `1 link` when absent before), its summary
+  naming `main-run@example.invalid · revoked`; the audit log's newest lines name the invite and the
+  revoke.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
