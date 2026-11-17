@@ -19,7 +19,7 @@ One comment on SLNT-1050, every line an observation in Mend's words ("seen", nev
 ```markdown
 **Main on the box · <commit:12> · <UTC date>**
 
-Full CI: scheduled run <link> on <commit:12>, <conclusion>, <n> min, started <age> before this run.
+Full CI: run <link> (dispatched by this run, `formal=full`) on <commit:12>, <conclusion>, <n> min.
 
 - Jobs: <name · conclusion>, … (every job).
 - Tests failed or retried: <package · file > name · outcome · ticket>, … (or none).
@@ -27,16 +27,20 @@ Full CI: scheduled run <link> on <commit:12>, <conclusion>, <n> min, started <ag
 
 Box:
 
+- Wait for the box: <h> h <m> min from the lock to the hold.
 - Build: preview run <link>, version <version>, <n> min. Box: VM 131, was <version before>.
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
-- Disk under /var/lib/docker: <free before> → <free after> free. Removed: <what step 6 removed>.
+- Free on `/`: <free before> → <free after> free. Removed: <what step 6 removed>.
 
-| Flow           | Mode     | Min | Outcome            | What was seen                                  |
-| -------------- | -------- | --- | ------------------ | ---------------------------------------------- |
-| server.upgrade | agent    | 9   | seen               | finished for <version>; the box runs this head |
-| …              | scripted | 2   | failed · SLNT-n    | <the line that differed from "See">            |
-| …              | agent    |     | not run · <reason> |                                                |
+| Flow           | Mode     | By        | Min | Outcome         | What was seen                                  |
+| -------------- | -------- | --------- | --- | --------------- | ---------------------------------------------- |
+| server.upgrade | agent    | Opus      | 9   | seen            | finished for <version>; the box runs this head |
+| …              | scripted | Sol       | 2   | failed · SLNT-n | <the line that differed from "See">            |
+| …              | agent    | Sol, Opus |     | seen            | <Opus re-saw it>                               |
 
+- Who drove the flows: <n> by Sol subagents, <n> of them re-done by Opus; <n> by Opus. Model calls:
+  Opus <n>, Sol <n> (from each thread's transcript or T3's task record; `not shown` when neither
+  says).
 - Not on the box by design: flows.md, "Not on the box".
 
 <screenshots, one per web flow, the state a person saw>

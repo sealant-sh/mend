@@ -1,8 +1,8 @@
 # Flows on the box
 
-Runs: the flows marked `Sample: yes`, until the owner picks a set on SLNT-1050. Every other flow is
-listed so a person can read what a full pass would cover; a run reports it
-`not run · not in this run's set`.
+Runs: every flow below, once a day (the owner's choice on SLNT-1050, 17 Nov). To run fewer, name the
+set on this line, for example "the flows marked `Sample: yes`"; a run reports each flow outside it
+as `not run · not in this run's set`.
 
 Every flow one run of [SKILL.md](SKILL.md) can use on the box (VM 131), as its signed-in owner,
 after the preview of `main` is deployed. Each flow comes from the feature map
@@ -22,9 +22,10 @@ driven by the run's agent from the feature file.
 Box facts the flows depend on: sessions run on Boat by default, and Docker is offered beside it; the
 runtime is chosen per organization and a worktree keeps the runtime it was made on. One organization
 (Default), one account, single tenancy. Provider logins on 16 Nov: codex and claude connected,
-GitHub not. Flows use codex only until the owner says the run may spend Claude tokens (SLNT-1050).
-Exactly one flow, `start-session.boat-turn`, runs a real agent turn (codex, a one-line prompt):
-every turn spends the owner's tokens.
+GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided.
+Three flows run a real agent turn, each with a one-line prompt: `start-session.boat-turn`,
+`start-session.composer` and `send-review-back.deliver`. They use codex: the owner has far more
+Codex capacity than Claude (17 Nov).
 
 The map still names the project page's `Setup` tab. The web now has a project `Settings` tab with
 sub-tabs (`General`, `Workspace`, `Services`, `Secrets`, `Git`, `Landing`, `Review`, `Folders`;
@@ -64,11 +65,11 @@ flows reuse what earlier ones made:
 
 1. `server.data-intact` (before half), `server.upgrade`, `server.data-intact` (after half),
    `server.status-logs`
-2. `doctor.checklist`, `cli.help-version`, `exposure.read`, `operator.read`,
-   `organization.read-invite`, `provider-accounts.read`, `models.list-picker`
+2. `doctor.checklist`, `cli.version`, `exposure.read`, `operator.read`, `organization.read-invite`,
+   `provider-accounts.read`, `models.list-picker`
 3. `start-session.boat-turn`, `review-change.web-review`, `now-and-sessions.web-now`,
-   `attach-resume.boat-stop-resume`
-4. `start-session.boat-run`, `review-change.web-comments`, `send-review-back.open-only`,
+   `attach-resume.boat-stop-resume`, `send-review-back.deliver`
+4. `start-session.boat-run`, `start-session.composer`, `review-change.web-comments`,
    `land-change.panel-read`, `pull-change.boat-run`, `attach-resume.rename-web`, `tui.dashboard`
 5. `start-session.docker-run`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `session-shell.live-shell`,
@@ -122,6 +123,19 @@ flows reuse what earlier ones made:
 - **Sample:** yes
 - **Areas:** `packages/sessions/`, `packages/agent-protocol/`, `packages/agent-conversation/`,
   `apps/cli/src/`
+
+### start-session.composer
+
+- **Map:** start-session.md `start-composer`; now-and-sessions.md `home-composer`
+- **Needs:** Boat; real turn (codex); web; `start-session.boat-run` (its worktree)
+- **Do:** On `/`, in the form `New session`: project `<p>`, worktree `main-run-run-<sha8>`, harness
+  codex, the prompt `Reply with the single word ready and change nothing.`, then `Start`. Wait for
+  the turn with `M wait <id> --turn --timeout 8m`.
+- **See:** the browser lands on `/sessions/<id>` for a codex session in that worktree; the turn
+  completes; `M sessions --project <p> --json` lists it with no file changed by it.
+- **Mode:** `agent`
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
 
 ### start-session.boat-run
 
@@ -187,18 +201,21 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
 
-### send-review-back.open-only
+### send-review-back.deliver
 
-- **Map:** send-review-back.md `send-open`, `send-select`
-- **Needs:** either; no turn; web; `review-change.web-comments`
-- **Do:** On the same review, choose `Send review to session`, uncheck the one comment, read the
-  overlay, and close it without delivering. Delivering would resume the session and spend a turn.
+- **Map:** send-review-back.md `send-open`, `send-select`, `send-deliver`, `send-sent-state`
+- **Needs:** Boat; real turn (codex); web; `attach-resume.boat-stop-resume` (the turn's session,
+  settled)
+- **Do:** On the turn's change, add the change-level comment
+  `Add a second line to MAIN-RUN.md reading: reviewed.`, choose `Send review to session`, then
+  `Deliver to session`. Wait for the turn with `M wait <id> --turn --timeout 8m`.
 - **See:** the overlay `Send review to the session` with
-  `1 of 1 comments selected · resumes <branch>`, then `0 of 1` after the uncheck; after closing, the
-  card still reads `open`, not `sent to session`.
-- **Mode:** `agent` · a recipe would make it cheaper
-- **Box-only:** no
-- **Areas:** `apps/web/src/`, `apps/api/src/`
+  `1 of 1 comments selected · resumes <branch>`, then `Follow-up delivered`; the card reads
+  `sent to session`; the session resumes and its change shows `MAIN-RUN.md` with the lines `seen`
+  and `reviewed`.
+- **Mode:** `agent`
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
 
 ### land-change.panel-read
 
@@ -371,19 +388,6 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/cli/src/agent-memory.ts`, `apps/api/src/`
 
-### pi-profile.dry-run
-
-- **Map:** pi-profile.md `pi-profile-dry-run`, `pi-profile-refused`
-- **Needs:** no session; no turn; CLI; a disposable agent directory in `<scratch>` as pi-profile.md
-  builds it
-- **Do:** `M connect pi --dir <scratch>/pi-agent --dry-run`, then the same with
-  `--dir <scratch>/missing`.
-- **See:** `pi profile · <scratch>/pi-agent · 2 files · …` ending `  --dry-run: nothing sent`, exit
-  `0`; the missing directory refused, exit `1`.
-- **Mode:** `agent`
-- **Box-only:** no
-- **Areas:** `apps/cli/src/`
-
 ### appearance.web-theme
 
 - **Map:** appearance.md `theme-web`, `theme-system`, `theme-persist`
@@ -486,22 +490,6 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
   `apps/web/src/routes/settings.organization.folders.tsx`
-
-### mend-toml.init
-
-- **Map:** mend-toml.md `toml-init`
-- **Needs:** no session; no turn; CLI; `<scratch>/init` outside any repository, holding only the
-  map's `package.json`
-- **Do:** In `<scratch>/init`, `M service init < /dev/null`, then `M service init --yes`, then
-  again.
-- **See:** `proposed …/mend.toml:` with `[service.web]`, then
-  `mend: non-interactive — pass --yes to write the file`, exit `1`; `✓ wrote …/mend.toml — …`, exit
-  `0`; the third refused with `already exists — edit it directly (init never merges)`.
-- **Mode:** `agent`
-- **Box-only:** no
-- **Areas:** `apps/cli/src/`
-
-## Sessions
 
 ### now-and-sessions.web-now
 
@@ -780,20 +768,17 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/cli/src/doctor-bundle.ts`, `apps/cli/src/doctor-bundle-collectors.ts`,
   `apps/web/src/routes/settings.sealant.tsx`
 
-### cli.help-version
+### cli.version
 
-- **Map:** cli.md `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`,
-  `unknown-command`, `version`, `completions`, `bare-mend`
+- **Map:** cli.md `version`, `bare-mend`
 - **Needs:** no session; no turn; CLI; none
-- **Do:** The map's steps: `M help`, the three ways to one page, `M help service`, `M help claude`,
-  `MANPAGER=cat M man doctor`, `M completions`, `M nope`, `M version`, `M completions zsh`,
-  `M | head -1`.
-- **See:** `mend · the agent workbench`; three identical pages; `mend service · 8 commands`; the
-  refusals naming `mend help`, exit `1`; `mend <v>` and `server <v> · $WEB` with no
-  `versions differ` line; `#compdef mend`.
+- **Do:** `M version`, then `M | head -1`. These two ask the server; help, man pages, completions
+  and usage errors do not, and are in "Not on the box".
+- **See:** `mend <v>` and `server <v> · $WEB` with no `versions differ` line; the dashboard's or
+  bare `mend`'s first line naming `$WEB`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/cli/src/help.ts`, `apps/cli/src/`
+- **Areas:** `apps/cli/src/version.ts`, `apps/cli/src/`
 
 ### tui.dashboard
 
@@ -816,64 +801,64 @@ No flow: every client needs a device, an app or a world the box run does not hav
 
 ## Not on the box
 
-| Feature                 | Sub-feature(s)                                                                                                                                                                                                                                                                      | Why not                                                                               |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| adopt-project           | `adopt-web` (submit), `adopt-cli` (a new project), `adopt-visibility`, `adopt-tui`, `adopt-mobile`, `adopt-vscode`                                                                                                                                                                  | each run would leave a project; `<p>` was adopted once; phone, VS Code                |
-| start-session           | `start-composer`, `start-in-worktree`, `start-tui`, `start-desktop`, `start-mobile`, `start-vscode`, `start-slack`, `session-attach-resume`                                                                                                                                         | a composer start spends a turn; desktop, phone, VS Code, Slack                        |
-| review-change           | `review-inline-comment`, `review-machine-pass`, `review-desktop`, `review-mobile`                                                                                                                                                                                                   | inline has no stable handle; Mend's passes use inference; desktop, phone              |
-| send-review-back        | `send-edit`, `send-deliver`, `send-pending`, `send-continue-cli`, `send-sent-state`, `send-tui`, `send-desktop`, `send-mobile`                                                                                                                                                      | delivering resumes the session and spends a turn; desktop, phone                      |
-| land-change             | `land-web` (submit), `land-preview`, `land-cli`, `land-again`, `land-refused`, `land-check`, `land-observe`, `land-automatic`, `land-desktop`, `land-mobile-observe`, `land-slack`                                                                                                  | pushes to origin and opens pull requests; no GitHub login                             |
-| services                | `service-run-web`, `service-recipe`, `service-add`, `service-tui`, `service-desktop`                                                                                                                                                                                                | a local stack shows them; `<p>` declares no `mend.toml`; desktop                      |
-| sign-in                 | `first-account`, `cli-login`, `cli-logout`, `password-reset`, `desktop-connect`                                                                                                                                                                                                     | the CLI sign-in is never touched; a reset ends the owner's browser sessions; desktop  |
-| pairing-devices         | `mint-by-hand`, `claim-mobile`, `revoke`, `unpair-mobile`                                                                                                                                                                                                                           | each run would add a device; no phone                                                 |
-| provider-accounts       | `connect-grant`, `connect-my-login`, `connect-stdin`, `connect-github`, `connect-web`, `disconnect`, `reconnect-state`                                                                                                                                                              | would replace or remove the owner's codex login; no claude or GitHub credential       |
-| git-access              | `bridge-share`, `adopt-auth` (a real adoption), mode switches                                                                                                                                                                                                                       | needs an ssh-agent and a private repository; changes the account's mode               |
-| workspace-ssh           | `ssh-setup`, `vscode-setup`, `vscode-open`                                                                                                                                                                                                                                          | registers a key every run; VS Code                                                    |
-| models                  | `desktop-picker`, `mobile-picker`, `vscode-picker`, `resume-with`                                                                                                                                                                                                                   | desktop, phone, VS Code; `--with` another harness needs claude                        |
-| dotfiles                | all but `dotfiles-show`                                                                                                                                                                                                                                                             | replaces the owner's saved repository and snapshot; a local stack shows them          |
-| secret-files            | `secrets-add-web`, `secrets-delivery`, `secrets-mobile-list`                                                                                                                                                                                                                        | a local stack shows them; phone                                                       |
-| doppler                 | all                                                                                                                                                                                                                                                                                 | needs a real Doppler account                                                          |
-| git-author              | `git-author-set-web`, `git-author-session`                                                                                                                                                                                                                                          | a local stack shows them                                                              |
-| skills                  | all but `skills-list`                                                                                                                                                                                                                                                               | writes the owner's libraries; a local stack shows them                                |
-| agent-memory            | all but `memory-list`                                                                                                                                                                                                                                                               | needs a checkout with Claude memory; delivery needs claude                            |
-| pi-profile              | `pi-profile-save`, `pi-profile-dir`, `pi-profile-remove`, `pi-profile-session`                                                                                                                                                                                                      | writes the owner's saved profile; a local stack shows them                            |
-| appearance              | `theme-desktop`, `theme-mobile`, `text-size-mobile`                                                                                                                                                                                                                                 | desktop, phone                                                                        |
-| project-environment     | all but `env-show-cli`, `env-routing`                                                                                                                                                                                                                                               | changes `<p>`'s environment for every later session                                   |
-| cluster-bindings        | all but `cluster-show`, `cluster-local-runner`                                                                                                                                                                                                                                      | needs operator-made Kubernetes objects; changes `<p>`                                 |
-| workspace-images        | all but the panel reads                                                                                                                                                                                                                                                             | an image change rebuilds every later workspace                                        |
-| automatic-install       | `install-custom`, `install-switch`, `install-in-session`                                                                                                                                                                                                                            | changes `<p>`; `<p>` is not a Node repository                                         |
-| hot-sessions            | `hot-count` (change), `hot-claim`, `hot-rewarm`                                                                                                                                                                                                                                     | each ready standby is a live workspace on the box                                     |
-| project-settings        | changes, `settings-visibility`, `settings-remove`, `settings-retention`, `settings-instance-defaults`                                                                                                                                                                               | organization-wide or `<p>`-wide settings other checks depend on                       |
-| references-folders      | `ref-add`, `ref-select`, `ref-refresh-remove`, `folder-select`, `link-project`, `host-mounts`, `extras-delivery`                                                                                                                                                                    | needs a second project or an operator mount; changes `<p>`                            |
-| mend-toml               | `toml-recipes-card`, `toml-run-cli`, `toml-project-recipes`, `toml-shadowed`, `toml-parse-error`                                                                                                                                                                                    | `<p>` has no `mend.toml`; changes `<p>`                                               |
-| now-and-sessions        | `now-menus`, `now-mobile`, `now-desktop`                                                                                                                                                                                                                                            | a local stack shows the menu; phone, desktop                                          |
-| attach-resume           | `resume-cli`, `rejoin-cli`, `delete-web`, `attach-tui`, `pickup-takeover`, `attach-tunnels`, `attach-image-paste`                                                                                                                                                                   | delete would remove sessions the next run reads; phone; a local stack shows the rest  |
-| session-shell           | `shell-session-web`, `shell-session-tui`, `shell-tab-desktop`, `shell-mobile`                                                                                                                                                                                                       | a local stack shows them; desktop, phone                                              |
-| worktrees               | `worktrees-toggle`, `worktrees-clear-settled`, `worktrees-hidden-ended`, `worktrees-refresh`, `worktrees-tui`                                                                                                                                                                       | clear-settled would remove worktrees the next run reads; a local stack shows the rest |
-| workspace-replace       | all                                                                                                                                                                                                                                                                                 | needs a workspace marked to retire, and replacing stops what runs in it               |
-| pull-change             | `pull-wrong-origin`, `pull-checked-out`, `pull-too-large`                                                                                                                                                                                                                           | a local stack shows them                                                              |
-| handoff                 | `handoff-review-base`, `handoff-split`, `handoff-prompt`, `handoff-again`, `handoff-foreign-origin`, `handoff-hidden`                                                                                                                                                               | the prompt case spends a turn; a local stack shows the rest                           |
-| repositories-in-session | `repo-add`, `repo-refusals`, `repo-review-line`, `repo-removal-hold`                                                                                                                                                                                                                | needs a second project                                                                |
-| capture-and-save        | `capture-not-saved`, `capture-discard`, `capture-removal-hold`                                                                                                                                                                                                                      | needs a stalled or slow drain sized for the store                                     |
-| observed-agents         | all                                                                                                                                                                                                                                                                                 | runs `claude` by hand in the workspace; no claude login                               |
-| terminal-agent-waits    | all                                                                                                                                                                                                                                                                                 | its recipe runs in the VS Code driver's own world                                     |
-| organization            | `invite-web`, `join`, `join-signed-in`, `join-refused`, `role-change`, `password-reset`, `member-removal`, `org-switch-cli`, `org-switch-web`, `org-per-sign-in`, `org-isolation`, `org-leave`, `org-access-key`, `operator-add-member`, `take-over`, `visibility`, `who-sees-what` | needs a second account or organization; multi tenancy                                 |
-| shared-control          | all but `share-refused` (script)                                                                                                                                                                                                                                                    | needs a second account                                                                |
-| per-person-homes        | all but `runs-as-yourself`                                                                                                                                                                                                                                                          | needs a second account; `layout-opt-out` restarts the server                          |
-| operator                | `org-create`, `org-rename`, `org-invite-owner`, `grant-owner`, `reset-link`, `operator-only`, `operator-audit`                                                                                                                                                                      | changes the organization or needs a second account                                    |
-| exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                                                                              | each restarts the server with changed exposure variables                              |
-| server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`                                                                                                               | changes the box's install; the map drives them on a disposable host                   |
-| uninstall               | all                                                                                                                                                                                                                                                                                 | a regression would remove the box's server or the sign-in the run may never touch     |
-| cli                     | `qr` (covered by pairing-devices), live-id `completions`                                                                                                                                                                                                                            | a local stack shows them                                                              |
-| tui                     | `tui-new-worktree`, `tui-new-session`, `tui-attach`, `tui-auto-attach`, `tui-resume`, `tui-rename`, `tui-stop`, `tui-remove`, `tui-refresh`, `tui-snake`, `tui-adopt`, `tui-tunnels`, `tui-layout`, `tui-screen-mode`                                                               | a local stack shows them; each new one leaves sessions                                |
-| desktop-app             | all                                                                                                                                                                                                                                                                                 | no desktop app on the run's machine (and not shipping)                                |
-| mobile-app              | all                                                                                                                                                                                                                                                                                 | no phone, and its web build needs an allowed origin the box does not list             |
-| vscode                  | all                                                                                                                                                                                                                                                                                 | no VS Code; its driver runs its own world                                             |
-| slack                   | all                                                                                                                                                                                                                                                                                 | not drivable yet; no Slack workspace                                                  |
-| t3-gateway              | all                                                                                                                                                                                                                                                                                 | its recipe needs a local stack's gateway                                              |
+| Feature                 | Sub-feature(s)                                                                                                                                                                                                                                                                      | Why not                                                                                                                                  |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| adopt-project           | `adopt-web` (submit), `adopt-cli` (a new project), `adopt-visibility`, `adopt-tui`, `adopt-mobile`, `adopt-vscode`                                                                                                                                                                  | each run would leave a project; `<p>` was adopted once; phone, VS Code                                                                   |
+| start-session           | `start-in-worktree`, `start-tui`, `start-desktop`, `start-mobile`, `start-vscode`, `start-slack`, `session-attach-resume`                                                                                                                                                           | desktop, phone, VS Code, Slack; a local stack shows the rest                                                                             |
+| review-change           | `review-inline-comment`, `review-machine-pass`, `review-desktop`, `review-mobile`                                                                                                                                                                                                   | inline has no stable handle; Mend's passes use inference; desktop, phone                                                                 |
+| send-review-back        | `send-edit`, `send-pending`, `send-continue-cli`, `send-tui`, `send-desktop`, `send-mobile`                                                                                                                                                                                         | a local stack shows them; desktop, phone                                                                                                 |
+| land-change             | `land-web` (submit), `land-preview`, `land-cli`, `land-again`, `land-refused`, `land-check`, `land-observe`, `land-automatic`, `land-desktop`, `land-mobile-observe`, `land-slack`                                                                                                  | pushes to origin and opens pull requests; no GitHub login                                                                                |
+| services                | `service-run-web`, `service-recipe`, `service-add`, `service-tui`, `service-desktop`                                                                                                                                                                                                | a local stack shows them; `<p>` declares no `mend.toml`; desktop                                                                         |
+| sign-in                 | `first-account`, `cli-login`, `cli-logout`, `password-reset`, `desktop-connect`                                                                                                                                                                                                     | the CLI sign-in is never touched; a reset ends the owner's browser sessions; desktop                                                     |
+| pairing-devices         | `mint-by-hand`, `claim-mobile`, `revoke`, `unpair-mobile`                                                                                                                                                                                                                           | each run would add a device; no phone                                                                                                    |
+| provider-accounts       | `connect-grant`, `connect-my-login`, `connect-stdin`, `connect-github`, `connect-web`, `disconnect`, `reconnect-state`                                                                                                                                                              | would replace or remove the owner's codex login; no claude or GitHub credential                                                          |
+| git-access              | `bridge-share`, `adopt-auth` (a real adoption), mode switches                                                                                                                                                                                                                       | needs an ssh-agent and a private repository; changes the account's mode                                                                  |
+| workspace-ssh           | `ssh-setup`, `vscode-setup`, `vscode-open`                                                                                                                                                                                                                                          | registers a key every run; VS Code                                                                                                       |
+| models                  | `desktop-picker`, `mobile-picker`, `vscode-picker`, `resume-with`                                                                                                                                                                                                                   | desktop, phone, VS Code; `--with` another harness needs claude                                                                           |
+| dotfiles                | all but `dotfiles-show`                                                                                                                                                                                                                                                             | replaces the owner's saved repository and snapshot; a local stack shows them                                                             |
+| secret-files            | `secrets-add-web`, `secrets-delivery`, `secrets-mobile-list`                                                                                                                                                                                                                        | a local stack shows them; phone                                                                                                          |
+| doppler                 | all                                                                                                                                                                                                                                                                                 | needs a real Doppler account                                                                                                             |
+| git-author              | `git-author-set-web`, `git-author-session`                                                                                                                                                                                                                                          | a local stack shows them                                                                                                                 |
+| skills                  | all but `skills-list`                                                                                                                                                                                                                                                               | writes the owner's libraries; a local stack shows them                                                                                   |
+| agent-memory            | all but `memory-list`                                                                                                                                                                                                                                                               | needs a checkout with Claude memory; delivery needs claude                                                                               |
+| pi-profile              | all: `pi-profile-dry-run`, `pi-profile-refused`, `pi-profile-save`, `pi-profile-dir`, `pi-profile-remove`, `pi-profile-session`                                                                                                                                                     | the dry run never calls the server (an ordinary test: SLNT-1082); the rest write the owner's saved profile, and a local stack shows them |
+| appearance              | `theme-desktop`, `theme-mobile`, `text-size-mobile`                                                                                                                                                                                                                                 | desktop, phone                                                                                                                           |
+| project-environment     | all but `env-show-cli`, `env-routing`                                                                                                                                                                                                                                               | changes `<p>`'s environment for every later session                                                                                      |
+| cluster-bindings        | all but `cluster-show`, `cluster-local-runner`                                                                                                                                                                                                                                      | needs operator-made Kubernetes objects; changes `<p>`                                                                                    |
+| workspace-images        | all but the panel reads                                                                                                                                                                                                                                                             | an image change rebuilds every later workspace                                                                                           |
+| automatic-install       | `install-custom`, `install-switch`, `install-in-session`                                                                                                                                                                                                                            | changes `<p>`; `<p>` is not a Node repository                                                                                            |
+| hot-sessions            | `hot-count` (change), `hot-claim`, `hot-rewarm`                                                                                                                                                                                                                                     | each ready standby is a live workspace on the box                                                                                        |
+| project-settings        | changes, `settings-visibility`, `settings-remove`, `settings-retention`, `settings-instance-defaults`                                                                                                                                                                               | organization-wide or `<p>`-wide settings other checks depend on                                                                          |
+| references-folders      | `ref-add`, `ref-select`, `ref-refresh-remove`, `folder-select`, `link-project`, `host-mounts`, `extras-delivery`                                                                                                                                                                    | needs a second project or an operator mount; changes `<p>`                                                                               |
+| mend-toml               | all: `toml-init`, `toml-recipes-card`, `toml-run-cli`, `toml-project-recipes`, `toml-shadowed`, `toml-parse-error`                                                                                                                                                                  | `mend service init` never calls the server (`run-commands-json.test.ts` covers it); `<p>` has no `mend.toml`, and the rest change `<p>`  |
+| now-and-sessions        | `now-menus`, `now-mobile`, `now-desktop`                                                                                                                                                                                                                                            | a local stack shows the menu; phone, desktop                                                                                             |
+| attach-resume           | `resume-cli`, `rejoin-cli`, `delete-web`, `attach-tui`, `pickup-takeover`, `attach-tunnels`, `attach-image-paste`                                                                                                                                                                   | delete would remove sessions the next run reads; phone; a local stack shows the rest                                                     |
+| session-shell           | `shell-session-web`, `shell-session-tui`, `shell-tab-desktop`, `shell-mobile`                                                                                                                                                                                                       | a local stack shows them; desktop, phone                                                                                                 |
+| worktrees               | `worktrees-toggle`, `worktrees-clear-settled`, `worktrees-hidden-ended`, `worktrees-refresh`, `worktrees-tui`                                                                                                                                                                       | clear-settled would remove worktrees the next run reads; a local stack shows the rest                                                    |
+| workspace-replace       | all                                                                                                                                                                                                                                                                                 | needs a workspace marked to retire, and replacing stops what runs in it                                                                  |
+| pull-change             | `pull-wrong-origin`, `pull-checked-out`, `pull-too-large`                                                                                                                                                                                                                           | a local stack shows them                                                                                                                 |
+| handoff                 | `handoff-review-base`, `handoff-split`, `handoff-prompt`, `handoff-again`, `handoff-foreign-origin`, `handoff-hidden`                                                                                                                                                               | the prompt case spends a turn; a local stack shows the rest                                                                              |
+| repositories-in-session | `repo-add`, `repo-refusals`, `repo-review-line`, `repo-removal-hold`                                                                                                                                                                                                                | needs a second project                                                                                                                   |
+| capture-and-save        | `capture-not-saved`, `capture-discard`, `capture-removal-hold`                                                                                                                                                                                                                      | needs a stalled or slow drain sized for the store                                                                                        |
+| observed-agents         | all                                                                                                                                                                                                                                                                                 | runs `claude` by hand in the workspace; no claude login                                                                                  |
+| terminal-agent-waits    | all                                                                                                                                                                                                                                                                                 | its recipe runs in the VS Code driver's own world                                                                                        |
+| organization            | `invite-web`, `join`, `join-signed-in`, `join-refused`, `role-change`, `password-reset`, `member-removal`, `org-switch-cli`, `org-switch-web`, `org-per-sign-in`, `org-isolation`, `org-leave`, `org-access-key`, `operator-add-member`, `take-over`, `visibility`, `who-sees-what` | needs a second account or organization; multi tenancy                                                                                    |
+| shared-control          | all but `share-refused` (script)                                                                                                                                                                                                                                                    | needs a second account                                                                                                                   |
+| per-person-homes        | all but `runs-as-yourself`                                                                                                                                                                                                                                                          | needs a second account; `layout-opt-out` restarts the server                                                                             |
+| operator                | `org-create`, `org-rename`, `org-invite-owner`, `grant-owner`, `reset-link`, `operator-only`, `operator-audit`                                                                                                                                                                      | changes the organization or needs a second account                                                                                       |
+| exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                                                                              | each restarts the server with changed exposure variables                                                                                 |
+| server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`                                                                                                               | changes the box's install; the map drives them on a disposable host                                                                      |
+| uninstall               | all                                                                                                                                                                                                                                                                                 | a regression would remove the box's server or the sign-in the run may never touch                                                        |
+| cli                     | `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`, `unknown-command`, `completions`, `qr`                                                                                                                                                           | never call the server: `help.test.ts` and `main.test.ts` cover them; `qr` is in pairing-devices                                          |
+| tui                     | `tui-new-worktree`, `tui-new-session`, `tui-attach`, `tui-auto-attach`, `tui-resume`, `tui-rename`, `tui-stop`, `tui-remove`, `tui-refresh`, `tui-snake`, `tui-adopt`, `tui-tunnels`, `tui-layout`, `tui-screen-mode`                                                               | a local stack shows them; each new one leaves sessions                                                                                   |
+| desktop-app             | all                                                                                                                                                                                                                                                                                 | no desktop app on the run's machine (and not shipping)                                                                                   |
+| mobile-app              | all                                                                                                                                                                                                                                                                                 | no phone, and its web build needs an allowed origin the box does not list                                                                |
+| vscode                  | all                                                                                                                                                                                                                                                                                 | no VS Code; its driver runs its own world                                                                                                |
+| slack                   | all                                                                                                                                                                                                                                                                                 | not drivable yet; no Slack workspace                                                                                                     |
+| t3-gateway              | all                                                                                                                                                                                                                                                                                 | its recipe needs a local stack's gateway                                                                                                 |
 
-Flows: 54 total · 3 scripted · 51 agent · 1 needing a real turn (`start-session.boat-turn`) · 11
-box-only. Features: 44 with a flow, 10 only in Not on the box (doppler, workspace-replace,
-observed-agents, terminal-agent-waits, uninstall, desktop-app, mobile-app, vscode, slack,
-t3-gateway): 54 of the map's 54 mapped features placed, none left over. (The map's README says 53;
-its tables list 54.)
+Flows: 53 total · 3 scripted · 50 agent · 3 needing a real turn (`start-session.boat-turn`,
+`start-session.composer`, `send-review-back.deliver`) · 13 box-only. Features: 42 with a flow, 12
+only in Not on the box (doppler, workspace-replace, observed-agents, terminal-agent-waits,
+uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack, t3-gateway): 54 of the
+map's 54 mapped features placed, none left over.

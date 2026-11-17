@@ -1,22 +1,32 @@
 ---
 name: box-main-run
 description:
-  One run of the 12-hour check: reports main's full CI run, deploys a preview of main to the box
-  (VM 131) and uses it as a signed-in person through the flow list, filing a ticket per failure.
-  Use when a scheduled task names this skill, or to run it by hand.
+  One run of the daily check of Mend's main: starts and reports a full CI run, deploys a preview of
+  main to the box (VM 131) and uses it as a signed-in person through the flow list, filing a ticket
+  per failure. Use when a scheduled task names this skill, or to run it by hand.
 ---
 
 # Main on the box
 
-A T3 scheduled task runs this every 12 hours in the Mend project. One run reads `main`'s full CI
-run, builds a preview of `main`, deploys it to the box, and uses Mend there as a person: the CLI and
-browser of the box's checker account, through the flows in [flows.md](flows.md). Every author's own
-run is re-seen here, by an agent that wrote none of it. You report and file tickets; you fix
-nothing.
+A T3 scheduled task runs this once a day in the Mend project. One run starts a full CI run of
+`main`, waits for the box, builds a preview of `main`, deploys it to the box, and uses Mend there as
+a person: the CLI and browser of the box's checker account, through the flows in
+[flows.md](flows.md). Every author's own run is re-seen here, by an agent that wrote none of it. You
+report and file tickets; you fix nothing.
 
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
-top. Until the owner picks (SLNT-1050), a run does the flows marked `Sample: yes`; report the rest
-as `not run · not in this run's set`.
+top; report any flow outside it as `not run · not in this run's set`.
+
+## Who does what
+
+The run is an Opus 5.5 thread that hands most flows to GPT-6.1 Sol subagents (the owner's choice on
+SLNT-1050, 17 Nov). You are the Opus thread. You keep what needs judgement or happens once: steps 1
+to 4 (the skip, the CI dispatch, the wait and the hold, the build, deploy and identity), the flows
+`server.upgrade`, `server.data-intact`, `handoff.held` and `capture-and-save.live-stop`, reading
+every subagent's evidence, step 6's wind-down, and step 7's report and tickets. The subagents drive
+the other flows (step 5). Linear is reached through the Executor MCP server's `execute` tool, with
+the `linear_app.org.localLinearMcp` connection; when your harness has no such tool, write the report
+to `$E/report.md` and the tickets to `$E/tickets.md`, and say so in your last line.
 
 You are the only writer of what this skill keeps. Work in the task's worktree of Mend, detached at
 `origin/main`:
@@ -76,18 +86,24 @@ soon as the step that made it succeeds, so a run that dies still leaves its ledg
 ## Limits
 
 - **One run at a time.** `mkdir $STATE/lock` is the lock; write `{ "tag", "at" }` into
-  `$STATE/lock/run.json`. A lock older than 3 hours is a dead run: remove it, say so in the report,
-  and go on.
-- **Load.** No run while the 1-minute load average in `/proc/loadavg` is over **24**: checked at
-  step 1 and again before step 4's deploy.
-- **The box.** No run while `verify box plan` says another check holds it or a session is live.
+  `$STATE/lock/run.json`. A lock older than **24 hours** is a dead run: remove it, say so in the
+  report, and go on.
+- **The wait.** A run waits for the box for at most **20 hours** from taking the lock, so it never
+  meets the next day's run, then gives up with one skip line (step 3).
+- **Load.** Nothing touches the box while the 1-minute load average in `/proc/loadavg` is over
+  **24**: the wait (step 3) waits it out, and step 4 checks again before the deploy.
+- **The box.** No run while `verify box plan` says another check holds it, a session is live, the
+  box runs a migration `main` lacks, or its disk is short: the wait (step 3) waits all four out.
 - **Time.** Each step has the cap below. A step past its cap is hung: stop the command it started,
-  mark it failed with `hung after <n> min`, and go on to what can still run. At **2 hours** from the
-  lock, start nothing new: wind down (step 6) and report what did not run as `not run · run cap`.
+  mark it failed with `hung after <n> min`, and go on to what can still run. At **4 hours** from the
+  hold, start nothing new: wind down (step 6) and report what did not run as `not run · run cap`.
+  The hold lapses for other checks after 6 hours.
 
 | Step                                | Cap    |
 | ----------------------------------- | ------ |
+| the box (step 3's wait)             | 20 h   |
 | the preview build                   | 45 min |
+| the full CI run, after the flows    | 2 h    |
 | `preview-deploy.sh`                 | 25 min |
 | each flow                           | 10 min |
 | the agent turn (`mend wait --turn`) | 8 min  |
@@ -103,82 +119,70 @@ Each `gh` call spends a quota a dozen agents share: no polling loops of your own
 In order; the first that holds ends the run with one line in your final message, and the box
 untouched:
 
-1. `mkdir $STATE/lock` fails and the lock is under 3 hours old: `skipped · a run is in progress`.
-2. The load average is over 24: `skipped · load <n>`.
-3. No product commit since `lastCommit`: run `pnpm verify plan --base <lastCommit> --json` and read
+1. `mkdir $STATE/lock` fails and the lock is under 24 hours old: `skipped · a run is in progress`.
+2. No product commit since `lastCommit`: run `pnpm verify plan --base <lastCommit> --json` and read
    `.verify/latest/plan.json`. No obligation with id `judge` means no product source changed:
    `skipped · main has no product commit since <lastCommit:12>`. With no `lastCommit`, go on.
-4. `pnpm verify box plan --tag $TAG`: step `free` is not `passed`:
-   `skipped · the box is held: <its detail>`. Step `schema` blocked means the box runs a migration
-   `main` lacks (a PR preview not yet merged): `skipped · <its detail>`. Step `disk` blocked:
-   `skipped · <its detail>`, and file it (step 7) once.
 
 A skip removes the lock it took and leaves `lastCommit` as it was, so the next run tries again. Plan
 `--base` against a `lastCommit` that is no longer on `main` fails: treat it as no `lastCommit`.
 
-**Done when** the run stopped with a skip line, or every check passed and you hold the lock.
+**Done when** the run stopped with a skip line, or you hold the lock and `main` has product commits.
 
 ## 2. Full CI
 
-The report leads with `main`'s latest full CI run: `ci.yml` on `schedule`, which runs every test
-with turbo `--force` and the formal models at full bounds. GitHub starts that cron hours late (09:07
-to 09:57 UTC for the 02:23 line, 12 to 15 Nov), so read the run that exists; never wait for one.
+Start the full CI run now; you read it in step 7. A dispatch of `ci.yml` on `main` with
+`formal=full` runs the same set as its nightly schedule: every package (a run that is not a pull
+request selects all), cold (GitHub's runners hold no Turbo cache to read, which is what the
+schedule's `--force` ensures on the box), and the formal models at full bounds. GitHub starts the
+schedule hours late, so the run starts its own.
 
 ```sh
-gh run list --repo sealant-sh/mend --workflow ci.yml --event schedule --branch main --limit 1 \
-  --json databaseId,headSha,createdAt,updatedAt,conclusion,url
-gh run view <id> --repo sealant-sh/mend --json jobs --jq '.jobs[] | [.name, .conclusion] | @tsv'
-/home/yiannis/Developer/OSS/Sealant/agent-home/bin/ci failures --dry-run --json --repos mend \
-  --since <createdAt>
-gh run view <id> --repo sealant-sh/mend --log --job <the formal job id> \
-  | cut -f3- | sed -E 's/^\S+Z //' | grep -E '^\S+\s+\S+: '
+gh workflow run ci.yml --repo sealant-sh/mend --ref main -f formal=full
+gh run list --repo sealant-sh/mend --workflow ci.yml --branch main --event workflow_dispatch \
+  --limit 1 --json databaseId,headSha,createdAt,url
 ```
 
-From `ci failures` keep the entries whose `runUrl` is this run: each failed, retried, over-budget or
-uncaught-error test by name. `--dry-run` leaves the failed-tests watch's state alone. The formal job
-prints one line per model with its status. Read `build-input-probe.yml`'s latest scheduled run the
-same way (its conclusion only). A run with no scheduled CI run since the last one says so.
+Take the run whose `createdAt` is after your dispatch and note its id and `headSha` in
+`$STATE/lock/run.json`. Then go on: it runs while you wait for the box and use it.
 
-A red full run is reported and ticketed like a failed flow (report.md), after looking for the ticket
-the failed-tests watch (the home repo's `watch-ci-failures`) already made: link that one. It never
-stops the box flows.
+**Done when** the CI run is started and its id noted.
 
-What else runs only on a schedule, and whether this check covers it:
+## 3. Wait, hold and build
 
-| Scheduled work                                         | Covered here                                           |
-| ------------------------------------------------------ | ------------------------------------------------------ |
-| `ci.yml`: turbo `--force`, models at full bounds       | yes: this step                                         |
-| `build-input-probe.yml` (daily)                        | yes: its conclusion, this step                         |
-| the Undo crash property's full sweep (`docker-suites`) | yes: a job of every push to `main` and of the full run |
-| `nightly-watch.yml` (every 6 h, on CI completion)      | no: it files the `nightly-failure` GitHub issue itself |
-| `t3code-drift.yml` (daily)                             | no: it opens its own drift issue                       |
-| `nix-server.yml` (Mondays)                             | no: weekly; its result is in GitHub                    |
+Wait for the box with no model calls, and hold it the moment it is free. Run the script as a
+background command when your harness has them, and read its last line when it ends; it stops itself
+after 110 minutes in any case. Another check can take the box within a minute of its release, so the
+waiting script takes the hold itself, before any build:
 
-**Done when** the report's first block has the run, its commit, every job's result, each failed or
-retried test, each model's result, and the probe's conclusion, or says there was no run.
+```sh
+deadline=$(( $(date -d "<the lock's at>" +%s) + 20 * 3600 ))
+.agents/skills/box-main-run/wait-for-box.sh $deadline     # in the background; read its last line
+```
 
-## 3. Build and hold
+Its last line says what happened:
 
-Another check can take the box while a build runs, so the hold comes right after the dispatch, not
-after the build:
+- `held <sha> <tag>`: the box is yours. Set `SHA` and `TAG` from it, `E=$STATE/runs/$TAG`, run
+  `pnpm install --frozen-lockfile`, and record `dump` in the ledger from
+  `.verify/latest/box-prepare.json`.
+- `again <what blocked>`: a background command's 2-hour limit came first. Start it again with the
+  same deadline.
+- `deadline <what blocked>`: 20 hours passed without a free box. End the run with
+  `skipped · the box was not free in 20 h: <what blocked>`, remove the lock, and leave `lastCommit`.
+  The CI run still goes on the ticket: comment its link and conclusion on SLNT-1050.
+
+Count the wait: from the lock's `at` to the hold, for the report. Then build the preview:
 
 ```sh
 gh workflow run preview.yml --repo sealant-sh/mend --ref main
 gh run list --repo sealant-sh/mend --workflow preview.yml --branch main --event workflow_dispatch \
   --limit 1 --json databaseId,number,headSha,createdAt
-pnpm verify box prepare --tag $TAG --yes     # pg_dumpall to /root/backups, and the hold
 ```
 
-Take the run whose `createdAt` is after your dispatch. Its `headSha` is the commit you test: when it
-is not `$SHA` (main moved), `git checkout --detach <headSha>`, `pnpm install --frozen-lockfile`, and
-set `SHA`, `TAG` and `E` again before `prepare`. A `prepare` that is not `passed` because the box is
-held, busy or full is a skip, as in step 1: `gh run cancel <id>`, remove the lock, and end with the
-skip line. A skip writes no `runs` entry: it made nothing on the box. Record `dump` in the ledger
-once `prepare` passes.
-
-Then wait for the build as background work, never in a polling loop of your own: start
-`timeout 45m gh run watch <id> --repo sealant-sh/mend --interval 60 --exit-status` in the background
-and wait for it to end. The version is
+Take the run whose `createdAt` is after your dispatch. Its `headSha` is the commit you test: when
+`main` moved since the hold, `git checkout --detach <headSha>` and `pnpm install --frozen-lockfile`,
+set `SHA` to it, and keep `TAG`: the hold's name. Wait for the build as background work:
+`timeout 45m gh run watch <id> --repo sealant-sh/mend --interval 60 --exit-status`. The version is
 `node scripts/next-version.mjs --package apps/cli --preview <number> --main origin/main $SHA`.
 
 A failed build is a failure of `main`: no flow runs. File it (step 7) naming the failed job, then
@@ -231,13 +235,31 @@ passes and `health` answers is still a deploy: record the exit and its last line
 
 ## 5. The flows
 
-Run this run's set of flows from [flows.md](flows.md), in its order, each within its cap. Note the
-UTC time at each flow's start and end: the report gives each flow's wall time.
+Run this run's set of flows from [flows.md](flows.md) in its "Run order": later flows reuse what
+earlier ones made. Do the four flows Opus keeps (see "Who does what") yourself, in their place in
+that order. Hand each other group of the run order to one subagent, one group after another; two
+groups run side by side only when both are plainly independent reads (no session made or stopped).
+At most one subagent runs at a time otherwise, which keeps this machine at 4 processes or fewer.
+
+Start a subagent with T3's `delegate_task`: `target`
+`{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
+`isolation: "shared"` (it works in this worktree), and as `task` the text of
+[sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, this worktree's path,
+`$KIT`, `$C`, `$WEB`, `<sha8>`, `$E`, `$P`, and the session ids earlier flows made (from their
+`result.txt` or your own notes). Wait for its completion, then read its evidence.
+
+**Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
+driver's `steps.log` and its screenshots show every part of the flow's See line. Read them for every
+flow; open screenshots where the See line names a screen. A flow the subagent marked `failed`, or
+whose evidence falls short, you see again yourself before reporting it as failed or filing a ticket.
+When a subagent's work on a group falls short on more than one flow, do the whole group yourself and
+say so in the report. Note per flow who drove it (Sol, or Opus) and whether you re-did it.
+
+How a flow is driven, by you or a subagent:
 
 - A `scripted` flow runs its recipe with the verify skill's web driver. The box is the declared
   outer server (`MEND_VERIFY_OUTER_URL`, step 4), which is how the guard lets a driver reach it
-  (`.agents/skills/verify/references/guard.md`): the owner asked for this run on SLNT-1050. Read
-  pass or fail and the recipe's `steps.log`; open the screenshots only on a failure.
+  (`.agents/skills/verify/references/guard.md`): the owner asked for this run on SLNT-1050.
 
   ```sh
   MAIN_RUN_SESSION=<id> node .agents/skills/verify/scripts/drive-web.mjs --web $WEB --out $E/<flow> \
@@ -245,15 +267,15 @@ UTC time at each flow's start and end: the report gives each flow's wall time.
     --recipe .agents/skills/box-main-run/recipes/<recipe>.mjs
   ```
 
-- An `agent` flow you drive by hand, as its feature file's "Driving it with verify" says, through
-  `M` and a Playwright page against `$WEB` (a throwaway recipe module of your own, run with the same
-  driver, keeps the redaction and the screenshots' checks). Judge only the flow's "See" line.
+- An `agent` flow is driven by hand, as its feature file's "Driving it with verify" says, through
+  `M` and a recipe module of your own run with the same driver (it keeps the redaction and the
+  screenshots' checks). Judge only the flow's See line.
 
 Keep every CLI command's stdout, stderr and exit code in `$E/<flow>/cli.log`. Each flow ends as
-`seen`, `failed` or `not run · <reason>`, against the flow's own "seen" line, never a looser one. A
+`seen`, `failed` or `not run · <reason>`, against the flow's own See line, never a looser one. A
 flow that needs an earlier flow's session and lacks it is `not run · <flow> failed`.
 
-**Done when** every flow in flows.md has one of the three outcomes.
+**Done when** every flow in this run's set has one of the three outcomes, checked by you.
 
 ## 6. Wind down
 
@@ -285,11 +307,46 @@ Limits), and every ledger entry older than `runs[1]` is gone or named in the rep
 
 ## 7. Report and tickets
 
-As [report.md](report.md) says: scan the evidence, comment the report on SLNT-1050, and file one
-ticket per failure.
+First read the full CI run step 2 started. If it has not ended, wait for it as background work
+(`timeout 2h gh run watch <id> --repo sealant-sh/mend --interval 120 --exit-status`); past that,
+report it as `running` with its link. Then:
 
-**Done when** the report is on SLNT-1050 and every `failed` flow has its ticket or a comment on an
-open one.
+```sh
+gh run view <id> --repo sealant-sh/mend --json jobs \
+  --jq '.jobs[] | [.databaseId, .name, .conclusion] | @tsv'
+gh api repos/sealant-sh/mend/actions/runs/<id>/artifacts --jq '.artifacts[].name' | grep -- '-retried$'
+gh run download <id> --repo sealant-sh/mend -n <each -retried artifact> -D <scratch>   # retried-*.json
+gh run view <id> --repo sealant-sh/mend --log --job <each formal job id> \
+  | cut -f3- | sed -E 's/^\S+Z //' | grep -E '^\S+\s+\S+: '
+gh run view <id> --repo sealant-sh/mend --log-failed | grep -E 'FAIL |not ok ' | head -40
+```
+
+A lane that retried a test uploads its report as `test-report-<job>-retried`; its `retried-*.json`
+name each test. Each formal job prints one line per model with its status. Failed tests are the
+`FAIL` and `not ok` lines of the failed jobs' logs. The home repo's `bin/ci failures` reads only
+pushes to `main` and scheduled runs, so it does not see this dispatched run. Read the latest
+scheduled `build-input-probe.yml` run's conclusion too.
+
+A red full run is reported and ticketed like a failed flow, after looking in Linear's "Flaky tests"
+project for the ticket the failed-tests watch (the home repo's `watch-ci-failures`) may already have
+made for the same test: link that one. It never stopped the box flows.
+
+What else runs only on a schedule, and whether this check covers it:
+
+| Scheduled work                                         | Covered here                                           |
+| ------------------------------------------------------ | ------------------------------------------------------ |
+| `ci.yml`'s nightly: every package cold, models full    | yes: step 2's dispatch runs the same set               |
+| `build-input-probe.yml` (daily)                        | yes: its latest conclusion                             |
+| the Undo crash property's full sweep (`docker-suites`) | yes: a job of every push to `main` and of the full run |
+| `nightly-watch.yml` (every 6 h, on CI completion)      | no: it files the `nightly-failure` GitHub issue itself |
+| `t3code-drift.yml` (daily)                             | no: it opens its own drift issue                       |
+| `nix-server.yml` (Mondays)                             | no: weekly; its result is in GitHub                    |
+
+Then, as [report.md](report.md) says: scan the evidence, comment the report on SLNT-1050, and file
+one ticket per failure.
+
+**Done when** the report is on SLNT-1050, leading with the full CI run, and every `failed` flow or
+CI job has its ticket or a comment on an open one.
 
 ## 8. Finish
 
