@@ -17,6 +17,17 @@ report and file tickets; you fix nothing.
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
 top; report any flow outside it as `not run · not in this run's set`.
 
+## Who does what
+
+The run is an Opus 5.5 thread that hands most flows to GPT-6.1 Sol subagents (the owner's choice on
+SLNT-1050, 17 Nov). You are the Opus thread. You keep what needs judgement or happens once: steps 1
+to 4 (the skip, the CI dispatch, the wait and the hold, the build, deploy and identity), the flows
+`server.upgrade`, `server.data-intact`, `handoff.held` and `capture-and-save.live-stop`, reading
+every subagent's evidence, step 6's wind-down, and step 7's report and tickets. The subagents drive
+the other flows (step 5). Linear is reached through the Executor MCP server's `execute` tool, with
+the `linear_app.org.localLinearMcp` connection; when your harness has no such tool, write the report
+to `$E/report.md` and the tickets to `$E/tickets.md`, and say so in your last line.
+
 You are the only writer of what this skill keeps. Work in the task's worktree of Mend, detached at
 `origin/main`:
 
@@ -139,9 +150,10 @@ Take the run whose `createdAt` is after your dispatch and note its id and `headS
 
 ## 3. Wait, hold and build
 
-Wait for the box as background work, with no model calls, and hold it the moment it is free. Another
-check can take the box within a minute of its release, so the waiting script takes the hold itself,
-before any build:
+Wait for the box with no model calls, and hold it the moment it is free. Run the script as a
+background command when your harness has them, and read its last line when it ends; it stops itself
+after 110 minutes in any case. Another check can take the box within a minute of its release, so the
+waiting script takes the hold itself, before any build:
 
 ```sh
 deadline=$(( $(date -d "<the lock's at>" +%s) + 20 * 3600 ))
@@ -223,13 +235,31 @@ passes and `health` answers is still a deploy: record the exit and its last line
 
 ## 5. The flows
 
-Run this run's set of flows from [flows.md](flows.md), in its order, each within its cap. Note the
-UTC time at each flow's start and end: the report gives each flow's wall time.
+Run this run's set of flows from [flows.md](flows.md) in its "Run order": later flows reuse what
+earlier ones made. Do the four flows Opus keeps (see "Who does what") yourself, in their place in
+that order. Hand each other group of the run order to one subagent, one group after another; two
+groups run side by side only when both are plainly independent reads (no session made or stopped).
+At most one subagent runs at a time otherwise, which keeps this machine at 4 processes or fewer.
+
+Start a subagent with T3's `delegate_task`: `target`
+`{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
+`isolation: "shared"` (it works in this worktree), and as `task` the text of
+[sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, this worktree's path,
+`$KIT`, `$C`, `$WEB`, `<sha8>`, `$E`, `$P`, and the session ids earlier flows made (from their
+`result.txt` or your own notes). Wait for its completion, then read its evidence.
+
+**Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
+driver's `steps.log` and its screenshots show every part of the flow's See line. Read them for every
+flow; open screenshots where the See line names a screen. A flow the subagent marked `failed`, or
+whose evidence falls short, you see again yourself before reporting it as failed or filing a ticket.
+When a subagent's work on a group falls short on more than one flow, do the whole group yourself and
+say so in the report. Note per flow who drove it (Sol, or Opus) and whether you re-did it.
+
+How a flow is driven, by you or a subagent:
 
 - A `scripted` flow runs its recipe with the verify skill's web driver. The box is the declared
   outer server (`MEND_VERIFY_OUTER_URL`, step 4), which is how the guard lets a driver reach it
-  (`.agents/skills/verify/references/guard.md`): the owner asked for this run on SLNT-1050. Read
-  pass or fail and the recipe's `steps.log`; open the screenshots only on a failure.
+  (`.agents/skills/verify/references/guard.md`): the owner asked for this run on SLNT-1050.
 
   ```sh
   MAIN_RUN_SESSION=<id> node .agents/skills/verify/scripts/drive-web.mjs --web $WEB --out $E/<flow> \
@@ -237,15 +267,15 @@ UTC time at each flow's start and end: the report gives each flow's wall time.
     --recipe .agents/skills/box-main-run/recipes/<recipe>.mjs
   ```
 
-- An `agent` flow you drive by hand, as its feature file's "Driving it with verify" says, through
-  `M` and a Playwright page against `$WEB` (a throwaway recipe module of your own, run with the same
-  driver, keeps the redaction and the screenshots' checks). Judge only the flow's "See" line.
+- An `agent` flow is driven by hand, as its feature file's "Driving it with verify" says, through
+  `M` and a recipe module of your own run with the same driver (it keeps the redaction and the
+  screenshots' checks). Judge only the flow's See line.
 
 Keep every CLI command's stdout, stderr and exit code in `$E/<flow>/cli.log`. Each flow ends as
-`seen`, `failed` or `not run · <reason>`, against the flow's own "seen" line, never a looser one. A
+`seen`, `failed` or `not run · <reason>`, against the flow's own See line, never a looser one. A
 flow that needs an earlier flow's session and lacks it is `not run · <flow> failed`.
 
-**Done when** every flow in flows.md has one of the three outcomes.
+**Done when** every flow in this run's set has one of the three outcomes, checked by you.
 
 ## 6. Wind down
 

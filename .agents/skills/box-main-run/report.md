@@ -32,12 +32,15 @@ Box:
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
 - Free on `/`: <free before> → <free after> free. Removed: <what step 6 removed>.
 
-| Flow           | Mode     | Min | Outcome            | What was seen                                  |
-| -------------- | -------- | --- | ------------------ | ---------------------------------------------- |
-| server.upgrade | agent    | 9   | seen               | finished for <version>; the box runs this head |
-| …              | scripted | 2   | failed · SLNT-n    | <the line that differed from "See">            |
-| …              | agent    |     | not run · <reason> |                                                |
+| Flow           | Mode     | By        | Min | Outcome         | What was seen                                  |
+| -------------- | -------- | --------- | --- | --------------- | ---------------------------------------------- |
+| server.upgrade | agent    | Opus      | 9   | seen            | finished for <version>; the box runs this head |
+| …              | scripted | Sol       | 2   | failed · SLNT-n | <the line that differed from "See">            |
+| …              | agent    | Sol, Opus |     | seen            | <Opus re-saw it>                               |
 
+- Who drove the flows: <n> by Sol subagents, <n> of them re-done by Opus; <n> by Opus. Model calls:
+  Opus <n>, Sol <n> (from each thread's transcript or T3's task record; `not shown` when neither
+  says).
 - Not on the box by design: flows.md, "Not on the box".
 
 <screenshots, one per web flow, the state a person saw>
