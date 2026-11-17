@@ -341,29 +341,35 @@ const remoteWindow = async (): Promise<void> => {
   const folder = vscode.workspace.workspaceFolders?.[0]?.uri;
   if (folder === undefined) throw new Error("the Remote-SSH window has no folder");
   const role = roleOf(folder);
-  const mend = await vscode.extensions.getExtension<MendApi>("sealant-sh.mend")?.activate();
-  if (mend === undefined) throw new Error("the Mend extension is not loaded in the remote window");
-  const story = role === "first" ? await ownersStory(folder) : {};
-  const editor = await mend.workspaceEditor();
-  const after =
-    role === "first"
-      ? { picked: await pickInWorkspace() }
-      : { warm: await vscode.commands.executeCommand("mend.bringMyEditor") };
-  fs.writeFileSync(
-    reportFile(role),
-    `${JSON.stringify(
-      {
-        remoteName: vscode.env.remoteName,
-        folder: folder.toString(),
-        enteredAt,
-        ...story,
-        editor,
-        ...after,
-      },
-      null,
-      2,
-    )}\n`,
-  );
+  const report = (value: unknown) =>
+    fs.writeFileSync(reportFile(role), `${JSON.stringify(value, null, 2)}\n`);
+  // A window whose run ends takes all of VS Code with it, before the first window can say why: a
+  // failure here is reported, step and cause, and the window stays open for the first to read it.
+  let step = "activating Mend";
+  try {
+    const mend = await vscode.extensions.getExtension<MendApi>("sealant-sh.mend")?.activate();
+    if (mend === undefined) throw new Error("the Mend extension is not loaded");
+    step = "the owner's story";
+    const story = role === "first" ? await ownersStory(folder) : {};
+    step = "reading the workspace editor";
+    const editor = await mend.workspaceEditor();
+    step =
+      role === "first" ? `the Extensions panel install of ${pickedExtension}` : "bring my editor";
+    const after =
+      role === "first"
+        ? { picked: await pickInWorkspace() }
+        : { warm: await vscode.commands.executeCommand("mend.bringMyEditor") };
+    report({
+      remoteName: vscode.env.remoteName,
+      folder: folder.toString(),
+      enteredAt,
+      ...story,
+      editor,
+      ...after,
+    });
+  } catch (cause) {
+    report({ failed: { step, cause: String(cause) } });
+  }
   await sleep(REMOTE_WINDOW_OPEN_MS);
 };
 
@@ -409,7 +415,7 @@ const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<u
   windowRoles[sshUserOf(folder)] = role;
   fs.writeFileSync(rolesFile, JSON.stringify(windowRoles));
   await original.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
-  return until(
+  const report: unknown = await until(
     `the ${role} Remote-SSH window to report`,
     async () =>
       fs.existsSync(reportFile(role))
@@ -417,6 +423,13 @@ const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<u
         : null,
     300_000,
   );
+  const failed = field(report, "failed");
+  if (failed !== undefined) {
+    throw new Error(
+      `the ${role} Remote-SSH window failed at ${String(field(failed, "step"))}: ${String(field(failed, "cause"))}`,
+    );
+  }
+  return report;
 };
 
 export async function run(): Promise<void> {
