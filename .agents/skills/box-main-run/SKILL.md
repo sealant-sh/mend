@@ -22,11 +22,13 @@ top; report any flow outside it as `not run · not in this run's set`.
 The run is an Opus 5.5 thread that hands most flows to GPT-6.1 Sol subagents (the owner's choice on
 SLNT-1050, 17 Nov). You are the Opus thread. You keep what needs judgement or happens once: steps 1
 to 4 (the skip, the CI dispatch, the wait and the hold, the build, deploy and identity), the flows
-`server.upgrade`, `server.data-intact`, `handoff.held` and `capture-and-save.live-stop`, reading
-every subagent's evidence, step 6's wind-down, and step 7's report and tickets. The subagents drive
-the other flows (step 5). Linear is reached through the Executor MCP server's `execute` tool, with
-the `linear_app.org.localLinearMcp` connection; when your harness has no such tool, write the report
-to `$E/report.md` and the tickets to `$E/tickets.md`, and say so in your last line.
+`server.upgrade`, `server.data-intact`, `handoff.held`, `capture-and-save.live-stop` and the three
+`land-change.web-push`, `land-change.cli-again` and `land-change.refused` (they use `git` on the box
+over ssh, which subagents never do), reading every subagent's evidence, step 6's wind-down, and step
+7's report and tickets. The subagents drive the other flows (step 5). Linear is reached through the
+Executor MCP server's `execute` tool, with the `linear_app.org.localLinearMcp` connection; when your
+harness has no such tool, write the report to `$E/report.md` and the tickets to `$E/tickets.md`, and
+say so in your last line.
 
 You are the only writer of what this skill keeps. Work in the task's worktree of Mend, detached at
 `origin/main`:
@@ -41,6 +43,7 @@ git fetch --quiet origin main && git checkout --quiet --detach origin/main && pn
 export MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41'   # VM 131, mend-boat-preview
 WEB=https://yiannis-k8s-arc.tailc79e49.ts.net             # the box's APP_URL
 KIT=~/.local/share/mend-boat-check                        # its checker account: cli/, password
+KIT2=~/.local/share/mend-boat-check-2                     # the second account (fixtures.sh)
 STATE=~/.local/state/mend-main-run                        # state.json, lock/, runs/<tag>/
 SHA=$(git rev-parse HEAD); TAG=main-${SHA:0:12}; E=$STATE/runs/$TAG
 ```
@@ -73,7 +76,7 @@ a lost file is rebuilt from the latest report.
       "dump": "/root/backups/pre-main-<sha12>-<stamp>.sql",
       "cliDir": "/root/box-main-<sha12>-cli",
       "image": "ghcr.io/sealant-sh/mend:<version>",
-      "worktrees": ["main-run-<sha8>", "main-run-run-<sha8>", "main-run-live-<sha8>"],
+      "worktrees": ["boat-check-ubuntu/main-run-<sha8>", "main-run-land/main-run-land-<sha8>", "…"],
       "session": "<the start-session.boat-turn session id>"
     }
   ]
@@ -202,8 +205,11 @@ Record `cliDir` in the ledger from its result. Then set up this machine's side:
 mkdir -p $E && P=$(mktemp -d) && C=$(mktemp -d) && chmod 700 $P
 npm install --silent --prefix $C .verify/box/cli-${SHA:0:12}/*.tgz
 M() { XDG_CONFIG_HOME=$KIT/cli $C/node_modules/.bin/mend "$@"; }
+M2() { XDG_CONFIG_HOME=$KIT2/cli $C/node_modules/.bin/mend "$@"; }   # the second account
 jq -n --rawfile p $KIT/password '{email:"boat-check@example.test",password:($p|rtrimstr("\n"))}' \
   > $P/account.json
+jq -n --rawfile p $KIT2/password '{email:"main-run-second@example.test",password:$p}' \
+  > $P/account2.json   # once fixtures.sh has made the second account
 export MEND_VERIFY_OUTER_URL=$WEB MEND_VERIFY_PRIVATE=$P
 ```
 
@@ -231,7 +237,18 @@ Record `version` and `image` in the ledger once the deploy pulled the image. `id
 passes and `health` answers is still a deploy: record the exit and its last lines in flow
 `server.upgrade`.
 
-**Done when** `identity` passed, or the run is going to step 6 with the reason recorded.
+Then make sure the fixtures are there, and make any that are missing:
+
+```sh
+MEND_CLI=$C/node_modules/.bin/mend .agents/skills/box-main-run/fixtures.sh $TAG
+```
+
+It prints one line per fixture (`present`, `made`, or `manual: <step>`) and keeps them in the
+report. A fixture it could not make turns the flows that need it into
+`not run · fixture <name> missing`; it never stops the run.
+
+**Done when** `identity` passed and the fixtures were checked, or the run is going to step 6 with
+the reason recorded.
 
 ## 5. The flows
 
@@ -245,8 +262,8 @@ Start a subagent with T3's `delegate_task`: `target`
 `{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
 `isolation: "shared"` (it works in this worktree), and as `task` the text of
 [sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, this worktree's path,
-`$KIT`, `$C`, `$WEB`, `<sha8>`, `$E`, `$P`, and the session ids earlier flows made (from their
-`result.txt` or your own notes). Wait for its completion, then read its evidence.
+`$KIT`, `$KIT2`, `$C`, `$WEB`, `<sha8>`, `$E`, `$P`, and the session ids earlier flows made (from
+their `result.txt` or your own notes). Wait for its completion, then read its evidence.
 
 **Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
 driver's `steps.log` and its screenshots show every part of the flow's See line. Read them for every
@@ -293,12 +310,12 @@ flow that needs an earlier flow's session and lacks it is `not run · <flow> fai
    remove each thing it names, after checking its name has the shape below. A name of any other
    shape is not this skill's: leave it and say so.
 
-   | Field       | Shape it must have                                                         | Remove with                                   |
-   | ----------- | -------------------------------------------------------------------------- | --------------------------------------------- |
-   | `dump`      | `/root/backups/pre-main-<12 hex>-<stamp>.sql`                              | `rm -f` on the box                            |
-   | `cliDir`    | `/root/box-main-<12 hex>-cli`                                              | `rm -rf` on the box                           |
-   | `image`     | `ghcr.io/sealant-sh/mend:<x.y.z>-next.<n>.preview.<n>`                     | `docker image rm` on the box                  |
-   | `worktrees` | each `main-run-<8 hex>`, `main-run-run-<8 hex>` or `main-run-live-<8 hex>` | `M worktrees rm <name> --force --project <p>` |
+   | Field       | Shape it must have                                                                                                                              | Remove with                                         |
+   | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
+   | `dump`      | `/root/backups/pre-main-<12 hex>-<stamp>.sql`                                                                                                   | `rm -f` on the box                                  |
+   | `cliDir`    | `/root/box-main-<12 hex>-cli`                                                                                                                   | `rm -rf` on the box                                 |
+   | `image`     | `ghcr.io/sealant-sh/mend:<x.y.z>-next.<n>.preview.<n>`                                                                                          | `docker image rm` on the box                        |
+   | `worktrees` | `<project>/main-run-<word>-<8 hex>` or `<project>/main-run-<8 hex>`, `<project>` one of `boat-check-ubuntu`, `main-run-land`, `main-run-second` | `M worktrees rm <name> --force --project <project>` |
 
    Never remove the image `mend-mend-1` runs. A refusal (`image is in use`, a live session) keeps
    that thing and its ledger entry: say so. Drop an entry once everything it names is gone. Nothing

@@ -27,6 +27,24 @@ Three flows run a real agent turn, each with a one-line prompt: `start-session.b
 `start-session.composer` and `send-review-back.deliver`. They use codex: the owner has far more
 Codex capacity than Claude (17 Nov).
 
+For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
+git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
+`<second>` is the project `main-run-second` (from `<git>/second.git`, branch `main`); `M2` is the
+CLI signed in as `main-run-second@example.test`, used like `M` (never `mend login` or `mend logout`
+it); `<git dir>` is the directory on the box that holds the bare repositories (`/srv/mend-git`).
+"The owner's browser" is the saved sign-in other flows use; "the second browser" is the second
+account's saved sign-in. The run's machine cannot reach `<git>`: every read of a bare repository is
+`git` over `MEND_VERIFY_BOX_SSH` on the box.
+
+These flows assume the owner adopted `<land>` and `<second>` with the default visibility, `private`.
+A flow that needs the second account to see a project makes it `shared` and puts it back to
+`private` before it ends.
+
+Project settings: the map names Setup-tab sections. In the web today, `Visibility`,
+`Linked projects` and `References` are on the project Settings tab's `General` sub-tab, and folders
+are `Organization folders` (access `off`, `read`, `write`) on its `Folders` sub-tab. A flow reads a
+section where it is now and reports a handle that differs from the map as a map gap.
+
 The map still names the project page's `Setup` tab. The web now has a project `Settings` tab with
 sub-tabs (`General`, `Workspace`, `Services`, `Secrets`, `Git`, `Landing`, `Review`, `Folders`;
 `apps/web/src/components/project/settings-sections.ts`), and app Settings has one page per section
@@ -47,6 +65,17 @@ you hold the box (`verify box prepare`).
   `Inherit · Boat` on 16 Nov), switch to Docker without moving anything; run
   `M run --project <p> --name main-run-docker -- sh -c 'echo docker > MAIN-RUN-DOCKER.md'`; put the
   noted choice back without moving anything. Made on 16 Nov. `M worktrees --project <p>` lists it.
+- **The git service** on the box, serving bare repositories at `<git>/<name>.git` that accept
+  pushes. Not on GitHub. Made by `fixtures.sh`, which keeps the repositories in `/srv/mend-git` on
+  the box, written `<git dir>`.
+- **The landing project** `<land>`, adopted by the owner from `<git>/land.git`. `M projects` lists
+  it.
+- **The second project** `<second>`, adopted by the owner from `<git>/second.git`. `M projects`
+  lists it.
+- **The second account** `main-run-second@example.test`, a member of Default, with its CLI config
+  (`M2`, in `~/.local/share/mend-boat-check-2/cli`) and its password file beside it, joined and
+  signed in by `fixtures.sh` through its own browser. `M members` lists it as `member`. It has no
+  agent login.
 - **The serve command** `<serve-cmd>`: a command the Ubuntu workspace image runs that listens on TCP
   port 8000 and answers HTTP (services.md: "Launch must confirm which command the image supports").
   Confirm it once with `M shell` in any live session, and write the command here. Until it is
@@ -79,6 +108,12 @@ flows reuse what earlier ones made:
 8. The rest, in any order: `adopt-project.*`, `sign-in.fresh-browser`, `pairing-devices.mint-read`,
    `git-access.read`, `workspace-ssh.status`, the Personal setup and Project setup flows, then
    `doctor.bundle-web` last.
+9. `land-change.web-push`, `land-change.cli-again`, `land-change.refused`,
+   `organization.visibility-who-sees`, `repositories-in-session.add-second`,
+   `references-folders.select-link`, `organization.roles-roundtrip`, `organization.join-refused`,
+   `operator.owner-grant-restore`, `shared-control.two-people`, `per-person-homes.two-people`, in
+   that order and one at a time: several change `<land>`, `<second>` or a role, and each runs only
+   after the one before it has put that back.
 
 ## The core loop
 
@@ -229,6 +264,77 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
+
+### land-change.web-push
+
+- **Map:** land-change.md `land-web` (submit, a non-GitHub origin), `land-session-line`,
+  `land-preview` (its absence), `land-observe` (`Check origin`)
+- **Needs:** either; no turn; CLI, web (the owner's browser) and `git` on the box over
+  `MEND_VERIFY_BOX_SSH`; `<land>`
+- **Do:**
+  `M run --project <land> --name main-run-land-<sha8> -- sh -c 'printf "landed\n" > LAND.md'`;
+  record its session id as this run's `land session`. On its page read the landing line, choose
+  `Land →`, read the `Land` region, choose `Push to origin`, then `Check origin`; go back to the
+  session page. On the box, `git --git-dir <git dir>/land.git log --oneline -1 <remote branch>` and
+  `git --git-dir <git dir>/land.git show <remote branch>:LAND.md`. Nothing to restore: the pushed
+  branch stays for `land-change.cli-again`.
+- **See:** `not landed` with `Land →`; the region reads `push <branch> to origin`,
+  `not landed · nothing pushed from Mend yet` and
+  `pull request unavailable · origin is on <git host>, not GitHub`, with the button `Push to origin`
+  and neither `Pull request title` nor `Preview description`; after the push a status line
+  `pushed · <remote branch> · <sha>` with no pull request part; `Check origin` adds when origin was
+  last checked; the session line now states that fact instead of `not landed`; the box's `log` names
+  the same `<sha>` and `show` prints `landed`.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/land-panel.tsx`, `apps/api/src/landing-state.ts`,
+  `apps/api/src/workspace-landing.ts`, `packages/landing/`
+
+### land-change.cli-again
+
+- **Map:** land-change.md `land-cli` (`--no-pr`, `--branch`), `land-again` (nothing new; more work)
+- **Needs:** either; no turn; CLI and `git` on the box; `land-change.web-push`
+- **Do:** `M land main-run-land-<sha8> --project <land>` (nothing new); add work without a turn with
+  `M run --project <land> --worktree main-run-land-<sha8> -- sh -c 'printf "again\n" >> LAND.md'`,
+  then `M land main-run-land-<sha8> --project <land>`; add work the same way once more
+  (`printf "push-only\n"`), then
+  `M land main-run-land-<sha8> --project <land> --no-pr --branch main-run/push-only-<sha8>`. On the
+  box, `git --git-dir <git dir>/land.git log --oneline -2` for both branches. Restore: on the box,
+  `git --git-dir <git dir>/land.git branch -D main-run/push-only-<sha8>`, so only Mend's landing
+  branch is left.
+- **See:** the first `land` prints `  landing <branch> · <land> · session <id8> · …`, exit `1`, and
+  `mend: landing not started · nothing new since the last landing`; the second prints
+  `✓ pushed · <remote branch> · <sha>` with no pull request, `  checkpoint <sha>` and an
+  `  observed` block, exit `0` (record the pull request line it prints, if any); the third's first
+  `✓` line reads `pushed · main-run/push-only-<sha8> · <sha>`, exit `0`; the box's logs carry those
+  shas; after the restore only `<remote branch>` holds this run's commits.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/cli/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
+
+### land-change.refused
+
+- **Map:** land-change.md `land-refused`, `land-observe` (`Check origin` after a refused push)
+- **Needs:** either; no turn; CLI, web (the owner's browser) and `git` on the box;
+  `land-change.cli-again`
+- **Do:** Add unlanded work with
+  `M run --project <land> --worktree main-run-land-<sha8> -- sh -c 'printf "refused\n" >> LAND.md'`.
+  On the box, in a `mktemp -d` directory, clone `<git dir>/land.git` at `<remote branch>`, commit a
+  file `OUTSIDE.md`, push it back, and record origin's head with
+  `git --git-dir <git dir>/land.git rev-parse <remote branch>`. Run
+  `M land main-run-land-<sha8> --project <land>`; read `rev-parse` again; on the review page's
+  `Land` region choose `Check origin`. Restore: on the box, set the branch back to the sha Mend last
+  pushed
+  (`git --git-dir <git dir>/land.git update-ref refs/heads/<remote branch> <mend sha> <outside sha>`)
+  and remove the clone.
+- **See:** `· push refused · <remote branch> · <remote's words>`, exit `1`; origin's head is the
+  outside commit before and after the `land`; the panel shows the refused landing and, after
+  `Check origin`, a line stating what origin held; after the restore `rev-parse` prints Mend's last
+  sha.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/api/src/workspace-landing.ts`, `packages/landing/src/git-words.ts`,
+  `apps/web/src/components/land-panel.tsx`, `apps/cli/src/`
 
 ### services.cli-run
 
@@ -491,6 +597,36 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
   `apps/web/src/routes/settings.organization.folders.tsx`
 
+### references-folders.select-link
+
+- **Map:** references-folders.md `folder-select`, `ref-add`, `ref-select`, `ref-refresh-remove`,
+  `link-project`, `extras-delivery`
+- **Needs:** Boat; no turn; CLI and web (the owner's browser); `<land>` and `<second>`; a
+  `<scratch>/folder` holding `a.txt`
+- **Do:** `M folder create main-run-sel-<sha8>`,
+  `M folder push main-run-sel-<sha8> <scratch>/folder`. On `<land>`'s Settings: give
+  `main-run-sel-<sha8>` `read` access; add the reference `main-run-ref` with the URL
+  `<git>/second.git` and no ref; link `<second>` as `main-run-link`. Run
+  `M folder rm main-run-sel-<sha8>` (refused while selected). Then
+  `M run --project <land> --name main-run-extras-<sha8> -- sh -c 'ls -R /workspace/home /workspace/ref /workspace/repos > EXTRAS.txt 2>&1; true'`
+  and read `EXTRAS.txt` in its change. Choose `refresh` on `main-run-ref`. Restore in the same flow:
+  set the folder's access back to `off`, `remove` the reference and the link,
+  `M folder rm main-run-sel-<sha8>`, and `M worktrees rm main-run-extras-<sha8> --project <land>`.
+- **See:** the folder row with `read` pressed; the reference row with its short head sha and
+  `fetched <date>` (or the refusal of a `git://` URL in its own words: record which); the link row
+  `main-run-link read-write` with `<second> · worktree <worktree>`;
+  `mend: A project mounts this folder. Deselect it there first.`, exit `1`; `EXTRAS.txt` lists
+  `a.txt` under `main-run-sel-<sha8>`, the reference's top level, and `main-run-link` under
+  `/workspace/repos` or a missing directory (record which: the map says linked projects are not
+  delivered in capture mode); after the restore, `<land>`'s sections show none of the three,
+  `M folder list` has no `main-run-sel-<sha8>` and `M worktrees --project <land>` no
+  `main-run-extras-<sha8>`.
+- **Mode:** `agent`
+- **Box-only:** `boat`
+- **Areas:** `apps/web/src/components/project/settings/general-links.tsx`,
+  `apps/web/src/components/project/settings/folders.tsx`, `apps/api/src/folders.ts`,
+  `packages/sessions/`
+
 ### now-and-sessions.web-now
 
 - **Map:** now-and-sessions.md `inbox-groups`
@@ -598,6 +734,41 @@ flows reuse what earlier ones made:
 - **Box-only:** `boat`
 - **Areas:** `packages/sessions/`, `packages/store/`, `apps/api/src/`, `apps/cli/src/`
 
+### repositories-in-session.add-second
+
+- **Map:** repositories-in-session.md `repo-projects`, `repo-add`, `repo-list`, `repo-refusals` (own
+  project, unknown project, name taken), `repo-session-card`, `repo-review-line`,
+  `repo-removal-hold`
+- **Needs:** Boat; no turn; CLI in tmux and web (the owner's browser); `<land>` and `<second>`, both
+  `private`
+- **Do:** In tmux, `M run --project <land> --name main-run-repo-<sha8> -- sleep 1800`; record
+  `<id8>`. `M shell <id8>` in a second tmux session and, as the map's steps, run `mend repo list`,
+  `mend repo projects`, `mend repo add main-run-land`, `mend repo add no-such-project`,
+  `mend repo add main-run-second` (wait for the row),
+  `git -C /workspace/repos/main-run-second status -sb`, `mend repo add main-run-second` again,
+  `mend repo list`, then write `/workspace/repo/VERIFY.md`. Read the session page's `Repositories`
+  card; choose `Mark checkpoint` and open the review. `exit` the shell, `M stop <id8>`, wait in
+  `M sessions --project <land> --all --json` until it is settled and its capture done, then
+  `M worktrees rm main-run-repo-<sha8> --project <land>`. Restore:
+  `M worktrees rm main-run-repo-<sha8> --project <land> --force`, then
+  `M worktrees rm main-run-repo-<sha8> --project <second>`, so neither project keeps this run's
+  worktree.
+- **See:** `no repositories beside /workspace/repo · …`; `mend repo projects` names
+  `main-run-second` with `main` and `<git>/second.git`, and not `main-run-land`; the own-project and
+  unknown-project refusals, each `exit=1`;
+  `adding main-run-second · /workspace/repos/main-run-second · branch mend/main-run-repo-<sha8> · cloning`,
+  then the row ending `ready · saved with the main repository`, `exit=0`;
+  `## mend/main-run-repo-<sha8>`; `this session already has a repository named main-run-second`,
+  `exit=1`; the card's `ready` row (and `adding`, or "not observed"); the review line
+  `repositories · /workspace/repos/main-run-second ready · nothing of its own to review yet`; the
+  removal refusal naming 1 repository added with `mend repo add`, exit `1`; after the restore,
+  `M worktrees --project <land>` and `M worktrees --project <second>` list no
+  `main-run-repo-<sha8>`.
+- **Mode:** `agent`
+- **Box-only:** `boat`
+- **Areas:** `apps/cli/src/`, `packages/sessions/`, `packages/store/`, `apps/api/src/`,
+  `apps/web/src/`
+
 ### worktrees.web-create-remove
 
 - **Map:** worktrees.md `worktrees-tab`, `worktrees-new`, `worktrees-view`, `worktrees-menu`,
@@ -657,6 +828,163 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
   `apps/web/src/routes/settings.organization.invitations.tsx`
+
+### organization.visibility-who-sees
+
+- **Map:** organization.md `visibility`, `who-sees-what`, `members-cli` (the member's row);
+  land-change.md Gotchas (a non-owner's `Landing →` and `only the change's owner lands it`)
+- **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time;
+  `land-change.web-push` (something landed in `<land>`)
+- **Do:** `M2 members`; `M2 projects`; in the second browser, `/projects`. In the owner's browser,
+  set `<land>`'s `Visibility` to `shared`. `M2 projects` again; in the second browser, `/projects`,
+  then the land session's page, choose `Landing →` and read the `Land` region. In the owner's
+  browser set `<land>` back to `private`, which restores it in the same flow; `M2 projects` once
+  more.
+- **See:** `M2 members` has `Default · 2 members` with the `▸` row the second account's, `member`;
+  before, neither `M2 projects` nor the second browser's `main` lists `<land>` or `<second>`; after
+  `shared`, the owner's header line ends `· shared` and both list `<land>`; the session page link
+  reads `Landing →` (not `Land →`) and the region reads `only the change's owner lands it` with no
+  `Push to origin`; after `private`, `<land>` is gone from `M2 projects`.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/project/settings/general.tsx`, `apps/api/src/`,
+  `apps/web/src/components/land-panel.tsx`, `apps/cli/src/`
+
+### organization.roles-roundtrip
+
+- **Map:** organization.md `role-change` (and its last-owner refusal), `members-web`, `members-cli`,
+  `audit-log`
+- **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time; the second
+  account a `member`
+- **Do:** In the owner's browser on Settings · Members, choose `Make member` on the owner's row
+  (refused). Choose `Make owner` on the second account's row; `M members`; in the second browser,
+  read Settings · Members and look for `Invitations`. In the owner's browser, choose `Make member`
+  scoped to the second account's row by its email, which restores the role in the same flow;
+  `M members`, `M2 invite`. Read the audit log.
+- **See:** `An organization needs an owner. Make someone else an owner before this one steps down.`;
+  the row then reads `owner`, and `M members` agrees; the second browser shows the owner controls
+  while it is an owner (record which); after the restore the row and `M members` read `member`, the
+  second browser shows `Members` without `Make owner`, `Remove…` or `Invitations`, and `M2 invite`
+  exits `1` with `mend: only an owner can invite; mend members shows who`; the audit log's newest
+  lines name `made <second> an owner` and the change back.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/web/src/routes/settings.organization.members.tsx`, `apps/api/src/`,
+  `apps/cli/src/`
+
+### organization.join-refused
+
+- **Map:** organization.md `invite-web`, `invite-cli`, `join-refused` (not an invitation, already a
+  member, bound to another email, spent), `invite-revoke`
+- **Needs:** no session; no turn; CLI and web, one browser at a time, plus a fresh signed-out
+  browser context
+- **Do:** `M invite --days 1` (link A). In the owner's browser on Settings · Invitations, make a
+  `member` link bound to `main-run-other@example.invalid` (link B), `Done`. In the second browser,
+  open `/join#not-a-token`, link A, then link B. In the owner's browser revoke links A and B, which
+  restores the open list in the same flow. In the signed-out context open link A.
+- **See:** link A's two lines (`works once · member · expires <day>`); the box
+  `Copy it now. The link is not shown again. …` for B; `This link is not an invitation`;
+  `You are already a member of Default.` with `Open Mend` for A; B refused with its reason (record
+  the words); both rows leave the open list and the `<n> spent` summary afterwards (record its count
+  before and after); A in the signed-out context reads it cannot be used (record the words).
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/web/src/routes/join.$token.tsx`, `apps/web/src/routes/join.index.tsx`,
+  `apps/web/src/routes/settings.organization.invitations.tsx`, `apps/api/src/`
+
+### shared-control.two-people
+
+- **Map:** shared-control.md `share-on-web`, `share-off-web`, `share-cli`, `share-refused` (a
+  non-owner), `viewer-lines`, `org-owner-off`, `terminal-owner-only`, `who-pays`, `audit`
+- **Needs:** Boat; no turn; CLI (`M` and `M2`, `M2` also in tmux) and web, two browsers at once (the
+  owner's and the second's, side by side); `<second>`
+- **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`. In tmux,
+  `M2 run --project <second> --name main-run-share-<sha8> -- sleep 1800`; record `<id>` and `<id8>`.
+  Open `/sessions/<id>` in both browsers. `M session share <id8> on --yes` (as the owner). In the
+  second browser: `On`, `Keep it off`, `On`, `Turn on`. Reload the owner's page; there choose
+  `Turn off`. `M2 session share <id8> on --yes`, `M2 session share <id8> off`, and in tmux
+  `M2 session share <id8> on` answered `n`. Read the audit log. Restore in the same flow:
+  `M2 stop <id8>`, wait until it settles,
+  `M2 worktrees rm main-run-share-<sha8> --project <second>`, and set `<second>` back to `private`.
+- **See:** the owner's page reads
+  `Only <second> steers this session. You can read the record and review the change.` and its header
+  ends `· runs as <second>`; the owner's `share` exits `1` with
+  `mend: only the session owner can share control of this session`; in the second browser `Off`
+  pressed, the who-pays line (record which layout's words), the dialog `Turn on shared control?`,
+  `Off` still pressed after `Keep it off`, then `On` pressed; the owner's page reads
+  `· shared control on`, a read-only terminal line naming `<second>`, and
+  `<second> shares control of this session.` with `Turn off`, then the viewer line again;
+  `✓ shared control on · <harness> <id8>` and `✓ shared control off · …`, exit `0`;
+  `shared control stays off`; the audit log names both turn-ons and both turn-offs with their
+  people. Record whether a `mend run` session shows the switch at all: the map drives it on a
+  harness session.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/shared-control-dialog.tsx`, `apps/web/src/`, `apps/api/src/`,
+  `apps/cli/src/`
+
+### per-person-homes.two-people
+
+- **Map:** per-person-homes.md `join-line`, `shared-workspace-line`, `runs-as-yourself` (the second
+  person)
+- **Needs:** Boat; no turn; CLI (`M` and `M2`) in tmux and web, one browser at a time (the owner's);
+  `<second>`
+- **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`. In tmux,
+  `M2 run --project <second> --name main-run-pp-<sha8> -- sleep 1800`; record `<b8>`. In the owner's
+  browser, on `<second>`'s Worktrees tab open `New session in main-run-pp-<sha8>`, read it,
+  `Escape`. In tmux, `M run --project <second> --worktree main-run-pp-<sha8> -- sleep 1800`; record
+  `<a8>`. `M sessions --project <second>`; open `<a8>`'s session page. `M2 shell <b8>` and
+  `M shell <a8>`, each running `id -un; id -u; echo $HOME`, then `exit`. Restore in the same flow:
+  `M stop <a8>`, `M2 stop <b8>`, wait until both settle, remove the worktree as its owner
+  (`M2 worktrees rm main-run-pp-<sha8> --project <second>`), and set `<second>` back to `private`.
+- **See:** the menu's line
+  `<second>'s session is running in this worktree. You share its workspace: …`; the owner's `run`
+  prints `✓ joins worktree main-run-pp-<sha8> · 1 session · …` and the join line (record whether it
+  prints: the map names it for harness launches); under the live row
+  `Shared workspace with <second> · …`, and the same line on the session page; two different `m`
+  plus 8 character logins, each uid in 40001–49999 with its own `/home/<name>` (or uid `0` and the
+  shared-home case, record which: the map says a first launch on an unchecked image can share one
+  home).
+- **Mode:** `agent`
+- **Box-only:** `boat`
+- **Areas:** `apps/web/src/components/shared-workspace.tsx`,
+  `packages/domain/src/workbench/shared-workspace.ts`, `packages/sessions/`, `apps/cli/src/`
+
+### operator.owner-grant-restore
+
+- **Map:** operator.md `operator-only`, `org-create` (the refusal), `org-rename`,
+  `org-invite-owner`, `grant-owner`, `reset-link` (the refusal), `operator-audit`,
+  `instance-defaults` (the member's view); organization.md `operator-add-member` (the single-tenancy
+  refusal)
+- **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time, plus a fresh
+  signed-out browser context; the owner account is the operator
+- **Do:** `M2 operator org list`, `M2 operator gate`; `M operator org create main-run-x`;
+  `M operator org rename Default main-run-renamed`, `M members`, then
+  `M operator org rename main-run-renamed Default`, which restores the name in the same flow;
+  `M operator org rename no-such-org x`;
+  `M operator org add-member Default main-run-second@example.test`;
+  `M operator org invite-owner Default --email main-run-owner@example.invalid`, open it in the
+  signed-out context, then revoke it on Settings · Invitations;
+  `M operator grant-owner Default main-run-second@example.test`, `M members`, then `Make member` on
+  the second account's row (scoped by email), which restores the role;
+  `M operator grant-owner Default nobody@example.invalid`;
+  `M operator reset-link nobody@example.invalid`. In the second browser look for
+  `instance · operator` on Settings; in the owner's, read the audit log.
+- **See:** both `M2` commands exit `1` with `mend: this account is not the operator of this Mend`;
+  the create refusal naming `MEND_TENANCY=single`; `✓ renamed Default to main-run-renamed`,
+  `M members` starting `main-run-renamed · 2 members`, and the rename back;
+  `mend: no organization named "no-such-org"`;
+  `mend: This Mend runs one organization (MEND_TENANCY=single). Invite people with a link instead.`;
+  the owner link's line `owner of Default · for main-run-owner@example.invalid · works once · …` and
+  `as owner · expires <day>` on the join page, then the row gone;
+  `✓ main-run-second@example.test is an owner of Default` and `owner` in `M members`, then `member`
+  again; the two `No … has that email` refusals, exit `1`; no `instance · operator` for the second
+  account; the audit log names the renames, the owner invitation and its revoke, and the grant, each
+  `as the operator` where the map says so.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/api/src/`, `apps/cli/src/`,
+  `apps/web/src/routes/settings.organization.audit-log.tsx`
 
 ### shared-control.refuse-script
 
@@ -801,64 +1129,64 @@ No flow: every client needs a device, an app or a world the box run does not hav
 
 ## Not on the box
 
-| Feature                 | Sub-feature(s)                                                                                                                                                                                                                                                                      | Why not                                                                                                                                  |
-| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
-| adopt-project           | `adopt-web` (submit), `adopt-cli` (a new project), `adopt-visibility`, `adopt-tui`, `adopt-mobile`, `adopt-vscode`                                                                                                                                                                  | each run would leave a project; `<p>` was adopted once; phone, VS Code                                                                   |
-| start-session           | `start-in-worktree`, `start-tui`, `start-desktop`, `start-mobile`, `start-vscode`, `start-slack`, `session-attach-resume`                                                                                                                                                           | desktop, phone, VS Code, Slack; a local stack shows the rest                                                                             |
-| review-change           | `review-inline-comment`, `review-machine-pass`, `review-desktop`, `review-mobile`                                                                                                                                                                                                   | inline has no stable handle; Mend's passes use inference; desktop, phone                                                                 |
-| send-review-back        | `send-edit`, `send-pending`, `send-continue-cli`, `send-tui`, `send-desktop`, `send-mobile`                                                                                                                                                                                         | a local stack shows them; desktop, phone                                                                                                 |
-| land-change             | `land-web` (submit), `land-preview`, `land-cli`, `land-again`, `land-refused`, `land-check`, `land-observe`, `land-automatic`, `land-desktop`, `land-mobile-observe`, `land-slack`                                                                                                  | pushes to origin and opens pull requests; no GitHub login                                                                                |
-| services                | `service-run-web`, `service-recipe`, `service-add`, `service-tui`, `service-desktop`                                                                                                                                                                                                | a local stack shows them; `<p>` declares no `mend.toml`; desktop                                                                         |
-| sign-in                 | `first-account`, `cli-login`, `cli-logout`, `password-reset`, `desktop-connect`                                                                                                                                                                                                     | the CLI sign-in is never touched; a reset ends the owner's browser sessions; desktop                                                     |
-| pairing-devices         | `mint-by-hand`, `claim-mobile`, `revoke`, `unpair-mobile`                                                                                                                                                                                                                           | each run would add a device; no phone                                                                                                    |
-| provider-accounts       | `connect-grant`, `connect-my-login`, `connect-stdin`, `connect-github`, `connect-web`, `disconnect`, `reconnect-state`                                                                                                                                                              | would replace or remove the owner's codex login; no claude or GitHub credential                                                          |
-| git-access              | `bridge-share`, `adopt-auth` (a real adoption), mode switches                                                                                                                                                                                                                       | needs an ssh-agent and a private repository; changes the account's mode                                                                  |
-| workspace-ssh           | `ssh-setup`, `vscode-setup`, `vscode-open`                                                                                                                                                                                                                                          | registers a key every run; VS Code                                                                                                       |
-| models                  | `desktop-picker`, `mobile-picker`, `vscode-picker`, `resume-with`                                                                                                                                                                                                                   | desktop, phone, VS Code; `--with` another harness needs claude                                                                           |
-| dotfiles                | all but `dotfiles-show`                                                                                                                                                                                                                                                             | replaces the owner's saved repository and snapshot; a local stack shows them                                                             |
-| secret-files            | `secrets-add-web`, `secrets-delivery`, `secrets-mobile-list`                                                                                                                                                                                                                        | a local stack shows them; phone                                                                                                          |
-| doppler                 | all                                                                                                                                                                                                                                                                                 | needs a real Doppler account                                                                                                             |
-| git-author              | `git-author-set-web`, `git-author-session`                                                                                                                                                                                                                                          | a local stack shows them                                                                                                                 |
-| skills                  | all but `skills-list`                                                                                                                                                                                                                                                               | writes the owner's libraries; a local stack shows them                                                                                   |
-| agent-memory            | all but `memory-list`                                                                                                                                                                                                                                                               | needs a checkout with Claude memory; delivery needs claude                                                                               |
-| pi-profile              | all: `pi-profile-dry-run`, `pi-profile-refused`, `pi-profile-save`, `pi-profile-dir`, `pi-profile-remove`, `pi-profile-session`                                                                                                                                                     | the dry run never calls the server (an ordinary test: SLNT-1082); the rest write the owner's saved profile, and a local stack shows them |
-| appearance              | `theme-desktop`, `theme-mobile`, `text-size-mobile`                                                                                                                                                                                                                                 | desktop, phone                                                                                                                           |
-| project-environment     | all but `env-show-cli`, `env-routing`                                                                                                                                                                                                                                               | changes `<p>`'s environment for every later session                                                                                      |
-| cluster-bindings        | all but `cluster-show`, `cluster-local-runner`                                                                                                                                                                                                                                      | needs operator-made Kubernetes objects; changes `<p>`                                                                                    |
-| workspace-images        | all but the panel reads                                                                                                                                                                                                                                                             | an image change rebuilds every later workspace                                                                                           |
-| automatic-install       | `install-custom`, `install-switch`, `install-in-session`                                                                                                                                                                                                                            | changes `<p>`; `<p>` is not a Node repository                                                                                            |
-| hot-sessions            | `hot-count` (change), `hot-claim`, `hot-rewarm`                                                                                                                                                                                                                                     | each ready standby is a live workspace on the box                                                                                        |
-| project-settings        | changes, `settings-visibility`, `settings-remove`, `settings-retention`, `settings-instance-defaults`                                                                                                                                                                               | organization-wide or `<p>`-wide settings other checks depend on                                                                          |
-| references-folders      | `ref-add`, `ref-select`, `ref-refresh-remove`, `folder-select`, `link-project`, `host-mounts`, `extras-delivery`                                                                                                                                                                    | needs a second project or an operator mount; changes `<p>`                                                                               |
-| mend-toml               | all: `toml-init`, `toml-recipes-card`, `toml-run-cli`, `toml-project-recipes`, `toml-shadowed`, `toml-parse-error`                                                                                                                                                                  | `mend service init` never calls the server (`run-commands-json.test.ts` covers it); `<p>` has no `mend.toml`, and the rest change `<p>`  |
-| now-and-sessions        | `now-menus`, `now-mobile`, `now-desktop`                                                                                                                                                                                                                                            | a local stack shows the menu; phone, desktop                                                                                             |
-| attach-resume           | `resume-cli`, `rejoin-cli`, `delete-web`, `attach-tui`, `pickup-takeover`, `attach-tunnels`, `attach-image-paste`                                                                                                                                                                   | delete would remove sessions the next run reads; phone; a local stack shows the rest                                                     |
-| session-shell           | `shell-session-web`, `shell-session-tui`, `shell-tab-desktop`, `shell-mobile`                                                                                                                                                                                                       | a local stack shows them; desktop, phone                                                                                                 |
-| worktrees               | `worktrees-toggle`, `worktrees-clear-settled`, `worktrees-hidden-ended`, `worktrees-refresh`, `worktrees-tui`                                                                                                                                                                       | clear-settled would remove worktrees the next run reads; a local stack shows the rest                                                    |
-| workspace-replace       | all                                                                                                                                                                                                                                                                                 | needs a workspace marked to retire, and replacing stops what runs in it                                                                  |
-| pull-change             | `pull-wrong-origin`, `pull-checked-out`, `pull-too-large`                                                                                                                                                                                                                           | a local stack shows them                                                                                                                 |
-| handoff                 | `handoff-review-base`, `handoff-split`, `handoff-prompt`, `handoff-again`, `handoff-foreign-origin`, `handoff-hidden`                                                                                                                                                               | the prompt case spends a turn; a local stack shows the rest                                                                              |
-| repositories-in-session | `repo-add`, `repo-refusals`, `repo-review-line`, `repo-removal-hold`                                                                                                                                                                                                                | needs a second project                                                                                                                   |
-| capture-and-save        | `capture-not-saved`, `capture-discard`, `capture-removal-hold`                                                                                                                                                                                                                      | needs a stalled or slow drain sized for the store                                                                                        |
-| observed-agents         | all                                                                                                                                                                                                                                                                                 | runs `claude` by hand in the workspace; no claude login                                                                                  |
-| terminal-agent-waits    | all                                                                                                                                                                                                                                                                                 | its recipe runs in the VS Code driver's own world                                                                                        |
-| organization            | `invite-web`, `join`, `join-signed-in`, `join-refused`, `role-change`, `password-reset`, `member-removal`, `org-switch-cli`, `org-switch-web`, `org-per-sign-in`, `org-isolation`, `org-leave`, `org-access-key`, `operator-add-member`, `take-over`, `visibility`, `who-sees-what` | needs a second account or organization; multi tenancy                                                                                    |
-| shared-control          | all but `share-refused` (script)                                                                                                                                                                                                                                                    | needs a second account                                                                                                                   |
-| per-person-homes        | all but `runs-as-yourself`                                                                                                                                                                                                                                                          | needs a second account; `layout-opt-out` restarts the server                                                                             |
-| operator                | `org-create`, `org-rename`, `org-invite-owner`, `grant-owner`, `reset-link`, `operator-only`, `operator-audit`                                                                                                                                                                      | changes the organization or needs a second account                                                                                       |
-| exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                                                                              | each restarts the server with changed exposure variables                                                                                 |
-| server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`                                                                                                               | changes the box's install; the map drives them on a disposable host                                                                      |
-| uninstall               | all                                                                                                                                                                                                                                                                                 | a regression would remove the box's server or the sign-in the run may never touch                                                        |
-| cli                     | `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`, `unknown-command`, `completions`, `bare-mend`, `qr`                                                                                                                                              | never call the server: `help.test.ts` and `main.test.ts` cover them; `qr` is in pairing-devices                                          |
-| tui                     | `tui-new-worktree`, `tui-new-session`, `tui-attach`, `tui-auto-attach`, `tui-resume`, `tui-rename`, `tui-stop`, `tui-remove`, `tui-refresh`, `tui-snake`, `tui-adopt`, `tui-tunnels`, `tui-layout`, `tui-screen-mode`                                                               | a local stack shows them; each new one leaves sessions                                                                                   |
-| desktop-app             | all                                                                                                                                                                                                                                                                                 | no desktop app on the run's machine (and not shipping)                                                                                   |
-| mobile-app              | all                                                                                                                                                                                                                                                                                 | no phone, and its web build needs an allowed origin the box does not list                                                                |
-| vscode                  | all                                                                                                                                                                                                                                                                                 | no VS Code; its driver runs its own world                                                                                                |
-| slack                   | all                                                                                                                                                                                                                                                                                 | not drivable yet; no Slack workspace                                                                                                     |
-| t3-gateway              | all                                                                                                                                                                                                                                                                                 | its recipe needs a local stack's gateway                                                                                                 |
+| Feature                 | Sub-feature(s)                                                                                                                                                                                                          | Why not                                                                                                                                                           |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| adopt-project           | `adopt-web` (submit), `adopt-cli` (a new project), `adopt-visibility`, `adopt-tui`, `adopt-mobile`, `adopt-vscode`                                                                                                      | each run would leave a project; `<p>` was adopted once; phone, VS Code                                                                                            |
+| start-session           | `start-in-worktree`, `start-tui`, `start-desktop`, `start-mobile`, `start-vscode`, `start-slack`, `session-attach-resume`                                                                                               | desktop, phone, VS Code, Slack; a local stack shows the rest                                                                                                      |
+| review-change           | `review-inline-comment`, `review-machine-pass`, `review-desktop`, `review-mobile`                                                                                                                                       | inline has no stable handle; Mend's passes use inference; desktop, phone                                                                                          |
+| send-review-back        | `send-edit`, `send-pending`, `send-continue-cli`, `send-tui`, `send-desktop`, `send-mobile`                                                                                                                             | a local stack shows them; desktop, phone                                                                                                                          |
+| land-change             | `land-preview`, `land-check`, `land-observe` (`Refresh pull request`), `land-automatic`, `land-desktop`, `land-mobile-observe`, `land-slack`                                                                            | need a GitHub origin and login; automatic landing needs a fourth real turn; desktop, phone, Slack                                                                 |
+| services                | `service-run-web`, `service-recipe`, `service-add`, `service-tui`, `service-desktop`                                                                                                                                    | a local stack shows them; `<p>` declares no `mend.toml`; desktop                                                                                                  |
+| sign-in                 | `first-account`, `cli-login`, `cli-logout`, `password-reset`, `desktop-connect`                                                                                                                                         | the CLI sign-in is never touched; a reset ends the owner's browser sessions; desktop                                                                              |
+| pairing-devices         | `mint-by-hand`, `claim-mobile`, `revoke`, `unpair-mobile`                                                                                                                                                               | each run would add a device; no phone                                                                                                                             |
+| provider-accounts       | `connect-grant`, `connect-my-login`, `connect-stdin`, `connect-github`, `connect-web`, `disconnect`, `reconnect-state`                                                                                                  | would replace or remove the owner's codex login; no claude or GitHub credential                                                                                   |
+| git-access              | `bridge-share`, `adopt-auth` (a real adoption), mode switches                                                                                                                                                           | needs an ssh-agent and a private repository; changes the account's mode                                                                                           |
+| workspace-ssh           | `ssh-setup`, `vscode-setup`, `vscode-open`                                                                                                                                                                              | registers a key every run; VS Code                                                                                                                                |
+| models                  | `desktop-picker`, `mobile-picker`, `vscode-picker`, `resume-with`                                                                                                                                                       | desktop, phone, VS Code; `--with` another harness needs claude                                                                                                    |
+| dotfiles                | all but `dotfiles-show`                                                                                                                                                                                                 | replaces the owner's saved repository and snapshot; a local stack shows them                                                                                      |
+| secret-files            | `secrets-add-web`, `secrets-delivery`, `secrets-mobile-list`                                                                                                                                                            | a local stack shows them; phone                                                                                                                                   |
+| doppler                 | all                                                                                                                                                                                                                     | needs a real Doppler account                                                                                                                                      |
+| git-author              | `git-author-set-web`, `git-author-session`                                                                                                                                                                              | a local stack shows them                                                                                                                                          |
+| skills                  | all but `skills-list`                                                                                                                                                                                                   | writes the owner's libraries; a local stack shows them                                                                                                            |
+| agent-memory            | all but `memory-list`                                                                                                                                                                                                   | needs a checkout with Claude memory; delivery needs claude                                                                                                        |
+| pi-profile              | all: `pi-profile-dry-run`, `pi-profile-refused`, `pi-profile-save`, `pi-profile-dir`, `pi-profile-remove`, `pi-profile-session`                                                                                         | the dry run never calls the server (an ordinary test: SLNT-1082); the rest write the owner's saved profile, and a local stack shows them                          |
+| appearance              | `theme-desktop`, `theme-mobile`, `text-size-mobile`                                                                                                                                                                     | desktop, phone                                                                                                                                                    |
+| project-environment     | all but `env-show-cli`, `env-routing`                                                                                                                                                                                   | changes `<p>`'s environment for every later session                                                                                                               |
+| cluster-bindings        | all but `cluster-show`, `cluster-local-runner`                                                                                                                                                                          | needs operator-made Kubernetes objects; changes `<p>`                                                                                                             |
+| workspace-images        | all but the panel reads                                                                                                                                                                                                 | an image change rebuilds every later workspace                                                                                                                    |
+| automatic-install       | `install-custom`, `install-switch`, `install-in-session`                                                                                                                                                                | changes `<p>`; `<p>` is not a Node repository                                                                                                                     |
+| hot-sessions            | `hot-count` (change), `hot-claim`, `hot-rewarm`                                                                                                                                                                         | each ready standby is a live workspace on the box                                                                                                                 |
+| project-settings        | changes, `settings-visibility`, `settings-remove`, `settings-retention`, `settings-instance-defaults`                                                                                                                   | organization-wide or `<p>`-wide settings other checks depend on                                                                                                   |
+| references-folders      | `host-mounts`                                                                                                                                                                                                           | maps a path of the box host into sessions                                                                                                                         |
+| mend-toml               | all: `toml-init`, `toml-recipes-card`, `toml-run-cli`, `toml-project-recipes`, `toml-shadowed`, `toml-parse-error`                                                                                                      | `mend service init` never calls the server (`run-commands-json.test.ts` covers it); `<p>` has no `mend.toml`, and the rest change `<p>`                           |
+| now-and-sessions        | `now-menus`, `now-mobile`, `now-desktop`                                                                                                                                                                                | a local stack shows the menu; phone, desktop                                                                                                                      |
+| attach-resume           | `resume-cli`, `rejoin-cli`, `delete-web`, `attach-tui`, `pickup-takeover`, `attach-tunnels`, `attach-image-paste`                                                                                                       | delete would remove sessions the next run reads; phone; a local stack shows the rest                                                                              |
+| session-shell           | `shell-session-web`, `shell-session-tui`, `shell-tab-desktop`, `shell-mobile`                                                                                                                                           | a local stack shows them; desktop, phone                                                                                                                          |
+| worktrees               | `worktrees-toggle`, `worktrees-clear-settled`, `worktrees-hidden-ended`, `worktrees-refresh`, `worktrees-tui`                                                                                                           | clear-settled would remove worktrees the next run reads; a local stack shows the rest                                                                             |
+| workspace-replace       | all                                                                                                                                                                                                                     | needs a workspace marked to retire, and replacing stops what runs in it                                                                                           |
+| pull-change             | `pull-wrong-origin`, `pull-checked-out`, `pull-too-large`                                                                                                                                                               | a local stack shows them                                                                                                                                          |
+| handoff                 | `handoff-review-base`, `handoff-split`, `handoff-prompt`, `handoff-again`, `handoff-foreign-origin`, `handoff-hidden`                                                                                                   | the prompt case spends a turn; a local stack shows the rest                                                                                                       |
+| repositories-in-session | `repo-refusals` (a private project in a shared session, no origin, a taken worktree name)                                                                                                                               | each needs another project or a shared main project; a local stack shows them                                                                                     |
+| capture-and-save        | `capture-not-saved`, `capture-discard`, `capture-removal-hold`                                                                                                                                                          | needs a stalled or slow drain sized for the store                                                                                                                 |
+| observed-agents         | all                                                                                                                                                                                                                     | runs `claude` by hand in the workspace; no claude login                                                                                                           |
+| terminal-agent-waits    | all                                                                                                                                                                                                                     | its recipe runs in the VS Code driver's own world                                                                                                                 |
+| organization            | `join`, `join-signed-in`, `password-reset`, `member-removal`, `org-switch-cli`, `org-switch-web`, `org-per-sign-in`, `org-isolation`, `org-leave`, `org-access-key`, `operator-add-member` (an actual add), `take-over` | each creates or removes an account, or mints a reset link nothing revokes; the rest need a second organization and multi tenancy                                  |
+| shared-control          | `share-refused` (opencode), a steered turn                                                                                                                                                                              | no opencode login; the second account has no agent login and the web sends no turn                                                                                |
+| per-person-homes        | `layout-opt-out`, `no-way-back`, `layout-fallback`, `waiting-line`, `retirement` (in workspace-replace)                                                                                                                 | the first two restart the server with `MEND_HARNESS_LAYOUT=shared`; the fallback needs an image that cannot run per person; the waiting line needs a steered turn |
+| operator                | `org-create` (an actual create), `reset-link` (a real link)                                                                                                                                                             | multi tenancy; a reset link nothing revokes                                                                                                                       |
+| exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                  | each restarts the server with changed exposure variables                                                                                                          |
+| server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`                                                   | changes the box's install; the map drives them on a disposable host                                                                                               |
+| uninstall               | all                                                                                                                                                                                                                     | a regression would remove the box's server or the sign-in the run may never touch                                                                                 |
+| cli                     | `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`, `unknown-command`, `completions`, `bare-mend`, `qr`                                                                                  | never call the server: `help.test.ts` and `main.test.ts` cover them; `qr` is in pairing-devices                                                                   |
+| tui                     | `tui-new-worktree`, `tui-new-session`, `tui-attach`, `tui-auto-attach`, `tui-resume`, `tui-rename`, `tui-stop`, `tui-remove`, `tui-refresh`, `tui-snake`, `tui-adopt`, `tui-tunnels`, `tui-layout`, `tui-screen-mode`   | a local stack shows them; each new one leaves sessions                                                                                                            |
+| desktop-app             | all                                                                                                                                                                                                                     | no desktop app on the run's machine (and not shipping)                                                                                                            |
+| mobile-app              | all                                                                                                                                                                                                                     | no phone, and its web build needs an allowed origin the box does not list                                                                                         |
+| vscode                  | all                                                                                                                                                                                                                     | no VS Code; its driver runs its own world                                                                                                                         |
+| slack                   | all                                                                                                                                                                                                                     | not drivable yet; no Slack workspace                                                                                                                              |
+| t3-gateway              | all                                                                                                                                                                                                                     | its recipe needs a local stack's gateway                                                                                                                          |
 
-Flows: 53 total · 6 scripted · 47 agent · 3 needing a real turn (`start-session.boat-turn`,
-`start-session.composer`, `send-review-back.deliver`) · 13 box-only. Features: 42 with a flow, 12
+Flows: 64 total · 6 scripted · 58 agent · 3 needing a real turn (`start-session.boat-turn`,
+`start-session.composer`, `send-review-back.deliver`) · 16 box-only. Features: 42 with a flow, 12
 only in Not on the box (doppler, workspace-replace, observed-agents, terminal-agent-waits,
 uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack, t3-gateway): 54 of the
 map's 54 mapped features placed, none left over.
