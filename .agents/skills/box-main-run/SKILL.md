@@ -267,9 +267,16 @@ How a flow is driven, by you or a subagent:
     --recipe .agents/skills/box-main-run/recipes/<recipe>.mjs
   ```
 
+- A scripted CLI flow runs `recipes/cli-reads.sh <flow id>` with
+  `MEND_CLI=$C/node_modules/.bin/mend`, `KIT`, `WEB`, `E` and `SHA8` set. It checks every part of
+  the See line and writes `cli.log` and `result.txt`; exit 0 is `seen`.
+
 - An `agent` flow is driven by hand, as its feature file's "Driving it with verify" says, through
   `M` and a recipe module of your own run with the same driver (it keeps the redaction and the
   screenshots' checks). Judge only the flow's See line.
+
+A scripted flow that fails is not yet a failure: drive it again the agent way, and report it failed
+only when that sees the same.
 
 Keep every CLI command's stdout, stderr and exit code in `$E/<flow>/cli.log`. Each flow ends as
 `seen`, `failed` or `not run · <reason>`, against the flow's own See line, never a looser one. A

@@ -510,7 +510,7 @@ flows reuse what earlier ones made:
 - **Do:** `M projects`, `M sessions --all --project <p>`, `M worktrees --project <p>`.
 - **See:** `<p>` listed; this run's sessions listed, each settled; `main-run-<sha8>`,
   `main-run-run-<sha8>` and `main-run-docker` listed with their sessions.
-- **Mode:** `agent`
+- **Mode:** `scripted` (recipes/cli-reads.sh now-and-sessions.cli-lists)
 - **Box-only:** no
 - **Sample:** yes
 - **Areas:** `apps/cli/src/`, `apps/api/src/`
@@ -748,7 +748,7 @@ flows reuse what earlier ones made:
 - **See:** `✓ server` naming `$WEB · mend <version>`; `✓ signed in  token accepted`; `✓ sealant` and
   `✓ codex … connected`; the `claude` and `github` lines each read `connected` or
   `· … not connected`, recorded as found (claude was connected on 16 Nov); no `✗` line, exit `0`.
-- **Mode:** `agent`
+- **Mode:** `scripted` (recipes/cli-reads.sh doctor.checklist)
 - **Box-only:** no
 - **Sample:** yes
 - **Areas:** `apps/cli/src/doctor.ts`, `apps/cli/src/doctor-boat.ts`, `apps/api/src/`
@@ -770,13 +770,13 @@ flows reuse what earlier ones made:
 
 ### cli.version
 
-- **Map:** cli.md `version`, `bare-mend`
+- **Map:** cli.md `version`
 - **Needs:** no session; no turn; CLI; none
-- **Do:** `M version`, then `M | head -1`. These two ask the server; help, man pages, completions
-  and usage errors do not, and are in "Not on the box".
-- **See:** `mend <v>` and `server <v> · $WEB` with no `versions differ` line; the dashboard's or
-  bare `mend`'s first line naming `$WEB`.
-- **Mode:** `agent` · a recipe would make it cheaper
+- **Do:** `M version`, which asks the server. Help, man pages, completions, usage errors and bare
+  `mend` on a pipe (the index) do not, and are in "Not on the box".
+- **See:** `mend <v>` and `server <v> · $WEB`, exit `0`. A CLI packed from source carries the
+  package's version, so a `versions differ` line follows; it is recorded, not judged.
+- **Mode:** `scripted` (recipes/cli-reads.sh cli.version)
 - **Box-only:** no
 - **Areas:** `apps/cli/src/version.ts`, `apps/cli/src/`
 
@@ -849,7 +849,7 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                                                                              | each restarts the server with changed exposure variables                                                                                 |
 | server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`                                                                                                               | changes the box's install; the map drives them on a disposable host                                                                      |
 | uninstall               | all                                                                                                                                                                                                                                                                                 | a regression would remove the box's server or the sign-in the run may never touch                                                        |
-| cli                     | `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`, `unknown-command`, `completions`, `qr`                                                                                                                                                           | never call the server: `help.test.ts` and `main.test.ts` cover them; `qr` is in pairing-devices                                          |
+| cli                     | `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`, `unknown-command`, `completions`, `bare-mend`, `qr`                                                                                                                                              | never call the server: `help.test.ts` and `main.test.ts` cover them; `qr` is in pairing-devices                                          |
 | tui                     | `tui-new-worktree`, `tui-new-session`, `tui-attach`, `tui-auto-attach`, `tui-resume`, `tui-rename`, `tui-stop`, `tui-remove`, `tui-refresh`, `tui-snake`, `tui-adopt`, `tui-tunnels`, `tui-layout`, `tui-screen-mode`                                                               | a local stack shows them; each new one leaves sessions                                                                                   |
 | desktop-app             | all                                                                                                                                                                                                                                                                                 | no desktop app on the run's machine (and not shipping)                                                                                   |
 | mobile-app              | all                                                                                                                                                                                                                                                                                 | no phone, and its web build needs an allowed origin the box does not list                                                                |
@@ -857,7 +857,7 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | slack                   | all                                                                                                                                                                                                                                                                                 | not drivable yet; no Slack workspace                                                                                                     |
 | t3-gateway              | all                                                                                                                                                                                                                                                                                 | its recipe needs a local stack's gateway                                                                                                 |
 
-Flows: 53 total · 3 scripted · 50 agent · 3 needing a real turn (`start-session.boat-turn`,
+Flows: 53 total · 6 scripted · 47 agent · 3 needing a real turn (`start-session.boat-turn`,
 `start-session.composer`, `send-review-back.deliver`) · 13 box-only. Features: 42 with a flow, 12
 only in Not on the box (doppler, workspace-replace, observed-agents, terminal-agent-waits,
 uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack, t3-gateway): 54 of the
