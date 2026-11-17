@@ -61,6 +61,8 @@ export default async ({ page, web, capture, note }) => {
       ]),
     }),
   );
+  // The router the page hydrated with (TanStack Router keeps it on `window` in a browser).
+  await page.waitForFunction(() => window.__TSR_ROUTER__ !== undefined);
   await page.evaluate(() => window.__TSR_ROUTER__.navigate({ to: "/forced-error" }));
   await heading("This page didn't load");
   await page.getByText("The verify recipe failed this read on purpose.").waitFor();

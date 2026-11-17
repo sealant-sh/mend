@@ -69,7 +69,8 @@ function RootDocument({ children }: { readonly children: ReactNode }) {
   // Read once: the sheet stays as the page was served.
   const [critical] = useState(criticalSheet);
   return (
-    <html lang="en">
+    // The theme script sets `.dark` on <html> before React hydrates it.
+    <html lang="en" suppressHydrationWarning>
       <head>
         <HeadContent />
         {/* Text, not markup: the server writes the rules into the empty tag after React renders
