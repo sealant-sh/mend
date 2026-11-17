@@ -19,7 +19,7 @@ One comment on SLNT-1050, every line an observation in Mend's words ("seen", nev
 ```markdown
 **Main on the box · <commit:12> · <UTC date>**
 
-Full CI: scheduled run <link> on <commit:12>, <conclusion>, <n> min, started <age> before this run.
+Full CI: run <link> (dispatched by this run, `formal=full`) on <commit:12>, <conclusion>, <n> min.
 
 - Jobs: <name · conclusion>, … (every job).
 - Tests failed or retried: <package · file > name · outcome · ticket>, … (or none).
@@ -27,9 +27,10 @@ Full CI: scheduled run <link> on <commit:12>, <conclusion>, <n> min, started <ag
 
 Box:
 
+- Wait for the box: <h> h <m> min from the lock to the hold.
 - Build: preview run <link>, version <version>, <n> min. Box: VM 131, was <version before>.
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
-- Disk under /var/lib/docker: <free before> → <free after> free. Removed: <what step 6 removed>.
+- Free on `/`: <free before> → <free after> free. Removed: <what step 6 removed>.
 
 | Flow           | Mode     | Min | Outcome            | What was seen                                  |
 | -------------- | -------- | --- | ------------------ | ---------------------------------------------- |

@@ -190,14 +190,14 @@ pnpm verify box release --pr <n> --yes   # when you are done: tidies the box, th
 box while you still hold it, removing what no container uses and no check could want back
 (preview-builds.md, Deploy, says what), and writes what it removed into its result.
 
-Every 12 hours, when `main` has product commits since the last run, a scheduled run puts a preview
-of `main` on VM 131 and uses it as a person through a list of flows that covers every feature in the
-verify skill's feature map, after reporting `main`'s full CI run. Its skill is
-`.agents/skills/box-main-run/`, the flows in `flows.md` there, each with a stable id. So the feature
-you proved on a local stack is used again on the real server by an agent that wrote none of it. Each
-failure becomes a ticket in "CI follow-ups" naming the merged PR that most likely caused it; when it
-names yours, pick it up. While it runs it holds the box as `main-<sha12>`: wait, as for any other
-hold.
+Once a day, when `main` has product commits since the last run, a scheduled run puts a preview of
+`main` on VM 131 and uses it as a person through a list of flows that covers every feature in the
+verify skill's feature map, beside a full CI run of `main` it starts itself. It waits for the box
+rather than skipping a day. Its skill is `.agents/skills/box-main-run/`, the flows in `flows.md`
+there, each with a stable id. So the feature you proved on a local stack is used again on the real
+server by an agent that wrote none of it. Each failure becomes a ticket in "CI follow-ups" naming
+the merged PR that most likely caused it; when it names yours, pick it up. While it runs it holds
+the box as `main-<sha12>`: wait, as for any other hold.
 
 ## Dependencies
 

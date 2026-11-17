@@ -1,8 +1,8 @@
 # Flows on the box
 
-Runs: the flows marked `Sample: yes`, until the owner picks a set on SLNT-1050. Every other flow is
-listed so a person can read what a full pass would cover; a run reports it
-`not run · not in this run's set`.
+Runs: every flow below, once a day (the owner's choice on SLNT-1050, 17 Nov). To run fewer, name the
+set on this line, for example "the flows marked `Sample: yes`"; a run reports each flow outside it
+as `not run · not in this run's set`.
 
 Every flow one run of [SKILL.md](SKILL.md) can use on the box (VM 131), as its signed-in owner,
 after the preview of `main` is deployed. Each flow comes from the feature map
