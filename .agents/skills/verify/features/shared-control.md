@@ -65,9 +65,15 @@ Preconditions:
   stderr `mend: non-interactive · pass --yes to turn shared control on`.
 - **Refuse a non-owner.** Run `mend session share <id8> on --yes` as `<owner>`. Exit code `1`,
   stderr `mend: only the session owner can share control of this session`.
-- **Owner's switch.** On `memberPage`, go to `<web>/sessions/<id>`. The label `Shared control` and
-  the group are present; `Off` reports `aria-pressed="true"`. The line beside it states whose login
-  a steered turn spends (see Gotchas).
+- **Owner's switch.** On `memberPage`, go to `<web>/sessions/<id>` and wait until the page no longer
+  reads `Reading the record…`. The owner sees no `Only … steers this session.` line; the header has
+  a `Share` button (`memberPage.getByRole("button", { name: "Share", exact: true })`, with
+  `aria-pressed="false"` while off). Click it: the popover
+  `memberPage.getByRole("dialog", { name: "Share this session" })` holds the text `Shared control`
+  and the group `Shared control`, whose `Off` reports `aria-pressed="true"`. The paragraph below it
+  starts
+  `On lets everyone who can see this project send turns, answer approvals and interrupt. Each turn runs on its sender's login.`
+  (see Gotchas). The steps below act on that group inside the popover.
 - **Ask, then keep it off.** Run
   `await memberPage.getByRole("group", { name: "Shared control" }).getByRole("button", { name: "On", exact: true }).click()`.
   A dialog named `Turn on shared control?` opens
@@ -140,6 +146,13 @@ Preconditions:
   (`packages/domain/src/workbench/shared-workspace.ts:84-86`). Assert the wording the layout
   implies; see [per-person-homes.md](./per-person-homes.md).
 - `On` needs `exact: true`: Playwright's name match is a substring match by default.
+- On the web the owner's switch sits in the `Share this session` popover, not on the page, and the
+  paragraph under it starts
+  `On lets everyone who can see this project send turns, answer approvals and interrupt.` before the
+  layout's line, and ends
+  `They can read the terminal; only you type in it. Every action is recorded with who sent it.`
+  (`apps/web/src/components/session/shared-control.tsx`; seen on the box on 17 Nov). A phone-width
+  page hides `Share`; `More session actions` holds it there (`header.tsx`).
 - The web page has no box to send a turn. A steered turn comes from a conversation session on the
   desktop or the phone, from Slack, or as review comments sent back
   ([send-review-back.md](./send-review-back.md)). In a terminal session the owner alone sends

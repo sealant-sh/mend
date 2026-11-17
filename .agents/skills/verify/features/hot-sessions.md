@@ -11,16 +11,16 @@ the last failure verbatim.
 
 ## Sub-features
 
-- `hot-count` raises or lowers the project's count with `Keep one more workspace ready` and
-  `Keep one fewer workspace ready`, bounded 0 to 8.
-- `hot-status` reports the caller's own standbys: `off`, `none ready yet`, `<n> ready`,
+- `hot-count` raises or lowers the project's count with `One more: Ready workspaces` and
+  `One fewer: Ready workspaces`, bounded 0 to 8.
+- `hot-status` reports the caller's own standbys: `off`, `none ready yet`, `<n> ready now`,
   `<n> warming`, `<n> failed`, and `warming failed · <error>`.
 - `hot-claim` lets a new session in an eligible new or existing worktree start on a ready standby.
 - `hot-rewarm` drains and rewarms standbys when a launch input changes.
 
 ## How to get to it (user POV)
 
-- Web: a project's Setup tab, section `Hot sessions` (anchor `#hot-sessions`), for the project's
+- Web: a project's Settings tab, `Workspace` sub-tab, section `Ready workspaces`, for the project's
   creator and organization owners. The status refreshes every five seconds.
 - CLI, TUI, desktop, mobile: a new session started there claims a standby the same way; none of them
   shows the pool.
@@ -36,30 +36,36 @@ Preconditions:
 - Mend is healthy at `<web>`, signed in as the creator of `<project>` or an owner.
 - The signed-in person started a session in `<project>` in the last seven days (for example the
   `mend run` below, run once first). Standbys are kept only for such people.
-- The project's count is `0`: `section("Hot sessions")` reads `off`.
+- The project's count is `0`: `section("Ready workspaces")` reads `off`.
 - `const section = (name) => page.locator("section").filter({ has: page.getByRole("heading", { name, exact: true }) })`.
 
-- **Read the section.** Open `<project>`'s Setup tab. `section("Hot sessions")` reads `off`, the
-  count reads `0`, `Keep one fewer workspace ready` is disabled and `Keep one more workspace ready`
-  is enabled.
+- **Read the section.** Open `<project>`'s Settings tab, `Workspace` sub-tab
+  (`<web>/projects/<id>/settings/workspace`). Under the heading `Ready workspaces`, the line
+  `Kept started so a new session opens in seconds. Each is a live container, per person.`; the
+  textbox `Ready workspaces` reads `0`; the status
+  (`section("Ready workspaces").getByRole("status")`) reads `off`; `One fewer: Ready workspaces` is
+  disabled and `One more: Ready workspaces` is enabled. Where the runtime reports an idle cost, a
+  line follows: the runtime's words, then
+  `Each ready workspace runs while it waits, so each one counts.` (on the box:
+  `Boat bills a workspace by the second while its VM runs, idle or not. …`).
 - **Raise the count.** Run
-  `await section("Hot sessions").getByRole("button", { name: "Keep one more workspace ready" }).click()`.
-  The count reads `1`. Poll the status until `1 ready`; record any sampled `none ready yet` or
+  `await section("Ready workspaces").getByRole("button", { name: "One more: Ready workspaces" }).click()`.
+  The textbox reads `1`. Poll the status until `1 ready now`; record any sampled `none ready yet` or
   `1 warming` states. The five-second refresh can miss transitions; a first build can take minutes.
 - **Claim it.** Run `time mend run --project <project> -- sh -c 'printf "hot\n" > HOT.txt'`. Exit
   code `0`, and the run reaches `✓ recording` without a build line. Poll the pool while it launches
-  and record any sample below `1 ready`, any `1 warming` sample and the return to `1 ready`.
+  and record any sample below `1 ready now`, any `1 warming` sample and the return to `1 ready now`.
   Replacement warming starts asynchronously; a missed drop or warming state is inconclusive about
   the claim.
-- **Compare with cold.** Lower the count to `0` with `Keep one fewer workspace ready` and wait for
-  the status `off` (it reads `<n> ready` for a few seconds while the pool drains) and run the same
+- **Compare with cold.** Lower the count to `0` with `One fewer: Ready workspaces` and wait for the
+  status `off` (it reads `<n> ready now` for a few seconds while the pool drains) and run the same
   `mend run` again. Record both wall-clock times from `time`; report them as observed, not as a
   speed claim.
-- **Rewarm on a change.** Raise the count to `1` and wait for `1 ready`. Add a variable on the same
-  page (see [Project environment](./project-environment.md)). Record sampled transitions and wait
-  for `1 ready` again. A missed `warming` state is inconclusive about rewarming.
-- **Upper bound.** Choose `Keep one more workspace ready` until the count reads `8`. The button is
-  then disabled. Lower it back to `0` before cleanup: each ready standby is a live container.
+- **Rewarm on a change.** Raise the count to `1` and wait for `1 ready now`. Add a variable on the
+  same page (see [Project environment](./project-environment.md)). Record sampled transitions and
+  wait for `1 ready now` again. A missed `warming` state is inconclusive about rewarming.
+- **Upper bound.** Choose `One more: Ready workspaces` until the count reads `8`. The button is then
+  disabled. Lower it back to `0` before cleanup: each ready standby is a live container.
 - **VS Code launch.** The VS Code driver runs its own server, not this map's stack (see
   [VS Code extension](./vscode.md), story a). There `palette("Mend: New session")` opens one quick
   input whose dim line reads `claude · default model · from <base>`. To start Codex, click
@@ -70,12 +76,17 @@ Preconditions:
 - **Slack launch.** `not drivable yet`: the verify stack has no Slack driver. From a linked Slack
   account, mention `@mend project=<project> List the files and change nothing.` in a new thread. The
   thread reports the created session and its status; pool readback is on the web.
-- **Proof.** ARIA snapshots and screenshots of `section("Hot sessions")` at `off`, `1 ready`, after
-  the claim and at any sampled `1 warming` state, plus both timed `mend run` transcripts. Report
-  missed claim or rewarming transitions as inconclusive.
+- **Proof.** ARIA snapshots and screenshots of `section("Ready workspaces")` at `off`,
+  `1 ready now`, after the claim and at any sampled `1 warming` state, plus both timed `mend run`
+  transcripts. Report missed claim or rewarming transitions as inconclusive.
 
 ## Gotchas
 
+- The section is `Ready workspaces` on the Settings → Workspace sub-tab, not `Hot sessions` on the
+  Setup tab. The box (17 Nov) showed its count `0`, the status `off` and
+  `One fewer: Ready workspaces` disabled; the raised-count words (`<n> ready now`, `<n> warming`,
+  `<n> failed`, `none ready yet`) and the upper bound are from
+  `apps/web/src/components/project/settings/workspace.tsx`, not confirmed by a capture.
 - The status is the signed-in person's own standbys only. Another person's pool, and their failures,
   never show. A count above `0` with no session started by this person in the last week stays
   `none ready yet`.

@@ -54,19 +54,24 @@ Preconditions:
 - `mend dotfiles` prints `repo      none` and
   `snapshot  none — sync from this machine: mend dotfiles sync --all`.
 
-- **Open the panel.** Run `await page.goto("<web>/settings")`. The heading `Settings` (level 1) and
-  the heading `Dotfiles` are visible. The panel's footer reads `repo · none — snapshot · none`.
+- **Open the panel.** Run `await page.goto("<web>/settings/workspace")`. The heading `Dotfiles` is
+  visible (`page.getByRole("heading", { name: "Dotfiles" })`) with the textbox `Repository` empty
+  (placeholder `https://github.com/you/dotfiles.git`), the textboxes `Branch` and `Subdirectory`,
+  the switch `Run ./install.sh when present` (checked) and the group `Manager` with `Auto` pressed.
+  Below, the fold `Home files 0 files`
+  (`page.getByRole("button", { name: /^Home files \d+ files?$/ })`) and the table `Home files` with
+  the one row `nothing synced yet · run mend dotfiles sync, or add files here`. There is no
+  `repo · … — snapshot · …` footer.
 - **Enter a repository.** Run
-  `await page.getByRole("textbox", { name: "Dotfiles repository" }).fill("<dotfiles-repo-url>")`.
-  The textboxes `Branch` and `Subdirectory`, the checkbox `Run ./install.sh when present` (checked)
-  and the group `Manager` appear. In the group, the button whose name starts with `Auto` reports
-  `aria-pressed="true"`.
+  `await page.getByRole("textbox", { name: "Repository" }).fill("<dotfiles-repo-url>")`. The group
+  `Manager`'s button whose name starts with `Auto` still reports `aria-pressed="true"`.
 - **Pick a manager.** Run
   `await page.getByRole("group", { name: "Manager" }).getByRole("button", { name: /^Copy/ }).click()`.
   That button now reports `aria-pressed="true"`.
-- **Save.** Run `await page.getByRole("button", { name: "Save repository" }).click()`. The button
-  reads `Cloning…` while the server clones, then the footer reads
-  `Saved · applies from the next launch`.
+- **Save.** A save bar appears; run
+  `await page.getByRole("button", { name: "Save workspace" }).click()`. It reads
+  `Cloning the repository…` while the server clones, then the page says
+  `Saved · applies from the next launch` (see Gotchas).
 - **Second view.** Run `mend dotfiles`. Stdout's first line is
   `repo      <dotfiles-repo-url> (default branch · manager copy · install.sh on)`. Exit code `0`.
 - **Add a file from the web.** Run
@@ -166,6 +171,12 @@ as in [organization.md](./organization.md)), `<wt>-shared` a `shared` project on
 
 ## Gotchas
 
+- The box (17 Nov) showed the empty state only: `Repository` empty, `Home files 0 files` and the
+  `nothing synced yet · …` row. The save bar's `Save workspace` and `Cloning the repository…`, and
+  where `Saved · applies from the next launch` shows, are from
+  `apps/web/src/components/settings/workspace.tsx`, not confirmed by a capture; the panel's handles
+  after a save, and the snapshot line `<n> file · synced … from … · <sha7>`, were not re-read
+  either.
 - Under `o::rwx`, other directories in a member's home that this copy does not make read `0777` at
   the parent and the head of #186 (`.claude`, `.codex`, `.local`, `.local/share`,
   `.local/share/sealant-dotfiles`, `.local/state`, `.pi`, `.pi/agent`, `.config/git`). Do not count

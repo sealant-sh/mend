@@ -13,7 +13,7 @@ a revocable device token, listed under Settings → Devices. Signing out revokes
 - `first-account` creates the first account on a fresh instance, then asks for Git access
   (`/welcome`), then lands on the Now page's first-run checklist.
 - `registration-closed` shows sign-in only once an account exists, with the invitation note.
-- `web-sign-in` signs in with email and password, and returns to the page that asked (`?next=`).
+- `web-sign-in` signs in with email and password, and returns to the page that asked (`#next=`).
 - `web-sign-out` signs the browser out from the shell's `Sign out`.
 - `cli-login` signs a terminal in through the browser authorize page (`mend login [--url]`).
 - `authorize-page` shows the code, `Authorize` or `Deny`, and says when a code is spent or missing.
@@ -25,7 +25,7 @@ a revocable device token, listed under Settings → Devices. Signing out revokes
 
 ## How to get to it (user POV)
 
-- Web: `/login` (any signed-out page walks there as `/login?next=<page>`). On a fresh instance it
+- Web: `/login` (any signed-out page walks there as `/login#next=<page>`). On a fresh instance it
   opens on `Create the first account`, then `/welcome` (`Git access`), then `/`.
 - Web: the shell's `Sign out` button, in the sidebar at wide widths and the top strip below them.
 - Web: `/authorize?code=<code>`, opened by `mend login` or the desktop app.
@@ -76,9 +76,13 @@ Preconditions:
 - **Wrong password.** Fill `Email` with `<email>` and the `Password` field with a wrong value, then
   run `await page.getByRole("button", { name: "Sign in" }).click()`. An alert appears
   (`page.getByRole("alert")`) and the URL stays `/login`.
-- **Sign in and return.** Run `await page.goto("<web>/settings")` while signed out. The browser
-  walks to `/login?next=%2Fsettings`. Sign in with the right password. The browser lands on
-  `/settings` and the heading `Settings` is visible.
+- **Sign in and return.** Run `await page.goto("<web>/settings")` while signed out. `/settings`
+  opens its first page, `/settings/account`, so the browser walks to
+  `/login#next=%2Fsettings%2Faccount` (the continuation rides the fragment, not the query:
+  `withContinuation`, `apps/web/src/lib/onboarding.ts`). The heading `Sign in` and
+  `Accounts are created by invitation. Ask an owner of this Mend for a link.` are visible. Sign in
+  with the right password. The browser lands on `/settings/account` and the heading `Account`
+  (`page.getByRole("heading", { name: "Account", level: 1 })`) is visible (see Gotchas).
 - **CLI login.** Run `mend login --url <web>` in the background and read its stdout. It prints
   `✓ authorize request open at <web>`,
   `  code    <XXXX-XXXX> · approve only if the browser shows the same code`,
@@ -140,6 +144,11 @@ Preconditions:
 
 ## Gotchas
 
+- On the box (17 Nov) a fresh context's `/settings` reached `/login#next=%2Fsettings%2Faccount` with
+  `Sign in` and the invitation line, and `/authorize` with no code read the heading
+  `No code to authorize`. The page after sign-in, `/settings/account` with the heading `Account`,
+  was seen in the owner's saved browser, not after this sign-in; the sign-out in a fresh context was
+  not driven there. A sign-in that returns elsewhere is a finding.
 - A password input has no ARIA role: `getByRole("textbox", { name: "Password" })` finds nothing. Use
   `getByLabel`. `Password` is a prefix of `Password, again` (and `New password` of
   `New password, again`), so pass `exact: true`. Revealing a password with `Show password` turns the

@@ -18,7 +18,7 @@ upgrade tickets: single use, thirty seconds, one target.
 - `tenancy-gate` prints the multi mode gate item by item (`mend operator gate`).
 - `health-counts` answers `/api/health`, unauthenticated, with the declaration and counts only.
 - `doctor-line` prints one `exposure` line in `mend doctor` (mapped in [doctor.md](./doctor.md)).
-- `shell-line` shows `exposure · <declared> · <scheme>` in the web sidebar.
+- `shell-line` shows `exposure · <declared> · <scheme>` in the web account popover.
 - `public-refusal` refuses to start `MEND_EXPOSURE=public` with the open items and the fix for each.
 - `declared-items` takes `core-private`, `edge-tls`, `workspace-ssh` and `t3code-gateway` in
   `MEND_EXPOSURE_DECLARED` and refuses any other name at start.
@@ -34,7 +34,7 @@ upgrade tickets: single use, thirty seconds, one target.
   beside what it observed, and, for the operator, both gates (mapped in [server.md](./server.md)).
 - CLI: `mend server setup --exposure <loopback|private|public>` and `--tenancy <single|multi>`
   declare the posture on the Docker install (mapped in [server.md](./server.md)).
-- Web: the sidebar's machine block, displayed at widths of 1024 px and more, reads
+- Web: the machine block of the account popover, opened from the sidebar's account button, reads
   `exposure · <declared> · <http|https>` and `· via proxy` when the request came through a trusted
   proxy.
 - HTTP: `GET <web>/api/health` (no sign-in) carries `exposure` and `tenancyGate`.
@@ -81,9 +81,13 @@ Preconditions:
   `tenancyGate.failing` from `/api/health`.
 - **Operator only.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend operator exposure`. Exit code `1`,
   stderr `mend: this account is not the operator of this Mend`.
-- **Sidebar line.** At a 1280x800 viewport, go to `<web>/`. The text
-  `exposure · private · <http|https>` is visible in the sidebar
-  (`page.getByText(/^exposure · private · /)`).
+- **Account popover line.** At a 1280x800 viewport, go to `<web>/`. The sidebar shows no exposure
+  text. Open the account button at its foot
+  (`page.getByRole("button", { name: /account and machine$/ })`, named
+  `<name>, account and machine`). The popover
+  (`page.getByRole("dialog", { name: "Account and machine" })`) reads the name, the email,
+  `machine`, `<hostname> · <platform>`, then the paragraph `exposure · private · <http|https>`
+  (`getByText(/^exposure · private · /)` inside it), and `Sign out`.
 - **Declare an item.** Restart with `MEND_EXPOSURE_DECLARED=edge-tls`. `mend operator exposure`
   shows `○ edge-tls  declared …`. Restart with `MEND_EXPOSURE_DECLARED=budgets`: the server does not
   start, and its log says
@@ -145,10 +149,12 @@ Preconditions:
   without blocking. `core-private`, `edge-tls` and `reassessment` never block a start.
 - `/api/health` gives counts for exposure but names the failing multi mode gate items in
   `tenancyGate.failing` (an open question in ADR 0004, left as released).
-- The sidebar's exposure line is an unnamed paragraph (`apps/web/src/components/shell.tsx:186`). The
-  sidebar is always rendered but hidden by CSS below 1024 px (`hidden … lg:flex`, `shell.tsx:34`),
-  so at a narrow viewport `getByText` finds it but it is not visible. Use a wide viewport and assert
-  visibility. Its `title` holds the host's address kinds.
+- The exposure line is an unnamed paragraph in the account popover's machine block (`MachineBlock`,
+  `apps/web/src/components/shell.tsx`), not on the sidebar itself; the popover renders only once the
+  account button is opened. With an organization the button and popover are named
+  `… account, organization and machine` / `Account, organization and machine` instead (`shell.tsx`,
+  `PersonMenu`); the box read `Account and machine` on 17 Nov. Its `title` holds the host's address
+  kinds.
 - `mend operator exposure` and `mend operator gate` have no `--json`. Assert lines by their item id.
 - Budget request windows are in memory per API process; a restart resets them. Session ceilings are
   counted from the database and can be overshot by the number of requests in flight.

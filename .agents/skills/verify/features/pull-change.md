@@ -12,7 +12,8 @@ project's.
 
 - `pull-fetch` fetches a session's change into the clone as `mend/<worktree>` and prints the
   commits.
-- `pull-again` pulls again: the branch fast-forwards, or reads `already here` when nothing moved.
+- `pull-again` pulls again: the branch fast-forwards, or reads
+  `unchanged since the last pull · nothing moved` when nothing moved.
 - `pull-not-a-clone` refuses outside a git repository.
 - `pull-wrong-origin` refuses a clone whose remotes do not include the project's origin, unless
   `--force`.
@@ -56,10 +57,11 @@ Preconditions:
   and `VERIFY.md` is in the tip (`git -C <clone> show <branch>:VERIFY.md` prints `verified`).
   `git -C <clone> status --short` and `git -C <clone> branch --show-current` are what they were
   before the pull.
-- **Pull again.** Run the same `mend pull` in `<clone>`. The `✓ fetched` line now ends
-  `· already here`; exit code `0`.
+- **Pull again.** Run the same `mend pull` in `<clone>`. After the same `  pulling …` line, stdout
+  reads `✓ <branch> · <sha7> · unchanged since the last pull · nothing moved` (no `fetched`, no
+  commit lines), then `  switch to it git switch <branch>`; exit code `0`.
 - **By id prefix.** Run `mend pull <id8>` in `<clone>`. It picks the same session and prints the
-  same `✓ fetched` line.
+  same `✓ <branch> · <sha7> · unchanged since the last pull · nothing moved` line.
 - **Checked out.** Run `git -C <clone> switch <branch>`, then
   `mend pull <worktree> --project <project>`. Stderr reads
   `mend: nothing fetched · <branch> is checked out here · switch to another branch first; mend pull does not touch the working tree`;

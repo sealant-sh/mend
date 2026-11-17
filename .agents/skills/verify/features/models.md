@@ -62,9 +62,10 @@ Preconditions:
 - Mend is healthy at `<web>`, the browser and the CLI are signed in, `<project>` is adopted with a
   worktree `<worktree>`, and `mend connect claude` has been run (see
   [Start a session](./start-session.md) for the composer's project and worktree pickers).
-- From `mend models`, `<default-id>` and `<default-label>` are claude's default model, and
-  `<model-id>` and `<label>` another claude model. The browser has no saved composer choice for
-  `<project>` (a fresh browser profile).
+- From `mend models`, `<model-id>` and `<label>` are a claude model. Claude names no default model
+  (migration 0130), nor does opencode; codex's default, `<codex-default-label>`, is the line that
+  ends `default`. The browser has no saved composer choice for `<project>` (a fresh browser
+  profile).
 - `mend resume` reads the project from the current directory unless given `--project <project>`: run
   it inside a clone of `<repo-url>` whose `origin` is `<repo-url>`, or pass `--project`. Resuming
   `--with codex` needs `mend connect codex`.
@@ -77,10 +78,12 @@ Preconditions:
 - **List.** Run `mend models`. Stdout shows one block per harness: a line
   `<harness>  effort <range>` (with ` · --fast` where the harness offers priority processing), then
   one line per model: `  <id>  <label>`, with `default` on the default and `effort <range>` where a
-  model takes fewer. Exit `0`.
+  model takes fewer. Only codex marks a default; claude's and opencode's blocks carry no `default`.
+  Exit `0`.
 - **List as JSON.** Run `mend models --json`. Stdout is `{ "version": 1, "harnesses": [ … ] }`; each
   harness has `harness`, `models` (`id`, `label`, `isDefault`, `efforts`), `defaultModel`, `efforts`
-  and `fastCapable`. The ids match the text listing.
+  and `fastCapable`. The ids match the text listing. `defaultModel` is the codex default's id and
+  `null` for claude and opencode.
 - **Launch on a model.** Run
   `mend claude "List the files and change nothing." --worktree <worktree> --project <project> --model <model-id> --effort high --detach`.
   Exit `0`. Run `mend sessions --project <project>`: the new row ends its dim facts with
@@ -92,9 +95,13 @@ Preconditions:
   whose `mend models` line lists fewer efforts, with `--effort ultra`. `mend sessions` shows an
   effort from that model's range, not `ultra`.
 - **Web picker.** Run `await page.goto("<web>/")`, pick `<project>` and `<worktree>` in the
-  composer, and open `page.getByRole("button", { name: /^Agent: / })`; its `Agent` group's checked
-  row is `claude`. The `Model` group's `menuitemradio` rows list every claude model; the default's
-  row says `default` and, on a fresh browser, reports `aria-checked="true"`. Run
+  composer, and open `page.getByRole("button", { name: /^Agent: / })`. Choose
+  `page.getByRole("menuitemradio", { name: "codex", exact: true })`: the `Model` group
+  (`page.getByRole("group", { name: "Model" })`) lists codex's models, the default's row named
+  `<codex-default-label> default` (`GPT-6.1 Sol default` on the box, 17 Nov) with
+  `aria-checked="true"`, and the `Thinking` group's `default` row checked. Choose
+  `page.getByRole("menuitemradio", { name: "claude", exact: true })`: the `Model` group lists every
+  claude model, none named `… default`, and on a fresh browser none checked (see Gotchas). Run
   `await page.getByRole("menuitemradio", { name: new RegExp("<label>") }).click()`. The row reports
   `aria-checked="true"`; after `Escape`, the button's name reads `model: <label>`.
 - **Effort and speed.** In the same menu's `Thinking` group run
@@ -132,9 +139,11 @@ Preconditions:
 
 - The agent button's name follows the current choice (`Agent: claude, model: <label>`); match it by
   the `Agent: ` prefix.
-- The menu (`role="menu"`) has no name, and its group titles (`Thinking`, `Speed`, `Permissions`,
-  `Land when a turn completes`) are plain text, not `group`s. A `menuitemradio`'s name is its label
-  and its note together (`Fable · latest fable · default`); match the id with a regular expression.
+- The menu (`role="menu"`) has no name. On the box (17 Nov) `Agent`, `Model` and `Thinking` were
+  `group`s named by their title, each holding a same-named `group` of rows; the other titles
+  (`Speed`, `Permissions`, `Land when a turn completes`) were not captured. A `menuitemradio`'s name
+  is its label and its note together (`GPT-6 Astra gpt-6-astra`, or `GPT-6.1 Sol default` for the
+  default); match the id with a regular expression.
 - The model and settings pills render only when the composer is at least medium width; a narrow
   composer shows a single `options` pill holding `Model` and the settings groups. Keep the default
   viewport.
@@ -162,3 +171,7 @@ Preconditions:
   chips step blocked by that missing handle. That is a finding; start phone sessions from the
   session recipes, not by these buttons.
 - The TUI dashboard has no model picker: its launches run the server's default.
+- That claude's `Model` group has no checked row on a fresh browser comes from source and the
+  changelog ("preselect no model", `apps/cli/CHANGELOG.md`), not from a box snapshot: the box run of
+  17 Nov captured codex's menu only. The `Model` and `Thinking` handles are `group`s inside a
+  same-named `group` in that snapshot.
