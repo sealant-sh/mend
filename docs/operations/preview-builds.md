@@ -90,6 +90,21 @@ any built in the last seven days. Most of the build cache backs those workspace 
 it frees only the part no image shares; `plan` prints both beside free space, with the workspace
 images' total.
 
+Before it tidies, `release --yes` puts the box's data back when the check's deploy applied a Mend
+migration `origin/main` lacks: a preview of an unmerged migration would otherwise refuse every
+preview of `main` until that branch merges (on 16 Nov 2026, for about ten hours). It stops the app
+container, drops every database (Mend's and `sealant_control_plane` alike) and replays the hold's
+`prepare` dump, then checks that no migration main lacks is left. Mend stays stopped: the image the
+check deployed would apply its migrations again on start, and `mend server upgrade` refuses a
+downgrade, so the next deploy starts it. A restore that fails keeps the hold and says what to put
+right. `--no-restore` leaves the data, for a check whose branch is about to merge.
+
+A restore puts back the databases only. What the check made outside them stays, with no row that
+names it: worktrees and repositories in the `mend-store` volume, captured objects in the
+`mend-garage` bucket, Boat's own state (`mend_mend-boat-state`), and the T3 gateway's and SSH
+volumes. None stops a later deploy or check. They take disk until removed by hand, and a Boat VM a
+check left running stays running: stop a check's sessions before releasing it.
+
 On the box, as root, with the `mend` CLI installed, run the command from the run's summary:
 
 ```sh

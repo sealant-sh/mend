@@ -183,12 +183,14 @@ pnpm verify box prepare --pr <n> --yes   # pg_dumpall to /root/backups, and hold
 pnpm verify box cli --pr <n> --yes       # a CLI packed from this commit, installed beside the global one
 # build and deploy the preview: docs/operations/preview-builds.md
 pnpm verify box identity                 # by patch id, the running build contains this change
-pnpm verify box release --pr <n> --yes   # when you are done: tidies the box, then lifts the hold
+pnpm verify box release --pr <n> --yes   # when you are done: restores, tidies, then lifts the hold
 ```
 
 `plan` and `identity` only read; the others change the box only with `--yes`. `release` tidies the
 box while you still hold it, removing what no container uses and no check could want back
-(preview-builds.md, Deploy, says what), and writes what it removed into its result.
+(preview-builds.md, Deploy, says what), and writes what it removed into its result. When your deploy
+applied a migration `main` lacks, it first puts the box's databases back to `prepare`'s dump and
+leaves Mend stopped for the next deploy, so the box can run plain `main` again.
 
 Every 12 hours, when `main` has product commits since the last run, a scheduled run puts a preview
 of `main` on VM 131 and uses it as a person through a list of flows that covers every feature in the
