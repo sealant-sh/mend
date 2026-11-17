@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
-import { createWriteStream, mkdirSync } from "node:fs";
+import { createWriteStream, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -79,7 +79,21 @@ export const drift = (root, coverage, head) => {
   return { known: true, files };
 };
 
-/** What check.sh needs: Nix, or java and curl, or a jar named by TLA2TOOLS_JAR. */
+/** Where docs/formal/tlx.sh puts the tlx it pins, built or not. */
+export const tlxPath = (root, env) => {
+  const pin = readFileSync(join(root, "docs/formal/tlx.sh"), "utf8").match(
+    /^TLX_COMMIT=([0-9a-f]{40})$/m,
+  );
+  if (!pin) throw new Error("docs/formal/tlx.sh names no TLX_COMMIT");
+  const cache = env.XDG_CACHE_HOME || join(env.HOME ?? "", ".cache");
+  return join(cache, "mend-formal", `tlx-${pin[1]}`, "tlx");
+};
+
+/**
+ * What check.sh needs. With tlx, its default: a build in MEND_TLX, the pinned build tlx.sh made
+ * already, or cargo or Nix for tlx.sh to make it. With TLC (MEND_FORMAL_ENGINE=tlc): Nix, or java
+ * and curl, or a jar named by TLA2TOOLS_JAR.
+ */
 export const checkerMissing = (
   env,
   has = (tool) => {
@@ -90,10 +104,15 @@ export const checkerMissing = (
       return false;
     }
   },
+  built = () => false,
 ) => {
-  if (env.TLA2TOOLS_JAR || has("nix")) return null;
-  const missing = ["java", "curl"].filter((tool) => !has(tool));
-  return missing.length === 0 ? null : `check.sh needs Nix, or ${missing.join(" and ")}`;
+  if ((env.MEND_FORMAL_ENGINE ?? "tlx") === "tlc") {
+    if (env.TLA2TOOLS_JAR || has("nix")) return null;
+    const missing = ["java", "curl"].filter((tool) => !has(tool));
+    return missing.length === 0 ? null : `check.sh needs Nix, or ${missing.join(" and ")}`;
+  }
+  if (env.MEND_TLX || built() || has("cargo") || has("nix")) return null;
+  return "check.sh needs tlx: cargo or Nix to build it (docs/formal/tlx.sh), or MEND_TLX naming a build";
 };
 
 /**
@@ -199,7 +218,13 @@ export const formalSteps = async (
           : "the sync commit is not in this clone"
       }`,
     });
-    const missing = checkerMissing(env);
+    const missing = checkerMissing(env, undefined, () => {
+      try {
+        return existsSync(tlxPath(root, env));
+      } catch {
+        return false;
+      }
+    });
     if (missing) {
       steps.push({
         id: `${coverage.area}-check`,

@@ -201,6 +201,37 @@ test("static checks, all test shards and packaging can start without another exe
   assert.deepEqual(commands("vscode-e2e").at(-1), "pnpm --filter ./apps/vscode test:e2e");
 });
 
+// What CI's formal job allows besides a model's budget: checkout, setup, and building tlx on a
+// cache miss.
+const FORMAL_SETUP_MINUTES = 20;
+
+test("formal checks with the tlx docs/formal/tlx.sh pins, built once per commit and cached by it", () => {
+  const steps = jobs.formal.steps;
+  const at = (predicate) => steps.findIndex(predicate);
+  const name = at((step) => step.id === "tlx");
+  const restore = at((step) => step.uses?.startsWith("actions/cache/restore@"));
+  const build = at((step) => step.run === "bash docs/formal/tlx.sh");
+  const save = at((step) => step.uses?.startsWith("actions/cache/save@"));
+  const check = at((step) => step.env?.AREA !== undefined);
+  assert.ok(
+    name >= 0 && name < restore && restore < build && build < save && save < check,
+    "name the pin, restore, build on a miss, save, then check",
+  );
+  assert.match(steps[name].run, /bash docs\/formal\/tlx\.sh --commit/);
+  assert.equal(
+    steps[restore].with.key,
+    "tlx-${{ steps.tlx.outputs.commit }}-${{ runner.os }}-${{ runner.arch }}",
+  );
+  assert.equal(steps[restore].with.path, "${{ steps.tlx.outputs.dir }}");
+  for (const index of [build, save])
+    assert.equal(steps[index].if, "${{ steps.tlx-cache.outputs.cache-hit != 'true' }}");
+  assert.equal(steps[save].with.key, "${{ steps.tlx-cache.outputs.cache-primary-key }}");
+  assert.equal(steps[save].with.path, steps[restore].with.path);
+  // The check runs the pinned build: no other engine and no other binary.
+  assert.equal(steps[check].env.MEND_FORMAL_ENGINE, undefined);
+  assert.equal(steps[check].env.MEND_TLX, undefined);
+});
+
 test("formal guards and quick-checks the models on a pull request, and runs every model's full bounds nightly", () => {
   const run = commands("formal").join("\n");
   assert.match(
@@ -224,11 +255,12 @@ test("formal guards and quick-checks the models on a pull request, and runs ever
   );
   assert.equal(jobs.formal.strategy["fail-fast"], false);
   // formal.mjs stops a model at its own budget, so it fails naming the model before the job's
-  // limit cancels it with nothing said; ten minutes cover checkout, setup and fetching TLC.
+  // limit cancels it with nothing said. The rest of the limit covers checkout, setup and building
+  // tlx when the cache has no build of the pinned commit.
   for (const coverage of readCoverages(fileURLToPath(root)))
     assert.ok(
-      coverage.budgets.full + 10 <= jobs.formal["timeout-minutes"],
-      `${coverage.area}: budget-full ${coverage.budgets.full} does not fit CI's formal job (${jobs.formal["timeout-minutes"]} minutes, setup included)`,
+      coverage.budgets.full + FORMAL_SETUP_MINUTES <= jobs.formal["timeout-minutes"],
+      `${coverage.area}: budget-full ${coverage.budgets.full} does not fit CI's formal job (${jobs.formal["timeout-minutes"]} minutes, ${FORMAL_SETUP_MINUTES} of them setup and a tlx build)`,
     );
   const step = jobs.formal.steps.find((candidate) => candidate.env?.AREA !== undefined);
   assert.equal(step.env.AREA, "${{ matrix.area }}");

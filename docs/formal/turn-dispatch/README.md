@@ -5,7 +5,7 @@ protocol host's dispatcher, written to Codex as `turn/start`, then bound to the 
 names and ended by Codex's `turn/completed`. Several writers move the same row: the person's send,
 the dispatcher, Codex's notifications, a Stop on one message, the session's Stop, a retry with the
 same launch correlation id, and recovery after a Mend restart. This directory holds a TLA+ model of
-all of them, and TLC checks every order of their steps within the bounds below.
+all of them, and a model checker (tlx) checks every order of their steps within the bounds below.
 
 The agent-facing instructions (when to run it, how to update it, which code each step stands for,
 the commit it was last confirmed at) are the project skill
@@ -92,22 +92,24 @@ only when the send was certainly not written.
 docs/formal/turn-dispatch/check.sh                # every row, full bounds (two messages)
 docs/formal/turn-dispatch/check.sh --quick        # one message: seconds; what pull requests run
 docs/formal/turn-dispatch/check.sh <row>          # one row with the checker's whole output and trace
-docs/formal/turn-dispatch/check.sh --engine tlx   # any of these with tlx, about ten times faster
+docs/formal/turn-dispatch/check.sh --engine tlc   # any of these with TLC, to cross-check by hand
 docs/formal/turn-dispatch/check.sh <row> | python3 -I docs/formal/standby-discard/trace.py   # a trace, one step per line
 ```
 
-`check.sh` works as the standby-discard one does, and the same TLC (tla2tools 1.7.4, pinned by
-sha256) and tlx notes apply: see [`../standby-discard/README.md`](../standby-discard/README.md),
-"Run it" and "TLC and tlx". A run exits 0 only when every row ends with the verdict and the
-distinct-state count `ROWS` pins. A row expected to hold uses every core; `MEND_FORMAL_WORKERS` caps
-that on a shared machine.
+`check.sh` works as the standby-discard one does, with the same checker, tlx, built by `../tlx.sh`
+at its pinned commit, and the same TLC for a cross-check by hand: see
+[`../standby-discard/README.md`](../standby-discard/README.md), "Run it" and "tlx and TLC". A run
+exits 0 only when every row ends with the verdict and the distinct-state count `ROWS` pins. A row
+expected to hold uses every core; `MEND_FORMAL_WORKERS` caps that on a shared machine.
 
 ### Last full run
 
-TLC (tla2tools 1.7.4) at `163a84a967`, 4 workers, 2026-11-15. Every row was as expected. The full
-bounds took about 4½ minutes, the largest row being `fix-sketch-slnt-466` (24,417,284 distinct
-states, 99 s). `--quick` took about 20 seconds. tlx reached the same verdict and the same count on
-every row.
+tlx at `59d4fa0666`, 4 workers, 2026-11-17 (SLNT-1081). Every row was as expected: the verdict and
+the distinct-state count TLC reached on every row, at both bounds. The full bounds took 53 seconds,
+the largest row being `fix-sketch-slnt-466` (24,417,284 distinct states, 23 s); `--quick` took about
+2 seconds. TLC on CI's four cores (run
+[43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641), `b192d2e2`, the same
+model) took about 6½ minutes for the full bounds, that row 145 s.
 
 ## The rows
 

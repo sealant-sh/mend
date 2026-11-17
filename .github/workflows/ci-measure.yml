@@ -641,7 +641,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') || inputs.runner
       }}
-    timeout-minutes: 120
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -650,6 +650,24 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version-file: .node-version
+      - name: Name the pinned tlx
+        id: tlx
+        run: |
+          echo "commit=$(bash docs/formal/tlx.sh --commit)" >> "$GITHUB_OUTPUT"
+          echo "dir=$(dirname "$(bash docs/formal/tlx.sh --path)")" >> "$GITHUB_OUTPUT"
+      - id: tlx-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.tlx.outputs.dir }}
+          key: tlx-${{ steps.tlx.outputs.commit }}-${{ runner.os }}-${{ runner.arch }}
+      - name: Build tlx
+        if: ${{ steps.tlx-cache.outputs.cache-hit != 'true' }}
+        run: bash docs/formal/tlx.sh
+      - if: ${{ steps.tlx-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: ${{ steps.tlx.outputs.dir }}
+          key: ${{ steps.tlx-cache.outputs.cache-primary-key }}
       - name: Guard the models' coverage and check them
         env:
           EVENT_NAME: ${{ github.event_name }}

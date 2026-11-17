@@ -11,7 +11,7 @@ description:
 # Standby discard model
 
 `docs/formal/standby-discard/` holds a TLA+ model of every actor that can reach
-`drainHotWorkspace`'s `stopWorkspace(…, { discardUnsaved: true })`, checked by TLC across every
+`drainHotWorkspace`'s `stopWorkspace(…, { discardUnsaved: true })`, checked by tlx across every
 order of their steps. Its `README.md` explains the promise, the finding it made and how the code
 fixed it (SLNT-823), the bounds and the Postgres behaviour it rests on. This skill is the procedure:
 decide whether your change touches the model, run it, read what it says, and keep it true to the
@@ -34,9 +34,9 @@ covered function changed, the model still describes the code and you are done.
 ## 2. Run the check
 
 ```sh
-docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~30 s
-docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~12 min on 32 cores
-MEND_FORMAL_WORKERS=4 docs/formal/standby-discard/check.sh   # on a shared machine; about an hour
+docs/formal/standby-discard/check.sh --quick   # while iterating: one launch, ~5 s
+docs/formal/standby-discard/check.sh           # before handing off: full bounds, ~4 min on 4 cores
+MEND_FORMAL_WORKERS=4 docs/formal/standby-discard/check.sh   # on a shared machine
 ```
 
 Pull requests run only `--quick`; the full bounds run each night and on a dispatched CI run with
@@ -46,18 +46,21 @@ the full count, write the new count and its full-run time on the ticket, and if 
 cores comes near that budget, say on the ticket what to give up before CI finds out at night: that
 is how SLNT-1065 started.
 
-TLC is the reference: the run you hand off with a change to the model or to the code it models is a
-TLC run. While iterating, `--engine tlx` (it composes with `--quick` and a row name) runs the same
-rows with tlx, a Rust checker about twelve times faster here: ~2.5 min for the full bounds, ~5 s
-with `--quick`. tlx is version 0.1, from github.com/tlaplus-x/tlx, measured at commit `8d5f082b0f`;
-it is not in the Nix flake or CI. README "TLC and tlx" says how to build it and has the measured
-table. `check.sh` takes it from `MEND_TLX`, else `tlx` on `PATH`, and exits 2 when there is none.
+The checker is tlx, a TLA+ model checker in Rust, version 0.1, built from github.com/tlaplus-x/tlx
+at the commit `docs/formal/tlx.sh` pins. `check.sh` runs that build, and builds it first when this
+machine has none (a few minutes, once; it needs cargo or Nix). The run you hand off with a change to
+the model or to the code it models is a tlx run; tlx and TLC matched on every row and count before
+tlx replaced TLC (SLNT-1081). `--engine tlc` (it composes with `--quick` and a row name) runs the
+same rows with TLC for a cross-check by hand; at the full bounds that takes about an hour on four
+cores. README "tlx and TLC" has the build, the comparison table and the times. `MEND_TLX` names
+another tlx build to compare by hand. A new tlx commit in `tlx.sh` is a change to every model: CI
+checks each again, and each row must still reach its pinned count.
 
 Each row prints `as expected` or `NOT AS EXPECTED`, and the script exits 0 only when every row is
 `as expected`: the verdict matches and the distinct-state count equals the one `ROWS` pins for those
 bounds. A wrong count from either checker fails the row even when the verdict matches. When an
-intended model change moves a count, take the new count from a TLC run, full and `--quick`. The rows
-and their expected outcomes are the `ROWS` table in `check.sh`:
+intended model change moves a count, take the new count from a run of `check.sh`, full and
+`--quick`. The rows and their expected outcomes are the `ROWS` table in `check.sh`:
 
 - `code` is the code, expected to hold both `NoDiscardOfSessionWork` and `NoClaimableRowWithSession`
   (one run: both are invariants of the same state space). `code-promise-atomic-retire` is the code
@@ -96,8 +99,8 @@ guards allow it, and the value it acts on was read where and when the code reads
 - **A mutant that holds.** Either the code changed so that break is caught some other way (pick a
   mutant that still matters and say why in `check.sh`), or the model lost behaviour (a modelling
   error).
-- **`error`.** TLC did not finish: a parse error, `TypeOK` violated, or memory. Its output is
-  printed above the row.
+- **`error`.** The checker did not finish: a parse error, `TypeOK` violated, or memory. Its output
+  is printed above the row.
 
 ## 4. Update the model for an intended change
 
@@ -107,8 +110,8 @@ guards allow it, and the value it acts on was read where and when the code reads
   bite.
 - A new caller of `drainHotWorkspace`, `claim`, `retire`, `setFailed`, `setReady` or `remove` is a
   new action (and a new drain slot for a new caller), added to `Next` and to the record below.
-- Run the full check with TLC, update the counts in `ROWS` (full and `--quick`) and README's "Last
-  full run" table, then move the sync commit.
+- Run the full check, update the counts in `ROWS` (full and `--quick`) and README's "Last full run"
+  table, then move the sync commit.
 
 ## Coverage record
 

@@ -6,8 +6,8 @@ import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { parseCoverage, readCoverages } from "../../scripts/formal-coverage.mjs";
-import { checkerMissing, drift, formalSteps, guard, runBudgeted } from "./formal.mjs";
+import { parseCoverage, readCoverages, touches } from "../../scripts/formal-coverage.mjs";
+import { checkerMissing, drift, formalSteps, guard, runBudgeted, tlxPath } from "./formal.mjs";
 
 // A repository with one model, `demo`, that covers src/covered.ts, synced at its first commit.
 const repo = (t) => {
@@ -120,7 +120,7 @@ test("a touched model is checked at quick bounds, or full with --full; untouched
     runs.push([command, ...args].join(" "));
     return 0;
   };
-  const env = { TLA2TOOLS_JAR: "/jar" };
+  const env = { MEND_TLX: "/tlx" };
   const none = await formalSteps(r.root, {
     files: ["src/other.ts"],
     base: r.base,
@@ -200,7 +200,7 @@ test("a check that runs past its budget is stopped and fails naming the model an
     head: "HEAD",
     all: true,
     full: true,
-    env: { TLA2TOOLS_JAR: "/jar" },
+    env: { MEND_TLX: "/tlx" },
     run: async (_command, _args, { budgetMs }) => {
       budgets.push(budgetMs);
       return "timeout";
@@ -225,7 +225,7 @@ test("--area keeps a run to one model, and names one that does not exist", async
     head: "HEAD",
     all: true,
     full: true,
-    env: { TLA2TOOLS_JAR: "/jar" },
+    env: { MEND_TLX: "/tlx" },
     run: async (_command, args) => {
       runs.push(args[0]);
       return 0;
@@ -265,17 +265,65 @@ test("the budget stops the whole process group, not only the shell that started 
   );
 });
 
-test("without Nix, Java or a jar the check is blocked, not failed", async (t) => {
+test("without a way to get its checker the check is blocked, not failed", () => {
+  // tlx, the default: a build named by MEND_TLX, the pinned build, or cargo or Nix to make it.
   assert.match(
     checkerMissing({}, () => false),
+    /needs tlx: cargo or Nix to build it/,
+  );
+  assert.equal(
+    checkerMissing({}, (tool) => tool === "cargo"),
+    null,
+  );
+  assert.equal(
+    checkerMissing({}, (tool) => tool === "nix"),
+    null,
+  );
+  assert.equal(
+    checkerMissing({ MEND_TLX: "/tlx" }, () => false),
+    null,
+  );
+  assert.equal(
+    checkerMissing(
+      {},
+      () => false,
+      () => true,
+    ),
+    null,
+  );
+  // TLC, by hand: Nix, or java and curl, or a jar.
+  const tlc = { MEND_FORMAL_ENGINE: "tlc" };
+  assert.match(
+    checkerMissing(tlc, (tool) => tool === "cargo"),
     /needs Nix, or java and curl/,
   );
   assert.equal(
-    checkerMissing({}, (tool) => tool !== "nix"),
+    checkerMissing(tlc, (tool) => tool !== "nix"),
     null,
   );
   assert.equal(
-    checkerMissing({ TLA2TOOLS_JAR: "/jar" }, () => false),
+    checkerMissing({ ...tlc, TLA2TOOLS_JAR: "/jar" }, () => false),
     null,
   );
+});
+
+test("the pinned tlx is built into the cache by its commit, and a new pin checks every model", () => {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const commit = execFileSync("bash", [join(root, "docs/formal/tlx.sh"), "--commit"], {
+    encoding: "utf8",
+  }).trim();
+  assert.match(commit, /^[0-9a-f]{40}$/);
+  assert.equal(tlxPath(root, { XDG_CACHE_HOME: "/cache" }), `/cache/mend-formal/tlx-${commit}/tlx`);
+  assert.equal(tlxPath(root, { HOME: "/home/a" }), `/home/a/.cache/mend-formal/tlx-${commit}/tlx`);
+  assert.equal(
+    execFileSync("bash", [join(root, "docs/formal/tlx.sh"), "--path"], {
+      encoding: "utf8",
+      env: { ...process.env, XDG_CACHE_HOME: "/cache" },
+    }).trim(),
+    tlxPath(root, { XDG_CACHE_HOME: "/cache" }),
+  );
+  const coverages = readCoverages(root);
+  assert.ok(coverages.length > 0);
+  for (const coverage of coverages)
+    assert.ok(touches(coverage, "docs/formal/tlx.sh"), coverage.area);
 });

@@ -12,7 +12,7 @@ description:
 # Turn dispatch model
 
 `docs/formal/turn-dispatch/` holds a TLA+ model of every writer of an agent turn's status and
-provider turn id, checked by TLC across every order of their steps. Its `README.md` states the three
+provider turn id, checked by tlx across every order of their steps. Its `README.md` states the three
 promises, what the model found (SLNT-466, SLNT-1021, SLNT-1022), the bounds and what is left out.
 This skill is the procedure: decide whether your change touches the model, run it, read what it
 says, and keep it true to the code.
@@ -42,14 +42,14 @@ docs/formal/turn-dispatch/check.sh                        # full bounds (two mes
 MEND_FORMAL_WORKERS=4 docs/formal/turn-dispatch/check.sh  # the same on a shared machine
 ```
 
-The full bounds take about 4½ minutes on 32 cores. Pull requests run only `--quick`; the nightly run
+The full bounds take about a minute on 4 cores. Pull requests run only `--quick`; the nightly run
 checks the full bounds on CI's four cores within this model's `budget-full` (`COVERAGE`), and a
 dispatched CI run with `formal: full` does the same on a branch. When a change grows the full count,
 write the new count and the full run's time on the ticket before it merges.
 
-TLC is the reference, as in the standby-discard skill. `--engine tlx` composes with `--quick` and a
-row name, and runs about ten times faster for iterating. Each row prints `as expected` or
-`NOT AS EXPECTED`, and the script exits 0 only when every row's verdict and distinct-state count
+The checker is tlx, built at the commit `docs/formal/tlx.sh` pins, as in the standby-discard skill;
+`--engine tlc` runs the same rows with TLC for a cross-check by hand. Each row prints `as expected`
+or `NOT AS EXPECTED`, and the script exits 0 only when every row's verdict and distinct-state count
 match `ROWS` in `check.sh`.
 
 The rows:
@@ -83,7 +83,7 @@ the code's guards allow it, and the value it acts on was read where and when the
   code it stands for, and rerun. Building this model, a restart that let dispatch run before the
   replay reached its high water was one (`replay` now gates `DClaim`, as `entry.gate` does).
 - **A `code-*` row expected violated that now holds.** The finding was fixed. Confirm the fix is in
-  the diff, move the row to `holds` with TLC's count, and say so on its ticket.
+  the diff, move the row to `holds` with the count the checker reached, and say so on its ticket.
 - **A mutant that holds.** Either the code now catches that break another way (pick a mutant that
   still bites and say why in `check.sh`), or the model lost the behaviour.
 - **`error`.** The checker did not finish: a parse error, `TypeOK` violated, or memory. Its output
@@ -95,8 +95,8 @@ the code's guards allow it, and the value it acts on was read where and when the
   write or one printed message; a read whose value a later step uses is its own action.
 - A new writer of `status` or `provider_turn_id` is a new action, added to `Next` and to the record
   below.
-- Run the full check with TLC, update the counts in `ROWS` (full and `--quick`), then move the sync
-  line in `COVERAGE` and the commit in step 1 to the commit you checked.
+- Run the full check, update the counts in `ROWS` (full and `--quick`), then move the sync line in
+  `COVERAGE` and the commit in step 1 to the commit you checked.
 
 ## Coverage record
 

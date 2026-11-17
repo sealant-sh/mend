@@ -22,9 +22,7 @@ on:
           - ubuntu-24.04
           - box
       formal:
-        description:
-          Bounds for the formal models (full is what the nightly run checks; it takes one to one and
-          a half hours)
+        description: Bounds for the formal models (full is what the nightly run checks)
         type: choice
         default: quick
         options:
@@ -56,7 +54,8 @@ concurrency:
 # Every job has a time limit, so one hung step cannot hold a main run for GitHub's default six
 # hours (SLNT-1076). Each is about three times the job's slowest time on the 20 main runs before
 # 16 Nov, rounded up to five minutes and never under ten: room for a slow runner and for a bounded
-# install's retries (scripts/ci-bounded.sh). formal and vscode-e2e keep the limits they had.
+# install's retries (scripts/ci-bounded.sh). vscode-e2e keeps the limit it had; formal's fits its
+# models' budgets (the comment above it).
 jobs:
   # `changes` and `checks` are seconds of work on GitHub's arm64 runners, free for this public
   # repository, so neither waits for an x86 slot. On the box, run 38746126993's 10-second `checks`
@@ -714,10 +713,10 @@ jobs:
   # Formal models (docs/formal/<area>): a pull request that reaches code a model's COVERAGE names
   # runs the drift guard (that code moved the model or its sync commit) and the quick bounds; a push
   # to main and the nightly run check every model, the nightly one (or a dispatch with
-  # `formal: full`) at its full bounds. TLC needs Java, which the hosted runner has; check.sh fetches
-  # its pinned tla2tools and checks the sha256. One job per model, so each has the job's 120 minutes
-  # to itself; formal.mjs stops a model at its own budget (COVERAGE's budget-full), at least 10
-  # minutes before that. standby-discard's full bounds take 57 to about 85 minutes, by runner host.
+  # `formal: full`) at its full bounds. The checker is tlx, built from source at the commit
+  # docs/formal/tlx.sh pins and cached by that commit: a miss builds it, a hit restores it in
+  # seconds. One job per model; formal.mjs stops a model at its own budget (COVERAGE's
+  # budget-full), and the job's limit leaves room for a build on a miss and for setup.
   # The matrix lists every docs/formal/<area> with a COVERAGE (scripts/ci-workflow.test.mjs).
   formal:
     needs: changes
@@ -729,7 +728,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
-    timeout-minutes: 120
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -739,6 +738,25 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version-file: .node-version
+      - name: Name the pinned tlx
+        id: tlx
+        run: |
+          echo "commit=$(bash docs/formal/tlx.sh --commit)" >> "$GITHUB_OUTPUT"
+          echo "dir=$(dirname "$(bash docs/formal/tlx.sh --path)")" >> "$GITHUB_OUTPUT"
+      - id: tlx-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.tlx.outputs.dir }}
+          key: tlx-${{ steps.tlx.outputs.commit }}-${{ runner.os }}-${{ runner.arch }}
+      # rustup on the runner takes the rustc tlx pins (its rust-toolchain.toml).
+      - name: Build tlx
+        if: ${{ steps.tlx-cache.outputs.cache-hit != 'true' }}
+        run: bash docs/formal/tlx.sh
+      - if: ${{ steps.tlx-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.tlx.outputs.dir }}
+          key: ${{ steps.tlx-cache.outputs.cache-primary-key }}
       - name: Guard the models' coverage and check them
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -746,7 +764,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BOUNDS: ${{ inputs.formal }}
           AREA: ${{ matrix.area }}
-          # TLC's progress lines in the job log, so a model its budget stopped shows how far it got.
+          # The checker's progress lines in the job log, so a model its budget stopped shows how far
+          # it got.
           MEND_FORMAL_PROGRESS: "1"
         run: |
           if [ "$EVENT_NAME" = pull_request ]; then

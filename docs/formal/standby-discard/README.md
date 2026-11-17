@@ -4,7 +4,8 @@ Mend keeps warm standby workspaces that a launch can claim and turn into a sessi
 hot pool). Since mend#1608, `drainHotWorkspace` (`packages/sessions/src/engine.ts`) ends an
 unclaimed standby with `sealant.stopWorkspace(workspace, { discardUnsaved: true })`, which tells
 sealant to remove the workspace without saving its files. This directory holds a TLA+ model of every
-actor that can reach that call, and TLC checks it across every order of their steps.
+actor that can reach that call, and a model checker (tlx) checks it across every order of their
+steps.
 
 - **The promise:** a discard is never sent for a workspace that holds, or can still come to hold, a
   session's work.
@@ -20,8 +21,8 @@ the commit it was last confirmed at) are the project skill
 The model found one schedule on `origin/main` at `374094f416` in which a reconcile pass discarded
 the workspace a launch had just claimed and was adopting. `drainHotWorkspace` now reads the session
 again once `retire` has taken the row, and sends an ordinary stop when one exists (SLNT-823,
-mend#1628, commit `aa029659e3`). Row `mutant-no-reread` keeps the drain as it was, and TLC still
-breaks the promise there.
+mend#1628, commit `aa029659e3`). Row `mutant-no-reread` keeps the drain as it was, and the checker
+still breaks the promise there.
 
 The schedule, in Mend's words:
 
@@ -152,10 +153,10 @@ cautious path there and drains it as before.
 ## Run it
 
 ```sh
-docs/formal/standby-discard/check.sh                # every row, full bounds, about 12 minutes on 32 cores
-docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 30 seconds
+docs/formal/standby-discard/check.sh                # every row, full bounds, about 4 minutes on 4 cores
+docs/formal/standby-discard/check.sh --quick        # one launch instead of two, about 5 seconds
 docs/formal/standby-discard/check.sh <row>          # one row with the checker's whole output and trace
-docs/formal/standby-discard/check.sh --engine tlx   # any of these with tlx: about 3.5 minutes, 5 seconds with --quick
+docs/formal/standby-discard/check.sh --engine tlc   # any of these with TLC, to cross-check by hand
 ```
 
 A run ends with exit 0 only when every row of the table in `check.sh` ends with the verdict the
@@ -164,85 +165,71 @@ table expects and reaches the number of distinct states it pins, at the full bou
 core). The pinned count is what makes a second checker safe to use: a checker that says "holds" over
 a different state space fails the run. A row that holds explores every reachable state, and a row
 expected to fail runs on one worker and stops at the same shortest trace, so both counts are the
-same on every run. TLC is tla2tools 1.7.4 (TLC 2.19), from the repository's pinned nixpkgs
-(`flake.lock`) when Nix is installed. Otherwise it is the GitHub release, checked against its
-sha256; that path needs `java` and `curl`. To tell a counterexample as one line per step, pipe it
-through `trace.py`, which reads either checker's trace:
+same on every run. The checker is tlx, which `../tlx.sh` builds the first time (below). To tell a
+counterexample as one line per step, pipe it through `trace.py`, which reads either checker's trace:
 
 ```sh
 docs/formal/standby-discard/check.sh mutant-no-reread | python3 -I docs/formal/standby-discard/trace.py
 ```
 
-### TLC and tlx
+### tlx and TLC
 
-TLC is the reference. The run that goes with a change to the model, or to the code it models, is a
-TLC run, and a pinned count is only ever moved to what TLC reached. tlx is for iterating: a TLA+
-checker written in Rust that reads the same `.tla` and `.cfg` files, about twelve times faster here.
-`check.sh` runs it with `-tlc`, its mode that promises TLC's verdicts, counts, depth and shortest
-traces.
+The checker is tlx, a TLA+ model checker written in Rust that reads the same `.tla` and `.cfg` files
+as TLC. `check.sh` runs it with `-tlc`, its mode that promises TLC's verdicts, counts, depth and
+shortest traces. It replaced TLC everywhere on 17 Nov 2026 (SLNT-1081): TLC took 55 to 85 minutes
+for this model's full bounds on CI, and the nightly run outgrew its budget (SLNT-1065).
 
-tlx is version 0.1, about a month old, with no releases. It comes from
-[tlaplus-x/tlx](https://github.com/tlaplus-x/tlx) and was measured at commit
-`8d5f082b0f0d922bf5999d9a8db00c70a4c1d261`. Build it with Rust and a C compiler, then point
-`check.sh` at it (it is not in the Nix flake or CI):
+tlx is version 0.1, with no releases, so Mend builds it from source at one pinned commit of
+[tlaplus-x/tlx](https://github.com/tlaplus-x/tlx), `8d5f082b0f0d922bf5999d9a8db00c70a4c1d261`.
+`docs/formal/tlx.sh` holds the pin, builds it once into `~/.cache/mend-formal/tlx-<commit>/tlx` and
+prints the path; `check.sh` calls it, so the first run on a machine takes a few minutes longer. It
+needs git, a C compiler, and cargo (with rustup, the rustc tlx pins, 1.93.0) or Nix (cargo and rustc
+from the repository's pinned nixpkgs). `CARGO_BUILD_JOBS` caps the build's jobs. CI caches the build
+by the commit. `MEND_TLX` names another build to compare by hand.
 
-```sh
-git clone https://github.com/tlaplus-x/tlx && cd tlx && git checkout 8d5f082b0f
-nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo build --release   # or plain cargo
-MEND_TLX=$PWD/target/release/tlx docs/formal/standby-discard/check.sh --engine tlx
-```
+TLC stays for that too: `--engine tlc` (or `MEND_FORMAL_ENGINE=tlc`). It is tla2tools 1.7.4 (TLC
+2.19), from the repository's pinned nixpkgs (`flake.lock`) when Nix is installed, else the GitHub
+release checked against its sha256 (needs `java` and `curl`). Nothing scheduled runs it.
 
-Without `MEND_TLX`, `check.sh --engine tlx` runs `tlx` from `PATH`, and stops with exit 2 when there
-is none. `MEND_FORMAL_ENGINE=tlx` picks tlx as `--engine tlx` does.
+Before the switch both checkers ran every row at the full bounds on the same model, and every
+verdict, violated invariant and distinct-state count matched. TLC is CI's full run
+[43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641) at `b192d2e2` on CI's
+four cores; tlx is the run at `59d4fa0666` (the model unchanged since `b192d2e2`) with
+`MEND_FORMAL_WORKERS=4` on a 32-core machine:
 
-Measured on 2026-11-13 on a 32-core machine, both checkers on the same model at full bounds: each
-row alone with its time and peak memory, then whole `check.sh` runs. Every verdict, violated
-invariant, state count and depth matched:
+| Row                              | Expected                             | TLC     | tlx   | Distinct states (both) |
+| -------------------------------- | ------------------------------------ | ------- | ----- | ---------------------: |
+| `code`                           | holds                                | 3,312 s | 245 s |            129,386,795 |
+| `mutant-no-reread`               | violated `NoDiscardOfSessionWork`    | 9 s     | 1 s   |                183,199 |
+| `mutant-no-reread-atomic-retire` | violated `NoDiscardOfSessionWork`    | 8 s     | 2 s   |                172,787 |
+| `mutant-no-reread-no-sweep`      | holds                                | 50 s    | 3 s   |              1,938,517 |
+| `mutant-reread-before-retire`    | violated `NoDiscardOfSessionWork`    | 13 s    | 2 s   |                297,173 |
+| `mutant-discard-before-retire`   | violated `NoDiscardOfSessionWork`    | 2 s     | 0 s   |                  4,630 |
+| `mutant-claim-leaves-ready`      | violated `NoClaimableRowWithSession` | 1 s     | 0 s   |                    188 |
+| `mutant-reused-id`               | violated `NoClaimableRowWithSession` | 1 s     | 0 s   |                 10,343 |
+| `mutant-no-look`                 | violated `NoDiscardOfSessionWork`    | 3 s     | 1 s   |                 32,926 |
+| `mutant-look-live-only`          | violated `NoDiscardOfSessionWork`    | 4 s     | 0 s   |                 54,740 |
+| `mutant-agent-ignores-stop`      | violated `NoDiscardOfSessionWork`    | 2 s     | 0 s   |                 19,346 |
 
-| Row                                      | TLC           | tlx          | Distinct states (both) |
-| ---------------------------------------- | ------------- | ------------ | ---------------------: |
-| `code-promise`                           | 142 s, 7.3 GB | 11 s, 1.5 GB |             18,141,305 |
-| `code-claimable`                         | 167 s         | 12 s         |             18,141,305 |
-| `mutant-no-reread` (one worker)          | 6.1 s         | 0.8 s        |                113,052 |
-| `mutant-reused-id` (one worker)          | 1.6 s         | 0.2 s        |                  9,408 |
-| `mutant-no-reread-no-sweep`              | 5.0 s         | 0.6 s        |                293,226 |
-| whole `check.sh` (all ten rows, wall)    | 214 s         | 22 s         |                        |
-| whole `check.sh --quick` (all ten, wall) | 16 s          | 2 s          |                        |
-
-On 2026-11-16, with SLNT-1053's actions and thirteen rows, the whole `check.sh` took about 30
-minutes with TLC; `--quick` took about 40 s with TLC.
+`code-promise-atomic-retire` runs at `--quick` only (`check.sh`, ROWS). At `--quick` every row, that
+one included, reached the count `check.sh` pins with tlx. tlx held `code` at about 6 GB.
 
 ### How long the full bounds take, and on CI
 
 Pull requests run `--quick`. The nightly run (and a dispatched CI run with `formal: full`) runs the
 full bounds on GitHub's four-core runner, in a job of this model's own, which `formal.mjs` stops
-after `budget-full` minutes (`COVERAGE`) with a message naming this model. SLNT-1053 grew the full
-state space 7.1 times, from 18,141,305 to 129,386,795 distinct states: the one join, the one Stop
-and the failed re-plan each multiply it, and each with the second launch. On CI one row of that size
-took 61 minutes, so the three rows that explored it then (`code-promise`, `code-claimable` and
-`code-promise-atomic-retire`) ran the nightly job into its 90-minute limit (SLNT-1065). Two changes
-cut that without giving up any state: `code` checks both promises in one run, since they are
-invariants of the same state space, and `code-promise-atomic-retire` runs at `--quick` only, since
-its action constraint only removes transitions and so `code` holding at the full bounds proves it.
-
-Java's default heap, a quarter of the runner's 16 GB, left TLC spilling its fingerprint set to disk
-at this size: `code` did not finish in 75 minutes. `check.sh` lets the heap take three quarters of
-the machine, and on CI the whole full check then took 57 minutes (`code`: 129,386,795 states in
-3,312 s, about 18 million states generated a minute throughout), at `b192d2e2`, run
-[43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641). With
-`MEND_FORMAL_PROGRESS` set, as CI sets it, TLC's memory and progress lines go to the job log as they
+after `budget-full` minutes (`COVERAGE`) with a message naming this model. With
+`MEND_FORMAL_PROGRESS` set, as CI sets it, the checker's progress lines go to the job log as they
 come.
 
-GitHub's four-core runner is not one speed. The first nightly after that,
-[44068746119](https://github.com/sealant-sh/mend/actions/runs/44068746119) at `43927c51`, ran the
-same model on a slower host: Azure in westus where the passing run had AWS in us-east-1, with the
-same heap. TLC generated about 12 million states a minute from its first minute to its last, so
-`code` needed about 82 minutes for the same 1,005 million states generated, and the whole check
-about 85. The 75-minute budget stopped it with 118.6 million distinct states found (SLNT-1065).
-`budget-full` is now 110 minutes, about 30% over that slow host, and CI's `formal` job allows 120.
-When the budget stops it again, read the checker's last progress line first. Distinct states short
-of the pinned count at about 12 or 18 million generated a minute means a slow host. A higher count
-than pinned, or a rate that falls late in the run, means the model or the memory changed.
+With TLC the full bounds took 57 minutes on a fast CI host and about 85 on a slow one (SLNT-1065):
+GitHub's four-core runner is not one speed. SLNT-1053 had grown the full state space 7.1 times, from
+18,141,305 to 129,386,795 distinct states, and SLNT-1065 kept it whole by checking both promises in
+one `code` row and running `code-promise-atomic-retire` at `--quick` only.
+
+When the budget stops a run, read the checker's last progress line first. Distinct states short of
+the pinned count at the usual rate means a slow host. A higher count than pinned, or a rate that
+falls late in the run, means the model or the memory changed.
 
 A change that grows the full count should say on its ticket what the full run took, on four cores
 too (`MEND_FORMAL_WORKERS=4`), before it merges, so the budget is not found out at night.
@@ -285,8 +272,8 @@ names its code, and the skill's coverage record maps them.
 - Unbounded reconcile passes, so a discard is retried without bound.
 - Unbounded sweep passes, restarts, settles and resumes.
 
-TLC explores every reachable state within those bounds, with symmetry over ids and launches. The
-`--quick` mode uses one launch. On top of the routine runs, one run with three standbys and one
+The checker explores every reachable state within those bounds, with symmetry over ids and launches.
+The `--quick` mode uses one launch. On top of the routine runs, one run with three standbys and one
 launch was made at the sync commit (see "Last full run").
 
 **Assumptions.** Each one either matches the code or only adds behaviours:
@@ -361,9 +348,9 @@ E6 and E7 are the database half of the finding. Once the unconditional `setFaile
 
 - `NoDiscardOfSessionWork` (the promise): no discard from `drainHotWorkspace` is ever sent for a
   workspace that a session has taken as its executor (`acceptExecutor`) or holds work in, and no
-  discard from `discardStandbyNeverClaimed` for one that holds work (SLNT-1053). TLC checks it in
-  every state, so a discard sent first and an adoption afterwards break it too. That is the "can
-  still come to hold" half. On the code it holds; without the second session read
+  discard from `discardStandbyNeverClaimed` for one that holds work (SLNT-1053). The checker checks
+  it in every state, so a discard sent first and an adoption afterwards break it too. That is the
+  "can still come to hold" half. On the code it holds; without the second session read
   (`mutant-no-reread`) it fails, which was the finding.
 - `NoClaimableRowWithSession`, the reviewer's first property: a row is `ready` only while no session
   has its id, has taken its workspace, or holds work in it. On the code it holds (row `code`, which
@@ -378,7 +365,7 @@ E6 and E7 are the database half of the finding. Once the unconditional `setFaile
 ## Each property can fail
 
 The mutants run on the code. Each one fails only because of its own break. Each counterexample below
-is TLC's shortest, from `check.sh <row>`.
+is the shortest, from `check.sh <row>`; tlx and TLC give the same one.
 
 - **`no-reread`**: the drain as it was before SLNT-823, deciding the discard from `retire` alone. It
   breaks `NoDiscardOfSessionWork` in 22 steps: the schedule in "The finding, fixed".
