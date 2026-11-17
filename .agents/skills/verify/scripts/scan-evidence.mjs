@@ -51,10 +51,14 @@ if (!dir || !secretsDir) {
   process.exit(2);
 }
 
+// Regular files only: a socket or a pipe (a tmux server a flow left in its directory) holds no
+// bytes, and opening one fails with ENXIO.
 const files = (root) =>
   readdirSync(root).flatMap((name) => {
     const path = join(root, name);
-    return statSync(path).isDirectory() ? files(path) : [path];
+    const stat = statSync(path);
+    if (stat.isDirectory()) return files(path);
+    return stat.isFile() ? [path] : [];
   });
 
 const extra = (process.env.MEND_VERIFY_SCAN_EXTRA ?? "").split(":").filter(Boolean);
