@@ -38,7 +38,7 @@ describe("the recipe digest", () => {
       "7117c9f091d857144dec10e3de1d4eb204b11e661ceb029234435f71adb17f70",
     );
     expect(digests.get("web")).toBe(
-      "cf1a61f1daf0e59a7b6db5344f0b63cb394192543e4e020307f838c634c867c1",
+      "6bbb011aeeed5c3cd0379bc6ec6b56e2db367a1e70dfffb0a0818530755a6ddd",
     );
     expect(digestsOf('[service.web]\ncommand = "pnpm dev"\nport = 3000\n').get("web")).toBe(
       "62db5b7a629e363bbc0bce91b1e463a11690347aed51a82cc8f0bcfc645b2f58",

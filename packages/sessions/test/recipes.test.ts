@@ -112,7 +112,7 @@ port = 5432
 command = "pnpm dev"
 port = 3000
 browserScheme = "http"
-cwd = "./apps//web/"
+cwd = "./apps//web-old/"
 env = { NODE_ENV = "development", _x1 = "" }
 ready = { http = "/health?deep=1", timeout = "2m" }
 host = "preserve"
