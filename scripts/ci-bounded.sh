@@ -6,8 +6,11 @@
 #
 #   scripts/ci-bounded.sh "<what, for the log>" <minutes> <attempts> -- <command> [args...]
 #
-# timeout signals the command's whole process group, so a stall in a grandchild (sudo apt-get
-# under playwright-core) ends with it. Exits 0 on the first attempt that succeeds, 1 otherwise.
+# timeout signals the command's whole process group, so a stall in a grandchild ends with it, but
+# only for processes this user may signal. Run a command that elevates (playwright-core's
+# install-deps runs `sudo apt-get`) under `sudo scripts/ci-bounded.sh`: otherwise the root apt-get
+# outlives its attempt, keeps the dpkg lock, and every retry fails on it (SLNT-1094).
+# Exits 0 on the first attempt that succeeds, 1 otherwise.
 set -u
 
 if [ "$#" -lt 5 ] || [ "$4" != "--" ]; then

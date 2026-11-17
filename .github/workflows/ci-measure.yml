@@ -734,10 +734,12 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/ci-images.mjs postgres
       - run: pnpm install --frozen-lockfile
+      # As in ci.yml: the apt wrapper runs as root so its timeout can stop apt-get (SLNT-1094).
       - name: Install Chromium's and Firefox's system packages for the preview browsers
         run:
-          scripts/ci-bounded.sh "Chromium's and Firefox's system packages (apt-get)" 4 3 -- pnpm
-          --filter @mend/api-server exec playwright-core install-deps chromium firefox
+          sudo scripts/ci-bounded.sh "Chromium's and Firefox's system packages (apt-get)" 4 3 --
+          "$(command -v node)" apps/api/node_modules/playwright-core/cli.js install-deps chromium
+          firefox
       - name: Install Chromium and Firefox for the preview browsers
         run:
           scripts/ci-bounded.sh "The Chromium and Firefox download" 4 3 -- pnpm --filter
