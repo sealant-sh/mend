@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { pageThemes } from "@mend/ui/page-theme";
+import { pageThemes } from "@mend/ui-old/page-theme";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";

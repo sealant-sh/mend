@@ -1,4 +1,4 @@
-import { Button } from "@mend/ui/components/ui/button";
+import { Button } from "@mend/ui-old/components/ui/button";
 
 import type { SessionDto, SessionProcessDto } from "#/lib/api";
 import { sessionTitle } from "#/lib/words";

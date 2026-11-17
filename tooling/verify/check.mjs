@@ -103,7 +103,7 @@ export const runCheck = async (
   const next = [];
   const logOf = (id) => join(logs, `check-${id}.log`);
 
-  if (!existsSync(join(root, "apps/web/src/routeTree.gen.ts"))) {
+  if (!existsSync(join(root, "apps/web-old/src/routeTree.gen.ts"))) {
     return {
       steps: [
         {

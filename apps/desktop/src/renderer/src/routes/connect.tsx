@@ -1,6 +1,6 @@
-import { Button } from "@mend/ui/components/ui/button";
-import { Input } from "@mend/ui/components/ui/input";
-import { Label } from "@mend/ui/components/ui/label";
+import { Button } from "@mend/ui-old/components/ui/button";
+import { Input } from "@mend/ui-old/components/ui/input";
+import { Label } from "@mend/ui-old/components/ui/label";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 

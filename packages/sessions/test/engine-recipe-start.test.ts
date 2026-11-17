@@ -20,7 +20,7 @@ const RECIPE = `
 [service.web]
 command = "pnpm dev"
 port = 3000
-cwd = "apps/web"
+cwd = "apps/web-old"
 env = { MODE = "first" }
 depends = ["db"]
 
@@ -119,7 +119,7 @@ describe("a recipe runs whoever added or changed it (ADR 0017, decision log 4, r
         yield* engine.runServiceRecipe(sessionId, "web", steerer);
         expect(spawned.at(-1)).toEqual(["sh", "-c", "pnpm dev --edited"]);
         expect(opened.slice(before).at(-1)).toMatchObject({
-          cwd: "/workspace/repo/apps/web",
+          cwd: "/workspace/repo/apps/web-old",
           env: { MODE: "edited", PORT: "3000" },
         });
       }),

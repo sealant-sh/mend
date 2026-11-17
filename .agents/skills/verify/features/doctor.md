@@ -150,8 +150,9 @@ Preconditions:
   a longer line, such as a session's recorded argv (`sh -c 'echo NAME=value'`), the value stays in
   the archive.
 - The web `Sealant connection` panel is a `section` with no `aria-labelledby`, so it has no region
-  role (`apps/web/src/routes/settings.tsx:1223`); scope to it through its heading. Its status word
-  is plain text, not `role="status"` (`settings.tsx:1245`); assert it with `getByText`. A finding.
+  role (`apps/web-old/src/routes/settings.tsx:1223`); scope to it through its heading. Its status
+  word is plain text, not `role="status"` (`settings.tsx:1245`); assert it with `getByText`. A
+  finding.
 - The web says `Connected · observed`; the doctor's `sealant` line says `connected · <url>`. They
   are the same observation in two words; do not report a mismatch.
 - `Settings` appears in two primary navigations, one hidden by viewport width. Playwright skips the

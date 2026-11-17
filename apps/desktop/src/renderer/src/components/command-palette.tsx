@@ -1,4 +1,4 @@
-import { Input } from "@mend/ui/components/ui/input";
+import { Input } from "@mend/ui-old/components/ui/input";
 import { useState } from "react";
 
 import { StatusDot } from "#/components/status-dot";

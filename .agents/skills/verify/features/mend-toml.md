@@ -126,7 +126,7 @@ Preconditions:
   `page.locator("div").filter({ has: page.getByText("verify-proj", { exact: true }) }).filter({ has: page.getByRole("button", { name: "Run", exact: true }) }).last()`.
   `Shadowed` is plain text, not a status.
 - The Setup `Services` form has no labels: its inputs are named only by placeholders
-  (`apps/web/src/components/project-setup.tsx:964-982`); only `Browser behavior` and `udp` have
+  (`apps/web-old/src/components/project-setup.tsx:964-982`); only `Browser behavior` and `udp` have
   names. The placeholder `pnpm dev (empty = adopt a listening port)` is the same text the session
   card's run form uses.
 - The shorthand `mend service <name>` cannot reach a recipe named like a `service` verb (`run`,

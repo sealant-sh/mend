@@ -940,7 +940,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const notEnded = inArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
         const ended = notInArray(agentSessions.status, [...NOT_ENDED_STATUSES]);
         const reviewSince = new Date((yield* DateTime.nowAsDate).getTime() - REVIEW_WAIT_MS);
-        // Ready to review, as the inbox reads it (apps/web lib/inbox.ts `readyToReview`): a
+        // Ready to review, as the inbox reads it (apps/web-old lib/inbox.ts `readyToReview`): a
         // follow-up waits to be sent, or a session that ended within `REVIEW_WAIT_MS`, however it
         // ended, has a change with no review comment yet.
         // Listed whatever the cap, unless this person settled it by hand. Read from those two small

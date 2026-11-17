@@ -1,4 +1,4 @@
-import { useSecondTick } from "@mend/ui/hooks/use-second-tick";
+import { useSecondTick } from "@mend/ui-old/hooks/use-second-tick";
 import { ScrollView, View } from "react-native";
 
 import { MonoText, UiText } from "@/components/typography";

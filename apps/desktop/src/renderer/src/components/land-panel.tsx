@@ -1,5 +1,5 @@
 import { pullRequestTitle } from "@mend/domain/workbench";
-import { Sheet, SheetHeader } from "@mend/ui/sheet";
+import { Sheet, SheetHeader } from "@mend/ui-old/sheet";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 

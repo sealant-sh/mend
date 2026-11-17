@@ -6,7 +6,7 @@
 @import "@fontsource/jetbrains-mono/500.css";
 
 @import "tailwindcss";
-@import "@mend/ui/styles/globals.css";
+@import "@mend/ui-old/styles/globals.css";
 
 /*
   The cockpit (Figma "Desktop / Cockpit"): the Evidence Review sheet, plus the

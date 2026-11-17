@@ -1,9 +1,0 @@
-{
-  "extends": "@mend/typescript/web.json",
-  "compilerOptions": {
-    "paths": {
-      "@mend/ui/*": ["./src/*"]
-    }
-  },
-  "include": ["src/**/*.ts", "src/**/*.tsx", "package.json"]
-}

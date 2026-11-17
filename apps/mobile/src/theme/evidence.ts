@@ -1,14 +1,14 @@
 // The Evidence Review theme for React Native. Colors, radii, spacing, and
-// type all come from @mend/ui/tokens — the same authority as the web sheet.
+// type all come from @mend/ui-old/tokens — the same authority as the web sheet.
 
-import type { EvidenceColors, EvidenceScheme } from "@mend/ui/tokens";
-import { evidenceColors, shadows } from "@mend/ui/tokens";
+import type { EvidenceColors, EvidenceScheme } from "@mend/ui-old/tokens";
+import { evidenceColors, shadows } from "@mend/ui-old/tokens";
 import { useSyncExternalStore } from "react";
 import { Appearance } from "react-native";
 
 import { useDisplayPreferences } from "@/data/preferences";
 
-export { fontFamilies, radius, spacing, typeScale } from "@mend/ui/tokens";
+export { fontFamilies, radius, spacing, typeScale } from "@mend/ui-old/tokens";
 export type { EvidenceColors, EvidenceScheme };
 
 export type EvidenceShadows = { readonly [K in keyof (typeof shadows)["light"]]: string };

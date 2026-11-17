@@ -322,7 +322,7 @@ The chart renders two tiers. The **API Deployment** (`apps/api`, `MEND_MODE=all`
 replica**) is the real Mend server: the typed contract, auth, the WebSocket data planes, the session
 engine, and the workers; it mounts the store claim and the users' Mend keys, carries the capture
 store's env, and listens on `<release>-api:3101` plus the internal `<release>-session` Service for
-the workspace session channel (capture routes included). The **web Deployment** (`apps/web`,
+the workspace session channel (capture routes included). The **web Deployment** (`apps/web-old`,
 stateless, `web.replicaCount` free) serves the TanStack app and transparently proxies `/api/*` —
 HTTP, SSE, and WebSocket upgrades — to the API tier, so clients keep one origin on 3105. Plus
 Postgres (or `DATABASE_URL` from the secret), NetworkPolicies per tier (clients→web:3105,

@@ -1,4 +1,4 @@
-# The web server (apps/web): the TanStack app plus a transparent /api proxy to the API tier.
+# The web server (apps/web-old): the TanStack app plus a transparent /api proxy to the API tier.
 # Deliberately stateless — no store, no database, no engine — so replicaCount is free.
 apiVersion: v1
 kind: Service

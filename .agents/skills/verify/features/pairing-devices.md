@@ -112,7 +112,7 @@ Preconditions:
 - Devices are on their own page, `/settings/devices`, in the table `Devices`; each row's button is
   named `Revoke <device name>` (box ARIA snapshot, 17 Nov). The revoke dialog and its `Revoke`
   confirm, the mint-by-hand row, and the `web` row after a phone's claim are from
-  `apps/web/src/components/settings/devices.tsx`, not confirmed by a box capture.
+  `apps/web-old/src/components/settings/devices.tsx`, not confirmed by a box capture.
 - The box read the countdown once (`Expires in 9:57.`); that it falls is from source
   (`useSecondTick`), not seen there. Read it twice a few seconds apart.
 - `Pair a phone` opens a `dialog` of that name. When the server lists more than one pairing URL, it

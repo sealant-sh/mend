@@ -1,6 +1,6 @@
 import { modelPickerFor, pickerLaunchFields, type PermissionMode } from "@mend/domain/workbench";
-import { Button } from "@mend/ui/components/ui/button";
-import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui/model-picker";
+import { Button } from "@mend/ui-old/components/ui/button";
+import { EffortMenu, MenuRadioGroup, ModelMenu } from "@mend/ui-old/model-picker";
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";

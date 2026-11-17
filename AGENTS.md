@@ -25,13 +25,15 @@ the area. The roadmap is in Linear.
 - `apps/t3-gateway`: a t3code environment in front of Mend; t3code's clients pair with it (ADR
   0012).
 - `apps/vscode`: VS Code extension: open and steer sessions, workspaces over Remote-SSH.
-- `apps/web`: TanStack Start product web app — Now · projects · sessions · review.
+- `apps/web-old` is the current product web app, to be replaced by a new `apps/web`.
+- `packages/ui-old` is the Evidence Review kit that desktop, marketing, mobile, the API and the old
+  web app use.
 - `packages/*`: shared libraries: `agent-conversation`, `agent-protocol` (Codex/Claude stdio
   adapters), `api-contracts` (the HTTP API contract), `auth`, `db` (Postgres, migrations), `domain`,
   `inference`, `jobs` (pg-boss), `landing`, `local-git` (git on the person's machine: handoff
   snapshots), `network`, `sealant` (the SDK behind Effect services), `sessions` (the session
   engine), `slack`, `store` (repository store, worktrees, checkpoints), `t3-contracts` (t3code's
-  contracts, copied verbatim), `ui` (design tokens), `workspace-ssh`.
+  contracts, copied verbatim), `ui-old` (Evidence Review kit), `workspace-ssh`.
 - `tooling/*`: shared configs (`typescript`), build scripts (`scripts`: the server bundler) and CI
   test helpers (`test-ci`).
 

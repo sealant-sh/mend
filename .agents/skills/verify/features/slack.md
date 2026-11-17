@@ -128,10 +128,10 @@ Preconditions:
   buttons share names with other panels on the settings page: `Copy` (devices, git key), `Remove…`
   (organization members), `On` and `Off` (instance defaults). Scope by `section#slack`, Mend's own
   anchor (the link page navigates to it). Finding:
-  `apps/web/src/components/organization-settings.tsx:75`.
+  `apps/web-old/src/components/organization-settings.tsx:75`.
 - Inside the panel, the four display settings each have an `On` and an `Off` button with nothing to
   tell them apart but order, and `Default harness`'s choices are named only by the harness. The rows
-  are not groups. Finding: `apps/web/src/components/slack-settings.tsx:378`, `:355`.
+  are not groups. Finding: `apps/web-old/src/components/slack-settings.tsx:378`, `:355`.
 - The token fields are password inputs, so they are not textboxes; reach them with
   `getByLabel("app-level token")` and `getByLabel("bot token")`, which their wrapping labels name.
 - `Your default project` is a select named by its `aria-label`; it appears only once the

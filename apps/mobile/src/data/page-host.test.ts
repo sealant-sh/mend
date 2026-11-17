@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { pageLinkResult, pageThemeMessage } from "@mend/ui/page-frame";
-import { pageThemes } from "@mend/ui/page-theme";
+import { pageLinkResult, pageThemeMessage } from "@mend/ui-old/page-frame";
+import { pageThemes } from "@mend/ui-old/page-theme";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {

@@ -1,18 +1,19 @@
 # Evidence Review — Design Language
 
 Version: 3.0 (depth & polish) · Vendored from the Sealant platform repo (`apps/web/DESIGN.md` in
-sealant-sh/sealant) · Applies to: `@mend/ui`, web app, marketing site, content style.
+sealant-sh/sealant) · Applies to: `@mend/ui-old`, web app, marketing site, content style.
 
 Mend is a "by Sealant" product and must be **visually identical family** with the platform: the same
-tokens (vendored in `packages/ui/src/styles/globals.css`), the same components, the same voice.
-Token references below to `packages/ui/src/styles/globals.css` mean this repo's `@mend/ui` sheet.
+tokens (vendored in `packages/ui-old/src/styles/globals.css`), the same components, the same voice.
+Token references below to `packages/ui-old/src/styles/globals.css` mean this repo's `@mend/ui-old`
+sheet.
 
 This is the visual language of an **evidence-backed review surface** for AI software runs: warm +
 premium, with real depth. It keeps the colour discipline and the "evidence beside the claim" ethos
 of the original review tool, but trades the flat/structural look for a polished, elevated, dev-infra
 aesthetic (think Linear / Vercel / Stripe-grade). The canonical reference is the Sealant platform's
-Evidence Review surface, whose token sheet `@mend/ui` vendors; the run-record motif is described in
-§5. The marketing landing page (rebuilt in #383) no longer draws product screens, so it is not a
+Evidence Review surface, whose token sheet `@mend/ui-old` vendors; the run-record motif is described
+in §5. The marketing landing page (rebuilt in #383) no longer draws product screens, so it is not a
 reference for the motif. This document is the implementation contract.
 
 ---
@@ -37,7 +38,7 @@ reference for the motif. This document is the implementation contract.
 A warm near-white canvas, near-black ink, pale warm rules. One cobalt brand accent. Three earned
 semantic colors. Nothing decorative carries color.
 
-All values live as CSS custom properties in `packages/ui/src/styles/globals.css`. **Reference
+All values live as CSS custom properties in `packages/ui-old/src/styles/globals.css`. **Reference
 tokens, never raw hexes**, in app/component code (`bg-background`, `text-muted-foreground`,
 `text-[var(--sw-accent)]`, `text-success`, …).
 

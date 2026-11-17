@@ -21,7 +21,7 @@ await supervise(async (supervisor) => {
   });
   await supervisor.start({
     name: "mend-web",
-    command: [node, ...flags, path.join(repoRoot, "apps/web/src/entry/main.ts")],
+    command: [node, ...flags, path.join(repoRoot, "apps/web-old/src/entry/main.ts")],
     env: {
       ...process.env,
       PORT: webPort,

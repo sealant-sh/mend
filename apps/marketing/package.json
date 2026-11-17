@@ -20,7 +20,7 @@
     "@fontsource/inter": "catalog:",
     "@fontsource/jetbrains-mono": "catalog:",
     "@fontsource/space-grotesk": "catalog:",
-    "@mend/ui": "workspace:*",
+    "@mend/ui-old": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-router": "catalog:",
     "@tanstack/react-start": "catalog:",

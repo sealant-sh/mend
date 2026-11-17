@@ -1,6 +1,6 @@
 import type { PageRef } from "@mend/domain/workbench";
-import { fitPageHeight, pageFrameSrc } from "@mend/ui/page-frame";
-import { pageThemes } from "@mend/ui/page-theme";
+import { fitPageHeight, pageFrameSrc } from "@mend/ui-old/page-frame";
+import { pageThemes } from "@mend/ui-old/page-theme";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { StyleSheet, View } from "react-native";

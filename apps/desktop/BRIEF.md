@@ -41,7 +41,7 @@ observations, "recorded/observed" only when a Sealant run stands behind the clai
 ## The main screen
 
 Left to right: project tree · (tabs above) the terminal · inbox. The Evidence Review token sheet
-(`@mend/ui`) styles everything; the terminal is the one always-dark surface.
+(`@mend/ui-old`) styles everything; the terminal is the one always-dark surface.
 
 ### The left rail — two faces (`docs/SIDEBAR-MAP.md`)
 
@@ -187,7 +187,7 @@ Shells never appear here. The inbox is about agents that may need you; a shell i
 "Review the change" opens **in the app**, not the browser. Same API the web review uses
 (`/api/changes/:id/diff|comments|stats|tour|passes`), same loop: unified diff with 2px edge marks,
 line comments and change-level comments, read/suggest passes, edit-the-instruction send-back to the
-same session. The web app (`apps/web/src/routes/changes.$changeId.tsx`) is the reference
+same session. The web app (`apps/web-old/src/routes/changes.$changeId.tsx`) is the reference
 implementation; port, don't reinvent, and extract shared pieces into a package only when the second
 consumer proves the shape. The desktop review lives at `routes/review.$changeId.$sliceId.tsx`.
 

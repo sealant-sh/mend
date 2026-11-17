@@ -482,7 +482,7 @@ jobs:
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-b
       # The built web app loads in a real browser and renders its first screen: the sign-in page,
-      # served by the production front with no API behind it (apps/web/scripts/check-browser.mjs).
+      # served by the production front with no API behind it (apps/web-old/scripts/check-browser.mjs).
       - name: Install Chromium for the web app's browser check
         # The runner image already carries Chromium's system libraries; when its apt mirror is down
         # or stalls, install the browser alone rather than fail the lane before a test runs. Each
@@ -497,8 +497,8 @@ jobs:
           # The workspace's locked Playwright, as the packaging job's verify tests use it.
           MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
         run: |
-          pnpm exec turbo run build --filter=@mend/web
-          pnpm --filter @mend/web check:browser
+          pnpm exec turbo run build --filter=@mend/web-old
+          pnpm --filter @mend/web-old check:browser
 
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}

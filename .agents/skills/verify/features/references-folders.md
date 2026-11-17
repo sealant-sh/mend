@@ -133,7 +133,7 @@ Preconditions:
 ## Gotchas
 
 - The add forms for references, linked projects and mounted folders have no labels. Their inputs are
-  named only by placeholders (`apps/web/src/components/project-setup.tsx:644-654`, `816-825`,
+  named only by placeholders (`apps/web-old/src/components/project-setup.tsx:644-654`, `816-825`,
   `1174-1189`), and the linked-project picker is a `select` with no accessible name at all
   (`project-setup.tsx:800-815`): find it as the only combobox in `section("Linked projects")`.
 - Rows in these sections are plain `div`s, not list items. `refresh` and `remove` repeat per row,
@@ -152,7 +152,7 @@ Preconditions:
   note saying so (`Folders` does). Report the link and host-mount delivery unreachable in capture
   mode.
 - In Settings, `Add files…` and `Add a folder…` are labels around hidden file inputs, not buttons
-  (`apps/web/src/components/organization-settings.tsx:680-700`). Drive them through Playwright's
+  (`apps/web-old/src/components/organization-settings.tsx:680-700`). Drive them through Playwright's
   file chooser after clicking the text; they have no role to ask for.
 - The `Folders` and `References` checkboxes are controlled by the saved selection, which updates
   after a server round trip. Use `click()` and then wait for `toBeChecked()`; Playwright's `check()`
@@ -160,8 +160,8 @@ Preconditions:
 - A folder row's button name is its whole text, `<name> created <date> · files`; match it with an
   anchored regular expression. Folder and file rows have no group role or accessible name. `Delete`
   repeats for every file and `Remove…` for every folder
-  (`apps/web/src/components/organization-settings.tsx:571-600`, `666-676`); scope to the row by its
-  folder button or file path text before choosing the action. File deletion has no confirm. Web
+  (`apps/web-old/src/components/organization-settings.tsx:571-600`, `666-676`); scope to the row by
+  its folder button or file path text before choosing the action. File deletion has no confirm. Web
   folder removal requires `Remove…`, then `Remove <name>`; a selected folder is refused.
 - `mend folder push` skips `.git`, `node_modules`, symlinks and files over 1 MiB and counts them;
   the skip reason for directories reads `skipped`. Without `--replace` files add beside what the

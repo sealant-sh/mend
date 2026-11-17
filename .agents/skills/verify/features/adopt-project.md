@@ -161,7 +161,7 @@ Preconditions:
   on the Projects page. Ask for the role as well as the name.
 - The `Adopt` button's name is a prefix of `Adopt a repository`. Pass `exact: true`.
 - The panel is a `dialog` named `Adopt a repository`
-  (`apps/web/src/components/projects-index/adopt-dialog.tsx`). While the `Repository` combobox's
+  (`apps/web-old/src/components/projects-index/adopt-dialog.tsx`). While the `Repository` combobox's
   list is open, the box's ARIA snapshot (17 Nov) held only the combobox, its status and `Dismiss`:
   the refusal line and `Adopt` were in the screenshot, not the snapshot. The refusal line is the
   form's `role="alert"` paragraph in source; that it is exposed as an alert once the list closes is

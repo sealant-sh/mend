@@ -119,8 +119,8 @@ Preconditions:
 - The project's switches are on the Settings tab's `Landing` and `Review` sub-tabs, each a `group`
   named by its label with `Inherit · <value>`, `On` and `Off` (box ARIA snapshots, 17 Nov). The
   project names its row `Compose the description and tour`; the organization's Defaults names the
-  same setting `Compose the description & tour` (`apps/web/src/lib/organization-defaults.ts`). The
-  steps that click `Off`/`On` and reload were not driven on the box.
+  same setting `Compose the description & tour` (`apps/web-old/src/lib/organization-defaults.ts`).
+  The steps that click `Off`/`On` and reload were not driven on the box.
 - Every project and organization choice reported `aria-pressed` on the box (17 Nov). `On` and `Off`
   repeat in every group: scope to the group by its name and pass `exact: true`. The `section` and
   `row` helpers above are no longer needed for these choices.

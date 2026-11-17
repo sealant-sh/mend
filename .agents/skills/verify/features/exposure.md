@@ -150,8 +150,8 @@ Preconditions:
 - `/api/health` gives counts for exposure but names the failing multi mode gate items in
   `tenancyGate.failing` (an open question in ADR 0004, left as released).
 - The exposure line is an unnamed paragraph in the account popover's machine block (`MachineBlock`,
-  `apps/web/src/components/shell.tsx`), not on the sidebar itself; the popover renders only once the
-  account button is opened. With an organization the button and popover are named
+  `apps/web-old/src/components/shell.tsx`), not on the sidebar itself; the popover renders only once
+  the account button is opened. With an organization the button and popover are named
   `… account, organization and machine` / `Account, organization and machine` instead (`shell.tsx`,
   `PersonMenu`); the box read `Account and machine` on 17 Nov. Its `title` holds the host's address
   kinds.

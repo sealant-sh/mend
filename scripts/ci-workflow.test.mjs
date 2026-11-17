@@ -310,10 +310,10 @@ test("clients-b loads the built web app in Chromium after its tests", () => {
   const run = commands("test-clients-b");
   const shard = run.indexOf("node scripts/ci-shards.mjs clients-b");
   const browser = run.findIndex((command) =>
-    command.includes("pnpm --filter @mend/web check:browser"),
+    command.includes("pnpm --filter @mend/web-old check:browser"),
   );
   assert.ok(shard >= 0 && browser > shard, "the browser check runs after the shard");
-  assert.match(run[browser], /turbo run build --filter=@mend\/web\n/);
+  assert.match(run[browser], /turbo run build --filter=@mend\/web-old\n/);
   assert.ok(
     run.some((command) => command.includes("--filter @mend/mobile exec playwright-core install")),
     "Chromium is installed for it",
@@ -715,7 +715,7 @@ test("PRs have exact history; pushes to main, manual and nightly events retain t
   );
   assert.match(scope.run, /else\s+node scripts\/ci-scope.mjs --all/);
   assert.doesNotMatch(scope.run, /merge.group/i);
-  for (const name of ["web", "marketing", "desktop"]) {
+  for (const name of ["web-old", "marketing", "desktop"]) {
     const config = JSON.parse(
       readFileSync(new URL(`../apps/${name}/turbo.json`, import.meta.url), "utf8"),
     );

@@ -7,8 +7,8 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-} from "@mend/ui/components/ui/alert-dialog";
-import { cn } from "@mend/ui/lib/utils";
+} from "@mend/ui-old/components/ui/alert-dialog";
+import { cn } from "@mend/ui-old/lib/utils";
 import { useMutation } from "@tanstack/react-query";
 import { useState } from "react";
 

@@ -59,7 +59,7 @@ const fixture = (t) => {
     copyFileSync(join(repo, path), join(root, path));
   }
   write(".gitignore", ".verify/\n");
-  write("apps/web/src/routeTree.gen.ts", "// generated\n");
+  write("apps/web-old/src/routeTree.gen.ts", "// generated\n");
   git("init", "-b", "main");
   git("add", "-A");
   git("commit", "-m", "base");
@@ -268,7 +268,7 @@ const LOCAL_ANSWER = {
 
 test("a feature's run is owed until it is judged and verify evidence passes on this commit", async (t) => {
   const { root, commit } = fixture(t);
-  commit("apps/web/src/routes/a.tsx");
+  commit("apps/web-old/src/routes/a.tsx");
   const line = async (id) =>
     (await runVerb(root, "status", options())).steps.find((step) => step.id === id);
   assert.equal((await line("judge")).status, "skipped");
@@ -281,7 +281,7 @@ test("a feature's run is owed until it is judged and verify evidence passes on t
   assert.deepEqual(validateResult(asked), []);
   assert.equal(asked.status, "requires_external_observer");
   const brief = readFileSync(join(root, asked.evidence[0].path), "utf8");
-  assert.match(brief, /apps\/web\/src\/routes\/a\.tsx/);
+  assert.match(brief, /apps\/web-old\/src\/routes\/a\.tsx/);
   assert.match(brief, /`boat`:/);
   saveResult(root, asked);
   assert.equal((await line("judge")).status, "requires_external_observer");
@@ -313,14 +313,14 @@ test("a feature's run is owed until it is judged and verify evidence passes on t
   );
   assert.equal((await line("run-it")).status, "passed");
 
-  commit("apps/web/src/routes/b.tsx");
+  commit("apps/web-old/src/routes/b.tsx");
   assert.equal((await line("judge")).status, "skipped", "a later commit is judged again");
   assert.equal((await line("run-it")).status, "skipped");
 });
 
 test("the receipt carries the judgement in a block a script reads back exactly", async (t) => {
   const { root, commit, write, git } = fixture(t);
-  commit("apps/web/src/routes/a.tsx");
+  commit("apps/web-old/src/routes/a.tsx");
   // Text that would close the block or open HTML if it were not escaped.
   const answer = {
     ...LOCAL_ANSWER,
@@ -358,10 +358,10 @@ test("the receipt carries the judgement in a block a script reads back exactly",
   const first = read.receipt.productPatchId;
   assert.match(first, /^[0-9a-f]{40}$/);
   const patchOf = async () => (await runVerb(root, "status", options())).productPatchId;
-  commit("apps/web/src/routes/a.test.tsx");
+  commit("apps/web-old/src/routes/a.test.tsx");
   commit("docs/notes.md");
   assert.equal(await patchOf(), first);
-  commit("apps/web/src/routes/b.tsx");
+  commit("apps/web-old/src/routes/b.tsx");
   assert.notEqual(await patchOf(), first);
 
   // `verify receipt` reads a body from a file; a damaged block is named, an absent one skipped.
@@ -416,7 +416,7 @@ test("a judgement for the box is discharged by the box running this change", asy
 
 test("an answer the brief did not ask for is refused, and the deploy script only goes to the box", async (t) => {
   const { root, commit, write } = fixture(t);
-  commit("apps/web/src/routes/a.tsx");
+  commit("apps/web-old/src/routes/a.tsx");
   const refused = async (answer) => {
     const result = await runVerb(root, "judge", options({ record: answerFile(root, answer) }));
     assert.equal(result.status, "failed");
@@ -428,11 +428,11 @@ test("an answer the brief did not ask for is refused, and the deploy script only
   assert.match(await refused({ ...LOCAL_ANSWER, mustSee: ["one"] }), /three to five/);
   assert.match(await refused({ ...LOCAL_ANSWER, reason: " " }), /reason is required/);
 
-  write("apps/web/src/routes/a.tsx", "edited\n");
+  write("apps/web-old/src/routes/a.tsx", "edited\n");
   assert.equal((await runVerb(root, "judge", options())).status, "blocked_by_prerequisite");
 
   const limits = loadLimits(repo);
-  const floor = floorOf(limits, ["scripts/preview-deploy.sh", "apps/web/src/a.tsx"]);
+  const floor = floorOf(limits, ["scripts/preview-deploy.sh", "apps/web-old/src/a.tsx"]);
   assert.deepEqual(floor, [{ id: "preview-deploy", files: ["scripts/preview-deploy.sh"] }]);
   assert.match(validateAnswer(LOCAL_ANSWER, { limits, floor }).join(), /only be shown on the box/);
   assert.deepEqual(

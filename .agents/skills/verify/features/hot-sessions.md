@@ -86,12 +86,12 @@ Preconditions:
   Setup tab. The box (17 Nov) showed its count `0`, the status `off` and
   `One fewer: Ready workspaces` disabled; the raised-count words (`<n> ready now`, `<n> warming`,
   `<n> failed`, `none ready yet`) and the upper bound are from
-  `apps/web/src/components/project/settings/workspace.tsx`, not confirmed by a capture.
+  `apps/web-old/src/components/project/settings/workspace.tsx`, not confirmed by a capture.
 - The status is the signed-in person's own standbys only. Another person's pool, and their failures,
   never show. A count above `0` with no session started by this person in the last week stays
   `none ready yet`.
 - The count is a plain number between the buttons, with no label or live region
-  (`apps/web/src/components/project-setup.tsx:308-310`); the status line is plain text, not a
+  (`apps/web-old/src/components/project-setup.tsx:308-310`); the status line is plain text, not a
   `status` role. Read both by text, scoped to the section.
 - A new session can claim a standby for a new or existing worktree, including one with captures. It
   needs a ready standby for that owner matching the current launch inputs, and the owner must still

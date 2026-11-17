@@ -112,7 +112,7 @@ describe("redacting upstream detail from an error message", () => {
     for (const words of [
       "see /application/settings for that",
       "/nixos is not a project",
-      "cannot read /apps/web/src/main.ts",
+      "cannot read /apps/web-old/src/main.ts",
       "the /datasets route answered 404",
     ]) {
       expect(redactDetail(words)).toBe(words);
