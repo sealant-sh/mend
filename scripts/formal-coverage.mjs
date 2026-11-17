@@ -71,6 +71,15 @@ export const readCoverages = (root) => {
 
 export const coverageFile = (coverage) => `${coverage.dir}/COVERAGE`;
 
-/** Whether a changed path is code the model covers, the model itself, or its COVERAGE. */
+/**
+ * Files every model is checked with: docs/formal/tlx.sh pins and builds the checker. A change to
+ * one is a change to every model, so each is checked again.
+ */
+export const sharedModelFiles = ["docs/formal/tlx.sh"];
+
+/** Whether a changed path is code the model covers, the model itself, its COVERAGE or its checker. */
 export const touches = (coverage, path) =>
-  coverage.paths.includes(path) || coverage.model.includes(path) || path === coverageFile(coverage);
+  coverage.paths.includes(path) ||
+  coverage.model.includes(path) ||
+  path === coverageFile(coverage) ||
+  sharedModelFiles.includes(path);

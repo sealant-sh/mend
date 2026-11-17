@@ -212,7 +212,11 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
       steps,
       evidence: steps.flatMap((step) => (step.log ? [{ kind: "log", path: step.log }] : [])),
       next: steps.some((step) => step.status === "blocked_by_prerequisite")
-        ? ["nix develop, or install java and curl (check.sh fetches its pinned tla2tools)"]
+        ? [
+            (options.env ?? process.env).MEND_FORMAL_ENGINE === "tlc"
+              ? "nix develop, or install java and curl (check.sh fetches its pinned tla2tools)"
+              : "install cargo (rustup.rs) or Nix: check.sh builds its pinned tlx with either (docs/formal/tlx.sh)",
+          ]
         : [],
     });
   }

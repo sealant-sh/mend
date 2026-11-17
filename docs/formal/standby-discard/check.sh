@@ -5,20 +5,20 @@
 #                           with the verdict and the distinct-state count ROWS pins
 #   check.sh --quick        the same with one launch instead of two: seconds, for iterating
 #   check.sh <row>          one row, printing the checker's whole output and its trace
-#   check.sh --engine tlx   any of the above with tlx instead of TLC (MEND_FORMAL_ENGINE=tlx too)
+#   check.sh --engine tlc   any of the above with TLC instead of tlx (MEND_FORMAL_ENGINE=tlc too)
 #
 # MEND_FORMAL_WORKERS caps the workers a row expected to hold uses (default: every core). At the
-# full bounds TLC explores 129 million states for `code`: about 10 minutes on 32 cores, and about an
-# hour on CI's four, which is why COVERAGE gives this model a budget-full of its own.
+# full bounds the checker explores 129 million states for `code` (README.md, "How long the full
+# bounds take" has the times).
 #
-# TLC is the reference: the run that goes with a change to the model or to the code it models uses
-# TLC. It is tla2tools 1.7.4 (TLC 2.19), checked against its sha256 before it runs. It comes from
-# the repository's pinned nixpkgs when Nix is installed, else from the GitHub release (needs java
-# and curl), or from TLA2TOOLS_JAR when that is set.
+# The checker is tlx (github.com/tlaplus-x/tlx, version 0.1), a TLA+ model checker in Rust that
+# reads the same files as TLC. ../tlx.sh builds it once at the commit Mend pins, and check.sh runs
+# that build, or the binary in MEND_TLX when that is set. It runs with -tlc, so its verdicts,
+# counts and traces are TLC's; trace.py reads either checker's trace.
 #
-# tlx (github.com/tlaplus-x/tlx, version 0.1) is for iterating: about twelve times faster here.
-# It is the binary in MEND_TLX when that is set, else `tlx` on PATH. It runs with -tlc, so its
-# verdicts, counts and traces are TLC's; trace.py reads either checker's trace.
+# TLC stays for a cross-check by hand; nothing scheduled runs it. It is tla2tools 1.7.4 (TLC 2.19),
+# checked against its sha256 before it runs. It comes from the repository's pinned nixpkgs when
+# Nix is installed, else from the GitHub release (needs java and curl), or from TLA2TOOLS_JAR.
 set -euo pipefail
 
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -30,15 +30,17 @@ TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 # row | mutant | invariants | action constraint | expected outcome | distinct states | at --quick
 #
 # The code rows hold. `code` checks both of the model's promises in one run: they are invariants of
-# the same state space, so two runs would explore it twice for nothing. Each mutant breaks one check or one order of the code, so a row expected to
-# fail shows that its property can fail. `no-reread` is the drain as it was before SLNT-823 (the
-# finding in README.md); its two restricted rows say what that finding needed.
+# the same state space, so two runs would explore it twice for nothing. Each mutant breaks one check
+# or one order of the code, so a row expected to fail shows that its property can fail. `no-reread`
+# is the drain as it was before SLNT-823 (the finding in README.md); its two restricted rows say
+# what that finding needed.
 #
-# The last two fields pin the distinct states TLC finds at the full bounds and at --quick's. A row
-# is as expected only when its verdict and its count both match, so a checker that says "holds"
-# over a different state space fails the run. A row that holds explores every reachable state; a
-# row expected to fail runs on one worker and stops at the same shortest trace every time. When a
-# change to the model moves a count, take the new one from a TLC run.
+# The last two fields pin the distinct states the checker finds at the full bounds and at --quick's.
+# A row is as expected only when its verdict and its count both match, so a checker that says
+# "holds" over a different state space fails the run. A row that holds explores every reachable
+# state; a row expected to fail runs on one worker and stops at the same shortest trace every time.
+# When a change to the model moves a count, take the new one from a run of this script, full and
+# --quick. tlx and TLC reached every count here alike (README.md, "tlx and TLC").
 #
 # A full count of `-` runs the row at --quick only. `code-promise-atomic-retire` adds an action
 # constraint, which only removes transitions: its states are a subset of `code`'s, so at the full
@@ -65,7 +67,7 @@ standbys="{s1, s2}"
 launches="{l1, l2}"
 quick=0
 only=""
-engine=${MEND_FORMAL_ENGINE:-tlc}
+engine=${MEND_FORMAL_ENGINE:-tlx}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --quick) quick=1 ;;
@@ -108,14 +110,15 @@ sha256_of() {
 }
 
 if [[ "$engine" == tlx ]]; then
-  tlx=${MEND_TLX:-$(command -v tlx || true)}
-  if [[ -z "$tlx" || ! -x "$tlx" ]]; then
-    if [[ -n "${MEND_TLX:-}" ]]; then
+  # The pinned build, which ../tlx.sh builds once; MEND_TLX names another, to compare by hand.
+  if [[ -n "${MEND_TLX:-}" ]]; then
+    tlx=$MEND_TLX
+    if [[ ! -x "$tlx" ]]; then
       echo "check.sh: MEND_TLX is $MEND_TLX, which is not an executable; nothing was checked." >&2
-    else
-      echo "check.sh: no tlx on PATH and MEND_TLX is not set; nothing was checked." >&2
+      exit 2
     fi
-    echo "  Build it as README.md says, then set MEND_TLX to it, or run with TLC (the default)." >&2
+  elif ! tlx=$(bash "$here/../tlx.sh"); then
+    echo "check.sh: no tlx, and ../tlx.sh could not build it (above); nothing was checked." >&2
     exit 2
   fi
   # tlx has no version flag; it prints the version first even for a file it cannot read.
