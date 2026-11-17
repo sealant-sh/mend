@@ -19,6 +19,9 @@ and Needs lines); then, for each, the feature file its Map line names, under
 
 - The CLI under test, signed in already:
   `M() { XDG_CONFIG_HOME=<kit>/cli <cli dir>/node_modules/.bin/mend "$@"; }`
+- The second account's CLI, for the flows that name `M2`:
+  `M2() { XDG_CONFIG_HOME=<kit2>/cli <cli dir>/node_modules/.bin/mend "$@"; }`. Its browser: the web
+  driver with `--account <private dir>/account2.json --state <private dir>/browser2.json`.
 - The box's web: `<web>`. The project: `boat-check-ubuntu`, written `<p>`. `<sha8>`: `<sha8>`.
 - Sessions earlier flows made: <name = session id, one per line, or "none">
 - Evidence: `<evidence dir>/<flow id>/` per flow. The web driver:
