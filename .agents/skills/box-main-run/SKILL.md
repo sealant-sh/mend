@@ -22,13 +22,13 @@ top; report any flow outside it as `not run · not in this run's set`.
 The run is an Opus 5.5 thread that hands most flows to GPT-6.1 Sol subagents (the owner's choice on
 SLNT-1050, 17 Nov). You are the Opus thread. You keep what needs judgement or happens once: steps 1
 to 4 (the skip, the CI dispatch, the wait and the hold, the build, deploy and identity), the flows
-`server.upgrade`, `server.data-intact`, `handoff.held`, `capture-and-save.live-stop` and the three
-`land-change.web-push`, `land-change.cli-again` and `land-change.refused` (they use `git` on the box
-over ssh, which subagents never do), reading every subagent's evidence, step 6's wind-down, and step
-7's report and tickets. The subagents drive the other flows (step 5). Linear is reached through the
-Executor MCP server's `execute` tool, with the `linear_app.org.localLinearMcp` connection; when your
-harness has no such tool, write the report to `$E/report.md` and the tickets to `$E/tickets.md`, and
-say so in your last line.
+`server.upgrade`, `server.data-intact`, `handoff.held`, `capture-and-save.live-stop`, and the four
+that run commands on the box over ssh, which subagents never do (`server.status-logs`,
+`land-change.web-push`, `land-change.cli-again` and `land-change.refused`), reading every subagent's
+evidence, step 6's wind-down, and step 7's report and tickets. The subagents drive the other flows
+(step 5). Linear is reached through the Executor MCP server's `execute` tool, with the
+`linear_app.org.localLinearMcp` connection; when your harness has no such tool, write the report to
+`$E/report.md` and the tickets to `$E/tickets.md`, and say so in your last line.
 
 You are the only writer of what this skill keeps. Work in the task's worktree of Mend, detached at
 `origin/main`:
@@ -82,6 +82,10 @@ a lost file is rebuilt from the latest report.
   ]
 }
 ```
+
+`lastCommit` is the commit of `main` the run checked. A run's `commit` is the one it deployed, which
+is the same except when a run checked `main` with an unmerged branch merged in (16 Nov: `main`
+c416f754 with the SLNT-895 stack, deployed as 92eca0b8); then the two differ, by design.
 
 `runs` is newest first and lists only what this skill made and has not removed. Write each field as
 soon as the step that made it succeeds, so a run that dies still leaves its ledger.
@@ -202,19 +206,31 @@ pnpm verify box cli --tag $TAG --yes         # this commit's CLI, under /root/bo
 Record `cliDir` in the ledger from its result. Then set up this machine's side:
 
 ```sh
-mkdir -p $E && P=$(mktemp -d) && C=$(mktemp -d) && chmod 700 $P
-npm install --silent --prefix $C .verify/box/cli-${SHA:0:12}/*.tgz
-M() { XDG_CONFIG_HOME=$KIT/cli $C/node_modules/.bin/mend "$@"; }
-M2() { XDG_CONFIG_HOME=$KIT2/cli $C/node_modules/.bin/mend "$@"; }   # the second account
-jq -n --rawfile p $KIT/password '{email:"boat-check@example.test",password:($p|rtrimstr("\n"))}' \
-  > $P/account.json
-jq -n --rawfile p $KIT2/password '{email:"main-run-second@example.test",password:$p}' \
-  > $P/account2.json   # once fixtures.sh has made the second account
-export MEND_VERIFY_OUTER_URL=$WEB MEND_VERIFY_PRIVATE=$P
+mkdir -p $E
+.agents/skills/box-main-run/names.sh .verify/box/cli-${SHA:0:12}/*.tgz
 ```
 
+It installs this commit's CLI and writes, at fixed paths under `$STATE`, the names every later
+command uses:
+
+| Name          | Path                                   | What it is                                                                          |
+| ------------- | -------------------------------------- | ----------------------------------------------------------------------------------- |
+| `M`           | `~/.local/state/mend-main-run/bin/M`   | mend, signed in as the checker account                                              |
+| `M2`          | `~/.local/state/mend-main-run/bin/M2`  | mend, signed in as the second account                                               |
+| `box`         | `~/.local/state/mend-main-run/bin/box` | `box '<command>'` runs it on the box over ssh                                       |
+| `web`, `web2` | `~/.local/state/mend-main-run/bin/web` | `web <out dir> <recipe> [flags]`: the web driver against the box, as either account |
+| `$P`          | `~/.local/state/mend-main-run/private` | mode 700, the two accounts' web sign-in and browser state                           |
+
 `$P` holds credentials and nothing else: the evidence scan (step 7) treats every value in it as a
-secret, and `--delete-hits` deletes the evidence that contains one. The CLI lives in `$C`.
+secret, and `--delete-hits` deletes the evidence that contains one.
+
+**Run every command as one plain command, by these full paths.** A shell function or variable does
+not outlive one tool call, so write `~/.local/state/mend-main-run/bin/M stop <id8>`, not `M stop`
+inside `bash -c '…'` or after `source`. This matters most for a removal (`… worktrees rm`,
+`… secrets rm`, `… folder rm`, `rm -rf …`): Claude Code's removal check reads a plain command and
+refuses one hidden in `bash -c` or a sourced file, and on 17 Nov that left a worktree, a secret and
+a folder on the box. Give each removal its own command. Where these files write `M`, `M2`, `box` or
+`web`, they mean those paths.
 
 `M doctor` must name `$WEB` as its server before any other `M` command: a different server means
 stop, release, and report the run as not started. Take the `before` listing of flow
@@ -240,7 +256,7 @@ passes and `health` answers is still a deploy: record the exit and its last line
 Then make sure the fixtures are there, and make any that are missing:
 
 ```sh
-MEND_CLI=$C/node_modules/.bin/mend .agents/skills/box-main-run/fixtures.sh $TAG
+.agents/skills/box-main-run/fixtures.sh $TAG
 ```
 
 It prints one line per fixture (`present`, `made`, or `manual: <step>`) and keeps them in the
@@ -262,8 +278,8 @@ Start a subagent with T3's `delegate_task`: `target`
 `{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
 `isolation: "shared"` (it works in this worktree), and as `task` the text of
 [sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, this worktree's path,
-`$KIT`, `$KIT2`, `$C`, `$WEB`, `<sha8>`, `$E`, `$P`, and the session ids earlier flows made (from
-their `result.txt` or your own notes). Wait for its completion, then read its evidence.
+`$WEB`, `<sha8>`, `$E`, and the session ids earlier flows made (from their `result.txt` or your own
+notes). Wait for its completion, then read its evidence.
 
 **Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
 driver's `steps.log` and its screenshots show every part of the flow's See line. Read them for every
@@ -279,18 +295,18 @@ How a flow is driven, by you or a subagent:
   (`.agents/skills/verify/references/guard.md`): the owner asked for this run on SLNT-1050.
 
   ```sh
-  MAIN_RUN_SESSION=<id> node .agents/skills/verify/scripts/drive-web.mjs --web $WEB --out $E/<flow> \
-    --private $P --account $P/account.json --state $P/browser.json \
-    --recipe .agents/skills/box-main-run/recipes/<recipe>.mjs
+  MAIN_RUN_SESSION=<id> ~/.local/state/mend-main-run/bin/web $E/<flow> \
+    .agents/skills/box-main-run/recipes/<recipe>.mjs
   ```
 
-- A scripted CLI flow runs `recipes/cli-reads.sh <flow id>` with
-  `MEND_CLI=$C/node_modules/.bin/mend`, `KIT`, `WEB`, `E` and `SHA8` set. It checks every part of
-  the See line and writes `cli.log` and `result.txt`; exit 0 is `seen`.
+- A scripted CLI flow runs
+  `E=$E SHA8=<sha8> .agents/skills/box-main-run/recipes/cli-reads.sh <flow id>` (it uses step 4's
+  CLI and the checker account by default). It checks every part of the See line and writes `cli.log`
+  and `result.txt`; exit 0 is `seen`.
 
 - An `agent` flow is driven by hand, as its feature file's "Driving it with verify" says, through
-  `M` and a recipe module of your own run with the same driver (it keeps the redaction and the
-  screenshots' checks). Judge only the flow's See line.
+  `M` and a recipe module of your own run with `web` (it keeps the redaction and the screenshots'
+  checks). Judge only the flow's See line.
 
 A scripted flow that fails is not yet a failure: drive it again the agent way, and report it failed
 only when that sees the same.
@@ -324,7 +340,8 @@ flow that needs an earlier flow's session and lacks it is `not run · <flow> fai
 
 4. Read `df -B1 --output=avail /` on the box; the report states it beside the figure read before the
    deploy (step 4).
-5. `rm -rf $P` once the evidence scan (step 7) has passed.
+5. `rm -rf ~/.local/state/mend-main-run/private` once the evidence scan (step 7) has passed, as one
+   plain command.
 
 **Done when** no session of this run is live, the hold is released (or kept for the reason in
 Limits), and every ledger entry older than `runs[1]` is gone or named in the report with why.

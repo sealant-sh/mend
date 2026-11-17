@@ -76,10 +76,9 @@ you hold the box (`verify box prepare`).
   (`M2`, in `~/.local/share/mend-boat-check-2/cli`) and its password file beside it, joined and
   signed in by `fixtures.sh` through its own browser. `M members` lists it as `member`. It has no
   agent login.
-- **The serve command** `<serve-cmd>`: a command the Ubuntu workspace image runs that listens on TCP
-  port 8000 and answers HTTP (services.md: "Launch must confirm which command the image supports").
-  Confirm it once with `M shell` in any live session, and write the command here. Until it is
-  written, `services.cli-run` is `not run · fixture serve-cmd missing`.
+- **The serve command** `<serve-cmd>`: `python3 -m http.server 8000`. Python is one of Mend's
+  default workspace packages (`DEFAULT_WORKSPACE_PACKAGES`, `packages/domain/src/settings.ts`), so
+  the Ubuntu image has it; nothing needs making.
 - **The previous run's session**: the ledger's `session` from the last run (SKILL.md, State). Not
   made by hand; with no previous run, `server.data-intact` runs its listing half only.
 
@@ -340,10 +339,11 @@ flows reuse what earlier ones made:
 
 - **Map:** services.md `service-run-cli`, `service-observe`, `service-connect`, `service-logs`,
   `service-restart-stop`, `service-hold`
-- **Needs:** Boat; no turn; CLI and web; `start-session.boat-live`, fixture `<serve-cmd>`
-- **Do:** On the live session, as services.md's CLI steps: `service run` with
-  `--name web --http --no-connect`, `service list`, `service connect web --port 18000` with one
-  curl, `service logs`, `service restart`; then `M stop <id8>` and `M stop --services <id8>`.
+- **Needs:** Boat; no turn; CLI and web; `start-session.boat-live`
+- **Do:** On the live session, as services.md's CLI steps:
+  `M service run <id8> --port 8000 --name web --http --no-connect -- python3 -m http.server 8000`,
+  `service list`, `service connect web --port 18000` with one curl, `service logs`,
+  `service restart`; then `M stop <id8>` and `M stop --services <id8>`.
 - **See:** the session page's `Services` card lists `web` ending at `reachable`; curl prints `200`;
   `mend stop` names what keeps the workspace up ending `· mend stop --services <id8>`; then
   `✓ stopped 1 service · …` and `no live services — …` from `service list`.
@@ -1086,10 +1086,12 @@ flows reuse what earlier ones made:
 - **Map:** doctor.md `doctor-bundle`, `doctor-bundle-redaction`, `doctor-bundle-options`,
   `doctor-web-connection`
 - **Needs:** no session; no turn; CLI and web; none
-- **Do:** `M doctor --bundle --out $E/doctor.bundle-web/bundle.tgz --tail 50`, then the map's mode
-  and token checks on the archive (count the token's occurrences without printing it);
+- **Do:** `M doctor --bundle --out $E/doctor.bundle-web/bundle.tgz --tail 50`; its mode
+  (`stat -c %a`); extract it into `$E/doctor.bundle-web/x` and run
+  `node .agents/skills/verify/scripts/scan-evidence.mjs --dir $E/doctor.bundle-web/x --secrets $P`,
+  which looks for every credential shape without anyone reading the CLI's token (the run may not);
   `M doctor --bundle --tail 0`; on Settings, `Sealant connection` and `Check again`.
-- **See:** the archive path and one line per file; mode `600`; the token count `0`;
+- **See:** the archive path and one line per file; mode `600`; the scan exits `0`, no hit;
   `mend: --tail is 1..2000`, exit `1`; the panel reads connected after `Check again`.
 - **Mode:** `agent`
 - **Box-only:** no

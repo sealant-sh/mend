@@ -46,9 +46,21 @@ Box:
 <screenshots, one per web flow, the state a person saw>
 ```
 
-Screenshots go into the comment one at a time: `prepare_file_upload` with the file's name, type and
-size, `curl -X PUT --data-binary @<png>` with every header it returned (the URL expires in 60
-seconds), then `![<flow>](<assetUrl>)` in the body.
+Screenshots go into the comment one at a time, in two calls with nothing between them: Linear's
+signed URL expires 60 seconds after `prepare_file_upload` answers.
+
+1. `prepare_file_upload` with the file's name, `image/png` and its size in bytes (`stat -c %s`).
+2. At once, pipe its answer, exactly as it came, into the helper:
+
+   ```sh
+   .agents/skills/box-main-run/upload-screenshot.sh <png> <<'JSON'
+   <prepare_file_upload's answer>
+   JSON
+   ```
+
+   It sends every header verbatim and prints the markdown to put in the comment. On 17 Nov the PUT
+   landed 9 seconds after the URL was signed. A refusal (400 or 403) means the URL expired: prepare
+   again.
 
 ## 3. A ticket per failure
 
@@ -63,8 +75,14 @@ the full CI run (after linking the failed-tests watch's ticket when it has one):
 2. **Grade it** by Fix Now or File (the home repo's `AGENTS.md`): what a person does to hit it and
    how often. A core flow failing on `main` usually meets Fix Now; a fault only this box's set-up
    can produce is File.
-3. **Look for a twin.** Search SLNT's open tickets for the flow's id and its failing line. An open
-   one gets a comment (this run's commit, the line, the evidence) instead of a new ticket.
+3. **Look for a twin.** Search SLNT's open tickets (any status but Done, Canceled or Duplicate) for
+   the flow's id: `list_issues` with the id as the query finds it in a title or a description, and a
+   ticket this check filed ends its title `(main on the box: <flow>)` or names the flow in its list.
+   When one describes the same failure (the same part of the See line, the same words seen), it is
+   that failure: comment one line on it (this run's commit, and anything that changed), file
+   nothing, and write `failed · SLNT-n (known)` in the report's table. A ticket kept open as a
+   product question (on 17 Nov, SLNT-1086 and SLNT-1087) counts the same way. File a new ticket only
+   when no open ticket describes the failure, or the flow now fails a different way.
 4. **File it:** project `CI follow-ups`, status `Todo`, assigned to Yiannis, label `mend`, related
    to SLNT-1050. The title is what a person saw, in the product's words, ending
    `(main on the box: <flow>)`. The body follows the `linear` skill's template, and its Notes hold

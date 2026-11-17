@@ -4,12 +4,12 @@
 # database it rebuilds them all, except the steps that cannot be scripted within the rules: those it
 # names, and it exits 3.
 #
-#   MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41' MEND_CLI=<this commit's mend> \
+#   MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41' \
 #     .agents/skills/box-main-run/fixtures.sh <hold tag>
 #
 # Run it from the worktree's root, while this check holds the box as <hold tag> (`pnpm verify box
-# prepare --tag <hold tag> --yes`): it refuses otherwise. MEND_CLI is the mend binary of the commit
-# under test (SKILL.md, step 4, installs it in $C). It never signs the first account's CLI in or
+# prepare --tag <hold tag> --yes`): it refuses otherwise. MEND_CLI defaults to the mend names.sh
+# installed (SKILL.md, step 4). It never signs the first account's CLI in or
 # out, and reads no token: the second account is signed in with its own config and password file.
 #
 # One line per fixture: `fixture <name> · present`, `· made`, or `· manual: <the step>`.
@@ -18,7 +18,7 @@ set -uo pipefail
 
 tag=${1:?usage: fixtures.sh <hold tag>}
 : "${MEND_VERIFY_BOX_SSH:?set MEND_VERIFY_BOX_SSH}"
-: "${MEND_CLI:?set MEND_CLI to the mend binary of the commit under test}"
+MEND_CLI=${MEND_CLI:-$HOME/.local/state/mend-main-run/cli/node_modules/.bin/mend}
 read -r -a box_ssh <<<"$MEND_VERIFY_BOX_SSH"
 
 WEB=https://yiannis-k8s-arc.tailc79e49.ts.net

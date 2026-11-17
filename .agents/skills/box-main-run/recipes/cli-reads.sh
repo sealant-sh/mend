@@ -4,8 +4,9 @@
 # See line. A flow this marks `failed` goes to an agent, who sees it again before it is reported
 # (SKILL.md, step 5).
 #
-#   MEND_CLI=$C/node_modules/.bin/mend KIT=$KIT WEB=$WEB E=$E SHA8=<sha8> \
-#     .agents/skills/box-main-run/recipes/cli-reads.sh <flow id>
+#   E=$E SHA8=<sha8> .agents/skills/box-main-run/recipes/cli-reads.sh <flow id>
+#
+# MEND_CLI, KIT and WEB default to names.sh's CLI, the checker account and the box.
 #
 # Writes <E>/<flow id>/cli.log (each command, its stdout and stderr, and its exit) and
 # <E>/<flow id>/result.txt (`seen` or `failed`, then one line per part of the See line). Exit 0 when
@@ -13,7 +14,10 @@
 set -uo pipefail
 
 flow=${1:-}
-: "${MEND_CLI:?set MEND_CLI}" "${KIT:?set KIT}" "${WEB:?set WEB}" "${E:?set E}"
+MEND_CLI=${MEND_CLI:-$HOME/.local/state/mend-main-run/cli/node_modules/.bin/mend}
+KIT=${KIT:-$HOME/.local/share/mend-boat-check}
+WEB=${WEB:-https://yiannis-k8s-arc.tailc79e49.ts.net}
+: "${E:?set E}"
 P=${P:-boat-check-ubuntu}
 dir=$E/$flow
 log=$dir/cli.log

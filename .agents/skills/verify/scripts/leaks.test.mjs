@@ -17,6 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
+import { createServer as createSocketServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { deflateSync } from "node:zlib";
@@ -218,6 +219,21 @@ test(
     assert.ok(!everything(out).includes(shapeless), "the value reached the evidence");
   },
 );
+
+test("the scan reads past a socket left in the evidence, as a tmux server leaves one", async () => {
+  const privateDir = privateWithAccount();
+  const out = fresh("evidence-socket");
+  writeFileSync(join(out, "cli.log"), "nothing secret here\n");
+  const server = createSocketServer();
+  await new Promise((resolve) => server.listen(join(out, "tmux-0"), resolve));
+  try {
+    const scan = node([join(here, "scan-evidence.mjs"), "--dir", out, "--secrets", privateDir]);
+    assert.equal(scan.status, 0, scan.stdout + scan.stderr);
+    assert.doesNotMatch(scan.stderr, /ENXIO/);
+  } finally {
+    server.close();
+  }
+});
 
 test("malformed account state is reported without its contents", () => {
   const dir = fresh("handover");
