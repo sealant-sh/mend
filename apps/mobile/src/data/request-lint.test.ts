@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
@@ -36,6 +36,14 @@ const withProbes = async (
   const root = await mkdtemp(path.join(tmpdir(), "mobile-request-lint-"));
   try {
     await copyFile(path.join(rootDirectory, ".oxlintrc.json"), path.join(root, ".oxlintrc.json"));
+    // The config loads JS plugins by path and by package name, resolved from beside it.
+    await symlink(path.join(rootDirectory, "node_modules"), path.join(root, "node_modules"), "dir");
+    await mkdir(path.join(root, "tooling"));
+    await symlink(
+      path.join(rootDirectory, "tooling/oxlint-plugin-mend"),
+      path.join(root, "tooling/oxlint-plugin-mend"),
+      "dir",
+    );
     const directory = path.join(root, "apps/mobile/src/data/probe");
     await mkdir(directory, { recursive: true });
     const files: string[] = [];
