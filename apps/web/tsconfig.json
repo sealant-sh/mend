@@ -1,0 +1,11 @@
+{
+  "extends": "@mend/typescript/web.json",
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["dist", "node_modules"],
+  "compilerOptions": {
+    "paths": {
+      "#/*": ["./src/*"]
+    },
+    "types": ["vite/client", "node"]
+  }
+}
