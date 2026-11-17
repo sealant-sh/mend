@@ -34,6 +34,10 @@ path packages/sessions/src/engine.ts
 path packages/sessions/src/capture-channel.ts
 
 # How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
-# naming this model (SLNT-1065, SLNT-1081). PROVISIONAL until CI measures tlx.
+# naming this model (SLNT-1065, SLNT-1081). With tlx the full bounds took 8.4 minutes on CI
+# (run 44103197639, `code` 486 s) and --quick 13 seconds. GitHub's four-core runner is not one
+# speed: TLC ran 1.5 times slower on a slow host (SLNT-1065), so a slow host needs about 12.5
+# minutes. budget-full is twice that; CI's formal job allows 10 minutes more for setup and a tlx
+# build when its cache has none.
 budget-quick 5
-budget-full 30
+budget-full 25

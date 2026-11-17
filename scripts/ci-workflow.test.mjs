@@ -203,7 +203,7 @@ test("static checks, all test shards and packaging can start without another exe
 
 // What CI's formal job allows besides a model's budget: checkout, setup, and building tlx on a
 // cache miss.
-const FORMAL_SETUP_MINUTES = 20;
+const FORMAL_SETUP_MINUTES = 10;
 
 test("formal checks with the tlx docs/formal/tlx.sh pins, built once per commit and cached by it", () => {
   const steps = jobs.formal.steps;

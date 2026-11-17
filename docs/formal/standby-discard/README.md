@@ -212,7 +212,9 @@ four cores; tlx is the run at `59d4fa0666` (the model unchanged since `b192d2e2`
 | `mutant-agent-ignores-stop`      | violated `NoDiscardOfSessionWork`    | 2 s     | 0 s   |                 19,346 |
 
 `code-promise-atomic-retire` runs at `--quick` only (`check.sh`, ROWS). At `--quick` every row, that
-one included, reached the count `check.sh` pins with tlx. tlx held `code` at about 6 GB.
+one included, reached the count `check.sh` pins with tlx. tlx held `code` at about 6 GB. On CI's
+four cores (run [44103197639](https://github.com/sealant-sh/mend/actions/runs/44103197639)) tlx
+reached the same verdicts and counts again, `code` in 486 s.
 
 ### How long the full bounds take, and on CI
 
@@ -221,6 +223,12 @@ full bounds on GitHub's four-core runner, in a job of this model's own, which `f
 after `budget-full` minutes (`COVERAGE`) with a message naming this model. With
 `MEND_FORMAL_PROGRESS` set, as CI sets it, the checker's progress lines go to the job log as they
 come.
+
+With tlx the full check takes 8.4 minutes on that runner and `--quick` 13 seconds. Pull requests
+keep `--quick`: the full bounds are past the five minutes a pull request's check should take.
+`budget-full` (25) is twice what a host 1.5 times slower would need, the spread TLC showed between
+CI hosts. A tlx build, when CI's cache has none for the pinned commit, takes 2.5 to 3 minutes before
+the check starts.
 
 With TLC the full bounds took 57 minutes on a fast CI host and about 85 on a slow one (SLNT-1065):
 GitHub's four-core runner is not one speed. SLNT-1053 had grown the full state space 7.1 times, from

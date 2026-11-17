@@ -716,7 +716,9 @@ jobs:
   # `formal: full`) at its full bounds. The checker is tlx, built from source at the commit
   # docs/formal/tlx.sh pins and cached by that commit: a miss builds it, a hit restores it in
   # seconds. One job per model; formal.mjs stops a model at its own budget (COVERAGE's
-  # budget-full), and the job's limit leaves room for a build on a miss and for setup.
+  # budget-full), and the job's limit is the largest budget plus 10 minutes for setup and a build
+  # on a miss (2.5 to 3 minutes on the hosted runner). The full bounds take 8.4 minutes for
+  # standby-discard, so pull requests keep the quick bounds (seconds).
   # The matrix lists every docs/formal/<area> with a COVERAGE (scripts/ci-workflow.test.mjs).
   formal:
     needs: changes
@@ -728,7 +730,7 @@ jobs:
     runs-on:
       ${{ inputs.runner == 'box' && fromJSON('["self-hosted","box","linux","x64"]') ||
       'ubuntu-24.04' }}
-    timeout-minutes: 50
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:

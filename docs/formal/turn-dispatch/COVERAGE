@@ -15,6 +15,8 @@ path packages/db/src/repos/agent-conversation.ts
 path packages/agent-protocol/src/codex.ts
 
 # How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
-# naming this model (SLNT-1065, SLNT-1081). PROVISIONAL until CI measures tlx.
+# naming this model (SLNT-1065, SLNT-1081). With tlx the full bounds took 2.3 minutes on CI (run
+# 44103197639) and --quick 3 seconds: about 3.4 minutes on a host 1.5 times slower, and
+# budget-full is about twice that.
 budget-quick 5
-budget-full 10
+budget-full 8
