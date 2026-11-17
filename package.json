@@ -29,9 +29,12 @@
   "devDependencies": {
     "@actions/expressions": "0.3.61",
     "@changesets/cli": "^2.31.0",
+    "@tanstack/eslint-plugin-query": "5.105.3",
+    "@tanstack/eslint-plugin-router": "1.162.0",
     "@tanstack/intent": "^0.5.6",
     "@types/node": "catalog:",
     "@typescript/typescript6": "catalog:",
+    "eslint": "10.14.0",
     "oxfmt": "^0.40.0",
     "oxlint": "1.76.0",
     "tsrs": "0.24.0-ts7.1.0-beta",

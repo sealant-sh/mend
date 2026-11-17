@@ -223,6 +223,13 @@ the box as `main-<sha12>`: wait, as for any other hold.
 - In React, derive data from props, state and loaders; reach for `useEffect` only when no cleaner
   data flow exists.
 
+New code in `apps/web` and `packages/ui` passes the rules `.oxlintrc.json` sets for those two paths,
+with no disable comments: React, hooks, accessibility, TanStack Query and Router, import boundaries,
+and Mend's own plugin, `tooling/oxlint-plugin-mend`. Its `mend/query-states` fails a component that
+reads a query's data without handling its pending and error states, or a mutation that never reads
+its pending state or handles its failure; its README says what each rule flags and allows. When
+ordinary code needs a disable comment, narrow the rule in the plugin instead.
+
 ## Effect
 
 Before writing Effect code, load the home repo's `effect` skill. It covers services, layers, the
