@@ -59,7 +59,12 @@ export const queryStates: Rule = {
   },
   create(context) {
     const { sourceCode } = context;
-    const sites: Array<{ readonly call: ESTree.CallExpression; readonly kind: Kind }> = [];
+    // `options` stays the hook's own options when a site is a caller of a hook that returns it.
+    const sites: Array<{
+      readonly call: ESTree.CallExpression;
+      readonly kind: Kind;
+      readonly options: Node | undefined;
+    }> = [];
     const lists: Array<ESTree.CallExpression> = [];
     // Calls by plain name, to follow a function in this file that returns a query or mutation.
     const callsByName = new Map<string, Array<ESTree.CallExpression>>();
@@ -71,9 +76,10 @@ export const queryStates: Rule = {
       CallExpression(call) {
         const hook = importedCallee(call, imports);
         if (hook !== undefined && MUTATION_CACHE_HOOKS.has(hook)) readsMutationCache = true;
-        if (hook !== undefined && QUERY_HOOKS.has(hook)) sites.push({ call, kind: "query" });
+        if (hook !== undefined && QUERY_HOOKS.has(hook))
+          sites.push({ call, kind: "query", options: call.arguments[0] });
         else if (hook !== undefined && MUTATION_HOOKS.has(hook))
-          sites.push({ call, kind: "mutation" });
+          sites.push({ call, kind: "mutation", options: call.arguments[0] });
         else if (hook !== undefined && LIST_HOOKS.has(hook)) lists.push(call);
         const callee = innermost(call.callee);
         if (callee.type === "Identifier") {
@@ -93,11 +99,12 @@ export const queryStates: Rule = {
             const name = functionName(usage.returnedFrom);
             if (name !== undefined && !followed.has(name)) {
               followed.add(name);
-              for (const call of callsByName.get(name) ?? []) queue.push({ call, kind: site.kind });
+              for (const call of callsByName.get(name) ?? [])
+                queue.push({ call, kind: site.kind, options: site.options });
             }
             continue;
           }
-          const options = site.call.arguments[0];
+          const { options } = site;
           const messageId =
             site.kind === "query"
               ? queryProblem(sourceCode, usage, options)

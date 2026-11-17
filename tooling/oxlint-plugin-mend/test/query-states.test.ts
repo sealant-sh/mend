@@ -308,6 +308,17 @@ tester.run("query-states", queryStates, {
       errors: [{ messageId: "queryBoth", line: 6 }],
     },
     {
+      name: "a caller's own arguments are not the query's options",
+      code: `${RQ}function useSession(input) {
+        return useQuery(sessionQuery(input.id));
+      }
+      function Session() {
+        const { data, isPending } = useSession({ id, throwOnError: true });
+        return isPending ? <Loading /> : <Detail session={data} />;
+      }`,
+      errors: [{ messageId: "queryError", line: 6 }],
+    },
+    {
       name: "a custom hook that reads data itself",
       code: `${RQ}function useSessionNames() {
         const { data } = useQuery(sessionsQuery());
