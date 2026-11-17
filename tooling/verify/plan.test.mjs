@@ -55,7 +55,7 @@ test("the plan's CI jobs are CI's own decision for the same paths", () => {
   // A docs change skips every scoped lane; the unscoped jobs always run.
   assert.deepEqual(runs(["docs/x.md"]), ["changes", "static", ...unscopedTests(), "checks"]);
   assert.ok(runs(["packages/store/src/a.ts"]).includes("store-image-git"));
-  assert.ok(!runs(["apps/web/src/a.tsx"]).includes("mobile-web"));
+  assert.ok(!runs(["apps/web-old/src/a.tsx"]).includes("mobile-web"));
   assert.ok(runs(["apps/mobile/src/a.tsx"]).includes("mobile-web"));
 });
 
@@ -65,7 +65,7 @@ const unscopedTests = () =>
     .map((job) => job.job);
 
 test("product source owes a judgement, a run and screenshots; its tests and docs do not", () => {
-  assert.deepEqual(ids(["apps/web/src/routes/index.tsx"]), [
+  assert.deepEqual(ids(["apps/web-old/src/routes/index.tsx"]), [
     "pre-pr-checks",
     "judge",
     "run-it",
@@ -76,7 +76,7 @@ test("product source owes a judgement, a run and screenshots; its tests and docs
     "judge",
     "run-it",
   ]);
-  assert.deepEqual(ids(["packages/db/test/sessions.test.ts", "apps/web/src/a.test.tsx"]), [
+  assert.deepEqual(ids(["packages/db/test/sessions.test.ts", "apps/web-old/src/a.test.tsx"]), [
     "pre-pr-checks",
   ]);
   assert.deepEqual(ids(["docs/operations/ci.md", "AGENTS.md"]), ["pre-pr-checks"]);
@@ -97,9 +97,9 @@ test("code a model covers owes that model, and gated suites name their gate", ()
 
 test("a test helper, fake or fixture under a product path owes no judge; the code beside it does", () => {
   const helpers = [
-    "apps/web/src/components/settings/sessions-test-trpc.tsx",
-    "apps/web/src/test-fixtures/fake-fetch.ts",
-    "apps/web/src/isomorphic-test-setup.ts",
+    "apps/web-old/src/components/settings/sessions-test-trpc.tsx",
+    "apps/web-old/src/test-fixtures/fake-fetch.ts",
+    "apps/web-old/src/isomorphic-test-setup.ts",
     "apps/cli/src/server-lifecycle-test-fixtures.ts",
     "apps/cli/src/dashboard.fixture.ts",
     "apps/cli/test-fixtures/docker/compose.v2.yaml",
@@ -115,7 +115,7 @@ test("a test helper, fake or fixture under a product path owes no judge; the cod
     "no judge, no run, no screenshots",
   );
   const product = [
-    "apps/web/src/components/settings/sessions.tsx",
+    "apps/web-old/src/components/settings/sessions.tsx",
     "apps/cli/src/server-setup.ts",
     "packages/sessions/src/setup.ts",
     "apps/api/src/routes/harness-models.ts",

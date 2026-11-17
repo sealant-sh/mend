@@ -45,7 +45,7 @@ import { readResourceTables } from "./resource-tables.ts";
  * command = "pnpm dev"
  * port = 3000
  * browserScheme = "http"
- * cwd = "apps/web"
+ * cwd = "apps/web-old"
  * env = { NODE_ENV = "development" }
  * ready = { http = "/", timeout = "120s" }
  * depends = ["db"]

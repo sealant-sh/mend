@@ -1,5 +1,5 @@
-import { Button } from "@mend/ui/components/ui/button";
-import { cn } from "@mend/ui/lib/utils";
+import { Button } from "@mend/ui-old/components/ui/button";
+import { cn } from "@mend/ui-old/lib/utils";
 import { Link } from "@tanstack/react-router";
 
 import { useEventsState } from "#/lib/events";

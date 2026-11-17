@@ -1,8 +1,8 @@
 import { type LoginChoice, loginChoiceOf, unchosenLoginSummary } from "@mend/domain/default-login";
-import { Button, buttonVariants } from "@mend/ui/components/ui/button";
-import { Input } from "@mend/ui/components/ui/input";
-import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
-import { cn } from "@mend/ui/lib/utils";
+import { Button, buttonVariants } from "@mend/ui-old/components/ui/button";
+import { Input } from "@mend/ui-old/components/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@mend/ui-old/components/ui/toggle-group";
+import { cn } from "@mend/ui-old/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useState, type ReactNode } from "react";

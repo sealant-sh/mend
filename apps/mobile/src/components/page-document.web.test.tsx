@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { pageThemes } from "@mend/ui/page-theme";
+import { pageThemes } from "@mend/ui-old/page-theme";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";

@@ -1,0 +1,116 @@
+import { loadPublicNetwork } from "@mend/network";
+import tailwindcss from "@tailwindcss/vite";
+import { tanstackStart } from "@tanstack/react-start/plugin/vite";
+import viteReact from "@vitejs/plugin-react";
+import { Effect } from "effect";
+import { nitro } from "nitro/vite";
+import { visualizer } from "rollup-plugin-visualizer";
+import { defineConfig, esmExternalRequirePlugin } from "vite";
+
+import { devProxyRoutes } from "./src/entry/proxy-headers.ts";
+
+// Dev runs two processes: this vite server for the app, and the Mend API
+// server (apps/api) on 3101. The proxy keeps them one origin — the same
+// shape production has, where the web server proxies /api to the API.
+
+// Vite's DNS-rebinding guard receives the same explicit hosts as auth and
+// CORS. It accepts hostnames rather than origins, so scheme and port remain
+// enforced by those request boundaries.
+const publicNetwork = Effect.runSync(loadPublicNetwork);
+const allowedHosts = [
+  ...new Set(publicNetwork.allowedOrigins.map((origin) => new URL(origin).hostname)),
+];
+
+const apiTarget = process.env.MEND_API_URL ?? "http://localhost:3101";
+
+const config = defineConfig({
+  // Vite's own resolver, not vite-tsconfig-paths: that plugin returns a bare id, so a module first
+  // reached through "#/" lost its package.json type, and Rolldown's CommonJS interop for it (and
+  // every chunk hash above it) depended on which importer happened to load it first.
+  resolve: { tsconfigPaths: true },
+  build: {
+    rolldownOptions: {
+      // Effect's Schema builders are pure: a schema nothing reads is dropped like any unused value.
+      // The browser imports the domain package for its rules (`canSteerSession`, `sessionTitle`);
+      // without this, every schema declared beside them (and Effect's Schema with them) shipped.
+      treeshake: { manualPureFunctions: ["Schema"] },
+    },
+  },
+  environments: {
+    ssr: {
+      build: {
+        rolldownOptions: {
+          // The production image ships .output alone, with no node_modules. Vite 8 bundles
+          // CommonJS dependencies apps/web-old cannot resolve itself (@base-ui's
+          // use-sync-external-store) into the SSR build, and leaves their require("react") as a
+          // runtime call that nitro cannot follow: every page then fails with "Cannot find module
+          // 'react'". As imports, nitro bundles them with the rest of React.
+          plugins: [esmExternalRequirePlugin({ external: [/^react(-dom)?(\/|$)/] })],
+        },
+      },
+    },
+  },
+  server: {
+    // The workbench is steered from any device on the operator's network
+    // (docs/archive/ARCHITECTURE.md §9), so dev binds every interface, not just loopback.
+    host: true,
+    port: 3105,
+    allowedHosts,
+    proxy: {
+      // Vite owns WebSocket upgrades for terminals and tunnels. Nitro's
+      // earlier middleware handles HTTP through devProxy below.
+      "/api": { target: apiTarget, ws: true },
+      // /trpc needs no proxy: it is a Start SERVER route, served by vite dev
+      // itself (and by nitro in production).
+    },
+  },
+  plugins: [
+    tailwindcss(),
+    tanstackStart({
+      router: {
+        // Loaders are split out of the route tree too, not only components: a route file's loader
+        // imports its page's module (`settingsLoader`, `devicesOptions`), and in the eager tree
+        // that put every page's code in front of every other page.
+        codeSplittingOptions: {
+          defaultBehavior: [
+            ["loader"],
+            ["component"],
+            ["pendingComponent"],
+            ["errorComponent"],
+            ["notFoundComponent"],
+          ],
+        },
+      },
+    }),
+    // The official deployment layer: `vite build` emits a self-contained node
+    // server at .output/server/index.mjs (+ static assets in .output/public).
+    nitro({
+      // Nitro handles extensionless requests before Vite's HTTP proxy runs.
+      // Without this, auth and SSE requests fall into the app's HTML 404.
+      devProxy: devProxyRoutes(apiTarget),
+      // The scripts ship precompressed beside themselves and go out in the encoding the browser
+      // accepts: about a fifth of their size, which on a phone's network is most of the wait
+      // before the first page and before the first session opens.
+      compressPublicAssets: { gzip: true, brotli: true },
+    }),
+    viteReact(),
+    // `MEND_ANALYZE=<file>`: what the browser downloads, module by module, with gzip and brotli
+    // sizes (raw data; `pnpm exec vite-bundle-visualizer`-style reports read it).
+    ...(process.env["MEND_ANALYZE"] === undefined
+      ? []
+      : [
+          {
+            ...visualizer({
+              filename: process.env["MEND_ANALYZE"],
+              template: "raw-data",
+              gzipSize: true,
+              brotliSize: true,
+            }),
+            applyToEnvironment: (environment: { readonly name: string }) =>
+              environment.name === "client",
+          },
+        ]),
+  ],
+});
+
+export default config;

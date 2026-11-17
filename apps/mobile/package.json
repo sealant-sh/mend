@@ -24,7 +24,7 @@
     "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
-    "@mend/ui": "workspace:*",
+    "@mend/ui-old": "workspace:*",
     "@react-native-async-storage/async-storage": "^3.1.1",
     "@t3tools/mobile-terminal-native": "file:./modules/t3-terminal",
     "@tanstack/react-query": "catalog:",

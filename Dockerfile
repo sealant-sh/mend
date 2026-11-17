@@ -14,7 +14,7 @@ FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
 FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
 
 # Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
-# apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
+# apps/web-old/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
 # nitro output: no node_modules, no workspace layout, no type stripping. Bundling is also what
 # keeps memory down: Node keeps every loaded module's source resident and evaluates everything a
 # barrel re-exports, so an unbundled server pays for code it never calls.
@@ -24,7 +24,7 @@ RUN npm install --global corepack && corepack enable
 WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build \
+RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web-old build \
   && pnpm --filter @mend/t3-gateway build
 RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 
@@ -68,7 +68,7 @@ COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /
 
 WORKDIR /app
 COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
-COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
+COPY --from=mend-build /app/apps/web-old/.output ./apps/web-old/.output
 # The t3code gateway, bundled with the worker that parses messages for find in a thread, in a root
 # of its own it is confined to (ADR 0012; review 643-1; scripts/t3-gateway-root.sh). It runs only
 # when the operator turned it on, and scripts/bundle-supervisor.mjs starts it there as its own uid

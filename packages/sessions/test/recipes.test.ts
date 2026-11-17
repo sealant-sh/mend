@@ -129,7 +129,7 @@ service = "web"
 `);
     expect(file.refused).toEqual([]);
     expect(file.recipes[0]).toMatchObject({
-      cwd: "apps/web",
+      cwd: "apps/web-old",
       env: { NODE_ENV: "development", _x1: "" },
       ready: { _tag: "Http", path: "/health?deep=1", timeoutMs: 120_000 },
       host: "preserve",
@@ -386,7 +386,7 @@ describe("[setup]", () => {
       [
         "[setup]",
         'run = ["pnpm install --frozen-lockfile", " pnpm build:deps "]',
-        'inputs = ["./pnpm-lock.yaml", "apps/web/package.json", "pnpm-lock.yaml"]',
+        'inputs = ["./pnpm-lock.yaml", "apps/web-old/package.json", "pnpm-lock.yaml"]',
         "",
         ...WEB,
       ].join("\n"),
@@ -397,7 +397,7 @@ describe("[setup]", () => {
         run: ["pnpm install --frozen-lockfile", "pnpm build:deps"],
         inputs: [
           RepoRelativePath.make("pnpm-lock.yaml"),
-          RepoRelativePath.make("apps/web/package.json"),
+          RepoRelativePath.make("apps/web-old/package.json"),
         ],
       }),
     );

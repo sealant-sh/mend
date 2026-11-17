@@ -5,7 +5,7 @@ import {
   pageThemeMessage,
   readPageFrameRequest,
   usePageLoadDeadline,
-} from "@mend/ui/page-frame";
+} from "@mend/ui-old/page-frame";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 import type { PageDocumentProps } from "./page-document";

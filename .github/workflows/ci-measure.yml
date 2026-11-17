@@ -442,8 +442,8 @@ jobs:
         env:
           MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
         run: |
-          pnpm exec turbo run build --filter=@mend/web
-          pnpm --filter @mend/web check:browser
+          pnpm exec turbo run build --filter=@mend/web-old
+          pnpm --filter @mend/web-old check:browser
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

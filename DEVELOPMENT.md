@@ -50,8 +50,8 @@ host-side dev server refuses it; the comment in `deploy/dev/executor.compose.yam
   needs Docker.
 - The `scripts/*.test.mjs` suites run in CI's static job (`.github/workflows/ci.yml`). Run the one
   for any script you change with `node --test`.
-- With `pnpm dev` running, `node --test apps/web/scripts/dev-auth.integration.mjs` checks that auth
-  requests reach the auth server rather than the app.
+- With `pnpm dev` running, `node --test apps/web-old/scripts/dev-auth.integration.mjs` checks that
+  auth requests reach the auth server rather than the app.
 
 The default suite runs no performance benchmark. Three measurements have their own commands. Run
 each on an otherwise idle machine, and keep the JSON report, the workload and the machine with the

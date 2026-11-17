@@ -1,5 +1,5 @@
-import { fitPageHeight, pageLinkResult, usePageLoadDeadline } from "@mend/ui/page-frame";
-import type { PageTheme } from "@mend/ui/page-theme";
+import { fitPageHeight, pageLinkResult, usePageLoadDeadline } from "@mend/ui-old/page-frame";
+import type { PageTheme } from "@mend/ui-old/page-theme";
 import { useEffect, useRef, useState } from "react";
 import { Linking, Platform } from "react-native";
 import { WebView } from "react-native-webview";

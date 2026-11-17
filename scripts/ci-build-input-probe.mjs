@@ -22,13 +22,13 @@ const testFile =
 export const VOLATILE = [
   {
     // Nitro stamps its build time.
-    glob: "apps/web/.output/nitro.json",
+    glob: "apps/web-old/.output/nitro.json",
     normalize: (text) =>
       text.replace(/^(\s{2}"date": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/m, '$1"<build time>"'),
   },
   {
     // Nitro's public-asset map: each entry's file mtime, and the entries' order.
-    glob: "apps/web/.output/server/index.mjs",
+    glob: "apps/web-old/.output/server/index.mjs",
     normalize: (text) =>
       text.replace(/^var public_assets_data_default = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
         const entries = body

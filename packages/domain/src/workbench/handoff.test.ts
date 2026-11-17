@@ -321,7 +321,7 @@ describe("isEnvPath", () => {
       ".env.local",
       ".env.example",
       ".environment",
-      "apps/web/.env.local",
+      "apps/web-old/.env.local",
     ]) {
       expect(isEnvPath(path), path).toBe(true);
     }

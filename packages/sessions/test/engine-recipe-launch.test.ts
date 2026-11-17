@@ -106,7 +106,7 @@ const WEB_AND_DB = `
 command = "pnpm dev"
 port = 3000
 browserScheme = "http"
-cwd = "apps/web"
+cwd = "apps/web-old"
 env = { NODE_ENV = "development" }
 depends = ["db"]
 
@@ -150,7 +150,7 @@ describe("a recipe's launch", () => {
               },
             },
             {
-              cwd: "/workspace/repo/apps/web",
+              cwd: "/workspace/repo/apps/web-old",
               env: {
                 NODE_ENV: "development",
                 PORT: "3000",

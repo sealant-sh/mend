@@ -17,8 +17,8 @@ export const repoRelativePathIssue = (raw: string): string | null => {
 };
 
 /**
- * A directory inside the repository, normalized, never the root itself: `apps/web`, never
- * `/apps/web`, `./apps/web/`, `apps/../web` or `.`.
+ * A directory inside the repository, normalized, never the root itself: `apps/web-old`, never
+ * `/apps/web-old`, `./apps/web-old/`, `apps/../web` or `.`.
  */
 export const RepoRelativePath = Schema.String.pipe(
   Schema.check(

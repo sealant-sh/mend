@@ -126,11 +126,11 @@ api:
   # 10.244.0.0/16 is the flannel default. Empty list = trust loopback only.
   trustedProxyCidrs: ["10.244.0.0/16"]
 
-# The web tier (apps/web): the TanStack app + a transparent /api proxy to the API tier.
+# The web tier (apps/web-old): the TanStack app + a transparent /api proxy to the API tier.
 # Stateless — scale it freely.
 web:
-  # The slim per-tier image (apps/web/Dockerfile): .output only, no source.
-  # Combined-image substitution needs: command: [node, apps/web/src/entry/main.ts]
+  # The slim per-tier image (apps/web-old/Dockerfile): .output only, no source.
+  # Combined-image substitution needs: command: [node, apps/web-old/src/entry/main.ts]
   image:
     repository: ghcr.io/sealant-sh/mend-web
     tag: ""

@@ -174,9 +174,9 @@ as in [organization.md](./organization.md)), `<wt>-shared` a `shared` project on
 - The box (17 Nov) showed the empty state only: `Repository` empty, `Home files 0 files` and the
   `nothing synced yet · …` row. The save bar's `Save workspace` and `Cloning the repository…`, and
   where `Saved · applies from the next launch` shows, are from
-  `apps/web/src/components/settings/workspace.tsx`, not confirmed by a capture; the panel's handles
-  after a save, and the snapshot line `<n> file · synced … from … · <sha7>`, were not re-read
-  either.
+  `apps/web-old/src/components/settings/workspace.tsx`, not confirmed by a capture; the panel's
+  handles after a save, and the snapshot line `<n> file · synced … from … · <sha7>`, were not
+  re-read either.
 - Under `o::rwx`, other directories in a member's home that this copy does not make read `0777` at
   the parent and the head of #186 (`.claude`, `.codex`, `.local`, `.local/share`,
   `.local/share/sealant-dotfiles`, `.local/state`, `.pi`, `.pi/agent`, `.config/git`). Do not count

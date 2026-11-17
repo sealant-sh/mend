@@ -11,8 +11,8 @@ import {
   pageThemeMessage,
   readPageFrameRequest,
   type PageFrameRequest,
-} from "@mend/ui/page-frame";
-import type { PageTheme } from "@mend/ui/page-theme";
+} from "@mend/ui-old/page-frame";
+import type { PageTheme } from "@mend/ui-old/page-theme";
 
 import { randomBytes } from "@/data/random";
 

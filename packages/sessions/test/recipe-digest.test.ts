@@ -12,7 +12,7 @@ const WEB_AND_DB = `
 command = "pnpm dev"
 port = 3000
 browserScheme = "http"
-cwd = "apps/web"
+cwd = "apps/web-old"
 env = { NODE_ENV = "development", API_URL = "http://localhost:4000" }
 depends = ["db"]
 
@@ -59,7 +59,7 @@ command = "docker compose up db"
 [service.web]
 depends = ["db"]
 env = { API_URL = "http://localhost:4000", NODE_ENV = "development" }
-cwd = "./apps/web/"
+cwd = "./apps/web-old/"
 browserScheme = "http"
 port = 3000
 command = "pnpm dev"
@@ -69,7 +69,7 @@ command = "pnpm dev"
 
   it.each([
     ["command", 'command = "pnpm dev"', 'command = "pnpm dev --open"'],
-    ["cwd", 'cwd = "apps/web"', 'cwd = "apps/site"'],
+    ["cwd", 'cwd = "apps/web-old"', 'cwd = "apps/site"'],
     ["env", 'NODE_ENV = "development"', 'NODE_ENV = "production"'],
     ["setup run", 'run = ["pnpm install --frozen-lockfile"]', 'run = ["pnpm install"]'],
     ["setup inputs", 'inputs = ["pnpm-lock.yaml"]', 'inputs = ["pnpm-lock.yaml", ".nvmrc"]'],

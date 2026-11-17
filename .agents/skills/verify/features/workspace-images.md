@@ -122,22 +122,22 @@ Preconditions:
 ## Gotchas
 
 - The project's image is edited in place in the `Image` section of the Settings → Workspace sub-tab
-  (`apps/web/src/components/project/settings/workspace-image.tsx`); the steps here that open
+  (`apps/web-old/src/components/project/settings/workspace-image.tsx`); the steps here that open
   `Edit…`, `Save override` and `Use default` describe the older Setup-tab panel and need a rewrite
   against that section. Its save bar and `reset` were not driven on the box. The organization's
   `Workspace environment · <organization>` line (`<os> · <n> packages · from the instance`) is from
-  `apps/web/src/components/settings/environment-organization.tsx`; the box run of 17 Nov looked for
-  it on Defaults and did not read it.
+  `apps/web-old/src/components/settings/environment-organization.tsx`; the box run of 17 Nov looked
+  for it on Defaults and did not read it.
 - Both editors have a Docker service switch (`role="switch"`, named `Docker service` by its label):
   the project's `Workspace image` panel since mend#663
-  (`apps/web/src/routes/projects.$projectId.setup.tsx:375-386`), and Settings. The live pass
+  (`apps/web-old/src/routes/projects.$projectId.setup.tsx:375-386`), and Settings. The live pass
   (2026-10-10) ran before mend#663, when the project editor had none.
 - No choice button exposes its state: the mode, OS and shell buttons in both editors have no
   `aria-pressed`, so a snapshot cannot say which is chosen. Read the saved summary line instead.
 - The Settings Docker toggle is a `switch` named `Docker service`
-  (`apps/web/src/components/workspace-environment-editor.tsx:250-261`); before mend#663 it was named
-  only by its state, `Enabled` or `Disabled`, as the live pass saw. The Settings OS buttons' names
-  include their description (`Arch Rolling packages; Mend’s default.`); match `/^Arch/`.
+  (`apps/web-old/src/components/workspace-environment-editor.tsx:250-261`); before mend#663 it was
+  named only by its state, `Enabled` or `Disabled`, as the live pass saw. The Settings OS buttons'
+  names include their description (`Arch Rolling packages; Mend’s default.`); match `/^Arch/`.
 - The Settings editor uses fixed element ids for `Base image`, `Setup commands` and `Packages`
   (`workspace-environment-editor.tsx:164`, `188`, `271`). An operator who is also the owner sees two
   editors on `/settings` once the organization has its own image, and the second editor's labels

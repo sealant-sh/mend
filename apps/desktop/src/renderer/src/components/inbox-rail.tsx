@@ -1,8 +1,12 @@
-import { Button } from "@mend/ui/components/ui/button";
-import { ToggleGroup, ToggleGroupItem } from "@mend/ui/components/ui/toggle-group";
-import { useContextMenu, type ContextMenuEntry, type ContextMenuSpec } from "@mend/ui/context-menu";
-import { cn } from "@mend/ui/lib/utils";
-import { MenuRadioGroup } from "@mend/ui/model-picker";
+import { Button } from "@mend/ui-old/components/ui/button";
+import { ToggleGroup, ToggleGroupItem } from "@mend/ui-old/components/ui/toggle-group";
+import {
+  useContextMenu,
+  type ContextMenuEntry,
+  type ContextMenuSpec,
+} from "@mend/ui-old/context-menu";
+import { cn } from "@mend/ui-old/lib/utils";
+import { MenuRadioGroup } from "@mend/ui-old/model-picker";
 import { AlarmClock, AlarmClockOff } from "lucide-react";
 import { useEffect, useState } from "react";
 

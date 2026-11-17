@@ -1,11 +1,11 @@
 import { isLoopbackHostname } from "@mend/domain/workbench";
-import { Button } from "@mend/ui/components/ui/button";
-import { Checkbox } from "@mend/ui/components/ui/checkbox";
-import { Input } from "@mend/ui/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@mend/ui/components/ui/native-select";
-import { cn } from "@mend/ui/lib/utils";
-import { Modal, ModalHeader } from "@mend/ui/modal";
-import { Sheet, SheetHeader } from "@mend/ui/sheet";
+import { Button } from "@mend/ui-old/components/ui/button";
+import { Checkbox } from "@mend/ui-old/components/ui/checkbox";
+import { Input } from "@mend/ui-old/components/ui/input";
+import { NativeSelect, NativeSelectOption } from "@mend/ui-old/components/ui/native-select";
+import { cn } from "@mend/ui-old/lib/utils";
+import { Modal, ModalHeader } from "@mend/ui-old/modal";
+import { Sheet, SheetHeader } from "@mend/ui-old/sheet";
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 

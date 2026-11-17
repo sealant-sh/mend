@@ -7,8 +7,8 @@ import {
   injectHtmlRenderBootstrap,
 } from "@mend/t3-contracts/html-render";
 import { T3_CODE_DARK_THEME_COLORS } from "@mend/t3-contracts/theme-palettes";
-import { pageThemes } from "@mend/ui/page-theme";
-import { lightColors } from "@mend/ui/tokens";
+import { pageThemes } from "@mend/ui-old/page-theme";
+import { lightColors } from "@mend/ui-old/tokens";
 import { describe, expect, it } from "vitest";
 
 import { T3_CODE_THEME_RULES, injectPageBootstrap, pageDocument } from "./page-document.ts";

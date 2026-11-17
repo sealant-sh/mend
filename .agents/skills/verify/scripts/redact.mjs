@@ -14,7 +14,7 @@
 // Sources: invitation, reset and Slack links in their fragment and older path forms
 // (packages/network handed-links.ts), device tokens `mdt_` and pairing secrets `mdc_` (apps/api
 // routes/devices.ts), the `mend://pair?…&c=…` payload and its grouped `XXXX-XXXX` code, printed by
-// `mend pair` or standing alone in a snapshot node (apps/cli pair.ts, apps/web pairing-qr.tsx),
+// `mend pair` or standing alone in a snapshot node (apps/cli pair.ts, apps/web-old pairing-qr.tsx),
 // `mend login`'s authorization code (`code  XXXX-XXXX`) and its `/authorize?code=` link (apps/cli
 // login.ts, apps/api routes/devices.ts), bearer headers, signed upload URLs, PEM private keys,
 // Anthropic, OpenAI, GitHub, Slack and AWS key shapes, and token, password, secret and API key

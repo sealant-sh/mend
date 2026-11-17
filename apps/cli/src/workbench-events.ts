@@ -2,7 +2,7 @@
  * The dashboard's side of `/api/events` (the same SSE stream the web app
  * reads): parse frames out of the byte stream, drop the `: ping` heartbeats,
  * and map each pointer event to the query families it can actually stale —
- * mirroring apps/web/src/lib/workbench-events.ts, reduced to the TUI's three
+ * mirroring apps/web-old/src/lib/workbench-events.ts, reduced to the TUI's three
  * cache families. Pure functions; dashboard.tsx owns the socket and the
  * QueryClient.
  */

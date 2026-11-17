@@ -47,10 +47,10 @@ section where it is now and reports a handle that differs from the map as a map 
 
 The map still names the project page's `Setup` tab. The web now has a project `Settings` tab with
 sub-tabs (`General`, `Workspace`, `Services`, `Secrets`, `Git`, `Landing`, `Review`, `Folders`;
-`apps/web/src/components/project/settings-sections.ts`), and app Settings has one page per section
-(`/settings/devices`, `/settings/git-access`, …; old `#anchors` redirect). A flow that reads a Setup
-section reads it in the matching Settings sub-tab, and reports a missing section as a map gap, not a
-product failure.
+`apps/web-old/src/components/project/settings-sections.ts`), and app Settings has one page per
+section (`/settings/devices`, `/settings/git-access`, …; old `#anchors` redirect). A flow that reads
+a Setup section reads it in the matching Settings sub-tab, and reports a missing section as a map
+gap, not a product failure.
 
 ## Fixtures
 
@@ -143,7 +143,7 @@ flows reuse what earlier ones made:
   navigation `<p> project` and its `Worktrees <n>` link.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/projects.index.tsx`, `apps/web/src/components/project/`,
+- **Areas:** `apps/web-old/src/routes/projects.index.tsx`, `apps/web-old/src/components/project/`,
   `apps/api/src/adoptions.ts`
 
 ### start-session.boat-turn
@@ -173,7 +173,7 @@ flows reuse what earlier ones made:
   completes; `M sessions --project <p> --json` lists it with no file changed by it.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
-- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/web-old/src/`, `apps/api/src/`, `packages/sessions/`
 
 ### start-session.boat-run
 
@@ -222,7 +222,7 @@ flows reuse what earlier ones made:
 - **Mode:** `scripted` (recipes/session-review.mjs)
 - **Box-only:** no
 - **Sample:** yes
-- **Areas:** `apps/web/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
+- **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
 
 ### review-change.web-comments
 
@@ -237,7 +237,7 @@ flows reuse what earlier ones made:
   `M sessions --project <p> --all --json` shows the session's `review.openComments` as `1`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
+- **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
 
 ### send-review-back.deliver
 
@@ -255,7 +255,7 @@ flows reuse what earlier ones made:
   change shows `MAIN-RUN.md` with the lines `seen` and `reviewed`.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
-- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/web-old/src/`, `apps/api/src/`, `packages/sessions/`
 
 ### land-change.panel-read
 
@@ -268,7 +268,7 @@ flows reuse what earlier ones made:
   `pull request unavailable · origin is on <host>, not GitHub` (record which).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
+- **Areas:** `apps/web-old/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
 
 ### land-change.web-push
 
@@ -292,7 +292,7 @@ flows reuse what earlier ones made:
   the same `<sha>` and `show` prints `landed`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/land-panel.tsx`, `apps/api/src/landing-state.ts`,
+- **Areas:** `apps/web-old/src/components/land-panel.tsx`, `apps/api/src/landing-state.ts`,
   `apps/api/src/workspace-landing.ts`, `packages/landing/`
 
 ### land-change.cli-again
@@ -339,7 +339,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/workspace-landing.ts`, `packages/landing/src/git-words.ts`,
-  `apps/web/src/components/land-panel.tsx`, `apps/cli/src/`
+  `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/`
 
 ### services.cli-run
 
@@ -370,7 +370,8 @@ flows reuse what earlier ones made:
   `Account`; the heading `No code to authorize`; after sign-out, `/login`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `packages/auth/`, `apps/web/src/routes/login.tsx`, `apps/web/src/routes/authorize.tsx`
+- **Areas:** `packages/auth/`, `apps/web-old/src/routes/login.tsx`,
+  `apps/web-old/src/routes/authorize.tsx`
 
 ### pairing-devices.mint-read
 
@@ -385,7 +386,7 @@ flows reuse what earlier ones made:
   reading `<device> cli`, its paired day (`Nov 5, 2026`) and its last use.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/settings.devices.tsx`, `apps/cli/src/`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/routes/settings.devices.tsx`, `apps/cli/src/`, `apps/api/src/`
 
 ### provider-accounts.read
 
@@ -398,7 +399,7 @@ flows reuse what earlier ones made:
   restore.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web/src/`
+- **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web-old/src/`
 
 ### git-access.read
 
@@ -411,7 +412,7 @@ flows reuse what earlier ones made:
   same mode pressed.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/web/src/routes/settings.git-access.tsx`, `apps/api/src/`
+- **Areas:** `apps/cli/src/`, `apps/web-old/src/routes/settings.git-access.tsx`, `apps/api/src/`
 
 ### workspace-ssh.status
 
@@ -438,7 +439,7 @@ flows reuse what earlier ones made:
   default row (`<label> default`) `aria-checked="true"`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/web/src/`, `apps/api/src/`
+- **Areas:** `apps/cli/src/`, `apps/web-old/src/`, `apps/api/src/`
 
 ## Personal setup
 
@@ -454,7 +455,7 @@ flows reuse what earlier ones made:
   snapshot's file count and rows).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/dotfiles.ts`, `apps/web/src/`, `apps/api/src/`
+- **Areas:** `apps/cli/src/dotfiles.ts`, `apps/web-old/src/`, `apps/api/src/`
 
 ### secret-files.cli-roundtrip
 
@@ -469,7 +470,7 @@ flows reuse what earlier ones made:
   `removed ~/.main-run/token · …`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/api/src/`, `apps/web/src/`
+- **Areas:** `apps/cli/src/`, `apps/api/src/`, `apps/web-old/src/`
 
 ### git-author.roundtrip
 
@@ -485,7 +486,7 @@ flows reuse what earlier ones made:
   `· your account's name and email`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/git-author.ts`, `apps/api/src/`, `apps/web/src/`
+- **Areas:** `apps/cli/src/git-author.ts`, `apps/api/src/`, `apps/web-old/src/`
 
 ### skills.read
 
@@ -496,7 +497,7 @@ flows reuse what earlier ones made:
   `Your skill library`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/web/src/routes/skills.index.tsx`, `apps/api/src/`
+- **Areas:** `apps/cli/src/`, `apps/web-old/src/routes/skills.index.tsx`, `apps/api/src/`
 
 ### agent-memory.read
 
@@ -519,7 +520,7 @@ flows reuse what earlier ones made:
   `mend-theme` is `"system"` at the end.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web/src/`, `packages/ui/`
+- **Areas:** `apps/web-old/src/`, `packages/ui-old/`
 
 ## Project setup and customization
 
@@ -533,7 +534,7 @@ flows reuse what earlier ones made:
   `The MEND_ prefix is reserved for Mend itself.` with `Save` disabled.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/env.ts`, `apps/web/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/cli/src/env.ts`, `apps/web-old/src/components/project/settings/`, `apps/api/src/`
 
 ### cluster-bindings.read
 
@@ -545,7 +546,7 @@ flows reuse what earlier ones made:
   non-Kubernetes install (record which); no `cluster binding` line in `env show`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/`
 
 ### workspace-images.read
 
@@ -561,7 +562,7 @@ flows reuse what earlier ones made:
   `<os> · <n> packages · from the instance` or `… · set for Default`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/`
 
 ### automatic-install.read
 
@@ -577,7 +578,7 @@ flows reuse what earlier ones made:
   (record which); or `Capture mode only. …`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/`
 
 ### hot-sessions.read
 
@@ -590,7 +591,7 @@ flows reuse what earlier ones made:
   `<n> warming`, `<n> failed` or `none ready yet` (record which).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/preview-pools.ts`,
+- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/preview-pools.ts`,
   `packages/sessions/`
 
 ### project-settings.read
@@ -608,8 +609,8 @@ flows reuse what earlier ones made:
   `Inherit · …`, `On`/`Off` (or `Docker`/`Boat`) pressed.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/settings/`,
-  `apps/web/src/routes/settings.organization.defaults.tsx`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/components/project/settings/`,
+  `apps/web-old/src/routes/settings.organization.defaults.tsx`, `apps/api/src/`
 
 ### references-folders.folder-cli
 
@@ -624,7 +625,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
-  `apps/web/src/routes/settings.organization.folders.tsx`
+  `apps/web-old/src/routes/settings.organization.folders.tsx`
 
 ### references-folders.select-link
 
@@ -652,8 +653,8 @@ flows reuse what earlier ones made:
   `main-run-extras-<sha8>`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
-- **Areas:** `apps/web/src/components/project/settings/general-links.tsx`,
-  `apps/web/src/components/project/settings/folders.tsx`, `apps/api/src/folders.ts`,
+- **Areas:** `apps/web-old/src/components/project/settings/general-links.tsx`,
+  `apps/web-old/src/components/project/settings/folders.tsx`, `apps/api/src/folders.ts`,
   `packages/sessions/`
 
 ### now-and-sessions.web-now
@@ -665,7 +666,7 @@ flows reuse what earlier ones made:
 - **Mode:** `scripted` (recipes/now.mjs)
 - **Box-only:** no
 - **Sample:** yes
-- **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/web/src/routes/_inbox.index.tsx`,
+- **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/web-old/src/routes/_inbox.index.tsx`,
   `apps/api/src/`
 
 ### now-and-sessions.cli-lists
@@ -692,7 +693,7 @@ flows reuse what earlier ones made:
   back; the project filter shows only `<p>`'s rows; the heading `What should an agent work on?`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/api/src/`
 
 ### attach-resume.boat-stop-resume
 
@@ -706,7 +707,7 @@ flows reuse what earlier ones made:
 - **Mode:** `scripted` (recipes/resume.mjs)
 - **Box-only:** `boat`
 - **Sample:** yes
-- **Areas:** `packages/sessions/`, `apps/web/src/routes/_inbox.sessions.$sessionId.tsx`,
+- **Areas:** `packages/sessions/`, `apps/web-old/src/routes/_inbox.sessions.$sessionId.tsx`,
   `apps/api/src/`
 
 ### attach-resume.attach-detach
@@ -730,7 +731,7 @@ flows reuse what earlier ones made:
   the heading is back to its earlier title.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/_inbox.sessions.$sessionId.tsx`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/routes/_inbox.sessions.$sessionId.tsx`, `apps/api/src/`
 
 ### session-shell.live-shell
 
@@ -796,7 +797,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/cli/src/`, `packages/sessions/`, `packages/store/`, `apps/api/src/`,
-  `apps/web/src/`
+  `apps/web-old/src/`
 
 ### worktrees.web-create-remove
 
@@ -812,7 +813,7 @@ flows reuse what earlier ones made:
   from the tab and `M worktrees --project <p> --json` no longer lists it.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/tabs/worktrees.tsx`, `apps/api/src/`,
+- **Areas:** `apps/web-old/src/components/project/tabs/worktrees.tsx`, `apps/api/src/`,
   `packages/store/`
 
 ### pull-change.boat-run
@@ -862,7 +863,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
-  `apps/web/src/routes/settings.organization.invitations.tsx`
+  `apps/web-old/src/routes/settings.organization.invitations.tsx`
 
 ### organization.visibility-who-sees
 
@@ -882,8 +883,8 @@ flows reuse what earlier ones made:
   `Push to origin`; after `private`, `<land>` is gone from `M2 projects`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/project/settings/general.tsx`, `apps/api/src/`,
-  `apps/web/src/components/land-panel.tsx`, `apps/cli/src/`
+- **Areas:** `apps/web-old/src/components/project/settings/general.tsx`, `apps/api/src/`,
+  `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/`
 
 ### organization.roles-roundtrip
 
@@ -904,7 +905,7 @@ flows reuse what earlier ones made:
   lines name `made <second> an owner` and the change back.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/settings.organization.members.tsx`, `apps/api/src/`,
+- **Areas:** `apps/web-old/src/routes/settings.organization.members.tsx`, `apps/api/src/`,
   `apps/cli/src/`
 
 ### organization.join-refused
@@ -924,8 +925,8 @@ flows reuse what earlier ones made:
   before and after); A in the signed-out context reads it cannot be used (record the words).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/routes/join.$token.tsx`, `apps/web/src/routes/join.index.tsx`,
-  `apps/web/src/routes/settings.organization.invitations.tsx`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/routes/join.$token.tsx`, `apps/web-old/src/routes/join.index.tsx`,
+  `apps/web-old/src/routes/settings.organization.invitations.tsx`, `apps/api/src/`
 
 ### shared-control.two-people
 
@@ -955,8 +956,8 @@ flows reuse what earlier ones made:
   harness session.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web/src/components/shared-control-dialog.tsx`, `apps/web/src/`, `apps/api/src/`,
-  `apps/cli/src/`
+- **Areas:** `apps/web-old/src/components/shared-control-dialog.tsx`, `apps/web-old/src/`,
+  `apps/api/src/`, `apps/cli/src/`
 
 ### per-person-homes.two-people
 
@@ -982,7 +983,7 @@ flows reuse what earlier ones made:
   home).
 - **Mode:** `agent`
 - **Box-only:** `boat`
-- **Areas:** `apps/web/src/components/shared-workspace.tsx`,
+- **Areas:** `apps/web-old/src/components/shared-workspace.tsx`,
   `packages/domain/src/workbench/shared-workspace.ts`, `packages/sessions/`, `apps/cli/src/`
 
 ### operator.owner-grant-restore
@@ -1019,7 +1020,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/`, `apps/cli/src/`,
-  `apps/web/src/routes/settings.organization.audit-log.tsx`
+  `apps/web-old/src/routes/settings.organization.audit-log.tsx`
 
 ### shared-control.refuse-script
 
@@ -1045,7 +1046,8 @@ flows reuse what earlier ones made:
   `not run · not the operator`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/api/src/`, `apps/web/src/routes/settings.instance.defaults.tsx`
+- **Areas:** `apps/cli/src/`, `apps/api/src/`,
+  `apps/web-old/src/routes/settings.instance.defaults.tsx`
 
 ### exposure.read
 
@@ -1135,7 +1137,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/doctor-bundle.ts`, `apps/cli/src/doctor-bundle-collectors.ts`,
-  `apps/web/src/routes/settings.sealant.tsx`
+  `apps/web-old/src/routes/settings.sealant.tsx`
 
 ### cli.version
 

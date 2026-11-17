@@ -5,7 +5,7 @@ import {
   NO_SUCH_PREVIEW,
   siblingRequestAdmitted,
 } from "@mend/network";
-import { type PageTheme, pageThemes } from "@mend/ui/page-theme";
+import { type PageTheme, pageThemes } from "@mend/ui-old/page-theme";
 import { Brand } from "effect";
 
 import type {

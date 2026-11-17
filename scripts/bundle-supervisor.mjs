@@ -414,7 +414,7 @@ const startBundle = async (supervisor) => {
     timeoutMs: 240_000,
   });
   await supervisor.start(
-    baseSpecification("mend-web", ["node", "/app/apps/web/.output/front.mjs"], {
+    baseSpecification("mend-web", ["node", "/app/apps/web-old/.output/front.mjs"], {
       PORT: "3105",
       MEND_API_URL: "http://127.0.0.1:3101",
     }),

@@ -7,7 +7,7 @@ import {
   T3_CODE_DARK_THEME_COLORS,
   T3_CODE_LIGHT_THEME_COLORS,
 } from "@mend/t3-contracts/theme-palettes";
-import { type PageTheme, pageThemes } from "@mend/ui/page-theme";
+import { type PageTheme, pageThemes } from "@mend/ui-old/page-theme";
 
 export interface ThemeRule {
   readonly media: string | null;

@@ -1,6 +1,6 @@
-import { Button } from "@mend/ui/components/ui/button";
-import { useContextMenu, type ContextMenuSpec } from "@mend/ui/context-menu";
-import { cn } from "@mend/ui/lib/utils";
+import { Button } from "@mend/ui-old/components/ui/button";
+import { useContextMenu, type ContextMenuSpec } from "@mend/ui-old/context-menu";
+import { cn } from "@mend/ui-old/lib/utils";
 import { useEffect, useState } from "react";
 
 import { StatusDot, toneText } from "#/components/status-dot";

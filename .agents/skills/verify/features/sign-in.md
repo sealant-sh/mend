@@ -79,7 +79,7 @@ Preconditions:
 - **Sign in and return.** Run `await page.goto("<web>/settings")` while signed out. `/settings`
   opens its first page, `/settings/account`, so the browser walks to
   `/login#next=%2Fsettings%2Faccount` (the continuation rides the fragment, not the query:
-  `withContinuation`, `apps/web/src/lib/onboarding.ts`). The heading `Sign in` and
+  `withContinuation`, `apps/web-old/src/lib/onboarding.ts`). The heading `Sign in` and
   `Accounts are created by invitation. Ask an owner of this Mend for a link.` are visible. Sign in
   with the right password. The browser lands on `/settings/account` and the heading `Account`
   (`page.getByRole("heading", { name: "Account", level: 1 })`) is visible (see Gotchas).

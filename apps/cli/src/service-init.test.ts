@@ -151,9 +151,9 @@ describe("renderMendToml", () => {
     protocol: "tcp",
     guessed: true,
     browserScheme: "http",
-    cwd: "apps/web",
+    cwd: "apps/web-old",
     address: "loopback",
-    source: "apps/web/package.json",
+    source: "apps/web-old/package.json",
   } as const;
   const mysql = {
     name: "mysql",
@@ -170,12 +170,12 @@ describe("renderMendToml", () => {
   it("renders a commented, committable file, with [preview] for its one browser Service", () => {
     expect(renderMendToml([web, mysql])).toBe(
       [
-        "# apps/web/package.json",
+        "# apps/web-old/package.json",
         "[service.web]",
         'command = "pnpm run dev"',
         "port = 5173 # guessed — verify",
         'browserScheme = "http"',
-        'cwd = "apps/web"',
+        'cwd = "apps/web-old"',
         "",
         "# compose",
         "[service.mysql]",

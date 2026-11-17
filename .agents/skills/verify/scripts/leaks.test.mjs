@@ -157,7 +157,7 @@ test(
     const privateDir = privateWithAccount();
     const out = fresh("evidence");
     // The product's own controls: the Claude token textarea (no label, a placeholder) and the secret
-    // file's paste field (apps/web settings.tsx, secret-files-panel.tsx).
+    // file's paste field (apps/web-old settings.tsx, secret-files-panel.tsx).
     const run = drive(
       privateDir,
       out,

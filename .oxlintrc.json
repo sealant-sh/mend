@@ -229,7 +229,7 @@
       "rules": { "no-restricted-globals": "off" }
     },
     {
-      "files": ["packages/ui/src/components/ui/**"],
+      "files": ["packages/ui-old/src/components/ui/**"],
       "rules": {
         "no-shadow": "off"
       }

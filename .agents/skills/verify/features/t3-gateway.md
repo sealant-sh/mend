@@ -339,7 +339,7 @@ git -C <t3code> checkout "$(jq -r .tag packages/t3-contracts/t3code.pin.json)"
 ```
 
 `VITE_HOSTED_APP_CHANNEL=latest` builds the hosted app (app.t3.codes): no local server, every
-environment added by pairing. The build is `<t3code>/apps/web/dist` (its `build` script is
+environment added by pairing. The build is `<t3code>/apps/web-old/dist` (its `build` script is
 `vp build`). The 2026-10-24 run drove a dist built this way beforehand; these commands were not run
 again that day.
 
@@ -347,7 +347,7 @@ Serve it and drive it, after the gateway answers (Preconditions above, with `MEN
 set to a free port):
 
 ```sh
-node $skill/scripts/serve-t3-client.mjs --dist <t3code>/apps/web/dist --port <client port> \
+node $skill/scripts/serve-t3-client.mjs --dist <t3code>/apps/web-old/dist --port <client port> \
   --gw http://127.0.0.1:<gateway port> &
 node $skill/scripts/drive-web.mjs --web http://127.0.0.1:<client port> --out "$E/t3-client/web" \
   --private "$P" --recipe $skill/recipes/t3-client.mjs --timeout 60000
@@ -641,16 +641,16 @@ $skill/scripts/capture.sh "$E/git" <project name> -- \
 In this single-environment client, the scratch thread rows read `No project` and show their worktree
 branches (`t3-client/drive-6/scratch-final-sidebar.aria.yml`). The pinned client's machine label is
 conditional on project groups spanning environments and the thread having no branch
-(`t3code/apps/web/src/components/Sidebar.tsx`, `scratchMachineLabelFor`, and
+(`t3code/apps/web-old/src/components/Sidebar.tsx`, `scratchMachineLabelFor`, and
 `components/sidebar/SidebarThreadRow.tsx`, `showsScratchMachine`). The scratch drafts and thread
 breadcrumbs read `No project`.
 
 ### Worktree and project removal
 
-Observed on **2026-10-30**, hosted `v0.1.2` client from `/var/tmp/t3s1/t3code/apps/web/dist`, built
-with `VITE_HOSTED_APP_CHANNEL=latest`. Mend and the gateway used `f80019659802`, served by the local
-outer as `dff867c8a21b` with the same tree. The stack used pinned Sealant releases and fake Claude
-logins. Evidence: `/var/tmp/t3s1-removal-verify.ouXa5Z/evidence/`.
+Observed on **2026-10-30**, hosted `v0.1.2` client from `/var/tmp/t3s1/t3code/apps/web-old/dist`,
+built with `VITE_HOSTED_APP_CHANNEL=latest`. Mend and the gateway used `f80019659802`, served by the
+local outer as `dff867c8a21b` with the same tree. The stack used pinned Sealant releases and fake
+Claude logins. Evidence: `/var/tmp/t3s1-removal-verify.ouXa5Z/evidence/`.
 
 `MEND_VERIFY_T3_REMOVAL` selects a focused pass after the recipe pairs the real client. Each pass
 starts with an empty browser. Use `MEND_VERIFY_T3_ACCOUNT=removal-member.json` for the second
@@ -762,9 +762,9 @@ show that it never reaches Mend. Keep the trace outside `$P` and scan it with al
 
 ### Restorable project removal
 
-Observed on **2026-10-30**, hosted `v0.1.2` client from `/var/tmp/t3s1/t3code/apps/web/dist`, built
-with `VITE_HOSTED_APP_CHANNEL=latest`. Mend tree `c4769d026780` was served by the local outer as
-`9303e81eee70`; the gateway used that checkout. The stack used pinned Sealant releases and the
+Observed on **2026-10-30**, hosted `v0.1.2` client from `/var/tmp/t3s1/t3code/apps/web-old/dist`,
+built with `VITE_HOSTED_APP_CHANNEL=latest`. Mend tree `c4769d026780` was served by the local outer
+as `9303e81eee70`; the gateway used that checkout. The stack used pinned Sealant releases and the
 skill's fake Claude login. Evidence: `/var/tmp/t3s1-retention-verify.3CxTpp/evidence/`.
 
 Prepare a shared project as the organization owner. In this run, `verify-fixture` held the stack

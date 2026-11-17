@@ -206,7 +206,7 @@ test("the bundle uses the catalog sealant version and declared digest images wit
   assert.doesNotMatch(supervisor, /RABBITMQ_URL|REGISTRY_/);
   // Both Mend processes run from bundles; the runtime image carries no workspace or node_modules.
   assert.match(supervisor, /\/app\/apps\/api\/dist\/main\.js/);
-  assert.match(supervisor, /\/app\/apps\/web\/\.output\/front\.mjs/);
+  assert.match(supervisor, /\/app\/apps\/web-old\/\.output\/front\.mjs/);
   assert.doesNotMatch(
     dockerfile,
     /src\/main\.ts|mend-production-dependencies|\/app\/node_modules \.\/node_modules/,
