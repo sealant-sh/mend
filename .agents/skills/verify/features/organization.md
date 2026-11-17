@@ -18,7 +18,8 @@ someone cannot see answers as a missing one does.
 - `members-cli` prints the roster with `mend members`, the caller's row marked `▸`.
 - `invite-web` creates a one-time link from Settings → Invitations, optionally bound to an email.
 - `invite-cli` prints a one-time link with `mend invite`, with `--role`, `--email` and `--days`.
-- `invite-revoke` revokes an open invitation; spent ones are counted under `<n> spent`.
+- `invite-revoke` revokes an open invitation; accepted, revoked and expired ones are counted under
+  the fold `Used and closed <n> links`.
 - `join` opens `/join#<token>`, creates an account and joins with the link's role.
 - `join-signed-in` opens `/join#<token>` while signed in as an account of another organization: it
   joins with that account and moves the browser's sign-in to the new organization.
@@ -94,18 +95,24 @@ Preconditions:
 - **Invite from the CLI.** Run `mend invite --email verify-member@example.invalid --days 3`. Stdout
   line 1 is `<web>/join#<token>`, line 2 is
   `works once · member · for verify-member@example.invalid · expires <YYYY-MM-DD>`. Exit code `0`.
-- **Invitations panel.** Go to `<web>/settings`. The heading `Invitations` is visible
-  (`page.getByRole("heading", { name: "Invitations" })`) and a row reads
-  `verify-member@example.invalid` with `member · created <day> · expires <day>` and a `Revoke`
-  button.
+- **Invitations panel.** Go to `<web>/settings/organization/invitations` (Settings → Organization →
+  Invitations). The heading `Invitations` is visible
+  (`page.getByRole("heading", { name: "Invitations" })`) and the table `Open invitations`
+  (`page.getByRole("table", { name: "Open invitations" })`) has a row with the cells
+  `verify-member@example.invalid`, `member`, the created day and the expiry day, and a `Revoke`
+  button named `Revoke the invitation for verify-member@example.invalid`.
 - **Invite from the web, then revoke.** Run
   `await page.getByRole("textbox", { name: "Bind the link to an email (optional)" }).fill("revoke-me@example.invalid")`,
-  `await page.getByRole("group", { name: "Role" }).getByRole("button", { name: "member" }).click()`,
+  `await page.getByRole("group", { name: "Role" }).getByRole("button", { name: "Member" }).click()`,
   then `await page.getByRole("button", { name: "New link" }).click()`. The button reads `Creating…`,
   then a box says `Copy it now. The link is not shown again. It works once and expires <day>.` with
   the link and the buttons `Copy` and `Done`. Choose `Done`. Run
-  `await page.locator("#invitations > div:last-child > div").filter({ hasText: "revoke-me@example.invalid" }).getByRole("button", { name: "Revoke" }).click()`
-  (a CSS scope; see Gotchas). The row leaves the open list and a summary `1 spent` appears.
+  `await page.getByRole("button", { name: "Revoke the invitation for revoke-me@example.invalid", exact: true }).click()`.
+  The row leaves `Open invitations` (it reads `no open invitations` when it was the only one), and
+  the fold `Used and closed <n> links`
+  (`page.getByRole("button", { name: /^Used and closed \d+ links?$/ })`) counts one more: it appears
+  as `Used and closed 1 link` when nothing was closed before. Its summary line names
+  `revoke-me@example.invalid · revoked`.
 - **Open a link that is not one.** Run `await memberPage.goto("<web>/join#not-a-token")`. The
   heading `This link is not an invitation` is visible.
 - **Join.** Run `await memberPage.goto("<web>/join#<token>")` with the CLI's link. The heading is
@@ -275,10 +282,10 @@ Preconditions:
   `page.locator("#members > div:last-child > div").filter({ hasText: "<email>" })`. A plain
   `page.locator("div").filter({ hasText })` also matches the ancestor that holds every row and fails
   strict mode. That is a finding: the rows need a role and a name.
-- `Revoke` on each open invitation carries no email or role (`organization-settings.tsx:458`), and
-  the invitation rows have no role either (`organization-settings.tsx:448`). Scope with
-  `page.locator("#invitations > div:last-child > div").filter({ hasText: "<email>" })`. That is a
-  finding.
+- `Revoke` on each open invitation is named `Revoke the invitation for <email>` (or
+  `… for anyone with the link` when unbound), and the rows are table rows of `Open invitations`
+  (`apps/web/src/components/settings/org-invitations.tsx`); the box's ARIA snapshot showed both on
+  17 Nov.
 - `Take over…` carries no project name (`organization-settings.tsx:749`); its confirmation
   `Take over <name>` does.
 - The minted link is a plain `<code>` element with no label (`organization-settings.tsx:357`). Read

@@ -9,7 +9,7 @@ the same way; the dashboard and the phone send every open comment at once.
 
 ## Sub-features
 
-- `send-open` opens `Send review to session` once the change has open comments that were not sent.
+- `send-open` opens `Send <n> to <agent>` once the change has open comments that were not sent.
 - `send-select` picks which open comments go; the instruction is reassembled from the selection.
 - `send-edit` edits the instruction before sending; what is sent is what the session receives.
 - `send-deliver` delivers to a settled session, which resumes with the instruction.
@@ -17,7 +17,7 @@ the same way; the dashboard and the phone send every open comment at once.
   review pages.
 - `send-continue-cli` delivers the pending bundle from the terminal with `mend continue` and
   attaches.
-- `send-sent-state` marks delivered comments `sent to session`.
+- `send-sent-state` marks delivered comments `sent`.
 - `send-tui` sends from the dashboard's review screen (`s`) and delivers a pending bundle (`y`).
 - `send-desktop` selects, assembles and delivers from the Pinned Review's `Follow-up instruction`.
 - `send-mobile` sends from the phone's Review screen (`Send review`) and delivers a pending bundle
@@ -25,7 +25,8 @@ the same way; the dashboard and the phone send every open comment at once.
 
 ## How to get to it (user POV)
 
-- Web: on the review page (`/changes/<id>`), the `Send review to session` button beside the heading.
+- Web: on the session's change (`/sessions/<id>/change`), the `Send <n> to <agent>` button in the
+  Comments rail.
 - Web: on the session page and the review page, the pending follow-up line (`follow-up pending`)
   with its `Deliver` button once the session is no longer live.
 - Web: the Now page and the Worktrees tab append `· follow-up pending` to a session's facts.
@@ -58,27 +59,33 @@ Preconditions:
   surface's delivery needs open, unsent comments of its own and a settled session again: add
   comments on that surface and `mend stop <id8>` between surfaces.
 
-- **Open the send dialog.** On the review page, choose `Send review to session`. Run
-  `await page.getByRole("button", { name: "Send review to session" }).click()`. An overlay titled
-  `Send review to the session` opens, with `<n> of <n> comments selected · resumes <branch>` under
-  the title and one checked checkbox per open comment.
+- **Open the send dialog.** On the session's change (`<web>/sessions/<id>/change`), the Comments
+  rail's heading reads `Comments <n> not sent` and its button reads `Send <n> to <agent>` (`Codex`
+  or `Claude`). Run `await page.getByRole("button", { name: /^Send \d+ to / }).first().click()`. A
+  dialog named `Send <n> to <agent>` opens (`page.getByRole("dialog", { name: /^Send \d+ to / })`),
+  with `<n> of <n> comments · continues <branch>` under the title and, in the group
+  `Comments to send`, one checked checkbox per open comment.
 - **Narrow the selection.** Uncheck one comment. Run
   `await page.getByRole("checkbox", { name: /<comment text>/ }).uncheck()`. The count reads
-  `<n-1> of <n> comments selected` and the instruction no longer lists that comment.
-- **Edit the instruction.** The instruction textarea follows the paragraph
-  `Instruction — edit before sending`. Append a line to it (see Gotchas for the handle). The text
-  under it reads `persisted before launch; what you send is verbatim what the session receives`.
+  `<n-1> of <n> comments · continues <branch>`, the title and confirm button read
+  `Send <n-1> to <agent>`, and the instruction no longer lists that comment.
+- **Edit the instruction.** The instruction is the textbox
+  `What <agent> receives · edit before sending`
+  (`dialog.getByRole("textbox", { name: /receives · edit before sending$/ })`). Append a line to it.
+  The text under it reads `saved before it is sent; the agent receives these words as they are`.
 - **Deliver to a settled session.** Run
-  `await page.getByRole("button", { name: "Deliver to session" }).click()`. The button reads
-  `Delivering…`, then the overlay says `Follow-up delivered` and
-  `Mend persisted the new run and marked only the selected comments sent.` Choose `Done`.
-- **Sent state.** The delivered comments' cards read `<author> · sent to session`; the unchecked one
-  still reads `open`, and the heading line's open-comment count drops.
+  `await dialog.getByRole("button", { name: /^Send \d+ to / }).click()`. The button reads
+  `Sending…`. In source the dialog then reads `Sent to <agent>` with
+  `Mend recorded the new turn and marked only the selected comments sent.` and `Done`; the box run
+  of 17 Nov did not capture it (see Gotchas). Choose `Done` if it shows.
+- **Sent state.** The rail's heading drops to `Comments <m> not sent`; each delivered change-level
+  comment shows as a card reading `<author> · sent` over its body; the unchecked one is still listed
+  as not sent.
 - **Session resumed.** Go to `<web>/sessions/<id>`. The status reads `Running · recording` again,
   and the terminal or record shows the delivered instruction as the new first message.
 - **Pending while live.** While that session runs, add a comment on the review and send it again
-  with `Send review to session` and `Deliver to session`. The overlay says
-  `Follow-up saved pending`. The review page and the session page show `follow-up pending` and
+  with `Send <n> to <agent>` in the rail and in the dialog. The dialog's title reads
+  `Saved, not sent yet`. The review page and the session page show `follow-up pending` and
   `the session is live — this bundle remains pending`.
 - **Second view.** Run `mend sessions --project <project> --json`. The session's
   `review.pendingFollowUp` is `true`.
@@ -144,22 +151,24 @@ Preconditions:
 
 ## Gotchas
 
-- The send overlay is a plain `div`: it has no `role="dialog"` and no accessible name. Wait for the
-  text `Send review to the session`, not for a dialog role. That is a finding.
-- The instruction textarea has no label; the paragraph `Instruction — edit before sending` above it
-  is not associated with it. It is the only textarea inside the overlay. That is a finding.
+- The send overlay is a `dialog` named by its title, `Send <n> to <agent>`, and the instruction is
+  the textbox `What <agent> receives · edit before sending`; the box's ARIA snapshot showed both on
+  17 Nov. After `Send <n> to <agent>` the box saw `Sending…` and then no further dialog text: the
+  `Sent to <agent>` title, its status line and `Done` (`send-review.tsx`) are from source, not
+  confirmed by a capture. Read the delivery from the rail (`Comments 0 not sent`, `<author> · sent`)
+  and from `mend wait <id> --turn`.
 - Errors inside the overlay are plain text
   (`delivery failed before membership finalized · retry uses the same key unless you edit`), not
   `role="alert"`.
 - Each comment checkbox is named by its whole row: `<file>:<line> · <body>`, or
   `whole change · <body>` for a change-level comment. Match on the comment text with a regular
   expression.
-- `Send review to session` is disabled with no open, unsent comments, and absent for a viewer who
+- `Send <n> to <agent>` is disabled with no open, unsent comments, and absent for a viewer who
   cannot steer. For a session whose agent runs in a terminal, only its owner sends: everyone else
   reads `Comments stay here.` and an owner-only line.
 - Delivery resumes the agent with the instruction as its first message. Drive it with a `claude` or
-  `codex` session. A `mend run` session has no agent to resume: the web and the phone offer no
-  `Send review to session` there and read
+  `codex` session. A `mend run` session has no agent to resume: the web offers no
+  `Send <n> to <agent>` and the phone no `Send review` there, and they read
   `Comments stay here. This run session has no agent to send the review to. Start an agent in this worktree, then send it.`
   The server refuses a delivery to it in the same words and records nothing. The desktop (not
   shipping) still offers `Deliver to session`; it ends in those words.

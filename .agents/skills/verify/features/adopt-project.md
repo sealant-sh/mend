@@ -67,32 +67,39 @@ Preconditions:
 - **Open Projects.** Go to the directory. Run `await page.goto("<web>/projects")`. The heading
   `Projects` is visible (`page.getByRole("heading", { name: "Projects", exact: true })`).
 - **Open the adopt panel.** Choose `Adopt a repository`. Run
-  `await page.getByRole("button", { name: "Adopt a repository" }).click()`. The textbox
-  `Repository Git URL` appears, and the same button now reads `Close`.
+  `await page.getByRole("button", { name: "Adopt a repository" }).click()`. The dialog
+  `page.getByRole("dialog", { name: "Adopt a repository" })` opens with the combobox `Repository`
+  (`dialog.getByRole("combobox", { name: "Repository" })`) focused. With no GitHub login on the
+  server its list reads the status
+  `GitHub search is off: the Mend server has no GitHub login · paste any git URL`.
 - **Refuse a local path.** Type a path that is not a network URL. Run
-  `await page.getByRole("textbox", { name: "Repository Git URL" }).fill("/tmp/not-a-url")`. An alert
-  appears (`page.getByRole("alert")`) and the `Adopt` button is disabled.
-- **Enter the URL and name.** Run
-  `await page.getByRole("textbox", { name: "Repository Git URL" }).fill("<repo-url>")` and
-  `await page.getByRole("textbox", { name: "Project name (optional)" }).fill("<project>")`. The
-  alert is gone and `Adopt` is enabled.
-- **Pick access and visibility.** The access row `git access:` has `mend key` and `bridge`; the
-  account's own mode (Settings) is pressed. Run
-  `await page.getByRole("button", { name: "mend key" }).click()`. The `mend key` button reports
-  `aria-pressed="true"`, and the panel shows the account's Mend key card (choosing `mend key`
-  creates the key when the account has none). The `only you` button is pressed by default; leave it.
-- **Adopt.** Run `await page.getByRole("button", { name: "Adopt", exact: true }).click()`. The
-  button reads `Adopting…`, then the panel closes and the toggle reads `Adopt a repository` again.
+  `await dialog.getByRole("combobox", { name: "Repository" }).fill("/tmp/not-a-url")`. The combobox
+  reports `aria-invalid="true"`, the line under the form reads
+  `Use an HTTP(S), SSH, SCP-style, or git:// repository URL. Local paths and file:// URLs are not supported.`
+  and `Adopt` is disabled. While the combobox's list is open, the ARIA snapshot holds only the
+  combobox (see Gotchas); read the line and `Adopt` from a screenshot, or after the list closes.
+- **Enter the URL and name.** Fill the `Repository` combobox with `<repo-url>` and the `Name` field
+  with `<project>`. The line is gone and `Adopt` is enabled.
+- **Pick access and visibility.** The group `Git access` has `Mend's key` and `Your computer's key`.
+  Run
+  `await dialog.getByRole("group", { name: "Git access" }).getByRole("button", { name: "Mend's key" }).click()`;
+  the dialog shows the account's Mend key card, or `Create Mend's key` when it has none. The group
+  `Visible to` has `Only you` pressed by default; leave it.
+- **Adopt.** Run `await dialog.getByRole("button", { name: "Adopt", exact: true }).click()`. The
+  dialog shows the clone's progress, then its title reads `<project> adopted` with `Done` and
+  `Open project`.
 - **Confirm in the directory.** Run
-  `await page.getByRole("searchbox", { name: "Filter projects by name, origin or store path" }).fill("<project>")`.
-  A count `1 of <n>` appears and the directory lists one row link whose name starts with `<project>`
-  and a space (`page.getByRole("main").getByRole("link", { name: new RegExp("^<project> ") })`).
-  Scope it to `main`: the sidebar repeats every project as a link named exactly by the project name.
+  `await page.getByRole("searchbox", { name: "Filter projects by name, origin or path" }).fill("<project>")`.
+  The status beside it reads `1 of <n>`, and the table lists one row whose first cell holds the link
+  named exactly `<project>`
+  (`page.getByRole("main").getByRole("link", { name: "<project>", exact: true })`). Scope it to
+  `main`: the sidebar can repeat projects as links.
 - **Open the project.** Choose that link. The project page shows the heading `<project>`
-  (`page.getByRole("heading", { name: "<project>", exact: true })`), the navigation `Project` with
-  links `Worktrees` and `Setup`, and the region `Worktrees` with its heading
-  (`page.getByRole("heading", { name: "Worktrees", exact: true })`). Without `exact: true` the
-  heading also matches `No worktrees yet`.
+  (`page.getByRole("heading", { name: "<project>", exact: true, level: 1 })`), a line
+  `<origin> · <default branch> · <visibility>`, and the navigation `<project> project` with the
+  links `Sessions <n>`, `Worktrees <n>`, `Resources <n>`, `Skills <n>` and `Settings`. The landing
+  tab is Sessions (the region `Sessions in <project>`); the region `Worktrees` is on
+  `/projects/<id>/worktrees`, reached by the `Worktrees <n>` link.
 - **CLI entry.** Adopt a second copy under another name. Run
   `mend adopt <repo-url> --name <project>-cli --auth mend-key`. Exit code `0`, and stdout starts
   with `✓ adopted · <project>-cli · <store path>`, then `  default branch <branch>`,
@@ -153,19 +160,21 @@ Preconditions:
 - `Adopt a repository` names a link in the first-run checklist and the expanded rail, and a button
   on the Projects page. Ask for the role as well as the name.
 - The `Adopt` button's name is a prefix of `Adopt a repository`. Pass `exact: true`.
-- While the panel is closed it carries the `hidden` attribute, so its fields are not in the
-  accessibility tree. Open it first.
-- The panel's own title `Adopt a repository` is a plain paragraph, not a heading or a labelled form.
-  Do not wait for a heading by that name.
-- A project row's link name is the whole row: name, source, default branch, adoption date and live
-  count. Match it with an anchored regular expression that ends the name with a space
-  (`^<project> `), so `<project>-cli` does not match, and scope it to `page.getByRole("main")`: at
-  viewports 1024 px and wider the sidebar (`complementary`) lists every project as a link named
-  exactly by its name, on every page.
+- The panel is a `dialog` named `Adopt a repository`
+  (`apps/web/src/components/projects-index/adopt-dialog.tsx`). While the `Repository` combobox's
+  list is open, the box's ARIA snapshot (17 Nov) held only the combobox, its status and `Dismiss`:
+  the refusal line and `Adopt` were in the screenshot, not the snapshot. The refusal line is the
+  form's `role="alert"` paragraph in source; that it is exposed as an alert once the list closes is
+  not confirmed by a capture.
+- The handles of the steps after the refusal (`Name`, `Git access`, `Visible to`, the adopted state)
+  come from source, not from a box capture: the box flow adopts nothing.
+- A project's directory row is a table `row` whose name is the whole row; the link inside its first
+  cell is named exactly by the project's name (box, 17 Nov). Match it with `exact: true`, so
+  `<project>-cli` does not match, and scope it to `page.getByRole("main")`.
 - Accessible names match as case-blind substrings unless `exact: true`. `Worktrees` matches
   `No worktrees yet`. On a project page two links are named `Projects` (the sidebar's and the page
   header's): scope to `main` or the `Primary` navigation.
-- Choosing `mend key` creates the user's Mend key and shows its public key. A private repository
+- `Create Mend's key` creates the user's Mend key and shows its public key. A private repository
   then needs that key on the git host before an SSH clone succeeds. Use a disposable public HTTP(S)
   repository unless the run is about git access: neither mode signs an HTTP(S) clone.
 - Project names are unique within an organization. Rerunning the recipe needs a fresh `<project>` or

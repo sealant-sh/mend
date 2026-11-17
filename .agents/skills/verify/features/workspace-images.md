@@ -44,15 +44,24 @@ Preconditions:
 
 - Mend is healthy at `<web>`, signed in as the instance's first account (the operator and the
   organization's owner), and `<project>` is adopted.
-- The project and the organization have no override: the project's panel line ends `· inherited` and
-  the organization panel's line ends `· instance`.
+- The project and the organization have no override: each field of the project's `Image` section
+  reads `from the instance default`, and the organization's line ends `· from the instance`.
 - `<package>` is a package id the platform's catalog resolves for Arch and no saved definition uses
   yet (for example `htop`, if the catalog has it). Launch confirms it.
 - `const section = (name) => page.locator("section").filter({ has: page.getByRole("heading", { name, exact: true }) })`.
 
-- **Read the inherited image.** Open `<project>`'s Setup tab. `section("Workspace image")` reads
-  `<os> · <n> packages · inherited` (the default install reads `arch · 17 packages`) and shows the
-  button `Edit…`.
+- **Read the image.** Open `<project>`'s Settings tab, `Workspace` sub-tab
+  (`<web>/projects/<id>/settings/workspace`). The heading `Image`
+  (`page.getByRole("heading", { name: "Image", exact: true })`) reads
+  `What the workspace is built from. New sessions wait for a rebuild.` and holds the groups `Base`
+  (`OS family`, `Custom image`), `OS` (`Arch`, `Fedora`, `Ubuntu`, `Nix`) and `Login shell` (`bash`,
+  `zsh`, `fish`), each a `page.getByRole("group", { name })` with the chosen button
+  `aria-pressed="true"`, and the textbox `Packages` (placeholder `packages, separated by spaces`).
+  Each field's source reads `set for <project> · reset` when the project overrides it (the box, 17
+  Nov: all four, `OS family`, `Ubuntu`, `zsh`), else `from your organization` or
+  `from the instance default`. A runtime that cannot use a choice disables its button and says why
+  below the group (Boat: `Custom image`, `Arch`, `Fedora`). There is no
+  `<os> · <n> packages · inherited` line and no `Edit…`.
 - **Open the editor.** Run
   `await section("Workspace image").getByRole("button", { name: "Edit…" }).click()`. Buttons
   `os family` and `custom image`, OS buttons `arch`, `fedora`, `ubuntu`, `nix`, shell buttons
@@ -88,15 +97,16 @@ Preconditions:
   ` · step <n>/<m>` after `image` when the platform reports the step). Close with
   `tmux kill-session -t img`.
 - **Use default.** Open `Edit…` and choose `Use default`. The line ends `· inherited` again.
-- **Organization default.** Go to `<web>/settings`.
-  `section("Workspace environment · <organization>")` reads `<summary> · instance` and the button
-  `Set for <organization>`. Choose it. The editor shows `OS family`, `Custom image`, one button per
-  OS (`Arch`, `Fedora`, `Ubuntu`, `Nix`, each named with its description), `bash`/`zsh`/`fish`, the
-  Docker toggle, the textbox `Packages`, the line `<n> packages · checked for Arch on save`,
-  `Cancel` and `Save environment` (disabled until something changes). Add `<package>` to `Packages`;
-  the status reads `Unsaved environment changes`. Choose `Save environment`: it reads
-  `Checking packages…`, then `Saved · packages resolved by Sealant`, and `Cancel` becomes
-  `Follow the instance`.
+- **Organization default.** Go to `<web>/settings/organization/environment`.
+  `section("Workspace environment · <organization>")` reads
+  `<os> · <n> packages · from the instance` (or `… · set for <organization>`) and the button
+  `Set for <organization>` (see Gotchas). Choose it. The editor shows `OS family`, `Custom image`,
+  one button per OS (`Arch`, `Fedora`, `Ubuntu`, `Nix`, each named with its description),
+  `bash`/`zsh`/`fish`, the Docker toggle, the textbox `Packages`, the line
+  `<n> packages · checked for Arch on save`, `Cancel` and `Save environment` (disabled until
+  something changes). Add `<package>` to `Packages`; the status reads `Unsaved environment changes`.
+  Choose `Save environment`: it reads `Checking packages…`, then
+  `Saved · packages resolved by Sealant`, and `Cancel` becomes `Follow the instance`.
 - **Project follows the organization.** Back on `<project>`'s Setup tab (no project override), the
   `Workspace image` line counts the organization's packages and ends `· inherited`.
 - **Follow the instance.** In Settings choose `Follow the instance`. The organization panel's line
@@ -111,6 +121,13 @@ Preconditions:
 
 ## Gotchas
 
+- The project's image is edited in place in the `Image` section of the Settings → Workspace sub-tab
+  (`apps/web/src/components/project/settings/workspace-image.tsx`); the steps here that open
+  `Edit…`, `Save override` and `Use default` describe the older Setup-tab panel and need a rewrite
+  against that section. Its save bar and `reset` were not driven on the box. The organization's
+  `Workspace environment · <organization>` line (`<os> · <n> packages · from the instance`) is from
+  `apps/web/src/components/settings/environment-organization.tsx`; the box run of 17 Nov looked for
+  it on Defaults and did not read it.
 - Both editors have a Docker service switch (`role="switch"`, named `Docker service` by its label):
   the project's `Workspace image` panel since mend#663
   (`apps/web/src/routes/projects.$projectId.setup.tsx:375-386`), and Settings. The live pass

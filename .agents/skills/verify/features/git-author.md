@@ -36,24 +36,27 @@ Preconditions:
 
 - **Show.** Run `mend git-author`. Stdout is
   `<account name> <<account email>> · your account's name and email`. Exit code `0`.
-- **Web panel.** Run `await page.goto("<web>/settings")`. Under the heading `Git author`, the
-  textbox `Name` holds the account name, the textbox `Email` the account email, and the line reads
-  `your account's name and email · not set`. `Save author` is disabled; there is no
-  `Use my account's` button.
-- **Web refusal.** Run `await page.getByRole("textbox", { name: "Email" }).fill("not-an-email")`.
-  The line `the email is not an address like you@example.com` appears and `Save author` stays
-  disabled.
+- **Web panel.** Run `await page.goto("<web>/settings/git-access")`. Under the heading `Git author`,
+  the textbox `Name` holds the account name and the textbox `Email` the account email, each field
+  marked `from your account`. There is no `Use my account's name and email` button and no save bar.
+- **Web refusal.** Run `await page.getByRole("textbox", { name: "Email" }).fill("not-an-email")`. A
+  save bar appears whose summary reads `the email is not an address like you@example.com`, and
+  `Save author` is disabled.
 - **Web save.** Run `await page.getByRole("textbox", { name: "Name" }).fill("Verify Web")` and
   `await page.getByRole("textbox", { name: "Email" }).fill("verify-web@example.com")`, then
-  `await page.getByRole("button", { name: "Save author" }).click()`. The button reads `Saving…`,
-  then the line reads `saved` and the button `Use my account's` appears.
+  `await page.getByRole("button", { name: "Save author" }).click()`. The page then says
+  `Saved · applies to sessions launched from now on` and the button
+  `Use my account's name and email` appears.
 - **Second view.** Run `mend git-author`. Stdout is
   `Verify Web <verify-web@example.com> · your setting`.
 - **CLI set.** Run `mend git-author "Verify Cli" verify-cli@example.com`. Stdout is
   `✓ git author · Verify Cli <verify-cli@example.com> · your setting`, then
   `  sessions launched from now on commit as this, unless their dotfiles say otherwise`. Exit code
-  `0`. Reload the web page: the textboxes hold `Verify Cli` and `verify-cli@example.com` and the
-  line reads `your setting`.
+  `0`. Reload the web page: the textboxes `Name` and `Email` hold `Verify Cli` and
+  `verify-cli@example.com`, no `from your account` mark, and the button
+  `Use my account's name and email`
+  (`page.getByRole("button", { name: "Use my account's name and email" })`) is shown. The web has no
+  `your setting` words.
 - **CLI refusal.** Run `mend git-author "Verify Cli" not-an-email`. Stderr is
   `mend: git author not saved · the email is not an address like you@example.com`. Exit code `1`.
   Run `mend git-author OnlyName`. Stderr is `mend: usage: mend git-author [<name> <email>]` followed
@@ -62,9 +65,10 @@ Preconditions:
   `mend run --project <project> -- sh -c 'git config user.name > AUTHOR.md && git config user.email >> AUTHOR.md'`.
   Exit code `0`. The change (see [Review a change](./review-change.md)) holds `AUTHOR.md` with
   `Verify Cli` and `verify-cli@example.com`.
-- **Web clear.** Run `await page.getByRole("button", { name: "Use my account's" }).click()`. The
-  textboxes return to the account's name and email, the line reads `saved`, and `Use my account's`
-  disappears. After a reload the line reads `your account's name and email · not set`.
+- **Web clear.** Run
+  `await page.getByRole("button", { name: "Use my account's name and email" }).click()`. It reads
+  `Saving…`, then the textboxes return to the account's name and email marked `from your account`,
+  and the button disappears.
 - **CLI clear.** Set it again with the CLI, then run `mend git-author --clear`. Stdout is
   `✓ git author · <account name> <<account email>> · your account's name and email`.
 - **Proof.** Keep the ARIA snapshot and screenshot of the Git author panel before the save, after
@@ -73,10 +77,12 @@ Preconditions:
 
 ## Gotchas
 
-- `Use my account's` uses a straight apostrophe in its accessible name. It is rendered only while
-  the author comes from a setting.
-- The panel's status line (`saved`, `your setting`, `your account's name and email · not set`) and
-  its red error line are plain text, not `role="status"` or `role="alert"`.
+- `Use my account's name and email` uses a straight apostrophe in its accessible name. It is
+  rendered only while the author comes from a setting.
+- On the box (17 Nov) the panel was read with a setting saved: `Name`, `Email` and
+  `Use my account's name and email`. The `from your account` marks, the save bar (`Save author`, its
+  summary, `Saved · applies to sessions launched from now on`) and the clear's `Saving…` are from
+  `apps/web/src/components/settings/git-access.tsx`, not confirmed by a capture.
 - The web form checks only once something changed: an unchanged invalid value shows no error.
 - `mend git-author` takes exactly two words, name then email. Quote a name with spaces.
 - A `user` section in the person's dotfiles or in the repository's config wins over the setting, by

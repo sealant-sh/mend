@@ -14,7 +14,8 @@ origin's branches into the store so new worktrees base on current tips.
 
 - `worktrees-tab` shows the Worktrees tab: the region `Worktrees`, its count, and each worktree with
   its sessions.
-- `worktrees-view` switches between `List` and `Cards`, remembered in the browser.
+- `worktrees-view`: gone. The tab has no `List`/`Cards` switch (none on the box, 17 Nov; none in
+  `apps/web/src/components/project/tabs/worktrees.tsx`).
 - `worktrees-toggle` hides or shows one worktree's sessions.
 - `worktrees-new` creates a worktree from `New worktree` (or `Create your first worktree`).
 - `worktrees-menu` opens a worktree's right-click menu: open its newest session or review, start a
@@ -32,10 +33,9 @@ origin's branches into the store so new worktrees base on current tips.
 ## How to get to it (user POV)
 
 - Web: a project's Worktrees tab, `/projects/<id>`, reached from the Projects list or the Now page's
-  project name. The tab holds the `Worktree view` group (`List`, `Cards`), `New worktree`, the tree,
-  and `Clear settled` once a worktree is settled. Each worktree header has a show/hide toggle, its
-  sessions count, `Review`, and `New session in <worktree>`; right-clicking the header opens its
-  menu.
+  project name. The tab holds `New worktree`, the tree, and `Clear settled` once a worktree is
+  settled. Each worktree header has a show/hide toggle, its sessions count, `Review`, and
+  `New session in <worktree>`; right-clicking the header opens its menu.
 - CLI: `mend worktrees [--project <p>] [--json]`,
   `mend worktrees rm <name> [--force] [--project <p>]`, `mend refresh [project]`, and
   `mend sessions --json=v2` (the same grouped shape).
@@ -68,27 +68,26 @@ Preconditions:
   `New worktree` opens. Run `await page.getByRole("textbox", { name: "Name" }).fill("verify-wt")`;
   the line under it reads `branch mend/verify-wt`. Run
   `await page.getByRole("button", { name: "Create worktree" }).click()`. The button reads
-  `Creating…`, the dialog closes, and the tree shows `verify-wt` with `mend/verify-wt · base <base>`
-  and `0 sessions`, and the line `No visible sessions` under it. A worktree `mend handoff` made
-  reads `mend/<name> · base <base> · handed off from <machine>`, and each of its session lines ends
-  `· handed off from <machine>` (see [Hand off local work](./handoff.md)); `mend worktrees` prints
-  no such fact.
+  `Creating…`, the dialog closes, and the tab lists
+  `page.getByRole("listitem", { name: "Worktree verify-wt" })`, reading `verify-wt`,
+  `base <base>@<sha7>` (`base master@7fd1a60` on the box), `0 sessions` and `not landed`, a disabled
+  `Review`, `New session in verify-wt`, and the line `No visible sessions` under it. A worktree
+  `mend handoff` made reads `base <base>@<sha7> · handed off from <machine>`, and each of its
+  session lines ends `· handed off from <machine>` (see [Hand off local work](./handoff.md));
+  `mend worktrees` prints no such fact.
 - **CLI view.** Run `mend worktrees --project <project>`. A line starts `verify-wt` and reads
   `<project>  mend/verify-wt · base <base>  0 sessions`. Run
   `mend worktrees --project <project> --json`. The JSON has `"version": 2` and a worktree with
   `"name": "verify-wt"`, `"branch": "mend/verify-wt"` and `"sessions": []`.
-- **Switch the view.** Run `await page.getByRole("button", { name: "Cards" }).click()`. `Cards` has
-  `aria-pressed="true"` and `List` `false`; each worktree becomes its own card. Reload the page:
-  `Cards` is still pressed. Switch back with `List`.
 - **Worktree menu.** Right-click the worktree's name
   (`await page.getByText("verify-wt", { exact: true }).first().click({ button: "right" })`). A menu
   (`role="menu"`, titled `verify-wt`) lists `Start claude session here`, `Start codex session here`,
   `Start opencode session here`, `Start pi session here`, `Copy directory name`, `Copy branch name`
   and, with no live session, `Remove worktree…`; `Open newest live session` when a member is live,
   else `Open newest session` when it has members; `Open review` when it has a change;
-  `Copy base ref` when a base ref was named. Choose
-  `page.getByRole("menuitem", { name: "Copy directory name" })`: the item reads `Copied`, then the
-  menu closes. Read the clipboard, not the item
+  `Copy base ref` when a base ref was named (the box's new worktree listed it, after
+  `Copy branch name`). Choose `page.getByRole("menuitem", { name: "Copy directory name" })`: the
+  item reads `Copied`, then the menu closes. Read the clipboard, not the item
   (`page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: web })`, then
   `navigator.clipboard.readText()`): it holds the worktree's directory name (`verify-wt`), not a
   path: a captured worktree has no directory on the server.
@@ -161,9 +160,9 @@ Preconditions:
   server's refusal words.
 - **Proof.** Capture the Worktrees tab
   (`page.getByRole("region", { name: "Worktrees" }).ariaSnapshot()` and a screenshot) after create,
-  in Cards view, with the `Not removed` dialog open, and after Clear settled. Keep every
-  `mend worktrees`, `mend worktrees rm`, `mend refresh` transcript with exit codes, and the tmux
-  captures.
+  with the `Not removed` dialog open, and after Clear settled. The tab has no `Cards`/`List` switch.
+  Keep every `mend worktrees`, `mend worktrees rm`, `mend refresh` transcript with exit codes, and
+  the tmux captures.
 
 ## Gotchas
 
@@ -173,9 +172,12 @@ Preconditions:
   picks the worktree header over a session line with the same text.
 - The worktree and session menus take focus as they open: `Escape` closes them, as does a click
   outside (see [Now and sessions](./now-and-sessions.md)).
-- The worktree header has no role, and its menu (`role="menu"`) has no accessible name; only its
-  `menuitem`s are named. A confirm item renames itself to its confirmation on the first click, and a
-  copy item to `Copied`.
+- Each worktree is a `listitem` named `Worktree <shown name>`; its header row inside has no role.
+  Its menu (`role="menu"`) has no accessible name, opens with the worktree's name as a paragraph,
+  and only its `menuitem`s are named. A confirm item renames itself to its confirmation on the first
+  click, and a copy item to `Copied`. The box run of 17 Nov saw the row leave after
+  `Remove worktree…` but did not capture the `Really remove worktree <name>? …` item: that wording
+  is from `apps/web/src/lib/workbench-menus.ts`, not confirmed by a capture.
 - `Remove worktree…` is absent while any session in the worktree is live; the CLI refuses the same
   case itself, before asking the server.
 - `mend run --name <n>` names its worktree; without it the name is automatic (`wt-<id>`). Read it

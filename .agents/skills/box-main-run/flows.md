@@ -133,10 +133,14 @@ flows reuse what earlier ones made:
 - **Map:** adopt-project.md `projects-directory`, `project-page`, `adopt-web` (the panel opens and
   refuses a local path; nothing is adopted)
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** On `/projects`, open `Adopt a repository`, type a local path and read the refusal, close
-  the panel; filter the directory by `<p>` and open its page.
-- **See:** an alert with `Adopt` disabled; `1 of <n>` and one row for `<p>`; the project heading
-  `<p>` with the `Worktrees` region.
+- **Do:** On `/projects`, open `Adopt a repository`, type a local path in its `Repository` combobox
+  and read the refusal, close the dialog with `Cancel`; filter the directory by `<p>` and open its
+  page.
+- **See:** the dialog `Adopt a repository` with the `Repository` combobox marked invalid
+  (`aria-invalid`), the line
+  `Use an HTTP(S), SSH, SCP-style, or git:// repository URL. Local paths and file:// URLs are not supported.`
+  and `Adopt` disabled; `1 of <n>` and one row for `<p>`; the project heading `<p>` with the
+  navigation `<p> project` and its `Worktrees <n>` link.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/projects.index.tsx`, `apps/web/src/components/project/`,
@@ -240,13 +244,15 @@ flows reuse what earlier ones made:
 - **Map:** send-review-back.md `send-open`, `send-select`, `send-deliver`, `send-sent-state`
 - **Needs:** Boat; real turn (codex); web; `attach-resume.boat-stop-resume` (the turn's session,
   settled)
-- **Do:** On the turn's change, add the change-level comment
-  `Add a second line to MAIN-RUN.md reading: reviewed.`, choose `Send review to session`, then
-  `Deliver to session`. Wait for the turn with `M wait <id> --turn --timeout 8m`.
-- **See:** the overlay `Send review to the session` with
-  `1 of 1 comments selected · resumes <branch>`, then `Follow-up delivered`; the card reads
-  `sent to session`; the session resumes and its change shows `MAIN-RUN.md` with the lines `seen`
-  and `reviewed`.
+- **Do:** On the turn's change, in the Comments rail's `Comment on the whole change` box, add the
+  comment `Add a second line to MAIN-RUN.md reading: reviewed.` and choose `Comment`; choose
+  `Send 1 to Codex` in the rail, then `Send 1 to Codex` in the overlay. Wait for the turn with
+  `M wait <id> --turn --timeout 8m`.
+- **See:** the rail's `Comments 1 not sent`; the overlay `Send 1 to Codex` with
+  `1 of 1 comments · continues <branch>` and the checked comment
+  `whole change · Add a second line …`; its confirm button reads `Sending…`; then
+  `Comments 0 not sent` and the card `<owner> · sent` over the comment; `M wait` exits `0`; the
+  change shows `MAIN-RUN.md` with the lines `seen` and `reviewed`.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
@@ -359,9 +365,9 @@ flows reuse what earlier ones made:
 - **Needs:** no session; no turn; web; a fresh browser context (not the saved `browser.json`)
 - **Do:** In a context with no saved sign-in, open `/settings`, sign in with the account file, open
   `/authorize` with no code, then `Sign out`. The saved browser state other flows use is untouched.
-- **See:** `/login?next=%2Fsettings` with the heading `Sign in` and
-  `Accounts are created by invitation. …`; after sign-in the heading `Settings`;
-  `No code to authorize`; after sign-out, `/login`.
+- **See:** `/login#next=%2Fsettings%2Faccount` with the heading `Sign in` and
+  `Accounts are created by invitation. …`; after sign-in `/settings/account` with the heading
+  `Account`; the heading `No code to authorize`; after sign-out, `/login`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
 - **Areas:** `packages/auth/`, `apps/web/src/routes/login.tsx`, `apps/web/src/routes/authorize.tsx`
@@ -372,9 +378,11 @@ flows reuse what earlier ones made:
 - **Needs:** no session; no turn; web and CLI; none
 - **Do:** On Settings → Devices choose `Pair a phone`, read the panel, `Done`; run `M pair`,
   `M pair --url http://not-configured.invalid`, `M qr hello`, `M qr`. Claim no code.
-- **See:** a code `XXXX-XXXX` with a countdown `expires in m:ss` that falls; `✓ pairing code …` and
-  `  expires in 10 min · one device, once`; the `--url` refusal and `mend: usage: mend qr <text>`,
-  each exit `1`; the device list names this CLI's device as `cli · paired …`.
+- **See:** the dialog `Pair a phone` with a code `XXXX-XXXX`, its QR, and
+  `Scan with the Mend app, or type the code. Expires in m:ss.` where `m:ss` falls between two reads;
+  `✓ pairing code …` and `  expires in 10 min · one device, once`; the `--url` refusal and
+  `mend: usage: mend qr <text>`, each exit `1`; the `Devices` table's row for this CLI's device
+  reading `<device> cli`, its paired day (`Nov 5, 2026`) and its last use.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/settings.devices.tsx`, `apps/cli/src/`, `apps/api/src/`
@@ -424,8 +432,10 @@ flows reuse what earlier ones made:
 - **Needs:** no session; no turn; CLI and web; `<p>`
 - **Do:** `M models` and `M models --json`; on `/` pick `<p>` in the composer and open the agent
   menu, pick `codex`, read the `Model` and `Thinking` groups, `Escape`, and start nothing.
-- **See:** one block per harness with `default` on one model; JSON `"version": 1` with the same ids;
-  the menu's default model row `aria-checked="true"`.
+- **See:** one block per harness; codex's block with `default` on one model, claude's and opencode's
+  with no `default` (neither names one, by design); JSON `"version": 1` with the same ids,
+  `defaultModel` set for codex and `null` for claude and opencode; codex's `Model` group with its
+  default row (`<label> default`) `aria-checked="true"`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/web/src/`, `apps/api/src/`
@@ -436,9 +446,12 @@ flows reuse what earlier ones made:
 
 - **Map:** dotfiles.md `dotfiles-show`
 - **Needs:** no session; no turn; CLI and web; none
-- **Do:** `M dotfiles`; read Settings → Dotfiles.
-- **See:** `repo …` and `snapshot …` lines (`none` or the saved values); the panel footer
-  `repo · … — snapshot · …` agrees.
+- **Do:** `M dotfiles`; read Settings → Workspace (`/settings/workspace`), its `Dotfiles` and
+  `Home files` sections.
+- **See:** `repo …` and `snapshot …` lines (`none` or the saved values); the `Repository` field
+  empty when `repo` is `none` (or holding the saved URL); `Home files 0 files` with the row
+  `nothing synced yet · run mend dotfiles sync, or add files here` when `snapshot` is `none` (or the
+  snapshot's file count and rows).
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/dotfiles.ts`, `apps/web/src/`, `apps/api/src/`
@@ -464,10 +477,12 @@ flows reuse what earlier ones made:
   `git-author-clear`
 - **Needs:** no session; no turn; CLI and web; none
 - **Do:** `M git-author`; when it reads `· your account's name and email`, set one with the CLI,
-  reload Settings, try the `not-an-email` refusal, then `M git-author --clear`. When a setting is
-  already saved, only show it and stop.
-- **See:** `✓ git author · Verify Cli <verify-cli@example.com> · your setting`; the web panel reads
-  `your setting`; the refusal, exit `1`; after the clear, `· your account's name and email`.
+  reload Settings → Git access (`/settings/git-access`), try the `not-an-email` refusal, then
+  `M git-author --clear`. When a setting is already saved, only show it and stop.
+- **See:** `✓ git author · Verify Cli <verify-cli@example.com> · your setting`; under `Git author`
+  the textboxes `Name` holding `Verify Cli` and `Email` holding `verify-cli@example.com`, and the
+  button `Use my account's name and email`; the refusal, exit `1`; after the clear,
+  `· your account's name and email`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/git-author.ts`, `apps/api/src/`, `apps/web/src/`
@@ -537,10 +552,13 @@ flows reuse what earlier ones made:
 - **Map:** workspace-images.md `image-project-override` (the panel read),
   `image-organization-default` (read)
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** Read `<p>`'s `Workspace image` panel and the organization default in Settings. Open no
-  editor.
-- **See:** `ubuntu · <n> packages · …` with `inherited` or `project override`, and `Edit…`; the
-  organization line ends with its source.
+- **Do:** Read the `Image` section of `<p>`'s Settings → Workspace sub-tab, and the organization
+  default on Settings → Organization → Environment. Choose nothing.
+- **See:** under `Image`, the groups `Base` (`OS family` pressed), `OS` (`Ubuntu` pressed),
+  `Login shell` (one shell pressed) and the textbox `Packages` listing the packages, each field
+  marked `set for <p> · reset`, or `from your organization` or `from the instance default` when it
+  follows; the section `Workspace environment · Default` with the line
+  `<os> · <n> packages · from the instance` or `… · set for Default`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/`
@@ -549,9 +567,14 @@ flows reuse what earlier ones made:
 
 - **Map:** automatic-install.md `install-detected`, `install-colocated`
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** Read `<p>`'s `Dependencies` card.
-- **See:** `automatic install` with `on` or `off` pressed and a `detected · …`, `runs · … · custom`
-  or `off · …` line, or `Capture mode only. …` (record which).
+- **Do:** Read the `Dependencies` section of `<p>`'s Settings → Workspace sub-tab. Change nothing.
+- **See:** `Installs dependencies in every new worktree before the agent starts.`; the switch
+  `Automatic install` checked (or unchecked, with
+  `No install runs, in sessions or for the shared cache`); while checked, the textbox
+  `Custom command` and one line under it:
+  `no lockfile recognised on origin/<default branch> · detected again at launch`,
+  `detected · <command> · from <lockfile> on origin/<default branch>` or `runs · <command> · custom`
+  (record which); or `Capture mode only. …`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/`
@@ -560,9 +583,11 @@ flows reuse what earlier ones made:
 
 - **Map:** hot-sessions.md `hot-status`, `hot-count` (read)
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** Read `<p>`'s `Hot sessions` section. Change no count.
-- **See:** `off` with the count `0` and `Keep one fewer workspace ready` disabled, or the status
-  words the map lists for a raised count (record which).
+- **Do:** Read the `Ready workspaces` section of `<p>`'s Settings → Workspace sub-tab. Change no
+  count.
+- **See:** `Ready workspaces` with the textbox `Ready workspaces` reading `0`, the status `off` and
+  `One fewer: Ready workspaces` disabled, or for a raised count its number with `<n> ready now`,
+  `<n> warming`, `<n> failed` or `none ready yet` (record which).
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/settings/`, `apps/api/src/preview-pools.ts`,
@@ -573,10 +598,14 @@ flows reuse what earlier ones made:
 - **Map:** project-settings.md `settings-background`, `settings-review-automation`,
   `settings-landing`, `settings-org-defaults` (all read)
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** Read `<p>`'s session, review automation and landing switches, and Settings → Organization
-  · Defaults. Choose nothing.
-- **See:** each project switch with one of `inherit`, `on`, `off` pressed; the five organization
-  rows with one of `Instance · on|off`, `On`, `Off` pressed.
+- **Do:** Read `<p>`'s Settings → Landing sub-tab (`Sessions`, `Landing`) and Review sub-tab
+  (`Review automation`), and Settings → Organization → Defaults. Choose nothing.
+- **See:** the groups `Run sessions in the background`, `Land when a turn completes`,
+  `Compose the description and tour`, `Suggest fixes` and `Name the session`, each with one of
+  `Inherit · on|off`, `On`, `Off` pressed; under `Defaults · Default`, six groups
+  (`Run sessions in the background`, `Compose the description & tour`, `Suggest fixes`,
+  `Name the session`, `Land when a turn completes`, `Where new sessions run`), each with one of
+  `Inherit · …`, `On`/`Off` (or `Docker`/`Boat`) pressed.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/settings/`,
@@ -774,11 +803,13 @@ flows reuse what earlier ones made:
 - **Map:** worktrees.md `worktrees-tab`, `worktrees-new`, `worktrees-view`, `worktrees-menu`,
   `worktrees-remove`, `worktrees-cli`; start-session.md `start-new-worktree`
 - **Needs:** no session; no turn; web and CLI; `<p>`
-- **Do:** On `<p>`'s Worktrees tab create `main-run-wt-<sha8>`, read it with
-  `M worktrees --project <p> --json`, switch to `Cards` and back to `List`, open its menu and remove
-  it.
-- **See:** the dialog's `branch mend/main-run-wt-<sha8>`; the row with `0 sessions`; JSON with
-  `"version": 2` and that name; after removal it is gone from both views.
+- **Do:** On `<p>`'s Worktrees tab create `main-run-wt-<sha8>` with `New worktree`, read it with
+  `M worktrees --project <p> --json`, right-click its name to open its menu, and choose
+  `Remove worktree…`, then `Really remove worktree main-run-wt-<sha8>? …`.
+- **See:** the dialog's `branch mend/main-run-wt-<sha8>`; the row `Worktree main-run-wt-<sha8>`
+  reading `base master@<sha7>`, `0 sessions`, `not landed` and `No visible sessions`; JSON with
+  `"version": 2` and that name; the menu ending `Remove worktree…`; after removal the row is gone
+  from the tab and `M worktrees --project <p> --json` no longer lists it.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/tabs/worktrees.tsx`, `apps/api/src/`,
@@ -793,7 +824,8 @@ flows reuse what earlier ones made:
   fresh clone twice.
 - **See:** `mend: … is not a git repository · …`, exit `1`;
   `✓ fetched mend/main-run-run-<sha8> · … · created` and `git show <branch>:VERIFY.md` prints
-  `verified`; the second pull ends `· already here`.
+  `verified`; the second pull prints
+  `✓ mend/main-run-run-<sha8> · <sha7> · unchanged since the last pull · nothing moved`, exit `0`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `packages/local-git/`, `apps/api/src/`
@@ -820,10 +852,12 @@ flows reuse what earlier ones made:
   `audit-log`
 - **Needs:** no session; no turn; CLI and web; none
 - **Do:** `M members`, `M org`; `M invite --email main-run@example.invalid --days 1`; on Settings →
-  Invitations revoke that link, which restores the list in the same flow; read the audit log.
+  Invitations choose `Revoke` on that link's row, which restores the list in the same flow; read the
+  audit log.
 - **See:** `<org> · 1 member` with the `▸` row `owner`; `M org` marks Default; the link, then the
-  invitation gone and `<n> spent` unchanged; the audit log's newest lines name the invite and the
-  revoke.
+  row gone from `Open invitations` and the fold `Used and closed <n> links` one higher (it appears
+  as `1 link` when absent before), its summary naming `main-run@example.invalid · revoked`; the
+  audit log's newest lines name the invite and the revoke.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
@@ -990,9 +1024,12 @@ flows reuse what earlier ones made:
 
 - **Map:** shared-control.md `share-refused` (the script case)
 - **Needs:** Boat; no turn; CLI; `start-session.boat-live`
-- **Do:** `M session share <id8> on < /dev/null`. Nothing changes.
-- **See:** `mend: non-interactive · pass --yes to turn shared control on`, exit `1`; the session
-  page still reads `Only <owner> steers this session. …`.
+- **Do:** `M session share <id8> on < /dev/null`. Nothing changes. On the session page, once it has
+  loaded, open `Share` to read it, choose nothing, and press `Escape`.
+- **See:** `mend: non-interactive · pass --yes to turn shared control on`, exit `1`; the header's
+  `Share` button, not pressed; its popover `Share this session` with the group `Shared control` and
+  `Off` pressed. The owner never reads `Only <owner> steers this session. …`: that line is for a
+  viewer who cannot steer.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`
@@ -1014,11 +1051,12 @@ flows reuse what earlier ones made:
 - **Map:** exposure.md `health-counts`, `exposure-report`, `tenancy-gate`, `shell-line`,
   `doctor-line`
 - **Needs:** no session; no turn; CLI, HTTP and web; operator for the two `mend operator` commands
-- **Do:** `curl -s $WEB/api/health`; `M operator exposure`; `M operator gate`; read the web
-  sidebar's exposure line at 1280x800; the `exposure` line of `doctor.checklist`'s output.
+- **Do:** `curl -s $WEB/api/health`; `M operator exposure`; `M operator gate`; at 1280x800, open the
+  sidebar's account button (`<name>, account and machine`) and read its popover; the `exposure` line
+  of `doctor.checklist`'s output.
 - **See:** JSON with `"tenancy": "single"` and an `exposure` object naming no item; line 1
-  `exposure · declared <posture> · …`; the gate ending `<k> of 10 items open; …`; the sidebar
-  `exposure · <posture> · https`.
+  `exposure · declared <posture> · …`; the gate ending `<k> of 10 items open; …`; the popover
+  `Account and machine` with `machine` and the line `exposure · <posture> · https`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/exposure.ts`, `packages/network/`, `apps/cli/src/`
