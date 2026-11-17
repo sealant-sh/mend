@@ -80,9 +80,7 @@ describe("QueryView", () => {
   });
 
   it("shows the caller's empty state when the read loaded nothing", async () => {
-    const page = await render(
-      <Projects read={async () => []} empty={<p>No projects yet</p>} />,
-    );
+    const page = await render(<Projects read={async () => []} empty={<p>No projects yet</p>} />);
     await settle();
     expect(page.textContent).toBe("No projects yet");
   });
@@ -102,8 +100,6 @@ export function OptionalChildRefused({ read }: { readonly read: () => Promise<st
   const query = useQuery({ queryKey: ["name"], queryFn: read });
   return (
     // @ts-expect-error The loaded child takes data that is always there, never `undefined`.
-    <QueryView query={query}>
-      {(name: string | undefined) => <p>{name ?? "nobody"}</p>}
-    </QueryView>
+    <QueryView query={query}>{(name: string | undefined) => <p>{name ?? "nobody"}</p>}</QueryView>
   );
 }

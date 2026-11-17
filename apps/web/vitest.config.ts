@@ -30,10 +30,5 @@ const testSetup = {
 export default defineConfig({
   // Vite's own resolver for the "#/" paths, as vite.config.ts uses.
   resolve: { tsconfigPaths: true },
-  plugins: [
-    vitestCiGuard({ packageName: "@mend/web" }),
-    tailwindcss(),
-    viteReact(),
-    testSetup,
-  ],
+  plugins: [vitestCiGuard({ packageName: "@mend/web" }), tailwindcss(), viteReact(), testSetup],
 });

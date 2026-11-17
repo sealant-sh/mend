@@ -25,7 +25,11 @@ the area. The roadmap is in Linear.
 - `apps/t3-gateway`: a t3code environment in front of Mend; t3code's clients pair with it (ADR
   0012).
 - `apps/vscode`: VS Code extension: open and steer sessions, workspaces over Remote-SSH.
-- `apps/web-old` is the current product web app, to be replaced by a new `apps/web`.
+- `apps/web`: the web app being rebuilt to the Sheet design. It started with no product routes; each
+  route lands in its own PR, copying the `lib` modules it needs from the old app. It runs beside the
+  old app (`pnpm dev:web`, port 3115) and ships nowhere until cut-over.
+- `apps/web-old`: the web app people use today, until cut-over. It is frozen: only Fix Now bugs go
+  there.
 - `packages/ui-old` is the Evidence Review kit that desktop, marketing, mobile, the API and the old
   web app use.
 - `packages/*`: shared libraries: `agent-conversation`, `agent-protocol` (Codex/Claude stdio

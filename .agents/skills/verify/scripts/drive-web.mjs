@@ -2,8 +2,8 @@
 // The verify skill's web driver: one headless Chromium against the tunnelled stack, one recipe.
 //
 //   node .agents/skills/verify/scripts/drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> \
-//     --private <dir> [--account <file>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] \
-//     [--cdp <url>]
+//     --private <dir> [--account <file>] [--sign-in <url>] [--state <file>] [--timeout <ms>] \
+//     [--viewport <w>x<h>] [--cdp <url>]
 //
 // --viewport sets the page size (default 1280x900; the map's mobile web runs at 390x844).
 // --cdp attaches to a browser that is already running with a remote debugging port (the desktop
@@ -20,8 +20,11 @@
 //   holding a secret;
 // - `registerSecret(name, value)` registers a credential a page minted (a token, a pairing code).
 // --account signs in at /login with the stack's first account (handover.mjs's account.json),
-// typing its password the same way. --state keeps the signed-in browser between runs. Both hold
-// credentials: keep them in the private directory, never under --out.
+// typing its password the same way. --sign-in names the server whose /login it uses, when the page
+// under --web has none of its own (the new web app, which signs in through its stack's: the session
+// cookie is for the host, on any port); it must be this run's tunnel. --state keeps the signed-in
+// browser between runs. Both hold credentials: keep them in the private directory, never under
+// --out.
 //
 // Every snapshot, log line and error goes through the registry (every
 // value, by value) and redact.mjs (every shape). A page that shows one (a field a secret was typed
@@ -77,12 +80,21 @@ const recipe = flag("recipe");
 const privateDir = flag("private");
 const state = flag("state");
 const accountFile = flag("account");
+const signIn = flag("sign-in");
 const timeout = Number(flag("timeout") ?? "30000");
 const cdp = flag("cdp");
 const viewportFlag = /^(\d+)x(\d+)$/.exec(flag("viewport") ?? "1280x900");
-if (!web || !out || !recipe || !privateDir || !viewportFlag || (cdp && (state || accountFile))) {
+if (
+  !web ||
+  !out ||
+  !recipe ||
+  !privateDir ||
+  !viewportFlag ||
+  (cdp && (state || accountFile)) ||
+  (signIn && !accountFile)
+) {
   process.stderr.write(
-    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] [--cdp <url>] (--cdp takes neither --account nor --state)\n",
+    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--sign-in <url>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] [--cdp <url>] (--cdp takes neither --account nor --state; --sign-in needs --account)\n",
   );
   process.exit(2);
 }
@@ -93,6 +105,7 @@ try {
     { ...process.env, MEND_VERIFY_PRIVATE: privateRoot(privateDir) },
     { clients: true },
   );
+  if (signIn) checkTarget(signIn, { ...process.env, MEND_VERIFY_PRIVATE: privateRoot(privateDir) });
 } catch (error) {
   if (!(error instanceof Refused)) throw error;
   process.stderr.write(
@@ -407,7 +420,7 @@ let failed = false;
 try {
   if (accountFile) {
     const account = JSON.parse(readFileSync(accountFile, "utf8"));
-    await page.goto(new URL("/login", web).href);
+    await page.goto(new URL("/login", signIn ?? web).href);
     await page.getByRole("button", { name: "Sign in" }).waitFor();
     await page.getByRole("textbox", { name: "Email" }).fill(account.email);
     await typeSecret(

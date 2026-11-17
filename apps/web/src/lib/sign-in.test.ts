@@ -53,7 +53,10 @@ const check = (location: { readonly pathname: string; readonly href: string }) =
       }),
     ],
   });
-  return requireSignedIn({ context: { queryClient, trpc: makeTrpcProxy(queryClient, client) }, location });
+  return requireSignedIn({
+    context: { queryClient, trpc: makeTrpcProxy(queryClient, client) },
+    location,
+  });
 };
 
 const thrown = async (run: Promise<void>): Promise<unknown> =>
@@ -67,7 +70,9 @@ const thrown = async (run: Promise<void>): Promise<unknown> =>
 describe("a page served to nobody", () => {
   it("redirects to sign-in, carrying the page to come back to", async () => {
     status = 401;
-    const stopped = await thrown(check({ pathname: "/sessions/s1", href: "/sessions/s1?tab=change" }));
+    const stopped = await thrown(
+      check({ pathname: "/sessions/s1", href: "/sessions/s1?tab=change" }),
+    );
     expect(isRedirect(stopped)).toBe(true);
     if (!isRedirect(stopped)) return;
     expect(stopped.options.href).toBe("/login#next=%2Fsessions%2Fs1%3Ftab%3Dchange");

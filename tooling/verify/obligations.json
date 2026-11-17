@@ -15,6 +15,7 @@
         "apps/mobile/**",
         "apps/t3-gateway/**",
         "apps/vscode/**",
+        "apps/web/**",
         "apps/web-old/**",
         "packages/**"
       ],
@@ -61,6 +62,7 @@
         "apps/marketing/src/**",
         "apps/mobile/src/**",
         "apps/vscode/src/**",
+        "apps/web/src/**",
         "apps/web-old/src/**"
       ],
       "exclude": [

@@ -9,6 +9,7 @@
     "clean:workspaces": "pnpm -r --parallel exec rm -rf node_modules .turbo",
     "dev": "pnpm --filter @mend/web-old dev",
     "dev:all": "turbo dev --ui=tui",
+    "dev:web": "pnpm --filter @mend/web dev",
     "format": "oxfmt . --check",
     "format:check": "oxfmt . --check",
     "format:fix": "oxfmt .",
