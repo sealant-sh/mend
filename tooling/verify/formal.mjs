@@ -224,7 +224,7 @@ export const formalSteps = async (
         code === 0
           ? "every row as expected"
           : code === "timeout"
-            ? `${coverage.area} ran past its ${minutes}-minute budget at ${bounds} bounds and was stopped, so nothing it had left was checked. Its state space has outgrown the budget: the log's last row and the checker's progress lines say where. Find what grew (README.md in ${coverage.dir}), and change the budget-${bounds} line in ${coverageFile(coverage)} only with what the model then gives up written down`
+            ? `${coverage.area} ran past its ${minutes}-minute budget at ${bounds} bounds and was stopped, so nothing it had left was checked. Either its state space grew or the runner was slow: the checker's last progress line gives the distinct states it reached, against the count check.sh pins for the row, and the states it generated a minute, against the rates README.md in ${coverage.dir} records. If the model grew, find what grew and change the budget-${bounds} line in ${coverageFile(coverage)} only with what the model then gives up written down`
             : "a row is NOT AS EXPECTED; the log names it, and the skill's step 3 classifies it",
     });
   }

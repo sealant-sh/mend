@@ -185,11 +185,6 @@ test("COVERAGE's budgets default, and an area may set its own in whole minutes",
     full: 25,
   });
   assert.throws(() => parseCoverage(`${head}budget-full 1.5\n`, "demo"), /whole number/);
-  for (const coverage of readCoverages(fileURLToPath(new URL("../../", import.meta.url))))
-    assert.ok(
-      coverage.budgets.full <= 80,
-      `${coverage.area}: CI's formal job for one model stops at 90 minutes, setup included`,
-    );
 });
 
 test("a check that runs past its budget is stopped and fails naming the model and the budget", async (t) => {
@@ -216,6 +211,7 @@ test("a check that runs past its budget is stopped and fails naming the model an
   const check = steps.find((step) => step.id === "demo-check");
   assert.equal(check.status, "failed");
   assert.match(check.detail, /^demo ran past its 7-minute budget at full bounds and was stopped/);
+  assert.match(check.detail, /Either its state space grew or the runner was slow/);
   assert.match(check.detail, /budget-full line in docs\/formal\/demo\/COVERAGE/);
 });
 

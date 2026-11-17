@@ -233,6 +233,17 @@ the machine, and on CI the whole full check then took 57 minutes (`code`: 129,38
 `MEND_FORMAL_PROGRESS` set, as CI sets it, TLC's memory and progress lines go to the job log as they
 come.
 
+GitHub's four-core runner is not one speed. The first nightly after that,
+[44068746119](https://github.com/sealant-sh/mend/actions/runs/44068746119) at `43927c51`, ran the
+same model on a slower host: Azure in westus where the passing run had AWS in us-east-1, with the
+same heap. TLC generated about 12 million states a minute from its first minute to its last, so
+`code` needed about 82 minutes for the same 1,005 million states generated, and the whole check
+about 85. The 75-minute budget stopped it with 118.6 million distinct states found (SLNT-1065).
+`budget-full` is now 110 minutes, about 30% over that slow host, and CI's `formal` job allows 120.
+When the budget stops it again, read the checker's last progress line first. Distinct states short
+of the pinned count at about 12 or 18 million generated a minute means a slow host. A higher count
+than pinned, or a rate that falls late in the run, means the model or the memory changed.
+
 A change that grows the full count should say on its ticket what the full run took, on four cores
 too (`MEND_FORMAL_WORKERS=4`), before it merges, so the budget is not found out at night.
 
