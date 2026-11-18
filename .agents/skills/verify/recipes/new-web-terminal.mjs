@@ -151,11 +151,18 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     await page.waitForTimeout(900);
   };
   /** The shell's width in columns, as the shell itself reads it. */
+  // Each probe prints its own marker: the replay after a reconnect holds every earlier one.
+  let probes = 0;
   const columns = async () => {
-    await typeLine("echo cols=$(tput cols)");
-    const found = [...(await terminalText()).matchAll(/cols=(\d+)/g)].at(-1);
-    if (found === undefined) throw new Error("the shell didn't print its width");
-    return Number(found[1]);
+    probes += 1;
+    const marker = `cols${probes}x`;
+    await typeLine(`echo ${marker}=$(tput cols)`);
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      const found = (await terminalText()).match(new RegExp(`^${marker}=(\\d+)`, "m"));
+      if (found !== null) return Number(found[1]);
+      await page.waitForTimeout(500);
+    }
+    throw new Error(`the shell didn't print its width (${marker})`);
   };
   /** The terminal's canvas carries this mark while the same terminal stays in the page. */
   const markTerminal = () =>
@@ -279,7 +286,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   if (!(narrow < wide && narrow > wide / 2))
     throw new Error(`the shell is ${narrow} columns in half the width, ${wide} before`);
   const kept = await terminalText();
-  if (!kept.includes("cols=")) throw new Error("the scrollback is gone after the move");
+  if (!kept.includes("mend-42")) throw new Error("the scrollback is gone after the move");
   note(
     `moved to a tile on the right: the same terminal element, the shell went from ${wide} to ${narrow} columns, the scrollback is there`,
   );
