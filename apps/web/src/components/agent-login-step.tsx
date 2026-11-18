@@ -32,7 +32,6 @@ import {
   waitedFor,
   whenSince,
 } from "#/lib/git-access";
-import { laterPage } from "#/lib/later-pages";
 import { usePhone } from "#/lib/phone";
 import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
@@ -77,7 +76,7 @@ export function AgentLoginStep() {
   const [focusKey, setFocusKey] = useState(false);
   const connected = anyAgentConnected(identity.accounts);
   const agentLabel = useId();
-  const onward = () => void navigate(laterPage("welcome/first-project"));
+  const onward = () => void navigate({ to: "/welcome/first-project" });
 
   return (
     <SetupFrame

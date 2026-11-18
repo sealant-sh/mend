@@ -8,8 +8,11 @@ import {
   matchesQuery,
   nameIssue,
   openSessionCounts,
+  pushedAgo,
+  repositoriesMatching,
   repositoryName,
   repositoryWords,
+  searchesOnPage,
   shortOrigin,
   sourceIssue,
   visibleToWords,
@@ -111,5 +114,40 @@ describe("adding a project", () => {
     expect(sourceIssue("")).toBeNull();
     expect(sourceIssue("https://github.com/northwind/ledger")).toBeNull();
     expect(sourceIssue("/tmp/not-a-url")).toMatch(/Local paths/);
+  });
+});
+
+const onGithub = (nameWithOwner: string) => ({
+  nameWithOwner,
+  visibility: "private",
+  pushedAt: null,
+});
+
+describe("picking a repository at setup", () => {
+  const listed = [onGithub("northwind/checkout-api"), onGithub("northwind/web")];
+
+  it("filters the listed repositories by owner and name, ignoring case and spaces", () => {
+    expect(repositoriesMatching(listed, " Checkout ")).toEqual([listed[0]]);
+    expect(repositoriesMatching(listed, "northwind/WEB")).toEqual([listed[1]]);
+    expect(repositoriesMatching(listed, "")).toEqual(listed);
+  });
+
+  it("searches on the page only while the server's list is shorter than its limit", () => {
+    expect(searchesOnPage(29)).toBe(true);
+    expect(searchesOnPage(30)).toBe(false);
+  });
+
+  it("says when the repository was last pushed, as the frames do", () => {
+    const now = new Date("2026-11-18T12:00:00Z");
+    const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toISOString();
+    expect(pushedAgo(ago(0.5), now)).toBe("Pushed just now");
+    expect(pushedAgo(ago(20), now)).toBe("Pushed 20m ago");
+    expect(pushedAgo(ago(150), now)).toBe("Pushed 2h ago");
+    expect(pushedAgo(ago(30 * 60), now)).toBe("Pushed yesterday");
+    expect(pushedAgo(ago(3 * 24 * 60), now)).toBe("Pushed 3 days ago");
+    expect(pushedAgo(ago(15 * 24 * 60), now)).toBe("Pushed 2 weeks ago");
+    expect(pushedAgo(ago(90 * 24 * 60), now)).toBe("Pushed 3 months ago");
+    expect(pushedAgo(ago(400 * 24 * 60), now)).toBe("Pushed 1 year ago");
+    expect(pushedAgo(null, now)).toBe("");
   });
 });

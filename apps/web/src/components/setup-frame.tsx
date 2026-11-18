@@ -1,5 +1,6 @@
 import { cn } from "@mend/ui/lib/utils";
-import { Check, CircleCheck } from "lucide-react";
+import { Link } from "@tanstack/react-router";
+import { Check, ChevronLeft, CircleCheck, Minus } from "lucide-react";
 import { type ReactNode, useSyncExternalStore } from "react";
 
 import { SETUP_STEPS } from "#/lib/onboarding";
@@ -41,23 +42,37 @@ export interface SetupSaved {
 const SAVED_KEYS = ["account", "git", "agent", "project"] as const;
 const NOTHING_SAVED: SetupSaved = {};
 
+/** A step the person may skip: only the agent login. */
+export type SkippableStep = "agent";
+
 /**
  * The four setup steps beside the sheet: earlier ones checked, with what they saved under them,
- * the current one marked.
+ * or a dash and "Skipped" for one the person skipped; the current one marked.
  */
 export function SetupSteps({
   step,
   saved = NOTHING_SAVED,
+  skipped,
 }: {
   readonly step: SetupStep;
   readonly saved?: SetupSaved | undefined;
+  readonly skipped?: SkippableStep | undefined;
 }) {
   return (
     <ol aria-label="Setup steps" className="grid text-sm leading-snug">
       {SETUP_STEPS.map((name, index) => {
         const number = index + 1;
-        const state = number < step ? "done" : number === step ? "current" : "later";
-        const savedLine = state === "done" ? saved[SAVED_KEYS[index] ?? "account"] : undefined;
+        const key = SAVED_KEYS[index] ?? "account";
+        const state =
+          number < step
+            ? key === skipped
+              ? "skipped"
+              : "done"
+            : number === step
+              ? "current"
+              : "later";
+        const savedLine =
+          state === "skipped" ? "Skipped" : state === "done" ? saved[key] : undefined;
         return (
           <li
             key={name}
@@ -68,11 +83,18 @@ export function SetupSteps({
               className={cn(
                 "grid size-6 flex-none place-items-center rounded-full border text-xs font-medium",
                 state === "current" && "border-primary bg-primary text-primary-foreground",
-                state === "done" && "border-input bg-background text-foreground",
+                (state === "done" || state === "skipped") &&
+                  "border-input bg-background text-foreground",
                 state === "later" && "border-border bg-background text-muted-foreground",
               )}
             >
-              {state === "done" ? <Check aria-hidden className="size-3.5" /> : number}
+              {state === "done" ? (
+                <Check aria-hidden className="size-3.5" />
+              ) : state === "skipped" ? (
+                <Minus aria-hidden className="size-3.5" />
+              ) : (
+                number
+              )}
             </span>
             <span className="grid min-w-0 gap-0.5 pt-0.5">
               <span
@@ -82,7 +104,9 @@ export function SetupSteps({
                 )}
               >
                 {name}
-                {state === "done" ? <span className="sr-only"> (done)</span> : null}
+                {state === "done" || state === "skipped" ? (
+                  <span className="sr-only"> ({state})</span>
+                ) : null}
               </span>
               {savedLine === undefined || savedLine === "" ? null : (
                 <span className="truncate text-xs text-muted-foreground">{savedLine}</span>
@@ -99,6 +123,8 @@ export function SetupFrame({
   title,
   step,
   saved,
+  skipped,
+  back,
   banner,
   children,
 }: {
@@ -108,6 +134,10 @@ export function SetupFrame({
   readonly step?: SetupStep;
   /** What the steps before this one saved (`SetupSteps`). */
   readonly saved?: SetupSaved;
+  /** A step before this one the person skipped (`SetupSteps`). */
+  readonly skipped?: SkippableStep | undefined;
+  /** On a phone, the step before this one, as a back arrow in the header. */
+  readonly back?: { readonly to: "/welcome" | "/welcome/agent-login"; readonly label: string };
   /** A state that affects the whole page (a `Banner`), across the top of the sheet. */
   readonly banner?: ReactNode;
   readonly children: ReactNode;
@@ -121,13 +151,22 @@ export function SetupFrame({
           <p className="text-lead font-semibold text-foreground">Mend</p>
           <p className="text-row text-muted-foreground">{host}</p>
         </div>
-        {step === undefined ? null : <SetupSteps step={step} saved={saved} />}
+        {step === undefined ? null : <SetupSteps step={step} saved={saved} skipped={skipped} />}
       </div>
       <main className="flex min-w-0 flex-1 flex-col bg-background lg:overflow-hidden lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
         {/* Phone: the header first, the banner under it. Desktop: the banner across the top of the
             sheet, then the column with the heading in it. */}
         {banner === undefined ? null : <div className="order-2 lg:order-1">{banner}</div>}
-        <header className="order-1 flex min-h-14 flex-col items-center justify-center border-b px-4 py-2 text-center lg:order-2 lg:mx-auto lg:min-h-0 lg:w-full lg:max-w-140 lg:items-start lg:border-0 lg:px-5 lg:pt-16 lg:pb-0 lg:text-left">
+        <header className="relative order-1 flex min-h-14 flex-col items-center justify-center border-b px-4 py-2 text-center lg:order-2 lg:mx-auto lg:min-h-0 lg:w-full lg:max-w-140 lg:items-start lg:border-0 lg:px-5 lg:pt-16 lg:pb-0 lg:text-left">
+          {back === undefined ? null : (
+            <Link
+              to={back.to}
+              aria-label={back.label}
+              className="absolute top-1/2 left-1 grid size-11 -translate-y-1/2 place-items-center rounded-lg text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none lg:hidden"
+            >
+              <ChevronLeft aria-hidden className="size-5" />
+            </Link>
+          )}
           <h1 className="text-title font-semibold tracking-tight text-foreground lg:text-2xl">
             {title}
           </h1>

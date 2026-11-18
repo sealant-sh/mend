@@ -72,6 +72,26 @@ export const signInEntry = async (observed: SetupObserved): Promise<SetupEntry> 
   return (await observed.hasAgentLogin()) ? "first-project" : "git-access";
 };
 
+/**
+ * What `/welcome/first-project` does with a person. It comes after Git access; an agent login is
+ * not needed, since that step may be skipped. Someone who can already see a project has nothing
+ * to add, so a member who joins an organization with a shared project goes on to Mend.
+ */
+export const firstProjectEntry = (
+  observed: Pick<SetupObserved, "access" | "hasProject">,
+): SetupEntry => {
+  if (!gitAccessChosen(observed.access)) return "git-access";
+  return observed.hasProject ? "home" : "first-project";
+};
+
+/**
+ * Whether First project offers "Skip for now". A person who sees no project yet, in an
+ * organization with other members, may be waiting for one of them to share a project, so they may
+ * go on without one. The first account, alone in its organization, adds a project: onboarding
+ * keeps its four steps.
+ */
+export const firstProjectSkippable = (memberCount: number): boolean => memberCount > 1;
+
 /** The page each answer opens. */
 export const ENTRY_PATHS: Readonly<Record<SetupEntry, string>> = {
   "git-access": SETUP_PATHS.gitAccess,

@@ -174,6 +174,25 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/projects.ts`, `apps/web/src/lib/clone-state.ts`,
   `apps/web/src/lib/project-removal.ts`
 
+### adopt-project.new-web-first-project
+
+- **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
+- **Needs:** no session; no turn; web; GitHub reachable from the box
+- **Do:** Drive the recipe `new-web-first-project` (after the composer's CLI batch
+  `new-web-composer-setup.json`): setup's First project step sends someone who sees a project on to
+  Mend; with the project list answered without the account's projects, it refuses a local path,
+  reports a clone that fails with Clone again and Change details, clones a small public repository
+  shared with the organization, then clones a big one, keeps it across a reload, and Continue to
+  Mend opens the composer, where a session queued on the clone waits and starts.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the session queued on the
+  clone starts by itself; every project the recipe made is purged at its end.
+- **Mode:** `scripted` (recipes/new-web-first-project.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/first-project-step.tsx`,
+  `apps/web/src/routes/welcome.first-project.tsx`, `apps/web/src/lib/use-clone.ts`,
+  `apps/web/src/lib/setup.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`
