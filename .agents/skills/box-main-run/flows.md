@@ -233,15 +233,20 @@ flows reuse what earlier ones made:
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,
   `review-checkpoint-mark`, `review-pinned`, `review-files`
 - **Needs:** either; no turn; web and CLI; `start-session.boat-run`
-- **Do:** On the run session's review, add a change-level comment, dismiss and reopen it; on the
-  session page choose `Mark checkpoint`; reload the review. Leave the comment open for the next
+- **Do:** On the run session's review, add a change-level comment; choose `Dismiss` on its row under
+  `Comments 1 not sent`, then `Reopen` on the card it becomes; choose
+  `More session actions → Mark a checkpoint`; reload the review. Leave the comment open for the next
   flow.
-- **See:** a card `<name> · open` and `1 open comment`; `dismissed` then `open`; a new
-  `<n> · user-mark` checkpoint line; the `<sha A> → <sha B>` line unchanged on reload;
+- **See:** under `Comments 1 not sent` the row `whole change` over the comment, with
+  `Mark addressed` and `Dismiss`; after `Dismiss`, `Comments 0 not sent` and a card
+  `<name> · dismissed` with `Reopen`; after `Reopen`, the row back under `Comments 1 not sent` and
+  no card; a new `#<n> user-mark` checkpoint line; the `<sha A> → <sha B>` line unchanged on reload;
   `M sessions --project <p> --all --json` shows the session's `review.openComments` as `1`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
+- **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`,
+  `apps/web-old/src/components/session/change-tab.tsx`,
+  `apps/web-old/src/components/comment-state.tsx`, `apps/api/src/`, `packages/store/`
 
 ### send-review-back.deliver
 
