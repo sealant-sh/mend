@@ -12,10 +12,12 @@ import {
   DropdownMenuTrigger,
 } from "@mend/ui/components/ui/dropdown-menu";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
 
 import { ASK_LABEL } from "#/components/new-session/pickers";
+import { askOf, isPending, waitingRequest } from "#/lib/agent-requests";
+import { answeredHere } from "#/lib/answered-here";
 import { launchFirstMessage, pasteSessionImage } from "#/lib/api";
 import type { ConversationView } from "#/lib/conversation";
 import { readDraft, subscribeDrafts, writeDrafts } from "#/lib/drafts";
@@ -42,8 +44,17 @@ import {
   ownRunningTurn,
   sameSelection,
 } from "#/lib/session-composer";
-import { useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
+import { executorCallsQuery } from "./executor-calls";
+import {
+  AnsweredElsewhere,
+  ApprovalComposer,
+  ExecutorApprovalComposer,
+  type PromptBase,
+  QuestionComposer,
+  RequestPreview,
+} from "./request-card";
 import type { SessionFacts } from "./session-facts";
 
 type Size = "default" | "touch";
@@ -101,7 +112,9 @@ const lockedWords = (mode: ComposerMode, facts: SessionFacts): string => {
  * An imported conversation's first message starts the agent. Where the viewer can't write to the
  * agent, the composer says why instead.
  *
- * It is a Composer card so that a question or approval (PR 14) joins it above the input.
+ * It is a Composer card: while the agent waits on a question or an approval, the card holds it
+ * above the input (`request-card.tsx`), and the composer's one send button answers it. Someone who
+ * may not answer sees what was asked, with no controls.
  */
 export function SessionComposer({
   facts,
@@ -135,14 +148,53 @@ export function SessionComposer({
     case "no-control":
     case "terminal":
     case "starting":
-    case "not-running":
+    case "not-running": {
+      const waiting =
+        mode._tag === "no-control" && conversation !== undefined
+          ? waitingRequest(conversation.requests)
+          : undefined;
       return (
         <ComposerCard className="max-lg:max-w-none">
-          <PromptInput state="locked" size={size} notice={lockedWords(mode, facts)} />
+          {waiting === undefined ? null : (
+            <RequestPreview
+              request={waiting}
+              facts={facts}
+              conversation={conversation}
+              size={size}
+            />
+          )}
+          <PromptInput
+            state="locked"
+            size={size}
+            notice={waiting === undefined ? lockedWords(mode, facts) : answerLockedWords(facts)}
+          />
         </ComposerCard>
       );
+    }
   }
 }
+
+/** Why the viewer can't answer what the agent asks here. */
+const answerLockedWords = (facts: SessionFacts): string => {
+  const owner = facts.session.ownerUserId === null ? null : facts.nameOf(facts.session.ownerUserId);
+  return `Only ${owner ?? "the session's owner"} can answer ${facts.agent} in this session, or someone they share control with.`;
+};
+
+/**
+ * The Executor call waiting on the viewer's own approval, oldest first; undefined when none does.
+ * A call whose approver is the turn's sender (`approverId` null) waits on whoever sent the turn,
+ * which the server checks when it is answered.
+ */
+const useHeldExecutorCall = (facts: SessionFacts) => {
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const calls = useInfiniteQuery(executorCallsQuery(trpc, client, facts.session.id));
+  if (calls.isPending || calls.isError) return undefined;
+  return calls.data.pages
+    .flatMap((page) => page.calls)
+    .filter((call) => call.outcome === "held" && call.approverId === facts.viewerId)
+    .at(-1);
+};
 
 /** Images a paste or a drop carries; the rest of what it carries goes on as usual. */
 const imagesOf = (files: FileList): ReadonlyArray<File> =>
@@ -380,6 +432,23 @@ function MessageComposer({
     draft.write({ text: "", key: null });
   };
 
+  // What the agent waits on the viewer for: its own question or approval first, then an Executor
+  // call. The card shows the one that waited longest.
+  const waiting = conversation === undefined ? undefined : waitingRequest(conversation.requests);
+  const heldCall = useHeldExecutorCall(facts);
+  // The request this tab showed last: once it settles without this tab answering, the card says
+  // who answered it, until dismissed.
+  const [watched, setWatched] = useState<string | null>(null);
+  if (waiting !== undefined && waiting.id !== watched) setWatched(waiting.id);
+  const watchedRequest =
+    watched === null || waiting !== undefined
+      ? undefined
+      : conversation?.requests.find((request) => request.id === watched);
+  const elsewhere =
+    watchedRequest !== undefined && !isPending(watchedRequest) && !answeredHere(watchedRequest.id)
+      ? watchedRequest
+      : undefined;
+
   const stopped = turns.at(-1)?.status === "interrupted";
   const placeholder =
     own !== null
@@ -390,6 +459,29 @@ function MessageComposer({
           ? `Tell ${agent} what to do next`
           : `Message ${agent}`;
   const announcement = outbox.announcement;
+  // What every card's input shares: the field, the draft it writes, attach and the model menu.
+  const prompt: PromptBase = {
+    id: messageInputId(session.id),
+    size,
+    label: `Message ${agent}`,
+    value: draft.text,
+    onValueChange: (text) => draft.write({ text, key: draft.key }),
+    blocked: scope === null || busyAttaching,
+    onAttach: () => files.current?.click(),
+    harness: agent,
+    ...(selection === null || (session.harness !== "claude" && session.harness !== "codex")
+      ? {}
+      : {
+          model: (
+            <NextTurnMenu
+              harness={session.harness}
+              selection={selection}
+              onPick={setPicked}
+              size={size}
+            />
+          ),
+        }),
+  };
 
   return (
     <div
@@ -411,34 +503,55 @@ function MessageComposer({
       }}
     >
       <ComposerCard className="max-lg:max-w-none">
-        <PromptInput
-          id={messageInputId(session.id)}
-          size={size}
-          state={own === null ? "default" : "running"}
-          label={`Message ${agent}`}
-          placeholder={placeholder}
-          value={draft.text}
-          onValueChange={(text) => draft.write({ text, key: draft.key })}
-          onSubmit={send}
-          onSteer={send}
-          onStop={() => interrupt.mutate({ turnId: own?.id ?? "" })}
-          stopping={interrupt.isPending}
-          blocked={scope === null || busyAttaching}
-          onAttach={() => files.current?.click()}
-          harness={agent}
-          {...(selection === null || (session.harness !== "claude" && session.harness !== "codex")
-            ? {}
-            : {
-                model: (
-                  <NextTurnMenu
-                    harness={session.harness}
-                    selection={selection}
-                    onPick={setPicked}
-                    size={size}
-                  />
-                ),
-              })}
-        />
+        {waiting !== undefined && askOf(waiting).kind === "question" ? (
+          <QuestionComposer
+            key={waiting.id}
+            request={waiting}
+            facts={facts}
+            base={prompt}
+            size={size}
+          />
+        ) : waiting !== undefined ? (
+          <ApprovalComposer
+            key={waiting.id}
+            request={waiting}
+            facts={facts}
+            conversation={conversation}
+            base={prompt}
+            size={size}
+            sendWords={send}
+          />
+        ) : heldCall !== undefined ? (
+          <ExecutorApprovalComposer
+            key={heldCall.id}
+            call={heldCall}
+            facts={facts}
+            base={prompt}
+            size={size}
+            sendWords={send}
+          />
+        ) : (
+          <>
+            {elsewhere === undefined ? null : (
+              <AnsweredElsewhere
+                request={elsewhere}
+                facts={facts}
+                hasWords={draft.text.trim() !== ""}
+                size={size}
+                onDismiss={() => setWatched(null)}
+              />
+            )}
+            <PromptInput
+              {...prompt}
+              state={own === null ? "default" : "running"}
+              placeholder={placeholder}
+              onSubmit={send}
+              onSteer={send}
+              onStop={() => interrupt.mutate({ turnId: own?.id ?? "" })}
+              stopping={interrupt.isPending}
+            />
+          </>
+        )}
       </ComposerCard>
       <input
         ref={files}

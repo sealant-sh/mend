@@ -37,10 +37,11 @@ import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints } from "#/lib/session-sheet";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
-import { AgentTurn, type PagesById, RequestLine } from "./agent-turn";
+import { AgentTurn, type PagesById } from "./agent-turn";
 import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
 import { PageEvent } from "./page-view";
+import { RequestLine } from "./request-card";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
 
@@ -499,7 +500,9 @@ function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
  *
  * Its footer is the composer (`SessionComposer`): the person's messages show in the thread the
  * moment they are sent (`lib/outbox`), and say where they stand until the agent reads them.
- * Answering a question is PR 14's card, where `RequestLine` stands now.
+ * A question or approval the agent asks waits in the composer card; the conversation keeps a line
+ * where it was asked (`RequestLine`), saying whose answer it waits for and, once settled, who
+ * answered and how.
  */
 export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
@@ -537,6 +540,8 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
     facts.agentLive &&
     conversationActivity(conversation.data) === "working";
   const failedStart = startFailed(facts);
+  // Anyone who steers the session answers what its agent asks (shared control included).
+  const canAnswer = facts.detail.control.steer;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {failedStart ? (
@@ -634,7 +639,9 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
                   <AgentTurn
                     row={entry.row}
                     facts={facts}
-                    renderRequest={(request) => <RequestLine request={request} />}
+                    renderRequest={(request) => (
+                      <RequestLine request={request} facts={facts} canAnswer={canAnswer} />
+                    )}
                     pages={pages}
                   />
                 </ConversationItem>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { Approval } from "@mend/ui/components/approval";
-import { Question } from "@mend/ui/components/question";
+import { Question, QuestionEarlier } from "@mend/ui/components/question";
 import { describe, expect, it, vi } from "vitest";
 
 import { click, getByRole, press, render } from "./render.tsx";
@@ -46,6 +46,36 @@ describe("Question", () => {
 
     press(getByRole("radio", "Back off and retry"), "Enter");
     expect(onSubmit).toHaveBeenCalledWith("retry");
+  });
+});
+
+describe("Question with several parts", () => {
+  it("lets several choices be picked and says where it is among the parts", () => {
+    const onValueChange = vi.fn();
+    render(
+      <Question
+        multiple
+        step="2 of 2"
+        title="Which flows should back off?"
+        choices={choices}
+        values={["final", "retry"]}
+        onValueChange={onValueChange}
+      />,
+    );
+
+    expect(getByRole("checkbox", "Treat 409 as final")).toHaveProperty("checked", true);
+    expect(getByRole("checkbox", "Back off and retry")).toHaveProperty("checked", true);
+    click(getByRole("checkbox", "Back off and retry"));
+    expect(onValueChange).toHaveBeenLastCalledWith("retry");
+    expect(document.body.textContent).toContain("2 of 2");
+  });
+
+  it("goes back to an earlier part from its folded answer", () => {
+    const onChange = vi.fn();
+    render(<QuestionEarlier label="Question 1" answer="Back off and retry" onChange={onChange} />);
+
+    click(getByRole("button", "Change your answer to Question 1: Back off and retry"));
+    expect(onChange).toHaveBeenCalledOnce();
   });
 });
 

@@ -1,4 +1,9 @@
-import { Approval, ApprovalCommand } from "@mend/ui/components/approval";
+import {
+  Approval,
+  ApprovalArguments,
+  ApprovalCommand,
+  ApprovalDiff,
+} from "@mend/ui/components/approval";
 import { Banner, InlineAlert } from "@mend/ui/components/banner";
 import {
   CommandPalette,
@@ -13,7 +18,7 @@ import { CopyField } from "@mend/ui/components/copy-field";
 import { FileAttachment } from "@mend/ui/components/file-attachment";
 import { Lump, type LumpPr, type LumpStatus } from "@mend/ui/components/lump";
 import { ComposerCard, PromptInput, PromptInputModel } from "@mend/ui/components/prompt-input";
-import { Question } from "@mend/ui/components/question";
+import { Question, QuestionEarlier } from "@mend/ui/components/question";
 import { Status } from "@mend/ui/components/status";
 import { TraceRow } from "@mend/ui/components/trace-row";
 import { Button } from "@mend/ui/components/ui/button";
@@ -26,6 +31,7 @@ import {
   GitPullRequestArrowIcon,
   ListChecksIcon,
   PencilIcon,
+  PlugIcon,
   SettingsIcon,
   SquareTerminalIcon,
 } from "lucide-react";
@@ -514,6 +520,47 @@ function QuestionDemo() {
           />
         </ComposerCard>
       </Row>
+      <Row label="two parts, on the second: the first answer folded above it, with step">
+        <ComposerCard className="mx-0 w-full">
+          <QuestionEarlier label="Question 1" answer="Back off and retry" onChange={() => {}} />
+          <Question
+            step="2 of 2"
+            name="wait"
+            title="How long should a refund wait in total?"
+            description="The waits add up across retries. After this long, the refund is marked as failed."
+            choices={[
+              { value: "2s", label: "2 seconds", description: "Waits 250ms, 500ms and 1s." },
+              { value: "10s", label: "10 seconds", description: "Waits 1s, 3s and 6s." },
+            ]}
+            other={{ value: "other", label: "Something else" }}
+            defaultValue="2s"
+            hint="Press Enter to send both answers. A note goes with both."
+          />
+          <PromptInput
+            placeholder="Add a note to both answers (optional)"
+            allowEmpty
+            harness="Claude Code"
+            model={<PromptInputModel>Opus</PromptInputModel>}
+          />
+        </ComposerCard>
+      </Row>
+      <Row label="multiple: several choices picked">
+        <ComposerCard className="mx-0 w-full">
+          <Question
+            multiple
+            name="areas"
+            title="Which payment flows should back off?"
+            choices={[
+              { value: "charges", label: "Charges" },
+              { value: "refunds", label: "Refunds" },
+              { value: "payouts", label: "Payouts" },
+            ]}
+            values={["charges", "refunds"]}
+            hint="Pick any, then press Enter."
+          />
+          <PromptInput placeholder="Add a note (optional)" allowEmpty harness="Claude Code" />
+        </ComposerCard>
+      </Row>
     </div>
   );
 }
@@ -727,6 +774,61 @@ function ApprovalDemo() {
             model={<PromptInputModel size="touch">Opus</PromptInputModel>}
             onAttach={() => {}}
           />
+        </ComposerCard>
+      </Row>
+      <Row label="a file edit: ApprovalDiff">
+        <ComposerCard className="mx-0 w-full">
+          <Approval
+            title="Codex wants to edit a file"
+            actions={
+              <>
+                <Button size="sm" variant="outline">
+                  Deny
+                </Button>
+                <Button size="sm">Approve</Button>
+              </>
+            }
+          >
+            <ApprovalDiff
+              path="migrations/0043_drop_coupon.sql"
+              diff={[
+                "@@ -1,3 +1,5 @@",
+                " BEGIN;",
+                "-ALTER TABLE legacy_coupons RENAME TO legacy_coupons_old;",
+                "+-- Coupons live in billing.discounts since 0039.",
+                "+DROP INDEX IF EXISTS legacy_coupons_code_idx;",
+                "+DROP TABLE IF EXISTS legacy_coupons;",
+                " COMMIT;",
+              ].join("\n")}
+            />
+          </Approval>
+          <PromptInput placeholder="Or tell Codex what to do instead" harness="Codex" />
+        </ComposerCard>
+      </Row>
+      <Row label="a tool: ApprovalArguments">
+        <ComposerCard className="mx-0 w-full">
+          <Approval
+            title="Claude Code wants to use a tool"
+            actions={
+              <>
+                <Button size="sm" variant="outline">
+                  Deny
+                </Button>
+                <Button size="sm">Approve</Button>
+              </>
+            }
+          >
+            <ApprovalArguments
+              icon={<PlugIcon />}
+              name="linear · create_issue"
+              entries={[
+                ["team", "NW"],
+                ["title", "Back off on a 409 from Stripe when refunding"],
+                ["labels", '["payments", "follow-up"]'],
+              ]}
+            />
+          </Approval>
+          <PromptInput placeholder="Or tell Claude Code what to do instead" harness="Claude Code" />
         </ComposerCard>
       </Row>
     </div>

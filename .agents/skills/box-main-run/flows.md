@@ -27,9 +27,10 @@ Box facts the flows depend on: sessions run on Boat by default, and Docker is of
 runtime is chosen per organization and a worktree keeps the runtime it was made on. One organization
 (Default), one account, single tenancy. Provider logins on 16 Nov: codex and claude connected,
 GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided.
-Four flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
-`start-session.composer`, `start-session.web-write` and `send-review-back.deliver`. They use codex:
-the owner has far more Codex capacity than Claude (17 Nov).
+Five flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
+`start-session.composer`, `start-session.web-write`, `start-session.web-answer` and
+`send-review-back.deliver`. They use codex: the owner has far more Codex capacity than Claude (17
+Nov).
 
 For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
 git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
@@ -106,8 +107,8 @@ flows reuse what earlier ones made:
 3. `start-session.boat-turn`, `review-change.web-review`, `now-and-sessions.web-now`,
    `attach-resume.boat-stop-resume`, `send-review-back.deliver`
 4. `start-session.boat-run`, `start-session.composer`, `start-session.web-write`,
-   `review-change.web-comments`, `land-change.panel-read`, `pull-change.boat-run`,
-   `attach-resume.rename-web`, `tui.dashboard`
+   `start-session.web-answer`, `review-change.web-comments`, `land-change.panel-read`,
+   `pull-change.boat-run`, `attach-resume.rename-web`, `tui.dashboard`
 5. `start-session.docker-run`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `session-shell.live-shell`,
    `shared-control.refuse-script`, `services.cli-run`, `capture-and-save.live-stop`
@@ -291,6 +292,29 @@ flows reuse what earlier ones made:
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
   `apps/web/src/lib/session-composer.ts`
+
+### start-session.web-answer
+
+- **Map:** terminal-agent-waits.md `wait-permission`, `wait-question`, `wait-clears`;
+  shared-control.md (anyone who steers answers)
+- **Needs:** Boat; real turn (codex); web; `start-session.composer` (its session)
+- **Do:** On `/sessions/<id>` for the session `start-session.composer` started, open the composer's
+  model menu, tick `Ask before acting`, and send
+  `Run the shell command printf ok > approval-check.txt, then delete the file by running exactly rm -f approval-check.txt. Reply with the single word deleted if the file is gone, or kept if the deletion didn't run.`
+  Codex runs with full access in the workspace, so it asks only before a command it counts as
+  dangerous, such as `rm -f`. When the composer card asks (`Codex wants to run a command`), choose
+  `Approve`. Send the same message again with `refused-check.txt` and choose `Deny` when it asks.
+- **See:** while Codex waits, the card shows the command with `Approve once`, `Always allow …`,
+  `Deny` and `Approve`, the conversation reads `Wants to run a command · Waiting for your approval`,
+  and the session's sidebar row is under `Waiting on you`; after `Approve` the card goes, the
+  conversation reads `You approved the command once`, the row leaves `Waiting on you` with no
+  reload, and the turn replies `deleted`; after `Deny` it reads `You denied` and Codex replies
+  `kept`.
+- **Mode:** `agent`
+- **Box:** after cut-over
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `apps/web/src/components/session/request-card.tsx`,
+  `apps/web/src/lib/agent-requests.ts`, `apps/web/src/lib/answered-here.ts`
 
 ### start-session.boat-run
 

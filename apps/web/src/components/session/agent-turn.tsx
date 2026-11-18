@@ -1,23 +1,19 @@
 import {
   type AgentItemDto,
-  type AgentRequestDto,
   type AgentTaskView,
   durationWords,
   itemFailed,
   itemName,
   mendPageCallOf,
-  requestOutcome,
   taskFacts,
 } from "@mend/agent-conversation";
-import { AgentRequestKind, type PageRef, sessionAsk } from "@mend/domain/workbench";
-import { ConversationMarker } from "@mend/ui/components/conversation-marker";
+import type { PageRef } from "@mend/domain/workbench";
 import { TraceRow, type TraceTone } from "@mend/ui/components/trace-row";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { Schema } from "effect";
 import {
   BotIcon,
   CircleAlertIcon,
@@ -33,6 +29,7 @@ import {
 import { Fragment, type ReactNode, useState } from "react";
 
 import { stepCommand } from "#/lib/checks";
+import type { RequestView } from "#/lib/conversation";
 import {
   addedUnreachableLogin,
   type ConversationRow,
@@ -41,7 +38,6 @@ import {
   turnEnd,
   turnLasted,
 } from "#/lib/conversation-rows";
-import { askWords } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
 import { messageTime } from "#/lib/session-sheet";
 import { useTRPC } from "#/lib/trpc";
@@ -49,9 +45,6 @@ import { useTRPC } from "#/lib/trpc";
 import { PageEvent } from "./page-view";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
-
-/** A request kind this app knows; a newer server's kind reads as a plain ask. */
-const isRequestKind = Schema.is(AgentRequestKind);
 
 type AgentRow = Extract<ConversationRow, { readonly kind: "agent" }>;
 
@@ -193,7 +186,7 @@ function SubAgent({
   pages,
 }: {
   readonly segment: Extract<Segment, { readonly kind: "sub-agent" }>;
-  readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly renderRequest: (request: RequestView) => ReactNode;
   readonly pages: PagesById;
 }) {
   const { agent, task } = segment;
@@ -240,21 +233,6 @@ function Task({ task }: { readonly task: AgentTaskView }) {
   );
 }
 
-/**
- * A question or an approval the agent asked for, as one line: what it wants, and whether it waits
- * for an answer. Answering is PR 14's card, which takes this line's place.
- */
-export function RequestLine({ request }: { readonly request: AgentRequestDto }) {
-  const { kind } = request;
-  const asked = isRequestKind(kind) ? askWords(sessionAsk({ ...request, kind })) : "Asked you";
-  return (
-    <ConversationMarker
-      kind="status"
-      label={`${asked} · ${request.status === "pending" ? "Waiting for your answer" : requestOutcome(request)}`}
-    />
-  );
-}
-
 /** What the agent wrote and did, run by run, in the order it happened. */
 export function AgentSegments({
   segments,
@@ -262,7 +240,7 @@ export function AgentSegments({
   pages,
 }: {
   readonly segments: ReadonlyArray<Segment>;
-  readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly renderRequest: (request: RequestView) => ReactNode;
   readonly pages: PagesById;
 }) {
   return segments.map((segment) => {
@@ -402,7 +380,7 @@ export function AgentTurn({
 }: {
   readonly row: AgentRow;
   readonly facts: SessionFacts;
-  readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly renderRequest: (request: RequestView) => ReactNode;
   readonly pages: PagesById;
 }) {
   // A session's turns are numbered from 0; people count them from 1.

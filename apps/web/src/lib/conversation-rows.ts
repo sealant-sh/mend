@@ -1,6 +1,5 @@
 import {
   type AgentItemDto,
-  type AgentRequestDto,
   type AgentTurnSteerDto,
   buildAgentConversation,
   agentTaskOf,
@@ -14,7 +13,7 @@ import {
   type LoginClass,
 } from "@mend/domain/workbench";
 
-import type { ConversationView, TurnView } from "./conversation.ts";
+import type { ConversationView, RequestView, TurnView } from "./conversation.ts";
 import { arrivedIn, type OutboxMessage } from "./outbox.ts";
 import { clockTime } from "./session-view.ts";
 import { parentToolUseId, subAgentOf, toolUseId, type SubAgentView } from "./sub-agents.ts";
@@ -33,7 +32,7 @@ export type Segment =
       readonly segments: ReadonlyArray<Segment>;
       readonly stepCount: number;
     }
-  | { readonly kind: "request"; readonly key: string; readonly request: AgentRequestDto };
+  | { readonly kind: "request"; readonly key: string; readonly request: RequestView };
 
 /** One message of the conversation as the list shows it. */
 export type ConversationRow =

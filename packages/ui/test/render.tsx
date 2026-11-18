@@ -54,6 +54,7 @@ const implicitRoles: Record<string, string> = {
   button: "button",
   textarea: "textbox",
   "input[type=radio]": "radio",
+  "input[type=checkbox]": "checkbox",
 };
 
 /** Every element with `role`, by explicit role or the tag that implies it. */

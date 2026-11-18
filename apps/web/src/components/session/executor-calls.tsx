@@ -59,7 +59,8 @@ function Call({ call, facts }: { readonly call: ExecutorCall; readonly facts: Se
 /**
  * The calls the session's agent made through Executor, newest first, at the top of its
  * conversation: they are recorded beside the conversation, not in its turns. Nothing while there
- * are none. A call waiting on someone's approval says whose; answering it is PR 14's card.
+ * are none. A call waiting on someone's approval says whose; its approver answers it in the
+ * composer card (`ExecutorApprovalComposer`).
  */
 export function ExecutorCalls({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
@@ -102,7 +103,7 @@ export function ExecutorCalls({ facts }: { readonly facts: SessionFacts }) {
 }
 
 /** A session's Executor calls, newest first, a page at a time, read again every few seconds. */
-const executorCallsQuery = (trpc: TrpcProxy, client: TrpcClient, sessionId: string) =>
+export const executorCallsQuery = (trpc: TrpcProxy, client: TrpcClient, sessionId: string) =>
   infiniteQueryOptions({
     queryKey: [...trpc.executor.calls.queryKey({ sessionId }), "history"],
     queryFn: readCalls(client, sessionId),
