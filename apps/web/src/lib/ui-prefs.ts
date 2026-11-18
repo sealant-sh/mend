@@ -6,6 +6,7 @@ import {
   type InboxFilters,
   type InboxFolds,
 } from "./inbox.ts";
+import { parseKeptArrangements } from "./tiles.ts";
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null;
@@ -57,3 +58,10 @@ export const inboxFolds = createCookieStore(
   parseInboxFolds,
   DEFAULT_INBOX_FOLDS,
 );
+
+/**
+ * How each workspace's sheet is split into tiles, for the last few workspaces used in this
+ * browser (`keepArrangement` says how many fit), so the server renders a session's sheet as it was
+ * left.
+ */
+export const tileArrangements = createCookieStore("mend-tiles", parseKeptArrangements, []);

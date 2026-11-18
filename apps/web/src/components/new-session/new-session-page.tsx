@@ -115,7 +115,7 @@ const noLogins = (composer: Composer): boolean =>
   composer.logins._tag === "known" && composer.logins.none;
 
 /** The line under the composer: why it can't send, what went wrong, or how to send. */
-function Hint({
+export function Hint({
   composer,
   phone = false,
 }: {
@@ -298,7 +298,7 @@ function CloneNotice({ clone }: { readonly clone: Clone }) {
   );
 }
 
-const sendBlocked = (composer: Composer): boolean =>
+export const sendBlocked = (composer: Composer): boolean =>
   composer.starting ||
   composer.promptProblem !== null ||
   noLogins(composer) ||

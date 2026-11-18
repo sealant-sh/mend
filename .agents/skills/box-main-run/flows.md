@@ -218,6 +218,28 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/project-sessions.ts`, `apps/web/src/lib/project-starts.ts`,
   `apps/web/src/lib/shared-workspace.ts`
 
+### session-page.new-web-tiles
+
+- **Map:** no feature file yet (ADR 0026, tabs and tiles); start-session.md `session-page`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-tiles-sessions.json` (two sessions in the worktree `tiles-ws`,
+  each a `sleep`), then drive the recipe `new-web-tiles`: drag a tab onto a tile's right edge and
+  into another tile's middle, move tabs with Alt+Shift and the arrows, resize by the divider,
+  reload, maximise and restore, close a tile's last tab, reopen it from "+", open a New session tab,
+  start a session in the worktree from outside the page, open `?full=1`, and look under 1024px and
+  at 390px. Stop both batch sessions at the end.
+- **See:** each step's note in the recipe's `steps.log`: the drop marks Split right and Add to this
+  tile, two tiles after a split and one after a merge, the resized width kept over a reload, the
+  same conversation element after its tab moved, Restore layout on a maximised tile, the started
+  session's tab beside the active one, and one strip of tabs under 1024px.
+- **Mode:** `scripted` (recipes/new-web-tiles.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/`,
+  `apps/web/src/components/session/session-sheet.tsx`,
+  `apps/web/src/components/session/workspace-tabs.tsx`,
+  `apps/web/src/components/session/new-session-tab.tsx`, `apps/web/src/lib/tiles.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

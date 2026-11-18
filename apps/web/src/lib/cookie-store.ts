@@ -30,6 +30,8 @@ export function createCookieStore<T>(
   fallback: T,
 ): {
   readonly use: () => T;
+  /** The value now, outside a component: the request's cookie on the server. */
+  readonly read: () => T;
   readonly set: (value: T) => void;
 } {
   const listeners = new Set<() => void>();
@@ -61,6 +63,7 @@ export function createCookieStore<T>(
 
   return {
     use: () => useSyncExternalStore(subscribe, snapshot, snapshot),
+    read: snapshot,
     set: (value) => {
       document.cookie = `${name}=${encodeURIComponent(JSON.stringify(value))}; path=/; max-age=${YEAR_S}; samesite=lax`;
       for (const listener of listeners) listener();
