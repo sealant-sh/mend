@@ -823,6 +823,7 @@ export const createTenancyWorld = async (
     openComments: 0,
     totalComments: 0,
     pendingFollowUp: false,
+    fileCount: 2,
     pullRequest: null,
   });
   const accessLayers = Layer.mergeAll(
@@ -1139,6 +1140,7 @@ export const createTenancyWorld = async (
               (row) => row.status === "pending" && sessionIds.includes(row.sessionId),
             ),
           ),
+        newestItems: () => Effect.succeed([]),
         listConversationTurns: (sessionId) =>
           Effect.sync(() =>
             [...turns.values()]

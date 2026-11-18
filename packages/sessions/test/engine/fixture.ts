@@ -247,6 +247,7 @@ import { Clock, Duration, Effect, Fiber, Layer, Logger, Stream, type Scope } fro
 
 import { HarnessLayoutConfig } from "../../src/harness-layout-steps.ts";
 import { ResourceStatusReads, ResourceStatusReadsNone } from "../../src/resources/status-reads.ts";
+import { WORKTREE_STAMP, WorktreeReads } from "../../src/worktree-reads.ts";
 import { type MemoryCaptureStore } from ".././capture-store-memory.ts";
 import { memoryStoreRefs } from ".././capture-world.ts";
 import { adapterLayer, echo, fakeForward, scriptedSealant } from "../forward-fixture.ts";
@@ -1040,6 +1041,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   listRequests: () => Effect.succeed([]),
   hasPendingRequests: () => Effect.succeed(false),
   oldestPendingRequests: () => Effect.succeed([]),
+  newestItems: () => Effect.succeed([]),
   historyWindow: () =>
     Effect.succeed({
       items: [],
@@ -1618,6 +1620,10 @@ export interface World {
   readonly previews: Map<string, Preview>;
   readonly previewControls: Map<string, PreviewControl>;
   readonly changes: Map<string, Change>;
+  /** How many files `WorktreeReads.changedFiles` finds in each worktree's change; none when unset. */
+  readonly changedFiles: Map<string, number>;
+  /** What `WorktreeChangesRepo.recordFileCount` kept, by change id. */
+  readonly fileCounts: Map<string, number>;
   readonly checkpoints: Array<Checkpoint>;
   /** What `CheckpointsRepo.create` was given as the capture each row was observed from. */
   readonly checkpointCaptureIds: Map<string, string | null>;
@@ -1725,6 +1731,8 @@ export const makeWorld = (): World => ({
   previews: new Map(),
   previewControls: new Map(),
   changes: new Map(),
+  changedFiles: new Map(),
+  fileCounts: new Map(),
   checkpoints: [],
   checkpointCaptureIds: new Map(),
   checkpointHold: { current: null },
@@ -3381,9 +3389,28 @@ export const changesLayer = (world: World) =>
           }
         }
       }),
+    recordFileCount: (id, headSha, fileCount) =>
+      Effect.sync(() => {
+        for (const change of world.changes.values())
+          if (change.id === id && change.headSha === headSha) world.fileCounts.set(id, fileCount);
+      }),
     annotationsForProject: () => Effect.succeed([]),
     annotationsForProjects: () => Effect.succeed([]),
     annotationsForSessions: () => Effect.succeed([]),
+  });
+
+/** The change reads the engine counts files with: `world.changedFiles` files per worktree. */
+export const worktreeReadsLayer = (world: World) =>
+  Layer.mock(WorktreeReads, {
+    changedFiles: (_projectId, worktreeId) =>
+      Effect.succeed({
+        value: Array.from({ length: world.changedFiles.get(worktreeId) ?? 0 }, (_, index) => ({
+          path: `file-${index}.ts`,
+          additions: 1,
+          deletions: 0,
+        })),
+        stamp: WORKTREE_STAMP,
+      }),
   });
 
 /** Shared worktreesLayer fixture for engine scenarios. */
@@ -4400,6 +4427,7 @@ export const withPreparedEngineEffect = <B, A, E>(
           options.harnessLayout?.platform ?? PersonLayoutPlatformNone,
           options.resourceRuntime ?? ResourceRuntimeNone,
           options.resourceStatus ?? ResourceStatusReadsNone,
+          worktreeReadsLayer(world),
           Layer.succeed(HarnessLayoutConfig, {
             flag: options.harnessLayout?.flag ?? "shared",
             loginReleaseGrace: Duration.zero,

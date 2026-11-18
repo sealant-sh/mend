@@ -1,0 +1,72 @@
+[
+  {
+    "name": "01-files",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "facts-files",
+      "--",
+      "sh",
+      "-c",
+      "printf 'changed\\n' > FACTS.md"
+    ]
+  },
+  {
+    "name": "02-none",
+    "run": ["mend", "run", "--project", "verify-fixture", "--name", "facts-none", "--", "true"]
+  },
+  {
+    "name": "03-failed",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "facts-failed",
+      "--",
+      "sh",
+      "-c",
+      "printf 'half\\n' > HALF.md; exit 3"
+    ]
+  },
+  {
+    "name": "04-shared",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "facts-shared",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "05-shared-again",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "facts-shared",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "06-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]

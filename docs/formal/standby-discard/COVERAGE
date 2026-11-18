@@ -22,7 +22,13 @@
 # conversationOf's home, launchProtocol's resume id and prepareImportedConversation. They make no
 # hot-pool, claim, retire, drain or session-process call, so no action models them. Full TLC run at
 # 591a9e6e3b: every row as expected.
-sync 591a9e6e3b859d6959f848a2853df3aa04ab8a83
+# 7a2f304a37 is the SLNT-1113 branch on main after SLNT-895's squash, whose covered changes the
+# line before accounted for. SLNT-1113 changed engine.ts only outside the covered functions: after
+# each head refresh (refreshChangeHead) the engine counts the change's files through WorktreeReads
+# in a forked fiber and keeps the count on the change row. It makes no hot-pool, claim, retire,
+# drain or session-process call, so no action models it. Full TLC run at 225d463a4c, the same
+# engine.ts before a rebase: every row as expected.
+sync 7a2f304a3742c60f1236b522109ec43cc7ebfc93
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

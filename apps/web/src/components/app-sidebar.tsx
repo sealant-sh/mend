@@ -448,7 +448,8 @@ const InboxRowItem = memo(function InboxRowItem({
       note={
         shared === null ? undefined : (
           <>
-            <span className="font-mono text-2xs">{row.session.branch}</span> · {shared} sessions
+            {row.worktreeName ?? <span className="font-mono text-2xs">{row.session.branch}</span>} ·{" "}
+            {shared} sessions
           </>
         )
       }

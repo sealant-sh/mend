@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sessionAsk } from "./inbox.ts";
+import { agentActivity, sessionAsk } from "./inbox.ts";
 
 const request = (
   kind: Parameters<typeof sessionAsk>[0]["kind"],
@@ -59,5 +59,42 @@ describe("why a waiting session waits", () => {
     const ask = request("command-approval", null, { command: "x".repeat(200) });
     expect(ask.subject).toHaveLength(80);
     expect(ask.subject?.endsWith("…")).toBe(true);
+  });
+});
+
+const item = (
+  kind: Parameters<typeof agentActivity>[0]["kind"],
+  title: string | null,
+  data: unknown,
+) => agentActivity({ kind, title, data });
+
+describe("what a running agent is doing", () => {
+  it("names Codex's command and file from the item's title", () => {
+    expect(item("command-execution", "pnpm test", { command: "pnpm test" })).toEqual({
+      kind: "command",
+      subject: "pnpm test",
+    });
+    expect(item("file-change", "src/checkout.ts", null)).toEqual({
+      kind: "edit",
+      subject: "src/checkout.ts",
+    });
+  });
+
+  it("names Claude's command and file from the tool's input, never the tool's name", () => {
+    expect(
+      item("command-execution", "Bash", { name: "Bash", input: { command: "pnpm test" } }),
+    ).toEqual({ kind: "command", subject: "pnpm test" });
+    expect(
+      item("file-change", "Edit", { name: "Edit", input: { file_path: "src/retry.ts" } }),
+    ).toEqual({ kind: "edit", subject: "src/retry.ts" });
+    expect(item("web-search", "WebSearch", { name: "WebSearch", input: {} })).toEqual({
+      kind: "search",
+      subject: null,
+    });
+  });
+
+  it("says nothing for an item that isn't work under way", () => {
+    expect(item("user-message", null, null)).toBeNull();
+    expect(item("error", "boom", null)).toBeNull();
   });
 });

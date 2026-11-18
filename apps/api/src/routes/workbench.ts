@@ -180,8 +180,10 @@ import {
   type Project,
   type Worktree,
   Session,
+  agentActivity,
   sessionAsk,
   sessionTitle,
+  worktreeTitle,
   type SessionStatus,
   RECIPE_NAME,
   RepositoryCloneUrl,
@@ -2674,11 +2676,19 @@ const inboxRowsOf = (input: {
 }) =>
   Effect.gen(function* () {
     const sessionIds = input.sessions.map((session) => session.id);
-    const [processes, liveServices, requests] = yield* Effect.all(
+    const launching = asLaunching((yield* SessionEngine).launchUnderWay);
+    const conversations = yield* AgentConversationRepo;
+    // What a running agent is doing: the newest item of only the running sessions, one index
+    // step each.
+    const running = input.sessions.flatMap((session) =>
+      launching(session).status === "running" ? [session.id] : [],
+    );
+    const [processes, liveServices, requests, newest] = yield* Effect.all(
       [
         (yield* SessionProcessesRepo).listForSessions(sessionIds),
         (yield* ServicesRepo).liveCountsForSessions(sessionIds),
-        (yield* AgentConversationRepo).oldestPendingRequests(sessionIds),
+        conversations.oldestPendingRequests(sessionIds),
+        conversations.newestItems(running),
       ],
       { concurrency: "unbounded" },
     );
@@ -2689,12 +2699,14 @@ const inboxRowsOf = (input: {
     const annotationOf = new Map(input.annotations.map((row) => [row.sessionId, row]));
     const askOf = new Map(requests.map((request) => [request.sessionId, sessionAsk(request)]));
     const live = new Map<string, number>(liveServices);
-    const launching = asLaunching((yield* SessionEngine).launchUnderWay);
+    const activityOf = new Map(newest.map((item) => [item.sessionId, agentActivity(item)]));
     const importedWaiting = yield* importedWaitingOf(input.sessions);
     return input.sessions.map((session) => {
       const annotation = annotationOf.get(session.id);
       const shown = launching(session);
       const agent = currentAgentProcess(processesOf.get(session.id) ?? []);
+      const worktree = worktreeOf.get(session.worktreeId);
+      const worktreeMembers = members.get(session.worktreeId) ?? [];
       return new SessionInboxRow({
         session: {
           id: shown.id,
@@ -2713,11 +2725,8 @@ const inboxRowsOf = (input: {
           importedConversationWaiting: importedWaiting(session),
         },
         projectName: projectName.get(session.projectId) ?? "",
-        title: sessionTitle(
-          session,
-          worktreeOf.get(session.worktreeId),
-          members.get(session.worktreeId) ?? [],
-        ),
+        title: sessionTitle(session, worktree, worktreeMembers),
+        worktreeName: worktree === undefined ? null : worktreeTitle(worktree, worktreeMembers),
         annotation:
           annotation === undefined
             ? null
@@ -2727,8 +2736,11 @@ const inboxRowsOf = (input: {
                 pendingFollowUp: annotation.pendingFollowUp,
                 liveServices: live.get(session.id) ?? 0,
                 currentAgent: agent === null ? null : { kind: agent.kind },
+                fileCount: annotation.fileCount,
               },
         ask: askOf.get(session.id) ?? null,
+        failure: shown.status === "failed" ? shown.summary : null,
+        activity: shown.status === "running" ? (activityOf.get(session.id) ?? null) : null,
       });
     });
   });

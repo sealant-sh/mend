@@ -1365,9 +1365,12 @@ const ADMITTED: Readonly<
     status: 200,
     calls: [
       "changes.annotationsForSessions",
+      // Which sessions are running, for their newest item: the engine's memory, not a read.
+      "engine.launchUnderWay",
       "processes.listForSessions",
       "services.liveCountsForSessions",
       "conversation.oldestPendingRequests",
+      "conversation.newestItems",
       "importedConversations.undeliveredAmong",
       "engine.launchUnderWay",
     ],

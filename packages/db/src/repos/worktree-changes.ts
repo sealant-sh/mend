@@ -46,6 +46,11 @@ export interface SessionAnnotationRow {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /**
+   * How many files the change has against its base, as last counted at a head refresh
+   * (`recordFileCount`); null until one was counted.
+   */
+  readonly fileCount: number | null;
   /** The change's newest recorded pull request (docs/adr/0007-landing.md); null when none. */
   readonly pullRequest: ChangePullRequest | null;
 }
@@ -74,6 +79,16 @@ export class WorktreeChangesRepo extends Context.Service<
       id: ChangeId,
       headSha: Sha,
       viaSessionId: SessionId | null,
+    ) => Effect.Effect<void>;
+    /**
+     * Keep how many files the change has, counted at `headSha`: written only while `headSha` is
+     * still the change's head, so a count that finishes after a newer refresh never replaces the
+     * newer head's. A count that moved tells the change's session (`session-change`).
+     */
+    readonly recordFileCount: (
+      id: ChangeId,
+      headSha: Sha,
+      fileCount: number,
     ) => Effect.Effect<void>;
     /** One row per session of the project — list decoration, no git involved. */
     readonly annotationsForProject: (
@@ -196,6 +211,38 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       }
     });
 
+    const recordFileCount = Effect.fn("WorktreeChangesRepo.recordFileCount")(function* (
+      id: ChangeId,
+      headSha: Sha,
+      fileCount: number,
+    ) {
+      const [row] = yield* db
+        .update(worktreeChanges)
+        .set({ fileCount })
+        .where(
+          and(
+            eq(worktreeChanges.id, id),
+            eq(worktreeChanges.headSha, headSha),
+            or(isNull(worktreeChanges.fileCount), ne(worktreeChanges.fileCount, fileCount)),
+          ),
+        )
+        .returning({
+          sessionId: worktreeChanges.sessionId,
+          worktreeId: worktreeChanges.worktreeId,
+          projectId: worktreeChanges.projectId,
+        })
+        .pipe(Effect.orDie);
+      if (row !== undefined && row.sessionId !== null) {
+        yield* notifyEvent(sql, {
+          type: "session-change",
+          changeId: id,
+          worktreeId: row.worktreeId,
+          sessionId: row.sessionId,
+          projectId: row.projectId,
+        });
+      }
+    });
+
     /** Session annotations for the sessions `scope` picks (its project ids, or its session ids). */
     const annotationsIn = Effect.fn("WorktreeChangesRepo.annotationsIn")(function* (
       scope:
@@ -269,6 +316,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
         .select({
           sessionId: agentSessions.id,
           changeId: worktreeChanges.id,
+          fileCount: worktreeChanges.fileCount,
           openComments: commentCounts.open,
           totalComments: commentCounts.total,
           pendingSessionId: sessionsWithPendingFollowUps.sessionId,
@@ -297,6 +345,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           openComments: row.openComments ?? 0,
           totalComments: row.totalComments ?? 0,
           pendingFollowUp: row.pendingSessionId !== null,
+          fileCount: row.fileCount,
           pullRequest:
             row.pullRequestNumber === null ||
             row.pullRequestUrl === null ||
@@ -327,6 +376,7 @@ export const WorktreeChangesRepoLive: Layer.Layer<
       byWorktree,
       bySession,
       refreshHead,
+      recordFileCount,
       annotationsForProject,
       annotationsForProjects,
       annotationsForSessions,

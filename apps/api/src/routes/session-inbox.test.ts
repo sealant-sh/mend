@@ -7,8 +7,12 @@ interface InboxRowWire {
   readonly session: { readonly id: string; readonly projectId: string };
   readonly projectName: string;
   readonly title: string;
-  readonly annotation: { readonly changeId: string | null } | null;
+  readonly annotation: {
+    readonly changeId: string | null;
+    readonly fileCount: number | null;
+  } | null;
   readonly ask: { readonly kind: string; readonly subject: string | null } | null;
+  readonly worktreeName: string | null;
 }
 
 /**
@@ -44,6 +48,10 @@ describe("the sessions inbox read", () => {
     const shared = rows.find((row) => row.session.id === ids("shared-a").session);
     expect(shared?.projectName).toBe("shared-a");
     expect(shared?.annotation?.changeId).toBe(ids("shared-a").change);
+    // The change's file count as the change row keeps it, and the worktree's name, read with the
+    // rest: no worktree read.
+    expect(shared?.annotation?.fileCount).toBe(2);
+    expect(shared?.worktreeName).toBe("shared-a");
     // The world's pending request is a command approval titled "Run tests".
     expect(shared?.ask).toEqual({ kind: "command", subject: "Run tests" });
   });
@@ -58,6 +66,7 @@ describe("the sessions inbox read", () => {
     expect(reads.toSorted()).toEqual(
       [
         "changes.annotationsForSessions",
+        "conversation.newestItems",
         "conversation.oldestPendingRequests",
         "importedConversations.undeliveredAmong",
         "processes.listForSessions",

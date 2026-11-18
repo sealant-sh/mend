@@ -1,5 +1,5 @@
-import type { AgentInputQuestion, AgentRequestKind } from "./agent-protocol.ts";
-import type { SessionAsk } from "./inbox.ts";
+import type { AgentInputQuestion, AgentItemKind, AgentRequestKind } from "./agent-protocol.ts";
+import type { AgentActivity, SessionAsk } from "./inbox.ts";
 
 // What an inbox row says about a session: plain rules, free of Effect, so a client that reads
 // them loads no Schema (`./inbox.ts` holds the Schemas and re-exports these).
@@ -73,6 +73,56 @@ export const sessionAsk = (request: {
     }
     case "unknown":
       return { kind: "decision", subject: oneLine(request.title) };
+  }
+};
+
+/** Tool names Claude gives an item's title, which say nothing a row's kind doesn't already. */
+const TOOL_NAMES: ReadonlySet<string> = new Set([
+  ...EDIT_TOOLS,
+  "Bash",
+  "Shell",
+  "WebSearch",
+  "WebFetch",
+]);
+
+/**
+ * What a running agent is doing, from its newest item (`AgentConversationRepo.newestItems`): Codex
+ * puts the command or the file in the item's title; Claude names the tool there and puts the
+ * command or the file in the tool's input (`data.input`). Null for an item that says nothing about
+ * work under way: the person's own message, an error, a page, a proof, a screen.
+ */
+export const agentActivity = (item: {
+  readonly kind: AgentItemKind;
+  readonly title: string | null;
+  readonly data: unknown;
+}): AgentActivity | null => {
+  const data = isRecord(item.data) ? item.data : {};
+  const input = isRecord(data["input"]) ? data["input"] : {};
+  const title = item.title !== null && TOOL_NAMES.has(item.title) ? null : item.title;
+  switch (item.kind) {
+    case "command-execution":
+      return { kind: "command", subject: oneLine(textField(input, "command") ?? title) };
+    case "file-change":
+      return { kind: "edit", subject: oneLine(textField(input, "file_path", "path") ?? title) };
+    case "web-search":
+      return { kind: "search", subject: oneLine(textField(input, "query", "url") ?? title) };
+    case "tool-call":
+      return { kind: "tool", subject: oneLine(title) };
+    case "task":
+      return { kind: "task", subject: oneLine(title) };
+    case "reasoning":
+      return { kind: "thinking", subject: null };
+    case "assistant-message":
+      return { kind: "writing", subject: null };
+    case "plan":
+      return { kind: "planning", subject: null };
+    case "user-message":
+    case "error":
+    case "other":
+    case "page":
+    case "proof":
+    case "screen":
+      return null;
   }
 };
 
