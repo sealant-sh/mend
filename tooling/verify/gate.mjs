@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+import { flowWords } from "./judge.mjs";
 import { filesOwing, loadMap, matchObligations } from "./plan.mjs";
 import { productPatchId, readReceipts } from "./receipt.mjs";
 
@@ -72,6 +73,7 @@ export const decide = ({ pr, owes, headSha, headPatchId }) => {
           j.judgedBy === "self"
             ? "the author judged it (--self), not another agent"
             : "judged by another agent",
+          flowWords(j) || "judged before the judge named a flow",
         ].join("; "),
       );
     }

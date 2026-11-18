@@ -16,6 +16,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { CI_FILE_BUDGET_MS } from "../test-ci/src/file-budget.ts";
+import { flowsThrough, loadFlows, parseFlows } from "./flows.mjs";
 import { floorOf, loadLimits, validateAnswer } from "./judge.mjs";
 import { readReceipts } from "./receipt.mjs";
 import { createResult, exitCode, rollUp, saveResult, STATUSES, validateResult } from "./result.mjs";
@@ -54,6 +55,7 @@ const fixture = (t) => {
     "tooling/verify/local-stack-limits.json",
     ".github/workflows/ci.yml",
     "docs/formal/standby-discard/COVERAGE",
+    ".agents/skills/box-main-run/flows.md",
   ]) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     copyFileSync(join(repo, path), join(root, path));
@@ -282,6 +284,7 @@ const LOCAL_ANSWER = {
   reason: "It changes a web route; nothing in the diff needs Boat, old data or a real agent.",
   mustSee: ["Open Projects and see the new row", "Rename it and see the name change", "Reload"],
   ifBroken: "The row is missing",
+  flows: ["adopt-project.web-directory"],
 };
 
 test("a feature's run is owed until it is judged and verify evidence passes on this commit", async (t) => {
@@ -452,14 +455,104 @@ test("an answer the brief did not ask for is refused, and the deploy script only
   const limits = loadLimits(repo);
   const floor = floorOf(limits, ["scripts/preview-deploy.sh", "apps/web-old/src/a.tsx"]);
   assert.deepEqual(floor, [{ id: "preview-deploy", files: ["scripts/preview-deploy.sh"] }]);
-  assert.match(validateAnswer(LOCAL_ANSWER, { limits, floor }).join(), /only be shown on the box/);
+  const { flows } = loadFlows(repo);
+  const facts = { limits, floor, flows };
+  assert.match(validateAnswer(LOCAL_ANSWER, facts).join(), /only be shown on the box/);
   assert.deepEqual(
-    validateAnswer({ ...LOCAL_ANSWER, where: "box", limit: "preview-deploy" }, { limits, floor }),
+    validateAnswer({ ...LOCAL_ANSWER, where: "box", limit: "preview-deploy" }, facts),
     [],
   );
   for (const limit of limits)
     for (const path of limit.paths ?? [])
       assert.ok(existsSync(join(repo, path)), `${limit.id} names missing ${path}`);
+});
+
+test("a judgement names the box run's flow, and a change inside a flow's Areas cannot skip it", async (t) => {
+  const { root, commit, write, git } = fixture(t);
+  commit("apps/web-old/src/routes/a.tsx");
+  const judged = async (answer) =>
+    runVerb(root, "judge", options({ record: answerFile(root, answer) }));
+  const refused = async (answer) => {
+    const result = await judged(answer);
+    assert.equal(result.status, "failed");
+    return result.steps[0].detail;
+  };
+  const { flows: _, ...unnamed } = LOCAL_ANSWER;
+  const asked = await runVerb(root, "judge", options());
+  const brief = readFileSync(join(root, asked.evidence[0].path), "utf8");
+  assert.match(brief, /`organization\.join-refused`/);
+  assert.match(brief, /Not on the box: .*`vscode`/);
+
+  assert.match(await refused(unnamed), /flows, newFlow or noFlow, exactly one/);
+  assert.match(
+    await refused({ ...unnamed, flows: ["organization.join-refuzed"] }),
+    /flow "organization\.join-refuzed" is not in \.agents\/skills\/box-main-run\/flows\.md at [0-9a-f]{10}/,
+  );
+  assert.match(
+    await refused({ ...unnamed, newFlow: "Renaming a project from its row" }),
+    /no flow covers this change \(Renaming a project from its row\): add its flow/,
+  );
+  // `apps/web-old/src/` is in many flows' Areas, so "no flow" is not an answer for it.
+  assert.match(
+    await refused({ ...unnamed, noFlow: { reason: "a small route" } }),
+    /noFlow is refused: this change is inside the Areas of \d+ flows/,
+  );
+  assert.match(
+    await refused({ ...unnamed, noFlow: { notOnTheBox: "vscod", reason: "VS Code only" } }),
+    /"vscod" is not a row of the Not on the box table/,
+  );
+  const client = await judged({ ...unnamed, noFlow: { notOnTheBox: "vscode", reason: "VS Code" } });
+  assert.equal(client.status, "passed");
+  assert.match(client.steps[0].detail, /Box run: no flow \(not on the box: vscode\): VS Code\./);
+
+  // A change only to the new web app names today's flow and says the box shows it after cut-over.
+  git("reset", "-q", "--hard", "main");
+  commit("apps/web/src/routes/projects.tsx");
+  assert.match(
+    await refused({ ...unnamed, noFlow: { reason: "not served yet" } }),
+    /noFlow is refused for the new web app \(apps\/web\/src\/routes\/projects\.tsx\)/,
+  );
+  const later = await judged(LOCAL_ANSWER);
+  assert.equal(later.status, "passed");
+  assert.equal(later.judgement.flowsOnTheBox, "after cut-over");
+  saveResult(root, later);
+  assert.match(
+    toMarkdown(await runVerb(root, "status", options())),
+    /\*\*Box run:\*\* flow adopt-project\.web-directory, on the box after cut-over/,
+  );
+
+  // The flow a change adds to flows.md is one it can name.
+  const flowsPath = join(root, ".agents/skills/box-main-run/flows.md");
+  write(
+    ".agents/skills/box-main-run/flows.md",
+    readFileSync(flowsPath, "utf8").replace(
+      "## Not on the box",
+      "### projects.web-rename\n\n- **Box:** after cut-over\n- **Areas:** `apps/web/src/routes/`\n\n## Not on the box",
+    ),
+  );
+  git("add", "-A");
+  git("commit", "-q", "-m", "add its flow");
+  const added = await judged({ ...unnamed, flows: ["projects.web-rename"] });
+  assert.equal(added.status, "passed");
+  assert.deepEqual(added.judgement.flows, ["projects.web-rename"]);
+});
+
+test("every path a flow's Areas name exists, since a no-flow answer is refused inside them", () => {
+  const { flows, notOnTheBox } = loadFlows(repo);
+  assert.ok(flows.length > 0 && notOnTheBox.includes("vscode"));
+  for (const flow of flows) {
+    assert.ok(flow.areas.length > 0, `${flow.id} names no Areas`);
+    for (const area of flow.areas)
+      assert.ok(existsSync(join(repo, area)), `${flow.id} names missing ${area}`);
+  }
+  // An Areas entry ending in / holds what is under it; any other is one file.
+  const [flow] = parseFlows("### a.b\n\n- **Areas:** `apps/api/src/`, `apps/cli/src/x.ts`\n").flows;
+  assert.deepEqual(
+    ["apps/api/src/y/z.ts", "apps/cli/src/x.ts", "apps/cli/src/x.tsx"].map(
+      (file) => flowsThrough([flow], file).length,
+    ),
+    [1, 1, 0],
+  );
 });
 
 test("a change that owes no run has nothing to judge", async (t) => {
