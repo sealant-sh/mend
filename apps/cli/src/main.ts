@@ -1975,7 +1975,7 @@ const stopSessions = async (
       api<StopPreviewDto>(config, "GET", `/sessions/${session.id}/stop-preview`).catch(() => null),
     ]);
     const keptBy = preview === null ? null : keptRunningLineOf(preview);
-    if (keptBy !== null) say(`${amber("  " + keptBy)}`);
+    if (keptBy !== null) say(amber("  " + keptBy));
     const hold =
       after === null
         ? null
