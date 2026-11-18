@@ -116,6 +116,25 @@ function FileLines<A>({
   readonly between: BetweenLines<A> | undefined;
 }) {
   const parsed = useMemo(() => parsedFile(file.file.patch), [file.file.patch]);
+  const split = layout === "split" && !compact;
+  // The renderer draws again when these change: keep them the same object while they hold.
+  const options = useMemo(
+    () => ({
+      theme: THEME,
+      diffStyle: split ? ("split" as const) : ("unified" as const),
+      diffIndicators: "classic" as const,
+      lineDiffType: "none" as const,
+      hunkSeparators: "metadata" as const,
+      overflow: compact ? ("wrap" as const) : ("scroll" as const),
+      disableFileHeader: true,
+      lineHoverHighlight: "line" as const,
+    }),
+    [split, compact],
+  );
+  const annotations = useMemo(
+    () => (between === undefined ? [] : [...between.annotations(file)]),
+    [between, file],
+  );
   if (parsed === null || parsed.hunks.length === 0)
     return (
       <BodyNote>
@@ -126,7 +145,6 @@ function FileLines<A>({
             : "No lines changed."}
       </BodyNote>
     );
-  const split = layout === "split" && !compact;
   return (
     <>
       {split ? (
@@ -139,18 +157,9 @@ function FileLines<A>({
         fileDiff={parsed}
         metrics={METRICS}
         className="change-diff block border-b"
-        lineAnnotations={between === undefined ? [] : [...between.annotations(file)]}
+        lineAnnotations={annotations}
         {...(between === undefined ? {} : { renderAnnotation: between.render })}
-        options={{
-          theme: THEME,
-          diffStyle: split ? "split" : "unified",
-          diffIndicators: "classic",
-          lineDiffType: "none",
-          hunkSeparators: "metadata",
-          overflow: compact ? "wrap" : "scroll",
-          disableFileHeader: true,
-          lineHoverHighlight: "line",
-        }}
+        options={options}
       />
     </>
   );

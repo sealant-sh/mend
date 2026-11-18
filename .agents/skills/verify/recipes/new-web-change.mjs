@@ -256,16 +256,22 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     .getByText("Files changed since you opened this.")
     .waitFor({ state: "hidden", timeout: 30_000 });
   await section("src/payments/retry.ts").getByRole("button", { expanded: true }).waitFor();
-  if (await page.getByRole("checkbox", { name: "Viewed: src/payments/retry.ts" }).first().isChecked())
+  if (
+    await page.getByRole("checkbox", { name: "Viewed: src/payments/retry.ts" }).first().isChecked()
+  )
     throw new Error("retry.ts changed since its mark but still reads viewed");
-  note("Show the new version: the banner goes, and retry.ts, changed since its mark, reads unviewed");
+  note(
+    "Show the new version: the banner goes, and retry.ts, changed since its mark, reads unviewed",
+  );
   await both("new-version-desktop");
 
   // The big change.
   await open(`/sessions/${big.id}/change`);
   await section("pnpm-lock.yaml").waitFor({ timeout: 60_000 });
   await visible(
-    page.getByText("Mend folded this file because a tool generated it. You rarely need to read it."),
+    page.getByText(
+      "Mend folded this file because a tool generated it. You rarely need to read it.",
+    ),
   ).waitFor();
   await visible(page.getByText("38 files changed. Mend folds generated files.")).waitFor();
   await section("docs/README.md").getByText("Renamed").waitFor();
@@ -281,7 +287,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     return lines;
   });
   if (drawn >= 3000) throw new Error(`the page drew ${drawn} lines for a 3,000-line file`);
-  note(`src/data/rows.ts (3,000 lines) picked: the page holds ${drawn} drawn lines, not every line`);
+  note(
+    `src/data/rows.ts (3,000 lines) picked: the page holds ${drawn} drawn lines, not every line`,
+  );
   await both("big-rows-desktop");
   await visible(page.getByRole("searchbox", { name: "Filter files" })).fill("cart");
   await settled();
