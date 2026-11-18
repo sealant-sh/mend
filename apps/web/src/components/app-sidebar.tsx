@@ -116,6 +116,15 @@ export const areaOf = (pathname: string): SidebarArea => {
 export const openSessionOf = (pathname: string): string | undefined =>
   /^\/sessions\/([^/]+)/.exec(pathname)?.[1];
 
+/** "AL" for Ada Lovelace; the first letter of an email when there is no name. */
+export const initialsOf = (name: string): string =>
+  name
+    .split(/\s+/)
+    .filter((part) => part !== "")
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase() ?? "")
+    .join("");
+
 /** On the desk, a control's own ground: the background showing through. */
 const RAISED = "bg-background/72";
 /** What pointing at an item on the desk shows. */
