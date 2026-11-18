@@ -4,7 +4,6 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@mend/ui/components/ui/accordion";
-import { Alert, AlertAction, AlertDescription, AlertTitle } from "@mend/ui/components/ui/alert";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -182,21 +181,19 @@ import { Trace, TraceLine, TraceTitle } from "@mend/ui/components/ui/trace";
 import { useHighlightedCode } from "@mend/ui/hooks/use-highlighted-code";
 import {
   BellIcon,
-  CircleCheckIcon,
-  CircleXIcon,
   CopyIcon,
   FileDiffIcon,
   FolderIcon,
   InboxIcon,
-  InfoIcon,
   LayoutPanelLeftIcon,
   PencilIcon,
   SearchIcon,
   SquareTerminalIcon,
   TrashIcon,
-  TriangleAlertIcon,
 } from "lucide-react";
 import type * as React from "react";
+
+import { componentSections } from "./components.tsx";
 
 // `?open=dialog` (or menu, alert-dialog, sheet, sheet-lg, context-menu) opens that overlay on load,
 // for screenshots.
@@ -462,81 +459,6 @@ function autoClick(button: HTMLButtonElement | null) {
     clicked = true;
     queueMicrotask(() => button.click());
   }
-}
-
-const tones = [
-  {
-    tone: "info",
-    Icon: InfoIcon,
-    title: "You're offline.",
-    text: "Changes save when Mend can reach the server again.",
-  },
-  {
-    tone: "warning",
-    Icon: TriangleAlertIcon,
-    title: "Grace Hopper has shared control.",
-    text: "Ask Grace for control to send a message.",
-  },
-  {
-    tone: "error",
-    Icon: CircleXIcon,
-    title: "The session couldn't start.",
-    text: "The workspace image failed to build. Its log has the details.",
-  },
-  {
-    tone: "success",
-    Icon: CircleCheckIcon,
-    title: "Git access works.",
-    text: "Mend pushed to a test branch and removed it.",
-  },
-] as const;
-
-function BannerDemo() {
-  return (
-    <div className="flex flex-col gap-4">
-      {(["inline", "stacked"] as const).map((layout) => (
-        <Row key={layout} label={`layout ${layout}`}>
-          <div className="w-full border-t">
-            {tones.map(({ tone, Icon, title, text }) => (
-              <Alert key={tone} variant="band" tone={tone} layout={layout}>
-                <Icon />
-                <AlertTitle>{title}</AlertTitle>
-                <AlertDescription>{text}</AlertDescription>
-                <AlertAction>
-                  <Button size={layout === "stacked" ? "touch" : "sm"} variant="secondary">
-                    Try again
-                  </Button>
-                </AlertAction>
-              </Alert>
-            ))}
-          </div>
-        </Row>
-      ))}
-    </div>
-  );
-}
-
-function InlineAlertDemo() {
-  return (
-    <div className="grid gap-3 sm:grid-cols-2">
-      {tones.map(({ tone, Icon, title, text }) => (
-        <Alert key={tone} tone={tone}>
-          <Icon />
-          <AlertTitle>{title}</AlertTitle>
-          <AlertDescription>
-            {text}
-            {tone === "error" ? (
-              <>
-                {" "}
-                Check the setup steps in <code className="font-mono text-2xs">.mend/mend.toml</code>
-                .
-              </>
-            ) : null}
-          </AlertDescription>
-        </Alert>
-      ))}
-    </div>
-  );
 }
 
 function EmptyDemo() {
@@ -926,8 +848,6 @@ export const sections: ReadonlyArray<{ id: string; title: string; Demo: () => Re
   { id: "sheet", title: "Side sheet", Demo: SideSheetDemo },
   { id: "menu", title: "Menu and context menu", Demo: MenuDemo },
   { id: "toast", title: "Toast", Demo: ToastDemo },
-  { id: "banner", title: "Banner (Alert, band)", Demo: BannerDemo },
-  { id: "inline-alert", title: "Inline alert (Alert)", Demo: InlineAlertDemo },
   { id: "empty", title: "Empty state", Demo: EmptyDemo },
   { id: "form", title: "Fields and inputs", Demo: FormDemo },
   { id: "choices", title: "Toggles and tabs", Demo: ChoicesDemo },
@@ -941,4 +861,6 @@ export const sections: ReadonlyArray<{ id: string; title: string; Demo: () => Re
     title: "Message, trace, marker, attachment and code block",
     Demo: ConversationDemo,
   },
+  // Mend's shared components, built on the primitives above (SLNT-1092).
+  ...componentSections,
 ];

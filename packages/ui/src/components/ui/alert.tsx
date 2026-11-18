@@ -12,7 +12,8 @@ const alertVariants = cva(
           "bg-card text-destructive *:data-[slot=alert-description]:text-destructive/90 *:[svg]:text-current",
         // Sheet's Banner: a flat band across the sheet under its header, with a hairline under it.
         // Its actions take a column of their own on the right, so a long title never runs under them.
-        band: "rounded-none border-x-0 border-t-0 bg-background py-2.5 pr-3 pl-4 has-data-[slot=alert-action]:pr-3",
+        // The band is muted at 70% over the sheet, as the canvas mixes it; the tone never tints it.
+        band: "rounded-none border-x-0 border-t-0 bg-muted/70 py-2.5 pr-3 pl-4 has-data-[slot=alert-action]:pr-3",
       },
       // Sheet keeps the box neutral: the tone colours only the icon.
       tone: {

@@ -21,6 +21,21 @@ Every colour, radius, shadow and off-scale type size is a token in `src/styles/g
 names (`bg-canvas`, `text-meta`, `rounded-chip`, `shadow-pop`, `w-sidebar`); never write a raw
 value.
 
+## Mend's shared components
+
+`src/components/ui/` holds shadcn's primitives. `src/components/` holds Mend's own pieces built on
+them, from the Doop canvas's component definitions: the ones that don't know Mend's data, so the web
+app and later desktop share them. Import them from `@mend/ui/components/<name>`:
+
+- `status`, `lump`, `copy-field`, `banner` (Banner and InlineAlert), `command-palette`;
+- the conversation: `user-message`, `file-attachment`, `trace-row`, `conversation-marker`,
+  `question`, `prompt-input` (PromptInput and ComposerCard), `approval`, `conversation`.
+
+Props and variants follow the canvas, so a frame's `<doop-use>` reads like the JSX. Every sentence a
+person reads is a prop; a component owns only its own labels ("Copy", "Copied", "Steer", "Stop
+turn"). Components that know Mend's data (the sidebar, tiles, the diff) live with their routes in
+`apps/web`.
+
 ## Adding a component
 
 ```sh

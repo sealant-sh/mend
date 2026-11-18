@@ -12,6 +12,7 @@
     "gallery/**/*.ts",
     "gallery/**/*.tsx",
     "test/**/*.ts",
+    "test/**/*.tsx",
     "package.json"
   ]
 }
