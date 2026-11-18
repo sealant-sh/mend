@@ -2,10 +2,10 @@ import type { ExecutorCall } from "@mend/domain/workbench";
 import { ConversationItem } from "@mend/ui/components/conversation";
 import { TraceRow } from "@mend/ui/components/trace-row";
 import { Button } from "@mend/ui/components/ui/button";
-import { useInfiniteQuery } from "@tanstack/react-query";
+import { infiniteQueryOptions, useInfiniteQuery } from "@tanstack/react-query";
 import { PlugIcon } from "lucide-react";
 
-import { useTRPC, useTRPCClient } from "#/lib/trpc";
+import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import type { SessionFacts } from "./session-facts";
 
@@ -64,14 +64,7 @@ export function ExecutorCalls({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const sessionId = facts.session.id;
-  const calls = useInfiniteQuery({
-    queryKey: [...trpc.executor.calls.queryKey({ sessionId }), "history"],
-    queryFn: readCalls(client, sessionId),
-    initialPageParam: null as string | null,
-    getNextPageParam: (last) => last.olderCursor ?? undefined,
-    refetchInterval: CALLS_READ_MS,
-    retry: false,
-  });
+  const calls = useInfiniteQuery(executorCallsQuery(trpc, client, sessionId));
   if (calls.isPending) return null;
   if (calls.isError)
     return (
@@ -107,9 +100,21 @@ export function ExecutorCalls({ facts }: { readonly facts: SessionFacts }) {
   );
 }
 
+/** A session's Executor calls, newest first, a page at a time, read again every few seconds. */
+const executorCallsQuery = (trpc: TrpcProxy, client: TrpcClient, sessionId: string) =>
+  infiniteQueryOptions({
+    queryKey: [...trpc.executor.calls.queryKey({ sessionId }), "history"],
+    queryFn: readCalls(client, sessionId),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last: Awaited<ReturnType<ReturnType<typeof readCalls>>>) =>
+      last.olderCursor ?? undefined,
+    refetchInterval: CALLS_READ_MS,
+    retry: false,
+  });
+
 /** One page of calls, before the cursor the page is read with. */
 const readCalls =
-  (client: ReturnType<typeof useTRPCClient>, sessionId: string) =>
+  (client: TrpcClient, sessionId: string) =>
   ({ pageParam }: { readonly pageParam: string | null }) =>
     client.executor.calls.query({
       sessionId,

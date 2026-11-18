@@ -3,14 +3,18 @@ import { describe, expect, it } from "vitest";
 import { fitPageHeight, readPageFrameRequest } from "./page-frame.ts";
 import { pageThemeOf } from "./page-theme.ts";
 
+const size = (height: unknown) =>
+  readPageFrameRequest({
+    jsonrpc: "2.0",
+    method: "ui/notifications/size-changed",
+    params: { height },
+  });
+
+const link = (url: string) =>
+  readPageFrameRequest({ jsonrpc: "2.0", id: 7, method: "ui/open-link", params: { url } });
+
 describe("what a page's frame says to the app", () => {
   it("reads its size, a zero height included", () => {
-    const size = (height: unknown) =>
-      readPageFrameRequest({
-        jsonrpc: "2.0",
-        method: "ui/notifications/size-changed",
-        params: { height },
-      });
     expect(size(420)).toEqual({ kind: "size", height: 420 });
     expect(size(0)).toEqual({ kind: "size", height: 0 });
     expect(size(-1)).toBeUndefined();
@@ -18,8 +22,6 @@ describe("what a page's frame says to the app", () => {
   });
 
   it("opens only http and https links", () => {
-    const link = (url: string) =>
-      readPageFrameRequest({ jsonrpc: "2.0", id: 7, method: "ui/open-link", params: { url } });
     expect(link("https://example.com/report")).toEqual({
       kind: "link",
       id: 7,

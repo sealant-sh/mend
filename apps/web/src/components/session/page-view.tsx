@@ -9,7 +9,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@mend/ui/components/ui/dialog";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   type RefObject,
   useEffect,
@@ -30,7 +30,25 @@ import {
 } from "#/lib/page-frame";
 import { type PageTheme, pageThemeOf } from "#/lib/page-theme";
 import { useResolvedDark } from "#/lib/theme";
-import { useTRPC, useTRPCClient } from "#/lib/trpc";
+import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
+
+/**
+ * A page's frame address, for the appearance its first paint uses. The address expires: a held one
+ * is used only while it has long enough left to load.
+ */
+const pageFrameQuery = (
+  trpc: TrpcProxy,
+  client: TrpcClient,
+  id: string,
+  appearance: "light" | "dark",
+) =>
+  queryOptions({
+    queryKey: [...trpc.pages.frame.queryKey({ id }), appearance],
+    queryFn: () => client.pages.frame.query({ id, appearance }),
+    staleTime: PAGE_FRAME_TTL_MS - PAGE_FRAME_MIN_URL_LIFE_MS,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
 
 /** How far ahead of the screen a page starts loading, so it is there when the reader reaches it. */
 const NEAR_VIEWPORT = "600px 0px";
@@ -136,16 +154,10 @@ function PageLoader({
   const client = useTRPCClient();
   const theme = usePageTheme();
   const [appearance] = useState(theme.appearance);
-  const frame = useQuery({
-    queryKey: trpc.pages.frame.queryKey({ id: page.id }),
-    queryFn: () => client.pages.frame.query({ id: page.id, appearance }),
-    // The frame's address expires: a held one is used only while it has long enough to load.
-    staleTime: PAGE_FRAME_TTL_MS - PAGE_FRAME_MIN_URL_LIFE_MS,
-    retry: false,
-    refetchOnWindowFocus: false,
-  });
+  const frame = useQuery(pageFrameQuery(trpc, client, page.id, appearance));
   const [src, setSrc] = useState<string | null>(null);
-  if (src === null && frame.isSuccess && !frame.isStale) setSrc(pageFrameSrc(frame.data.url, theme));
+  if (src === null && frame.isSuccess && !frame.isStale)
+    setSrc(pageFrameSrc(frame.data.url, theme));
   if (src === null)
     return frame.isError ? (
       <PageFailure onRetry={onRetry} />
@@ -198,7 +210,8 @@ function PageDocument({
         setHeight(fitPageHeight(request.height));
         return;
       }
-      if (request?.kind === "link" && frameRef.current !== null) openPageLink(frameRef.current, request);
+      if (request?.kind === "link" && frameRef.current !== null)
+        openPageLink(frameRef.current, request);
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
