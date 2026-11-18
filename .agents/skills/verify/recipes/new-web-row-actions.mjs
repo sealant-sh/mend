@@ -18,6 +18,7 @@ const MENU_ITEMS = ["Open session", "Snooze", "Mark done", "Rename", "Copy link"
 /** The workspace's actions and the phone app's Approve, which a session row's menu never holds. */
 const NOT_IN_MENU = ["Copy branch name", "Land…", "Approve…", "Approve"];
 const REFUSAL = "The verify recipe refused this on purpose.";
+const pad = (n) => String(n).padStart(2, "0");
 
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
@@ -69,11 +70,16 @@ export default async ({ page, web, capture, note }) => {
   const api = (path, method, body) =>
     page.evaluate(
       async ({ path: to, method: verb, body: sent }) => {
-        const response = await fetch(`/api${to}`, {
-          method: verb,
-          headers: sent === undefined ? {} : { "content-type": "application/json" },
-          body: sent === undefined ? undefined : JSON.stringify(sent),
-        });
+        const response = await fetch(
+          `/api${to}`,
+          sent === undefined
+            ? { method: verb }
+            : {
+                method: verb,
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify(sent),
+              },
+        );
         return { status: response.status, json: await response.json().catch(() => null) };
       },
       { path, method, body },
@@ -249,6 +255,78 @@ export default async ({ page, web, capture, note }) => {
   await row("To review", REVIEW).waitFor();
   note("inbox-snooze-settle: Mark done moved row-review to Done; Undo put it back under To review");
 
+  // A row marked done offers Mark not done, which brings it back out of Done.
+  await (await moreButton("To review", REVIEW)).click();
+  await menuItem("Mark done").click();
+  await row("Done", REVIEW).waitFor();
+  await (await moreButton("Done", REVIEW)).click();
+  const doneNames = await menuNames();
+  if (doneNames.some((each) => each.startsWith("Mark done") || each.startsWith("Snooze")))
+    throw new Error(`a Done row's menu reads ${doneNames.join(" | ")}`);
+  await menuItem("Mark not done").click();
+  await showAll("To review");
+  await row("To review", REVIEW).waitFor();
+  await toast(`Moved "${REVIEW}" out of Done.`).waitFor();
+  note(
+    `inbox-snooze-settle: in Done the menu reads ${doneNames.join(" | ")}; Mark not done put it back`,
+  );
+
+  // Open session opens the session's page.
+  const reviewRowId = await row("To review", REVIEW).getAttribute("data-session-id");
+  await (await moreButton("To review", REVIEW)).click();
+  await menuItem("Open session").click();
+  await page.waitForURL(new RegExp(`/sessions/${reviewRowId}$`));
+  note("Open session opened /sessions/<id>, the session's page");
+  await open("/");
+  await showAll("To review");
+
+  // Someone else's session has no Rename: only its owner renames it. The stack has one account, so
+  // the inbox read is answered with one more row, a copy of row-review owned by someone else.
+  const THEIRS = "Grace's session";
+  await page.route("**/trpc/**", async (route) => {
+    const url = new URL(route.request().url());
+    const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
+    const at = paths.indexOf("sessions.inbox");
+    if (at === -1) return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    const answer = Array.isArray(body) ? body[at] : body;
+    const { json, meta } = answer.result.data;
+    const index = json.findIndex((each) => each.title === REVIEW);
+    const copy = structuredClone(json[index]);
+    copy.session.id = "00000000-0000-4000-8000-000000000122";
+    copy.session.ownerUserId = "someone-else";
+    copy.session.label = THEIRS;
+    copy.title = THEIRS;
+    json.push(copy);
+    for (const [key, value] of Object.entries(meta?.values ?? {}))
+      if (key.startsWith(`${index}.`))
+        meta.values[key.replace(/^\d+\./, `${json.length - 1}.`)] = value;
+    await route.fulfill({ response, json: body });
+  });
+  await page.getByRole("button", { name: /^Inbox filters:/ }).click();
+  await page.getByRole("menuitemradio", { name: "Everyone" }).click();
+  await page.keyboard.press("Escape");
+  await page.evaluate(() => {
+    void window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
+      queryKey: [["sessions", "inbox"]],
+    });
+  });
+  await row("To review", THEIRS).waitFor();
+  await (await moreButton("To review", THEIRS)).click();
+  const theirNames = await menuNames();
+  if (theirNames.some((each) => each.startsWith("Rename")))
+    throw new Error(`someone else's row offers Rename: ${theirNames.join(" | ")}`);
+  await capture("theirs-menu-desktop-light");
+  await page.keyboard.press("Escape");
+  await page.unroute("**/trpc/**");
+  await page.getByRole("button", { name: /^Inbox filters:/ }).click();
+  await page.getByRole("menuitemradio", { name: "Mine" }).click();
+  await page.keyboard.press("Escape");
+  note(
+    `rename-web: someone else's session (a fixture row) has no Rename: ${theirNames.join(" | ")}`,
+  );
+
   // Copy link (frame 0GWI0PsSOW): the session's address on this server, and a toast.
   await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
   const reviewId = await row("To review", REVIEW).getAttribute("data-session-id");
@@ -324,6 +402,28 @@ export default async ({ page, web, capture, note }) => {
   note(
     "phone: the sheet's Snooze → In an hour moved row-review to Snoozed, with a full-width toast",
   );
+
+  // Pick a time: the phone's own snooze choice, any time ahead.
+  const pick = new Date(Date.now() + 24 * 60 * 60_000);
+  const local = `${pick.getFullYear()}-${pad(pick.getMonth() + 1)}-${pad(pick.getDate())}T10:30`;
+  await inbox()
+    .getByRole("button", { name: `Actions for ${RUNNING}` })
+    .click();
+  await page
+    .getByRole("dialog", { name: RUNNING })
+    .getByRole("menuitem", { name: "Snooze" })
+    .click();
+  await page.getByRole("menuitem", { name: "Pick a time…" }).click();
+  await page.getByRole("dialog", { name: "Pick a time" }).waitFor();
+  await page.getByLabel("Snooze until").fill(local);
+  await both("phone-pick-a-time");
+  await page.getByRole("button", { name: "Snooze", exact: true }).click();
+  await page
+    .getByRole("region", { name: "Snoozed", exact: true })
+    .getByText("Back tomorrow at 10:30", { exact: true })
+    .waitFor();
+  await capture("phone-picked-time-light");
+  note("phone: Pick a time… snoozed row-running until tomorrow at 10:30");
 
   await reset();
   note(
