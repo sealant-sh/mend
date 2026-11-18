@@ -152,10 +152,25 @@ export default async ({ page, web, capture, note }) => {
   note(`after the denial Codex replied "${await lastReply()}"`);
   await both("box-approval-denied");
 
+  // Words instead: typed while the card waits and sent, they deny the command and go to Codex
+  // as the person's message.
+  const instead = "Don't delete it after all. Reply with the single word kept.";
+  await send(DELETE("instead-check.txt"));
+  await asks(2);
+  await field().fill(instead);
+  await page.keyboard.press("Enter");
+  await approvalCard(page).waitFor({ state: "hidden", timeout: 60_000 });
+  await visible(page.getByText(instead, { exact: true })).waitFor({ timeout: 60_000 });
+  const insteadLine = await visible(page.getByText(/^You denied/).last()).innerText();
+  note(`words instead: the thread reads "${insteadLine}" and shows the words as your message`);
+  await replied(2);
+  note(`after the words Codex replied "${await lastReply()}"`);
+  await both("box-approval-words-instead");
+
   // Answered first on another device: a second browser, signed in as the same person, approves
   // while this one shows the card.
   await send(DELETE("second-check.txt"));
-  await asks(2);
+  await asks(3);
   const other = await page
     .context()
     .browser()
@@ -178,7 +193,7 @@ export default async ({ page, web, capture, note }) => {
   );
   await both("box-approval-answered-elsewhere");
   await visible(page.getByRole("button", { name: "Dismiss" })).click();
-  await replied(2);
+  await replied(3);
 
   // A question: Codex asks with its own tool in plan mode; Keep is picked and sent from the card.
   const question =

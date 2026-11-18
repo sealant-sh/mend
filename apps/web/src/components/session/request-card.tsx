@@ -471,18 +471,21 @@ export function ApprovalComposer({
   const [choice, setChoice] = useState("once");
   const respond = useRespond(facts.session.id);
   const always = alwaysChoice(facts.agent, request, conversation);
-  const decide = (decision: "accept" | "accept-for-session" | "decline", words: string | null) =>
-    respond.mutate(
-      { requestId: request.id, response: { decision } },
-      {
-        onSuccess: () => {
-          if (words !== null) sendWords(words);
-        },
-        onError: () => {
-          if (words !== null) base.onValueChange?.(words);
-        },
-      },
-    );
+  // The card unmounts as soon as the answer lands, and a `mutate` call's own callbacks don't run
+  // after that: the words that go with a denial follow the promise instead.
+  const decide = async (
+    decision: "accept" | "accept-for-session" | "decline",
+    words: string | null,
+  ) => {
+    try {
+      await respond.mutateAsync({ requestId: request.id, response: { decision } });
+    } catch {
+      // Not sent: the words go back into the field, so nothing is lost.
+      if (words !== null) base.onValueChange?.(words);
+      return;
+    }
+    if (words !== null) sendWords(words);
+  };
   const pendingDecision =
     respond.isPending && "decision" in respond.variables.response
       ? respond.variables.response.decision
@@ -515,7 +518,7 @@ export function ApprovalComposer({
               variant="outline"
               size={touch ? "touch" : "sm"}
               disabled={busy}
-              onClick={() => decide("decline", null)}
+              onClick={() => void decide("decline", null)}
             >
               {pendingDecision === "decline" ? "Denying…" : "Deny"}
             </Button>
@@ -523,7 +526,9 @@ export function ApprovalComposer({
               type="button"
               size={touch ? "touch" : "sm"}
               disabled={busy}
-              onClick={() => decide(choice === "always" ? "accept-for-session" : "accept", null)}
+              onClick={() =>
+                void decide(choice === "always" ? "accept-for-session" : "accept", null)
+              }
             >
               {pendingDecision === "accept" || pendingDecision === "accept-for-session"
                 ? "Approving…"
@@ -538,7 +543,7 @@ export function ApprovalComposer({
         {...base}
         placeholder={`Or tell ${facts.agent} what to do instead`}
         blocked={busy}
-        onSubmit={(words) => decide("decline", words)}
+        onSubmit={(words) => void decide("decline", words)}
       />
     </>
   );
@@ -574,18 +579,17 @@ export function ExecutorApprovalComposer({
       onSettled: () => queryClient.invalidateQueries(trpc.executor.calls.pathFilter()),
     }),
   );
-  const decide = (action: "accept" | "decline", words: string | null) =>
-    answer.mutate(
-      { ...params, action, content: {} },
-      {
-        onSuccess: () => {
-          if (words !== null) sendWords(words);
-        },
-        onError: () => {
-          if (words !== null) base.onValueChange?.(words);
-        },
-      },
-    );
+  // As for the agent's own approvals: the card unmounts once the answer lands.
+  const decide = async (action: "accept" | "decline", words: string | null) => {
+    try {
+      await answer.mutateAsync({ ...params, action, content: {} });
+    } catch {
+      // Not sent: the words go back into the field, so nothing is lost.
+      if (words !== null) base.onValueChange?.(words);
+      return;
+    }
+    if (words !== null) sendWords(words);
+  };
   const busy = base.blocked || answer.isPending;
   const touch = size === "touch";
   const args = approval.data?.arguments;
@@ -616,7 +620,7 @@ export function ExecutorApprovalComposer({
               variant="outline"
               size={touch ? "touch" : "sm"}
               disabled={busy}
-              onClick={() => decide("decline", null)}
+              onClick={() => void decide("decline", null)}
             >
               {answer.isPending && answer.variables.action === "decline" ? "Denying…" : "Deny"}
             </Button>
@@ -624,7 +628,7 @@ export function ExecutorApprovalComposer({
               type="button"
               size={touch ? "touch" : "sm"}
               disabled={busy}
-              onClick={() => decide("accept", null)}
+              onClick={() => void decide("accept", null)}
             >
               {answer.isPending && answer.variables.action === "accept" ? "Approving…" : "Approve"}
             </Button>
@@ -654,7 +658,7 @@ export function ExecutorApprovalComposer({
         {...base}
         placeholder={`Or tell ${facts.agent} what to do instead`}
         blocked={busy}
-        onSubmit={(words) => decide("decline", words)}
+        onSubmit={(words) => void decide("decline", words)}
       />
     </>
   );

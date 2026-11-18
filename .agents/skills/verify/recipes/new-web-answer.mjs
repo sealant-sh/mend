@@ -451,6 +451,8 @@ export default async ({ page, web, capture, note }) => {
   await visible(page.getByText("You denied")).waitFor({ timeout: 30_000 });
   for (let waited = 0; sent.length === 0 && waited < 100; waited += 1)
     await page.waitForTimeout(100);
+  if (sent.at(-1)?.input !== INSTEAD)
+    throw new Error(`after the denial the words weren't sent: ${JSON.stringify(sent.at(-1))}`);
   note(
     `words instead: denied (${JSON.stringify(answered.at(-1)?.response)}) and sent "${sent.at(-1)?.input}" to Codex`,
   );
