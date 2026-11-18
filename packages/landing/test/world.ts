@@ -226,6 +226,7 @@ export const makeWorld = (options: WorldOptions = {}) => {
       remoteBranch: landing.remoteBranch,
       pushedSha:
         result.outcome === "refused" || result.outcome === "adopted" ? null : result.pushedSha,
+      oneOff: landing.oneOff,
       trigger: landing.trigger,
       pullRequest:
         result.outcome === "pull-request" || result.outcome === "adopted"

@@ -2952,6 +2952,8 @@ export const changeLandings = pgTable(
     commitSha: text().$type<Sha>(),
     remoteBranch: text().notNull(),
     pushedSha: text().$type<Sha>(),
+    // Made with `--no-pr` or a named `--branch` (0227): never moves where later landings push.
+    oneOff: boolean().notNull().default(false),
     trigger: text().$type<LandingTrigger>().notNull(),
     pullRequestNumber: integer(),
     pullRequestUrl: text(),

@@ -87,6 +87,15 @@ export class ChangeLanding extends Schema.Class<ChangeLanding>("ChangeLanding")(
   remoteBranch: Schema.String,
   /** What origin's branch was moved to; null when nothing was pushed. */
   pushedSha: Schema.NullOr(Sha),
+  /**
+   * Made with `--no-pr` or a named `--branch`: a one-off push, which never moves the branch later
+   * landings push to (`nextLandingBranch`). False for every landing recorded before Mend kept it,
+   * and from older servers.
+   */
+  oneOff: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
   trigger: LandingTrigger,
   pullRequest: Schema.NullOr(LandedPullRequest),
   /**
@@ -330,6 +339,8 @@ export interface LandingObservations {
   readonly landings: ReadonlyArray<ChangeLanding>;
   /** Commits on origin's branch that Mend's branch lacks, from the last fetch; null when none ran. */
   readonly originCommitsUnseen: number | null;
+  /** The branch that fetch read: the next landing's. Absent reads as the last push's. */
+  readonly originBranch?: string | null;
   /** Files that differ between the landed checkpoint and the latest one; null when not compared. */
   readonly filesChangedSinceLanding: number | null;
   /** `session_git_ops.ref_updates` of the agent's own pushes: `<old-sha> <new-sha> <ref>`. */
@@ -388,7 +399,7 @@ export const landingFacts = (observed: LandingObservations): ReadonlyArray<Landi
   if (lastPush !== undefined && (observed.originCommitsUnseen ?? 0) > 0) {
     facts.push({
       _tag: "origin-moved",
-      branch: lastPush.remoteBranch,
+      branch: observed.originBranch ?? lastPush.remoteBranch,
       commits: observed.originCommitsUnseen ?? 0,
     });
   }

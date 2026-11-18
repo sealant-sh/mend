@@ -8,6 +8,7 @@ import {
   forkPullRequestReason,
   type DecidedTurn,
   intentAllowsLanding,
+  isOneOffLanding,
   LandingFact,
   landingFactLine,
   LANDING_GUARD,
@@ -567,6 +568,52 @@ describe("pull requests opened outside Mend (docs/adr/0007, open question 4)", (
         agentBranches: ["wip"],
       }),
     ).toBe("landed");
+  });
+
+  describe("a one-off landing (`--no-pr` or a named `--branch`) never moves the branch", () => {
+    const base = {
+      requested: null,
+      agentBranches: [],
+      worktreeBranch: "mend/update-deps",
+      protectedBranches: ["main"],
+    };
+    const ordinary = landing({
+      remoteBranch: "mend/update-deps",
+      outcome: "pull-request",
+      pullRequest: pr367("open"),
+    });
+    const pushOnly = landing({ remoteBranch: "side/push-only", oneOff: true });
+    const named = landing({
+      remoteBranch: "feature/named",
+      oneOff: true,
+      outcome: "pull-request",
+      pullRequest: pr367("open"),
+    });
+
+    // Landings newest first, as the record lists them.
+    it.each([
+      ["ordinary, then push-only", [pushOnly, ordinary], "mend/update-deps"],
+      ["push-only, then ordinary", [ordinary, pushOnly], "mend/update-deps"],
+      ["ordinary, push-only, push-only", [pushOnly, pushOnly, ordinary], "mend/update-deps"],
+      ["push-only alone", [pushOnly], "mend/update-deps"],
+      ["ordinary, then a named branch", [named, ordinary], "mend/update-deps"],
+      ["a named branch that opened a pull request", [named], "feature/named"],
+      ["a named branch, then push-only", [pushOnly, named], "feature/named"],
+    ] as const)("%s", (_, landings, branch) => {
+      expect(nextLandingBranch({ ...base, landings })).toBe(branch);
+    });
+
+    it("leaves a push-only branch out even when the agent pushed none", () => {
+      expect(
+        nextLandingBranch({ ...base, landings: [pushOnly], agentBranches: ["wip/agent"] }),
+      ).toBe("wip/agent");
+    });
+
+    it("names a landing one-off when it asks for a branch or no pull request", () => {
+      expect(isOneOffLanding({ requestedBranch: null, pullRequest: true })).toBe(false);
+      expect(isOneOffLanding({ requestedBranch: null, pullRequest: false })).toBe(true);
+      expect(isOneOffLanding({ requestedBranch: "side", pullRequest: true })).toBe(true);
+    });
   });
 
   it("reads a pull request fact from a server that predates adoption", () => {

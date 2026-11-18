@@ -5697,4 +5697,11 @@ export const migrations = {
     yield* sql`ALTER TABLE worktree_changes ADD COLUMN IF NOT EXISTS file_count integer
       CHECK (file_count >= 0)`;
   }),
+  // Whether a landing was made with `--no-pr` or a named `--branch`, so such a one-off push never
+  // becomes the branch later landings push to (SLNT-1101). Earlier landings read as ordinary.
+  "0227_landing_one_off": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE change_landings ADD COLUMN IF NOT EXISTS one_off boolean NOT NULL
+      DEFAULT false`;
+  }),
 };

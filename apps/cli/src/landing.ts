@@ -91,7 +91,15 @@ export interface LandingReportDto {
 
 interface ChangeLandingsDto {
   readonly changeId: string | null;
+  /** Whether the caller owns the change and may land it. */
+  readonly land: boolean;
+  /** Newest first. */
+  readonly landings: ReadonlyArray<Pick<ChangeLandingDto, "remoteBranch" | "pushedSha">>;
   readonly facts: unknown;
+  /** Origin's branch, when the request asked for a fetch (`probe=true`) and one ran. */
+  readonly remote: { readonly remoteBranch: string; readonly remoteSha: string | null } | null;
+  /** The branch the next landing pushes when none is named; absent from older servers. */
+  readonly nextBranch?: string | null;
 }
 
 /** What `POST /changes/:id/pull-request/check` found. */
@@ -353,6 +361,57 @@ const readFacts = (wire: unknown): ReadonlyArray<LandingFact> => {
   }
 };
 
+/**
+ * The branch a landing pushes: the one named, else the server's choice (`nextBranch`). An older
+ * server does not say: the branch the change last pushed, else the session's own.
+ */
+export const landingTarget = (
+  view: Pick<ChangeLandingsDto, "landings" | "nextBranch">,
+  named: string | null,
+  sessionBranch: string,
+): string =>
+  named ??
+  view.nextBranch ??
+  view.landings.find((landing) => landing.pushedSha !== null)?.remoteBranch ??
+  sessionBranch;
+
+/** Whether an earlier landing of the change pushed to `branch`. */
+const pushedBefore = (view: Pick<ChangeLandingsDto, "landings">, branch: string): boolean =>
+  view.landings.some((landing) => landing.pushedSha !== null && landing.remoteBranch === branch);
+
+/**
+ * What `mend land` prints before it lands: where it pushes, in the Land panel's words, then, when
+ * origin no longer has a branch Mend pushed to before, that this landing creates it again.
+ */
+export const landingPlanLines = (input: {
+  readonly sessionBranch: string;
+  readonly target: string;
+  readonly project: string;
+  readonly sessionId: string;
+  readonly pullRequest: boolean;
+  /** What a fetch of origin found, when one ran. */
+  readonly remote: ChangeLandingsDto["remote"];
+}): ReadonlyArray<string> => {
+  const where =
+    input.target === input.sessionBranch
+      ? `${input.sessionBranch} to origin`
+      : `${input.sessionBranch} to origin as ${input.target}`;
+  const steps = input.pullRequest
+    ? "checkpoint · commit · push · pull request"
+    : "checkpoint · commit · push";
+  const lines = [
+    dim(
+      `  landing ${where} · ${input.project} · session ${input.sessionId.slice(0, 8)} · ${steps}`,
+    ),
+  ];
+  if (input.remote?.remoteBranch === input.target && input.remote.remoteSha === null) {
+    lines.push(
+      `  ${amber(`origin no longer has ${input.target} · this landing creates it again`)}`,
+    );
+  }
+  return lines;
+};
+
 /** What `mend land --check` found, as one line. */
 export const checkLine = (check: PullRequestCheckDto): string => {
   const pullRequest = check.landing?.pullRequest ?? null;
@@ -394,21 +453,32 @@ export const landCommand = async (api: ApiCall, args: ReadonlyArray<string>): Pr
     }
     return;
   }
-  const steps = parsed.args.pullRequest
-    ? "checkpoint · commit · push · pull request"
-    : "checkpoint · commit · push";
-  say(
-    dim(
-      `  landing ${session.branch} · ${project.name} · session ${session.id.slice(0, 8)} · ${steps}`,
-    ),
-  );
+  const landings = `/sessions/${session.id}/landings`;
+  const before = await api<ChangeLandingsDto>("GET", landings);
+  const target = landingTarget(before, parsed.args.branch, session.branch);
+  // Only a branch the owner did not name, which Mend pushed to before, is fetched: whether origin
+  // still has it decides whether this landing says it creates it again.
+  const probed =
+    parsed.args.branch === null && before.land && pushedBefore(before, target)
+      ? await api<ChangeLandingsDto>("GET", `${landings}?probe=true`)
+      : before;
+  for (const line of landingPlanLines({
+    sessionBranch: session.branch,
+    target,
+    project: project.name,
+    sessionId: session.id,
+    pullRequest: parsed.args.pullRequest,
+    remote: probed.remote,
+  })) {
+    say(line);
+  }
   const report = await api<LandingReportDto>("POST", `/sessions/${session.id}/land`, {
     branch: parsed.args.branch,
     pullRequest: parsed.args.pullRequest,
     title: parsed.args.title,
     body: null,
   });
-  const view = await api<ChangeLandingsDto>("GET", `/sessions/${session.id}/landings`);
+  const view = await api<ChangeLandingsDto>("GET", landings);
   for (const line of landedLines(report, readFacts(view.facts), new Date())) say(line);
   if (!landingSucceeded(report)) process.exitCode = 1;
 };

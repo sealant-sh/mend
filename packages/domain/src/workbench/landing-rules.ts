@@ -40,6 +40,7 @@ type RecordedLanding = Pick<
   | "trigger"
   | "remoteBranch"
   | "pushedSha"
+  | "oneOff"
   | "pullRequest"
   | "pullRequestCrossRepository"
   | "pullRequestHeadOwner"
@@ -90,9 +91,10 @@ export const forkPullRequestReason = (fork: {
 
 /**
  * The branch the next landing pushes, in order: the one the owner names; the one the change's
- * last landing pushed; the one the agent last pushed itself; the head of an adopted pull request
- * on origin; the worktree's own. Never the project's default branch or the pull request's base
- * (an owner who names one of those is refused, and Mend never picks one).
+ * newest landing pushed, leaving out one-off landings (`--no-pr` or a named `--branch`); the one
+ * the agent last pushed itself; the head on origin of the change's pull request, opened by Mend or
+ * adopted; the worktree's own. Never the project's default branch or the pull request's base (an
+ * owner who names one of those is refused, and Mend never picks one).
  */
 export const nextLandingBranch = (input: {
   readonly requested: string | null;
@@ -107,19 +109,35 @@ export const nextLandingBranch = (input: {
   if (input.requested !== null) return input.requested;
   const usable = (branch: string | undefined): branch is string =>
     branch !== undefined && branch !== "" && !input.protectedBranches.includes(branch);
-  const lastPush = input.landings.find((landing) => landing.pushedSha !== null)?.remoteBranch;
+  const lastPush = input.landings.find(
+    (landing) => landing.pushedSha !== null && !landing.oneOff,
+  )?.remoteBranch;
   if (usable(lastPush)) return lastPush;
   const agentBranch = input.agentBranches.find(usable);
   if (agentBranch !== undefined) return agentBranch;
-  const adopted = input.landings.find(
-    (landing) =>
-      landing.trigger === "adopted" &&
-      landing.pullRequest !== null &&
-      !landing.pullRequestCrossRepository,
+  // A one-off landing that opened a pull request still carries it: its head is where review is.
+  const pullRequestHead = input.landings.find(
+    (landing) => landing.pullRequest !== null && !landing.pullRequestCrossRepository,
   )?.remoteBranch;
-  if (usable(adopted)) return adopted;
+  if (usable(pullRequestHead)) return pullRequestHead;
   return input.worktreeBranch;
 };
+
+/** Whether a landing asked for is a one-off, which never moves where later landings push. */
+export const isOneOffLanding = (input: {
+  readonly requestedBranch: string | null;
+  readonly pullRequest: boolean;
+}): boolean => input.requestedBranch !== null || !input.pullRequest;
+
+/**
+ * The newest landing that pushed to `branch`, one-off or not: what origin's branch was last moved
+ * to by Mend, which "nothing new" and "Check origin" compare against.
+ */
+export const lastPushTo = <L extends RecordedLanding>(
+  landings: ReadonlyArray<L>,
+  branch: string,
+): L | undefined =>
+  landings.find((landing) => landing.pushedSha !== null && landing.remoteBranch === branch);
 
 const shortSha = (sha: string): string => sha.slice(0, 7);
 

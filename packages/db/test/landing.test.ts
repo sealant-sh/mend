@@ -79,6 +79,7 @@ const landingWith = (result: NewChangeLanding["result"]): NewChangeLanding => ({
   checkpoint: { id: CHECKPOINT, ref: "refs/mend/checkpoints/wt-1/1", sha: sha("c") },
   commitSha: sha("d"),
   remoteBranch: "mend/fix-login",
+  oneOff: false,
   trigger: "automatic",
   userId: "alice",
   result,
@@ -306,13 +307,17 @@ describe.skipIf(postgres.skip)("landing in Postgres", () => {
           }),
           commitSha: null,
           trigger: "manual",
+          oneOff: true,
         });
         expect(refused).toMatchObject({ outcome: "refused", pushedSha: null, pullRequest: null });
         expect(refused.message).toContain("fetch first");
 
-        expect((yield* landings.listForChange(CHANGE)).map((landing) => landing.id)).toEqual([
-          refused.id,
-          first.id,
+        // A one-off landing (`--no-pr` or a named `--branch`) reads back as one.
+        expect(
+          (yield* landings.listForChange(CHANGE)).map((landing) => [landing.id, landing.oneOff]),
+        ).toEqual([
+          [refused.id, true],
+          [first.id, false],
         ]);
         expect((yield* landings.latestForChange(CHANGE))?.id).toBe(refused.id);
 
@@ -391,6 +396,7 @@ describe.skipIf(postgres.skip)("landing in Postgres", () => {
           checkpoint: null,
           commitSha: null,
           remoteBranch: "fix-login",
+          oneOff: false,
           trigger: "adopted",
           userId: "alice",
           result: {
@@ -492,6 +498,7 @@ describe.skipIf(postgres.skip)("landing in Postgres", () => {
           checkpoint: null,
           commitSha: null,
           remoteBranch: "mend/bump",
+          oneOff: false,
           trigger: result.outcome === "adopted" ? "adopted" : "manual",
           userId: "alice",
           result,

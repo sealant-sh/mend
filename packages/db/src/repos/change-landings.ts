@@ -50,6 +50,8 @@ export interface NewChangeLanding {
   /** The commit Mend wrote for uncommitted work; null when it wrote none (or adopted). */
   readonly commitSha: Sha | null;
   readonly remoteBranch: string;
+  /** Made with `--no-pr` or a named `--branch`: never moves where later landings push. */
+  readonly oneOff: boolean;
   readonly trigger: LandingTrigger;
   /** The change's owner: only they land, and a pull request is adopted for them. */
   readonly userId: string;
@@ -97,6 +99,7 @@ const toLanding = (row: typeof changeLandings.$inferSelect): ChangeLanding =>
     commitSha: row.commitSha,
     remoteBranch: row.remoteBranch,
     pushedSha: row.pushedSha,
+    oneOff: row.oneOff,
     trigger: row.trigger,
     pullRequest:
       row.pullRequestNumber === null ||
@@ -192,6 +195,7 @@ export const ChangeLandingsRepoLive: Layer.Layer<
           checkpointSha: landing.checkpoint?.sha ?? null,
           commitSha: landing.commitSha,
           remoteBranch: landing.remoteBranch,
+          oneOff: landing.oneOff,
           trigger: landing.trigger,
           outcome: landing.result.outcome,
           userId: landing.userId,

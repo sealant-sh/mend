@@ -21,6 +21,7 @@ import {
   type Checkpoint,
   forkPullRequestReason,
   isLiveProcess,
+  isOneOffLanding,
   nextLandingBranch,
   openForkPullRequest,
   pullRequestToUpdate,
@@ -560,8 +561,8 @@ export const LandingLive: Layer.Layer<
       // included) leaves no commit to build on.
       const lastPush = history.find((landing) => landing.pushedSha !== null);
       const base = pullRequestBase(worktree.baseRef, project.defaultBranch);
-      // The branch: the owner's, the last landing's, the agent's own push, an adopted pull
-      // request's head on origin, else the worktree's.
+      // The branch: the owner's, the last ordinary landing's (never a one-off's), the agent's own
+      // push, the change's pull request's head on origin, else the worktree's.
       const remoteBranch = nextLandingBranch({
         requested: input.remoteBranch,
         landings: history,
@@ -597,6 +598,10 @@ export const LandingLive: Layer.Layer<
                 : { id: checkpoint.id, ref: checkpoint.ref, sha: checkpoint.sha },
             commitSha,
             remoteBranch,
+            oneOff: isOneOffLanding({
+              requestedBranch: input.remoteBranch,
+              pullRequest: input.pullRequest,
+            }),
             trigger: input.trigger,
             userId: owner,
             result,
@@ -634,9 +639,10 @@ export const LandingLive: Layer.Layer<
       }
       const { head, commitSha, nothingNew } = committed.success;
       const titleGiven = input.title !== null && input.title.trim() !== "";
-      // Nothing new since a landing that finished what is asked now: no push, no row. A landing
-      // whose pull request step failed, or one asked to open a pull request or retitle it, goes on.
-      const latest = history[0];
+      // Nothing new since a landing to this branch that finished what is asked now: no push, no
+      // row. A landing whose pull request step failed, or one asked to open a pull request or
+      // retitle it, goes on, and so does one to a branch a one-off push to another left behind.
+      const latest = history.find((landing) => landing.remoteBranch === remoteBranch);
       const wantsPullRequest =
         input.pullRequest && pullRequestAvailability(project.originUrl).available;
       const mediaAvailability = pullRequestAvailability(project.originUrl);
@@ -975,6 +981,7 @@ export const LandingLive: Layer.Layer<
         checkpoint: null,
         commitSha: null,
         remoteBranch: found.headRefName === "" ? worktree.branch : found.headRefName,
+        oneOff: false,
         trigger: "adopted",
         userId: owner,
         result: {

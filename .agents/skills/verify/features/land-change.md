@@ -13,7 +13,9 @@ but does not land; Slack lands automatically or from a button in the thread.
 - `land-web` lands from the review page's Land panel, with an optional pull request title and
   description.
 - `land-preview` previews the pull request description before landing.
-- `land-cli` lands with `mend land`, with `--branch`, `--no-pr` and `--title`.
+- `land-cli` lands with `mend land`, with `--branch`, `--no-pr` and `--title`, and names the branch
+  it pushes to before it lands. A landing made with `--no-pr` or `--branch` is a one-off: the next
+  one without `--branch` pushes to the landing branch again, usually the pull request's.
 - `land-again` lands again after more work: new commits on the same branch, the same pull request
   updated, or nothing pushed when nothing is new.
 - `land-refused` reports a refused push in the remote's own words and exits `1`, pushing nothing.
@@ -101,8 +103,10 @@ Preconditions:
 - **Session line after landing.** Go back to `<web>/sessions/<id>`. The landing line now states the
   latest fact instead of `not landed`.
 - **Land again with nothing new.** Run `mend land <worktree> --project <project>`. Stdout starts
-  with `  landing <branch> · <project> · session <id8> · checkpoint · commit · push · pull request`.
-  Nothing is pushed: exit code `1` and stderr reads
+  with
+  `  landing <branch> to origin · <project> · session <id8> · checkpoint · commit · push · pull request`
+  (`to origin as <remote branch>` when the landing branch is not the worktree's own). Nothing is
+  pushed: exit code `1` and stderr reads
   `mend: landing not started · nothing new since the last landing`.
 - **Land again after more work.** Add more work in the same worktree: run
   `mend claude "Append the line again to VERIFY.md." --worktree <worktree> --project <project> --detach`,
@@ -112,16 +116,24 @@ Preconditions:
   `  checkpoint <sha>`, `  commit <sha> · Mend's, for the work left uncommitted` (only when the
   agent left work uncommitted), `  pull request <url>`, and an `  observed` block. Exit code `0`.
   The pull request number is the same as before.
-- **Push only.** Add more work in the worktree first, as in the previous step: with nothing new, a
-  landing is refused even to another branch. Then run
-  `mend land <worktree> --project <project> --no-pr --branch verify/push-only`. Stdout's first `✓`
-  line reads `pushed · verify/push-only · <sha>` with no pull request. Exit code `0`.
+- **Push only.** Add more work in the worktree first, as in the previous step. Then run
+  `mend land <worktree> --project <project> --no-pr --branch verify/push-only`. Stdout starts with
+  `  landing <branch> to origin as verify/push-only · …` and its first `✓` line reads
+  `pushed · verify/push-only · <sha>` with no pull request. Exit code `0`. The Land panel still
+  reads `push <branch> to origin` (with `as <remote branch>` only for the landing branch, never
+  `as verify/push-only`): the push-only landing did not move the landing branch.
 - **Check GitHub.** Run `mend land <worktree> --project <project> --check`. Stdout reads
   `✓ pull request #<n> already recorded · <state> · observed`, then the `  observed` facts. Nothing
   is pushed.
 - **Refused push.** Add more unlanded work in the worktree (as above), push a commit to the landing
-  branch on origin from outside Mend, then run `mend land <worktree> --project <project>`. Stdout
-  reads `· push refused · <remote branch> · <remote's words>`; exit code `1`; origin is unchanged.
+  branch on origin from outside Mend, then run `mend land <worktree> --project <project>` with no
+  `--branch`. Stdout starts with `  landing <branch> to origin · …`, naming the landing branch and
+  not the push-only one, then reads `· push refused · <remote branch> · <remote's words>`; exit code
+  `1`; origin is unchanged, and the push-only branch is not created again.
+- **A landing branch gone from origin.** Delete the landing branch on origin (outside Mend), add
+  more work, and run `mend land <worktree> --project <project>`. Stdout's second line reads
+  `  origin no longer has <remote branch> · this landing creates it again`, before the `✓` line
+  `pushed · <remote branch> · <sha>`. Exit code `0`.
 - **Desktop: open the Land sheet.** Click the second change's session row in the sidebar (named
   `<harness> · <label or branch>`), then run
   `await page.getByRole("button", { name: "land", exact: true }).click()`. The side sheet
@@ -193,7 +205,10 @@ Preconditions:
   own only once the session is picked up on the phone.
 - "Land again after more work" needs `mend connect claude`; the other steps need no provider.
 - A landing with nothing new is refused by the server, not reported as a landing: the CLI exits `1`.
-  Do not read that exit code as a failed push.
+  Do not read that exit code as a failed push. "Nothing new" is judged against the last landing to
+  the same branch: a first push to another branch goes ahead.
+- `Check origin` fetches the branch the next landing pushes, never a push-only branch, and compares
+  it with what Mend last pushed there.
 - A disposable origin is required: landing really pushes and really opens a pull request, as the
   person whose GitHub login is connected.
 - The desktop's Land sheet has no description preview; `Preview description` exists on the web only.

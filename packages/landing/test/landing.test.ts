@@ -431,6 +431,41 @@ describe("Landing.land", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
+  it.effect(
+    "keeps landing on the pull request's branch after a push-only landing elsewhere",
+    () => {
+      const h = harness();
+      return Effect.gen(function* () {
+        const landing = yield* Landing;
+        yield* landing.land(input());
+        yield* landing.land(input({ remoteBranch: "side/push-only", pullRequest: false }));
+        yield* landing.land(input());
+        expect(h.pushes.map((push) => push.remoteBranch)).toEqual([
+          "mend/fix-login",
+          "side/push-only",
+          "mend/fix-login",
+        ]);
+        // Newest first: only the push-only landing is recorded as a one-off.
+        expect(h.world.landings.map((row) => row.oneOff)).toEqual([false, true, false]);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  it.effect("judges nothing new against the branch being pushed", () => {
+    const h = harness({ nothingNew: true });
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      yield* landing.land(input());
+      const side = yield* landing.land(input({ remoteBranch: "side/copy", pullRequest: false }));
+      expect(side.landing).toMatchObject({ remoteBranch: "side/copy", pushedSha: MEND_COMMIT });
+      const again = yield* landing
+        .land(input({ remoteBranch: "side/copy", pullRequest: false }))
+        .pipe(Effect.flip);
+      expect(again.reason).toBe("nothing-new");
+      expect(h.pushes.map((push) => push.remoteBranch)).toEqual(["mend/fix-login", "side/copy"]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
   it.effect("neither builds on nor reuses the branch of a landing that pushed nothing", () => {
     const h = harness({
       push: new PushRefusedError({

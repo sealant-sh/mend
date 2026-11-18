@@ -121,9 +121,9 @@ Landing a change runs these steps, in this order, and stops at the first that fa
    ```
 
    So the agent's commits keep their history, nothing is rewritten, and every push fast-forwards
-   from `L`. A landing that finds nothing new since the last one says
-   `nothing new since the last landing` and records nothing, unless the last landing did not finish
-   its pull request, or the owner gave a new title or description.
+   from `L`. A landing that finds nothing new since the last one to the same branch says
+   `nothing new since the last landing` and records nothing, unless that landing did not finish its
+   pull request, or the owner gave a new title or description.
 
 3. **Push.** The host pushes the landed commit to origin, as `refs/heads/mend/<name>` unless the
    owner names another branch, using the project's `gitAuthMode` and the change owner's key. The
@@ -410,9 +410,12 @@ short-lived workspace, as step 4 does. A pull request already recorded has its s
 instead of a second row.
 
 The next landing then chooses its branch in this order: the one the owner names, the one the
-change's last landing pushed, the one the agent last pushed itself, an adopted pull request's head
-on origin, the worktree's own. It passes the adopted pull request as the one to update. A pull
-request from a fork is shown
+change's last landing pushed, the one the agent last pushed itself, the head on origin of the
+change's pull request (adopted or Mend's own), the worktree's own. A landing made with `--no-pr` or
+a named `--branch` is a one-off and is left out of "the last landing" (SLNT-1101, 2026-11-18): a
+push to a side branch never becomes where later landings go, and `mend land` names the branch before
+it pushes, saying when origin no longer has one Mend pushed before. It passes the adopted pull
+request as the one to update. A pull request from a fork is shown
 (`pull request #367 · merged · observed 2 min ago · opened outside Mend · from anna's fork`) and
 never updated: Mend pushes to origin only, the Land button reads "Push to origin", and a landing
 skips its pull request step with that reason rather than open a second pull request.
