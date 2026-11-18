@@ -29,6 +29,7 @@ import {
   usePageLoadDeadline,
 } from "#/lib/page-frame";
 import { type PageTheme, pageThemeOf } from "#/lib/page-theme";
+import { messageTime } from "#/lib/session-sheet";
 import { useResolvedDark } from "#/lib/theme";
 import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -245,7 +246,7 @@ function PageDocument({
 /** A page the agent made, where it made it: its title, Open to see it large, and the page. */
 export function PageEvent({ page }: { readonly page: PageRef }) {
   const [open, setOpen] = useState(false);
-  const published = page.publishedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const published = messageTime(page.publishedAt, new Date());
   return (
     <figure className="flex min-w-0 flex-col gap-2">
       <figcaption className="flex items-baseline gap-3">

@@ -109,7 +109,35 @@ function Step({ item }: { readonly item: AgentItemDto }) {
 /** The pages a session's agent made, by id, for the page calls among its steps. */
 export type PagesById = ReadonlyMap<string, PageRef>;
 
-/** Steps in a row, then the pages any of them made, each where it was made. */
+const NO_PAGES: PagesById = new Map();
+
+/** The pages any of `items` made, each with the step that made it. */
+const pagesMadeBy = (
+  items: ReadonlyArray<AgentItemDto>,
+  pages: PagesById,
+): ReadonlyArray<{ readonly key: string; readonly page: PageRef }> =>
+  items.flatMap((item) => {
+    const attachment = mendPageCallOf(item)?.attachmentId ?? null;
+    const page = attachment === null ? undefined : pages.get(attachment);
+    return page === undefined ? [] : [{ key: item.id, page }];
+  });
+
+/** Pages the agent made, each shown where it was made. */
+function Pages({
+  items,
+  pages,
+}: {
+  readonly items: ReadonlyArray<AgentItemDto>;
+  readonly pages: PagesById;
+}) {
+  return pagesMadeBy(items, pages).map(({ key, page }) => (
+    <div key={key} className="mt-2">
+      <PageEvent page={page} />
+    </div>
+  ));
+}
+
+/** Steps in a row, then the pages any of them made. */
 function Steps({
   items,
   pages,
@@ -117,27 +145,18 @@ function Steps({
   readonly items: ReadonlyArray<AgentItemDto>;
   readonly pages: PagesById;
 }) {
-  const made = items.flatMap((item) => {
-    const attachment = mendPageCallOf(item)?.attachmentId ?? null;
-    const page = attachment === null ? undefined : pages.get(attachment);
-    return page === undefined ? [] : [{ key: item.id, page }];
-  });
   return (
     <div className="flex flex-col gap-0.5">
       {items.map((item) => (
         <Step key={item.id} item={item} />
       ))}
-      {made.map(({ key, page }) => (
-        <div key={key} className="mt-2">
-          <PageEvent page={page} />
-        </div>
-      ))}
+      <Pages items={items} pages={pages} />
     </div>
   );
 }
 
 /** "Worked for 2m 4s", the steps it took, and how many failed: a finished turn's steps, folded. */
-function Worked({ row, pages }: { readonly row: AgentRow; readonly pages: PagesById }) {
+function Worked({ row }: { readonly row: AgentRow }) {
   if (row.folded.length === 0) return null;
   const lasted = row.turn === null ? null : turnLasted(row.turn);
   const stopped = row.turn?.status === "interrupted" || row.turn?.status === "cancelled";
@@ -153,7 +172,7 @@ function Worked({ row, pages }: { readonly row: AgentRow; readonly pages: PagesB
       title={title}
       description={failed === 0 ? steps : `${steps} · ${failed} failed`}
     >
-      <Steps items={row.folded} pages={pages} />
+      <Steps items={row.folded} pages={NO_PAGES} />
     </TraceRow>
   );
 }
@@ -370,7 +389,9 @@ export function AgentTurn({
     <Message>
       <MessageContent className="gap-3">
         <MessageHeader className="px-0 text-meta font-normal">{header}</MessageHeader>
-        <Worked row={row} pages={pages} />
+        <Worked row={row} />
+        {/* A finished turn's steps fold away; the pages they made stay in view. */}
+        <Pages items={row.folded} pages={pages} />
         <AgentSegments segments={row.segments} renderRequest={renderRequest} pages={pages} />
         <TurnEnd row={row} facts={facts} />
       </MessageContent>

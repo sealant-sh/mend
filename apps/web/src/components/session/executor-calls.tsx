@@ -5,6 +5,7 @@ import { Button } from "@mend/ui/components/ui/button";
 import { infiniteQueryOptions, useInfiniteQuery } from "@tanstack/react-query";
 import { PlugIcon } from "lucide-react";
 
+import { messageTime } from "#/lib/session-sheet";
 import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import type { SessionFacts } from "./session-facts";
@@ -23,7 +24,7 @@ const callerOf = (call: ExecutorCall, facts: SessionFacts): string => {
 /** One call: the service and tool, whom it ran as, what Executor said, and who must answer. */
 function Call({ call, facts }: { readonly call: ExecutorCall; readonly facts: SessionFacts }) {
   const held = call.outcome === "held";
-  const at = call.observedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const at = messageTime(call.observedAt, new Date());
   const approver =
     call.approverId === null
       ? "the turn's sender"
