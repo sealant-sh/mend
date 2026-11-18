@@ -1,5 +1,5 @@
 import { cn } from "@mend/ui/lib/utils";
-import { Check } from "lucide-react";
+import { Check, CircleCheck } from "lucide-react";
 import { type ReactNode, useSyncExternalStore } from "react";
 
 import { SETUP_STEPS } from "#/lib/onboarding";
@@ -198,6 +198,47 @@ export function SetupActions({
           {children}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A section's heading inside a setup step, under the page's opening lines. */
+export function SectionTitle({ children }: { readonly children: string }) {
+  return (
+    <h2 className="mt-8 mb-3 text-lead font-semibold text-foreground max-lg:mt-6">{children}</h2>
+  );
+}
+
+/**
+ * A line Mend observed, with a tick: the key works, the computer connected, an agent login
+ * connected. `facts` is a second line about what connected (an account); `detail` says when.
+ */
+export function WorksLine({
+  line,
+  facts,
+  detail,
+  action,
+}: {
+  readonly line: string;
+  readonly facts?: string | undefined;
+  readonly detail: ReactNode;
+  readonly action?: ReactNode;
+}) {
+  return (
+    <div role="status" className="flex items-start gap-3 max-lg:flex-col">
+      <div className="flex min-w-0 flex-1 items-start gap-3">
+        <CircleCheck aria-hidden className="mt-0.5 size-4.5 flex-none text-foreground" />
+        <div className="grid min-w-0 gap-0.5">
+          <p className="text-prose text-pretty text-foreground max-lg:text-sm">{line}</p>
+          {facts === undefined ? null : (
+            <p className="text-prose font-medium break-all text-foreground max-lg:text-sm">
+              {facts}
+            </p>
+          )}
+          <p className="text-row text-muted-foreground">{detail}</p>
+        </div>
+      </div>
+      {action}
     </div>
   );
 }
