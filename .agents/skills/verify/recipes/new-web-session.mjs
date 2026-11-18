@@ -169,11 +169,32 @@ export default async ({ page, web, capture, note }) => {
     [ids["session-running"]]: working(ids["session-running"], me, at),
     [ids["session-start-failed"]]: empty(),
     [ids["session-starting"]]: empty(),
+    [ids["session-record"]]: published(ids["session-record"], me, at),
+  };
+  // The page the published fixture's turn made, and the session's Executor calls.
+  const pageId = "fixture-page-1";
+  const pagesOf = {
+    [ids["session-record"]]: superjson(
+      [
+        {
+          id: pageId,
+          sessionId: ids["session-record"],
+          title: "Refund retries",
+          height: 220,
+          publishedAt: at(5),
+        },
+      ],
+      ["0.publishedAt"],
+    ),
+  };
+  const callsOf = {
+    [ids["session-record"]]: executorCalls(ids["session-record"], me, at),
   };
   const sessionPatches = {
     [ids["session-turn"]]: { status: "completed", harness: "claude" },
     [ids["session-credit"]]: { status: "failed", summary: null, harness: "claude" },
     [ids["session-running"]]: { status: "running", harness: "claude" },
+    [ids["session-record"]]: { status: "completed", harness: "claude" },
     [ids["session-start-failed"]]: {
       status: "failed",
       summary:
@@ -201,6 +222,10 @@ export default async ({ page, web, capture, note }) => {
       if (path.startsWith("sessions.history") && failReads) return "fail";
       if (path.startsWith("sessions.history") && conversations[id] !== undefined) return "history";
       if (path === "sessions.detail" && sessionPatches[id] !== undefined) return "detail";
+      if (path === "sessions.pages" && pagesOf[id] !== undefined) return "pages";
+      if (path === "pages.frame" && id === pageId) return "frame";
+      const sessionId = inputs[String(index)]?.json?.sessionId;
+      if (path === "executor.calls" && callsOf[sessionId] !== undefined) return "calls";
       return null;
     });
     if (mine.every((each) => each === null)) return route.continue();
@@ -221,6 +246,23 @@ export default async ({ page, web, capture, note }) => {
         };
       else if (mine[index] === "history")
         answers[index] = { result: { data: conversations[id][path] } };
+      else if (mine[index] === "pages") answers[index] = { result: { data: pagesOf[id] } };
+      else if (mine[index] === "frame")
+        answers[index] = {
+          result: {
+            data: superjson(
+              {
+                url: `${web}/__fixture-page.html`,
+                expiresAt: new Date(Date.now() + 600_000).toISOString(),
+              },
+              ["expiresAt"],
+            ),
+          },
+        };
+      else if (mine[index] === "calls")
+        answers[index] = {
+          result: { data: callsOf[inputs[String(index)].json.sessionId] },
+        };
       else if (mine[index] === "detail")
         answers[index] = {
           result: { data: patchDetail(answers[index].result.data, sessionPatches[id]) },
@@ -277,6 +319,35 @@ export default async ({ page, web, capture, note }) => {
     await visible(page.getByText("The session couldn't start.")).waitFor();
   });
   note("fixture start failed: the banner says the session couldn't start, and why");
+
+  // A page the agent published, and its Executor calls. The page is a fixture document that does what
+  // t3code's bootstrap does: it takes the host's theme from its address and reports its height.
+  await page.route("**/__fixture-page.html", (route) =>
+    route.fulfill({ contentType: "text/html", body: FIXTURE_PAGE }),
+  );
+  await fixture("published", `/sessions/${ids["session-record"]}`, async () => {
+    await visible(page.getByRole("region", { name: "Executor calls" })).waitFor();
+    await visible(page.getByText("linear · save_issue", { exact: true })).waitFor();
+    await page
+      .frameLocator('iframe[title="Refund retries"]')
+      .getByText("Refund retries, by attempt")
+      .waitFor({ timeout: 30_000 });
+  });
+  await visible(page.getByText("linear · save_issue", { exact: true })).click();
+  await visible(page.getByText("Waiting for you to answer in Mend.")).waitFor();
+  const frameHeight = await page
+    .locator('iframe[title="Refund retries"]')
+    .first()
+    .evaluate((frame) => frame.getBoundingClientRect().height);
+  note(
+    `fixture published: the Executor calls list two calls, one waiting for you; the page Refund retries renders in its frame at ${Math.round(frameHeight)}px, its own height`,
+  );
+  await visible(page.getByRole("button", { name: "Open Refund retries" })).click();
+  await page.getByRole("dialog", { name: "Refund retries" }).waitFor();
+  await page.waitForTimeout(800);
+  await capture("fixture-page-open-desktop-light");
+  await page.keyboard.press("Escape");
+  note("Open shows the page large in a dialog, and Escape closes it");
 
   // The conversation's read fails: the failure with what the server said, and Try again.
   failReads = true;
@@ -454,6 +525,71 @@ const working = (sessionId, me, at) => {
     ],
   });
 };
+
+const published = (sessionId, me, at) => {
+  const t1 = turn(
+    sessionId,
+    me,
+    0,
+    "completed",
+    "Chart refund retries by attempt and publish it as a page.",
+    at(6),
+    at(4.9),
+  );
+  return history({
+    turns: [t1],
+    items: [
+      command(t1.id, "completed", at(5.8), at(5.6), "pnpm tsx scripts/retries.ts"),
+      item(t1.id, "tool-call", "completed", at(5.2), at(5), {
+        title: "mend_page",
+        data: { mendPageCall: { attachmentId: "fixture-page-1", failure: null } },
+      }),
+      item(t1.id, "assistant-message", "completed", at(4.95), at(4.95), {
+        text: "Published **Refund retries** above: most retries succeed on the second attempt.",
+      }),
+    ],
+  });
+};
+
+const executorCalls = (sessionId, me, at) => {
+  const call = (id, tool, outcome, message, approverId, minutes) => ({
+    id,
+    sessionId,
+    service: "linear",
+    tool,
+    asUserId: me,
+    asMember: false,
+    approverId,
+    outcome,
+    message,
+    observations: outcome === "completed" ? [{ service: "linear", tool, outcome: "ok" }] : [],
+    createdAt: at(minutes),
+    observedAt: at(minutes - 0.1),
+    expiresAt: null,
+  });
+  const calls = [
+    call("call-2", "save_issue", "held", "Executor holds this call until it is approved.", me, 3),
+    call("call-1", "get_issue", "completed", "Read issue SLNT-1119.", null, 4),
+  ];
+  return superjson(
+    { calls, olderCursor: null },
+    calls.flatMap((_, index) => [`calls.${index}.createdAt`, `calls.${index}.observedAt`]),
+  );
+};
+
+/** A page as t3code's bootstrap runs one: the host's theme from its address, its height posted. */
+const FIXTURE_PAGE = `<!doctype html><meta charset="utf-8"><body style="margin:0;padding:16px;font-family:var(--font-sans,sans-serif);background:var(--background);color:var(--foreground)">
+<h2 style="margin:0 0 8px;font-size:15px">Refund retries, by attempt</h2>
+<div style="display:flex;gap:6px;align-items:end;height:110px">${[90, 64, 22, 8]
+  .map((h) => `<div style="width:40px;height:${h}px;background:var(--primary)"></div>`)
+  .join("")}</div>
+<p style="margin:8px 0 0;font-size:12px;color:var(--muted-foreground)">Attempts 1 to 4, share of refunds</p>
+<script>
+const raw = decodeURIComponent((location.hash.match(/t3-theme=([^&]*)/) || [])[1] || "");
+try { const theme = JSON.parse(raw); for (const [k, v] of Object.entries(theme.variables || {})) document.documentElement.style.setProperty(k, v); } catch {}
+addEventListener("message", (e) => { const v = e.data?.params?.styles?.variables; if (v) for (const [k, x] of Object.entries(v)) document.documentElement.style.setProperty(k, x); });
+parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: document.body.scrollHeight } }, "*");
+</script>`;
 
 /**
  * The session's real detail with a fixture's status and summary in place, and, for a session the
