@@ -15,7 +15,7 @@ import {
   withScreens,
 } from "./engine/screen-fixture.ts";
 import { eventually } from "./screen-world.ts";
-import { dockerReady, fixtureImage } from "./xvnc.ts";
+import { dockerReady, fixtureImage, removeContainer } from "./xvnc.ts";
 
 const docker = (...args: ReadonlyArray<string>) =>
   execFileSync("docker", [...args], { encoding: "utf8", timeout: 30_000 });
@@ -67,7 +67,7 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
 
   afterAll(() => {
     for (const child of opened) child.kill();
-    execFileSync("docker", ["rm", "-f", container], { stdio: "ignore" });
+    removeContainer(container);
   });
 
   /** The platform starts the screen as the container's person, and its answer is still to come. */

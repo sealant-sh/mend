@@ -37,6 +37,14 @@ export const dockerReady = (() => {
 const docker = (...args: ReadonlyArray<string>) =>
   execFileSync("docker", [...args], { encoding: "utf8", timeout: 30_000 });
 
+/**
+ * Hands a container to Docker to kill and delete, and returns without waiting for it. A busy
+ * daemon can take longer than a hook's budget to delete a container, and no test claims anything
+ * about that wait (SLNT-1108, SLNT-1125). Detached, the removal outlives the worker that asked.
+ */
+export const removeContainer = (name: string): void =>
+  spawn("docker", ["rm", "-f", name], { detached: true, stdio: "ignore" }).unref();
+
 export interface Xvnc {
   readonly port: number;
   /** A shell command on the display, answering its output. */
@@ -57,10 +65,7 @@ export const startXvnc = (name: string): Xvnc => {
     "exec Xvnc :0 -geometry 1280x800 -depth 24 -SecurityTypes VncAuth -PasswordFile /tmp/passwd -rfbport 5900 -SendCutText=0 -nolisten tcp",
   ].join(" && ");
   docker("run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::5900", image, "sh", "-c", xvnc);
-  // A busy daemon can take longer than a hook's budget to delete a container, and no test claims
-  // anything about that wait (SLNT-1108). Detached, the removal outlives the worker that asked.
-  const remove = () =>
-    spawn("docker", ["rm", "-f", name], { detached: true, stdio: "ignore" }).unref();
+  const remove = () => removeContainer(name);
   try {
     const port = Number(docker("port", name, "5900").trim().split(":").at(-1));
     const x = (command: string) => docker("exec", "-e", "DISPLAY=:0", name, "sh", "-c", command);
