@@ -1,8 +1,7 @@
 import { resumesOwnHarness, serviceConnectCommand } from "@mend/domain/workbench";
 import { InlineAlert } from "@mend/ui/components/banner";
 import { CopyField } from "@mend/ui/components/copy-field";
-import { Button, buttonVariants } from "@mend/ui/components/ui/button";
-import { Checkbox } from "@mend/ui/components/ui/checkbox";
+import { Button } from "@mend/ui/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -14,40 +13,25 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@mend/ui/components/ui/dropdown-menu";
-import { Field, FieldDescription, FieldError, FieldLabel } from "@mend/ui/components/ui/field";
-import { Input } from "@mend/ui/components/ui/input";
-import { NativeSelect, NativeSelectOption } from "@mend/ui/components/ui/native-select";
 import { Spinner } from "@mend/ui/components/ui/spinner";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import {
-  AppWindowIcon,
-  ChevronDownIcon,
-  ChevronUpIcon,
-  ExternalLinkIcon,
-  GlobeIcon,
-  LockIcon,
-  PlayIcon,
-  RotateCwIcon,
-  ServerIcon,
-} from "lucide-react";
-import { type ReactNode, useCallback, useId, useState } from "react";
+import { AppWindowIcon, ChevronDownIcon, GlobeIcon, PlayIcon, ServerIcon } from "lucide-react";
+import { type ReactNode, useCallback, useState } from "react";
 
 import { Overlay } from "#/components/projects/overlay";
 import { QueryError } from "#/components/route-screens";
 import { useSessionFacts } from "#/components/session/session-facts";
 import type { ServiceRecipeDto } from "#/lib/api";
 import { usePhone } from "#/lib/phone";
-import { joinPath, previewShowing, type PreviewShowing, usePageAt } from "#/lib/previews";
+import { previewShowing, type PreviewShowing, usePageAt } from "#/lib/previews";
 import { failureWords } from "#/lib/refusal";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
 import {
-  lastLogLine,
   latestSupervisedAttempt,
-  logLines,
   portText,
   previewFact,
   previewLines,
@@ -58,20 +42,15 @@ import {
 import { shellAccess } from "#/lib/workspace-shells";
 
 import type { ViewFacts, ViewPlace, WorkspaceView } from "../views.tsx";
+import { type Layout, Page } from "./preview-page.tsx";
+import { type CommandStart, RunCommandDialog } from "./run-command-dialog.tsx";
+import { LogBar } from "./service-log.tsx";
 import {
   useOnMendHost,
   usePickedService,
-  useServiceLog,
   useShownService,
   useWorkspaceServices,
 } from "./use-workspace-services.ts";
-
-/**
- * How the view lays itself out in its tile (Doop "Preview · this workspace's services", its phone
- * copy, T13): the services beside the page in a large tile, a picker over it in a narrow one or on
- * a phone, and the page alone under its address bar in a short one.
- */
-type Layout = "list" | "picker" | "alone";
 
 const LIST_MIN_WIDTH = 720;
 const LIST_MIN_HEIGHT = 420;
@@ -126,14 +105,6 @@ const sharedNote = (sessions: number, worktree: ReactNode): ReactNode =>
   );
 
 /** What a person typed into Run a command, as the server takes it. */
-interface CommandStart {
-  readonly command: string;
-  readonly port: number;
-  readonly name: string | null;
-  readonly browserScheme: "http" | "https" | null;
-  readonly udp: boolean;
-}
-
 function PreviewBody({ place }: { readonly place: ViewPlace }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
@@ -907,7 +878,8 @@ function Pane({
     <Page
       key={base}
       base={base}
-      service={current}
+      name={current.name}
+      port={portText(current.port, current.udp)}
       showing={showing}
       layout={layout}
       line={lines[0] ?? null}
@@ -966,423 +938,6 @@ function ActionButton({
   );
 }
 
-const LINK_WHY: Record<Extract<PreviewShowing, { _tag: "Link" }>["why"], (name: string) => string> =
-  {
-    "another-site": () =>
-      "Previews are on a different site from this page, and a browser doesn't keep a preview signed in inside another site's page. Open it in a new tab: Mend signs you in to it there.",
-    "own-address": (name) =>
-      `${name} opens at its own address, which Mend doesn't show inside the view. Open it in a new tab.`,
-  };
-
-/**
- * The page, under its address bar: reload, the path, open in a new tab. The address is the
- * Service's and the path typed here: a page on another site can't be read from this one, so a
- * link followed inside the frame doesn't change it.
- *
- * The frame's `sandbox`, flag by flag. `allow-scripts`, `allow-forms` and `allow-modals`: the app
- * runs, submits its forms and shows its dialogs. `allow-same-origin`: the app keeps its own
- * origin, so its sign-in cookie and storage work. That origin is a preview host, never Mend's, so
- * together with `allow-scripts` it reaches nothing of Mend's: not its cookies, its storage or
- * this page. `allow-popups`: links that open a tab of their own still open, sandboxed alike. No
- * `allow-top-navigation`, so the app cannot take this tab away from Mend.
- */
-function Page({
-  base,
-  service,
-  showing,
-  layout,
-  line,
-}: {
-  readonly base: string;
-  readonly service: WorkspaceService;
-  readonly showing: PreviewShowing;
-  readonly layout: Layout;
-  /** The preview's newest status line ("preview · web · answered HTTP 200 · observed 4 s ago"). */
-  readonly line: string | null;
-}) {
-  const [path, setPath] = useState("/");
-  const [shown, setShown] = useState("/");
-  const [reload, setReload] = useState(0);
-  const src = joinPath(base, shown);
-  const id = useId();
-  const signedIn = base.startsWith("/");
-  return (
-    <div className="flex min-h-0 flex-1 flex-col">
-      <div
-        className={cn(
-          "flex shrink-0 items-center gap-1.5 border-b",
-          layout === "picker" ? "px-4 py-2" : "px-3 py-2",
-        )}
-      >
-        {showing._tag === "Frame" ? (
-          <Button
-            variant="ghost"
-            size={layout === "picker" ? "icon-touch" : "icon-sm"}
-            aria-label="Reload"
-            title="Reload"
-            onClick={() => setReload((count) => count + 1)}
-          >
-            <RotateCwIcon />
-          </Button>
-        ) : null}
-        <form
-          className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg bg-muted px-2.5 max-lg:h-11"
-          onSubmit={(event) => {
-            event.preventDefault();
-            setShown(path);
-            setReload((count) => count + 1);
-          }}
-        >
-          {signedIn ? (
-            <LockIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <AppWindowIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <label htmlFor={id} className="shrink-0 font-mono text-meta text-muted-foreground">
-            {service.name}
-            {portText(service.port, service.udp)}
-          </label>
-          <input
-            id={id}
-            value={path}
-            spellCheck={false}
-            autoComplete="off"
-            aria-label={`Path on ${service.name}`}
-            onChange={(event) => setPath(event.target.value)}
-            className="min-w-0 flex-1 bg-transparent font-mono text-meta text-foreground outline-none"
-          />
-        </form>
-        <a
-          href={src}
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Open in a new tab"
-          title="Open in a new tab"
-          className={cn(
-            buttonVariants({
-              variant: layout === "list" ? "outline" : "ghost",
-              size: layout === "list" ? "sm" : layout === "picker" ? "icon-touch" : "icon-sm",
-            }),
-          )}
-        >
-          {layout === "list" ? "Open in new tab" : <ExternalLinkIcon />}
-        </a>
-      </div>
-      {showing._tag === "Frame" ? (
-        <div
-          className={cn(
-            "flex min-h-0 flex-1 bg-muted/40",
-            layout === "alone" ? "" : "p-4 max-lg:p-3",
-          )}
-        >
-          <iframe
-            key={`${src}:${reload}`}
-            title={`Preview of ${service.name}`}
-            src={src}
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-            referrerPolicy="no-referrer"
-            className={cn(
-              "min-h-0 w-full flex-1 border-0 bg-white",
-              layout !== "alone" && "rounded-xl border",
-            )}
-          />
-        </div>
-      ) : (
-        <div className="flex flex-col items-start gap-3 px-6 py-6 max-lg:px-4">
-          {line === null ? null : (
-            <p className="font-mono text-meta break-words text-muted-foreground">{line}</p>
-          )}
-          <p className="max-w-prose text-row">{LINK_WHY[showing.why](service.name)}</p>
-          <a
-            href={src}
-            target="_blank"
-            rel="noreferrer"
-            className={cn(buttonVariants({ size: layout === "picker" ? "touch" : "sm" }))}
-          >
-            <ExternalLinkIcon aria-hidden />
-            Open in a new tab
-          </a>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/**
- * A Service's log: one bar at the foot of the view with its newest line (the frame's "Logs · web
- * GET /checkout 200"), opening upward into the whole log; on a phone or a narrow tile, a sheet.
- */
-function LogBar({
-  service,
-  open,
-  onOpenChange,
-  asSheet,
-  actions,
-}: {
-  readonly service: WorkspaceService;
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly asSheet: boolean;
-  readonly actions: ReactNode;
-}) {
-  const log = useServiceLog(service.logProcessId, service.live);
-  const lines =
-    log.isPending || log.isError ? [] : logLines(log.data.pages.flatMap((page) => page.chunks));
-  const last = lastLogLine(lines);
-  const body = log.isPending ? (
-    <p className="px-4 py-3 text-meta text-muted-foreground">Reading the log…</p>
-  ) : log.isError ? (
-    <div className="px-4 py-3">
-      <QueryError error={log.error} retry={() => void log.refetch()} retrying={log.isFetching} />
-    </div>
-  ) : (
-    <LogText lines={lines} name={service.name} live={service.live} />
-  );
-  const bar = (
-    <div className="flex h-10 shrink-0 items-center gap-2 border-t px-3">
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-expanded={asSheet ? undefined : open}
-        onClick={() => onOpenChange(!open)}
-        className="min-w-0 flex-1 justify-start gap-2 font-normal"
-      >
-        {open && !asSheet ? <ChevronDownIcon aria-hidden /> : <ChevronUpIcon aria-hidden />}
-        <span className="shrink-0">Logs</span>
-        <span className="min-w-0 truncate font-mono text-meta text-muted-foreground">
-          {service.name}
-          {last === null ? "" : ` ${last}`}
-        </span>
-      </Button>
-      {actions}
-    </div>
-  );
-  if (asSheet)
-    return (
-      <>
-        {bar}
-        <Overlay
-          open={open}
-          onOpenChange={onOpenChange}
-          title={`${service.name}'s log`}
-          description={`What ${service.name} printed, as Mend recorded it.`}
-          size="md"
-          footer={
-            <Button variant="outline" size="touch" onClick={() => onOpenChange(false)}>
-              Close
-            </Button>
-          }
-        >
-          {body}
-        </Overlay>
-      </>
-    );
-  return (
-    <>
-      {open ? (
-        <section
-          aria-label={`${service.name}'s log`}
-          className="flex max-h-[45%] min-h-40 shrink-0 flex-col border-t"
-        >
-          {body}
-        </section>
-      ) : null}
-      {bar}
-    </>
-  );
-}
-
-function LogText({
-  lines,
-  name,
-  live,
-}: {
-  readonly lines: ReadonlyArray<string>;
-  readonly name: string;
-  readonly live: boolean;
-}) {
-  // Kept at the newest line while it follows, as a terminal would.
-  const follow = useCallback((element: HTMLPreElement | null) => {
-    if (element !== null) element.scrollTop = element.scrollHeight;
-  }, []);
-  if (lines.length === 0)
-    return (
-      <p className="px-4 py-3 text-meta text-muted-foreground">
-        {live ? `${name} hasn't printed anything yet.` : `${name} printed nothing.`}
-      </p>
-    );
-  return (
-    <pre
-      ref={follow}
-      key={lines.length}
-      className="min-h-0 flex-1 overflow-auto px-4 py-3 font-mono text-meta leading-relaxed whitespace-pre-wrap text-foreground"
-    >
-      {lines.join("\n")}
-    </pre>
-  );
-}
-
-/**
- * Run a command as a Service in this workspace, or adopt a port something already listens on:
- * one-off, nothing saved. What every session starts with comes from `.mend/mend.toml` (decision
- * D8), so the dialog says where to declare it for good.
- */
-function RunCommandDialog({
-  open,
-  onOpenChange,
-  pending,
-  failure,
-  onRun,
-  sessions,
-}: {
-  readonly open: boolean;
-  readonly onOpenChange: (open: boolean) => void;
-  readonly pending: boolean;
-  readonly failure: string | null;
-  readonly onRun: (start: CommandStart) => void;
-  readonly sessions: number;
-}) {
-  const ids = useId();
-  const phone = usePhone();
-  const touch = phone ? "touch" : "default";
-  const [command, setCommand] = useState("");
-  const [port, setPort] = useState("");
-  const [name, setName] = useState("");
-  const [scheme, setScheme] = useState<"" | "http" | "https">("http");
-  const [udp, setUdp] = useState(false);
-  const [tried, setTried] = useState(false);
-  const portNumber = Number(port.trim());
-  const portProblem =
-    !Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535
-      ? "Enter the port it listens on, between 1 and 65535."
-      : null;
-  const submit = () => {
-    setTried(true);
-    if (portProblem !== null || pending) return;
-    onRun({
-      command: command.trim(),
-      port: portNumber,
-      name: name.trim() === "" ? null : name.trim(),
-      browserScheme: scheme === "" ? null : scheme,
-      udp,
-    });
-  };
-  return (
-    <Overlay
-      open={open}
-      onOpenChange={(next) => {
-        onOpenChange(next);
-        if (!next) setTried(false);
-      }}
-      title="Run a command"
-      description={
-        <>
-          It runs in this workspace until it stops
-          {sessions > 1 ? ", and every session here can use it" : ""}. To start it with every
-          session, declare it in <span className="font-mono">.mend/mend.toml</span>.
-        </>
-      }
-      size="md"
-      footer={
-        <>
-          <Button variant="outline" size={touch} onClick={() => onOpenChange(false)}>
-            Cancel
-          </Button>
-          <Button type="submit" form={`${ids}-form`} size={touch} disabled={pending}>
-            {pending ? "Starting…" : command.trim() === "" ? "Adopt port" : "Run"}
-          </Button>
-        </>
-      }
-    >
-      <form
-        id={`${ids}-form`}
-        className="flex flex-col gap-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit();
-        }}
-      >
-        <Field>
-          <FieldLabel htmlFor={`${ids}-command`}>Command</FieldLabel>
-          <Input
-            id={`${ids}-command`}
-            value={command}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="pnpm dev"
-            className={cn("font-mono", phone && "h-11")}
-            onChange={(event) => setCommand(event.target.value)}
-          />
-          <FieldDescription>
-            Leave it empty to adopt a port something in the workspace already listens on.
-          </FieldDescription>
-        </Field>
-        <div className="flex gap-3 max-sm:flex-col">
-          <Field data-invalid={tried && portProblem !== null ? true : undefined}>
-            <FieldLabel htmlFor={`${ids}-port`}>Port</FieldLabel>
-            <Input
-              id={`${ids}-port`}
-              value={port}
-              inputMode="numeric"
-              autoComplete="off"
-              placeholder="3000"
-              aria-invalid={tried && portProblem !== null ? true : undefined}
-              className={cn("font-mono", phone && "h-11")}
-              onChange={(event) => setPort(event.target.value)}
-            />
-            {tried && portProblem !== null ? <FieldError>{portProblem}</FieldError> : null}
-          </Field>
-          <Field>
-            <FieldLabel htmlFor={`${ids}-name`}>Name</FieldLabel>
-            <Input
-              id={`${ids}-name`}
-              value={name}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="web"
-              className={cn("font-mono", phone && "h-11")}
-              onChange={(event) => setName(event.target.value)}
-            />
-          </Field>
-        </div>
-        <Field>
-          <FieldLabel htmlFor={`${ids}-scheme`}>Opens in a browser</FieldLabel>
-          <NativeSelect
-            id={`${ids}-scheme`}
-            value={udp ? "" : scheme}
-            disabled={udp}
-            className={phone ? "h-11" : undefined}
-            onChange={(event) => {
-              const value = event.target.value;
-              setScheme(value === "http" || value === "https" ? value : "");
-            }}
-          >
-            <NativeSelectOption value="http">Yes, over http</NativeSelectOption>
-            <NativeSelectOption value="https">Yes, over https</NativeSelectOption>
-            <NativeSelectOption value="">No, it isn't a web page</NativeSelectOption>
-          </NativeSelect>
-        </Field>
-        <Field orientation="horizontal">
-          <Checkbox
-            id={`${ids}-udp`}
-            checked={udp}
-            onCheckedChange={(checked) => setUdp(checked)}
-          />
-          <FieldLabel htmlFor={`${ids}-udp`} className="font-normal">
-            It speaks UDP
-          </FieldLabel>
-        </Field>
-        {failure === null ? null : (
-          <InlineAlert size={touch} title="It didn't start.">
-            {failure}
-          </InlineAlert>
-        )}
-      </form>
-    </Overlay>
-  );
-}
-
-/** The Preview view (ADR 0026): this workspace's services, and the page one of them serves. */
 export const PREVIEW_VIEW: WorkspaceView = {
   id: "preview",
   name: "Preview",
