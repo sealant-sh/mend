@@ -1,0 +1,18 @@
+[
+  {
+    "name": "01-edit-while-reading",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "change-small",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "set -e\ncat >> src/payments/retry.ts <<'TS'\n\n/** A 409 means the first request is still being processed: back off and keep the key. */\nexport const RETRYABLE = new Set([409, 503]);\nTS\n"
+    ]
+  }
+]

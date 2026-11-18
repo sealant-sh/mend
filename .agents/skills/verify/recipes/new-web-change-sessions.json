@@ -1,0 +1,64 @@
+[
+  {
+    "name": "01-small",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "change-small",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "set -e\nmkdir -p src/payments\ncat > src/payments/retry.ts <<'TS'\nimport { sendCharge, type ChargeRequest } from \"./charge\";\nimport { sleep } from \"../util/sleep\";\n\nconst MAX_ATTEMPTS = 3;\nconst BASE_DELAY_MS = 200;\n\n/** One key per order, so the provider drops a repeated charge. */\nexport function idempotencyKey(orderId: string): string {\n  return `order_${orderId}_charge`;\n}\n\nexport function backoff(attempt: number, random = Math.random): number {\n  const base = BASE_DELAY_MS * 2 ** (attempt - 1);\n  return base + Math.floor(random() * base * 0.2);\n}\n\nexport async function chargeWithRetry(req: ChargeRequest) {\n  const key = idempotencyKey(req.orderId);\n  let lastError: unknown;\n  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {\n    try {\n      return await sendCharge({ ...req, idempotencyKey: key });\n    } catch (err) {\n      lastError = err;\n      await sleep(backoff(attempt));\n    }\n  }\n  throw lastError;\n}\nTS\ncat > src/payments/charge.ts <<'TS'\nexport interface ChargeRequest {\n  readonly orderId: string;\n  readonly amount: number;\n  readonly idempotencyKey?: string;\n}\n\nexport async function sendCharge(req: ChargeRequest) {\n  return { id: `ch_${req.orderId}`, amount: req.amount };\n}\nTS\ncat > src/payments/charge.test.ts <<'TS'\nimport { describe, expect, it } from \"vitest\";\nimport { backoff, idempotencyKey } from \"./retry\";\n\ndescribe(\"chargeWithRetry\", () => {\n  it(\"sends the same key on every attempt\", () => {\n    expect(idempotencyKey(\"ord_81\")).toBe(\"order_ord_81_charge\");\n  });\n\n  it(\"waits longer after each attempt\", () => {\n    expect(backoff(1, () => 0)).toBe(200);\n    expect(backoff(2, () => 0)).toBe(400);\n  });\n});\nTS\nprintf '# Verify fixture\\n\\nPayments retry with one idempotency key per order.\\n' > README.md\n"
+    ]
+  },
+  {
+    "name": "02-second",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "change-small",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "set -e\ncat >> src/payments/charge.test.ts <<'TS'\n\ndescribe(\"backoff\", () => {\n  it(\"adds at most a fifth as jitter\", () => {\n    expect(backoff(1, () => 0.99)).toBeLessThan(240);\n  });\n});\nTS\n"
+    ]
+  },
+  {
+    "name": "03-big",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "change-big",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "set -e\nmkdir -p src/app src/routes src/components public/og docs src/data\ngit mv README.md docs/README.md\nprintf '{\\n  \"name\": \"shop\",\\n  \"private\": true,\\n  \"dependencies\": {\\n    \"react-router\": \"^8.0.0\"\\n  }\\n}\\n' > package.json\ni=1\nwhile [ $i -le 1200 ]; do printf '  /pkg-%s@1.%s.0:\\n    resolution: {integrity: sha512-%s}\\n' $i $i $i; i=$((i+1)); done > pnpm-lock.yaml\nprintf 'export default { ssr: true };\\n' > react-router.config.ts\nprintf '\\211PNG\\r\\n\\032\\n\\000\\000\\000\\rIHDR\\000\\000\\000\\001\\000\\000\\000\\001\\010\\006\\000\\000\\000\\037\\025\\304\\211\\000\\000\\000\\rIDATx\\234c\\370\\317\\300\\360\\037\\000\\005\\000\\001\\377\\211\\231=\\035\\000\\000\\000\\000IEND\\256B`\\202' > public/og/checkout.png\nfor name in root entry.client entry.server; do\n  printf 'import { Outlet } from \"react-router\";\\n\\nexport default function %s() {\\n  return <Outlet />;\\n}\\n' \"$(echo $name | tr -d .)\" > src/app/$name.tsx\ndone\nfor name in _index account account.orders cart checkout checkout.payment checkout.success product search wishlist orders order settings help about contact; do\n  {\n    printf 'import type { Route } from \"./+types/%s\";\\n\\n' \"$name\"\n    printf 'export async function loader({ request }: Route.LoaderArgs) {\\n'\n    j=1; while [ $j -le 24 ]; do printf '  const step%s = new URL(request.url).searchParams.get(\"s%s\");\\n' $j $j; j=$((j+1)); done\n    printf '  return { ok: true };\\n}\\n'\n  } > \"src/routes/$name.tsx\"\ndone\nfor name in AddToCart CartDrawer CurrencyPicker Header Footer Price ProductCard Rating Search Wishlist Badge Banner; do\n  printf 'export function %s() {\\n  return <div className=\"%s\" />;\\n}\\n' $name $name > src/components/$name.tsx\ndone\ni=1\nwhile [ $i -le 3000 ]; do printf 'export const row%s = { id: %s, label: \"Row %s\" };\\n' $i $i $i; i=$((i+1)); done > src/data/rows.ts\n"
+    ]
+  },
+  {
+    "name": "04-empty",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "change-empty",
+      "--json",
+      "--",
+      "true"
+    ]
+  }
+]

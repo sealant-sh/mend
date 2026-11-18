@@ -79,3 +79,14 @@ export const dropAllDrafts = () => {
   }
   notify();
 };
+
+export interface ReviewDraftScope {
+  /** The signed-in account; drafts written before it is known are kept under "unknown". */
+  readonly userId: string;
+  readonly changeId: string;
+  readonly sliceId: string;
+}
+
+/** The draft key of a review comment: one per account, change, review slice and anchor. */
+export const reviewDraftKey = (scope: ReviewDraftScope, anchor: string): string =>
+  `review.${scope.userId}.${scope.changeId}.${scope.sliceId}.${anchor}`;
