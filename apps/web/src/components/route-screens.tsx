@@ -11,7 +11,7 @@ import {
 import { Separator } from "@mend/ui/components/ui/separator";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
-import { type ErrorComponentProps, useRouter } from "@tanstack/react-router";
+import { type ErrorComponentProps, Link, useRouter } from "@tanstack/react-router";
 import { CircleX, SearchX } from "lucide-react";
 import { createContext, type ReactNode, useContext } from "react";
 
@@ -28,12 +28,12 @@ const messageOf = (error: unknown): string =>
 /** On a phone, a page's actions are 44px touch targets (DESIGN.md). */
 const TOUCH = "max-md:h-11 max-md:px-4 max-md:text-lead";
 
-/** Home, as a link that looks like a button: a full load, so a broken page leaves nothing behind. */
+/** Home, the New session composer, as a link that looks like a button. */
 function GoHome({ variant }: { readonly variant: "default" | "outline" }) {
   return (
-    <a href="/" className={cn(buttonVariants({ variant }), TOUCH)}>
+    <Link to="/" className={cn(buttonVariants({ variant }), TOUCH)}>
       Go home
-    </a>
+    </Link>
   );
 }
 

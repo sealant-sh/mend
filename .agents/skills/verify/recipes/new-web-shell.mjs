@@ -1,5 +1,5 @@
 // The new web app (apps/web), signed in as the stack's first account through the stack's own sign-in
-// page: a path no route owns shows the not-found screen on the sheet beside the sidebar inbox, in
+// page: home is the New session composer, and a path no route owns shows the not-found screen on the sheet beside the sidebar inbox, in
 // light and dark, on a desktop and at phone width; a read that fails shows the error screen, and Try
 // again recovers with a tRPC call from the browser; a visit with no session goes to sign-in. The
 // pattern every route PR's recipe copies (SKILL.md, Drive):
@@ -24,6 +24,13 @@ export default async ({ page, web, capture, note }) => {
   const withTheme = async (theme, path) => {
     await page.evaluate((value) => localStorage.setItem("mend-theme", value), theme);
     await page.goto(`${web}${path}`);
+    // React has taken the page over: a navigation through the router before then draws a second
+    // page under the server's.
+    await page.waitForFunction(() =>
+      [...document.querySelectorAll("a[href]")].some((link) =>
+        Object.keys(link).some((key) => key.startsWith("__reactProps")),
+      ),
+    );
     const want = theme === "dark";
     if ((await dark()) !== want) throw new Error(`the page is not ${theme}`);
     if ((await page.evaluate(() => window.darkAtFirstPaint)) !== want)
@@ -49,11 +56,11 @@ export default async ({ page, web, capture, note }) => {
   await page.clock.install();
 
   await page.goto(`${web}/`);
-  await heading("Page not found");
+  await heading("New session");
   if (new URL(page.url()).pathname !== "/")
     throw new Error(`a signed-in visit went to ${page.url()}`);
   await page.getByRole("navigation", { name: "Inbox" }).waitFor();
-  note("signed in, home stays at / and shows the not-found screen on the sheet, beside the inbox");
+  note("signed in, home stays at / and shows the New session composer beside the inbox");
   for (const [viewport, size] of [
     ["desktop", DESKTOP],
     ["phone", PHONE],
@@ -73,23 +80,25 @@ export default async ({ page, web, capture, note }) => {
   // A read that fails: the signed-in read, made stale, fails as the browser asks again on a
   // navigation.
   await page.clock.fastForward("01:05");
-  await page.route("**/trpc/**", (route) =>
-    route.fulfill({
+  // One failure per call: a batch of several reads gets one answer each.
+  await page.route("**/trpc/**", (route) => {
+    const url = new URL(route.request().url());
+    const calls = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
+    const failure = {
+      error: {
+        json: {
+          message: "The verify recipe failed this read on purpose.",
+          code: -32603,
+          data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500 },
+        },
+      },
+    };
+    return route.fulfill({
       status: 500,
       contentType: "application/json",
-      body: JSON.stringify([
-        {
-          error: {
-            json: {
-              message: "The verify recipe failed this read on purpose.",
-              code: -32603,
-              data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500 },
-            },
-          },
-        },
-      ]),
-    }),
-  );
+      body: JSON.stringify(url.searchParams.has("batch") ? calls.map(() => failure) : failure),
+    });
+  });
   // The router the page hydrated with (TanStack Router keeps it on `window` in a browser).
   await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
   await page.evaluate(() => window["__TSR_ROUTER__"].navigate({ to: "/forced-error" }));
@@ -123,6 +132,13 @@ export default async ({ page, web, capture, note }) => {
   if (response.status() !== 200)
     throw new Error(`the browser's tRPC call answered ${response.status()}`);
   note(`Try again: the browser's tRPC call answered ${response.status()}`);
+  await heading("Page not found");
+  // Go home is the router's link to the composer.
+  await page.getByRole("link", { name: "Go home" }).first().click();
+  await heading("New session");
+  if (new URL(page.url()).pathname !== "/") throw new Error(`Go home went to ${page.url()}`);
+  note("Go home opens the New session composer at /");
+  await page.goBack();
   await heading("Page not found");
   await capture("recovered-desktop-light");
 

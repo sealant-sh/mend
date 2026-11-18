@@ -89,7 +89,7 @@ export function PhoneInbox({
           <SearchIcon className="size-5.5" />
         </span>
         <Link
-          to="/"
+          to="/new"
           aria-label="New session"
           className={cn(
             buttonVariants({ variant: "ghost", size: "icon-touch" }),
@@ -186,7 +186,7 @@ function PhoneInboxBody({
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Link to="/" className={buttonVariants({ size: "touch" })}>
+            <Link to="/new" className={buttonVariants({ size: "touch" })}>
               New session
             </Link>
           </EmptyContent>

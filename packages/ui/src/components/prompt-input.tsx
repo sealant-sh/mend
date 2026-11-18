@@ -20,6 +20,10 @@ type PromptInputState = "default" | "running" | "locked";
  * In a narrow tile the context count hides first, then the harness name. `size="touch"` gives
  * 44px targets and hides the context count; while running it also hides the harness name, so Steer
  * and Stop turn fit at 390px.
+ *
+ * `submitLabel` turns send into a labelled button ("Start session" in the New session composer).
+ * `blocked` keeps send off whatever the field holds, for a composer that can't send yet; say why
+ * beside it.
  */
 function PromptInput({
   state = "default",
@@ -38,6 +42,10 @@ function PromptInput({
   onSteer,
   onStop,
   onAttach,
+  submitLabel,
+  blocked = false,
+  id,
+  autoFocus,
   className,
 }: {
   state?: PromptInputState;
@@ -57,6 +65,11 @@ function PromptInput({
   onSteer?: (text: string) => void;
   onStop?: () => void;
   onAttach?: () => void;
+  submitLabel?: string;
+  blocked?: boolean;
+  /** The message field's id, for a label or a shortcut that focuses it. */
+  id?: string;
+  autoFocus?: boolean;
   className?: string;
 }) {
   const [own, setOwn] = React.useState(defaultValue);
@@ -67,7 +80,7 @@ function PromptInput({
   };
   const trimmed = text.trim();
   const running = state === "running";
-  const canSend = state === "default" && (trimmed !== "" || allowEmpty);
+  const canSend = state === "default" && !blocked && (trimmed !== "" || allowEmpty);
   const canSteer = running && trimmed !== "";
 
   const send = () => {
@@ -108,6 +121,8 @@ function PromptInput({
         <>
           <textarea
             data-slot="prompt-input-textarea"
+            id={id}
+            autoFocus={autoFocus}
             aria-label={label ?? placeholder}
             placeholder={placeholder}
             value={text}
@@ -178,6 +193,15 @@ function PromptInput({
                   Stop turn
                 </Button>
               </>
+            ) : submitLabel !== undefined ? (
+              <Button
+                type="submit"
+                size={touch ? "touch" : "default"}
+                disabled={!canSend}
+                className="disabled:opacity-45"
+              >
+                {submitLabel}
+              </Button>
             ) : (
               <Button
                 type="submit"

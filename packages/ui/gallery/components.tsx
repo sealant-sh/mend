@@ -573,6 +573,33 @@ function PromptInputDemo() {
           onAttach={() => {}}
         />
       </Row>
+      <Row label="submitLabel: the New session composer, then blocked (the picked agent has no login)">
+        <PromptInput
+          className="w-full max-w-conversation"
+          placeholder="Describe a task or ask a question"
+          model={
+            <>
+              <PromptInputModel>checkout-api</PromptInputModel>
+              <PromptInputModel>Claude Code · Opus</PromptInputModel>
+              <PromptInputModel>New worktree</PromptInputModel>
+            </>
+          }
+          submitLabel="Start session"
+        />
+        <PromptInput
+          className="w-full max-w-conversation"
+          defaultValue="Add idempotency keys to refund requests."
+          model={
+            <>
+              <PromptInputModel>checkout-api</PromptInputModel>
+              <PromptInputModel>Codex</PromptInputModel>
+              <PromptInputModel>New worktree</PromptInputModel>
+            </>
+          }
+          submitLabel="Start session"
+          blocked
+        />
+      </Row>
     </div>
   );
 }

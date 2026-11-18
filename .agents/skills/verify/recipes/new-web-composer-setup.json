@@ -1,0 +1,31 @@
+[
+  {
+    "name": "01-codex-login",
+    "run": [
+      "sh",
+      "-c",
+      "printf %s '{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"mendVerifyFake-codex-id-token-000000000000\",\"access_token\":\"mendVerifyFake-codex-access-token-000000000000\",\"refresh_token\":\"mendVerifyFake-codex-refresh-token-000000000000\",\"account_id\":\"mend-verify-fake-account\"},\"last_refresh\":\"2026-01-01T00:00:00Z\"}' | mend connect codex --from-stdin"
+    ]
+  },
+  {
+    "name": "02-worktree",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "composer-existing",
+      "--",
+      "true"
+    ]
+  },
+  {
+    "name": "03-models",
+    "run": ["mend", "models", "--json"]
+  },
+  {
+    "name": "04-accounts",
+    "run": ["mend", "accounts"]
+  }
+]
