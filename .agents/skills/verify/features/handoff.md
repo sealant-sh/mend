@@ -19,9 +19,11 @@ against the merge base `M`.
   reads `! not held · failed · <words>`.
 - `handoff-unchanged` leaves the checkout byte-identical: every file under it, `.git` included, has
   the same bytes, mode, size, mtime and ctime, and no file appears.
-- `handoff-row` shows `handed off from <host>` on the worktree and session lines (web project page),
-  the Now card (web), the worktree row (TUI), and the session's row in `mend sessions` (CLI). The
-  TUI session row carries it after the session's state, where a narrow pane can cut it.
+- `handoff-row` shows `handed off from <host>` on the worktree's fact line (web project page,
+  Worktrees tab), the worktree row (TUI), and the session's row in `mend sessions` (CLI). The TUI
+  session row carries it after the session's state, where a narrow pane can cut it. No web session
+  row carries it: not the project page's Sessions tab, not a session line on the Worktrees tab, not
+  the Now card.
 - `handoff-review-base` reviews the change from `M`: base `main`, base sha `M`, and exactly the
   files `git diff --name-only M` names plus the travelled untracked files, minus those left out.
 - `handoff-split` keeps staged and unstaged apart inside the session, the same file included.
@@ -35,9 +37,9 @@ against the merge base `M`.
 
 - CLI: `mend handoff ["prompt"] [--with <harness>] [--project <p>] [--yes]`, run inside a local
   checkout of the project's repository.
-- Web, TUI, desktop, mobile: no entry point to hand off. Afterwards the web project page shows
-  `handed off from <host>` on the worktree's fact line and on each session line in it, the Now card
-  shows it after the base, and the TUI shows it on the worktree row and the session row.
+- Web, TUI, desktop, mobile: no entry point to hand off. Afterwards the web project page's Worktrees
+  tab shows `handed off from <host>` on the worktree's fact line, and the TUI shows it on the
+  worktree row and the session row.
 - VS Code: not drivable yet; the extension rebuild brings it.
 
 ## Driving it with verify
@@ -99,13 +101,13 @@ Steps:
   has `"baseRef": "main"`, `"baseSha": "<M>"` and one session `<id>`. The project's own JSON
   (`GET <web>/api/projects/<project id>`) carries the worktree's `handoff`: `machine` is `<host>`,
   `head` is the clone's `HEAD` and `mergeBase` is `<M>`.
-- **Web rows.** Run `await page.goto("<web>/projects/<project id>")` and wait for
-  `page.getByRole("main").getByRole("link", { name: /session <id8> .* handed off from/ })`. The
-  worktree's fact line reads `mend/verify-handoff · base main · handed off from <host>`, and the
-  session link's name is `session <id8> claude · handed off from <host>`; the status beside it reads
-  `Idle`. Then `await page.goto("<web>/")`: the Live card for `verify-handoff · <project>` reads
-  `claude · mend/verify-handoff · base main · handed off from <host>`. Keep ARIA snapshots and
-  screenshots of both.
+- **Web rows.** Run `await page.goto("<web>/projects/<project id>/worktrees")` and wait for
+  `page.getByRole("main").getByRole("listitem", { name: "Worktree verify-handoff" })`. Under the
+  name `verify-handoff`, its fact line reads `base main@<M7> · handed off from <host>`. The session
+  line under it reads `session <id8> · claude` with the status `idle`, and no `handed off from`: the
+  web's session rows do not carry it, on this tab, on the Sessions tab
+  (`mend/verify-handoff · claude · <starter>`) or on the Now card. Keep an ARIA snapshot and a
+  screenshot of the Worktrees tab.
 - **TUI rows.** Run `tmux new-session -d -s mend-handoff -x 200 -y 50 'mend ui'`, select
   `<project>`, then `tmux send-keys -t mend-handoff 2`. `tmux capture-pane -p -t mend-handoff` shows
   `verify-handoff` with the line under it starting `from main · handed off from <host>`. Press `3`:
@@ -168,8 +170,8 @@ Steps:
 
 - The fingerprint covers the whole checkout, `.git` included. Run nothing else in `<clone>` between
   the two fingerprints: `git status` and editors refresh the index, which changes its mtime.
-- The session page (`<web>/sessions/<id>`) does not show `handed off from`; the project page and the
-  Now card do.
+- In the web only the Worktrees tab's worktree fact line shows `handed off from`. The session page
+  (`<web>/sessions/<id>`), the project page's Sessions tab and the Now card do not.
 - The inner home has no git identity: without the `git config` line in the preconditions, the
   fixture's first `git commit` fails with `Author identity unknown`.
 - Run in the order above, the prompt handoff is the fourth of the branch, so it is named

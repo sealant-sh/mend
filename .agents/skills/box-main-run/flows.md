@@ -978,13 +978,17 @@ flows reuse what earlier ones made:
 - **Needs:** Boat; no turn; CLI and web; a local clone of `<p>`'s origin in `<scratch>` with one
   commit and one untracked file on a branch `main-run/handoff-<sha8>`
 - **Do:** Fingerprint the clone with the map's script, `M handoff` with no prompt, fingerprint
-  again; read `M sessions --project <p>` and the project page's worktree row; stop the held session
-  and remove its worktree with `M worktrees rm <name> --project <p>`.
+  again; read `M sessions --project <p>` and, on the project page's Worktrees tab, the row of the
+  worktree `✓ handed off as <name>` named (`main-run-handoff-<sha8>`). Restore: `M stop <id8>`, then
+  `M worktrees rm <name> --force --project <p>`. The handed-off change was never landed, so Mend
+  refuses the removal without `--force`; a refusal that names a save under way lasts until the save
+  ends, so wait for it and run the removal again. Read back `M worktrees --project <p>`.
 - **See:** without a terminal,
   `  starting · the hold is still coming up · following it for up to 3 min · …`, then
   `✓ held · idle, no agent` within the 3 minutes, exit `0` (on Docker, `✓ held · idle, no agent`
   alone); never a last line of `starting` or `still starting`; the two fingerprints identical;
-  `handed off from <host>` on the CLI row and the web row; the worktree gone afterwards.
+  `handed off from <host>` on the CLI row and on the worktree's fact line on the Worktrees tab;
+  after the restore, `M worktrees --project <p>` lists no `<name>`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/cli/src/handoff.ts`, `packages/local-git/`, `apps/api/src/handoff-start.ts`
