@@ -20,6 +20,7 @@
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
+    "@mend/t3-contracts": "workspace:*",
     "@mend/ui": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",

@@ -5,10 +5,11 @@ import {
   durationWords,
   itemFailed,
   itemName,
+  mendPageCallOf,
   requestOutcome,
   taskFacts,
 } from "@mend/agent-conversation";
-import { AgentRequestKind, sessionAsk } from "@mend/domain/workbench";
+import { AgentRequestKind, type PageRef, sessionAsk } from "@mend/domain/workbench";
 import { ConversationMarker } from "@mend/ui/components/conversation-marker";
 import { TraceRow, type TraceTone } from "@mend/ui/components/trace-row";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
@@ -44,6 +45,7 @@ import { askWords } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
 import { useTRPC } from "#/lib/trpc";
 
+import { PageEvent } from "./page-view";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
 
@@ -104,8 +106,38 @@ function Step({ item }: { readonly item: AgentItemDto }) {
   );
 }
 
+/** The pages a session's agent made, by id, for the page calls among its steps. */
+export type PagesById = ReadonlyMap<string, PageRef>;
+
+/** Steps in a row, then the pages any of them made, each where it was made. */
+function Steps({
+  items,
+  pages,
+}: {
+  readonly items: ReadonlyArray<AgentItemDto>;
+  readonly pages: PagesById;
+}) {
+  const made = items.flatMap((item) => {
+    const attachment = mendPageCallOf(item)?.attachmentId ?? null;
+    const page = attachment === null ? undefined : pages.get(attachment);
+    return page === undefined ? [] : [{ key: item.id, page }];
+  });
+  return (
+    <div className="flex flex-col gap-0.5">
+      {items.map((item) => (
+        <Step key={item.id} item={item} />
+      ))}
+      {made.map(({ key, page }) => (
+        <div key={key} className="mt-2">
+          <PageEvent page={page} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** "Worked for 2m 4s", the steps it took, and how many failed: a finished turn's steps, folded. */
-function Worked({ row }: { readonly row: AgentRow }) {
+function Worked({ row, pages }: { readonly row: AgentRow; readonly pages: PagesById }) {
   if (row.folded.length === 0) return null;
   const lasted = row.turn === null ? null : turnLasted(row.turn);
   const stopped = row.turn?.status === "interrupted" || row.turn?.status === "cancelled";
@@ -121,11 +153,7 @@ function Worked({ row }: { readonly row: AgentRow }) {
       title={title}
       description={failed === 0 ? steps : `${steps} · ${failed} failed`}
     >
-      <div className="flex flex-col gap-0.5">
-        {row.folded.map((item) => (
-          <Step key={item.id} item={item} />
-        ))}
-      </div>
+      <Steps items={row.folded} pages={pages} />
     </TraceRow>
   );
 }
@@ -134,9 +162,11 @@ function Worked({ row }: { readonly row: AgentRow }) {
 function SubAgent({
   segment,
   renderRequest,
+  pages,
 }: {
   readonly segment: Extract<Segment, { readonly kind: "sub-agent" }>;
   readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly pages: PagesById;
 }) {
   const { agent, task } = segment;
   const status =
@@ -153,7 +183,7 @@ function SubAgent({
     >
       <div className="flex flex-col gap-2 py-1">
         {segment.segments.length === 0 ? null : (
-          <AgentSegments segments={segment.segments} renderRequest={renderRequest} />
+          <AgentSegments segments={segment.segments} renderRequest={renderRequest} pages={pages} />
         )}
         {task?.error == null ? null : <p className="text-row text-destructive">{task.error}</p>}
         {result === null ? null : <RichText text={result} />}
@@ -201,26 +231,29 @@ export function RequestLine({ request }: { readonly request: AgentRequestDto }) 
 export function AgentSegments({
   segments,
   renderRequest,
+  pages,
 }: {
   readonly segments: ReadonlyArray<Segment>;
   readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly pages: PagesById;
 }) {
   return segments.map((segment) => {
     switch (segment.kind) {
       case "text":
         return <RichText key={segment.key} text={segment.item.text ?? ""} />;
       case "steps":
-        return (
-          <div key={segment.key} className="flex flex-col gap-0.5">
-            {segment.items.map((item) => (
-              <Step key={item.id} item={item} />
-            ))}
-          </div>
-        );
+        return <Steps key={segment.key} items={segment.items} pages={pages} />;
       case "task":
         return <Task key={segment.key} task={segment.task} />;
       case "sub-agent":
-        return <SubAgent key={segment.key} segment={segment} renderRequest={renderRequest} />;
+        return (
+          <SubAgent
+            key={segment.key}
+            segment={segment}
+            renderRequest={renderRequest}
+            pages={pages}
+          />
+        );
       case "request":
         return <Fragment key={segment.key}>{renderRequest(segment.request)}</Fragment>;
     }
@@ -324,10 +357,12 @@ export function AgentTurn({
   row,
   facts,
   renderRequest,
+  pages,
 }: {
   readonly row: AgentRow;
   readonly facts: SessionFacts;
   readonly renderRequest: (request: AgentRequestDto) => ReactNode;
+  readonly pages: PagesById;
 }) {
   // A session's turns are numbered from 0; people count them from 1.
   const header = row.turn === null ? facts.agent : `${facts.agent} · turn ${row.turn.ordinal + 1}`;
@@ -335,8 +370,8 @@ export function AgentTurn({
     <Message>
       <MessageContent className="gap-3">
         <MessageHeader className="px-0 text-meta font-normal">{header}</MessageHeader>
-        <Worked row={row} />
-        <AgentSegments segments={row.segments} renderRequest={renderRequest} />
+        <Worked row={row} pages={pages} />
+        <AgentSegments segments={row.segments} renderRequest={renderRequest} pages={pages} />
         <TurnEnd row={row} facts={facts} />
       </MessageContent>
     </Message>

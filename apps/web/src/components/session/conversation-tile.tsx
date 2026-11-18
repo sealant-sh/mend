@@ -28,7 +28,9 @@ import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints } from "#/lib/session-sheet";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
-import { AgentTurn, RequestLine } from "./agent-turn";
+import { AgentTurn, type PagesById, RequestLine } from "./agent-turn";
+import { ExecutorCalls } from "./executor-calls";
+import { PageEvent } from "./page-view";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
 
@@ -294,6 +296,17 @@ function Note({ id, children }: { readonly id: string; readonly children: ReactN
 }
 
 /**
+ * The pages the session's agent made, by id. Until they are read, or if they can't be, a page
+ * call shows as its step alone.
+ */
+const usePages = (sessionId: string): PagesById => {
+  const trpc = useTRPC();
+  const pages = useQuery(trpc.sessions.pages.queryOptions({ id: sessionId }));
+  if (pages.isPending || pages.isError) return new Map();
+  return new Map(pages.data.map((page) => [page.id, page]));
+};
+
+/**
  * A terminal session's conversation, read from its durable record: what the agent and the person
  * said, and the commands it ran. The record carries no clock times.
  */
@@ -361,6 +374,8 @@ function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
             {group.events.map(({ key, event }) =>
               event.kind === "assistant" && event.text !== null ? (
                 <RichText key={key} text={event.text} />
+              ) : event.kind === "page" && event.page !== undefined ? (
+                <PageEvent key={key} page={event.page} />
               ) : event.kind === "tool" ? (
                 <TraceRow
                   key={key}
@@ -395,6 +410,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
     select: (data) => heldConversation(data.pages),
   });
   const opening = useOpeningMessage(facts.session.id);
+  const pages = usePages(facts.session.id);
   const body = conversationBody({ status: conversation.status, data: conversation.data });
   const held = body.rows.length > 0;
   // Once the conversation holds a message, the one this tab held for the start is in it.
@@ -443,6 +459,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
         className="min-h-0 flex-1"
       >
         <MendLines facts={facts} />
+        <ExecutorCalls facts={facts} />
         {body.list === "protocol" && conversation.hasNextPage ? (
           <ConversationItem messageId="older">
             <OlderMessages
@@ -502,6 +519,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
                     row={entry.row}
                     facts={facts}
                     renderRequest={(request) => <RequestLine request={request} />}
+                    pages={pages}
                   />
                 </ConversationItem>
               ),
