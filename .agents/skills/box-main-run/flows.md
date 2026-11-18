@@ -590,6 +590,35 @@ flows reuse what earlier ones made:
   `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/landing.ts`,
   `packages/domain/src/workbench/landing-rules.ts`
 
+### land-change.new-web-land
+
+- **Map:** land-change.md `land-web`, `land-preview`, `land-again`, `land-refused`, `land-check`,
+  `land-observe`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-land-sessions.json` (the worktree `land-retry`, written by
+  `mend run`, and a second session in it that keeps running), then drive the recipe
+  `new-web-land`. It opens `/sessions/<id>/change`, chooses `Land…`, chooses `Push to origin`
+  against the project's origin, then `Check origin`; opens the dialog from the workspace "…" and
+  from `/changes/<id>#land`; then lays recorded answers over the landing reads for a GitHub
+  origin: the title and description with `Preview`, the view after landing, the conversation's
+  landing line, `Land again…` with `Update pull request #412`, GitHub refusing the push, and the
+  phone's sheet. It stops the running session at the end.
+- **See:** each step's note in the recipe's `steps.log`: `Land…` in the Change view's toolbar; the
+  dialog `Land change` naming `Write tests for retry is still editing`; on an origin that is not
+  GitHub, `No pull request: …` and `Push to origin`; the push refused in git's own words with
+  `Try again`; a line from `Check origin`; `#land` opened by the workspace's `Land…` and by
+  `/changes/<id>#land`; Preview showing your text, then Mend's section (`Summary` or no summary,
+  changed files, `In Mend`); "Checkpoint N is in pull request #412." with no Land button;
+  "Checkpoint N landed as pull request #412 · View pull request" in the conversation; "Checkpoint N
+  isn't in pull request #412 yet." with `Land again…`; `Update pull request #412` keeping the
+  title; `GitHub refused the push` with GH006's words.
+- **Mode:** `scripted` (recipes/new-web-land.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/change/land-dialog.tsx`, `apps/web/src/lib/landing.ts`,
+  `apps/web/src/components/change/change-view.tsx`,
+  `apps/web/src/components/session/conversation-tile.tsx`
+
 ### services.cli-run
 
 - **Map:** services.md `service-run-cli`, `service-observe`, `service-connect`, `service-logs`,

@@ -21,6 +21,7 @@ import {
   landRequestOf,
   nextRemoteBranch,
   originPlace,
+  probeLine,
   pullRequestToUpdate,
   remoteLine,
   reportProblem,
@@ -248,6 +249,7 @@ describe("the facts", () => {
     expect(remoteLine(view({ remoteFailure: "Permission denied (publickey)" }), now)).toBe(
       "origin could not be checked · Permission denied (publickey)",
     );
+    expect(probeLine(view(), now)).toBe("origin not compared · nothing pushed from Mend yet");
   });
 });
 

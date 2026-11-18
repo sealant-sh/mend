@@ -215,6 +215,13 @@ export const remoteLine = (view: ChangeLandingsDto, now: Date): string | null =>
   return `${tip} · ${holds} · checked ${observedAgo(remote.observedAt, now)}`;
 };
 
+/**
+ * What "Check origin" found, always a line: when origin was checked, why it couldn't be, or that
+ * nothing Mend pushed was there to compare with (a refused push leaves nothing to compare).
+ */
+export const probeLine = (view: ChangeLandingsDto, now: Date): string =>
+  remoteLine(view, now) ?? "origin not compared · nothing pushed from Mend yet";
+
 // ─── The Change view's toolbar ──────────────────────────────────────────────
 
 /** "Pull request #412 open": the link the toolbar and the conversation give to GitHub. */

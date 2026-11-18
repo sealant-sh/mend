@@ -46,7 +46,7 @@ import {
   originPlace,
   pullRequestToUpdate,
   pullRequestWords,
-  remoteLine,
+  probeLine,
   reportProblem,
   stillEditing,
   type ToolbarLanding,
@@ -196,7 +196,11 @@ export function useChangeLanding(place: LandPlace): ChangeLanding {
             <LandedLine landing={landing} />
           </span>
           {landing.action === "land-again" ? (
-            <Button variant="outline" className="h-11 w-full" onClick={() => setOpen(true)}>
+            <Button
+              variant="outline"
+              className="h-11 w-full text-foreground"
+              onClick={() => setOpen(true)}
+            >
               Land again…
             </Button>
           ) : null}
@@ -446,8 +450,11 @@ function LandForm({
     });
   };
 
+  // Check GitHub looks for a pull request opened outside Mend, so it is there before anything
+  // landed; Check origin compares origin with what Mend pushed, so only once something landed.
+  const canCheck = view.land && view.pullRequest.available;
   const observed =
-    view.landings.length > 0 || probed !== null ? (
+    view.landings.length > 0 || probed !== null || canCheck ? (
       <Row label="Observed">
         <div className="flex flex-col gap-1">
           {facts.length === 0 ? (
@@ -477,7 +484,9 @@ function LandForm({
             ))
           )}
           {probed === null ? null : (
-            <p className="font-mono text-2xs text-muted-foreground">{remoteLine(probed, now)}</p>
+            <p role="status" className="font-mono text-2xs text-muted-foreground">
+              {probeLine(probed, now)}
+            </p>
           )}
           {check.isSuccess ? (
             <p role="status" className="font-mono text-2xs text-muted-foreground">
@@ -485,16 +494,18 @@ function LandForm({
             </p>
           ) : null}
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-            <Button
-              variant="link"
-              size="sm"
-              disabled={observing}
-              title="Fetch origin's branch with your git access and compare it with the landed commit"
-              onClick={() => probe.mutate()}
-            >
-              {probe.isPending ? "Checking origin…" : "Check origin"}
-            </Button>
-            {view.land && view.pullRequest.available ? (
+            {view.landings.length > 0 ? (
+              <Button
+                variant="link"
+                size="sm"
+                disabled={observing}
+                title="Fetch origin's branch with your git access and compare it with the landed commit"
+                onClick={() => probe.mutate()}
+              >
+                {probe.isPending ? "Checking origin…" : "Check origin"}
+              </Button>
+            ) : null}
+            {canCheck ? (
               <Button
                 variant="link"
                 size="sm"
@@ -590,9 +601,14 @@ function LandForm({
           <Row label="Change">
             The whole change from <code className="font-mono text-meta">{base}</code> to{" "}
             {editing.length > 0 ? "now" : `checkpoint ${place.review.checkpointB.ordinal}`}, with{" "}
-            <span className="font-mono text-meta text-success">+{added}</span>{" "}
-            <span className="font-mono text-meta text-destructive">−{removed}</span> in{" "}
-            {files.length === 1 ? "1 file" : `${files.length} files`}
+            <span className="font-mono text-meta text-success">+{added}</span>
+            {removed === 0 ? null : (
+              <>
+                {" "}
+                <span className="font-mono text-meta text-destructive">−{removed}</span>
+              </>
+            )}{" "}
+            in {files.length === 1 ? "1 file" : `${files.length} files`}
           </Row>
         ) : null}
         {mode === "update" && moved?._tag === "changed-since-landing" ? (
@@ -710,7 +726,8 @@ function LandForm({
       <div
         className={cn(
           "flex justify-end gap-2.5 pt-1",
-          phone && "sticky bottom-0 -mx-5 border-t bg-popover px-5 pt-3 pb-1 *:flex-1",
+          // On a phone the buttons stay at the sheet's foot while its body scrolls.
+          phone && "sticky -bottom-4 -mx-5 -mb-4 border-t bg-popover px-5 pt-3 pb-4 *:flex-1",
         )}
       >
         {mode === "observe" ? (
