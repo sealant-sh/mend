@@ -21,7 +21,6 @@ import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import { type AdoptionAttempt, clonePercent } from "#/lib/adoptions";
 import type { AdoptionProgressDto, ProjectDto } from "#/lib/api";
 import { type CloneState, cloneWords } from "#/lib/clone-state";
-import { laterPage } from "#/lib/later-pages";
 import { usePhone } from "#/lib/phone";
 import {
   alreadyAdded,
@@ -632,7 +631,8 @@ function Added({
             Done
           </Button>
           <Link
-            {...laterPage(`projects/${projectId}`)}
+            to="/projects/$projectId"
+            params={{ projectId }}
             onClick={() => onOpenChange(false)}
             className={buttonVariants({ size })}
           >

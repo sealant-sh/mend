@@ -28,7 +28,6 @@ import type { ReactNode } from "react";
 
 import type { ProjectDto } from "#/lib/api";
 import type { CloneState } from "#/lib/clone-state";
-import { laterPage } from "#/lib/later-pages";
 import { openSessionsWords, repositoryWords, visibleToWords } from "#/lib/projects";
 
 import { initialsOf } from "../app-sidebar.tsx";
@@ -116,7 +115,8 @@ export function ProjectRow({
       <ContextMenuTrigger render={<TableRow />}>
         <TableCell className={cn(CELL, "max-w-80 pl-0")}>
           <Link
-            {...laterPage(`projects/${project.id}`)}
+            to="/projects/$projectId"
+            params={{ projectId: project.id }}
             className="block truncate font-medium outline-none hover:underline focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50"
           >
             {project.name}
@@ -229,7 +229,9 @@ function MenuItems({
   const { remove } = actions;
   return (
     <>
-      <Item render={<Link {...laterPage(`projects/${project.id}`)} />}>Open project</Item>
+      <Item render={<Link to="/projects/$projectId" params={{ projectId: project.id }} />}>
+        Open project
+      </Item>
       <Item onClick={() => actions.newSession(project)}>New session</Item>
       {project.originUrl === null ? null : (
         <Item onClick={() => actions.copyAddress(project)}>Copy repository address</Item>
@@ -287,7 +289,8 @@ export function ProjectsList({
       {entries.map(({ project, open, actions }) => (
         <PhoneRow key={project.id}>
           <Link
-            {...laterPage(`projects/${project.id}`)}
+            to="/projects/$projectId"
+            params={{ projectId: project.id }}
             className="flex min-h-16 min-w-0 flex-1 flex-col justify-center py-2.5 pl-4 outline-none focus-visible:bg-muted"
           >
             <span className="truncate text-lead">{project.name}</span>

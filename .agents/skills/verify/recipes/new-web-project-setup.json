@@ -1,0 +1,49 @@
+[
+  {
+    "name": "01-codex-login",
+    "run": [
+      "sh",
+      "-c",
+      "printf %s '{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"mendVerifyFake-codex-id-token-000000000000\",\"access_token\":\"mendVerifyFake-codex-access-token-000000000000\",\"refresh_token\":\"mendVerifyFake-codex-refresh-token-000000000000\",\"account_id\":\"mend-verify-fake-account\"},\"last_refresh\":\"2026-01-01T00:00:00Z\"}' | mend connect codex --from-stdin"
+    ]
+  },
+  {
+    "name": "02-ended",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "project-ended",
+      "--",
+      "sh",
+      "-c",
+      "printf 'project page\\n' > PROJECT.md"
+    ]
+  },
+  {
+    "name": "03-stopped",
+    "run": ["mend", "run", "--project", "verify-fixture", "--name", "project-stopped", "--", "true"]
+  },
+  {
+    "name": "04-running",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "project-running",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "3600"
+    ]
+  },
+  {
+    "name": "05-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]
