@@ -231,8 +231,8 @@ export const rowStatus = (row: InboxRow, now: Date): RowStatus => {
 };
 
 /** What a running agent is doing, in the sidebar's short words: "Running a command". */
-export const activityWords = (activity: AgentActivityDto): string => {
-  switch (activity.kind) {
+export const activityWords = (doing: AgentActivityDto): string => {
+  switch (doing.kind) {
     case "command":
       return "Running a command";
     case "edit":
@@ -256,22 +256,22 @@ export const activityWords = (activity: AgentActivityDto): string => {
  * What a running agent is doing, naming what it named, for the phone row's second line:
  * "Running pnpm test", "Editing src/checkout.ts".
  */
-export const activityDetail = (activity: AgentActivityDto): string => {
-  if (activity.subject === null) return activityWords(activity);
-  switch (activity.kind) {
+export const activityDetail = (doing: AgentActivityDto): string => {
+  if (doing.subject === null) return activityWords(doing);
+  switch (doing.kind) {
     case "command":
     case "task":
-      return `Running ${activity.subject}`;
+      return `Running ${doing.subject}`;
     case "edit":
-      return `Editing ${activity.subject}`;
+      return `Editing ${doing.subject}`;
     case "search":
-      return `Searching for ${activity.subject}`;
+      return `Searching for ${doing.subject}`;
     case "tool":
-      return `Using ${activity.subject}`;
+      return `Using ${doing.subject}`;
     case "thinking":
     case "writing":
     case "planning":
-      return activityWords(activity);
+      return activityWords(doing);
   }
 };
 
