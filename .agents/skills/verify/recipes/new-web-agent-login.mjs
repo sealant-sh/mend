@@ -2,7 +2,7 @@
 // provider-accounts.md's `accounts-list`, `connect-web` (as an API key only: Yiannis ruled on
 // 17 Nov 2026 that Mend's apps take no part in a provider's sign-in) and `reconnect-state`:
 //
-//   pnpm verify drive new-web --recipe new-web-agent-login --account
+//   pnpm verify drive new-web --recipe new-web-agent-login
 //   # while it waits ("waiting for a CLI to connect"), from another terminal:
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-agent-login-connect.json
 //
@@ -13,10 +13,11 @@
 //   found until that step's route lands), and Continue is off.
 // - A login connected from the stack's CLI (`mend connect codex|claude --from-stdin`, the CLI the
 //   stack built from this commit) lands on the open page by itself, through the `user` event: no
-//   reload. Codex reads connected, Continue opens and Skip goes. The platform refuses the fake
-//   Claude login about 75 seconds after it is connected: the Claude tab then says to connect it
-//   again (`reconnect-state`).
-// - An API key, from "Use an API key instead": the other issuer's key is refused on the page; a
+//   reload. Codex reads connected, Continue opens and Skip goes; Claude Code reads connected too.
+//   The platform refuses the fake Claude login only when a session uses it, so the refused state
+//   (`reconnect-state`) is drawn from a logins read changed in the browser (`fixture-…`). Removing
+//   the Claude login through the API puts the page back to waiting, again without a reload.
+// - An API key for Claude Code, from "Use an API key instead": the other issuer's key is refused on the page; a
 //   Claude setup token pasted as a key is refused by the platform with its own words; a fake
 //   Anthropic key is saved ("Saving the key" held, then saved). The field is empty after every
 //   send, so no part of a key stays on the page.
@@ -116,6 +117,26 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
       if (removed.status !== 200) throw new Error(`removing ${one.provider}: ${removed.status}`);
     }
   };
+  /** Answers one tRPC read with what `change` makes of the server's answer, until `unroute`. */
+  const rewrite = async (call, change) =>
+    page.route("**/trpc/**", async (route) => {
+      const url = new URL(route.request().url());
+      const calls = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
+      const at = calls.indexOf(call);
+      if (at === -1) return route.continue();
+      const response = await route.fetch();
+      const body = await response.json();
+      const entry = Array.isArray(body) ? body[at] : body;
+      entry.result.data.json = change(entry.result.data.json);
+      await route.fulfill({ response, json: body });
+    });
+  /** Reads the person's logins again, as the `user` event makes the page do. */
+  const readAgain = () =>
+    page.evaluate(() =>
+      window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
+        queryKey: [["platform", "sealantIdentity"]],
+      }),
+    );
   /** Pastes `value` into the focused field, as the browser does: one paste event. */
   const paste = (value) =>
     page.evaluate((text) => {
@@ -187,8 +208,10 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
 
   await tab("Codex").click();
   await heading("Connect Codex");
+  // The Claude Code panel leaves once the switch has finished.
+  await page.getByText("mend connect claude", { exact: true }).waitFor({ state: "detached" });
   const codexCommands = await commands();
-  if (codexCommands[1] !== "mend connect codex")
+  if (codexCommands.join(" | ") !== `mend login --url ${origin} | mend connect codex`)
     throw new Error(`the Codex commands read ${JSON.stringify(codexCommands)}`);
   await visibleText(/Waiting for Codex to connect · \d+s/)
     .first()
@@ -238,24 +261,51 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   );
   await captureAll("agent-login-codex-connected");
 
-  // Claude: connected, then refused by the platform about 75 seconds later (reconnect-state).
+  // Claude: connected by the same batch.
   await tab("Claude Code").click();
   await heading("Connect Claude Code");
-  const claudeConnected = page.getByText(
-    "Claude Code is connected. Claude Code sessions will use this Claude account.",
-  );
-  const claudeRefused = page.getByText("Your Claude Code login needs connecting again.");
-  await claudeConnected.or(claudeRefused).first().waitFor({ timeout: 120_000 });
-  if ((await claudeConnected.count()) > 0) {
-    note("the Claude Code segment reads 'Claude Code is connected.' (the CLI batch's fake login)");
-    await captureAll("agent-login-claude-connected");
-  }
-  await claudeRefused.first().waitFor({ timeout: 240_000 });
+  await page
+    .getByText("Claude Code is connected. Claude Code sessions will use this Claude account.")
+    .first()
+    .waitFor({ timeout: 120_000 });
+  note("the Claude Code segment reads 'Claude Code is connected.' (the CLI batch's fake login)");
+  await captureAll("agent-login-claude-connected");
+
+  // reconnect-state. The platform refuses the fake Claude login only when a session uses it, so
+  // the refusal is drawn from the logins read changed in the browser: Claude's status invalid.
+  await rewrite("platform.sealantIdentity", (read) => ({
+    ...read,
+    accounts: read.accounts.map((one) =>
+      one.provider === "claude" ? { ...one, status: "invalid" } : one,
+    ),
+  }));
+  await readAgain();
+  await page.getByText("Your Claude Code login needs connecting again.").first().waitFor();
   await page.getByRole("button", { name: "Use an API key instead" }).waitFor();
   note(
-    "once the platform refused the fake Claude login, the open page read 'Your Claude Code login needs connecting again.' with 'Claude refused it, so Claude Code sessions can't start. Run the command again.' and offered 'Use an API key instead'",
+    "fixture, a refused Claude login (status invalid, made in the browser): 'Your Claude Code login needs connecting again.' with 'Claude refused it, so Claude Code sessions can't start. Run the command again.' and 'Use an API key instead'",
   );
-  await captureAll("agent-login-claude-refused");
+  await captureAll("fixture-agent-login-claude-refused");
+  await page.unroute("**/trpc/**");
+  await readAgain();
+  await page
+    .getByText("Claude Code is connected. Claude Code sessions will use this Claude account.")
+    .first()
+    .waitFor();
+
+  // Removing the Claude login lands on the page by itself too: back to waiting.
+  for (const one of await agentAccounts()) {
+    if (one.provider !== "claude") continue;
+    const removed = await api("DELETE", `/api/me/sealant/accounts/${one.id}`);
+    if (removed.status !== 200) throw new Error(`removing claude: ${removed.status}`);
+  }
+  await visibleText(/Waiting for Claude Code to connect · \d+s/)
+    .first()
+    .waitFor();
+  if (reloads.length > 0) throw new Error(`the page reloaded: ${reloads.join(", ")}`);
+  note(
+    "removing the Claude login through the API put the open page back to 'Waiting for Claude Code to connect', no reload",
+  );
 
   // connect-web as an API key.
   await page.getByRole("button", { name: "Use an API key instead" }).click();
@@ -267,8 +317,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
     note("the stack's platform doesn't run sessions on API keys: the key half shows that note");
     await captureAll("agent-login-key-unsupported");
   } else {
-    await page.getByText("Your Claude Code login needs connecting again.").first().waitFor();
-    note("'Use an API key instead' opened the Anthropic API key field, focused, under the refusal");
+    note("'Use an API key instead' opened the Anthropic API key field, focused");
     await captureAll("agent-login-key-empty");
 
     // The other issuer's key, refused on the page before anything is sent.

@@ -104,9 +104,13 @@ export function AgentLoginStep() {
           <p id={agentLabel} className="text-lead font-semibold text-foreground max-lg:text-base">
             Agent
           </p>
-          <TabsList aria-labelledby={agentLabel} className="max-lg:h-11 max-lg:w-full">
+          <TabsList aria-labelledby={agentLabel} className="max-lg:h-auto max-lg:w-full">
             {AGENTS.map((choice) => (
-              <TabsTrigger key={choice} value={choice} className="px-3 max-lg:text-base">
+              <TabsTrigger
+                key={choice}
+                value={choice}
+                className="px-3 max-lg:h-11 max-lg:text-base"
+              >
                 {AGENT_FACTS[choice].name}
               </TabsTrigger>
             ))}
