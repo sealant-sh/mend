@@ -253,12 +253,16 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
                 {facts.worktreeName} · {facts.session.branch}
               </span>
             </p>
-            <Button variant="ghost" size="sm" onClick={() => void copy()}>
-              Copy
-            </Button>
-            <Button variant="ghost" size="sm" onClick={() => terminal.current?.clear()}>
-              Clear
-            </Button>
+            {current.live ? (
+              <>
+                <Button variant="ghost" size="sm" onClick={() => void copy()}>
+                  Copy
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => terminal.current?.clear()}>
+                  Clear
+                </Button>
+              </>
+            ) : null}
             {current.processId !== null && typesHere ? (
               <Button variant="outline" size="sm" onClick={() => setClosing(current)}>
                 Close shell…
@@ -276,12 +280,13 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
             Only {ownerName(current.sessionId)} types here. You're watching.
           </p>
         ) : null}
-        {current === null ? (
+        {current === null || !current.live ? (
           <Nothing
             ready={ready}
             runs={runs}
             watches={sessions.some((session) => access.watches(session.id))}
             owner={ownerName(place.sessionId)}
+            ended={current?.name ?? null}
             newShell={layout === "list" ? null : newShell}
             failure={layout === "list" ? null : openFailed}
             opening={open.isPending}
@@ -529,12 +534,16 @@ function ShellPicker({
   );
 }
 
-/** No terminal to show: still reading, none open, the workspace stopped, or none to see. */
+/**
+ * No terminal to show: still reading, none open, the shell picked has ended, the workspace
+ * stopped, or none this person may see.
+ */
 function Nothing({
   ready,
   runs,
   watches,
   owner,
+  ended,
   newShell,
   failure,
   opening,
@@ -543,6 +552,8 @@ function Nothing({
   readonly runs: boolean;
   readonly watches: boolean;
   readonly owner: string;
+  /** The shell picked has ended: its name. Its terminal can't be attached once it has. */
+  readonly ended: string | null;
   readonly newShell: ReactNode;
   readonly failure: ReactNode;
   readonly opening: boolean;
@@ -553,9 +564,11 @@ function Nothing({
       ? `Only ${owner} and the people they share control with see this workspace's shells.`
       : opening
         ? "Opening a shell…"
-        : runs
-          ? "No shells are open in this workspace."
-          : "This workspace isn't running. Its shells stopped when its last session stopped.";
+        : ended !== null
+          ? `${ended} has ended. What it printed is in the session's record.`
+          : runs
+            ? "No shells are open in this workspace."
+            : "This workspace isn't running. Its shells stopped when its last session stopped.";
   return (
     <div role="status" className="flex flex-col items-start gap-3 px-6 py-6 max-lg:px-4">
       <p className="text-row text-muted-foreground">{words}</p>
