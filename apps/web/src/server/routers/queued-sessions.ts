@@ -28,7 +28,18 @@ export const queuedSessionsRouter = router({
   start: procedure
     .input(input(Schema.Struct({ id: QueuedSessionId, target: StartQueuedSessionRequest })))
     .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) => api.queuedSessions.start({ params: { id: i.id }, payload: i.target })),
+      run(ctx, (api) =>
+        // The client takes each form of the request on its own.
+        "adoptionId" in i.target
+          ? api.queuedSessions.start({
+              params: { id: i.id },
+              payload: { adoptionId: i.target.adoptionId },
+            })
+          : api.queuedSessions.start({
+              params: { id: i.id },
+              payload: { projectId: i.target.projectId },
+            }),
+      ),
     ),
   cancel: procedure
     .input(byId)

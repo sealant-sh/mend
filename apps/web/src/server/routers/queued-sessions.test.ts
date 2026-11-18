@@ -100,7 +100,13 @@ const startApi = async () => {
     requests,
     close: () =>
       new Promise<void>((resolve, reject) => {
-        server.close((error) => (error === undefined ? resolve() : reject(error)));
+        server.close((error) => {
+          if (error !== undefined) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
         server.closeAllConnections();
       }),
   };
@@ -182,6 +188,33 @@ describe("queued sessions router", () => {
         },
       },
     });
+  });
+
+  it("starts a failed one again in the project cloned since, or on a new clone", async () => {
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const start = (target: Record<string, string>) =>
+      handle(
+        new Request("http://internal-web.invalid/trpc/queuedSessions.start", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ json: { id, target } }),
+        }),
+      );
+
+    expect((await start({ projectId: "p-mobile-app" })).status).toBe(200);
+    expect((await start({ adoptionId })).status).toBe(200);
+    expect(api.requests).toEqual([
+      {
+        method: "POST",
+        path: `/api/queued-sessions/${id}/start`,
+        body: JSON.stringify({ projectId: "p-mobile-app" }),
+      },
+      {
+        method: "POST",
+        path: `/api/queued-sessions/${id}/start`,
+        body: JSON.stringify({ adoptionId }),
+      },
+    ]);
   });
 
   it("cancels it", async () => {

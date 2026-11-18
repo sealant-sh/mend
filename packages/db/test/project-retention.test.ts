@@ -578,6 +578,10 @@ describe.skipIf(postgres.skip)("project retention on a populated database (0167)
           // Its inserts and updates are fenced; removing its owner deletes it in a removed
           // project too (member removal), and purging the project cascades.
           "session_imported_conversations",
+          // Names a project that may not exist yet (its clone is still running). It holds none of
+          // the project's content, and starting it goes through SessionStart, whose fence refuses
+          // a project being removed.
+          "queued_sessions",
         ]);
         // tgtype bits: 4 INSERT, 8 DELETE, 16 UPDATE. A fence that misses one lets it through.
         const rows = yield* sql<{ readonly table: string; readonly fenced: boolean }>`
