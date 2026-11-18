@@ -288,8 +288,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   if (!(narrow < wide && narrow > wide / 2))
     throw new Error(`the shell is ${narrow} columns in half the width, ${wide} before`);
   const kept = await terminalText();
-  // The width probe printed before the move (`clear` before the link emptied what came earlier).
-  if (!/^cols1x=/m.test(kept)) throw new Error("the scrollback is gone after the move");
+  // What came before the move is still there (bash redraws its prompt over the line above it
+  // when the width changes, so look for the probe's command line and the link printed earlier).
+  if (!kept.includes("terminal-link-check") || !kept.includes("echo cols1x="))
+    throw new Error(`the scrollback is gone after the move: ${JSON.stringify(kept.slice(0, 400))}`);
   note(
     `moved to a tile on the right: the same terminal element, the shell went from ${wide} to ${narrow} columns, the scrollback is there`,
   );
