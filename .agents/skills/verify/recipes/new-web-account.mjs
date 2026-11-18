@@ -175,6 +175,7 @@ export default async ({ page, web, capture, note }) => {
   const dark = await firstFrame();
   if (!dark.dark) throw new Error("the reload's first frame was light, then turned dark");
   note(`theme-persist: Dark kept; the reload's first frame was dark (mend-theme=dark)`);
+  await page.waitForTimeout(2000);
   await capture("dark-after-reload-desktop");
   await accountButton.click();
   await menuItem(/^Theme/).hover();
@@ -214,16 +215,29 @@ export default async ({ page, web, capture, note }) => {
   await hydrated();
   if ((await glyph.getAttribute("aria-current")) !== "page")
     throw new Error("the open session's glyph is not marked as the page");
+  // The pointer off the rail, so no tooltip is opening or closing while the page is captured.
+  await page.mouse.move(700, 450);
+  // The session's page reads its record as it opens; the driver withholds a picture taken while
+  // the page is still inserting what it read.
+  await page.waitForTimeout(3000);
   await both("rail-in-session-desktop");
 
-  // The inbox as a flyout beside the rail (frame c7beWRxNSr); opening a session closes it.
-  await rail.getByRole("button", { name: /^Inbox/ }).click();
+  // The inbox as a flyout beside the rail (frame c7beWRxNSr); opening a session closes it. The
+  // driver's screenshot check closes a popover on a session page, so the flyout is captured from
+  // home.
   const flyout = visible(page.getByRole("dialog", { name: "Inbox" }));
+  await rail.getByRole("button", { name: /^Inbox/ }).click();
+  await flyout.getByRole("link", { name: new RegExp(`^${RUNNING}`) }).click();
+  await page.waitForURL(/\/sessions\//);
+  await flyout.waitFor({ state: "hidden" });
+  note("rail: opening a session from the inbox flyout opened it and closed the flyout");
+  await open("/");
+  await rail.getByRole("button", { name: /^Inbox/ }).click();
   await flyout.getByRole("link", { name: new RegExp(`^${RUNNING}`) }).waitFor();
   await both("rail-inbox-flyout-desktop");
-  await flyout.getByRole("link", { name: new RegExp(`^${RUNNING}`) }).click();
+  await page.keyboard.press("Escape");
   await flyout.waitFor({ state: "hidden" });
-  note("rail: the inbox flyout lists the groups; opening a session from it closes it");
+  note("rail: the inbox flyout lists the groups, and Escape closes it");
 
   // The organization and account menus open from the rail too.
   await rail.getByRole("button", { name: /, switch organization$/ }).click();
@@ -235,7 +249,7 @@ export default async ({ page, web, capture, note }) => {
   await both("rail-account-desktop");
   await closeMenu();
 
-  // And back: the toggle in the workspace header opens it in full, kept across a reload.
+  // And back: the toggle in the sheet's header opens it in full, kept across a reload.
   await button("Expand sidebar").click();
   await visible(page.locator("[data-slot=sidebar-header]")).waitFor();
   await open();
