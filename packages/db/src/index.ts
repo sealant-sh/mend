@@ -18,6 +18,7 @@ export * from "./repos/devices.ts";
 export * from "./repos/session-channel-tokens.ts";
 export * from "./repos/upgrade-tickets.ts";
 export * from "./repos/session-control-events.ts";
+export * from "./repos/session-shared-control.ts";
 export * from "./repos/access-keys.ts";
 export * from "./repos/audit-events.ts";
 export * from "./repos/folders.ts";

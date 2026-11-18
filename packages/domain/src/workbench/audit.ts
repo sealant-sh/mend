@@ -32,6 +32,9 @@ export const AuditAction = Schema.Literals([
   "reference.removed",
   "session.shared_control_on",
   "session.shared_control_off",
+  // Shared control for one person (docs/adr/0026, decision 7): `data.userId` names them.
+  "session.shared_control_granted",
+  "session.shared_control_taken_back",
   // The owner ended a session's workspace with captures still pending: work was discarded.
   "session.unsaved_discarded",
   // Mend stopped a session whose owner no longer has access to where it ran (mend#558): a removed

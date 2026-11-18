@@ -271,6 +271,14 @@ export const makeConnectionRegistry = Effect.sync(() => {
         ),
     );
 
+  /** One person's grant was taken back: only their steering connections on the session close. */
+  const closeForSessionPerson = (sessionId: string, userId: string) =>
+    closeAll(
+      [...(open.get(userId) ?? [])].filter(
+        (entry) => entry.sessionId === sessionId && (entry.kind === null || STEERS[entry.kind]),
+      ),
+    );
+
   const countFor = (userId: string, kind: ConnectionKind) =>
     Effect.sync(() => countOf(userId, kind));
 
@@ -284,6 +292,7 @@ export const makeConnectionRegistry = Effect.sync(() => {
     closeForMembership,
     closeForCredential,
     closeForSession,
+    closeForSessionPerson,
     closeForHolder,
     countFor,
     countOnSession,
@@ -331,7 +340,9 @@ export const ConnectionRegistryLive: Layer.Layer<
       }
       const event = signal.event;
       if (event.type === "shared-control-off") {
-        return registry.closeForSession(event.sessionId, event.ownerUserId);
+        return event.userId === undefined
+          ? registry.closeForSession(event.sessionId, event.ownerUserId)
+          : registry.closeForSessionPerson(event.sessionId, event.userId);
       }
       if (event.type === "sign-in-organization")
         return registry.closeForCredential(event.credential);

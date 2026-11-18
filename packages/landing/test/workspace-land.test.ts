@@ -8,9 +8,14 @@ import { workspaceLandLines, workspaceLandRefusal } from "../src/workspace-land.
 const NOW = new Date("2026-09-27T12:00:00.000Z");
 const PUSHED = Sha.make("3f2a1c0".padEnd(40, "0"));
 
-const session = (ownerUserId: string | null, shared = false) => ({
+const session = (
+  ownerUserId: string | null,
+  shared = false,
+  sharedControlUserIds: ReadonlyArray<string> = [],
+) => ({
   ownerUserId,
   sharedControlEnabledAt: shared ? NOW : null,
+  sharedControlUserIds,
 });
 
 const turn = (status: AgentTurnStatus, author: string | null) => ({ status, author });
@@ -82,6 +87,13 @@ describe("mend land: who it lands for (docs/adr/0007, Who lands)", () => {
     expect(
       workspaceLandRefusal({
         session: session("alice", true),
+        changeOwnerUserId: "alice",
+        turns: [],
+      }),
+    ).toBe("not landed · shared control is on · the change's owner lands it from Mend");
+    expect(
+      workspaceLandRefusal({
+        session: session("alice", false, ["carol"]),
         changeOwnerUserId: "alice",
         turns: [],
       }),

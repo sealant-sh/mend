@@ -40,6 +40,10 @@ const exceptions = new Map([
     "Removal ends shared control on the organization's sessions in every project state.",
   ],
   [
+    "packages/db/src/repos/session-shared-control.ts:endSharedControlOfMember:09de2517",
+    "Removal ends the member's shared control on the organization's sessions in every project state.",
+  ],
+  [
     "packages/db/src/repos/projects.ts:removedById:b685272a",
     "Removed metadata is an explicit recovery read.",
   ],

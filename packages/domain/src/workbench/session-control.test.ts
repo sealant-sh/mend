@@ -1,18 +1,21 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canAskSharedControl,
   canRelaunchSession,
   canSteerSession,
   canToggleSharedControl,
   canTypeInTerminal,
+  sharesControl,
   startsInTerminal,
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
 } from "./session-control.ts";
 
-const owned = { ownerUserId: "alice", sharedControlEnabledAt: null };
-const shared = { ownerUserId: "alice", sharedControlEnabledAt: new Date() };
-const ownerless = { ownerUserId: null, sharedControlEnabledAt: new Date() };
+const owned = { ownerUserId: "alice", sharedControlEnabledAt: null, sharedControlUserIds: [] };
+const shared = { ownerUserId: "alice", sharedControlEnabledAt: new Date(), sharedControlUserIds: [] };
+const ownerless = { ownerUserId: null, sharedControlEnabledAt: new Date(), sharedControlUserIds: [] };
+const grantedToCarol = { ...owned, sharedControlUserIds: ["carol"] };
 
 describe("steering a visible session (docs/adr/0003)", () => {
   it("the owner always, others only while control is shared, nobody without an owner", () => {
@@ -20,6 +23,24 @@ describe("steering a visible session (docs/adr/0003)", () => {
     expect(canSteerSession(owned, "carol")).toBe(false);
     expect(canSteerSession(shared, "carol")).toBe(true);
     expect(canSteerSession(ownerless, "alice")).toBe(false);
+  });
+
+  it("a grant lets that one person steer, and nobody else (docs/adr/0026)", () => {
+    expect(canSteerSession(grantedToCarol, "carol")).toBe(true);
+    expect(canSteerSession(grantedToCarol, "dave")).toBe(false);
+    expect(canSteerSession({ ...grantedToCarol, ownerUserId: null }, "carol")).toBe(false);
+    expect(sharesControl(owned)).toBe(false);
+    expect(sharesControl(grantedToCarol)).toBe(true);
+    expect(sharesControl(shared)).toBe(true);
+  });
+
+  it("anyone who cannot steer asks; the owner and those who steer already do not", () => {
+    expect(canAskSharedControl(owned, "carol")).toBe(true);
+    expect(canAskSharedControl(owned, "alice")).toBe(false);
+    expect(canAskSharedControl(grantedToCarol, "carol")).toBe(false);
+    expect(canAskSharedControl(grantedToCarol, "dave")).toBe(true);
+    expect(canAskSharedControl(shared, "carol")).toBe(false);
+    expect(canAskSharedControl({ ...owned, ownerUserId: null }, "carol")).toBe(false);
   });
 
   it("only the owner shares control; an organization owner may also take it back", () => {

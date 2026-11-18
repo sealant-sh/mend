@@ -65,6 +65,7 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   SessionControlEventsRepo,
+  SessionSharedControlRepo,
   SessionGitOpsRepo,
   SessionRepositoriesRepo,
   type SessionsRepo,
@@ -402,6 +403,7 @@ export const createTenancyApi = async (
       readonly engine?: Layer.PartialEffectful<SessionEngine["Service"]>;
       readonly screensRepo?: Layer.PartialEffectful<ScreensRepo["Service"]>;
       readonly controlEvents?: Layer.PartialEffectful<SessionControlEventsRepo["Service"]>;
+      readonly sharedControl?: Layer.PartialEffectful<SessionSharedControlRepo["Service"]>;
       readonly jobs?: Layer.PartialEffectful<JobRunner["Service"]>;
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
       readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
@@ -845,6 +847,21 @@ export const createTenancyApi = async (
         { record: () => Effect.void, ...options.implement?.controlEvents },
         calls,
       ),
+      recording(
+        SessionSharedControlRepo,
+        "sharedControl",
+        {
+          people: () => Effect.succeed([]),
+          asksOnOwnSessions: () => Effect.succeed(new Map()),
+          ask: () => Effect.succeed(true),
+          withdraw: () => Effect.succeed(true),
+          grant: () => Effect.succeed(true),
+          decline: () => Effect.succeed(true),
+          takeBack: () => Effect.succeed(true),
+          ...options.implement?.sharedControl,
+        },
+        calls,
+      ),
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", options.implement?.forwards ?? {}, calls),
       recording(
@@ -947,6 +964,7 @@ export const createTenancyApi = async (
           launchUnderWay: () => false,
           // Turning shared control off cancels the turns others queued (docs/adr/0016).
           cancelSteeredTurns: () => Effect.succeed(0),
+          cancelQueuedTurnsBy: () => Effect.succeed(0),
           // No migration of a pre-release shared home and no retiring executor (docs/adr/0016).
           preReleaseMemory: () => Effect.succeed(null),
           workspaceRetirement: () => Effect.succeed(null),

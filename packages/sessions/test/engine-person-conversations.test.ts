@@ -2482,10 +2482,13 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     readonly harness: "claude" | "opencode";
     readonly author: string;
     readonly logins?: (accountId: string) => PersonLogin;
+    /** Shared with this person alone (docs/adr/0026) rather than with everyone. */
+    readonly grantedTo?: string;
   }) => {
     const calls: Array<string> = [];
     const submitted: Array<string> = [];
     let refused: string | null = null;
+    let login: unknown = undefined;
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -2506,7 +2509,9 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             new Session({
               ...row,
               sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
-              sharedControlEnabledAt: now(),
+              ...(options.grantedTo === undefined
+                ? { sharedControlEnabledAt: now() }
+                : { sharedControlUserIds: [options.grantedTo] }),
             }),
           );
           const sent = yield* engine
@@ -2514,6 +2519,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
             .pipe(Effect.result);
           if (sent._tag === "Failure" && sent.failure._tag === "SessionTurnRefusedError") {
             refused = sent.failure.message;
+            login = sent.failure.login;
           }
         }),
       {
@@ -2526,7 +2532,7 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
         },
       },
     );
-    return { calls, submitted, refused };
+    return { calls, submitted, refused, login };
   };
 
   it("refuses a steerer whose own login is missing, unchosen or needs reconnecting, before anything is queued", async () => {
@@ -2547,6 +2553,9 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
     expect(invalid.refused).toBe(
       "Your Claude login needs reconnecting. Reconnect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.",
     );
+    // The refusal names the login, so a client offers connecting it again (docs/adr/0026).
+    expect(invalid.login).toEqual({ provider: "claude", state: "invalid" });
+    expect(missing.login).toEqual({ provider: "claude", state: "missing" });
     const unchosen = await submitScenario({
       harness: "claude",
       author: MARIA,
@@ -2556,6 +2565,19 @@ describe("shared steering through the engine (docs/adr/0016, Delivery 18)", () =
       "No Claude login chosen: Mend holds 2 of yours, and sessions use only the chosen one. Remove the others with mend connect claude --remove <name>, or Disconnect them in Settings → Connected accounts, then connect the one left again to choose it.",
     );
     expect(unchosen.submitted).toEqual([]);
+    // Shared with Maria alone: her turn is checked against her own login, as when shared with
+    // everyone (docs/adr/0026, decision 7).
+    const grantedExpired = await submitScenario({
+      harness: "claude",
+      author: MARIA,
+      grantedTo: MARIA,
+      logins: () => ({ _tag: "invalid" }),
+    });
+    expect(grantedExpired.login).toEqual({ provider: "claude", state: "invalid" });
+    expect(grantedExpired.submitted).toEqual([]);
+    const granted = await submitScenario({ harness: "claude", author: MARIA, grantedTo: MARIA });
+    expect(granted.refused).toBeNull();
+    expect(granted.submitted).toHaveLength(1);
     // Connected: queued, on the conversation, with one look at sealant.
     const active = await submitScenario({ harness: "claude", author: MARIA });
     expect(active.refused).toBeNull();

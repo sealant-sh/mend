@@ -306,6 +306,7 @@ import {
   linuxHomeOf,
   MEND_GROUP,
   canSteerSession,
+  sharesControl,
   canTypeInTerminal,
   ConversationWait,
   type ConversationWaitWork,
@@ -2059,7 +2060,7 @@ interface PersonDelivery extends PersonExec {
  * it, now or before (`sharedControlEverAt` is never cleared; docs/adr/0009 as amended by 0016).
  */
 const neverShared = (session: Session) =>
-  session.sharedControlEnabledAt === null && session.sharedControlEverAt === null;
+  !sharesControl(session) && session.sharedControlEverAt === null;
 
 /** Said when another person's session holds the same conversation (review of mend#567). */
 const PRE_RELEASE_COPY_REFUSED_WORDS =
@@ -2650,9 +2651,26 @@ export class PreReleaseMigrationError extends Schema.TaggedError<PreReleaseMigra
   { worktreeId: Schema.String, message: Schema.String },
 ) {}
 
+/**
+ * Why a steerer's own login refused their turn (docs/adr/0016, decision 6): the harness's
+ * provider, and whether they have none connected, one that needs reconnecting (expired or
+ * revoked), or several with none chosen. A client offers the way to connect it from this, beside
+ * the words.
+ */
+export const SteererLogin = Schema.Struct({
+  provider: Schema.Literals(["claude", "codex"]),
+  state: Schema.Literals(["missing", "invalid", "unchosen"]),
+});
+export type SteererLogin = typeof SteererLogin.Type;
+
 export class SessionTurnRefusedError extends Schema.TaggedError<SessionTurnRefusedError>()(
   "SessionTurnRefusedError",
-  { sessionId: Schema.String, message: Schema.String },
+  {
+    sessionId: Schema.String,
+    message: Schema.String,
+    /** Set when the sender's own login refused the turn. */
+    login: Schema.optionalKey(SteererLogin),
+  },
 ) {}
 
 /** A workspace is held only in capture mode: the co-located store has no executor to hold. */
@@ -17378,7 +17396,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const imported = yield* undeliveredImportOf(session);
         if (
           record === null &&
-          (terminal || session.sharedControlEnabledAt === null) &&
+          (terminal || !sharesControl(session)) &&
           fork === null &&
           imported === null
         )
@@ -21894,11 +21912,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const owner = session.ownerUserId;
               if (owner === null) return { kind: "send" } as const;
               const sender = turn.author ?? owner;
-              if (sender !== owner && session.sharedControlEnabledAt === null) {
+              // Shared control turned off, or taken back from this sender, while the turn
+              // waited (docs/adr/0026, decision 7).
+              if (!canSteerSession(session, sender)) {
                 return { kind: "refuse", words: STEERED_AFTER_SHARING_OFF } as const;
               }
               const moved = (yield* harnessLayouts.sharedConversationOf(session.id)) !== null;
-              if (sender === runsAs && (moved || session.sharedControlEnabledAt === null)) {
+              if (sender === runsAs && (moved || !sharesControl(session))) {
                 return { kind: "send" } as const;
               }
               return { kind: "hand-over", sender } as const;
@@ -22467,7 +22487,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   };
                 if (
                   sender !== session.ownerUserId &&
-                  (session.sharedControlEnabledAt === null ||
+                  (!canSteerSession(session, sender) ||
                     capture === null ||
                     agentProcess.runsAs === null)
                 )
@@ -22676,12 +22696,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * refused before anything is queued; Mend never falls back to the owner's. The owner's own
        * turns ask nothing more, and with the flag off and nothing recorded nothing is read.
        */
-      const steeringRefusal = Effect.fn("SessionEngine.steeringRefusal")(function* (
+      const steeringRefusalOf = Effect.fn("SessionEngine.steeringRefusalOf")(function* (
         session: Session,
         sender: string,
-      ) {
+      ): Effect.fn.Return<{ readonly words: string; readonly login?: SteererLogin } | null> {
         if (session.ownerUserId === null || sender === session.ownerUserId) return null;
-        if (session.harness === "opencode") return OPENCODE_NOT_STEERABLE;
+        if (session.harness === "opencode") return { words: OPENCODE_NOT_STEERABLE };
         if (capture === null || !layoutSteps.personPossible()) return null;
         if (!isConversationHarness(session.harness)) return null;
         if (!(yield* layoutSteps.mayRunPerson(session.worktreeId))) return null;
@@ -22697,17 +22717,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return null;
           case "unchosen": {
             const summary = unchosenLoginSummary(provider, login.count);
-            return `${summary.wordsAndSessionUse} ${summary.remedy}`;
+            return {
+              words: `${summary.wordsAndSessionUse} ${summary.remedy}`,
+              login: { provider, state: "unchosen" },
+            };
           }
           case "missing":
-            return `Connect ${name} to steer this session. ${connectWay(provider)}`;
+            return {
+              words: `Connect ${name} to steer this session. ${connectWay(provider)}`,
+              login: { provider, state: "missing" },
+            };
           case "invalid":
-            return `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session. ${connectWay(provider)}`;
+            return {
+              words: `Your ${name} login needs reconnecting. Reconnect ${name} to steer this session. ${connectWay(provider)}`,
+              login: { provider, state: "invalid" },
+            };
           case "unreachable":
             // The hand-over's own write refuses a login that is not there.
             return null;
         }
       });
+
+      const steeringRefusal = (session: Session, sender: string) =>
+        steeringRefusalOf(session, sender).pipe(Effect.map((refused) => refused?.words ?? null));
+
+      /** A steerer's refusal as the error a send fails with, their login named when it refused. */
+      const refusedTurn = (
+        sessionId: SessionId,
+        refused: { readonly words: string; readonly login?: SteererLogin },
+      ) =>
+        new SessionTurnRefusedError({
+          sessionId,
+          message: refused.words,
+          ...(refused.login === undefined ? {} : { login: refused.login }),
+        });
 
       /** `steeringRefusal` on a path that fails with the platform's error (a launch, a follow-up). */
       const refuseSteeringAt = (session: Session, author: string | null) =>
@@ -22766,10 +22809,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The owner's own turns ask nothing more; another person's turn is refused before it
           // is queued when it could not run on their own login (decision 6).
           if (steeringPossible && author !== session.ownerUserId) {
-            const refusal = yield* steeringRefusal(session, author);
-            if (refusal !== null) {
-              return yield* new SessionTurnRefusedError({ sessionId, message: refusal });
-            }
+            const refusal = yield* steeringRefusalOf(session, author);
+            if (refusal !== null) return yield* refusedTurn(sessionId, refusal);
           }
         }
         if (selection !== undefined) {
@@ -22918,12 +22959,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     sessionId: session.id,
                     message: retired,
                   });
-                const refusal = yield* steeringRefusal(session, input.sender);
-                if (refusal !== null)
-                  return yield* new SessionTurnRefusedError({
-                    sessionId: session.id,
-                    message: refusal,
-                  });
+                const refusal = yield* steeringRefusalOf(session, input.sender);
+                if (refusal !== null) return yield* refusedTurn(session.id, refusal);
                 const selection = yield* forkSelectionFor(session.id, input.selection);
                 return yield* protocolHost.sendMessage(
                   selection === undefined ? input : { ...input, selection },
@@ -22971,12 +23008,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sessionId: session.id,
                 message: retired,
               });
-            const refusal = yield* steeringRefusal(session, input.sender);
-            if (refusal !== null)
-              return yield* new SessionTurnRefusedError({
-                sessionId: session.id,
-                message: refusal,
-              });
+            const refusal = yield* steeringRefusalOf(session, input.sender);
+            if (refusal !== null) return yield* refusedTurn(session.id, refusal);
             if (input.selection !== undefined) {
               const selectionRefusal = turnSelectionRefusal(session.harness, input.selection);
               if (selectionRefusal !== null)
@@ -23559,7 +23592,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             handOver?.sender ??
             (protocolStart !== null &&
             protocolAuthor !== null &&
-            session.sharedControlEnabledAt !== null &&
+            canSteerSession(session, protocolAuthor) &&
             isConversationHarness(session.harness)
               ? protocolAuthor
               : session.ownerUserId);

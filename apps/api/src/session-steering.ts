@@ -3,6 +3,8 @@ import {
   NotFound,
   SessionControlView,
   SessionNotSteerable,
+  SessionSharedControl,
+  SharedControlPerson,
 } from "@mend/api-contracts";
 import {
   AgentConversationRepo,
@@ -10,6 +12,7 @@ import {
   ServicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  type SharedControlPerson as SharedControlPersonRow,
   type SignIn,
 } from "@mend/db";
 import {
@@ -28,6 +31,8 @@ import {
   type Service,
   type Session,
   type SessionProcess,
+  canAskSharedControl,
+  sharesControl,
   type SteeringFacts,
   type Viewer,
 } from "@mend/domain/workbench";
@@ -59,10 +64,51 @@ export const sessionControlView = (
     own: viewer !== null && session.ownerUserId === viewer.userId,
     steer,
     stop: steer || viewer?.role === "owner",
+    // The switch clients that know only on and off press: on while anyone besides the owner
+    // steers (docs/adr/0026, decision 7), so an organization owner can turn a grant off too.
     toggleSharedControl:
-      viewer !== null &&
-      canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
+      viewer !== null && canToggleSharedControl(session, viewer, !sharesControl(session)),
     terminalInput: viewer !== null && canTypeInTerminal(session, viewer.userId),
+    turnsOnSendersLogin,
+  });
+};
+
+/**
+ * A session's shared control as `viewer` reads it (docs/adr/0026, decision 7): everyone sees who
+ * holds it; the owner sees every open ask, anyone else only their own.
+ */
+export const sharedControlView = (
+  session: SteeringFacts & Pick<Session, "id" | "settledAt" | "harness">,
+  viewer: Pick<Viewer, "userId" | "role"> | null,
+  people: ReadonlyArray<SharedControlPersonRow>,
+  turnsOnSendersLogin: boolean,
+): SessionSharedControl => {
+  const own = viewer !== null && session.ownerUserId === viewer.userId;
+  const asked = people.filter(
+    (person) => person.state === "asked" && (own || person.userId === viewer?.userId),
+  );
+  const mine = asked.some((person) => person.userId === viewer?.userId);
+  return new SessionSharedControl({
+    sessionId: session.id,
+    ownerUserId: session.ownerUserId,
+    everyoneSince: session.sharedControlEnabledAt,
+    granted: people
+      .filter((person) => person.state === "granted")
+      .map((person) => new SharedControlPerson(person)),
+    asked: asked.map((person) => new SharedControlPerson(person)),
+    steer: viewer !== null && canSteerSession(session, viewer.userId),
+    acts: {
+      // opencode is one person's harness (docs/adr/0016, decision 6); a settled session takes no ask.
+      ask:
+        viewer !== null &&
+        !mine &&
+        session.settledAt === null &&
+        session.harness !== "opencode" &&
+        canAskSharedControl(session, viewer.userId),
+      withdraw: mine,
+      decide: own,
+      takeBack: viewer !== null && canToggleSharedControl(session, viewer, false),
+    },
     turnsOnSendersLogin,
   });
 };

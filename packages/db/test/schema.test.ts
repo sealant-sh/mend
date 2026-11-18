@@ -60,7 +60,8 @@ const modelDdl = () => {
         throw new Error(`Extend catalog parity for generated column ${config.name}.${column.name}`);
     const columns = config.columns.map(
       (column) =>
-        `${quote(column.name)} ${column.getSQLType()}${column.notNull ? " NOT NULL" : ""}${defaultClause(column)}`,
+        // Drizzle keeps an array column's element type and counts its dimensions apart.
+        `${quote(column.name)} ${column.getSQLType()}${"[]".repeat(column.dimensions ?? 0)}${column.notNull ? " NOT NULL" : ""}${defaultClause(column)}`,
     );
     const keys = [
       ...config.primaryKeys.map((key) => key.columns.map((column) => column.name)),
