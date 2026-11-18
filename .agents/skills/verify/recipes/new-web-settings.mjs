@@ -181,6 +181,11 @@ export default async ({ page, web, capture, note, account }) => {
   if ((await nameField.inputValue()) !== renamed)
     throw new Error("the new name didn't hold across a reload");
   note("the new name holds across a reload (Better Auth's update-user)");
+  // The sidebar's account row names the account by the organization's roster: the new name.
+  await open("/");
+  await visible(page.getByRole("button", { name: `${renamed}, account` })).waitFor();
+  note(`the app sidebar's account row reads "${renamed}"`);
+  await open("/settings/profile");
   await nameField.fill("   ");
   await nameField.press("Enter");
   await page.getByText("Your name can't be empty.").waitFor();
