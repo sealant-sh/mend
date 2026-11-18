@@ -135,10 +135,13 @@ pnpm verify judge --record <answer.json>  # keeps its answer for this commit
 The judge reads the diff and answers two questions. Where: a local stack, or the box when it can
 name which thing a local stack can't show (`tooling/verify/local-stack-limits.json` is that list;
 change it when a local stack gains or loses an ability). What: three to five things a person does
-and sees, and what they would see if the change didn't work. Hand over the brief unchanged. Your
-summary of the change, or your view of where it should run, makes the judge agree with you. When you
-can't start another agent, answer the brief yourself and record it with `--self`; the receipt then
-says the author judged it.
+and sees, and what they would see if the change didn't work. It also names the flow of the box run
+(below) that shows the change. A PR that adds or changes a feature adds or updates that flow in
+`.agents/skills/box-main-run/flows.md` in the same PR. `--record` refuses a flow id that is not in
+flows.md, and refuses "no flow" for a change inside some flow's Areas. Hand over the brief
+unchanged. Your summary of the change, or your view of where it should run, makes the judge agree
+with you. When you can't start another agent, answer the brief yourself and record it with `--self`;
+the receipt then says the author judged it.
 
 Then run it where the judge said. On a local stack, as the `verify` skill (`.agents/skills/verify/`)
 says:

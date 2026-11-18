@@ -75,8 +75,22 @@ add makes the judge agree with you.
 
 The answer says where to run it (`local`, or `box` with the limit from
 `tooling/verify/local-stack-limits.json` that applies), three to five things a person must see, and
-what they would see if it did not work. `--record` refuses an answer that is not in that shape, and
-a `local` answer for a file only the box can show. The receipt (`pnpm verify status --markdown`)
+what they would see if it did not work. It also names the flow of the daily box run
+(`.agents/skills/box-main-run/flows.md`) that shows the change, as exactly one of these:
+
+- `flows`: ids from flows.md at this commit;
+- `newFlow`: what no flow covers. `--record` refuses it until the change adds that flow to flows.md,
+  so add it in this PR and judge the new commit;
+- `noFlow`: no flow can show it. It is refused for a change inside some flow's Areas, or under
+  `apps/web/` or `packages/ui/`, unless it names a row of flows.md's Not on the box table.
+
+A change only to the new web app, which the box does not serve until cut-over, names the flow for
+the same feature, and the receipt reads "on the box after cut-over". A route that no flow covers
+adds one marked `- **Box:** after cut-over`. Tests, docs and CI owe no judgement, so they name no
+flow.
+
+`--record` refuses an answer that is not in that shape, a flow id flows.md does not have, and a
+`local` answer for a file only the box can show. The receipt (`pnpm verify status --markdown`)
 prints the whole answer under its lines, and a `json verify-receipt` block with the same facts that
 `pnpm verify receipt --pr <n>` (or `--body <file>`) reads back; paste it as printed. With no way to
 start another agent, answer the brief yourself and add `--self`; the receipt says so. **Done when**

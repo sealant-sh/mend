@@ -39,6 +39,7 @@ const fixture = (t) => {
     "tooling/verify/allowed-skips.json",
     "tooling/verify/local-stack-limits.json",
     ".github/workflows/ci.yml",
+    ".agents/skills/box-main-run/flows.md",
   ]) {
     mkdirSync(dirname(join(root, path)), { recursive: true });
     copyFileSync(join(repo, path), join(root, path));
@@ -67,6 +68,7 @@ const fixture = (t) => {
         reason: "A web route; nothing needs Boat, old data or a real agent turn.",
         mustSee: ["Open Projects", "See the new row", "Reload and see it again"],
         ifBroken: "The row is missing",
+        flows: ["adopt-project.web-directory"],
       }),
     );
     const judged = await runVerb(root, "judge", options({ record: answer, self }));
@@ -112,7 +114,14 @@ test("a PR that owes a run passes only with a receipt for its product change, ju
   const body = `Why.\n\n${await receipt()}`;
   const passed = gate(body, first);
   assert.equal(passed.passed, true);
-  assert.match(passed.summary, /judged by another agent/);
+  assert.match(passed.summary, /judged by another agent; flow adopt-project\.web-directory/);
+
+  // A receipt recorded before the judge named a flow keeps its shape, so it still passes.
+  const unnamed = body.replace(/,\s*"flows": \[\s*"adopt-project\.web-directory"\s*\]/, "");
+  assert.notEqual(unnamed, body);
+  const before = gate(unnamed, first);
+  assert.equal(before.passed, true);
+  assert.match(before.summary, /judged before the judge named a flow/);
 
   // A push of tests and docs keeps the product change, so the earlier receipt still counts.
   const tested = commit("apps/web-old/src/routes/a.test.tsx");

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 
+import { flowWords } from "./judge.mjs";
 import { STATUSES } from "./result.mjs";
 
 // The receipt a PR body carries: `pnpm verify status --markdown` prints it, `readReceipts` reads it
@@ -12,11 +13,15 @@ import { STATUSES } from "./result.mjs";
 //     "productPatchId": "<git patch-id --stable>" | null,
 //     "lines": [{ "id": "judge", "status": "passed" }, …],
 //     "judgement": null | { "where": "local" | "box", "limit"?: "<id>", "reason": "…",
-//                           "mustSee": ["…"], "ifBroken": "…", "judgedBy": "agent" | "self" } }
+//                           "mustSee": ["…"], "ifBroken": "…", "judgedBy": "agent" | "self",
+//                           "flows"?: ["<flow id>"], "flowsOnTheBox"?: "after cut-over",
+//                           "noFlow"?: { "notOnTheBox"?: "<feature>", "reason": "…" } } }
 //   ```
 //
 // `productPatchId` is the patch id of the diff, merge base to `sha`, of only the files that make
 // the change owe a judgement: a rebase, or a push that touches only tests or docs, keeps it.
+// `flows`, `flowsOnTheBox` and `noFlow` came with SLNT-1050: a judgement recorded before them has
+// none, and still conforms.
 
 export const RECEIPT_VERSION = 1;
 
@@ -65,6 +70,7 @@ export const judgementMarkdown = (judgement) => [
   "- **Must see:**",
   ...judgement.mustSee.map((line, index) => `  ${index + 1}. ${oneLine(line)}`),
   `- **If it did not work:** ${oneLine(judgement.ifBroken)}`,
+  ...(flowWords(judgement) === "" ? [] : [`- **Box run:** ${oneLine(flowWords(judgement))}`]),
   "",
 ];
 
@@ -82,6 +88,16 @@ export const receiptBlock = (result) => [
 ];
 
 const isText = (value) => typeof value === "string" && value.trim() !== "";
+
+/** The optional flow fields, when a judgement has them. */
+const flowShaped = (judgement) =>
+  typeof judgement !== "object" ||
+  judgement === null ||
+  ((judgement.flows === undefined ||
+    (Array.isArray(judgement.flows) && judgement.flows.every(isText))) &&
+    [undefined, "after cut-over"].includes(judgement.flowsOnTheBox) &&
+    (judgement.noFlow === undefined || isText(judgement.noFlow?.reason)) &&
+    !(judgement.flows !== undefined && judgement.noFlow !== undefined));
 
 /** Every way a parsed block departs from the contract; empty when it can be trusted as shaped. */
 export const validateReceipt = (data) => {
@@ -118,6 +134,7 @@ export const validateReceipt = (data) => {
         ["agent", "self"].includes(judgement.judgedBy),
       "judgement is null or { where, limit when box, reason, mustSee, ifBroken, judgedBy }",
     );
+    need(flowShaped(judgement), "a judgement names flows or noFlow { reason }, not both");
   }
   return errors;
 };

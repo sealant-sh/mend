@@ -9,8 +9,12 @@ after the preview of `main` is deployed. Each flow comes from the feature map
 (`.agents/skills/verify/features/`, written "the map"); the feature file holds the exact handles,
 commands and strings, and a flow points at it instead of copying them. Every feature in the map has
 at least one flow here or a line in [Not on the box](#not-on-the-box). A PR that adds or changes a
-feature adds or updates its flow here in the same PR. Ids are stable: reports, tickets and PRs name
-flows by id, so rename one only with a note in the PR that does it.
+feature adds or updates its flow here in the same PR, and its judge names that flow
+(`pnpm verify judge`, which refuses an id this file does not have). Ids are stable: reports, tickets
+and PRs name flows by id, so rename one only with a note in the PR that does it. A flow's `Areas`
+line names the paths it passes through: an entry ending in `/` holds everything under it, and a
+judge cannot answer "no flow" for a change inside one. A flow for a route only the new web app
+(`apps/web`) has carries `- **Box:** after cut-over`, and runs once the box serves that app.
 
 `M` is the CLI under test, signed in as the box's owner account (never `mend login` or `mend logout`
 it). `<p>` is the project `boat-check-ubuntu` (Ubuntu, branch `master`). `<sha8>` is the first 8
@@ -659,8 +663,7 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/web-old/src/components/project/settings/general-links.tsx`,
-  `apps/web-old/src/components/project/settings/folders.tsx`, `apps/api/src/folders.ts`,
-  `packages/sessions/`
+  `apps/web-old/src/components/project/settings/folders.tsx`, `apps/api/src/`, `packages/sessions/`
 
 ### now-and-sessions.web-now
 
@@ -730,7 +733,7 @@ flows reuse what earlier ones made:
   `mend: no active session matches "zzzzzzzz"`, exit `1`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
-- **Areas:** `apps/cli/src/attach-terminal.ts`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/cli/src/`, `apps/api/src/`, `packages/sessions/`
 
 ### attach-resume.rename-web
 
@@ -1135,7 +1138,7 @@ flows reuse what earlier ones made:
 - **Mode:** `scripted` (recipes/cli-reads.sh doctor.checklist)
 - **Box-only:** no
 - **Sample:** yes
-- **Areas:** `apps/cli/src/doctor.ts`, `apps/cli/src/doctor-boat.ts`, `apps/api/src/`
+- **Areas:** `apps/cli/src/doctor.ts`, `apps/api/src/`
 
 ### doctor.bundle-web
 

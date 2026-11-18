@@ -15,7 +15,9 @@ a person: the CLI and browser of the box's checker account, through the flows in
 report and file tickets; you fix nothing.
 
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
-top; report any flow outside it as `not run · not in this run's set`.
+top; report any flow outside it as `not run · not in this run's set`. A flow marked
+`- **Box:** after cut-over` drives the new web app (`apps/web`), which the box does not serve yet:
+report it as `not run · after cut-over`, apart from the seen and failed flows, until cut-over.
 
 ## Who does what
 
