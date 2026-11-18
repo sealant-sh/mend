@@ -72,7 +72,6 @@ import {
   sharedWith,
   shownRows,
 } from "#/lib/inbox";
-import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import { rowActions } from "#/lib/row-actions";
 import { lumpStatusOf, sessionLink } from "#/lib/session-sheet";
@@ -276,11 +275,7 @@ function SidebarRailNav({ organizationName, account, inbox, online, area, openId
           <RailItem label="Projects" active={area === "projects"} render={<Link to="/projects" />}>
             <FolderIcon />
           </RailItem>
-          <RailItem
-            label="Skills"
-            active={area === "skills"}
-            render={<Link {...laterPage("skills")} />}
-          >
+          <RailItem label="Skills" active={area === "skills"} render={<Link to="/skills" />}>
             <SparklesIcon />
           </RailItem>
         </SidebarMenu>
@@ -498,13 +493,7 @@ function NavItem({
       <SidebarMenuButton
         isActive={active}
         className={navClass}
-        render={
-          to === "skills" ? (
-            <Link {...laterPage(to)} aria-current={active ? "page" : undefined} />
-          ) : (
-            <Link to={`/${to}`} aria-current={active ? "page" : undefined} />
-          )
-        }
+        render={<Link to={`/${to}`} aria-current={active ? "page" : undefined} />}
       >
         {icon}
         <span>{children}</span>

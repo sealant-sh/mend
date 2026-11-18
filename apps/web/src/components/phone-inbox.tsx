@@ -42,7 +42,6 @@ import {
   type QueuedRow,
   rowStatus,
 } from "#/lib/inbox";
-import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import { rowActions } from "#/lib/row-actions";
 import { useSeenAfterIdle } from "#/lib/seen";
@@ -413,7 +412,7 @@ export function PhoneTabBar({
   const tabs = [
     { key: "inbox", link: { to: "/" }, label: "Inbox", icon: <InboxIcon /> },
     { key: "projects", link: { to: "/projects" }, label: "Projects", icon: <FolderIcon /> },
-    { key: "skills", link: laterPage("skills"), label: "Skills", icon: <SparklesIcon /> },
+    { key: "skills", link: { to: "/skills" }, label: "Skills", icon: <SparklesIcon /> },
     { key: "settings", link: { to: "/settings" }, label: "Settings", icon: <SettingsIcon /> },
   ] as const;
   return (
