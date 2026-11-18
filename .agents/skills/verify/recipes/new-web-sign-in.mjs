@@ -35,6 +35,17 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
     if (path() !== want) throw new Error(`the browser is at ${path()}, not ${want}`);
   };
   const signedOut = () => page.context().clearCookies();
+  // Signing in with no page to return to opens setup's Git access for an account with no Mend key
+  // yet (the stack's first account, until a visit to /welcome makes one), and Mend otherwise.
+  const landedWithNoPage = async (what) => {
+    const at = path().split("#")[0];
+    if (at === "/welcome") await heading("Git access");
+    else if (at === "/") await heading("New session");
+    else throw new Error(`${what} signed in and went to ${at}, not / or /welcome`);
+    note(
+      `${what} signed in and went to ${at === "/" ? "/, the New session composer" : "/welcome, setup's Git access (the account has no Mend key yet)"}`,
+    );
+  };
   // A full load each time: a goto that changes only the fragment would stay in the same document.
   const open = async (to) => {
     await page.goto("about:blank");
@@ -174,9 +185,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await fillSignIn(account.email, account.typePassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => url.pathname !== "/login");
-  expectPath("/");
-  await heading("New session");
-  note("#next=//evil.example/ signed in and went to /, the New session composer");
+  await landedWithNoPage("#next=//evil.example/");
 
   // member-removal: a removed member's browser.
   await signedOut();
@@ -263,8 +272,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await fillSignIn(account.email, account.typePassword);
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => url.pathname !== "/login");
-  expectPath("/");
-  note("the password set through the link signs in");
+  await landedWithNoPage("the password set through the link");
 
   // The same link again: spent.
   await signedOut();

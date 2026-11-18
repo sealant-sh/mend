@@ -5,7 +5,7 @@
 //
 // - `join`: the old /join/<token> form moves to /join#<token>; the form's problems, the server's
 //   "there's already an account" with Sign in instead, then a new person creates an account and
-//   lands on setup (/welcome, the not-found screen until its route lands).
+//   lands on setup's Git access step (/welcome).
 // - `join-signed-in`: signing in from the page, as the owner, who is already a member: a stack runs
 //   one organization (MEND_TENANCY=single), so a signed-in account is always in it. Joining a second
 //   organization while signed in needs `multi`, which a stack doesn't run.
@@ -213,10 +213,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   );
   await button("Create account and join").click();
   await page.waitForURL((url) => url.pathname === "/welcome");
-  await heading("Page not found");
-  note(
-    `'Create account and join' as ${joiner} landed on /welcome (not found until Git access lands)`,
-  );
+  await heading("Git access");
+  note(`'Create account and join' as ${joiner} landed on /welcome, setup's Git access step`);
 
   // The new member reopens the link they joined with.
   await open(`/join#${used.token}`);

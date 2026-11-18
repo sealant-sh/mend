@@ -27,13 +27,37 @@ export const useServerHost = (): string =>
 
 export type SetupStep = 1 | 2 | 3 | 4;
 
-/** The four setup steps beside the sheet: earlier ones checked, the current one marked. */
-export function SetupSteps({ step }: { readonly step: SetupStep }) {
+/**
+ * What each finished step saved, shown under its name once the person is past it: the account's
+ * name, the Git access mode, the agent login, the project.
+ */
+export interface SetupSaved {
+  readonly account?: string;
+  readonly git?: string;
+  readonly agent?: string;
+  readonly project?: string;
+}
+
+const SAVED_KEYS = ["account", "git", "agent", "project"] as const;
+const NOTHING_SAVED: SetupSaved = {};
+
+/**
+ * The four setup steps beside the sheet: earlier ones checked, with what they saved under them,
+ * the current one marked.
+ */
+export function SetupSteps({
+  step,
+  saved = NOTHING_SAVED,
+}: {
+  readonly step: SetupStep;
+  readonly saved?: SetupSaved | undefined;
+}) {
   return (
     <ol aria-label="Setup steps" className="grid text-sm leading-snug">
       {SETUP_STEPS.map((name, index) => {
         const number = index + 1;
         const state = number < step ? "done" : number === step ? "current" : "later";
+        const savedLine = state === "done" ? saved[SAVED_KEYS[index] ?? "account"] : undefined;
         return (
           <li
             key={name}
@@ -50,14 +74,19 @@ export function SetupSteps({ step }: { readonly step: SetupStep }) {
             >
               {state === "done" ? <Check aria-hidden className="size-3.5" /> : number}
             </span>
-            <span
-              className={cn(
-                "pt-0.5 font-medium",
-                state === "later" ? "text-muted-foreground" : "text-foreground",
+            <span className="grid min-w-0 gap-0.5 pt-0.5">
+              <span
+                className={cn(
+                  "font-medium",
+                  state === "later" ? "text-muted-foreground" : "text-foreground",
+                )}
+              >
+                {name}
+                {state === "done" ? <span className="sr-only"> (done)</span> : null}
+              </span>
+              {savedLine === undefined || savedLine === "" ? null : (
+                <span className="truncate text-xs text-muted-foreground">{savedLine}</span>
               )}
-            >
-              {name}
-              {state === "done" ? <span className="sr-only"> (done)</span> : null}
             </span>
           </li>
         );
@@ -69,6 +98,7 @@ export function SetupSteps({ step }: { readonly step: SetupStep }) {
 export function SetupFrame({
   title,
   step,
+  saved,
   banner,
   children,
 }: {
@@ -76,6 +106,8 @@ export function SetupFrame({
   readonly title: string;
   /** During setup, the step this page is; the steps show beside the sheet. */
   readonly step?: SetupStep;
+  /** What the steps before this one saved (`SetupSteps`). */
+  readonly saved?: SetupSaved;
   /** A state that affects the whole page (a `Banner`), across the top of the sheet. */
   readonly banner?: ReactNode;
   readonly children: ReactNode;
@@ -89,7 +121,7 @@ export function SetupFrame({
           <p className="text-lead font-semibold text-foreground">Mend</p>
           <p className="text-row text-muted-foreground">{host}</p>
         </div>
-        {step === undefined ? null : <SetupSteps step={step} />}
+        {step === undefined ? null : <SetupSteps step={step} saved={saved} />}
       </div>
       <main className="flex min-w-0 flex-1 flex-col bg-background lg:overflow-hidden lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
         {/* Phone: the header first, the banner under it. Desktop: the banner across the top of the
