@@ -151,7 +151,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       .filter((row) => row.worktreeName === worktree)
       .toSorted((a, b) => String(a.session.createdAt).localeCompare(String(b.session.createdAt)))
       .map((row) => row.session);
-  const [small, second] = of("change-small");
+  const smallSessions = of("change-small");
+  const [small, second] = smallSessions;
   const [big] = of("change-big");
   const [empty] = of("change-empty");
   if (small === undefined || second === undefined || big === undefined || empty === undefined)
@@ -203,9 +204,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
   const counts = (await changeTab().innerText()).replace(/\s+/g, " ").trim();
   note(`/sessions/<id>/change: the Change tab is focused and reads "${counts}"`);
-  await visible(page.getByText("This workspace's change, from 2 sessions.")).waitFor();
+  // Each run of the moves batch adds a session to the workspace.
+  const from = `This workspace's change, from ${smallSessions.length} sessions.`;
+  await visible(page.getByText(from)).waitFor();
   await visible(page.getByRole("link", { name: new RegExp(TITLES.second) })).waitFor();
-  note("the toolbar says 'This workspace's change, from 2 sessions.'; Sessions lists both");
+  note(`the toolbar says '${from}'; Sessions lists them`);
   note(`files column: "${(await filesFact()).replace(/\s+/g, " ")}"`);
   await both("first-look-desktop");
 
