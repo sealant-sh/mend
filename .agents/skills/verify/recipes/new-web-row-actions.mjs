@@ -190,6 +190,18 @@ export default async ({ page, web, capture, note }) => {
   await row("Running", RUNNING).waitFor();
   await toast(`Moved "${RUNNING}" out of Snoozed.`).waitFor();
   note("inbox-snooze-settle: Unsnooze from the right-click menu put it back under Running");
+  // Undo in a snooze's toast puts the row back where it was.
+  await (await moreButton("Running", RUNNING)).click();
+  await menuItem("Snooze").hover();
+  await menuItem("In an hour").click();
+  await row("Snoozed", RUNNING).waitFor();
+  await toasts()
+    .getByRole("dialog")
+    .filter({ hasText: `Snoozed "${RUNNING}" until` })
+    .getByRole("button", { name: "Undo" })
+    .click();
+  await row("Running", RUNNING).waitFor();
+  note("inbox-snooze-settle: Undo in the snooze's toast put row-running back under Running");
 
   // Rename in place, from the right-click menu (frame 5O6d7RDIIl): Enter saves.
   await row("Running", RUNNING).click({ button: "right" });
@@ -262,6 +274,22 @@ export default async ({ page, web, capture, note }) => {
   await (await moreButton("Done", REVIEW)).click();
   await menuItem("Open session").waitFor();
   const doneNames = await menuNames();
+  await page.keyboard.press("Escape");
+  // A row in Done because its session ended, not marked by hand, has no mark to take back.
+  const endedRow = group("Done")
+    .locator("a[data-session-id]")
+    .filter({ hasNotText: REVIEW })
+    .first();
+  const endedTitle = (await endedRow.locator("span").first().innerText()).trim();
+  await (await moreButton("Done", endedTitle)).click();
+  await menuItem("Open session").waitFor();
+  const endedNames = await menuNames();
+  if (endedNames.some((each) => each.startsWith("Mark not done")))
+    throw new Error(`a row done by its status offers Mark not done: ${endedNames.join(" | ")}`);
+  note(`a row in Done because it ended (${endedTitle}) reads ${endedNames.join(" | ")}`);
+  await page.keyboard.press("Escape");
+  await (await moreButton("Done", REVIEW)).click();
+  await menuItem("Open session").waitFor();
   if (doneNames.some((each) => each.startsWith("Mark done") || each.startsWith("Snooze")))
     throw new Error(`a Done row's menu reads ${doneNames.join(" | ")}`);
   await menuItem("Mark not done").click();
@@ -419,6 +447,16 @@ export default async ({ page, web, capture, note }) => {
     .click();
   await page.getByRole("menuitem", { name: "Pick a time…" }).click();
   await page.getByRole("dialog", { name: "Pick a time" }).waitFor();
+  // A time already past is refused before it is sent.
+  const past = new Date(Date.now() - 24 * 60 * 60_000);
+  await page
+    .getByLabel("Snooze until")
+    .fill(`${past.getFullYear()}-${pad(past.getMonth() + 1)}-${pad(past.getDate())}T10:30`);
+  await page.getByText("Pick a time after now.", { exact: true }).waitFor();
+  if (await page.getByRole("button", { name: "Snooze", exact: true }).isEnabled())
+    throw new Error("Snooze is offered for a time already past");
+  await capture("phone-pick-a-past-time-light");
+  note("phone: Pick a time refuses a time already past: Pick a time after now., Snooze disabled");
   await page.getByLabel("Snooze until").fill(local);
   await both("phone-pick-a-time");
   await page.getByRole("button", { name: "Snooze", exact: true }).click();
