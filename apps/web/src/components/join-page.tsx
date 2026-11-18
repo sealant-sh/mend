@@ -378,7 +378,10 @@ function ReadyToJoin({
       {accept.isError ? (
         <Refused title={`Mend didn't add you to ${org}.`} error={accept.error} />
       ) : null}
-      <SetupActions note={`The invitation expires on ${dayOf(invitation.expiresAt)}.`}>
+      <SetupActions
+        divided={false}
+        note={`The invitation expires on ${dayOf(invitation.expiresAt)}.`}
+      >
         <Button
           type="button"
           disabled={busy}
@@ -440,7 +443,7 @@ function AlreadyMember({
       {switching.isError ? (
         <Refused title={`Mend didn't switch you to ${org}.`} error={switching.error} />
       ) : null}
-      <SetupActions>{action}</SetupActions>
+      <SetupActions divided={false}>{action}</SetupActions>
     </SetupFrame>
   );
 }

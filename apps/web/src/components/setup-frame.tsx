@@ -127,15 +127,23 @@ export function SetupActions({
   note,
   status,
   secondary,
+  divided = true,
   children,
 }: {
   readonly note?: ReactNode;
   readonly status?: string | null;
   readonly secondary?: ReactNode;
+  /** The hairline over the row on a desktop; off when a hairline already ends what is above. */
+  readonly divided?: boolean;
   readonly children: ReactNode;
 }) {
   return (
-    <div className="mt-6 lg:mt-8 lg:flex lg:items-center lg:justify-between lg:gap-4 lg:border-t lg:pt-7">
+    <div
+      className={cn(
+        "mt-6 lg:flex lg:items-center lg:justify-between lg:gap-4",
+        divided ? "lg:mt-8 lg:border-t lg:pt-7" : "lg:mt-6",
+      )}
+    >
       {note === undefined ? null : (
         <p className="text-row text-pretty text-muted-foreground max-lg:text-sm">{note}</p>
       )}
