@@ -24,6 +24,29 @@ const PHONE = { width: 390, height: 844 };
 const OTHER = { id: "0b6d1c55-8f0e-4c55-9b55-5f0a1c2f1144", name: "Verify Labs" };
 const visible = (locator) => locator.filter({ visible: true });
 
+const tagged = (message, code, httpStatus, tag) => ({
+  error: {
+    json: { message, code, data: { code, httpStatus, path: "organizations.create", tag } },
+  },
+});
+/** A create refused by name before it reaches the server: empty, or the name already taken. */
+const nameRefusal = (name) =>
+  name.trim() === ""
+    ? tagged("An organization needs a name.", -32022, 422, "OrganizationNameEmpty")
+    : name.trim().toLowerCase() === "taken"
+      ? tagged(
+          `There's already an organization called ${name.trim()}. Pick another name.`,
+          -32009,
+          409,
+          "OrganizationNameTaken",
+        )
+      : null;
+const inputOf = (request, index) => {
+  const body = request.postDataJSON() ?? {};
+  const entry = body[String(index)] ?? body;
+  return entry?.json ?? entry;
+};
+
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
@@ -64,28 +87,6 @@ export default async ({ page, web, capture, note }) => {
 
   // --- What the rewritten answers say -------------------------------------------------------
   const rewrite = { multi: false, member: false };
-  const tagged = (message, code, httpStatus, tag) => ({
-    error: {
-      json: { message, code, data: { code, httpStatus, path: "organizations.create", tag } },
-    },
-  });
-  /** A create refused by name before it reaches the server: empty, or the name already taken. */
-  const nameRefusal = (name) =>
-    name.trim() === ""
-      ? tagged("An organization needs a name.", -32022, 422, "OrganizationNameEmpty")
-      : name.trim().toLowerCase() === "taken"
-        ? tagged(
-            `There's already an organization called ${name.trim()}. Pick another name.`,
-            -32009,
-            409,
-            "OrganizationNameTaken",
-          )
-        : null;
-  const inputOf = (request, index) => {
-    const body = request.postDataJSON() ?? {};
-    const entry = body[String(index)] ?? body;
-    return entry?.json ?? entry;
-  };
   await page.route("**/trpc/**", async (route) => {
     const request = route.request();
     const paths = decodeURIComponent(new URL(request.url()).pathname.replace(/^\/trpc\//, ""))
@@ -256,7 +257,7 @@ export default async ({ page, web, capture, note }) => {
 
   // --- What home says after the reload a create or a leave ends with ------------------------
   rewrite.multi = false;
-  const arrive = async (stored, words, name) => {
+  const arrive = async (stored, words, captured) => {
     await page.evaluate(
       (value) => sessionStorage.setItem("mend-switched-organization", value),
       JSON.stringify(stored),
@@ -264,7 +265,7 @@ export default async ({ page, web, capture, note }) => {
     await open("/");
     await visible(page.getByText(words)).waitFor();
     note(`toast: ${words}`);
-    await both(name);
+    await both(captured);
   };
   await page.setViewportSize(DESKTOP);
   await arrive(

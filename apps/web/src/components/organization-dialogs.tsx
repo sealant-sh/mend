@@ -202,7 +202,8 @@ export function LeaveOrganizationDialog({
     roster: roster.status === "success" && viewerId !== "" ? roster.data : null,
     others,
     liveSessions:
-      inbox.status === "success" && viewerId !== "" ? liveSessionsOf(
+      inbox.status === "success" && viewerId !== ""
+        ? liveSessionsOf(
             inbox.data.map((row) => row.session),
             viewerId,
           )
