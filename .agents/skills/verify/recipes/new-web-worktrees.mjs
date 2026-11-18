@@ -209,6 +209,16 @@ export default async ({ page, web, capture, note }) => {
     `worktrees-new: New worktree… → ${fresh} → "Created ${fresh} on mend/${fresh}." and its row`,
   );
 
+  // A name already used in the project is refused in the dialog, which keeps what was typed.
+  await button("New worktree…").click();
+  await dialog().getByRole("textbox", { name: /^Name/ }).fill(fresh);
+  await dialog().getByRole("button", { name: "Create worktree" }).click();
+  const taken = dialog().getByText(/already used in this project|already exists/);
+  await taken.waitFor({ timeout: 60_000 });
+  await both("name-taken-desktop");
+  note(`worktrees-new, a name in use: "${(await taken.innerText()).replace(/\s+/g, " ")}"`);
+  await closeDialog("Cancel");
+
   // worktrees-menu: the "…", then a shell started in the new worktree.
   await menuOf(fresh);
   await menuitem("New session in this worktree").waitFor();
@@ -282,7 +292,13 @@ export default async ({ page, web, capture, note }) => {
   if (!removed) throw new Error(`${fresh} was never removed after its shell stopped`);
   await tableRow(fresh).waitFor({ state: "detached" });
   await both("removed-desktop");
-  note(`worktrees-remove: once the shell stopped, Remove worktree took ${fresh} and its session`);
+  // The list `mend worktrees` reads no longer has it.
+  const listed = await call("worktrees.list", { projectId: fixture.id });
+  const names = JSON.stringify(listed).includes(`"${fresh}"`);
+  if (names) throw new Error(`worktrees.list still lists ${fresh}`);
+  note(
+    `worktrees-remove: once the shell stopped, Remove worktree took ${fresh} and its session; worktrees.list (what mend worktrees reads) no longer lists it`,
+  );
 
   // worktrees-remove, never landed: the files not on origin, and Remove anyway offered.
   await menuOf(unlanded);
@@ -300,7 +316,7 @@ export default async ({ page, web, capture, note }) => {
   await dialog().getByRole("heading", { name: "Clear finished worktrees?" }).waitFor();
   await dialog().getByText(unlanded, { exact: true }).waitFor();
   await both("clear-desktop");
-  const listed = await dialog().getByRole("list", { name: "Finished worktrees" }).innerText();
+  const finishedList = await dialog().getByRole("list", { name: "Finished worktrees" }).innerText();
   await dialog().getByRole("button", { name: "Clear finished worktrees" }).click();
   const cleared = toast(/^(Removed \d+ worktrees?\.|Kept )/);
   await cleared.waitFor({ timeout: 120_000 });
@@ -310,7 +326,7 @@ export default async ({ page, web, capture, note }) => {
   await tableRow(unlanded).waitFor();
   await both("cleared-desktop");
   note(
-    `worktrees-clear-settled: listed ${listed.replace(/\s+/g, " ")}; the toast read "${clearedWords}"`,
+    `worktrees-clear-settled: listed ${finishedList.replace(/\s+/g, " ")}; the toast read "${clearedWords}"`,
   );
 
   // The phone: the list, a worktree's actions, New worktree, and Remove anyway.
