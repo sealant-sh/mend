@@ -589,6 +589,23 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/web-old/src/routes/skills.index.tsx`, `apps/api/src/`
 
+### skills.new-web-skills
+
+- **Map:** skills.md `skills-list`, `skills-web-create`, `skills-web-edit`, `skills-web-remove`
+- **Needs:** no session; no turn; web; GitHub reachable from the box
+- **Do:** Drive the recipe `new-web-skills`: Skills with nothing yet; New skill… creates one and
+  says each broken field's rule beside it; search and no matches; a skill whose name a project's
+  skill also has; Edit skill adds and removes a file, previews, asks before leaving, and is refused
+  when a second browser saved first; Remove skill…, and a skill already removed elsewhere.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; every skill and the
+  project the recipe made are removed at its end.
+- **Mode:** `scripted` (recipes/new-web-skills.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/skills/`, `apps/web/src/routes/_inbox.skills.tsx`,
+  `apps/web/src/routes/_inbox.skills.$skillId.tsx`, `apps/web/src/lib/skills.ts`,
+  `apps/web/src/lib/skill-removal.ts`, `apps/web/src/lib/use-skill-twins.ts`
+
 ### agent-memory.read
 
 - **Map:** agent-memory.md `memory-list`
