@@ -3,6 +3,7 @@ import {
   AddProjectMount,
   AddProjectServiceRecipe,
   AdoptProject,
+  CreateProjectByName,
   ProjectApplyDotfilesRequest,
   ProjectDefaultShellProfileRequest,
   ProjectAutomationRequest,
@@ -54,6 +55,10 @@ export const projectsRouter = router({
   adopt: procedure
     .input(input(AdoptProject))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.projects.adopt({ payload }))),
+  // A project with no repository yet, private to its creator (`POST /projects/new`).
+  createNew: procedure
+    .input(input(CreateProjectByName))
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.projects.createNew({ payload }))),
   // How far the caller's own adoption under this key got (`adopt`'s `adoptionId`).
   adoption: procedure
     .input(input(Schema.Struct({ id: Schema.String })))
