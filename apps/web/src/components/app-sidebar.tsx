@@ -38,6 +38,7 @@ import {
   INBOX_GROUPS,
   type InboxGroup,
   type InboxRow,
+  type QueuedRow,
   readAt,
   rowStatus,
   sharedWith,
@@ -48,6 +49,7 @@ import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
 
 import { InboxFilterMenu } from "./inbox-filters.tsx";
+import { QueuedSidebarRow } from "./queued-session-row.tsx";
 
 /**
  * The app's left sidebar on the desk (Doop "App sidebar", "Sidebar group", "Sidebar row"): the
@@ -318,6 +320,7 @@ function InboxGroups({
               group={group}
               label={label}
               rows={view.groups[group]}
+              queued={queuedIn(view, group)}
               open={folds[group]}
               onOpenChange={(open) => inboxFolds.set({ ...folds, [group]: open })}
               all={view.all}
@@ -331,11 +334,16 @@ function InboxGroups({
   );
 }
 
+/** The queued sessions a group lists before its sessions: Running's waiting, To review's failed. */
+export const queuedIn = (view: InboxView, group: InboxGroup): ReadonlyArray<QueuedRow> =>
+  group === "running" || group === "review" ? view.queued[group] : [];
+
 /** One group: its heading (name, count, fold) and its rows, the first five, then "Show N more". */
 function SidebarInboxGroup({
   group,
   label,
   rows,
+  queued,
   open,
   onOpenChange,
   all,
@@ -345,6 +353,7 @@ function SidebarInboxGroup({
   readonly group: InboxGroup;
   readonly label: string;
   readonly rows: ReadonlyArray<InboxRow>;
+  readonly queued: ReadonlyArray<QueuedRow>;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly all: ReadonlyArray<InboxRow>;
@@ -387,16 +396,23 @@ function SidebarInboxGroup({
               wait && "text-warning",
             )}
           >
-            {rows.length}
+            {rows.length + queued.length}
           </span>
         </CollapsibleTrigger>
         <CollapsibleContent>
           <SidebarGroupContent>
-            {rows.length === 0 ? (
+            {queued.length === 0 ? null : (
+              <SidebarMenu>
+                {queued.map((row) => (
+                  <QueuedSidebarRow key={row.id} row={row} now={now} />
+                ))}
+              </SidebarMenu>
+            )}
+            {rows.length === 0 && queued.length === 0 ? (
               <p className="py-2.5 pr-2 pl-4 text-row text-muted-foreground">
                 {EMPTY_GROUP[group]}
               </p>
-            ) : (
+            ) : rows.length === 0 ? null : (
               <SidebarMenu>
                 {shown.map((row) => (
                   <InboxRowItem

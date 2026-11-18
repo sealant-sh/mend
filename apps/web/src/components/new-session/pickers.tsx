@@ -26,7 +26,7 @@ import { type Agent, agentLoginWord, agentOf, type WorktreeTarget } from "#/lib/
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 
-import { COMPOSER_AGENTS, type Composer } from "./use-composer.ts";
+import { type Clone, COMPOSER_AGENTS, type Composer } from "./use-composer.ts";
 
 /**
  * The composer's three pickers, each as its desktop menu or popover body and its phone sheet
@@ -45,11 +45,14 @@ const searchClass = (size: Size) => (size === "touch" ? "h-11 text-lead" : undef
 /** The project picker: find a project by name. */
 export function ProjectChoices({
   projects,
+  clone,
   selectedId,
   onPick,
   size,
 }: {
   readonly projects: ReadonlyArray<ProjectDto>;
+  /** The project this browser is cloning, listed last with how far it got. */
+  readonly clone: Clone | null;
   readonly selectedId: string | undefined;
   readonly onPick: (id: string) => void;
   readonly size: Size;
@@ -73,6 +76,21 @@ export function ProjectChoices({
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
             </CommandItem>
           ))}
+          {clone === null ? null : (
+            <CommandItem
+              value={clone.id}
+              keywords={[clone.name]}
+              data-checked={clone.id === selectedId}
+              onSelect={() => onPick(clone.id)}
+              className={itemClass(size)}
+            >
+              <FolderGit2Icon aria-hidden className="text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">{clone.name}</span>
+              <span className="shrink-0 text-meta text-muted-foreground">
+                {clone.percent === null ? "Cloning" : `Cloning · ${clone.percent}%`}
+              </span>
+            </CommandItem>
+          )}
         </CommandGroup>
       </CommandList>
     </Command>

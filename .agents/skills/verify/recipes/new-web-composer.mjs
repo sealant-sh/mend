@@ -131,8 +131,13 @@ export default async ({ page, web, capture, note }) => {
     );
   await open("/");
 
-  // home-composer: home is the composer on the sheet, beside the sidebar.
+  // home-composer: home is the composer on the sheet, beside the sidebar. The stack may hold
+  // projects other drives adopted: start from verify-fixture, the one this recipe knows.
   await task().waitFor();
+  if ((await pick(/^Project: verify-fixture$/).count()) === 0) {
+    await pick(/^Project: /).click();
+    await page.getByRole("option", { name: "verify-fixture", exact: true }).click();
+  }
   if ((await task().getAttribute("placeholder")) !== "Describe a task or ask a question")
     throw new Error("the task field's placeholder is not the frame's");
   await pick(/^Project: verify-fixture$/).waitFor();

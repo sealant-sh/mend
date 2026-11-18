@@ -15,6 +15,7 @@ import {
   EmptyTitle,
 } from "@mend/ui/components/ui/empty";
 import { Popover, PopoverContent, PopoverTrigger } from "@mend/ui/components/ui/popover";
+import { Progress } from "@mend/ui/components/ui/progress";
 import {
   Sheet,
   SheetContent,
@@ -46,7 +47,7 @@ import {
   ProjectChoices,
   WorktreeChoices,
 } from "./pickers.tsx";
-import { COMPOSER_AGENTS, type Composer, useComposer } from "./use-composer.ts";
+import { type Clone, COMPOSER_AGENTS, type Composer, useComposer } from "./use-composer.ts";
 
 /** The message field on each layout, for `c` to put the cursor in the one on screen. */
 const PROMPT_IDS = ["new-session-task", "new-session-task-phone"] as const;
@@ -130,6 +131,13 @@ function Hint({
     );
   if (block !== null) return <p className="text-meta text-muted-foreground">{block.hint}</p>;
   if (noLogins(composer)) return null;
+  if (composer.queuedOn !== null)
+    return (
+      <p role="status" className="text-meta text-muted-foreground">
+        Queued. The session starts when {composer.queuedOn} finishes cloning. It's under Running in
+        the sidebar.
+      </p>
+    );
   if (composer.saveFailed !== null)
     return <p className="text-meta text-muted-foreground">{composer.saveFailed}</p>;
   if (phone) return null;
@@ -218,6 +226,80 @@ function NoProjects({ touch = false }: { readonly touch?: boolean }) {
   );
 }
 
+/** Where the session would start: the project picked, or the clone; null before any project. */
+const placeOf = (
+  composer: Composer,
+): { readonly id: string; readonly name: string; readonly defaultBranch: string | null } | null => {
+  if (composer.onClone && composer.clone !== null)
+    return { id: composer.clone.id, name: composer.clone.name, defaultBranch: null };
+  const { project } = composer;
+  return project === undefined
+    ? null
+    : { id: project.id, name: project.name, defaultBranch: project.defaultBranch };
+};
+
+/** How far the clone got, as a bar; a bar with no value while git hasn't said. */
+function CloneProgress({
+  clone,
+  className,
+}: {
+  readonly clone: Clone;
+  readonly className?: string;
+}) {
+  return (
+    <Progress
+      value={clone.percent}
+      aria-label={`${clone.name} cloned`}
+      className={cn("w-32 shrink-0 *:data-[slot=progress-track]:h-1", className)}
+    />
+  );
+}
+
+/** The cloning project is picked, beside other projects: the band says the session will wait. */
+function CloneBanner({
+  composer,
+  layout,
+}: {
+  readonly composer: Composer;
+  readonly layout: "inline" | "stacked";
+}) {
+  const { clone } = composer;
+  // On the first run the card says it instead (frame "First run · clone still running").
+  if (
+    !composer.onClone ||
+    clone === null ||
+    (composer.projects.length === 0 && layout === "inline")
+  )
+    return null;
+  return (
+    <Banner
+      tone="info"
+      layout={layout}
+      title={`${clone.name} is still cloning.`}
+      actions={<CloneProgress clone={clone} className={layout === "stacked" ? "w-full" : ""} />}
+    >
+      {clone.percent === null ? "" : `It's ${clone.percent}% done. `}You can start the session now.
+      It starts when the clone finishes.
+    </Banner>
+  );
+}
+
+/** The first run, while the first project clones: the card says the task can be written now. */
+function CloneNotice({ clone }: { readonly clone: Clone }) {
+  return (
+    <div className="mx-4.5 flex items-center gap-4 py-3 text-row">
+      <span className="min-w-0 flex-1">
+        {clone.name} is still cloning. You can write your task now. It starts when the clone
+        finishes.
+      </span>
+      <CloneProgress clone={clone} />
+      <span className="w-9 shrink-0 text-right text-meta text-muted-foreground tabular-nums">
+        {clone.percent === null ? "" : `${clone.percent}%`}
+      </span>
+    </div>
+  );
+}
+
 const sendBlocked = (composer: Composer): boolean =>
   composer.starting ||
   composer.promptProblem !== null ||
@@ -225,7 +307,8 @@ const sendBlocked = (composer: Composer): boolean =>
   blockOf(composer) !== null;
 
 function DesktopComposer({ composer }: { readonly composer: Composer }) {
-  const { project } = composer;
+  const { project, clone } = composer;
+  const place = placeOf(composer);
   const [open, setOpen] = useState<"project" | "worktree" | null>(null);
   const toggle = (picker: "project" | "worktree") => (next: boolean) =>
     setOpen(next ? picker : null);
@@ -236,13 +319,17 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
       </header>
       <WorkspacesRefusedBanner layout="inline" />
       <LoginBanner composer={composer} layout="inline" />
-      {project === undefined ? (
+      <CloneBanner composer={composer} layout="inline" />
+      {place === null ? (
         <NoProjects />
       ) : (
         <div className="flex flex-1 justify-center px-8 pt-40 pb-16">
           <div className="flex w-full max-w-conversation flex-col gap-2">
             <ComposerCard className="mx-0 w-full">
               {noLogins(composer) ? <NoLoginNotice /> : null}
+              {composer.onClone && clone !== null && composer.projects.length === 0 ? (
+                <CloneNotice clone={clone} />
+              ) : null}
               <PromptInput
                 id={PROMPT_IDS[0]}
                 placeholder={PLACEHOLDER}
@@ -257,16 +344,17 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
                     <Popover open={open === "project"} onOpenChange={toggle("project")}>
                       <PopoverTrigger
                         render={
-                          <PromptInputModel aria-label={`Project: ${project.name}`}>
+                          <PromptInputModel aria-label={`Project: ${place.name}`}>
                             <FolderGit2Icon aria-hidden className="size-4 text-muted-foreground" />
-                            <span className="truncate">{project.name}</span>
+                            <span className="truncate">{place.name}</span>
                           </PromptInputModel>
                         }
                       />
                       <PopoverContent align="start" className="w-72 p-0">
                         <ProjectChoices
                           projects={composer.projects}
-                          selectedId={project.id}
+                          clone={clone}
+                          selectedId={place.id}
                           size="default"
                           onPick={(id) => {
                             composer.pickProject(id);
@@ -293,28 +381,36 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
                         <AgentMenuItems composer={composer} />
                       </DropdownMenuContent>
                     </DropdownMenu>
-                    <Popover open={open === "worktree"} onOpenChange={toggle("worktree")}>
-                      <PopoverTrigger
-                        render={
-                          <PromptInputModel aria-label={`Worktree: ${worktreeWords(composer)}`}>
-                            <GitBranchIcon aria-hidden className="size-4 text-muted-foreground" />
-                            <span className="truncate">{worktreeWords(composer)}</span>
-                          </PromptInputModel>
-                        }
-                      />
-                      <PopoverContent align="start" className="w-90 gap-0 px-0 py-1">
-                        <WorktreeChoices
-                          project={project}
-                          target={composer.target}
-                          size="default"
-                          now={new Date()}
-                          onPick={(target) => {
-                            composer.pickTarget(target);
-                            setOpen(null);
-                          }}
+                    {project === undefined ? (
+                      // A project still cloning has no worktrees yet: the session gets a new one.
+                      <PromptInputModel aria-label="Worktree: New worktree" disabled>
+                        <GitBranchIcon aria-hidden className="size-4 text-muted-foreground" />
+                        <span className="truncate">New worktree</span>
+                      </PromptInputModel>
+                    ) : (
+                      <Popover open={open === "worktree"} onOpenChange={toggle("worktree")}>
+                        <PopoverTrigger
+                          render={
+                            <PromptInputModel aria-label={`Worktree: ${worktreeWords(composer)}`}>
+                              <GitBranchIcon aria-hidden className="size-4 text-muted-foreground" />
+                              <span className="truncate">{worktreeWords(composer)}</span>
+                            </PromptInputModel>
+                          }
                         />
-                      </PopoverContent>
-                    </Popover>
+                        <PopoverContent align="start" className="w-90 gap-0 px-0 py-1">
+                          <WorktreeChoices
+                            project={project}
+                            target={composer.target}
+                            size="default"
+                            now={new Date()}
+                            onPick={(target) => {
+                              composer.pickTarget(target);
+                              setOpen(null);
+                            }}
+                          />
+                        </PopoverContent>
+                      </Popover>
+                    )}
                   </div>
                 }
               />
@@ -341,16 +437,22 @@ function PhoneRow({
   value,
   onOpen,
   muted = false,
+  disabled = false,
+  meta,
 }: {
   readonly icon: ReactNode;
   readonly label: string;
   readonly value: ReactNode;
+  /** A short fact after the value: how far a clone got. */
+  readonly meta?: string;
   readonly onOpen: () => void;
   readonly muted?: boolean;
+  readonly disabled?: boolean;
 }) {
   return (
     <button
       type="button"
+      disabled={disabled}
       aria-label={`${label}: ${typeof value === "string" ? value : ""}`.trim()}
       onClick={onOpen}
       className="flex h-14 w-full items-center gap-3 border-t border-border px-4 text-left text-lead outline-none focus-visible:bg-muted [&_svg]:size-5 [&_svg]:shrink-0"
@@ -360,6 +462,7 @@ function PhoneRow({
       <span className={cn("min-w-0 flex-1 truncate", muted && "text-muted-foreground")}>
         {value}
       </span>
+      {meta === undefined ? null : <span className="shrink-0 text-muted-foreground">{meta}</span>}
       <ChevronRightIcon aria-hidden className="text-muted-foreground" />
     </button>
   );
@@ -396,6 +499,7 @@ function PhoneSheet({
 
 function PhoneComposer({ composer }: { readonly composer: Composer }) {
   const { project } = composer;
+  const place = placeOf(composer);
   const [open, setOpen] = useState<"project" | "agent" | "worktree" | null>(null);
   const close = (next: boolean) => {
     if (!next) setOpen(null);
@@ -427,7 +531,8 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
       </header>
       <WorkspacesRefusedBanner layout="stacked" />
       <LoginBanner composer={composer} layout="stacked" />
-      {project === undefined ? (
+      <CloneBanner composer={composer} layout="stacked" />
+      {place === null ? (
         <NoProjects touch />
       ) : (
         <>
@@ -449,7 +554,15 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
             <PhoneRow
               icon={<FolderGit2Icon aria-hidden />}
               label="Project"
-              value={project.name}
+              value={place.name}
+              {...(composer.onClone && composer.clone !== null
+                ? {
+                    meta:
+                      composer.clone.percent === null
+                        ? "Cloning"
+                        : `Cloning · ${composer.clone.percent}%`,
+                  }
+                : {})}
               onOpen={() => setOpen("project")}
             />
             <PhoneRow
@@ -463,10 +576,13 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
               icon={<GitBranchIcon aria-hidden />}
               label="Worktree"
               value={
-                composer.target._tag === "new"
-                  ? `New worktree from ${project.defaultBranch}`
-                  : composer.target.branch
+                composer.target._tag === "existing"
+                  ? composer.target.branch
+                  : place.defaultBranch === null
+                    ? "New worktree"
+                    : `New worktree from ${place.defaultBranch}`
               }
+              disabled={project === undefined}
               onOpen={() => setOpen("worktree")}
             />
           </div>
@@ -484,7 +600,8 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
             <div className="px-4">
               <ProjectChoices
                 projects={composer.projects}
-                selectedId={project.id}
+                clone={composer.clone}
+                selectedId={place.id}
                 size="touch"
                 onPick={(id) => {
                   composer.pickProject(id);
@@ -506,16 +623,18 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
                 : "The session starts in this worktree, beside any sessions already there."
             }
           >
-            <WorktreeChoices
-              project={project}
-              target={composer.target}
-              size="touch"
-              now={new Date()}
-              onPick={(target) => {
-                composer.pickTarget(target);
-                setOpen(null);
-              }}
-            />
+            {project === undefined ? null : (
+              <WorktreeChoices
+                project={project}
+                target={composer.target}
+                size="touch"
+                now={new Date()}
+                onPick={(target) => {
+                  composer.pickTarget(target);
+                  setOpen(null);
+                }}
+              />
+            )}
           </PhoneSheet>
         </>
       )}

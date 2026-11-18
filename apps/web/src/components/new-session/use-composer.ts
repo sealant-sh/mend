@@ -1,13 +1,15 @@
 import type { EffortLevel, ModelPicker } from "@mend/domain/workbench";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
+import { adoptionProgressOptions, clonePercent, useAdoptionAttempt } from "#/lib/adoptions";
 import {
   createSession,
   createSessionInWorktree,
   launchSessionStart,
   type ProjectDto,
+  queueSession,
   type SessionDefaultsDto,
 } from "#/lib/api";
 import { sessionPage } from "#/lib/later-pages";
@@ -26,7 +28,9 @@ import {
   startingProject,
   type StartSpec,
   type WorktreeTarget,
+  launchFields,
 } from "#/lib/new-session";
+import { signedInOptions } from "#/lib/sign-in";
 import { type StartCalls, startSession } from "#/lib/start-session";
 import { useTRPC } from "#/lib/trpc";
 
@@ -59,10 +63,27 @@ export type Logins =
       readonly none: boolean;
     };
 
+/**
+ * A project this browser started cloning, while its clone runs: the composer offers it, and a
+ * session started in it is queued (`queuedSessions.queue`) and starts when the clone finishes.
+ */
+export interface Clone {
+  /** The clone's key (`AdoptProject.adoptionId`), which the project picker lists it by. */
+  readonly id: string;
+  readonly name: string;
+  /** How far git got, as a whole percent; null before it says. */
+  readonly percent: number | null;
+}
+
 export interface Composer {
   readonly projects: ReadonlyArray<ProjectDto>;
-  /** Undefined only when no project exists yet. */
+  /** The project picked; undefined when no project exists yet, or the clone is picked. */
   readonly project: ProjectDto | undefined;
+  /** The project this browser is cloning, while it clones. */
+  readonly clone: Clone | null;
+  /** The clone is picked: a start queues the session on it. */
+  readonly onClone: boolean;
+  /** A project's id, or the clone's. */
   readonly pickProject: (id: string) => void;
   readonly agent: Agent;
   readonly pickAgent: (agent: Agent) => void;
@@ -85,6 +106,8 @@ export interface Composer {
   /** What went wrong starting the last task sent; the task is back in the field. */
   readonly startFailed: string | null;
   readonly starting: boolean;
+  /** The last session queued on the clone, while the composer is left as it is. */
+  readonly queuedOn: string | null;
   /** Send `text` as the session's first message; the field empties while it starts. */
   readonly start: (text: string) => void;
 }
@@ -113,7 +136,39 @@ export function useComposer(): Composer {
   );
   const automation = useQuery(trpc.platform.automation.queryOptions());
 
-  const project = startingProject(projects, lastProject.use());
+  // The clone this browser started, while it runs and its project isn't listed yet.
+  const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
+  const attempt = useAdoptionAttempt(viewer.userId);
+  const progressRead = useQuery({
+    ...adoptionProgressOptions(trpc, attempt?.id ?? ""),
+    enabled: attempt !== null,
+  });
+  const progress = progressRead.isPending || progressRead.isError ? null : progressRead.data;
+  const adoptedId = progress?.state === "adopted" ? progress.projectId : null;
+  // The clone finished: its project is listed from now on. Reading the list again is the server
+  // state catching up, so it runs as the clone's end is seen.
+  useEffect(() => {
+    if (adoptedId !== null)
+      void queryClient.invalidateQueries({ queryKey: trpc.projects.list.queryKey() });
+  }, [adoptedId, queryClient, trpc]);
+  const clone: Clone | null =
+    attempt === null ||
+    progressRead.isError ||
+    (progress !== null && progress.state !== "running") ||
+    projects.some((row) => row.id === progress?.projectId)
+      ? null
+      : { id: attempt.id, name: attempt.name, percent: clonePercent(progress) };
+  const [cloneFor, setCloneFor] = useState<string | null>(null);
+  // The clone is picked when chosen, or when it is the only project there is (the first run).
+  const onClone = clone !== null && (cloneFor === clone.id || projects.length === 0);
+  // Once the picked clone's project is listed, the composer moves onto it.
+  const lastId = lastProject.use();
+  const project = onClone
+    ? undefined
+    : startingProject(
+        projects,
+        cloneFor !== null && cloneFor === attempt?.id && adoptedId !== null ? adoptedId : lastId,
+      );
   const agent = startingAgent(defaults);
   const picker = pickerFor(catalogs, defaults, agent);
 
@@ -165,13 +220,27 @@ export function useComposer(): Composer {
     onError: (_error, request) => setPrompt(request.spec.prompt),
   });
 
-  const projectId = project?.id ?? "";
+  const [queuedOn, setQueuedOn] = useState<string | null>(null);
+  const queue = useMutation({
+    mutationFn: queueSession,
+    onSuccess: () => {
+      setQueuedOn(clone?.name ?? "the project");
+      void queryClient.invalidateQueries({ queryKey: trpc.queuedSessions.list.queryKey() });
+    },
+    onError: (_error, request) => setPrompt(request.launch.prompt ?? ""),
+  });
+
+  const projectId = onClone ? (clone?.id ?? "") : (project?.id ?? "");
+  // A project still cloning sets no policy of its own: the choice starts from the automation.
+  const landingOf = onClone ? { autoLand: "inherit" as const } : project;
   const landing =
-    project === undefined || automation.isPending || automation.isError
+    landingOf === undefined || automation.isPending || automation.isError
       ? null
-      : landingChoice(project, automation.data.effective.autoLand, keptFor(landFor, projectId));
+      : landingChoice(landingOf, automation.data.effective.autoLand, keptFor(landFor, projectId));
   const fast = picker.fastCapable && keptFor(fastFor, agent) === true;
-  const target = keptFor(targetFor, projectId) ?? { _tag: "new" };
+  const target = onClone
+    ? { _tag: "new" as const }
+    : (keptFor(targetFor, projectId) ?? { _tag: "new" });
 
   const logins: Logins =
     identity.isPending || identity.isError
@@ -185,7 +254,17 @@ export function useComposer(): Composer {
   return {
     projects,
     project,
-    pickProject: (id) => lastProject.set(id),
+    clone,
+    onClone,
+    pickProject: (id) => {
+      setQueuedOn(null);
+      if (clone !== null && id === clone.id) {
+        setCloneFor(id);
+        return;
+      }
+      setCloneFor(null);
+      lastProject.set(id);
+    },
     agent,
     pickAgent: (choice) => save({ ...defaults, harness: choice }),
     picker,
@@ -204,31 +283,50 @@ export function useComposer(): Composer {
       ? "Mend couldn't keep this choice for next time. It still applies to this session."
       : null,
     prompt,
-    setPrompt,
+    setPrompt: (value) => {
+      setPrompt(value);
+      if (value !== "") setQueuedOn(null);
+    },
     promptProblem: promptProblem(prompt),
-    startFailed: run.isError
-      ? `The session didn't start. ${run.error instanceof Error ? run.error.message : ""}`.trim()
-      : null,
-    starting: run.isPending,
+    startFailed:
+      run.isError || queue.isError
+        ? `The session didn't start. ${messageOf(run.error ?? queue.error)}`.trim()
+        : null,
+    starting: run.isPending || queue.isPending,
+    queuedOn,
     start: (text) => {
-      if (project === undefined || run.isPending || promptProblem(text) !== null) return;
+      if (run.isPending || queue.isPending || promptProblem(text) !== null) return;
+      const autoLand = landing === null ? null : landing._tag === "pick" ? landing.land : null;
+      const spec: StartSpec = {
+        agent,
+        prompt: text,
+        model: picker.model,
+        effort: picker.effort,
+        speed: fast ? "fast" : null,
+        autoLand,
+      };
+      if (onClone && clone !== null) {
+        run.reset();
+        queue.reset();
+        queue.mutate({
+          id: crypto.randomUUID(),
+          adoptionId: clone.id,
+          harness: agent,
+          autoLand,
+          launch: launchFields(spec),
+        });
+        return;
+      }
+      if (project === undefined) return;
       run.reset();
+      queue.reset();
       lastProject.set(project.id);
-      run.mutate({
-        projectId: project.id,
-        target,
-        spec: {
-          agent,
-          prompt: text,
-          model: picker.model,
-          effort: picker.effort,
-          speed: fast ? "fast" : null,
-          autoLand: landing === null ? null : landing._tag === "pick" ? landing.land : null,
-        },
-      });
+      run.mutate({ projectId: project.id, target, spec });
     },
   };
 }
+
+const messageOf = (error: unknown): string => (error instanceof Error ? error.message : "");
 
 /** The agents in the menu's order. */
 export const COMPOSER_AGENTS: ReadonlyArray<Agent> = AGENTS.map((row) => row.id);
