@@ -62,24 +62,35 @@ export default async ({ page, web, capture, note }) => {
     }
     return null;
   };
-  /** Codex asks before a command: the card, or a clear failure saying it ran without asking. */
-  const asks = async () => {
+  const replies = () => page.getByText(/^(deleted|kept)\.?$/i).filter({ visible: true });
+  /** Codex's one-word reply to the latest message: the turn is over. */
+  const replied = async (before) => {
+    await page.waitForFunction(
+      ([count]) =>
+        [...document.querySelectorAll("p")].filter((node) =>
+          /^(deleted|kept)\.?$/i.test(node.textContent?.trim() ?? ""),
+        ).length > count,
+      [before],
+      { timeout: TURN_MS, polling: 1_000 },
+    );
+    await turnOver().catch(() => undefined);
+  };
+  /**
+   * Codex asks before a command: the card, or a clear failure saying it replied without asking.
+   * A pending request hides Stop turn, so the turn's end is read from Codex's reply instead.
+   */
+  const asks = async (before) => {
     const asked = await Promise.race([
       approvalCard(page)
-        .waitFor({ timeout: ASK_MS })
+        .waitFor({ timeout: TURN_MS })
         .then(() => true),
-      page
-        .waitForTimeout(20_000)
-        .then(() => turnOver())
-        .then(() => false),
+      replied(before).then(() => false),
     ]);
-    if (!asked) throw new Error("Codex finished the turn without asking before acting");
+    if (!asked) throw new Error("Codex replied without asking before acting");
     return approvalCard(page).innerText();
   };
-  const lastReply = async () => {
-    const replies = page.getByText(/^(deleted|kept)\.?$/i).filter({ visible: true });
-    return (await replies.count()) > 0 ? replies.last().innerText() : "(no one-word reply)";
-  };
+  const lastReply = async () =>
+    (await replies().count()) > 0 ? replies().last().innerText() : "(no one-word reply)";
 
   await page.setViewportSize(DESKTOP);
   await page.goto(`${web}/`);
@@ -109,7 +120,7 @@ export default async ({ page, web, capture, note }) => {
 
   // Codex asks before deleting: the card in the composer, the marker in the thread, and the row
   // under Waiting on you.
-  const asked = await asks();
+  const asked = await asks(0);
   await visible(page.getByText(/· Waiting for your approval$/)).waitFor();
   const listed = await waiting(id)
     .first()
@@ -126,25 +137,25 @@ export default async ({ page, web, capture, note }) => {
   note(
     `Approve: the card went, the thread reads "${approvedLine}", and the row ${left === null ? "stayed under Waiting on you for 30s" : `left Waiting on you ${left}ms later, with no reload`}`,
   );
-  await turnOver();
+  await replied(0);
   note(`after the approval Codex replied "${await lastReply()}"`);
   await both("box-approval-approved");
 
   // A second approval, refused: Codex carries on without running it.
   await send(DELETE("refused-check.txt"));
-  await asks();
+  await asks(1);
   await visible(page.getByRole("button", { name: "Deny", exact: true })).click();
   await approvalCard(page).waitFor({ state: "hidden", timeout: 60_000 });
   const deniedLine = await visible(page.getByText(/^You denied/)).innerText();
   note(`Deny: the card went and the thread reads "${deniedLine}"`);
-  await turnOver();
+  await replied(1);
   note(`after the denial Codex replied "${await lastReply()}"`);
   await both("box-approval-denied");
 
   // Answered first on another device: a second browser, signed in as the same person, approves
   // while this one shows the card.
   await send(DELETE("second-check.txt"));
-  await asks();
+  await asks(2);
   const other = await page
     .context()
     .browser()
@@ -167,7 +178,7 @@ export default async ({ page, web, capture, note }) => {
   );
   await both("box-approval-answered-elsewhere");
   await visible(page.getByRole("button", { name: "Dismiss" })).click();
-  await turnOver();
+  await replied(2);
 
   // A question: Codex asks with its own tool in plan mode; Keep is picked and sent from the card.
   const question =
@@ -194,7 +205,8 @@ export default async ({ page, web, capture, note }) => {
   const askedQuestion = await Promise.race([
     asking.waitFor({ timeout: ASK_MS }).then(() => true),
     page
-      .waitForTimeout(20_000)
+      .waitForTimeout(30_000)
+      .then(() => stopTurn().waitFor({ timeout: 60_000 }))
       .then(() => turnOver())
       .then(() => false),
   ]).catch(() => false);
