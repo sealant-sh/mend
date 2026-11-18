@@ -160,7 +160,7 @@ const makeProcess = async (options: { readonly refuseCreate?: boolean } = {}) =>
 };
 type Process = Awaited<ReturnType<typeof makeProcess>>;
 
-const sql = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof repos>>) =>
+const onDatabase = <A, E>(effect: Effect.Effect<A, E, Layer.Success<typeof repos>>) =>
   reposRuntime.runPromise(effect.pipe(Effect.orDie));
 
 /** The project row an adoption writes once its clone is done. */
@@ -263,7 +263,7 @@ describe.skipIf(postgres.skip)("sessions started while their project clones, in 
         yield* (yield* SqlClient.SqlClient).unsafe(`CREATE DATABASE ${database}`);
       }).pipe(Effect.provide(adminLayer), Effect.scoped),
     );
-    await sql(
+    await onDatabase(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         for (const [, migration] of Object.entries(migrations).toSorted(([a], [b]) =>
@@ -424,7 +424,9 @@ describe.skipIf(postgres.skip)("sessions started while their project clones, in 
     );
     await process.runtime.runPromise(Effect.sleep(Duration.millis(50)));
     expect(process.started).toEqual([]);
-    expect(await sql(Effect.flatMap(QueuedSessionsRepo, (repo) => repo.byId(asked.id)))).toBeNull();
+    expect(
+      await onDatabase(Effect.flatMap(QueuedSessionsRepo, (repo) => repo.byId(asked.id))),
+    ).toBeNull();
     await process.runtime.dispose();
   });
 
@@ -453,7 +455,7 @@ describe.skipIf(postgres.skip)("sessions started while their project clones, in 
     await before.runtime.dispose();
     const starting = QueuedSessionId.make(crypto.randomUUID());
     const old = QueuedSessionId.make(crypto.randomUUID());
-    await sql(
+    await onDatabase(
       Effect.gen(function* () {
         // The clone that finished wrote its project just before the restart.
         yield* recordProject(finished.projectId, "finished-before-restart");
