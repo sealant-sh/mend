@@ -317,6 +317,7 @@ function CommandPaletteDemo() {
         placeholder="Search Northwind"
         scope="in Northwind"
         count={count === 1 ? "1 result" : `${count} results`}
+        empty={count === 0}
       >
         {groups.map(({ group, items }) => (
           <CommandPaletteGroup key={group} heading={group}>

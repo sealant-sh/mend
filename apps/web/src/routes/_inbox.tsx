@@ -3,6 +3,7 @@ import { cn } from "@mend/ui/lib/utils";
 import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
 
 import { AppSidebar, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH } from "#/components/app-sidebar";
+import { SearchProvider } from "#/components/command-palette";
 import { SwitchedToast } from "#/components/organization-menu";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
@@ -58,30 +59,33 @@ function InboxLayout() {
       style={{ "--sidebar-width": SIDEBAR_WIDTH, "--sidebar-width-icon": SIDEBAR_RAIL_WIDTH }}
       className="bg-canvas"
     >
-      {/* Under 1024px there is no sidebar: home is the inbox, and Settings holds the switchers. */}
-      <div className="contents max-lg:hidden">
-        <AppSidebar
-          organizationName={organizationName}
-          account={account}
-          inbox={inbox}
-          online={online}
-        />
-      </div>
-      <SidebarInset className="min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
-        {home ? (
-          <PhoneInbox
+      {/* Search from anywhere: ⌘K, the sidebar's field, the phone inbox's search. */}
+      <SearchProvider organizationName={organizationName} inbox={inbox}>
+        {/* Under 1024px there is no sidebar: home is the inbox, and Settings holds the switchers. */}
+        <div className="contents max-lg:hidden">
+          <AppSidebar
             organizationName={organizationName}
+            account={account}
             inbox={inbox}
             online={online}
-            className="lg:hidden"
           />
-        ) : null}
-        <div className={cn("flex min-h-0 flex-1 flex-col", home && "max-lg:hidden")}>
-          <InSheet>
-            <Outlet />
-          </InSheet>
         </div>
-      </SidebarInset>
+        <SidebarInset className="min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
+          {home ? (
+            <PhoneInbox
+              organizationName={organizationName}
+              inbox={inbox}
+              online={online}
+              className="lg:hidden"
+            />
+          ) : null}
+          <div className={cn("flex min-h-0 flex-1 flex-col", home && "max-lg:hidden")}>
+            <InSheet>
+              <Outlet />
+            </InSheet>
+          </div>
+        </SidebarInset>
+      </SearchProvider>
       <Toaster />
       <SwitchedToast />
     </SidebarProvider>

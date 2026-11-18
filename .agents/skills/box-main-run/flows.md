@@ -653,6 +653,26 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.skills.$skillId.tsx`, `apps/web/src/lib/skills.ts`,
   `apps/web/src/lib/skill-removal.ts`, `apps/web/src/lib/use-skill-twins.ts`
 
+### search.new-web-search
+
+- **Map:** none yet: search from anywhere is new in the new web app (SLNT-1142), and the map
+  describes the app people use until cut-over.
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-search`: Ctrl K from the home composer, the Skills page and a
+  session page; nothing typed; a query that finds sessions, a project and a skill; one that finds
+  nothing; arrows, Enter and Escape; the sidebar's Search field and its rail's button; New session,
+  Add project… and Collapse/Expand sidebar; skills that fail to read, then Try again; on a phone,
+  the inbox's search screen with Clear, Cancel and the keyboard's search key.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the projects and skills
+  the recipe made are removed at its end.
+- **Mode:** `scripted` (recipes/new-web-search.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/command-palette.tsx`,
+  `apps/web/src/components/phone-search.tsx`, `apps/web/src/components/search-parts.tsx`,
+  `apps/web/src/lib/search.ts`, `apps/web/src/lib/search-keys.ts`, `apps/web/src/lib/fuzzy.ts`,
+  `packages/ui/src/components/command-palette.tsx`
+
 ### agent-memory.read
 
 - **Map:** agent-memory.md `memory-list`

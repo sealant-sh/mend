@@ -52,6 +52,7 @@ import type { InboxState, InboxView } from "#/lib/use-inbox";
 import { useRowActions } from "#/lib/use-row-actions";
 
 import { OfflineBand, queuedIn } from "./app-sidebar.tsx";
+import { useOpenSearch } from "./command-palette.tsx";
 import { filterWords, InboxFilterSheet } from "./inbox-filters.tsx";
 import { QueuedPhoneRow } from "./queued-session-row.tsx";
 import { PhoneRowActions } from "./row-actions.tsx";
@@ -75,6 +76,7 @@ export function PhoneInbox({
   readonly className?: string;
 }) {
   const host = useServerHost();
+  const openSearch = useOpenSearch();
   // The filter row scrolls away under the header; the header then names the filters itself.
   const filterRow = useRef<HTMLDivElement>(null);
   const filtersInView = useInView(filterRow);
@@ -92,10 +94,15 @@ export function PhoneInbox({
               : `${organizationName} · ${words.project} · ${words.whose}`}
           </p>
         </div>
-        {/* Search arrives with the command palette; until then it is drawn, not offered. */}
-        <span aria-hidden className="grid size-11 place-items-center text-foreground">
-          <SearchIcon className="size-5.5" />
-        </span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-touch"
+          aria-label="Search"
+          onClick={openSearch}
+        >
+          <SearchIcon aria-hidden className="size-5.5" />
+        </Button>
         <Link
           to="/new"
           aria-label="New session"
