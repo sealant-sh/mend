@@ -770,6 +770,27 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.skills.$skillId.tsx`, `apps/web/src/lib/skills.ts`,
   `apps/web/src/lib/skill-removal.ts`, `apps/web/src/lib/use-skill-twins.ts`
 
+### skills.new-web-project-skills
+
+- **Map:** skills.md `skills-list`, `skills-web-create`, `skills-web-edit`, `skills-web-remove`, in
+  a project's library; `skills-project-inherit` is dropped (no "Use global skills" switch)
+- **Needs:** no session; no turn; web; GitHub reachable from the box
+- **Do:** Drive the recipe `new-web-project-skills`: a project's Skills tab with nothing yet; New
+  skill… from an empty skill, then each rule (nothing picked to copy, a name the project has); a
+  copy of one of your skills under its own name; your skill and the project's each saying which is
+  used, and linking to the other; Edit skill in place of the project page and Save; Remove skill…,
+  which says yours is used again; fixtures for a reader who may not change them and for a project
+  being removed; a list that fails to load; the phone.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; every skill and the
+  project the recipe made are removed at its end.
+- **Mode:** `scripted` (recipes/new-web-project-skills.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/project/skills-tab.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.skills.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.skills.$skillId.tsx`,
+  `apps/web/src/lib/project-skills.ts`, `apps/web/src/lib/use-project-skill-owner.ts`
+
 ### search.new-web-search
 
 - **Map:** none yet: search from anywhere is new in the new web app (SLNT-1142), and the map
