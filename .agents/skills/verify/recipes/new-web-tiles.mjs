@@ -334,7 +334,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const draft = withNew[1];
   await tabOf(draft).focus();
   await page.keyboard.press("Delete");
-  await page.locator(`[data-tab="${draft}"]`).waitFor({ state: "detached" });
+  await page.locator(`[data-tab="${draft}"]`).first().waitFor({ state: "detached" });
   note("Delete on the New session tab closed it");
 
   // Start session in a New session tab: the session starts in tiles-ws and the tab becomes its
@@ -343,11 +343,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await tileOf(tabA).getByRole("button", { name: "Open a view" }).click();
   await page.getByRole("menuitem", { name: "New session in this workspace" }).click();
   await page.getByRole("heading", { name: "New session", level: 2 }).waitFor();
-  const draftAgain = (
-    await page
-      .locator("[data-tile] [data-tab]")
-      .evaluateAll((tabs) => tabs.map((t) => t.dataset.tab))
-  ).find((tab) => tab.startsWith("new:"));
+  const beforeStart = await page
+    .locator("[data-tile] [data-tab]")
+    .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
+  const draftAt = beforeStart.findIndex((tab) => tab.startsWith("new:"));
+  const draftAgain = beforeStart[draftAt] ?? "";
   const pageBefore = page.url();
   await page
     .getByRole("button", { name: /^Agent and model: / })
@@ -357,16 +357,19 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.keyboard.press("Escape");
   await page.getByRole("textbox", { name: "Task" }).filter({ visible: true }).fill("Say ready.");
   await page.getByRole("button", { name: "Start session" }).filter({ visible: true }).click();
-  await page.locator(`[data-tab="${draftAgain}"]`).waitFor({ state: "detached", timeout: 30_000 });
+  await page
+    .locator(`[data-tab="${draftAgain}"]`)
+    .first()
+    .waitFor({ state: "detached", timeout: 30_000 });
   const afterStart = await page
     .locator("[data-tile] [data-tab]")
     .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
-  const startedHere = afterStart[afterStart.indexOf(tabA) + 1] ?? "";
+  const startedHere = afterStart[draftAt] ?? "";
   if (!startedHere.startsWith("session:") || [tabA, tabB].includes(startedHere))
     throw new Error(`after Start session the tabs read ${afterStart.join(", ")}`);
   if (page.url() !== pageBefore) throw new Error(`Start session left the page for ${page.url()}`);
   note(
-    `Start session in the New session tab: its tab became ${startedHere}'s, in the same place, and the page stayed at ${new URL(pageBefore).pathname}`,
+    `Start session in the New session tab: its tab became ${startedHere}'s, in the same place (tab ${draftAt + 1}), and the page stayed at ${new URL(pageBefore).pathname}`,
   );
   await both("new-session-started");
   await client(
