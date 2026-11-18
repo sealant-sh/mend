@@ -1969,10 +1969,14 @@ const stopSessions = async (
       `${green("✓")} stopped · ${session.harness} · ${dim(session.id.slice(0, 8))} · ${session.branch}`,
     );
     // The workspace stops with the last session running in it; another session running there
-    // keeps it up, and its Services with it: say which session, and what still holds it.
+    // keeps it up, and its Services with it: say which session, and what still holds it. Both
+    // reads say nothing when they fail (`request` throws where `api` would exit): a server from
+    // before the preview answers it 404, and the stop has already happened.
     const [after, preview] = await Promise.all([
-      api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`).catch(() => null),
-      api<StopPreviewDto>(config, "GET", `/sessions/${session.id}/stop-preview`).catch(() => null),
+      request<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`).catch(() => null),
+      request<StopPreviewDto>(config, "GET", `/sessions/${session.id}/stop-preview`).catch(
+        () => null,
+      ),
     ]);
     const keptBy = preview === null ? null : keptRunningLineOf(preview);
     if (keptBy !== null) say(amber("  " + keptBy));

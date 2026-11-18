@@ -63,6 +63,38 @@ describe("Mend CLI session selection", spawning, () => {
     }
   });
 
+  it("stop names the session that keeps the workspace running, and says nothing more to a server without the preview", async () => {
+    const preview = {
+      sessionId: session.id,
+      workspace: "keeps-running",
+      runningSessions: [{ title: "Write tests for retry", ownerName: "Ada Lovelace" }],
+      services: [],
+    };
+    // A server from before the preview answers it 404: the stop has happened, and the CLI says so.
+    for (const answered of [preview, null]) {
+      const fake = await startFakeMend((request, response) => {
+        if (retained(request, response)) return;
+        if (request.url === `/api/sessions/${session.id}/stop`) json(response, session);
+        else if (request.url === `/api/sessions/${session.id}/stop-preview` && answered !== null)
+          json(response, answered);
+        else response.writeHead(404).end();
+      });
+      const cli = startCli(fake.url, ["stop"]);
+      try {
+        expect(await cli.exited, cli.stderr()).toEqual({ kind: "exit", code: 0 });
+        expect(cli.stdout()).toContain("stopped");
+        if (answered === null) expect(cli.stdout()).not.toContain("keeps running");
+        else
+          expect(cli.stdout()).toContain(
+            "the workspace keeps running for Write tests for retry (Ada Lovelace)",
+          );
+      } finally {
+        cli.child.kill("SIGKILL");
+        await fake.close();
+      }
+    }
+  });
+
   it("words a refusal that carries no sentence, never the call, the status or the tag", async () => {
     for (const [status, body] of [
       [409, { _tag: "SessionNotLive", id: session.id }],
