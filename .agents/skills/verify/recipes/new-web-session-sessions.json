@@ -1,0 +1,97 @@
+[
+  {
+    "name": "01-record",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "session-record",
+      "--",
+      "sh",
+      "-c",
+      "printf 'verified\\n' > VERIFY.md; printf 'the record ran\\n'"
+    ]
+  },
+  {
+    "name": "02-failed",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "session-failed",
+      "--",
+      "sh",
+      "-c",
+      "printf 'half\\n' > HALF.md; exit 3"
+    ]
+  },
+  {
+    "name": "03-turn",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "session-turn",
+      "--",
+      "sh",
+      "-c",
+      "printf 'turn\\n' > TURN.md"
+    ]
+  },
+  {
+    "name": "04-credit",
+    "run": ["mend", "run", "--project", "verify-fixture", "--name", "session-credit", "--", "true"]
+  },
+  {
+    "name": "05-start-failed",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "session-start-failed",
+      "--",
+      "true"
+    ]
+  },
+  {
+    "name": "06-starting",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "session-starting",
+      "--",
+      "true"
+    ]
+  },
+  {
+    "name": "07-running",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "session-running",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "08-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]
