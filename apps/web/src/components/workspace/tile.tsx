@@ -2,6 +2,8 @@ import { Tabs, TabsContent, TabsList } from "@mend/ui/components/ui/tabs";
 import { cn } from "@mend/ui/lib/utils";
 import { Fragment, type ReactNode } from "react";
 
+import type { TileSize } from "./tile-tab";
+
 /** One tab of a tile: what its strip shows, and what the tile's body shows while it is active. */
 export interface TileTabEntry {
   readonly value: string;
@@ -20,7 +22,8 @@ export interface TileTabEntry {
  * tile's turns grey. `actions` sits at the strip's right end.
  *
  * `size="touch"` is the phone's strip (Doop "Phone tab strip"), used under 1024px: 44px tabs whose
- * labels stay whole, the strip scrolling sideways instead.
+ * labels stay whole, the strip scrolling sideways instead. `size="auto"` is each by the window's
+ * width.
  *
  * Still to come: the "+" view menu after the tabs and the maximise button (PR 15), the active
  * tab's "…" (PR 13) in `actions`, and dropping a dragged tab on the tile (PR 15).
@@ -41,7 +44,7 @@ export function Tile({
   readonly active: string;
   readonly onActiveChange?: (value: string) => void;
   readonly focused?: boolean;
-  readonly size?: "default" | "touch";
+  readonly size?: TileSize;
   readonly actions?: ReactNode;
   readonly className?: string;
 }) {
@@ -62,7 +65,11 @@ export function Tile({
       <div
         className={cn(
           "box-content flex shrink-0 items-stretch border-b",
-          size === "touch" ? "h-11 pr-1 pl-1.5" : "h-tab-strip pr-2 pl-2.5",
+          size === "touch"
+            ? "h-11 pr-1 pl-1.5"
+            : size === "auto"
+              ? "h-tab-strip pr-2 pl-2.5 max-lg:h-11 max-lg:pr-1 max-lg:pl-1.5"
+              : "h-tab-strip pr-2 pl-2.5",
         )}
       >
         <TabsList
@@ -70,7 +77,11 @@ export function Tile({
           aria-label={label}
           className={cn(
             "h-full min-w-0 items-stretch gap-0.5 rounded-none p-0",
-            size === "touch" ? "overflow-x-auto [scrollbar-width:none]" : "overflow-hidden",
+            size === "touch"
+              ? "overflow-x-auto [scrollbar-width:none]"
+              : size === "auto"
+                ? "overflow-hidden max-lg:overflow-x-auto max-lg:[scrollbar-width:none]"
+                : "overflow-hidden",
           )}
         >
           {tabs.map((entry) => (

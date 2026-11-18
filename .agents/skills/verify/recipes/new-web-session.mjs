@@ -171,19 +171,22 @@ export default async ({ page, web, capture, note }) => {
     [ids["session-starting"]]: empty(),
   };
   const sessionPatches = {
-    [ids["session-turn"]]: { status: "completed" },
-    [ids["session-credit"]]: { status: "failed", summary: null },
+    [ids["session-turn"]]: { status: "completed", harness: "claude" },
+    [ids["session-credit"]]: { status: "failed", summary: null, harness: "claude" },
+    [ids["session-running"]]: { status: "running", harness: "claude" },
     [ids["session-start-failed"]]: {
       status: "failed",
       summary:
         "pnpm couldn't download @northwind/ledger-client. Check the registry token in verify-fixture's workspace settings, then try again.",
       sealantRunId: null,
+      harness: "claude",
       dropAgent: true,
     },
     [ids["session-starting"]]: {
       status: "starting",
       summary: "building the workspace image · step 3/12",
       sealantRunId: null,
+      harness: "claude",
       dropAgent: true,
     },
   };
@@ -191,7 +194,8 @@ export default async ({ page, web, capture, note }) => {
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
     const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
-    const inputs = JSON.parse(url.searchParams.get("input") ?? "{}");
+    // The app's tRPC client sends every call as a POST: the inputs are in the body.
+    const inputs = JSON.parse(route.request().postData() ?? url.searchParams.get("input") ?? "{}");
     const mine = paths.map((path, index) => {
       const id = inputs[String(index)]?.json?.id;
       if (path.startsWith("sessions.history") && failReads) return "fail";
@@ -459,6 +463,8 @@ const patchDetail = (data, patch) => {
   json.session.status = patch.status;
   if ("summary" in patch) json.session.summary = patch.summary;
   if ("sealantRunId" in patch) json.session.sealantRunId = patch.sealantRunId;
+  // The fixtures are an agent's turns: the session reads as Claude Code's, not a command's.
+  if ("harness" in patch) json.session.harness = patch.harness;
   if (patch.dropAgent === true) {
     json.currentAgent = null;
     json.processes = [];

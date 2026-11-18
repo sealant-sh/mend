@@ -3,6 +3,9 @@ import { TabsTrigger } from "@mend/ui/components/ui/tabs";
 import { cn } from "@mend/ui/lib/utils";
 import type { ReactNode } from "react";
 
+/** A desktop strip, the phone's (44px tabs, labels whole), or each by the window's width. */
+export type TileSize = "default" | "touch" | "auto";
+
 /** What a tab holds: a session's conversation (its lump), or a workspace view (its icon). */
 export type TileTabKind =
   | {
@@ -23,7 +26,8 @@ export type TileTabKind =
     };
 
 /**
- * One tab in a Tile's strip, or in the phone's strip (`size="touch"`): Doop "Tile tab". A session
+ * One tab in a Tile's strip, or in the phone's strip (`size="touch"`): Doop "Tile tab". `size="auto"`
+ * is the desktop tab from 1024px and the phone's under it, for a sheet that lays out either way. A session
  * tab shows its lump (shape is the status, colour the pull request, amber while it waits on you)
  * and its title; a view tab its icon and name, with its facts. The active tab of the focused tile
  * has the cobalt underline; the Tile turns it grey when the tile loses focus.
@@ -40,7 +44,7 @@ export function TileTab({
 }: TileTabKind & {
   readonly value: string;
   readonly label: string;
-  readonly size?: "default" | "touch";
+  readonly size?: TileSize;
   readonly className?: string;
 }) {
   return (
@@ -55,9 +59,12 @@ export function TileTab({
         "hover:text-foreground data-active:bg-transparent data-active:text-foreground dark:data-active:border-transparent dark:data-active:bg-transparent",
         "after:inset-x-2.5! after:bottom-[-1px]! after:h-0.5 after:rounded-full after:bg-[var(--tile-accent,var(--color-ring))] data-active:after:opacity-100",
         "focus-visible:ring-inset",
-        tab.kind === "session" && "min-w-30 shrink",
         // The phone strip scrolls sideways and clips what hangs below it: the underline sits inside.
         size === "touch" && "h-11 text-lead after:bottom-0!",
+        size === "auto" && "max-lg:h-11 max-lg:text-lead max-lg:after:bottom-0!",
+        // A session's title gives way first on a desktop strip; on the phone's, labels stay whole.
+        tab.kind === "session" && size === "default" && "min-w-30 shrink",
+        tab.kind === "session" && size === "auto" && "lg:min-w-30 lg:shrink",
         className,
       )}
     >
@@ -66,20 +73,38 @@ export function TileTab({
           status={tab.status}
           pr={tab.pr}
           moving
-          className={size === "touch" ? "size-3.75" : "size-3.5"}
+          className={
+            size === "touch"
+              ? "size-3.75"
+              : size === "auto"
+                ? "size-3.5 max-lg:size-3.75"
+                : "size-3.5"
+          }
         />
       ) : (
         <span
           aria-hidden
           className={cn(
             "flex shrink-0 text-muted-foreground",
-            size === "touch" ? "[&_svg]:size-4" : "[&_svg]:size-3.5",
+            size === "touch"
+              ? "[&_svg]:size-4"
+              : size === "auto"
+                ? "[&_svg]:size-3.5 max-lg:[&_svg]:size-4"
+                : "[&_svg]:size-3.5",
           )}
         >
           {tab.icon}
         </span>
       )}
-      <span className={cn("min-w-0 leading-tight", size === "default" && "truncate")}>{label}</span>
+      <span
+        className={cn(
+          "min-w-0 leading-tight",
+          size === "default" && "truncate",
+          size === "auto" && "lg:truncate",
+        )}
+      >
+        {label}
+      </span>
       {tab.kind === "view" && tab.added !== undefined ? (
         <span className="font-mono text-2xs font-normal text-success">+{tab.added}</span>
       ) : null}

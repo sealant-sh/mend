@@ -37,7 +37,7 @@ function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
   const { session, detail } = facts;
   const conversation = `session:${session.id}`;
   const [active, setActive] = useState(conversation);
-  const tab = (size: "default" | "touch"): TileTabEntry => ({
+  const tab: TileTabEntry = {
     value: conversation,
     tab: (
       <TileTab
@@ -47,11 +47,11 @@ function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
         pr={lumpPrOf(detail.landings)}
         statusWords={STATUS_WORDS[session.status]}
         label={facts.title}
-        size={size}
+        size="auto"
       />
     ),
     body: <ConversationTile facts={facts} />,
-  });
+  };
   return (
     <div className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))]">
       <WorkspaceHeader
@@ -74,17 +74,8 @@ function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
         back={BACK_TO_INBOX}
         className="lg:hidden"
       />
-      <div className="flex min-h-0 flex-1 max-lg:hidden">
-        <Tile label="Tile 1" tabs={[tab("default")]} active={active} onActiveChange={setActive} />
-      </div>
-      <div className="flex min-h-0 flex-1 lg:hidden">
-        <Tile
-          label="Tabs"
-          size="touch"
-          tabs={[tab("touch")]}
-          active={active}
-          onActiveChange={setActive}
-        />
+      <div className="flex min-h-0 flex-1">
+        <Tile label="Tabs" size="auto" tabs={[tab]} active={active} onActiveChange={setActive} />
       </div>
     </div>
   );
