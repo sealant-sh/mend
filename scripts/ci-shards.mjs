@@ -37,6 +37,7 @@ const shards = {
     "@mend/network",
     "@mend/oxlint-plugin-mend",
     "@mend/t3-contracts",
+    "@mend/ui",
     "@mend/workspace-ssh",
   ],
 };

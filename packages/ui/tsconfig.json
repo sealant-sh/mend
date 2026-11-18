@@ -1,0 +1,17 @@
+{
+  "extends": "@mend/typescript/web.json",
+  "compilerOptions": {
+    "types": ["vite/client"],
+    "paths": {
+      "@mend/ui/*": ["./src/*"]
+    }
+  },
+  "include": [
+    "src/**/*.ts",
+    "src/**/*.tsx",
+    "gallery/**/*.ts",
+    "gallery/**/*.tsx",
+    "test/**/*.ts",
+    "package.json"
+  ]
+}

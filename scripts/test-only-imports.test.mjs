@@ -58,6 +58,13 @@ const allowed = [
     mention: "packages/sessions/test/doppler-helper.test.ts",
     reason: "matched against test reports, never read",
   },
+  // The lint config turns one rule off for the kit's tests; only oxlint reads the glob, and lint
+  // runs in the static job and locally, not in the trimmed lanes.
+  {
+    file: ".oxlintrc.json",
+    mention: "packages/ui/**/*.test.{ts",
+    reason: "a lint override's glob, read only by oxlint",
+  },
 ];
 
 // An export's target paths, through any nesting of conditions and arrays.
