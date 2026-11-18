@@ -18,22 +18,35 @@ import { openReviewQuery } from "#/lib/review-open";
  *
  * It opens the review with this browser tab's key, as the Change view does, so the view finds the
  * same slice already open. The key lives in the tab's sessionStorage, so this runs in the browser
- * only. A change no session has worked in has no session to open, and says so.
+ * only. A change no session has worked in has no session to open (the server opens no review of
+ * it), and says so.
  */
 export const Route = createFileRoute("/_inbox/changes/$changeId")({
   ssr: false,
   loader: async ({ context: { queryClient, trpc }, params, location }) => {
-    const opened = await queryClient.ensureQueryData(openReviewQuery(params.changeId));
-    const review = await queryClient.ensureQueryData(
-      trpc.changes.reviewDiff.queryOptions({ id: params.changeId, sliceId: opened.slice.id }),
-    );
-    if (review.change.sessionId !== null)
-      throw redirect({
+    const toSession = (sessionId: string) =>
+      redirect({
         to: "/sessions/$sessionId/$view",
-        params: { sessionId: review.change.sessionId, view: "change" },
+        params: { sessionId, view: "change" },
         hash: location.hash,
         replace: true,
       });
+    const opened = await queryClient
+      .ensureQueryData(openReviewQuery(params.changeId))
+      .catch((cause: unknown) => ({ refused: cause }));
+    if ("refused" in opened) {
+      // The server opens no review of a worktree no session has worked in: read the change as it
+      // is to tell that apart from a failure, which the error screen shows.
+      const live = await queryClient.fetchQuery(
+        trpc.changes.diff.queryOptions({ id: params.changeId }),
+      );
+      if (live.change.sessionId === null) return;
+      throw opened.refused;
+    }
+    const review = await queryClient.ensureQueryData(
+      trpc.changes.reviewDiff.queryOptions({ id: params.changeId, sliceId: opened.slice.id }),
+    );
+    if (review.change.sessionId !== null) throw toSession(review.change.sessionId);
   },
   errorComponent: RouteErrorScreen,
   component: NoSessionYet,
