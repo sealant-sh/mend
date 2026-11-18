@@ -11,6 +11,8 @@ import { laterPage } from "#/lib/later-pages";
 import { lastProject } from "#/lib/new-session";
 import { usePhone } from "#/lib/phone";
 import { repositoryWords, visibleToWords } from "#/lib/projects";
+import { resourcesQuery } from "#/lib/resources";
+import { resourceCount } from "#/lib/resources-model";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
@@ -43,7 +45,7 @@ export interface ProjectTab {
  */
 export const projectTabs = (
   detail: ProjectDetailDto,
-  counts: { readonly skills: number | undefined },
+  counts: { readonly skills: number | undefined; readonly resources?: number | undefined },
 ): ReadonlyArray<ProjectTab> => {
   const id = detail.project.id;
   return [
@@ -61,9 +63,9 @@ export const projectTabs = (
     },
     {
       label: "Resources",
-      link: laterPage(`projects/${id}/resources`),
+      link: { to: "/projects/$projectId/resources", params: { projectId: id } },
       path: `/projects/${id}/resources`,
-      count: undefined,
+      count: counts.resources,
     },
     {
       label: "Skills",
@@ -203,11 +205,14 @@ export function ProjectFrame({
   const { project } = detail;
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
   const skills = useQuery(trpc.skills.forProject.queryOptions({ id: project.id }));
+  // The Resources tab reads the same list, so its count costs nothing more there.
+  const resources = useQuery(resourcesQuery(trpc, project.id, null));
   const [removing, setRemoving] = useState(false);
   const organizationName = viewer.organization.name;
   // A count not read yet, or that couldn't be read, shows nothing; the Skills tab says why.
   const tabs = projectTabs(detail, {
     skills: skills.isPending || skills.isError ? undefined : skills.data.length,
+    resources: resources.isPending || resources.isError ? undefined : resourceCount(resources.data),
   });
   const actions: ProjectActions = {
     setUp: () => onSetupOpenChange(true),
@@ -222,7 +227,7 @@ export function ProjectFrame({
   const now = useMinute().getTime();
 
   return (
-    <div className="flex min-w-0 flex-col max-lg:min-h-dvh lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))] lg:flex-none">
+    <div className="flex min-w-0 flex-col max-lg:min-h-dvh lg:min-h-0 lg:flex-1">
       <header className="shrink-0 border-b bg-background max-lg:hidden">
         <div className="flex h-header items-center gap-2 pr-2.5 pl-3">
           <SidebarToggle />

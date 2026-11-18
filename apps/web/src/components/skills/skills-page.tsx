@@ -79,7 +79,7 @@ export function SkillsPage() {
   return (
     <div
       className={cn(
-        "flex min-w-0 flex-col max-lg:min-h-dvh lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))] lg:flex-none",
+        "flex min-w-0 flex-col max-lg:min-h-dvh lg:min-h-0 lg:flex-1",
         // Room for the tab bar, which only the list has.
         openId === undefined && "max-lg:pb-14",
       )}

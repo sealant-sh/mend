@@ -407,7 +407,7 @@ function SessionSheet({
 
   return (
     // Exactly the sheet's height, never the content's: the thread scrolls inside its tile.
-    <div className="flex h-dvh min-w-0 flex-none flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))]">
+    <div className="flex h-dvh min-w-0 flex-none flex-col lg:h-auto lg:min-h-0 lg:flex-1">
       <WorkspaceHeaderRow facts={facts} workspace={workspace} />
       <PhoneHeader
         title={facts.worktreeName}

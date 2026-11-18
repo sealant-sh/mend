@@ -252,7 +252,7 @@ function SkillEditor({
   );
 
   return (
-    <div className="flex min-w-0 flex-col max-lg:min-h-dvh max-lg:pb-20 lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))] lg:flex-none">
+    <div className="flex min-w-0 flex-col max-lg:min-h-dvh max-lg:pb-20 lg:min-h-0 lg:flex-1">
       <PhoneHeader
         className="sticky top-0 z-10 lg:hidden"
         title={skill.name}
