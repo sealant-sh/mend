@@ -139,8 +139,9 @@ export default async ({ page, web, capture, note }) => {
       },
       "mutate",
     );
-  const landingSkill = await skillOf(names.landingSkill, "Check a landing page before it ships.");
+  await skillOf(names.landingSkill, "Check a landing page before it ships.");
   await skillOf(names.otherSkill, "Write release notes from the merged pull requests.");
+  const landingSkill = (await call("skills.list")).find((each) => each.name === names.landingSkill);
   note(
     `made projects ${names.landingProject}, ${names.otherProject} and skills ${names.landingSkill}, ${names.otherSkill}`,
   );

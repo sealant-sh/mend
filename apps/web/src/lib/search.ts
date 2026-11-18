@@ -15,7 +15,7 @@ export type SearchActionId = "new-session" | "add-project" | "toggle-sidebar";
 export interface SearchAction {
   readonly id: SearchActionId;
   readonly name: string;
-  /** Its own shortcut, as the palette shows it beside the name: "⌘B". */
+  /** Its own shortcut, as the palette shows it beside the name: "⌘B" or "Ctrl B". */
   readonly keys?: string;
 }
 

@@ -74,7 +74,7 @@ import {
 } from "#/lib/inbox";
 import { useServerHost } from "#/lib/online";
 import { rowActions } from "#/lib/row-actions";
-import { useSearchKeys } from "#/lib/search-keys";
+import { useKeys } from "#/lib/search-keys";
 import { lumpStatusOf, sessionLink } from "#/lib/session-sheet";
 import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
@@ -440,7 +440,7 @@ function InboxFlyout({
 /** The sidebar's Search field: it opens the command palette, as ⌘K does. */
 function SearchField() {
   const openSearch = useOpenSearch();
-  const keys = useSearchKeys();
+  const keys = useKeys("K");
   return (
     <button
       type="button"
@@ -463,7 +463,7 @@ function SearchField() {
 /** Search on the rail: the same palette, its name and shortcut in a tooltip. */
 function RailSearch() {
   const openSearch = useOpenSearch();
-  const keys = useSearchKeys();
+  const keys = useKeys("K");
   return (
     <SidebarMenuItem>
       <SidebarMenuButton

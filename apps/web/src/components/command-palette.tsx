@@ -23,7 +23,7 @@ import {
   searchResults,
   sessionStatus,
 } from "#/lib/search";
-import { useSearchShortcut } from "#/lib/search-keys";
+import { useKeys, useSearchShortcut } from "#/lib/search-keys";
 import { sessionLink } from "#/lib/session-sheet";
 import { useTRPC } from "#/lib/trpc";
 import type { InboxState } from "#/lib/use-inbox";
@@ -113,6 +113,7 @@ function useSearchModel(inbox: InboxState, phone: boolean, close: () => void): S
   const trpc = useTRPC();
   const navigate = useNavigate();
   const { state: sidebar, toggleSidebar } = useSidebar();
+  const sidebarKeys = useKeys("B");
   const [query, setQuery] = useState("");
   const projects = useQuery(trpc.projects.list.queryOptions());
   const skills = useQuery(trpc.skills.list.queryOptions());
@@ -127,7 +128,7 @@ function useSearchModel(inbox: InboxState, phone: boolean, close: () => void): S
           {
             id: "toggle-sidebar" as const,
             name: sidebar === "expanded" ? "Collapse sidebar" : "Expand sidebar",
-            keys: "⌘B",
+            keys: sidebarKeys,
           },
         ]),
   ];
@@ -233,7 +234,7 @@ function DeskPalette({
       ))}
       {empty ? (
         <CommandPaletteEmpty>
-          <NoResults query={query} />
+          <NoResults query={query} className="min-h-64" />
         </CommandPaletteEmpty>
       ) : null}
       <SearchNotes notes={notes} />

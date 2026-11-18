@@ -32,14 +32,14 @@ const isMac = (): boolean => /Macintosh|Mac OS X|iPhone|iPad/.test(navigator.use
 const never = () => () => undefined;
 
 /**
- * How the shortcut is written on this computer: "⌘K" or "Ctrl K". The server writes "⌘K"; the
- * browser corrects it once it has loaded.
+ * How a ⌘ shortcut is written on this computer: "⌘K" on a Mac, "Ctrl K" elsewhere. The server
+ * writes "⌘K"; the browser corrects it once it has loaded.
  */
-export const useSearchKeys = (): string =>
+export const useKeys = (letter: string): string =>
   useSyncExternalStore(
     never,
-    () => (isMac() ? "⌘K" : "Ctrl K"),
-    () => "⌘K",
+    () => (isMac() ? `⌘${letter}` : `Ctrl ${letter}`),
+    () => `⌘${letter}`,
   );
 
 /** Calls `onOpen` when the shortcut is pressed anywhere on the page. */
