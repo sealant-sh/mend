@@ -200,6 +200,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     throw new Error("term-ws has no running session: run the CLI batch first");
   const A = running[0].session.id;
   const projectId = running[0].session.projectId;
+  // Every session of the workspace: a fixture answers them all as another member's.
+  const worktreeId = running[0].session.worktreeId;
+  const inWorkspace = new Set(
+    rows.filter((row) => row.session.worktreeId === worktreeId).map((row) => row.session.id),
+  );
   note(`the batch session is ${A}; stop it with \`mend stop ${A}\` after the drive`);
   await client(
     async (trpc, [id, label]) => trpc.sessions.setLabel.mutate({ id, label }),
@@ -391,7 +396,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       };
       paths.forEach((path, index) => {
         const id = inputs[String(index)]?.json?.id;
-        if (path === "sessions.processes" && id === A && processes === "fail") {
+        if (path === "sessions.processes" && inWorkspace.has(id) && processes === "fail") {
           answers[index] = {
             error: {
               json: {
@@ -407,15 +412,16 @@ export default async ({ page, web, capture: captureOnce, note }) => {
         if (data === undefined) return;
         data.meta = data.meta ?? { values: {}, v: 1 };
         data.meta.values = data.meta.values ?? {};
-        if (path === "sessions.processes" && id === A && processes === "none") {
+        if (path === "sessions.processes" && inWorkspace.has(id) && processes === "none") {
           answers[index] = { result: { data: { json: [] } } };
           return;
         }
         if (path === "sessions.inbox")
           data.json.forEach((row, at) => {
-            if (row.session.id === A) patch(row.session, data.meta.values, `${at}.`);
+            if (row.session.worktreeId === worktreeId)
+              patch(row.session, data.meta.values, `${at}.`);
           });
-        if (path === "sessions.detail" && data.json.session.id === A)
+        if (path === "sessions.detail" && data.json.session.worktreeId === worktreeId)
           patch(data.json.session, data.meta.values, "");
         if (path === "organization.members" && owner !== null && data.json.length > 0) {
           const at = data.json.length;
