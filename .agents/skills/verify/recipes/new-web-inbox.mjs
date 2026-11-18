@@ -107,8 +107,8 @@ export default async ({ page, web, capture, note }) => {
     if ((await page.getByText(old, { exact: true }).count()) > 0)
       throw new Error(`the page still says ${old}`);
   note(`groups, in order: ${names.join(", ")}; none of ${OLD_NAMES.join(", ")} on the page`);
-  await page.getByRole("heading", { name: "Page not found" }).waitFor();
-  note("home's sheet shows the not-found screen until the composer's route exists");
+  await page.getByRole("heading", { name: "New session", exact: true }).waitFor();
+  note("home's sheet is the New session composer");
 
   const mark = async (id, body) => {
     const status = await page.evaluate(

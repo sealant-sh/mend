@@ -19,8 +19,8 @@ import { useWorkbenchEvents } from "#/lib/workbench-events";
  * remounts it; only the sheet changes.
  *
  * Under 1024px there is no sidebar: home is the inbox as its own screen, with the tab bar, and
- * every other page takes the whole width. Until the home composer's route exists, home's sheet
- * shows the not-found screen on a wide screen.
+ * every other page takes the whole width. The New session composer, home's sheet on a wide
+ * screen, is `/new` there.
  */
 export const Route = createFileRoute("/_inbox")({
   // The inbox's reads, against the options the inbox reads them with. On the server the page waits

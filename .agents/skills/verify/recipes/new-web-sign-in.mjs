@@ -175,8 +175,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => url.pathname !== "/login");
   expectPath("/");
-  await heading("Page not found");
-  note("#next=//evil.example/ signed in and went to / (the not-found screen until home lands)");
+  await heading("New session");
+  note("#next=//evil.example/ signed in and went to /, the New session composer");
 
   // member-removal: a removed member's browser.
   await signedOut();
