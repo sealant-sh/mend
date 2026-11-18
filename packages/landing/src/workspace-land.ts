@@ -1,4 +1,4 @@
-import type { AgentTurn, Session } from "@mend/domain/workbench";
+import { sharesControl, type AgentTurn, type Session } from "@mend/domain/workbench";
 
 import type { LandingReport } from "./landing.ts";
 
@@ -13,7 +13,10 @@ import type { LandingReport } from "./landing.ts";
 
 /** Why `mend land` does not land for this session, or null when the change's owner is asking. */
 export const workspaceLandRefusal = (input: {
-  readonly session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt">;
+  readonly session: Pick<
+    Session,
+    "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds"
+  >;
   /** The change's owner (`Worktree.changeOwnerUserId`). */
   readonly changeOwnerUserId: string | null;
   /** The session's turns; the one running is the request the agent is answering. */
@@ -43,7 +46,7 @@ export const workspaceLandRefusal = (input: {
       : "not landed · only the change's owner lands it · someone else sent this turn";
   }
   // A terminal session has no turns Mend reads: with shared control on, anyone may be typing.
-  return input.session.sharedControlEnabledAt === null
+  return !sharesControl(input.session)
     ? null
     : "not landed · shared control is on · the change's owner lands it from Mend";
 };

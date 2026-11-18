@@ -59,22 +59,24 @@ private, sandboxed or isolated. See [Per-person workspaces](/operate/per-person-
 
 ## Organizations
 
-| Term                    | Meaning                                                                                                                                                                                                                                                        |
-| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Organization**        | The tenant. It owns its members, projects, folders, reference repositories and audit log. An account belongs to one or more, with a role in each, and each sign-in acts in one at a time                                                                       |
-| **Active organization** | The one organization a sign-in acts in. With several, a person switches it per sign-in (`mend org switch`)                                                                                                                                                     |
-| **Owner**               | An organization role that also invites and removes people, changes roles and project visibility, and runs recovery                                                                                                                                             |
-| **Member**              | An organization role that works in the projects it can see                                                                                                                                                                                                     |
-| **Operator**            | An instance role that administers the machine and has no default read access to organization content                                                                                                                                                           |
-| **Invitation**          | A single-use link that adds someone to an organization. Registration is closed after the first account                                                                                                                                                         |
-| **Folder**              | A directory Mend keeps for an organization, which projects select for their sessions. It replaces host mounts                                                                                                                                                  |
-| **Private**             | A project visible to its creator only. The default                                                                                                                                                                                                             |
-| **Shared**              | A project visible to its whole organization                                                                                                                                                                                                                    |
-| **Shared control**      | A session setting that lets others who can see the session send turns. In a per-person workspace each turn spends its sender's own login; in a workspace that shares one home, the owner's. Only the owner turns it on, and only the owner types in a terminal |
+| Term                    | Meaning                                                                                                                                                                                                                                                                                 |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Organization**        | The tenant. It owns its members, projects, folders, reference repositories and audit log. An account belongs to one or more, with a role in each, and each sign-in acts in one at a time                                                                                                |
+| **Active organization** | The one organization a sign-in acts in. With several, a person switches it per sign-in (`mend org switch`)                                                                                                                                                                              |
+| **Owner**               | An organization role that also invites and removes people, changes roles and project visibility, and runs recovery                                                                                                                                                                      |
+| **Member**              | An organization role that works in the projects it can see                                                                                                                                                                                                                              |
+| **Operator**            | An instance role that administers the machine and has no default read access to organization content                                                                                                                                                                                    |
+| **Invitation**          | A single-use link that adds someone to an organization. Registration is closed after the first account                                                                                                                                                                                  |
+| **Folder**              | A directory Mend keeps for an organization, which projects select for their sessions. It replaces host mounts                                                                                                                                                                           |
+| **Private**             | A project visible to its creator only. The default                                                                                                                                                                                                                                      |
+| **Shared**              | A project visible to its whole organization                                                                                                                                                                                                                                             |
+| **Shared control**      | Leave to send turns and answer the agent in someone else's session. A person asks for it and the owner grants it to them alone. In a per-person workspace each turn spends its sender's own login; in a workspace that shares one home, the owner's. Only the owner types in a terminal |
 
-Only a session's owner steers it unless they turn on shared control. `MEND_TENANCY` is `single` (the
-default) or `multi`; `multi` refuses to start until the multi mode gate passes. See
-[Organizations](/organizations/overview/).
+Only a session's owner steers it unless they grant shared control. Someone who can see the session
+asks; the owner grants or declines; the owner or an organization owner takes it back. Older clients
+still turn it on for everyone who can see the project, and off for everyone, grants included.
+`MEND_TENANCY` is `single` (the default) or `multi`; `multi` refuses to start until the multi mode
+gate passes. See [Organizations](/organizations/overview/).
 
 ## Access
 

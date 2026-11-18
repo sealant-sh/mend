@@ -83,6 +83,8 @@ export interface SessionDto extends SessionCaptureLike {
   readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When shared control was turned on; null while it is off. Absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
+  /** The people the owner gave shared control to, one by one; absent on older servers. */
+  readonly sharedControlUserIds?: ReadonlyArray<string>;
   /**
    * The executor waits to be replaced (docs/adr/0016, decision 14), from the project view with
    * `livePeople`; null otherwise, absent on older servers.

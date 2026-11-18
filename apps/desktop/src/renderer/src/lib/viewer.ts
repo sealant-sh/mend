@@ -61,6 +61,7 @@ export const sessionActions = (
       ownerUserId: session.ownerUserId,
       sharedControlEnabledAt:
         session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
+      sharedControlUserIds: session.sharedControlUserIds ?? [],
     },
     viewer.userId,
   );

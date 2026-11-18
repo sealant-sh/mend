@@ -107,7 +107,7 @@ const notifiedTokens = (ownerUserId: string) =>
       const targets = yield* pushTargets(
         yield* PushDevicesRepo,
         yield* NotificationSettingsRepo,
-        { ownerUserId, sharedControlEnabledAt: null },
+        { ownerUserId, sharedControlEnabledAt: null, sharedControlUserIds: [] },
         null,
         { kind: "finished", slackThread: null },
       );

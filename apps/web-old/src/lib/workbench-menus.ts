@@ -111,7 +111,13 @@ export const projectMenu = (
 export const sessionMenu = (
   session: Pick<
     SessionDto,
-    "id" | "harness" | "status" | "label" | "ownerUserId" | "sharedControlEnabledAt"
+    | "id"
+    | "harness"
+    | "status"
+    | "label"
+    | "ownerUserId"
+    | "sharedControlEnabledAt"
+    | "sharedControlUserIds"
   >,
   annotation:
     | (Pick<SessionAnnotationDto, "changeId" | "liveServices"> & {

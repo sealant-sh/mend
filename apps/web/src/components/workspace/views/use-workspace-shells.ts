@@ -32,6 +32,7 @@ export const useWorkspaceShells = (place: ViewPlace) => {
       status: row.session.status,
       ownerUserId: row.session.ownerUserId,
       sharedControlEnabledAt: row.session.sharedControlEnabledAt,
+      sharedControlUserIds: row.session.sharedControlUserIds,
     })),
     ...(pageSession === null || rows.some((row) => row.session.id === pageSession.id)
       ? []
@@ -43,6 +44,7 @@ export const useWorkspaceShells = (place: ViewPlace) => {
             status: pageSession.status,
             ownerUserId: pageSession.ownerUserId,
             sharedControlEnabledAt: pageSession.sharedControlEnabledAt,
+            sharedControlUserIds: pageSession.sharedControlUserIds,
           },
         ]),
   ];

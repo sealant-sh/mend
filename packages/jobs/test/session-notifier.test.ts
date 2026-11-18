@@ -236,7 +236,7 @@ describe("pushTargets", () => {
       pushTargets(
         devices,
         settings,
-        { ownerUserId: "alice", sharedControlEnabledAt: null },
+        { ownerUserId: "alice", sharedControlEnabledAt: null, sharedControlUserIds: [] },
         "carol",
         finished,
       ),
@@ -246,7 +246,7 @@ describe("pushTargets", () => {
       pushTargets(
         devices,
         settings,
-        { ownerUserId: null, sharedControlEnabledAt: new Date() },
+        { ownerUserId: null, sharedControlEnabledAt: new Date(), sharedControlUserIds: [] },
         "carol",
         finished,
       ),
@@ -260,7 +260,7 @@ describe("pushTargets", () => {
       pushTargets(
         devices,
         settings,
-        { ownerUserId: "alice", sharedControlEnabledAt: new Date() },
+        { ownerUserId: "alice", sharedControlEnabledAt: new Date(), sharedControlUserIds: [] },
         "carol",
         finished,
       ),
@@ -268,12 +268,32 @@ describe("pushTargets", () => {
     expect(shared.map((device) => device.token)).toEqual(["alice-phone", "carol-phone"]);
   });
 
+  it("with shared control granted to one person, rings that sender and no one else's", async () => {
+    const session = {
+      ownerUserId: "alice",
+      sharedControlEnabledAt: null,
+      sharedControlUserIds: ["carol"],
+    };
+    const granted = await Effect.runPromise(
+      pushTargets(devices, settings, session, "carol", finished),
+    );
+    expect(granted.map((device) => device.token)).toEqual(["alice-phone", "carol-phone"]);
+    const takenBack = await Effect.runPromise(
+      pushTargets(devices, settings, { ...session, sharedControlUserIds: [] }, "carol", finished),
+    );
+    expect(takenBack.map((device) => device.token)).toEqual(["alice-phone"]);
+  });
+
   it("each recipient's own settings decide, and a Slack thread that says it rings no one", async () => {
     saved.set(
       "carol",
       new NotificationSettings({ ...DEFAULT_NOTIFICATION_SETTINGS, turnFinished: false }),
     );
-    const session = { ownerUserId: "alice", sharedControlEnabledAt: new Date() };
+    const session = {
+      ownerUserId: "alice",
+      sharedControlEnabledAt: new Date(),
+      sharedControlUserIds: [],
+    };
     const mendFinished = await Effect.runPromise(
       pushTargets(devices, settings, session, "carol", finished),
     );

@@ -241,6 +241,18 @@ export class SessionNotSteerable extends Schema.TaggedError<SessionNotSteerable>
     sessionId: SessionId,
     /** Why, in words a client can show as they are. */
     message: Schema.String,
+    /**
+     * Set when the sender's own login refused a message they sent to someone else's session
+     * (docs/adr/0016, decision 6): the provider, and `missing` (none connected), `invalid` (it
+     * expired or was revoked: connect it again) or `unchosen` (several, none chosen). The message
+     * stays theirs to send again once it is connected. Absent from older servers.
+     */
+    login: Schema.optionalKey(
+      Schema.Struct({
+        provider: Schema.Literals(["claude", "codex"]),
+        state: Schema.Literals(["missing", "invalid", "unchosen"]),
+      }),
+    ),
   },
   { httpApiStatus: 403 },
 ) {}
@@ -309,11 +321,90 @@ export class DiscardUnsavedRequest extends Schema.Class<DiscardUnsavedRequest>(
   confirm: Schema.Literal("discard unsaved"),
 }) {}
 
+/**
+ * The switch for everyone (docs/adr/0003): `enabled: true` lets everyone who can see the project
+ * steer; `enabled: false` leaves only the owner steering, which also ends every grant to one
+ * person (docs/adr/0026, decision 7).
+ */
 export class SharedControlRequest extends Schema.Class<SharedControlRequest>(
   "SharedControlRequest",
 )({
   enabled: Schema.Boolean,
 }) {}
+
+/**
+ * One person in a session's shared control (docs/adr/0026, decision 7): asking for it, or
+ * holding it because the owner granted their ask.
+ */
+export class SharedControlPerson extends Schema.Class<SharedControlPerson>("SharedControlPerson")({
+  userId: Schema.String,
+  state: Schema.Literals(["asked", "granted"]),
+  askedAt: Timestamp,
+  /** When the owner granted it; null while it is only asked. */
+  grantedAt: Schema.NullOr(Timestamp),
+  grantedByUserId: Schema.NullOr(Schema.String),
+}) {}
+
+/** What the viewer may do with a session's shared control now. */
+export const SharedControlActs = Schema.Struct({
+  /** Ask the owner for it: anyone who sees the session, cannot steer it and has not asked. */
+  ask: Schema.Boolean,
+  /** Withdraw their own open ask. */
+  withdraw: Schema.Boolean,
+  /** Grant or decline an open ask, and turn the switch for everyone on: the owner's alone. */
+  decide: Schema.Boolean,
+  /** Take a grant back, or turn the switch for everyone off: the owner or an organization owner. */
+  takeBack: Schema.Boolean,
+});
+export type SharedControlActs = typeof SharedControlActs.Type;
+
+/**
+ * Who steers a session besides its owner, and who asks to (docs/adr/0026, decision 7).
+ * `everyoneSince` is the switch for everyone that older clients know as on and off; `granted` are
+ * the people the owner granted it to one by one. Both may be set: a person steers while either
+ * covers them.
+ */
+export class SessionSharedControl extends Schema.Class<SessionSharedControl>(
+  "SessionSharedControl",
+)({
+  sessionId: SessionId,
+  ownerUserId: Schema.NullOr(Schema.String),
+  /** Shared with everyone who can see the project since then; null while it is not. */
+  everyoneSince: Schema.NullOr(Timestamp),
+  /** People holding shared control one by one, oldest ask first. Everyone who sees it reads them. */
+  granted: Schema.Array(SharedControlPerson),
+  /**
+   * Open asks, oldest first: every one for the session's owner, only the viewer's own for anyone
+   * else. Settling the session ends them.
+   */
+  asked: Schema.Array(SharedControlPerson),
+  /** Whether the viewer steers the session now. */
+  steer: Schema.Boolean,
+  acts: SharedControlActs,
+  /**
+   * A steered turn runs on its sender's own login (the worktree runs each person as themselves);
+   * false, it spends the owner's logins (docs/adr/0013, docs/adr/0016). Words on both sides say so.
+   */
+  turnsOnSendersLogin: Schema.Boolean,
+}) {}
+
+/**
+ * A step of shared control for one person did not happen, as the session stood when it ran
+ * (docs/adr/0026, decision 7). `reason`: `ended` (the session has settled), `owner` (the asker owns
+ * it, or nobody does), `steers` (the asker steers it already), `not-asked` (no open ask: withdrawn,
+ * declined or granted meanwhile), `not-granted` (no grant: taken back already), `opencode`
+ * (opencode sessions are one person's).
+ */
+export class SharedControlRefused extends Schema.TaggedError<SharedControlRefused>()(
+  "SharedControlRefused",
+  {
+    sessionId: SessionId,
+    reason: Schema.Literals(["ended", "owner", "steers", "not-asked", "not-granted", "opencode"]),
+    /** Why, in words a client can show as they are. */
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
 
 /**
  * End one piece of the previous sender's background work from the waiting line
@@ -402,7 +493,7 @@ export class SessionInboxMark extends Schema.Class<SessionInboxMark>("SessionInb
   markedAt: Timestamp,
 }) {}
 
-/** The session facts an inbox row shows, filters and acts on: fourteen of the session's fields. */
+/** The session facts an inbox row shows, filters and acts on: fifteen of the session's fields. */
 export const SessionInboxSession = Schema.Struct({
   id: Session.fields.id,
   projectId: Session.fields.projectId,
@@ -413,6 +504,7 @@ export const SessionInboxSession = Schema.Struct({
   status: Session.fields.status,
   ownerUserId: Session.fields.ownerUserId,
   sharedControlEnabledAt: Schema.NullOr(Timestamp),
+  sharedControlUserIds: Session.fields.sharedControlUserIds,
   startedAt: Session.fields.startedAt,
   settledAt: Session.fields.settledAt,
   createdAt: Session.fields.createdAt,
@@ -452,6 +544,12 @@ export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInbox
   annotation: Schema.NullOr(SessionInboxAnnotation),
   /** The oldest request still open; null when nothing waits on a person. */
   ask: Schema.NullOr(SessionAsk),
+  /**
+   * The open asks for shared control of the reader's own session, oldest first (docs/adr/0026,
+   * decision 7): each waits on them like a request does. Empty on anyone else's session; absent
+   * from servers before per-person shared control.
+   */
+  sharedControlAsks: Schema.optionalKey(Schema.Array(SharedControlPerson)),
   /**
    * The session's worktree's name as lists show it (`worktreeTitle`): what a row names when
    * sessions share a workspace. Null when the worktree row is gone; absent from older servers, as are the two below.
@@ -996,14 +1094,76 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // docs/adr/0003: the owner turns shared control on or off; an organization owner may turn it
-    // off. Everyone who can see the session then steers it on the owner's credentials.
+    // docs/adr/0003: the owner turns shared control with everyone on or off; an organization owner
+    // may turn it off. Off also ends every grant to one person (docs/adr/0026, decision 7).
     HttpApiEndpoint.put("sharedControl", "/sessions/:id/shared-control", {
       params: { id: SessionId },
       payload: SharedControlRequest,
       success: Session,
       error: [NotFound, SessionNotSteerable, RemovalInProgress],
     }),
+  )
+  .add(
+    // docs/adr/0026, decision 7: shared control for one person. Who holds it and who asks, and
+    // what the viewer may do about it.
+    HttpApiEndpoint.get("sharedControlPeople", "/sessions/:id/shared-control", {
+      params: { id: SessionId },
+      success: SessionSharedControl,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // The caller asks the owner for shared control. Asking again while asked changes nothing.
+    HttpApiEndpoint.post("askSharedControl", "/sessions/:id/shared-control/ask", {
+      params: { id: SessionId },
+      success: SessionSharedControl,
+      error: [NotFound, SharedControlRefused, RemovalInProgress],
+    }),
+  )
+  .add(
+    // The caller withdraws their open ask.
+    HttpApiEndpoint.post("withdrawSharedControl", "/sessions/:id/shared-control/withdraw", {
+      params: { id: SessionId },
+      success: SessionSharedControl,
+      error: [NotFound, SharedControlRefused, RemovalInProgress],
+    }),
+  )
+  .add(
+    // The owner grants `userId`'s open ask: from now on that person steers the session.
+    HttpApiEndpoint.post(
+      "grantSharedControl",
+      "/sessions/:id/shared-control/people/:userId/grant",
+      {
+        params: { id: SessionId, userId: Schema.String },
+        success: SessionSharedControl,
+        error: [NotFound, SessionNotSteerable, SharedControlRefused, RemovalInProgress],
+      },
+    ),
+  )
+  .add(
+    // The owner declines `userId`'s open ask.
+    HttpApiEndpoint.post(
+      "declineSharedControl",
+      "/sessions/:id/shared-control/people/:userId/decline",
+      {
+        params: { id: SessionId, userId: Schema.String },
+        success: SessionSharedControl,
+        error: [NotFound, SessionNotSteerable, SharedControlRefused, RemovalInProgress],
+      },
+    ),
+  )
+  .add(
+    // The owner, or an organization owner, takes `userId`'s grant back: their queued turns are
+    // not sent and their steering connections close; a turn of theirs already running finishes.
+    HttpApiEndpoint.post(
+      "takeBackSharedControl",
+      "/sessions/:id/shared-control/people/:userId/take-back",
+      {
+        params: { id: SessionId, userId: Schema.String },
+        success: SessionSharedControl,
+        error: [NotFound, SessionNotSteerable, SharedControlRefused, RemovalInProgress],
+      },
+    ),
   )
   .add(
     // Who interrupted, attached, opened a shell, stopped or shared control; oldest first.

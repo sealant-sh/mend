@@ -53,6 +53,7 @@ const session = (id: string, overrides: Partial<ShellSession>): ShellSession => 
   status: "running",
   ownerUserId: "ada",
   sharedControlEnabledAt: null,
+  sharedControlUserIds: [],
   processes: [],
   ...overrides,
 });
@@ -156,16 +157,19 @@ describe("who watches and who types", () => {
     session("mine", { ownerUserId: "ada" }),
     session("shared", { ownerUserId: "grace", sharedControlEnabledAt: at(0) }),
     session("private", { ownerUserId: "grace" }),
+    session("granted", { ownerUserId: "grace", sharedControlUserIds: ["ada"] }),
   ];
 
   it("lets the owner type, a steerer only watch, and anyone else neither", () => {
     const access = shellAccess(sessions, "shared", "ada");
     expect(
-      ["mine", "shared", "private"].map((id) => [access.watches(id), access.types(id)]),
+      ["mine", "shared", "private", "granted"].map((id) => [access.watches(id), access.types(id)]),
     ).toEqual([
       [true, true],
       [true, false],
       [false, false],
+      // Shared with Ada alone (docs/adr/0026): she watches, and still types only in her own.
+      [true, false],
     ]);
   });
 

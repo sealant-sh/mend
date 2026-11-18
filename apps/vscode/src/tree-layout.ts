@@ -97,6 +97,7 @@ const drawnRow = (view: SessionView, viewer: string | null): string =>
     view.capability,
     view.session.ownerUserId,
     view.session.sharedControlEnabledAt,
+    view.session.sharedControlUserIds,
     view.session.livePeople,
     view.session.workspaceRetirement,
     view.session.branch,

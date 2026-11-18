@@ -117,6 +117,7 @@ const removalWorld = (
                   revocationId: null,
                   requestedAt,
                   unshared: [],
+                  released: [],
                   queuedSessions: [],
                   linkedSlackFacts: [],
                 };
@@ -139,6 +140,7 @@ const removalWorld = (
                 revocationId,
                 requestedAt,
                 unshared: [{ id: SessionId.make("session-shared"), projectId: PROJECT }],
+                released: [],
                 queuedSessions: [{ id: SessionId.make("session-shared"), projectId: PROJECT }],
                 linkedSlackFacts: [{ teamId: "T-acme", slackUserId: `U-${input.userId}` }],
               };

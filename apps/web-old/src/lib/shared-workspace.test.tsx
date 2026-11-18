@@ -51,6 +51,12 @@ const row = (
   livePeople: Row["livePeople"] = [],
 ): Row => ({ worktreeId, ownerUserId, status, livePeople });
 const alice = { accountId: "alice", name: "Alice" };
+/** What the waiting line is decided from: who is live, and who shares control. */
+const facts = (
+  livePeople: ReadonlyArray<typeof alice>,
+  sharedControlEnabledAt: Date | null,
+  sharedControlUserIds: ReadonlyArray<string> = [],
+) => ({ livePeople, ownerUserId: "owner", sharedControlEnabledAt, sharedControlUserIds });
 const bob = { accountId: "bob", name: "Bob" };
 const dana = { accountId: "dana", name: "Dana" };
 
@@ -246,26 +252,28 @@ describe("what the session page asks for", () => {
   const on = new Date("2026-10-08T09:00:00Z");
 
   it("asks for the waiting line only where people run and control is shared", () => {
-    expect(waitingLineRelevant({ livePeople: [alice], sharedControlEnabledAt: on })).toBe(true);
-    expect(waitingLineRelevant({ livePeople: [], sharedControlEnabledAt: on })).toBe(false);
-    expect(waitingLineRelevant({ livePeople: [alice], sharedControlEnabledAt: null })).toBe(false);
+    expect(waitingLineRelevant(facts([alice], on))).toBe(true);
+    expect(waitingLineRelevant(facts([], on))).toBe(false);
+    expect(waitingLineRelevant(facts([alice], null))).toBe(false);
+    // Shared with one person (docs/adr/0026): their turns wait too.
+    expect(waitingLineRelevant(facts([alice], null, ["carol"]))).toBe(true);
   });
 
   it("polls the waiting line only while it can show and the session is live", () => {
-    expect(waitingLineQuery({ livePeople: [alice], sharedControlEnabledAt: on }, true)).toEqual({
+    expect(waitingLineQuery(facts([alice], on), true)).toEqual({
       enabled: true,
       refetchInterval: WAIT_POLL_MS,
     });
-    expect(waitingLineQuery({ livePeople: [alice], sharedControlEnabledAt: on }, false)).toEqual({
+    expect(waitingLineQuery(facts([alice], on), false)).toEqual({
       enabled: true,
       refetchInterval: false,
     });
     // With the flag off (nobody listed) or control not shared: nothing at all.
-    expect(waitingLineQuery({ livePeople: [], sharedControlEnabledAt: on }, true)).toEqual({
+    expect(waitingLineQuery(facts([], on), true)).toEqual({
       enabled: false,
       refetchInterval: false,
     });
-    expect(waitingLineQuery({ livePeople: [alice], sharedControlEnabledAt: null }, true)).toEqual({
+    expect(waitingLineQuery(facts([alice], null), true)).toEqual({
       enabled: false,
       refetchInterval: false,
     });

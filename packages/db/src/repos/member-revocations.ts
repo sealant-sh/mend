@@ -16,6 +16,7 @@ import {
   type LastOwnerError,
   type MemberNotFoundError,
 } from "./organizations.ts";
+import { endSharedControlOfMember } from "./session-shared-control.ts";
 import { SlackLinksRepo } from "./slack-links.ts";
 import { UsersRepo } from "./users.ts";
 
@@ -26,6 +27,10 @@ export const MemberRevocation = Schema.Struct({
   revocationId: Schema.NullOr(Schema.String),
   requestedAt: Schema.Date,
   unshared: Schema.Array(Schema.Struct({ id: SessionId, projectId: ProjectId })),
+  /** Other people's sessions where the member's ask or grant of shared control ended. */
+  released: Schema.Array(Schema.Struct({ id: SessionId, projectId: ProjectId })).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
   queuedSessions: Schema.Array(Schema.Struct({ id: SessionId, projectId: ProjectId })),
   linkedSlackFacts: Schema.Array(
     Schema.Struct({ teamId: Schema.String, slackUserId: Schema.String }),
@@ -112,6 +117,12 @@ export const MemberRevocationsRepoLive: Layer.Layer<
               input.userId,
               input.organizationId,
             );
+            // Their own asks and grants of shared control end with the membership too.
+            const released = yield* endSharedControlOfMember(
+              tx,
+              input.userId,
+              input.organizationId,
+            );
             // A competing claim must see these turns cancelled once the locked rows are released.
             const queued = yield* tx
               .select({
@@ -142,6 +153,7 @@ export const MemberRevocationsRepoLive: Layer.Layer<
               revocationId: last ? revocationId : null,
               requestedAt,
               unshared,
+              released,
               queuedSessions: [
                 ...new Map(
                   queued.map((turn) => [turn.id, { id: turn.id, projectId: turn.projectId }]),
@@ -173,6 +185,13 @@ export const MemberRevocationsRepoLive: Layer.Layer<
               ownerUserId: removed.userId,
             },
           ],
+        ),
+        ...removed.released.map(
+          (session): MendEvent => ({
+            type: "session",
+            sessionId: session.id,
+            projectId: session.projectId,
+          }),
         ),
         ...removed.queuedSessions.map(
           (session): MendEvent => ({

@@ -1066,7 +1066,6 @@ describe.skipIf(postgres.skip)("migration 0223 over sessions settled before it",
     const result = await legacy(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
-        const sessions = yield* SessionsRepo;
         const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
         for (const [name, migration] of ordered) {
           if (name.localeCompare("0223") >= 0) continue;
@@ -1085,20 +1084,12 @@ describe.skipIf(postgres.skip)("migration 0223 over sessions settled before it",
           { id: "s-other", summary: "launch failed: setup command exited 1", drain: null },
         ] as const;
         for (const row of rows) {
-          yield* sessions.create({
-            id: SessionId.make(row.id),
-            projectId: PROJECT,
-            worktreeId: WORKTREE,
-            harness: "claude",
-            label: null,
-            worktree: "wt-1",
-            branch: "mend/wt-1",
-            baseSha: Sha.make("abc"),
-            baseRef: "main",
-            contextSnapshotId: null,
-            ownerUserId: "alice",
-            origin: "mend",
-          });
+          // The columns the schema had before 0223: today's repo writes columns added since.
+          yield* sql`
+            INSERT INTO agent_sessions (id, project_id, worktree_id, owner_user_id, harness,
+                                        worktree, branch, base_sha, base_ref, status)
+            VALUES (${row.id}, ${PROJECT}, ${WORKTREE}, 'alice', 'claude', 'wt-1', 'mend/wt-1',
+                    'abc', 'main', 'running')`;
           yield* sql`
             UPDATE agent_sessions
                SET status = 'failed', settled_at = now(), summary = ${row.summary},

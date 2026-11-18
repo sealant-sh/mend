@@ -35,7 +35,15 @@
 # Stop followed by Stop services already took; it makes no hot-pool, claim, retire or discard call,
 # so no action models it. Full tlx run at 646dea54b8: every row as expected (`code` 129,386,795
 # states, 351 s on four workers).
-sync 646dea54b8142766684b538b47542693fe0d2566
+# 68e02def24 is the SLNT-1149 branch on main at 06b0294959. SLNT-1149 changed engine.ts only
+# outside the covered functions: shared control can go to one person (sharedControlUserIds), so
+# neverShared, conversationOf, the shared steering decide (sharedControlFor, protocolHooksFor's fork
+# path), the person a protocol start runs as, and the steerer's login refusal (steeringRefusalOf,
+# submitTurnChecked, sendMessage, steerTurn) read who may steer through canSteerSession and
+# sharesControl. None makes a hot-pool, claim, retire, drain, stop or session-process call, so no
+# action models them. Full tlx run at 68e02def24: every row as expected (`code` 129,386,795
+# states, 250 s on four workers).
+sync 68e02def2428cd7dda47ae9b477bf76bdf72c7df
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

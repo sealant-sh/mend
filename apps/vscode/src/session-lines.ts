@@ -54,9 +54,15 @@ export const parseRetirementState = (value: unknown): "marked" | "retiring" | nu
  * can a turn wait on someone else's work), the retirement only where one is under way.
  */
 export const workspaceReads = (
-  session: Pick<Session, "livePeople" | "sharedControlEnabledAt" | "workspaceRetirement">,
+  session: Pick<
+    Session,
+    "livePeople" | "sharedControlEnabledAt" | "sharedControlUserIds" | "workspaceRetirement"
+  >,
 ): { readonly waiting: boolean; readonly retirement: boolean } => ({
-  waiting: session.livePeople.length > 0 && session.sharedControlEnabledAt !== null,
+  // Shared with everyone, or with one person (docs/adr/0026, decision 7).
+  waiting:
+    session.livePeople.length > 0 &&
+    (session.sharedControlEnabledAt !== null || (session.sharedControlUserIds ?? []).length > 0),
   retirement: session.workspaceRetirement !== null,
 });
 

@@ -512,6 +512,30 @@ export const sessionControlEvents = pgTable(
   (table) => [index("session_control_events_session_idx").on(table.sessionId, table.createdAt)],
 );
 
+/**
+ * Shared control of a session, one person at a time (docs/adr/0026, decision 7): a person who
+ * asked (`asked`), or who holds it because the owner granted their ask (`granted`). A row ends by
+ * being deleted: declined, withdrawn, taken back, or (an ask) when the session settles. What
+ * happened stays in `session_control_events`. The granted rows are mirrored in
+ * `agent_sessions.shared_control_user_ids`.
+ */
+export const sessionSharedControl = pgTable(
+  "session_shared_control",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    // FK to "user"(id) ON DELETE CASCADE, declared in the migration.
+    userId: text().notNull(),
+    state: text().$type<"asked" | "granted">().notNull(),
+    askedAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    grantedAt: timestamp({ mode: "date", withTimezone: true }),
+    grantedByUserId: text(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.userId] })],
+);
+
 /** Instance roles, separate from organization ownership. Only `operator` exists. */
 export const instanceRoles = pgTable(
   "instance_roles",
@@ -1911,6 +1935,13 @@ export const agentSessions = pgTable(
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
     // When shared control was first turned on, never cleared (0116, docs/adr/0016 decision 9).
     sharedControlEverAt: timestamp({ mode: "date", withTimezone: true }),
+    // The people holding shared control one by one (0228, docs/adr/0026 decision 7): a mirror of
+    // `session_shared_control`'s granted rows, written in the same transaction, so every rule
+    // that reads a session reads who may steer it.
+    sharedControlUserIds: text()
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     // Null until settle classifies it (0050); false = a dead end the dashboard hides.
     hasTranscript: boolean(),
     // The idle stop's claim (0072): set when Mend stops an idle protocol agent, null on reopen.

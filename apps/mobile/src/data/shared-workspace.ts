@@ -60,6 +60,8 @@ export interface SessionSharing {
   /** Absent on servers from before per-person homes, and in a project's list. */
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
   readonly sharedControlEnabledAt?: string | null;
+  /** The people the owner gave shared control to, one by one; absent on older servers. */
+  readonly sharedControlUserIds?: ReadonlyArray<string>;
   readonly workspaceRetirement?: "marked" | "retiring" | null;
 }
 
@@ -69,7 +71,9 @@ export interface SessionSharing {
  * (with `MEND_HARNESS_LAYOUT=shared`, `livePeople` is always empty: no extra work at all).
  */
 export const readsWaiting = (session: SessionSharing | undefined): boolean =>
-  (session?.livePeople?.length ?? 0) > 0 && (session?.sharedControlEnabledAt ?? null) !== null;
+  (session?.livePeople?.length ?? 0) > 0 &&
+  ((session?.sharedControlEnabledAt ?? null) !== null ||
+    (session?.sharedControlUserIds ?? []).length > 0);
 
 /** Whether the session's executor waits to be replaced, as the session's own view says. */
 export const readsRetirement = (session: SessionSharing | undefined): boolean =>

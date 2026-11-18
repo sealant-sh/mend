@@ -2,6 +2,7 @@ import {
   JOIN_SHARED_HOME_LINE,
   joinWorktreeLine,
   retirementStopLines,
+  sharesControl,
   workspaceRetirementLine,
 } from "@mend/domain/workbench";
 import { useQuery } from "@tanstack/react-query";
@@ -112,15 +113,19 @@ export const useWorktreeJoinLine = (
 /** How often the waiting line is re-read while it can show: background work ends without an event. */
 export const WAIT_POLL_MS = 5_000;
 
-type WaitFacts = Pick<SessionDto, "livePeople" | "sharedControlEnabledAt">;
+type WaitFacts = Pick<
+  SessionDto,
+  "livePeople" | "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds"
+>;
 
 /**
  * Whether the waiting line (decision 6) can show at all: another sender's turn waits only where
  * people run in the executor (`livePeople`, empty for a shared executor and with
- * `MEND_HARNESS_LAYOUT=shared`) and the owner shares control. Otherwise the page asks nothing.
+ * `MEND_HARNESS_LAYOUT=shared`) and the owner shares control, with everyone or with someone.
+ * Otherwise the page asks nothing.
  */
 export const waitingLineRelevant = (session: WaitFacts): boolean =>
-  session.livePeople.length > 0 && session.sharedControlEnabledAt !== null;
+  session.livePeople.length > 0 && sharesControl(session);
 
 /**
  * How the waiting line is read: not at all where it cannot show; while it can, re-read on a short

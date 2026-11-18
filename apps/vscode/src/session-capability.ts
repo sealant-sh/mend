@@ -15,7 +15,10 @@ export type RowCapability =
   | { readonly kind: "notYours"; readonly watch: boolean; readonly why: string }
   | { readonly kind: "unknown"; readonly why: string };
 
-type SteeringFacts = Pick<Session, "ownerUserId" | "sharedControlEnabledAt">;
+type SteeringFacts = Pick<
+  Session,
+  "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds"
+>;
 
 /** Whether the server lets `viewer` steer, and so attach to the terminal of, `session`. */
 export const maySteer = (session: SteeringFacts, viewer: string): boolean =>
@@ -24,6 +27,7 @@ export const maySteer = (session: SteeringFacts, viewer: string): boolean =>
       ownerUserId: session.ownerUserId,
       sharedControlEnabledAt:
         session.sharedControlEnabledAt === null ? null : new Date(session.sharedControlEnabledAt),
+      sharedControlUserIds: session.sharedControlUserIds ?? [],
     },
     viewer,
   );

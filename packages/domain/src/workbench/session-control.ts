@@ -15,6 +15,10 @@ export * from "./session-control-rules.ts";
  * pending (docs/adr/0002-session-capture-store.md, "Stop drains, then terminates").
  * `terminal-watch` is an attach by someone other than the owner: output only, since only the
  * owner types in a session's terminal (docs/adr/0013-whoever-sends-a-turn-pays.md).
+ * `shared-control-ask` to `shared-control-take-back` are shared control for one person
+ * (docs/adr/0026, decision 7): the actor did it, and `refId` names the person it concerned (the
+ * one who asked, or whose grant was taken back). `shared-control-on` and `shared-control-off`
+ * stay the switch for everyone; `off` also ends every grant.
  */
 export const SessionControlKind = Schema.Literals([
   "interrupt",
@@ -27,6 +31,11 @@ export const SessionControlKind = Schema.Literals([
   "shared-control-on",
   "shared-control-off",
   "discard-unsaved-stop",
+  "shared-control-ask",
+  "shared-control-withdraw",
+  "shared-control-grant",
+  "shared-control-decline",
+  "shared-control-take-back",
 ]);
 export type SessionControlKind = typeof SessionControlKind.Type;
 

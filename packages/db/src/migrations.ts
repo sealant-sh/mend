@@ -2983,6 +2983,43 @@ const terminalWatchControlMigration = Effect.gen(function* () {
 });
 
 /**
+ * Shared control of a session for one person (docs/adr/0026, decision 7): a row while they ask
+ * and while they hold it, deleted when the ask is declined or withdrawn, the grant taken back, or
+ * (an ask) the session settles. Today's all-or-nothing value stays `shared_control_enabled_at`.
+ */
+const sessionSharedControlMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN IF NOT EXISTS shared_control_user_ids text[] NOT NULL DEFAULT '{}'::text[]`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS session_shared_control (
+      session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      state text NOT NULL CHECK (state IN ('asked', 'granted')),
+      asked_at timestamptz NOT NULL,
+      granted_at timestamptz,
+      granted_by_user_id text,
+      PRIMARY KEY (session_id, user_id),
+      CONSTRAINT session_shared_control_grant_check
+        CHECK ((state = 'granted') = (granted_at IS NOT NULL AND granted_by_user_id IS NOT NULL))
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS session_shared_control_user_idx ON session_shared_control (user_id)`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      DROP CONSTRAINT IF EXISTS session_control_events_kind_check`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      ADD CONSTRAINT session_control_events_kind_check CHECK (kind IN (
+        'interrupt', 'terminal-attach', 'terminal-watch', 'shell-open', 'stop', 'services-stop',
+        'idle-stop', 'shared-control-on', 'shared-control-off', 'discard-unsaved-stop',
+        'shared-control-ask', 'shared-control-withdraw', 'shared-control-grant',
+        'shared-control-decline', 'shared-control-take-back'
+      ))`;
+});
+
+/**
  * docs/adr/0013-whoever-sends-a-turn-pays.md, "Every turn records its payer": the person and the
  * connected account a turn ran on, with the account's name as it was then. Null on turns sent
  * before it, and on turns Mend could not say of. A payer, like every other actor Mend records, is
@@ -5704,4 +5741,8 @@ export const migrations = {
     yield* sql`ALTER TABLE change_landings ADD COLUMN IF NOT EXISTS one_off boolean NOT NULL
       DEFAULT false`;
   }),
+  // Shared control goes to the person who asked (docs/adr/0026, decision 7; SLNT-1149): asks and
+  // grants, one row per person and session, the granted ones mirrored on the session, and the
+  // control log's words for each step.
+  "0228_session_shared_control": sessionSharedControlMigration,
 };

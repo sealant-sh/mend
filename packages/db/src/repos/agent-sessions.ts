@@ -69,6 +69,7 @@ import {
 import { lockAgentConversation } from "./agent-conversation.ts";
 import { checkHistoryFence } from "./history-fence.ts";
 import { projectListed } from "./projects.ts";
+import { dropAsksOfSettled, endGrantsOf } from "./session-shared-control.ts";
 
 export class SessionNotFoundError extends Schema.TaggedError<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -840,10 +841,17 @@ const sessionSeamIntact: ExactKeys<
 > = true;
 void sessionSeamIntact;
 
-/** Disable the owner's shared control in the caller's transaction, without notifications. */
+/**
+ * Disable the owner's shared control in the caller's transaction, without notifications: with
+ * everyone, and every grant to one person (docs/adr/0026, decision 7).
+ */
 export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSharedControl")(
-  function* (db: Pick<MendDatabase, "update">, userId: string, organizationId: OrganizationId) {
-    return yield* db
+  function* (
+    db: Pick<MendDatabase, "update" | "delete">,
+    userId: string,
+    organizationId: OrganizationId,
+  ) {
+    const unshared = yield* db
       .update(agentSessions)
       .set({
         sharedControlEnabledByUserId: null,
@@ -853,12 +861,20 @@ export const disableOwnerSharedControl = Effect.fn("SessionsRepo.disableOwnerSha
       .where(
         and(
           eq(agentSessions.ownerUserId, userId),
-          isNotNull(agentSessions.sharedControlEnabledAt),
+          or(
+            isNotNull(agentSessions.sharedControlEnabledAt),
+            sql`cardinality(${agentSessions.sharedControlUserIds}) > 0`,
+          ),
           sql`${agentSessions.projectId} IN (SELECT ${projects.id} FROM ${projects} WHERE ${projects.organizationId} = ${organizationId})`,
         ),
       )
       .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
       .pipe(Effect.orDie);
+    yield* endGrantsOf(
+      db,
+      unshared.map((session) => session.id),
+    );
+    return unshared;
   },
 );
 
@@ -1489,6 +1505,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           })
           .where(and(eq(agentSessions.id, id), isNull(agentSessions.settledAt)))
           .pipe(Effect.orDie);
+        // An ask for shared control does not outlive the session (docs/adr/0026, decision 7).
+        yield* dropAsksOfSettled(db, id).pipe(Effect.orDie);
         yield* notify(id);
       });
 
@@ -1534,21 +1552,37 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         id: SessionId,
         enabledByUserId: string | null,
       ) {
+        // Off ends every grant to one person too (docs/adr/0026, decision 7): after it only the
+        // owner steers, whatever a client that knows only on and off was showing.
         const [row] = yield* db
-          .update(agentSessions)
-          .set({
-            sharedControlEnabledByUserId: enabledByUserId,
-            sharedControlEnabledAt: enabledByUserId === null ? null : yield* DateTime.nowAsDate,
-            // Once shared, always so for this session: turning it off keeps when it was first on.
-            ...(enabledByUserId === null
-              ? {}
-              : {
-                  sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
-                }),
-            updatedAt: yield* DateTime.nowAsDate,
-          })
-          .where(eq(agentSessions.id, id))
-          .returning()
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              if (enabledByUserId === null) {
+                yield* tx
+                  .select({ id: agentSessions.id })
+                  .from(agentSessions)
+                  .where(eq(agentSessions.id, id))
+                  .for("update");
+                yield* endGrantsOf(tx, [id]);
+              }
+              return yield* tx
+                .update(agentSessions)
+                .set({
+                  sharedControlEnabledByUserId: enabledByUserId,
+                  sharedControlEnabledAt:
+                    enabledByUserId === null ? null : yield* DateTime.nowAsDate,
+                  // Once shared, always so for this session: turning it off keeps when it was first on.
+                  ...(enabledByUserId === null
+                    ? {}
+                    : {
+                        sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
+                      }),
+                  updatedAt: yield* DateTime.nowAsDate,
+                })
+                .where(eq(agentSessions.id, id))
+                .returning();
+            }),
+          )
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new SessionNotFoundError({ sessionId: id });
         yield* notify(id);

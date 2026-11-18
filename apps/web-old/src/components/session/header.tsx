@@ -1,4 +1,4 @@
-import { captureDiscardOffered, sessionModelLine } from "@mend/domain/workbench";
+import { captureDiscardOffered, sessionModelLine, sharesControl } from "@mend/domain/workbench";
 import { cn } from "@mend/ui-old/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
@@ -76,11 +76,13 @@ export function SessionTitle({
       ? "nobody · the session has no owner"
       : session.sharedControlEnabledAt !== null
         ? "everyone who can see the project · shared control on"
-        : control.own
-          ? "only you"
-          : facts.ownerName === null
-            ? "its owner"
-            : `only ${facts.ownerName}`;
+        : session.sharedControlUserIds.length > 0
+          ? "its owner and the people they gave it to · shared control on"
+          : control.own
+            ? "only you"
+            : facts.ownerName === null
+              ? "its owner"
+              : `only ${facts.ownerName}`;
   return (
     <h1 className="flex min-w-0 items-center">
       <InfoPopover
@@ -157,11 +159,7 @@ function ShareButton({ facts }: { readonly facts: SessionFacts }) {
       className="w-[380px]"
       trigger={
         // A phone has no room for it on the header line: More holds it there.
-        <Button
-          size="sm"
-          aria-pressed={session.sharedControlEnabledAt !== null}
-          className="max-md:hidden"
-        >
+        <Button size="sm" aria-pressed={sharesControl(session)} className="max-md:hidden">
           Share
         </Button>
       }
@@ -181,7 +179,7 @@ function SessionSharing({ facts }: { readonly facts: SessionFacts }) {
     <SharedControl
       sessionId={session.id}
       ownerSteers={control.own}
-      shared={session.sharedControlEnabledAt !== null}
+      shared={sharesControl(session)}
       canToggle={control.toggleSharedControl}
       turnsOnSendersLogin={control.turnsOnSendersLogin}
       steer={control.steer}

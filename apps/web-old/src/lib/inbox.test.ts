@@ -57,6 +57,7 @@ const session = (
   autoLand: null,
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
+  sharedControlUserIds: [],
   sharedControlEverAt: null,
   livePeople: [],
   resourceStatusLines: [],

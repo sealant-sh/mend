@@ -6,16 +6,46 @@ import type { OrganizationRole } from "./organization.ts";
 /** The facts a steering decision reads. */
 export interface SteeringFacts {
   readonly ownerUserId: string | null;
+  /**
+   * Set while the owner shares control with everyone who can see the project: shared control as
+   * it was before it went to one person at a time (docs/adr/0026, decision 7).
+   */
   readonly sharedControlEnabledAt: Date | null;
+  /**
+   * The people the owner granted shared control to, one by one, each after they asked
+   * (docs/adr/0026, decision 7). Empty on a server from before, and while nobody holds a grant.
+   */
+  readonly sharedControlUserIds: ReadonlyArray<string>;
 }
 
 /**
- * Steering a session the caller can already see: its owner always, anyone else only while the
- * owner shares control. A session with no owner is steered by nobody.
+ * Steering a session the caller can already see: its owner always; anyone else while the owner
+ * shares control with everyone, or with them. A session with no owner is steered by nobody.
  */
 export const canSteerSession = (session: SteeringFacts, callerUserId: string): boolean =>
   session.ownerUserId !== null &&
-  (callerUserId === session.ownerUserId || session.sharedControlEnabledAt !== null);
+  (callerUserId === session.ownerUserId ||
+    session.sharedControlEnabledAt !== null ||
+    session.sharedControlUserIds.includes(callerUserId));
+
+/**
+ * Whether anyone besides the owner may steer the session now: shared control with everyone, or
+ * with at least one person. What "shared control on" means to a client that knows only on and off.
+ */
+export const sharesControl = (
+  session: Pick<SteeringFacts, "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds">,
+): boolean =>
+  session.ownerUserId !== null &&
+  (session.sharedControlEnabledAt !== null || session.sharedControlUserIds.length > 0);
+
+/**
+ * Asking the owner for shared control of a session the caller can see (docs/adr/0026, decision
+ * 7): anyone but its owner who cannot already steer it. A session with no owner has nobody to ask.
+ */
+export const canAskSharedControl = (session: SteeringFacts, callerUserId: string): boolean =>
+  session.ownerUserId !== null &&
+  callerUserId !== session.ownerUserId &&
+  !canSteerSession(session, callerUserId);
 
 /**
  * Typing into a session's terminal, starting its agent in one, opening a shell or running a
@@ -66,8 +96,10 @@ export const terminalOwnerOnlyLine = (ownerName: string, act: TerminalOwnerAct):
   }; they can continue it as a conversation.`;
 
 /**
- * Turning shared control on is the owner's choice alone: it lends their credentials. Turning it
- * off is also open to an organization owner, who can always take back a teammate's session.
+ * Turning shared control on, for everyone or for one person who asked, is the owner's choice
+ * alone: in a worktree that shares one home it lends their credentials. Turning it off, or taking
+ * it back from one person, is also open to an organization owner, who can always take back a
+ * teammate's session.
  */
 export const canToggleSharedControl = (
   session: SteeringFacts,

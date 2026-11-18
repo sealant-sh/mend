@@ -121,6 +121,10 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `shared control of session ${event.subjectId}`;
     case "session.shared_control_off":
       return `turned off shared control of session ${event.subjectId}`;
+    case "session.shared_control_granted":
+      return `gave ${text(event.data["userId"]) ?? "a member"} shared control of session ${event.subjectId}`;
+    case "session.shared_control_taken_back":
+      return `took shared control of session ${event.subjectId} back from ${text(event.data["userId"]) ?? "a member"}`;
     case "session.unsaved_discarded": {
       // What Mend knew when it was asked: last save, snaps failing, a completed final or none.
       const words = text(event.data["words"]);

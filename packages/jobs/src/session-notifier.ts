@@ -16,6 +16,7 @@ import {
 import { AgentTurnId, SessionId } from "@mend/domain";
 import {
   agentProcessOutcome,
+  canSteerSession,
   captureStatusLine,
   currentAgentProcess,
   DEFAULT_NOTIFICATION_SETTINGS,
@@ -220,14 +221,16 @@ const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent))
 export const pushTargets = (
   devices: PushDevicesRepo["Service"],
   settings: Pick<NotificationSettingsRepo["Service"], "forUsers">,
-  session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt">,
+  session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds">,
   latestTurnSenderUserId: string | null,
   notice: { readonly kind: NotificationKind; readonly slackThread: SlackThreadReach | null },
 ) =>
   Effect.gen(function* () {
     const recipients = notificationRecipients({
       ownerUserId: session.ownerUserId,
-      sharedControl: session.sharedControlEnabledAt !== null,
+      // The latest sender still steers it: shared with everyone, or with them (docs/adr/0026).
+      sharedControl:
+        latestTurnSenderUserId !== null && canSteerSession(session, latestTurnSenderUserId),
       latestTurnSenderUserId,
     });
     if (recipients.size === 0) return [];
@@ -360,7 +363,11 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
           const targets = yield* pushTargets(
             devices,
             notificationSettings,
-            { ownerUserId: call.approverId, sharedControlEnabledAt: null },
+            {
+              ownerUserId: call.approverId,
+              sharedControlEnabledAt: null,
+              sharedControlUserIds: [],
+            },
             null,
             {
               kind: "needs-input",

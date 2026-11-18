@@ -92,6 +92,8 @@ export interface SessionDto {
   readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When its owner turned shared control on; null while off, absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
+  /** The people the owner gave shared control to, one by one; absent on older servers. */
+  readonly sharedControlUserIds?: ReadonlyArray<string>;
   /**
    * Its executor waits to be replaced (docs/adr/0016, decision 14): the phone reads the
    * retirement's detail only then. Null otherwise, absent on older servers.

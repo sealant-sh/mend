@@ -6,7 +6,12 @@ import { canRemove, ownerLine, sessionActions } from "./viewer.ts";
 const org = OrganizationId.make("org-1");
 const alice = { userId: "alice", organizationId: org, role: "member" as const };
 const bob = { userId: "bob", organizationId: org, role: "owner" as const };
-const owned = { ownerUserId: "alice", sharedControlEnabledAt: null, origin: "mend" as const };
+const owned = {
+  ownerUserId: "alice",
+  sharedControlEnabledAt: null,
+  sharedControlUserIds: [],
+  origin: "mend" as const,
+};
 const shared = { ...owned, sharedControlEnabledAt: new Date() };
 const fromSlack = { ...owned, origin: "slack" as const };
 

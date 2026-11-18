@@ -104,11 +104,13 @@ export const MendEvent = Schema.Union([
   }),
   Schema.Struct({
     // The owner (or an organization owner) turned shared control off: every process closes the
-    // terminals and tunnels other accounts hold on this session.
+    // terminals and tunnels other accounts hold on this session. With `userId`, they took one
+    // person's grant back (docs/adr/0026, decision 7): only that person's close.
     type: Schema.Literals(["shared-control-off"]),
     sessionId: Schema.String,
     projectId: Schema.String,
     ownerUserId: Schema.NullOr(Schema.String),
+    userId: Schema.optionalKey(Schema.String),
   }),
   Schema.Struct({
     // Membership, roles or invitations of one organization changed.

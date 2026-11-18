@@ -220,14 +220,23 @@ export class Session extends Schema.Class<Session>("Session")({
    */
   autoLand: Schema.NullOr(Schema.Boolean).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
   /**
-   * Shared control (docs/adr/0003-organizations-and-tenancy.md): when set, anyone who can see the
-   * session may steer it, still on the owner's credentials. Who turned it on, and when.
+   * Shared control with everyone (docs/adr/0003-organizations-and-tenancy.md): when set, anyone
+   * who can see the session may steer it. Who turned it on, and when. Shared control with one
+   * person is `sharedControlUserIds` (docs/adr/0026, decision 7).
    */
   sharedControlEnabledByUserId: Schema.NullOr(Schema.String).pipe(
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   sharedControlEnabledAt: Schema.NullOr(Timestamp).pipe(
     Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The people the owner granted shared control to, one by one, each after asking (docs/adr/0026,
+   * decision 7). Empty while nobody holds a grant, and from servers before per-person grants.
+   */
+  sharedControlUserIds: Schema.Array(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+    Schema.withConstructorDefault(Effect.succeed([])),
   ),
   /**
    * When shared control was first turned on, kept after it is turned off (docs/adr/0016,

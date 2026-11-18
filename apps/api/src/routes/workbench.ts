@@ -61,6 +61,8 @@ import {
   SessionAnnotation,
   SessionInboxMark,
   SessionInboxRow,
+  SharedControlPerson,
+  SharedControlRefused,
   ConversationItemsPage,
   ConversationTurnsPage,
   ConversationRequestsPage,
@@ -93,6 +95,9 @@ import {
   SessionHistoryRepo,
   AuditEventsRepo,
   SessionControlEventsRepo,
+  SessionSharedControlRepo,
+  type SharedControlSessionMissing,
+  type SharedControlStepRefused,
   ChangePassesRepo,
   ChangeLandingsRepo,
   ChangeToursRepo,
@@ -206,6 +211,7 @@ import {
   LAUNCH_ADMISSION,
   type ReadStamp,
   SessionEngine,
+  type SessionTurnRefusedError,
   startFromBase,
   WorkspaceCaller,
   WorktreeReads,
@@ -252,7 +258,12 @@ import {
 } from "../services/workspace-environment.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
-import { requireOwnerRuns, SessionSteering, sessionControlView } from "../session-steering.ts";
+import {
+  requireOwnerRuns,
+  SessionSteering,
+  sessionControlView,
+  sharedControlView,
+} from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import {
@@ -2559,6 +2570,87 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     ),
 );
 
+/** A session's shared control as the caller reads it now (docs/adr/0026, decision 7). */
+const readSharedControl = (sessionId: SessionId) =>
+  Effect.gen(function* () {
+    const access = yield* ProjectAccess;
+    const session = yield* access.session(sessionId);
+    const people = yield* (yield* SessionSharedControlRepo).people(sessionId);
+    return sharedControlView(
+      session,
+      yield* access.viewer(),
+      people,
+      yield* (yield* SessionEngine).steersPerPerson(session),
+    );
+  });
+
+/** A refused step of shared control, in words the person who tried it can act on. */
+const sharedControlRefusal = (sessionId: SessionId, error: SharedControlStepRefused) => {
+  switch (error.reason) {
+    case "ended":
+      return new SharedControlRefused({
+        sessionId,
+        reason: error.reason,
+        message: "This session has ended, so shared control of it can no longer be asked for.",
+      });
+    case "owner":
+      return new SharedControlRefused({
+        sessionId,
+        reason: error.reason,
+        message: "Only someone else's session can be asked for: you own this one, or nobody does.",
+      });
+    case "steers":
+      return new SharedControlRefused({
+        sessionId,
+        reason: error.reason,
+        message: "You can already send messages in this session.",
+      });
+    case "not-asked":
+      return new SharedControlRefused({
+        sessionId,
+        reason: error.reason,
+        message: "There is no open ask from this person: it was withdrawn or already answered.",
+      });
+    case "not-granted":
+      return new SharedControlRefused({
+        sessionId,
+        reason: error.reason,
+        message: "This person doesn't have shared control of this session.",
+      });
+  }
+};
+
+/** A step on one person's shared control, refused and missing in the API's words. */
+const sharedControlStep = <A, R>(
+  sessionId: SessionId,
+  step: Effect.Effect<A, SharedControlStepRefused | SharedControlSessionMissing, R>,
+) =>
+  step.pipe(
+    Effect.catchTags({
+      SharedControlStepRefused: (error) => Effect.fail(sharedControlRefusal(sessionId, error)),
+      SharedControlSessionMissing: () => Effect.fail(new NotFound({ id: sessionId })),
+    }),
+  );
+
+/** Only the session's owner answers an ask for shared control of it. */
+const requireOwnerDecides = (session: Session) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    if (session.ownerUserId !== null && session.ownerUserId === caller.user.id) return;
+    return yield* new SessionNotSteerable({
+      sessionId: session.id,
+      message: "only the session owner answers an ask for shared control of this session",
+    });
+  });
+
+/** A refused turn as the API says it: the sender's own login named when it refused. */
+const turnRefusal = (sessionId: SessionId, error: SessionTurnRefusedError) =>
+  new SessionNotSteerable({
+    sessionId,
+    message: error.message,
+    ...(error.login === undefined ? {} : { login: error.login }),
+  });
+
 /** Record who steered a session, after the act succeeded (docs/adr/0003). */
 const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: string | null) =>
   Effect.gen(function* () {
@@ -2687,12 +2779,14 @@ const inboxRowsOf = (input: {
     const running = input.sessions.flatMap((session) =>
       launching(session).status === "running" ? [session.id] : [],
     );
-    const [processes, liveServices, requests, newest] = yield* Effect.all(
+    const reader = yield* CurrentUser;
+    const [processes, liveServices, requests, newest, controlAsks] = yield* Effect.all(
       [
         (yield* SessionProcessesRepo).listForSessions(sessionIds),
         (yield* ServicesRepo).liveCountsForSessions(sessionIds),
         conversations.oldestPendingRequests(sessionIds),
         conversations.newestItems(running),
+        (yield* SessionSharedControlRepo).asksOnOwnSessions(reader.user.id, sessionIds),
       ],
       { concurrency: "unbounded" },
     );
@@ -2722,6 +2816,7 @@ const inboxRowsOf = (input: {
           status: shown.status,
           ownerUserId: shown.ownerUserId,
           sharedControlEnabledAt: shown.sharedControlEnabledAt,
+          sharedControlUserIds: shown.sharedControlUserIds,
           startedAt: shown.startedAt,
           settledAt: shown.settledAt,
           createdAt: shown.createdAt,
@@ -2743,6 +2838,9 @@ const inboxRowsOf = (input: {
                 fileCount: annotation.fileCount,
               },
         ask: askOf.get(session.id) ?? null,
+        sharedControlAsks: (controlAsks.get(session.id) ?? []).map(
+          (person) => new SharedControlPerson(person),
+        ),
         failure: shown.status === "failed" ? shown.summary : null,
         activity: shown.status === "running" ? (activityOf.get(session.id) ?? null) : null,
       });
@@ -3076,10 +3174,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
                   message: "This session has no live conversation; resume it first.",
                 }),
               ),
-            SessionTurnRefusedError: (error) =>
-              Effect.fail(
-                new SessionNotSteerable({ sessionId: params.id, message: error.message }),
-              ),
+            SessionTurnRefusedError: (error) => Effect.fail(turnRefusal(params.id, error)),
             MessageKeyConflictError: (error) =>
               Effect.fail(new MessageKeyConflict({ message: error.message })),
             MessageTargetAmbiguousError: (error) =>
@@ -3244,10 +3339,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               AgentTurnNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
               ProtocolHostNotLiveError: (error) =>
                 Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
-              SessionTurnRefusedError: (error) =>
-                Effect.fail(
-                  new SessionNotSteerable({ sessionId: session.id, message: error.message }),
-                ),
+              SessionTurnRefusedError: (error) => Effect.fail(turnRefusal(session.id, error)),
               TurnSteerForbiddenError: (error) =>
                 Effect.fail(
                   new TurnSteerForbidden({
@@ -4004,6 +4096,109 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           subjectId: params.id,
         });
         return updated;
+      }),
+    )
+    .handle("sharedControlPeople", ({ params }) => readSharedControl(params.id))
+    .handle("askSharedControl", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        // opencode is one person's harness (docs/adr/0016, decision 6).
+        if (session.harness === "opencode") {
+          return yield* new SharedControlRefused({
+            sessionId: session.id,
+            reason: "opencode",
+            message: OPENCODE_NOT_STEERABLE,
+          });
+        }
+        const caller = yield* CurrentUser;
+        const asked = yield* sharedControlStep(
+          params.id,
+          (yield* SessionSharedControlRepo).ask(params.id, caller.user.id),
+        );
+        if (asked) yield* recordControl(params.id, "shared-control-ask", caller.user.id);
+        return yield* readSharedControl(params.id);
+      }),
+    )
+    .handle("withdrawSharedControl", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const caller = yield* CurrentUser;
+        yield* sharedControlStep(
+          params.id,
+          (yield* SessionSharedControlRepo).withdraw(params.id, caller.user.id),
+        );
+        yield* recordControl(params.id, "shared-control-withdraw", caller.user.id);
+        return yield* readSharedControl(params.id);
+      }),
+    )
+    .handle("grantSharedControl", ({ params }) =>
+      Effect.gen(function* () {
+        const access = yield* ProjectAccess;
+        const session = yield* access.session(params.id);
+        yield* requireOwnerDecides(session);
+        const caller = yield* CurrentUser;
+        yield* sharedControlStep(
+          params.id,
+          (yield* SessionSharedControlRepo).grant(params.id, params.userId, caller.user.id),
+        );
+        yield* recordControl(params.id, "shared-control-grant", params.userId);
+        const viewer = yield* access.viewer();
+        if (viewer !== null) {
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: viewer.organizationId,
+            actorUserId: viewer.userId,
+            action: "session.shared_control_granted",
+            subjectType: "session",
+            subjectId: params.id,
+            data: { userId: params.userId },
+          });
+        }
+        return yield* readSharedControl(params.id);
+      }),
+    )
+    .handle("declineSharedControl", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        yield* requireOwnerDecides(session);
+        yield* sharedControlStep(
+          params.id,
+          (yield* SessionSharedControlRepo).decline(params.id, params.userId),
+        );
+        yield* recordControl(params.id, "shared-control-decline", params.userId);
+        return yield* readSharedControl(params.id);
+      }),
+    )
+    .handle("takeBackSharedControl", ({ params }) =>
+      Effect.gen(function* () {
+        const access = yield* ProjectAccess;
+        const session = yield* access.session(params.id);
+        const viewer = yield* access.viewer();
+        // The owner, or an organization owner, as with the switch for everyone (`org-owner-off`).
+        if (viewer === null || !canToggleSharedControl(session, viewer, false)) {
+          return yield* new SessionNotSteerable({
+            sessionId: session.id,
+            message: "only the session owner or an organization owner takes shared control back",
+          });
+        }
+        yield* sharedControlStep(
+          params.id,
+          (yield* SessionSharedControlRepo).takeBack(params.id, params.userId),
+        );
+        // Their queued turns are not sent, unless the switch for everyone still lets them steer.
+        // A turn of theirs already running finishes, as when the switch is turned off.
+        if (session.sharedControlEnabledAt === null) {
+          yield* (yield* SessionEngine).cancelQueuedTurnsBy(params.userId, [params.id]);
+        }
+        yield* recordControl(params.id, "shared-control-take-back", params.userId);
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: viewer.organizationId,
+          actorUserId: viewer.userId,
+          action: "session.shared_control_taken_back",
+          subjectType: "session",
+          subjectId: params.id,
+          data: { userId: params.userId },
+        });
+        return yield* readSharedControl(params.id);
       }),
     )
     .handle("controlEvents", ({ params }) =>

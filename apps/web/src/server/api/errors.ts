@@ -66,14 +66,51 @@ export class ApiRefusal extends Error {
   readonly removal: unknown;
   /** The setup step that did not finish (`ServiceSetupFailed`). Null for every other refusal. */
   readonly setup: SetupFailureData | null;
-  constructor(tag: string, removal: unknown = null, setup: SetupFailureData | null = null) {
+  /**
+   * Shared control's facts (docs/adr/0026, decision 7): why a step was refused
+   * (`SharedControlRefused.reason`), and the sender's own login when it refused their message
+   * (`SessionNotSteerable.login`: provider and `missing` | `invalid` | `unchosen`). Null otherwise.
+   */
+  readonly sharedControl: SharedControlFacts | null;
+  constructor(
+    tag: string,
+    removal: unknown = null,
+    setup: SetupFailureData | null = null,
+    sharedControl: SharedControlFacts | null = null,
+  ) {
     super(tag);
     this.name = "ApiRefusal";
     this.tag = tag;
     this.removal = removal;
     this.setup = setup;
+    this.sharedControl = sharedControl;
   }
 }
+
+/** What a page lays out from a shared control refusal; see `ApiRefusal.sharedControl`. */
+export interface SharedControlFacts {
+  readonly reason: string | null;
+  readonly login: { readonly provider: string; readonly state: string } | null;
+}
+
+const sharedControlOf = (refusal: Refusal): SharedControlFacts | null => {
+  if (refusal._tag === "SharedControlRefused") {
+    const reason = refusal["reason"];
+    return { reason: typeof reason === "string" ? reason : null, login: null };
+  }
+  const login = refusal["login"];
+  if (
+    refusal._tag === "SessionNotSteerable" &&
+    typeof login === "object" &&
+    login !== null &&
+    "provider" in login &&
+    typeof login.provider === "string" &&
+    "state" in login &&
+    typeof login.state === "string"
+  )
+    return { reason: null, login: { provider: login.provider, state: login.state } };
+  return null;
+};
 
 const removalOf = (refusal: Refusal): unknown =>
   refusal._tag === "RemovalRefused"
@@ -108,7 +145,7 @@ export const toTRPCError = (error: unknown, apiUrl = ""): TRPCError => {
       return new TRPCError({
         code: codeForStatus(status),
         message: refusalWords(error),
-        cause: new ApiRefusal(error._tag, removalOf(error), setupOf(error)),
+        cause: new ApiRefusal(error._tag, removalOf(error), setupOf(error), sharedControlOf(error)),
       });
     }
   }
