@@ -111,6 +111,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       });
   };
   const drag = async (key, x, y) => {
+    await dismissOverlay();
     const from = await boxOf(tabOf(key));
     await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2);
     await page.mouse.down();
@@ -154,6 +155,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     );
   };
   const typeLine = async (line) => {
+    await dismissOverlay();
     await body.getByRole("textbox", { name: "Terminal input" }).first().click();
     await page.keyboard.type(`${line}\n`, { delay: 15 });
     await page.waitForTimeout(900);
