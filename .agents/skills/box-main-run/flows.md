@@ -175,6 +175,27 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/projects.ts`, `apps/web/src/lib/clone-state.ts`,
   `apps/web/src/lib/project-removal.ts`
 
+### settings.new-web-settings
+
+- **Map:** appearance.md `theme-web`, `theme-system`, `theme-persist`; sign-in.md `web-sign-out`
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-settings`: Settings opens Profile beside its own sidebar, with
+  every page a person may open; old settings addresses go to their new homes; Profile changes the
+  account's name and password and puts both back; Appearance sets theme, text size and terminal
+  font, kept across a reload from the first paint, and the account menu reads the same theme; a
+  member sees no owner page or Server and is refused them by address; an operator sees Server; the
+  phone's Settings tab, Profile and Appearance at 390px; Sign out last.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the account's name and
+  password are what they were before the run.
+- **Mode:** `scripted` (recipes/new-web-settings.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/`, `apps/web/src/routes/_inbox.settings.index.tsx`,
+  `apps/web/src/routes/_inbox.settings.profile.tsx`,
+  `apps/web/src/routes/_inbox.settings.appearance.tsx`, `apps/web/src/routes/_inbox.settings.$.tsx`,
+  `apps/web/src/lib/settings-pages.ts`, `apps/web/src/lib/settings-guards.ts`,
+  `apps/web/src/lib/appearance.ts`, `apps/web/src/lib/account.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`

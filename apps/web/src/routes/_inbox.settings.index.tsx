@@ -1,40 +1,36 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 
-import { PhoneAccountRow } from "#/components/account-menu";
-import { PhoneOrganizationRow } from "#/components/organization-menu";
-import { PhoneTabBar } from "#/components/phone-inbox";
-import { NotFoundScreen } from "#/components/route-screens";
-import { useInbox } from "#/lib/use-inbox";
-import { useViewer } from "#/lib/use-viewer";
+import { PhoneSettings } from "#/components/settings/phone-settings";
+import { ProfilePage } from "#/components/settings/profile-page";
+import { accountOptions } from "#/lib/account";
+import { oldAnchorPath } from "#/lib/settings-pages";
 
 /**
- * The phone's Settings tab (Doop "Phone · account actions", "Phone · organization switcher"): at
- * its top, the account row (the account's actions) and the organization row (the switcher). The
- * pages under them, and Settings on the desk, come with route PR 37; until then the desk shows
- * not found here, as it does for any address no route owns yet.
+ * `/settings`: on the desk it opens Profile, the first page; under 1024px it is the phone's
+ * Settings tab, which lists every page. An anchor from the old single settings page
+ * (`/settings#devices`, in Slack messages and older links) opens the page that holds that setting
+ * now.
  */
 export const Route = createFileRoute("/_inbox/settings/")({
-  component: SettingsTab,
+  loader: ({ context: { queryClient } }) => queryClient.ensureQueryData(accountOptions()),
+  component: SettingsHome,
 });
 
-function SettingsTab() {
-  const { organizationName, account } = useViewer();
-  const inbox = useInbox();
-  const waiting = inbox.status === "success" ? inbox.view.groups.waiting.length : 0;
+function SettingsHome() {
+  const navigate = useNavigate();
+  // The fragment never reaches the server, so the browser reads it once the page is up.
+  useEffect(() => {
+    const target = oldAnchorPath(window.location.hash);
+    if (target !== null) void navigate({ href: target, replace: true });
+  }, [navigate]);
   return (
     <>
-      <div className="flex min-h-dvh flex-col bg-background pb-14 lg:hidden">
-        <header className="px-4 pt-3 pb-3">
-          <h1 className="text-2xl font-semibold tracking-tight">Settings</h1>
-        </header>
-        <div className="border-t border-border">
-          <PhoneAccountRow account={account} />
-          <PhoneOrganizationRow organizationName={organizationName} />
-        </div>
-        <PhoneTabBar active="settings" badge={waiting} />
+      <div className="contents lg:hidden">
+        <PhoneSettings />
       </div>
       <div className="contents max-lg:hidden">
-        <NotFoundScreen />
+        <ProfilePage />
       </div>
     </>
   );

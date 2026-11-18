@@ -7,9 +7,11 @@ import { SearchProvider } from "#/components/command-palette";
 import { SwitchedToast } from "#/components/organization-menu";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
+import { SettingsSidebar } from "#/components/settings/settings-sidebar";
 import { Toaster } from "#/components/toaster";
 import { inboxQuery } from "#/lib/inbox-live";
 import { useOnline } from "#/lib/online";
+import { isSettingsPath } from "#/lib/settings-pages";
 import { sidebarExpanded } from "#/lib/ui-prefs";
 import { inboxMarksQuery, useInbox } from "#/lib/use-inbox";
 import { useViewer } from "#/lib/use-viewer";
@@ -24,6 +26,9 @@ import { useWorkbenchEvents } from "#/lib/workbench-events";
  * every other page takes the whole width. The organization switcher and the account menu are at
  * the top of the Settings tab there (`/settings`). The New session composer, home's sheet on a wide
  * screen, is `/new` there.
+ *
+ * On Settings' own pages (`/settings/…`, a project's `/projects/<id>/settings/…`) the settings
+ * sidebar takes the app sidebar's place on the desk, with Back to app at its top.
  */
 export const Route = createFileRoute("/_inbox")({
   // The inbox's reads, against the options the inbox reads them with. On the server the page waits
@@ -49,6 +54,7 @@ function InboxLayout() {
   const inbox = useInbox();
   const online = useOnline();
   const home = useLocation({ select: (location) => location.pathname === "/" });
+  const settings = useLocation({ select: (location) => isSettingsPath(location.pathname) });
   const { organizationName, account } = useViewer();
   // Open in full or folded to its rail, as this browser left it; the server renders it that way.
   const expanded = sidebarExpanded.use();
@@ -63,12 +69,16 @@ function InboxLayout() {
       <SearchProvider organizationName={organizationName} inbox={inbox}>
         {/* Under 1024px there is no sidebar: home is the inbox, and Settings holds the switchers. */}
         <div className="contents max-lg:hidden">
-          <AppSidebar
-            organizationName={organizationName}
-            account={account}
-            inbox={inbox}
-            online={online}
-          />
+          {settings ? (
+            <SettingsSidebar />
+          ) : (
+            <AppSidebar
+              organizationName={organizationName}
+              account={account}
+              inbox={inbox}
+              online={online}
+            />
+          )}
         </div>
         <SidebarInset className="min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
           {home ? (

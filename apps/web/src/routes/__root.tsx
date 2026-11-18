@@ -1,6 +1,7 @@
 import { createRootRouteWithContext, HeadContent, Scripts } from "@tanstack/react-router";
 import { type ReactNode, useState } from "react";
 
+import { textSize } from "#/lib/appearance";
 import { requireSignedIn } from "#/lib/sign-in";
 import { THEME_KEY } from "#/lib/theme";
 import type { RouterAppContext } from "#/router";
@@ -68,9 +69,11 @@ const retireCriticalSheet = (element: HTMLStyleElement | null) => {
 function RootDocument({ children }: { readonly children: ReactNode }) {
   // Read once: the sheet stays as the page was served.
   const [critical] = useState(criticalSheet);
+  // This browser's text size, from its cookie: the server draws the page at it, so nothing jumps.
+  const size = textSize.use();
   return (
     // The theme script sets `.dark` on <html> before React hydrates it.
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" data-text-size={size === "default" ? undefined : size} suppressHydrationWarning>
       <head>
         <HeadContent />
         {/* Text, not markup: the server writes the rules into the empty tag after React renders
