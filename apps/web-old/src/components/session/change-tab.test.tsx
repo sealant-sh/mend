@@ -10,7 +10,13 @@ import {
   Sha,
   WorktreeId,
 } from "@mend/domain";
-import { Change, ReviewComment, Session, SessionProcess } from "@mend/domain/workbench";
+import {
+  Change,
+  CommentState,
+  ReviewComment,
+  Session,
+  SessionProcess,
+} from "@mend/domain/workbench";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
   createMemoryHistory,
@@ -18,6 +24,7 @@ import {
   createRouter,
   RouterProvider,
 } from "@tanstack/react-router";
+import { Schema } from "effect";
 import { act, Suspense } from "react";
 import { createRoot } from "react-dom/client";
 import { serialize } from "superjson";
@@ -150,21 +157,31 @@ const comment = (id: string, file: string | null, body: string) =>
     updatedAt: now,
   });
 
+/** What the browser sends for `setCommentState`: tRPC's batch of one, the input under `json`. */
+const StateChange = Schema.Struct({
+  0: Schema.Struct({
+    json: Schema.Struct({
+      id: Schema.String,
+      commentId: Schema.String,
+      request: Schema.Struct({ state: CommentState }),
+    }),
+  }),
+});
+const decodeStateChange = Schema.decodeUnknownSync(Schema.fromJsonString(StateChange));
+
 /**
  * The Change tab's side panel, over a server that keeps each comment's state: the comment list
  * reads what `setCommentState` last wrote, as the API does.
  */
 const openPanel = async (comments: ReadonlyArray<ReviewComment>) => {
-  const states = new Map(comments.map((row) => [row.id as string, row.state]));
+  const states = new Map<string, CommentState>(comments.map((row) => [row.id, row.state]));
   const stateChanges: unknown[] = [];
   vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(urlText(input), "http://localhost");
     const paths = url.pathname.split("/trpc/")[1]?.split(",") ?? [];
     const replies = paths.map((path) => {
       if (path === "changes.setCommentState") {
-        const sent = JSON.parse(bodyText(init)) as {
-          0: { json: { commentId: string; request: { state: ReviewComment["state"] } } };
-        };
+        const sent = decodeStateChange(bodyText(init));
         stateChanges.push(sent[0].json);
         states.set(sent[0].json.commentId, sent[0].json.request.state);
         return { result: { data: serialize(null) } };
