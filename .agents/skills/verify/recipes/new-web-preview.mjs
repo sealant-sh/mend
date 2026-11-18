@@ -8,7 +8,7 @@
 // that fails says so (`service-observe`); a Mend-served preview on another site, and the file that
 // doesn't parse (`toml-parse-error`), as fixtures; the phone's picker; the view's failure; and the
 // workspace stopped by Stop session. Run the CLI batch first, once per stack: it starts a `sleep`
-// session in the worktree `preview-ws` whose `.mend/mend.toml` declares `web` (python3's
+// session in a new worktree `preview-ws-<time>` whose `.mend/mend.toml` declares `web` (python3's
 // http.server on 8000) and `broken` (exits 3).
 //
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-preview-sessions.json
@@ -124,7 +124,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await open("/no-such-page");
   await page.evaluate(() => localStorage.setItem("mend-theme", "light"));
 
-  // The session the CLI batch started in `preview-ws`.
+  // The session the CLI batch started, in the newest `preview-ws-<time>`.
   const rows = await page.evaluate(async () => {
     const queryClient = window["__TSR_ROUTER__"].options.context.queryClient;
     await queryClient.refetchQueries({ queryKey: [["sessions", "inbox"]] });
@@ -135,19 +135,20 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const running = rows
     .filter(
       (row) =>
-        row.worktreeName === "preview-ws" &&
+        /^preview-ws-\d+$/.test(row.worktreeName ?? "") &&
         !["completed", "stopped", "failed"].includes(row.session.status),
     )
     .toSorted((a, b) => String(b.session.createdAt).localeCompare(String(a.session.createdAt)));
   if (running.length === 0)
-    throw new Error("preview-ws has no running session: run the CLI batch first");
+    throw new Error("no preview-ws-<time> worktree has a running session: run the CLI batch first");
   const A = running[0].session.id;
   note(`the batch session is ${A}; the recipe stops it at the end (Stop session)`);
   await client(
     async (trpc, [id, label]) => trpc.sessions.setLabel.mutate({ id, label }),
     [A, TITLE],
   );
-  // Services a previous drive left in this workspace: stopped, so the list starts from the file.
+  // The newest batch session's worktree is new, so its list starts from the file. Services a
+  // failed drive left running in it are stopped first.
   const left = await client(
     async (trpc, id) =>
       (await trpc.services.list.query({ all: true })).filter(

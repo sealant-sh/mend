@@ -314,8 +314,8 @@ flows reuse what earlier ones made:
 - **Map:** services.md `service-run-web`, `service-recipe`, `service-add`, `service-observe`,
   `service-logs`, `service-restart-stop`; mend-toml.md `toml-recipes-card`, `toml-parse-error`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-preview-sessions.json` (a `sleep` session in the worktree
-  `preview-ws` whose `.mend/mend.toml` declares `web` and `broken`), then drive the recipe
+- **Do:** Run the CLI batch `new-web-preview-sessions.json` (a `sleep` session in a new worktree
+  `preview-ws-<time>` whose `.mend/mend.toml` declares `web` and `broken`), then drive the recipe
   `new-web-preview`: open `/sessions/<id>/preview`, Start web, open its page in a new tab, type a
   path, open the log, Restart service…, Run a command…, adopt a port, Start broken, Stop web and Run
   again, look at 390px with the picker open, a Mend preview on another site and a file that doesn't
