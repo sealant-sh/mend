@@ -60,7 +60,7 @@ export default async ({ page, web, capture, note }) => {
     if (id === null) throw new Error(`no session id on ${title}`);
     return id;
   };
-  const router = () => page.waitForFunction(() => window.__TSR_ROUTER__ !== undefined);
+  const router = () => page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
   /**
    * The page has hydrated: React has taken the inbox's controls over, so a click reaches them. A
    * click on the server's markup before then does nothing, as it would for a person.
@@ -81,7 +81,7 @@ export default async ({ page, web, capture, note }) => {
   /** Reads the inbox again from the browser, as an event or a refocus would. */
   const readAgain = () =>
     page.evaluate(() => {
-      void window.__TSR_ROUTER__.options.context.queryClient.invalidateQueries({
+      void window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
         queryKey: [["sessions", "inbox"]],
       });
     });
@@ -112,15 +112,15 @@ export default async ({ page, web, capture, note }) => {
 
   const mark = async (id, body) => {
     const status = await page.evaluate(
-      async ({ id, body }) =>
+      async ({ sessionId, change }) =>
         (
-          await fetch(`/api/sessions/${id}/inbox-mark`, {
+          await fetch(`/api/sessions/${sessionId}/inbox-mark`, {
             method: "PUT",
             headers: { "content-type": "application/json" },
-            body: JSON.stringify({ mark: body }),
+            body: JSON.stringify({ mark: change }),
           })
         ).status,
-      { id, body },
+      { sessionId: id, change: body },
     );
     if (status !== 200) throw new Error(`the mark answered ${status}`);
   };
@@ -309,7 +309,7 @@ export default async ({ page, web, capture, note }) => {
   });
   // Not awaited in the page: the read it starts is the one held above.
   await page.evaluate(() => {
-    void window.__TSR_ROUTER__.options.context.queryClient.resetQueries({
+    void window["__TSR_ROUTER__"].options.context.queryClient.resetQueries({
       queryKey: [["sessions", "inbox"]],
     });
   });
@@ -332,7 +332,7 @@ export default async ({ page, web, capture, note }) => {
   // Fixture rows: a long inbox (frame c5MKcsu4Ka), others' sessions for the Mine filter, and none.
   const me = await page.evaluate(
     () =>
-      window.__TSR_ROUTER__.options.context.queryClient
+      window["__TSR_ROUTER__"].options.context.queryClient
         .getQueryCache()
         .findAll({ queryKey: [["organization", "current"]] })[0]?.state.data?.userId,
   );
@@ -488,13 +488,15 @@ const fixtureRow = (index, { title, project, status, owner, minutes, ask = null 
   ask,
 });
 
+/** What a fixture row's agent asked: a question, or a command to approve. */
+const question = (subject) => ({ kind: "question", subject });
+const command = (subject) => ({ kind: "command", subject });
+
 /**
  * The long inbox: twelve waiting on the person, eight to review, two running, all theirs (`me`),
  * and two of someone else's.
  */
 const longInbox = (me) => {
-  const question = (subject) => ({ kind: "question", subject });
-  const command = (subject) => ({ kind: "command", subject });
   const rows = [
     [
       "Fix flaky checkout retry",
