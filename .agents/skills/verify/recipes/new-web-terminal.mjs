@@ -215,6 +215,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     throw new Error("the Terminal tab isn't the one showing");
   note(`/projects/<id>/shell/<id> went to ${new URL(page.url()).pathname}; the Terminal tab shows`);
   await list.waitFor();
+  // The list has read every session's processes: the session's own terminal is in it.
+  await list.getByRole("button", { name: new RegExp(`^${TITLE}`) }).waitFor({ timeout: 20_000 });
   const rowsBefore = await list.getByRole("button").allInnerTexts();
   note(`this workspace's shells before New shell: ${JSON.stringify(rowsBefore)}`);
   await both("terminal-before-new-shell");
@@ -286,7 +288,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   if (!(narrow < wide && narrow > wide / 2))
     throw new Error(`the shell is ${narrow} columns in half the width, ${wide} before`);
   const kept = await terminalText();
-  if (!kept.includes("mend-42")) throw new Error("the scrollback is gone after the move");
+  // The width probe printed before the move (`clear` before the link emptied what came earlier).
+  if (!/^cols1x=/m.test(kept)) throw new Error("the scrollback is gone after the move");
   note(
     `moved to a tile on the right: the same terminal element, the shell went from ${wide} to ${narrow} columns, the scrollback is there`,
   );
