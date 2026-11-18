@@ -3,6 +3,7 @@ import { buttonVariants } from "@mend/ui/components/ui/button";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, useState, useSyncExternalStore } from "react";
 
 import type { InboxRow } from "#/lib/inbox";
@@ -60,6 +61,8 @@ import {
   type SessionMenuContext,
   type StopDialogState,
   StopSessionDialog,
+  type DeleteDialogState,
+  DeleteSessionDialog,
   type TabLayout,
   TileMenuButton,
   type WorkspaceFacts,
@@ -234,11 +237,17 @@ function SessionSheet({
     inboxAll.find((row) => row.session.id === sessionId) ?? null;
   const [stopDialog, setStopDialog] = useState<StopDialogState>({ open: false, target: null });
   const [renameDialog, setRenameDialog] = useState<RenameDialogState>({ open: false, row: null });
+  const [deleteDialog, setDeleteDialog] = useState<DeleteDialogState>({
+    open: false,
+    target: null,
+  });
+  const navigate = useNavigate();
   const menus: SessionMenuContext = {
     rowOf,
     viewerId: facts.viewerId,
     onRename: (row) => setRenameDialog({ open: true, row }),
     onStop: (target) => setStopDialog({ open: true, target }),
+    onDelete: (target) => setDeleteDialog({ open: true, target }),
   };
 
   const drag = useTabDrag({
@@ -541,6 +550,15 @@ function SessionSheet({
         state={stopDialog}
         viewerId={facts.viewerId}
         onOpenChange={(next) => setStopDialog((current) => ({ ...current, open: next }))}
+      />
+      <DeleteSessionDialog
+        state={deleteDialog}
+        onOpenChange={(next) => setDeleteDialog((current) => ({ ...current, open: next }))}
+        onDeleted={(id) => {
+          // The page's own session is gone: home. Another session's tab just closes.
+          if (id === session.id) void navigate({ to: "/" });
+          else closeOne(sessionTab(id));
+        }}
       />
       <RenameSessionDialog
         state={renameDialog}

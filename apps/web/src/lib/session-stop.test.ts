@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   actorOf,
+  offersDelete,
+  savingTitle,
+  whatStays,
   resumeOf,
   type Sentence,
   type StopPreview,
@@ -160,5 +163,44 @@ describe("actorOf and resumeOf", () => {
     expect(resumeOf("codex")).toEqual({ harness: null, label: "Resume session" });
     expect(resumeOf("shell")).toEqual({ harness: null, label: "Resume session" });
     expect(resumeOf("run")).toEqual({ harness: "shell", label: "Resume as a shell" });
+  });
+});
+
+describe("offersDelete", () => {
+  const facts = { own: true, agentLive: false, status: "stopped" as const, group: "review" };
+  it("offers Delete to the owner of a stopped or Done session only", () => {
+    expect(offersDelete(facts)).toBe(true);
+    expect(offersDelete({ ...facts, status: "completed", group: "done" })).toBe(true);
+    // Completed but still under To review: not Done yet.
+    expect(offersDelete({ ...facts, status: "completed", group: "review" })).toBe(false);
+    expect(offersDelete({ ...facts, own: false })).toBe(false);
+    expect(offersDelete({ ...facts, agentLive: true })).toBe(false);
+  });
+});
+
+describe("whatStays", () => {
+  it("lists the worktree, branch, change with its checkpoints, and the pull request", () => {
+    const rows = whatStays({
+      worktreeName: "refund-keys",
+      branch: "mend/refund-keys",
+      checkpoints: 3,
+      pullRequest: null,
+    });
+    expect(rows.map((row) => `${row.term}: ${row.value}`)).toEqual([
+      "Worktree: refund-keys",
+      "Branch: mend/refund-keys",
+      "Its change and 3 checkpoints: In the worktree",
+      "Pull request: None yet",
+    ]);
+  });
+});
+
+describe("savingTitle", () => {
+  it("leads with what the capture line says", () => {
+    expect(savingTitle("saving · 3 left")).toEqual({
+      title: "Saving the session's work.",
+      settled: true,
+    });
+    expect(savingTitle("not saved · 3 pending · workspace kept").settled).toBe(false);
   });
 });
