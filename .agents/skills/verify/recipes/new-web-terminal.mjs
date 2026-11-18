@@ -439,13 +439,21 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const traded = embed.waitForResponse((response) =>
     response.url().endsWith("/api/upgrade-tickets/exchange"),
   );
-  const socket = embed.waitForEvent("websocket", { timeout: 30_000 });
+  // Every frame the page's sockets receive, counted from the first: a replay arrives at once.
+  const received = [];
+  let ws = null;
+  embed.on("websocket", (socket) => {
+    ws = socket;
+    socket.on("framereceived", (frame) => received.push(frame.payload));
+  });
   await embed.goto(
     `${web}/tty-embed?session=${encodeURIComponent(A)}&process=${encodeURIComponent(shell.id)}&ticket=${encodeURIComponent(ticket)}`,
   );
   const exchange = await traded;
-  const ws = await socket;
-  const frame = await ws.waitForEvent("framereceived", { timeout: 20_000 });
+  for (let waited = 0; received.length === 0 && waited < 20_000; waited += 250)
+    await embed.waitForTimeout(250);
+  if (ws === null || received.length === 0) throw new Error("/tty-embed's socket received nothing");
+  const frame = { payload: received[0] };
   const embedded = await embed.getByRole("textbox", { name: "Terminal input" }).count();
   await signedOut.close();
   if (exchange.status() !== 200) throw new Error(`the ticket trade answered ${exchange.status()}`);
