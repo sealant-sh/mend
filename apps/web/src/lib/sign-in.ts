@@ -19,7 +19,11 @@ export const signInPath = (next: string): string =>
  * would loop, and setting a password from a reset link. A route PR for another such page (an
  * invitation, the Slack link) adds its segment.
  */
-const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([SIGN_IN_PATH.slice(1), "reset"]);
+const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([
+  SIGN_IN_PATH.slice(1),
+  "reset",
+  "authorize",
+]);
 
 export const opensSignedOut = (pathname: string): boolean =>
   SIGNED_OUT_PAGES.has(pathname.split("/")[1] ?? "");

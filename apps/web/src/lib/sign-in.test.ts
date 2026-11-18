@@ -93,6 +93,14 @@ describe("a page served to nobody", () => {
     expect(requests).toBe(0);
   });
 
+  it("lets the authorize page through, since it asks a signed-out person to sign in itself", async () => {
+    status = 401;
+    await expect(
+      check({ pathname: "/authorize", href: "/authorize?code=K7QF-2MXD" }),
+    ).resolves.toBeUndefined();
+    expect(requests).toBe(0);
+  });
+
   it("shows any other failure as the page's error, not as a walk to sign-in", async () => {
     status = 503;
     const stopped = await thrown(check({ pathname: "/", href: "/" }));
