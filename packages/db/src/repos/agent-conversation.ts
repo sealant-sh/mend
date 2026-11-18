@@ -578,8 +578,10 @@ export class AgentConversationRepo extends Context.Service<
       sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<AgentRequest>>;
     /**
-     * Each session's newest item (the highest `seq`, so the one updated last), in one statement
-     * that reads one index entry per session; sessions with no item are absent.
+     * Each session's newest item (the highest `seq`, so the one updated last) while the turn it
+     * belongs to still runs, in one statement that reads one index entry per session. A session
+     * whose newest item's turn has ended, or that has no item, is absent: a conversation reads
+     * `running` between turns too, and its last reply says nothing about work under way.
      */
     readonly newestItems: (
       sessionIds: ReadonlyArray<SessionId>,
@@ -2541,7 +2543,12 @@ export const AgentConversationRepoLive: Layer.Layer<
       // LATERAL with LIMIT 1: one step down `agent_items_session_seq_idx` per session, however
       // long its conversation.
       const newest = db
-        .select({ kind: agentItems.kind, title: agentItems.title, data: agentItems.data })
+        .select({
+          kind: agentItems.kind,
+          title: agentItems.title,
+          data: agentItems.data,
+          turnId: agentItems.turnId,
+        })
         .from(agentItems)
         .where(eq(agentItems.sessionId, agentSessions.id))
         .orderBy(desc(agentItems.seq))
@@ -2556,6 +2563,10 @@ export const AgentConversationRepoLive: Layer.Layer<
         })
         .from(agentSessions)
         .crossJoinLateral(newest)
+        .innerJoin(
+          agentTurns,
+          and(eq(agentTurns.id, newest.turnId), eq(agentTurns.status, "running")),
+        )
         .where(inArray(agentSessions.id, [...sessionIds]))
         .pipe(Effect.orDie);
       return rows.map(

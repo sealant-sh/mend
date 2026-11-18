@@ -44,7 +44,7 @@ const seed = Effect.gen(function* () {
     VALUES ('proj-1','fixture','/store/fixture/repo.git','main',(SELECT id FROM organizations LIMIT 1),'u-1')`;
   yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha)
     VALUES ('wt-1','proj-1','fixture','fixture','mend/fixture',${base})`;
-  for (const id of ["talks", "quiet"])
+  for (const id of ["talks", "quiet", "between"])
     yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,owner_user_id,harness,worktree,branch,base_sha,status)
       VALUES (${id},'proj-1','wt-1','u-1','codex','fixture','mend/fixture',${base},'running')`;
   yield* sql`INSERT INTO worktree_changes (id,project_id,worktree_id,session_id,branch,base_sha)
@@ -63,6 +63,13 @@ const seed = Effect.gen(function* () {
   for (const [id, seq, kind, title] of items)
     yield* sql`INSERT INTO agent_items (id, session_id, process_id, turn_id, seq, provider_item_id, provider_output_process_id, provider_output_seq, provider_event_index, kind, status, title)
       VALUES (${id}, 'talks', 'p-1', 't-1', ${seq}, ${id}, 'p-1', ${seq}, 0, ${kind}, 'in-progress', ${title})`;
+  // A conversation between turns: its last turn ended, and its last item is the reply.
+  yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status)
+    VALUES ('p-2','between','ws-2','agent-protocol','codex','running')`;
+  yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, author, input, status)
+    VALUES ('t-2', 'between', 'p-2', 1, 'u-1', 'go', 'completed')`;
+  yield* sql`INSERT INTO agent_items (id, session_id, process_id, turn_id, seq, provider_item_id, provider_output_process_id, provider_output_seq, provider_event_index, kind, status, title)
+    VALUES ('i-done', 'between', 'p-2', 't-2', 1, 'i-done', 'p-2', 1, 0, 'assistant-message', 'completed', null)`;
 });
 
 describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktree", () => {
@@ -108,12 +115,13 @@ describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktr
     expect(counts).toEqual({ uncounted: null, counted: 3, newest: 0 });
   });
 
-  it("reads each session's newest item by its feed position, and nothing for a session with none", async () => {
+  it("reads each session's newest item while its turn runs, and nothing between turns or for a session with none", async () => {
     const newest = await withRepos(
       Effect.gen(function* () {
         return yield* (yield* AgentConversationRepo).newestItems([
           SessionId.make("talks"),
           SessionId.make("quiet"),
+          SessionId.make("between"),
         ]);
       }),
     );

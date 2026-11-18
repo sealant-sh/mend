@@ -417,7 +417,8 @@ export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInbox
   failure: Schema.optionalKey(Schema.NullOr(Schema.String)),
   /**
    * What a running session's agent is doing, from its newest conversation item; null when it isn't
-   * running, runs in terminal mode (no items), or its newest item says nothing about work under way.
+   * running, is between turns, runs in terminal mode (no items), or its newest item says nothing
+   * about work under way.
    */
   activity: Schema.optionalKey(Schema.NullOr(AgentActivity)),
 }) {}
