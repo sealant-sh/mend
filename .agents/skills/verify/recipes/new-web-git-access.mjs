@@ -256,6 +256,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await open("/welcome");
   await heading("Git access");
   if (path() !== "/welcome") throw new Error(`reopening /welcome went to ${path()}`);
+  const keyAgain = await page.locator('[data-slot="copy-field-value"]').first().textContent();
+  if (keyAgain !== publicKey) throw new Error("reopening /welcome showed a different key");
   note(
     "reopening /welcome as the member (key made, a project in the organization, no agent login) stays on Git access",
   );
@@ -298,11 +300,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   const origin = new URL(web).origin;
   if (commands[0] !== `mend login --url ${origin}` || commands[1] !== "mend keys share")
     throw new Error(`the commands read ${JSON.stringify(commands)}`);
+  await open("/welcome");
+  await heading("Connect your computer");
+  if (!(await radio("Your computer's key").isChecked()))
+    throw new Error("after a reload, Your computer's key is not chosen");
   await page.getByText(/^Waiting for your computer to connect · \d+s$/).waitFor();
   await continueOpen(false);
   await page.getByText("Continue once your computer connects.").first().waitFor();
   note(
-    `'Your computer's key' saved (GET /api/me/git-access: bridge); the page shows 'mend login --url ${origin}' and 'mend keys share' with Copy command, 'Waiting for your computer to connect · Ns', Continue disabled`,
+    `'Your computer's key' saved (GET /api/me/git-access: bridge); the page shows 'mend login --url ${origin}' and 'mend keys share' with Copy command; after a reload it is still chosen, 'Waiting for your computer to connect · Ns', Continue disabled`,
   );
   await captureAll("git-access-your-computer-waiting");
 
@@ -394,6 +400,43 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await button("Try again").click();
   await heading("Git access");
   note("Try again with the server back shows Git access");
+
+  // The first account on a server goes on to Git access. The stack has its first account already,
+  // so the instance read and Better Auth's answer to the sign-up are made in the browser; the
+  // member's own session then opens /welcome.
+  await page.route("**/trpc/platform.instance**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        { result: { data: { json: { users: "none", registration: "open" } } } },
+      ]),
+    }),
+  );
+  await page.route("**/api/auth/sign-up/email", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        token: null,
+        user: { id: "verify-first", email: "first@example.invalid", name: "First" },
+      }),
+    }),
+  );
+  await open("/login");
+  await heading("Create the first account");
+  await page.getByRole("textbox", { name: "Name" }).fill("First");
+  await page.getByRole("textbox", { name: "Email" }).fill("first@example.invalid");
+  await typeSecret(page.getByLabel("Password", { exact: true }), "first-password", memberPassword);
+  await typeSecret(page.getByLabel("Confirm password"), "first-password", memberPassword);
+  await button("Create account and continue").click();
+  await page.waitForURL((url) => url.pathname === "/welcome");
+  await heading("Git access");
+  note(
+    "'Create account and continue' on a server with no accounts (answers made in the browser) went to /welcome, Git access",
+  );
+  await page.unroute("**/api/auth/sign-up/email");
+  await page.unroute("**/trpc/platform.instance**");
 
   // Put the member's mode back.
   const restored = await api("PUT", "/api/me/git-access", { mode: "mend-key" });
