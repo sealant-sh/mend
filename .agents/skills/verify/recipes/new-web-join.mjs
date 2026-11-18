@@ -165,6 +165,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   note(
     "the stack's own email: 'There's already an account for <email> on this server.' and Sign in instead; then passwords that differ: 2 fields to fix",
   );
+  // A screenshot is withheld while a password field holds anything typed, so the capture is of the
+  // same form with its passwords emptied: the email's problem and 'Enter a password.'
+  for (const field of await page.locator('input[type="password"]').all()) await field.fill("");
+  await page.getByText("Enter a password.").waitFor();
+  await page.getByText("Fix the 2 fields above to continue.").waitFor();
   await captureAll("join-fields-need-fixing");
 
   // Sign in instead: the sign-in form on the same page, with the email carried over.
@@ -184,8 +189,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await page.getByRole("button", { name: "Sign in", exact: true }).click();
   await heading(`Sign in to join ${org}`);
   await outOfTheLimit();
-  await account.typePassword(page.getByLabel("Password", { exact: true }));
-  await button("Sign in").click();
+  await signIn();
   await page.getByText(`You're already a member of ${org}.`).waitFor();
   expectPath(`/join#${used.token}`);
   note("signed in from the page as the owner: back on the invitation, which says they're a member");
