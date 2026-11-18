@@ -186,58 +186,84 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
   await both("preview-running");
 
-  // Its page: Open in a new tab loads what the Service serves.
-  const link = body.getByRole("link", { name: "Open in a new tab" }).first();
+  // Its page: Open in a new tab goes to the Service's own address. (The stack's Services bind
+  // inside its container, which this machine's browser can't reach: the request below, from inside
+  // the workspace, is what shows the Service answering.)
+  const link = body.getByRole("link", { name: "Open in a new tab" });
+  if ((await link.count()) !== 1) throw new Error("more than one Open in a new tab");
   const href = await link.getAttribute("href");
+  if (!/^http:\/\/[^/]+:\d+\/$/.test(href ?? "")) throw new Error(`Open goes to ${href}`);
   const opened = page.context().waitForEvent("page", { timeout: 15_000 });
   await link.click();
-  const served = await opened;
-  const answer = await served
-    .waitForResponse((response) => response.url() === href, {
-      timeout: 15_000,
-    })
-    .catch(() => null);
-  await served.waitForLoadState("domcontentloaded");
-  const heading = await served
-    .locator("h1")
-    .first()
-    .innerText()
-    .catch(() => "");
-  await served.close();
-  note(
-    `Open in a new tab opened ${href}: HTTP ${answer?.status() ?? "?"}, its page's heading "${heading}"`,
-  );
-  if (!/Directory listing/.test(heading)) throw new Error("the Service's page didn't load");
+  const tabPage = await opened;
+  // The tab starts at about:blank, and doesn't load: wait for it to name its address.
+  await tabPage
+    .waitForURL(/^http/, { timeout: 10_000, waitUntil: "commit" })
+    .catch(() => undefined);
+  const tabUrl = tabPage.url();
+  await tabPage.close();
+  note(`Open in a new tab: a new tab opened at ${tabUrl} (the link's address is ${href})`);
 
-  // The address bar takes a path: both the frame and the link go there.
+  // The address bar takes a path: the link goes there.
   const path = body.getByRole("textbox", { name: "Path on web" });
   await path.fill("/.mend/");
   await path.press("Enter");
-  const pathed = await body
-    .getByRole("link", { name: "Open in a new tab" })
-    .first()
-    .getAttribute("href");
+  const pathed = await link.getAttribute("href");
   if (!pathed?.endsWith("/.mend/")) throw new Error(`the path went nowhere: ${pathed}`);
   note(`typed /.mend/ in the address bar: the page's link is now ${pathed}`);
+  await path.fill("/");
+  await path.press("Enter");
 
-  // The log: its newest line in the bar, the whole output when opened.
+  // Run a command…: a one-off Service, nothing saved. It asks web for its page first, from inside
+  // the workspace, and prints what web answered.
+  await list.getByRole("button", { name: "Run a command…" }).click();
+  const run = page.getByRole("dialog", { name: "Run a command" });
+  await run.waitFor();
+  await run
+    .getByRole("textbox", { name: "Command" })
+    .fill(
+      "python3 -c \"import urllib.request as u; print('web answered', u.urlopen('http://127.0.0.1:8000/').status)\" && exec python3 -m http.server 8002",
+    );
+  await run.getByRole("textbox", { name: "Port" }).fill("8002");
+  await run.getByRole("textbox", { name: "Name" }).fill("docs");
+  await settled();
+  await both("preview-run-command");
+  await run.getByRole("button", { name: "Run", exact: true }).click();
+  await run.waitFor({ state: "detached", timeout: 90_000 });
+  const docs = list.getByRole("button", { name: /^docs :8002/ });
+  await docs.waitFor({ timeout: 60_000 });
+  if ((await docs.getAttribute("aria-current")) !== "true")
+    throw new Error("the command's Service isn't the one showing");
+  note(`Run a command: docs started and shows: ${JSON.stringify(await textOf(docs))}`);
   const logs = body.getByRole("button", { name: /^Logs/ });
-  await page.waitForFunction(
-    (key) =>
-      /GET \//.test(
-        [...document.querySelectorAll(`[data-tab-body="${key}"] button`)].find((each) =>
-          /^Logs/.test(each.textContent ?? ""),
-        )?.textContent ?? "",
-      ),
-    VIEW,
-    { timeout: 30_000 },
+  const logBarSays = (pattern) =>
+    page.waitForFunction(
+      ([key, source]) =>
+        new RegExp(source).test(
+          [...document.querySelectorAll(`[data-tab-body="${key}"] button`)].find(
+            (each) => each.getClientRects().length > 0 && /^Logs/.test(each.textContent ?? ""),
+          )?.textContent ?? "",
+        ),
+      [VIEW, pattern.source],
+      { timeout: 60_000 },
+    );
+  await logBarSays(/web answered 200|Serving HTTP/);
+  await logs.click();
+  await waitText(/web answered 200/, 30_000);
+  note(
+    `docs's log: ${JSON.stringify((await textOf(body.getByRole("region", { name: "docs's log" }))).slice(0, 300))}`,
   );
-  note(`the Logs bar reads ${JSON.stringify(await textOf(logs))}`);
+  await logs.click();
+
+  // web's log: the request docs made, newest on the bar, the whole output when opened.
+  await list.getByRole("button", { name: /^web :8000/ }).click();
+  await logBarSays(/GET \/ HTTP\/1\.1" 200/);
+  note(`web's Logs bar reads ${JSON.stringify(await textOf(logs))}`);
   await logs.click();
   const log = body.getByRole("region", { name: "web's log" });
   await log.waitFor();
   await waitText(/Serving HTTP on/);
-  note(`the log, opened: ${JSON.stringify((await textOf(log)).slice(0, 300))}`);
+  note(`web's log, opened: ${JSON.stringify((await textOf(log)).slice(0, 400))}`);
   await both("preview-log");
   await logs.click();
 
@@ -252,27 +278,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await restart.waitFor({ state: "detached", timeout: 90_000 });
   await list.getByRole("button", { name: /^web :8000 Running/ }).waitFor({ timeout: 90_000 });
   note("Restart: the dialog closed, web reads Running on :8000 again");
-
-  // Run a command…: a one-off Service, nothing saved.
-  await list.getByRole("button", { name: "Run a command…" }).click();
-  const run = page.getByRole("dialog", { name: "Run a command" });
-  await run.waitFor();
-  await run.getByRole("textbox", { name: "Command" }).fill("python3 -m http.server 8002");
-  await run.getByRole("textbox", { name: "Port" }).fill("8002");
-  await run.getByRole("textbox", { name: "Name" }).fill("docs");
-  await settled();
-  await both("preview-run-command");
-  await run.getByRole("button", { name: "Run", exact: true }).click();
-  await run.waitFor({ state: "detached", timeout: 90_000 });
-  await list.getByRole("button", { name: /^docs :8002/ }).waitFor({ timeout: 60_000 });
-  if (
-    (await list.getByRole("button", { name: /^docs :8002/ }).getAttribute("aria-current")) !==
-    "true"
-  )
-    throw new Error("the command's Service isn't the one showing");
-  note(
-    `Run a command: docs started and shows; the list reads ${JSON.stringify(await textOf(list))}`,
-  );
 
   // An empty command adopts a port something already listens on: docs's own, under another name.
   await list.getByRole("button", { name: "Run a command…" }).click();

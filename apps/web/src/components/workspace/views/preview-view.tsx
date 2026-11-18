@@ -144,6 +144,12 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
     onSettled: settle,
   });
   const [running, setRunning] = useState(false);
+  // Each opening of Run a command starts with empty fields.
+  const [opened, setRuns] = useState(0);
+  const openRunCommand = () => {
+    setRuns((count) => count + 1);
+    setRunning(true);
+  };
   const runCommand = useMutation({
     mutationFn: (start: CommandStart) => {
       if (opensOn === null) throw new Error("Only the owner of a session here starts services.");
@@ -279,7 +285,7 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
       </p>
     ) : null;
   const runCommandButton = starts ? (
-    <Button variant="outline" size={touch} onClick={() => setRunning(true)}>
+    <Button variant="outline" size={touch} onClick={openRunCommand}>
       Run a command…
     </Button>
   ) : null;
@@ -408,7 +414,7 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
             recipes={starts ? offered : []}
             starting={startingRecipe}
             onStart={(recipe) => startRecipe.mutate(recipe)}
-            onRunCommand={starts ? () => setRunning(true) : null}
+            onRunCommand={starts ? openRunCommand : null}
             onShowLog={current?.logProcessId === null ? null : () => setLogOpen(true)}
             onRestart={steers && current !== null ? () => setRestarting(current) : null}
             onStop={steers && current !== null ? () => stop.mutate(current) : null}
@@ -426,6 +432,7 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
         {logBar}
       </div>
       <RunCommandDialog
+        key={opened}
         open={running}
         onOpenChange={(next) => {
           setRunning(next);

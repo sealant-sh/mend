@@ -101,21 +101,24 @@ export function Page({
             className="min-w-0 flex-1 bg-transparent font-mono text-meta text-foreground outline-none"
           />
         </form>
-        <a
-          href={src}
-          target="_blank"
-          rel="noreferrer"
-          aria-label="Open in a new tab"
-          title="Open in a new tab"
-          className={cn(
-            buttonVariants({
-              variant: layout === "list" ? "outline" : "ghost",
-              size: layout === "list" ? "sm" : layout === "picker" ? "icon-touch" : "icon-sm",
-            }),
-          )}
-        >
-          {layout === "list" ? "Open in new tab" : <ExternalLinkIcon />}
-        </a>
+        {/* Where the page can't show here, the Open below says why; the bar needs none. */}
+        {showing._tag === "Frame" ? (
+          <a
+            href={src}
+            target="_blank"
+            rel="noreferrer"
+            aria-label="Open in a new tab"
+            title="Open in a new tab"
+            className={cn(
+              buttonVariants({
+                variant: layout === "list" ? "outline" : "ghost",
+                size: layout === "list" ? "sm" : layout === "picker" ? "icon-touch" : "icon-sm",
+              }),
+            )}
+          >
+            {layout === "list" ? "Open in new tab" : <ExternalLinkIcon />}
+          </a>
+        ) : null}
       </div>
       {showing._tag === "Frame" ? (
         <div

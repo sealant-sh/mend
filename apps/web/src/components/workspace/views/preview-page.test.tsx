@@ -73,6 +73,14 @@ describe("the page under the Preview view's address bar", () => {
     );
   });
 
+  it("follows a typed path in the link when the page can't show here", () => {
+    const page = render(LINK, previewShowing(LINK, null, BOX));
+    submitPath(page, "/docs");
+    const links = [...page.querySelectorAll("a")];
+    expect(links).toHaveLength(1);
+    expect(links[0]?.getAttribute("href")).toBe("/preview-auth?preview=pv-web&path=%2Fdocs");
+  });
+
   it("says why a preview on another site can't show here, and opens it in a new tab", () => {
     const page = render(LINK, previewShowing(LINK, null, BOX));
     expect(page.querySelector("iframe")).toBeNull();
