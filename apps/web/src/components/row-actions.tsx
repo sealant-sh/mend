@@ -38,7 +38,7 @@ import {
   PencilIcon,
   Undo2Icon,
 } from "lucide-react";
-import { type ComponentType, type ReactNode, useState } from "react";
+import { type ComponentType, type ReactNode, useRef, useState } from "react";
 
 import { whenAhead, type InboxRow } from "#/lib/inbox";
 import { sessionPage } from "#/lib/later-pages";
@@ -206,10 +206,10 @@ export function RenameField({
   readonly onCancel: () => void;
 }) {
   // Enter and Esc end the edit before the box loses focus: the blur after them does nothing.
-  const [ended, setEnded] = useState(false);
+  const ended = useRef(false);
   const end = (then: () => void) => {
-    if (ended) return;
-    setEnded(true);
+    if (ended.current) return;
+    ended.current = true;
     then();
   };
   return (
