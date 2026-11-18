@@ -358,10 +358,15 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     );
     note(`the pass failed for real; the block reads: "${reason}"`);
     await both("failed-desktop");
+    // Try again queues the pass; a refused login fails it within a second or two, so the page may
+    // read the pass already failed again by the time it looks.
+    const asked = page.waitForResponse((response) => response.url().includes("changes.queueTour"));
     await button("Try again").click();
-    await writing.waitFor({ timeout: 30_000 });
-    note("Try again queues the pass again, for real: 'Mend is writing the description and tour.'");
-    await capture("writing-real-desktop-light");
+    const queued = await asked;
+    note(
+      `Try again asked for the pass again, for real: changes.queueTour answered ${queued.status()}`,
+    );
+    if (await writing.isVisible()) await capture("writing-real-desktop-light");
     await failed.or(written).waitFor({ timeout: 360_000 });
     note(
       `after Try again the pass ${(await written.isVisible()) ? "wrote the description" : "failed the same way"}`,
