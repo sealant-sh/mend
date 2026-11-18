@@ -185,11 +185,16 @@ export default async ({ page, web, capture, note }) => {
     "Use your request_user_input tool to ask me one question: should the file approval-check.txt be kept or deleted, with exactly two options, Keep and Delete. Wait for my answer, then reply with the single word I chose and do nothing else.";
   await page.evaluate(
     async ({ sessionId, words }) => {
-      const { trpcClient } = window["__TSR_ROUTER__"].options.context;
+      const { trpcClient, queryClient } = window["__TSR_ROUTER__"].options.context;
+      const viewer = queryClient
+        .getQueryCache()
+        .findAll({ queryKey: [["organization", "current"]] })[0]?.state.data?.userId;
       await trpcClient.sessions.sendMessage.mutate({
         id: sessionId,
         input: words,
         clientMessageId: crypto.randomUUID(),
+        resume: true,
+        expectedUserId: viewer,
         selection: {
           harness: "codex",
           model: null,
