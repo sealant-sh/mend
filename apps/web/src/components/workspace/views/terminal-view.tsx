@@ -12,7 +12,7 @@ import {
 } from "@mend/ui/components/ui/dropdown-menu";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon, SquareTerminalIcon } from "lucide-react";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 
@@ -24,6 +24,7 @@ import { copyTextChecked } from "#/lib/clipboard";
 import { age } from "#/lib/inbox";
 import { failureWords } from "#/lib/refusal";
 import { sessionDetailQuery } from "#/lib/session-queries";
+import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
 import {
@@ -79,10 +80,17 @@ const useBoxSize = () => {
   return { box, ref };
 };
 
-/** The Terminal tab's and its "+" item's fact: how many shells run ("1 shell"). */
+/**
+ * The Terminal tab's and its "+" item's fact: how many shells run ("1 shell") of those the person
+ * may see. Nothing until who is looking is known.
+ */
 const useTerminalFacts = (place: ViewPlace): ViewFacts => {
-  const { shells } = useWorkspaceShells(place);
-  const fact = runningShellsFact(shells);
+  const trpc = useTRPC();
+  const viewer = useQuery(signedInOptions(trpc));
+  const { sessions, shells } = useWorkspaceShells(place);
+  if (viewer.isPending || viewer.isError) return {};
+  const access = shellAccess(sessions, place.sessionId, viewer.data.userId);
+  const fact = runningShellsFact(shells.filter((shell) => access.watches(shell.sessionId)));
   return fact === undefined ? {} : { fact };
 };
 
