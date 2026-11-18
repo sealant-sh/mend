@@ -206,6 +206,9 @@ which is measured rather than assumed.
 
 ### Resources that were instance-global
 
+**Changed by [ADR 0025](0025-one-home-per-setting.md):** nothing a project or member sets inherits
+an organization's or the instance's value.
+
 | Resource               | Decision                                                                                                                                                                                                                                                                        |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Host mounts            | Replaced by **folders**: Mend-managed directories owned by an organization and stored under it, created by owners and selected per project. Arbitrary host paths remain only for the operator in `single`.                                                                      |

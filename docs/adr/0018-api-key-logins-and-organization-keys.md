@@ -9,7 +9,8 @@ design on 2026-10-25 (SLNT-102 to SLNT-109). Amends
 [ADR 0013](0013-whoever-sends-a-turn-pays.md) (who pays for a turn) and
 [ADR 0016](0016-per-person-harness-homes.md) decision 5 ("no person ever runs on anyone else's
 login"). Read against Mend `7239f5cac` and sealant `9802ef32`. Amended 2026-11-08 with a custom
-endpoint (decision 11).
+endpoint (decision 11). Decision 2 (organization keys, never built) is withdrawn by
+[ADR 0025](0025-one-home-per-setting.md): an organization holds no provider keys.
 
 ## Amendment: a custom endpoint, 2026-11-08
 
