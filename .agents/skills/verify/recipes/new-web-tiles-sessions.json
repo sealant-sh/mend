@@ -1,0 +1,34 @@
+[
+  {
+    "name": "01-first",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "tiles-ws",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7201"
+    ]
+  },
+  {
+    "name": "02-second",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "tiles-ws",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7202"
+    ]
+  }
+]

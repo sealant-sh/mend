@@ -414,6 +414,7 @@ function SessionSheet({
               <Kept key={tab} node={nodeOf(tab)}>
                 {/* A press or focus in a body focuses its tile: the body's events reach here, not the tile. */}
                 <div
+                  data-tab-body={tab}
                   className="flex min-h-0 flex-1 flex-col"
                   onPointerDownCapture={() => focusOn(tileOfTab(shown, tab)?.id)}
                   onFocusCapture={() => focusOn(tileOfTab(shown, tab)?.id)}
