@@ -74,12 +74,14 @@ import {
 } from "#/lib/inbox";
 import { useServerHost } from "#/lib/online";
 import { rowActions } from "#/lib/row-actions";
+import { useSearchKeys } from "#/lib/search-keys";
 import { lumpStatusOf, sessionLink } from "#/lib/session-sheet";
 import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
 import { useRowActions } from "#/lib/use-row-actions";
 
 import { type Account, AccountMenu } from "./account-menu.tsx";
+import { useOpenSearch } from "./command-palette.tsx";
 import { InboxFilterMenu } from "./inbox-filters.tsx";
 import { OrganizationMenu } from "./organization-menu.tsx";
 import { QueuedSidebarRow } from "./queued-session-row.tsx";
@@ -198,18 +200,7 @@ function ExpandedSidebar({ organizationName, account, inbox, online, area, openI
       <SidebarHeader className="gap-0 p-0">
         <OrganizationMenu organizationName={organizationName} place="sidebar" />
         <div className="my-2.5 flex gap-1.5">
-          {/* Search arrives with the command palette; until then the field is drawn, not offered. */}
-          <div
-            aria-hidden
-            className={cn(
-              "flex h-8.5 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-muted-foreground",
-              RAISED,
-            )}
-          >
-            <SearchIcon className="size-4" />
-            <span className="flex-1 text-row">Search</span>
-            <kbd className="font-sans text-2xs font-medium">⌘K</kbd>
-          </div>
+          <SearchField />
           <Link
             to="/"
             aria-label="New session"
@@ -262,10 +253,7 @@ function SidebarRailNav({ organizationName, account, inbox, online, area, openId
       <nav aria-label="Sidebar rail" className="flex min-h-0 flex-1 flex-col items-center">
         <OrganizationMenu organizationName={organizationName} place="rail" />
         <SidebarMenu className="mt-2 w-auto gap-0.5">
-          {/* Search arrives with the command palette; until then it is drawn, not offered. */}
-          <li aria-hidden className="grid size-8 place-items-center text-muted-foreground">
-            <SearchIcon className="size-4" />
-          </li>
+          <RailSearch />
           <RailItem label="New session" active={false} className={RAISED} render={<Link to="/" />}>
             <SquarePenIcon />
           </RailItem>
@@ -446,6 +434,54 @@ function InboxFlyout({
         </div>
       </PopoverContent>
     </Popover>
+  );
+}
+
+/** The sidebar's Search field: it opens the command palette, as ⌘K does. */
+function SearchField() {
+  const openSearch = useOpenSearch();
+  const keys = useSearchKeys();
+  return (
+    <button
+      type="button"
+      onClick={openSearch}
+      aria-keyshortcuts="Meta+K Control+K"
+      className={cn(
+        "flex h-8.5 min-w-0 flex-1 items-center gap-2 rounded-lg px-2.5 text-muted-foreground outline-none hover:bg-background focus-visible:ring-3 focus-visible:ring-ring/50",
+        RAISED,
+      )}
+    >
+      <SearchIcon aria-hidden className="size-4" />
+      <span className="flex-1 text-left text-row">Search</span>
+      <kbd aria-hidden className="font-sans text-2xs font-medium">
+        {keys}
+      </kbd>
+    </button>
+  );
+}
+
+/** Search on the rail: the same palette, its name and shortcut in a tooltip. */
+function RailSearch() {
+  const openSearch = useOpenSearch();
+  const keys = useSearchKeys();
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        tooltip={{
+          children: (
+            <>
+              Search <Kbd>{keys}</Kbd>
+            </>
+          ),
+        }}
+        aria-label="Search"
+        aria-keyshortcuts="Meta+K Control+K"
+        className={railButton}
+        onClick={openSearch}
+      >
+        <SearchIcon aria-hidden />
+      </SidebarMenuButton>
+    </SidebarMenuItem>
   );
 }
 

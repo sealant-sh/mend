@@ -12,7 +12,9 @@ import * as React from "react";
  * It only presents. The app searches as `query` changes and passes the results as children:
  * `CommandPaletteGroup`s of `CommandPaletteItem`s, and a `CommandPaletteEmpty` (holding an Empty
  * state of kind inline) that shows when there are none. `scope` says where it searches ("in Northwind"); `count` says how many it found
- * ("4 results"). Arrow keys, Enter and Escape come from cmdk and Base UI's dialog.
+ * ("4 results"); it also names the list for a screen reader and is read out as it changes. With
+ * `empty`, nothing is listed and the footer offers only Esc. Arrow keys, Enter and Escape come
+ * from cmdk and Base UI's dialog, which gives focus back to where it was when it closes.
  */
 function CommandPalette({
   open,
@@ -22,6 +24,7 @@ function CommandPalette({
   placeholder,
   scope,
   count,
+  empty = false,
   children,
   className,
 }: {
@@ -31,7 +34,9 @@ function CommandPalette({
   onQueryChange: (query: string) => void;
   placeholder?: string;
   scope?: string;
-  count?: string;
+  count?: string | undefined;
+  /** Nothing is listed: the footer drops Move and Open. */
+  empty?: boolean;
   children?: React.ReactNode;
   className?: string;
 }) {
@@ -47,7 +52,12 @@ function CommandPalette({
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
         {/* The app has already searched: cmdk keeps its order and only moves the highlight. */}
-        <CommandPrimitive shouldFilter={false} loop className="flex flex-col">
+        <CommandPrimitive
+          shouldFilter={false}
+          loop
+          label={placeholder ?? "Search"}
+          className="flex flex-col"
+        >
           <div
             data-slot="command-palette-input"
             className="flex h-12 items-center gap-2 border-b px-3"
@@ -65,6 +75,7 @@ function CommandPalette({
           </div>
           <CommandPrimitive.List
             data-slot="command-palette-list"
+            label={count ?? "Results"}
             className="max-h-96 scroll-py-1 overflow-y-auto p-1 outline-none **:[[cmdk-group-heading]]:px-2 **:[[cmdk-group-heading]]:py-1.5 **:[[cmdk-group-heading]]:text-2xs **:[[cmdk-group-heading]]:font-medium **:[[cmdk-group-heading]]:text-muted-foreground"
           >
             {children}
@@ -73,12 +84,16 @@ function CommandPalette({
             data-slot="command-palette-footer"
             className="flex h-10 items-center gap-4 border-t px-3 text-2xs text-muted-foreground"
           >
-            <span className="flex items-center gap-1.5">
-              <Kbd>↑↓</Kbd>Move
-            </span>
-            <span className="flex items-center gap-1.5">
-              <Kbd>↵</Kbd>Open
-            </span>
+            {empty ? null : (
+              <>
+                <span className="flex items-center gap-1.5">
+                  <Kbd>↑↓</Kbd>Move
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <Kbd>↵</Kbd>Open
+                </span>
+              </>
+            )}
             <span className="flex items-center gap-1.5">
               <Kbd>Esc</Kbd>Close
             </span>
@@ -140,25 +155,56 @@ function CommandPaletteItem({
   );
 }
 
-/** `text` with every case-insensitive occurrence of `query` in semibold. */
-function CommandPaletteMatch({ text, query }: { text: string; query: string }) {
-  const needle = query.trim().toLowerCase();
-  if (needle === "") return text;
+/**
+ * `text` with the typed letters in semibold: the characters at `indices` (from a fuzzy match), or
+ * else every case-insensitive occurrence of `query`.
+ */
+function CommandPaletteMatch({
+  text,
+  query = "",
+  indices,
+}: {
+  text: string;
+  query?: string;
+  indices?: ReadonlyArray<number>;
+}) {
+  const marked = new Set(indices ?? occurrences(text, query));
+  if (marked.size === 0) return text;
   const parts: React.ReactNode[] = [];
-  const haystack = text.toLowerCase();
   let from = 0;
-  for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, from)) {
-    if (at > from) parts.push(text.slice(from, at));
+  while (from < text.length) {
+    const bold = marked.has(from);
+    let to = from + 1;
+    while (to < text.length && marked.has(to) === bold) to += 1;
+    const run = text.slice(from, to);
     parts.push(
-      <b key={at} className="font-semibold">
-        {text.slice(at, at + needle.length)}
-      </b>,
+      bold ? (
+        <b key={from} className="font-semibold">
+          {run}
+        </b>
+      ) : (
+        run
+      ),
     );
-    from = at + needle.length;
+    from = to;
   }
-  if (from < text.length) parts.push(text.slice(from));
   return parts;
 }
+
+/** The index of every character inside a case-insensitive occurrence of `query` in `text`. */
+const occurrences = (text: string, query: string): number[] => {
+  const needle = query.trim().toLowerCase();
+  if (needle === "") return [];
+  const haystack = text.toLowerCase();
+  const found: number[] = [];
+  for (
+    let at = haystack.indexOf(needle);
+    at !== -1;
+    at = haystack.indexOf(needle, at + needle.length)
+  )
+    for (let offset = 0; offset < needle.length; offset += 1) found.push(at + offset);
+  return found;
+};
 
 export {
   CommandPalette,

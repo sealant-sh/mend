@@ -12,9 +12,9 @@ import { InputGroup, InputGroupAddon, InputGroupInput } from "@mend/ui/component
 import { Tabs, TabsList, TabsTrigger } from "@mend/ui/components/ui/tabs";
 import { createToastManager, Toaster } from "@mend/ui/components/ui/toast";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { FolderIcon, PlusIcon, SearchIcon } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useEffectEvent, useState } from "react";
 
 import { clonePercent } from "#/lib/adoptions";
 import type { ProjectDto } from "#/lib/api";
@@ -74,6 +74,17 @@ export function ProjectsPage() {
     if (clone.state?._tag === "Added" || clone.state?._tag === "Gone") clone.forget();
     setAdding(true);
   };
+  // Asked for from elsewhere (`?add=true`, search's "Add project…"): opened as the button opens it,
+  // and the address put back, so a reload doesn't open it again. An effect: the address is a
+  // request to act once, not state to show.
+  const askedToAdd = useSearch({ from: "/_inbox/projects/", select: (search) => search.add });
+  const openAsked = useEffectEvent(() => {
+    openAdd();
+    void navigate({ to: "/projects", search: {}, replace: true });
+  });
+  useEffect(() => {
+    if (askedToAdd === true) openAsked();
+  }, [askedToAdd]);
 
   const organizationName = viewer.organization.name;
   // A roster that failed to read again keeps the names it had; until then nobody is named.
