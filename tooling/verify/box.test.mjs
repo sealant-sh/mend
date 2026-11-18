@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { holdBy, parseState, relate, schemaProblems } from "./box.mjs";
+import { frontOnly } from "./box-front.mjs";
+import {
+  boxIdentity,
+  boxPlan,
+  boxPrepare,
+  holdBy,
+  parseState,
+  relate,
+  schemaProblems,
+} from "./box.mjs";
 import { exitCode, validateResult } from "./result.mjs";
 import { parseArgs, runVerb } from "./verify.mjs";
 
@@ -86,6 +95,8 @@ const box = (subverb, extra) =>
     subverb,
     pr: "1700",
     readMain: () => migrations,
+    // Never this checkout's own new web app check: release would scan and remove it.
+    front: { read: () => null, scan: () => 0, end: () => null },
     ...extra,
   });
 
@@ -478,4 +489,187 @@ test("release refuses to restore from a dump the hold does not name", async () =
 
 test("--no-restore parses", () => {
   assert.equal(parseArgs(["box", "release", "--no-restore"]).options.noRestore, true);
+});
+
+// A checkout whose change is the new web app's alone, and the builds a box might run: the
+// branch's base, main after it, and a server from another line that lacks the base.
+const frontHistory = (t) => {
+  const cwd = mkdtempSync(join(tmpdir(), "mend-verify-front-"));
+  t.after(() => rmSync(cwd, { recursive: true, force: true }));
+  const env = {
+    ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("GIT_"))),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: "/dev/null",
+    GIT_AUTHOR_NAME: "f",
+    GIT_AUTHOR_EMAIL: "f@example.invalid",
+    GIT_COMMITTER_NAME: "f",
+    GIT_COMMITTER_EMAIL: "f@example.invalid",
+  };
+  const git = (...args) => execFileSync("git", args, { cwd, env, encoding: "utf8" }).trim();
+  const write = (file, text) => {
+    mkdirSync(join(cwd, dirname(file)), { recursive: true });
+    writeFileSync(join(cwd, file), text);
+  };
+  const commit = (files) => {
+    for (const [file, text] of Object.entries(files)) write(file, text);
+    git("add", "-A");
+    git("commit", "-qm", Object.keys(files).join(" "));
+    return git("rev-parse", "HEAD");
+  };
+  git("init", "-qb", "main");
+  const first = commit({
+    "tooling/verify/obligations.json": readFileSync(
+      join(root, "tooling/verify/obligations.json"),
+      "utf8",
+    ),
+    "packages/db/src/migrations.ts": readFileSync(
+      join(root, "packages/db/src/migrations.ts"),
+      "utf8",
+    ),
+    "apps/api/src/server.ts": "export const v = 0;\n",
+    "apps/web/src/route.tsx": "export const r = 0;\n",
+  });
+  const base = commit({ "apps/api/src/server.ts": "export const v = 1;\n" });
+  git("checkout", "-qb", "route");
+  const front = commit({
+    "apps/web/src/route.tsx": "export const r = 1;\n",
+    "packages/ui/src/kit.tsx": "export const k = 1;\n",
+    ".agents/skills/verify/recipes/new-web-route.mjs": "export default async () => {};\n",
+  });
+  git("checkout", "-qb", "server");
+  const server = commit({ "apps/api/src/server.ts": "export const v = 2;\n" });
+  git("checkout", "-q", "main");
+  const later = commit({ "apps/api/src/server.ts": "export const v = 3;\n" });
+  git("checkout", "-qb", "elsewhere", first);
+  const other = commit({ "apps/api/src/server.ts": "export const v = 4;\n" });
+  git("checkout", "-q", "route");
+  return {
+    cwd,
+    checkout: (branch) => git("checkout", "-q", branch),
+    head: { sha: front, mergeBase: base, dirty: false },
+    serverHead: { sha: server, mergeBase: base, dirty: false },
+    base,
+    later,
+    other,
+  };
+};
+
+// Named as `verify` names results, so the newest sorts last: the newest drive of a recipe counts.
+let drives = 0;
+const droveOnBox = (cwd, head, revision, status = "passed") => {
+  mkdirSync(join(cwd, ".verify/results"), { recursive: true });
+  drives += 1;
+  writeFileSync(
+    join(cwd, ".verify/results", `drive-new-web-20261118T${String(drives).padStart(6, "0")}Z.json`),
+    JSON.stringify({
+      verb: "drive new-web",
+      status,
+      head: { sha: head.sha, dirty: false },
+      drive: {
+        surface: "new-web",
+        recipe: "new-web-route",
+        out: join(cwd, "out"),
+        box: { web: "https://box.example.test", revision, version: "0.37.0-next.1.preview.9" },
+      },
+    }),
+  );
+};
+
+const identityOn = (cwd, head, revision) =>
+  boxIdentity(cwd, { head, ssh: fakeBox(boxSays({ revision })).ssh });
+
+test("a change that is the new web app's alone is found by its drive on the box, not by a deploy", (t) => {
+  const { cwd, checkout, head, serverHead, base, later, other } = frontHistory(t);
+  assert.deepEqual(
+    { ...frontOnly(cwd, { head, revision: base }), product: undefined },
+    { front: true, product: undefined, outside: [], server: "same" },
+  );
+  assert.equal(frontOnly(cwd, { head, revision: later }).server, "later");
+  assert.equal(frontOnly(cwd, { head, revision: other }).server, "other");
+
+  const undriven = identityOn(cwd, head, base);
+  assert.equal(undriven.steps[0].status, "failed");
+  assert.match(undriven.steps[0].detail, /no passing drive new-web --box of this clean head/);
+
+  droveOnBox(cwd, head, later, "failed");
+  assert.equal(identityOn(cwd, head, later).steps[0].status, "failed", "a failed drive is none");
+  droveOnBox(cwd, head, base);
+  const driven = identityOn(cwd, head, base);
+  assert.equal(driven.steps[0].status, "passed");
+  assert.equal(driven.identity.relation, "front");
+  assert.match(driven.steps[0].detail, /served from this checkout by drive new-web --box/);
+  assert.equal(
+    identityOn(cwd, head, later).steps[0].status,
+    "failed",
+    "a drive in front of another build does not count",
+  );
+  droveOnBox(cwd, head, later);
+  assert.equal(identityOn(cwd, head, later).steps[0].status, "passed");
+  assert.equal(
+    identityOn(cwd, head, base).steps[0].status,
+    "failed",
+    "the box now runs a build the newest drive did not meet",
+  );
+
+  droveOnBox(cwd, head, other);
+  const elsewhere = identityOn(cwd, head, other);
+  assert.equal(elsewhere.steps[0].status, "failed");
+  assert.match(elsewhere.steps[0].detail, /differs from this branch's base/);
+
+  // Like plan, it reads the change of the checkout it runs in.
+  checkout("server");
+  assert.deepEqual(frontOnly(cwd, { head: serverHead, revision: base }).outside, [
+    "apps/api/src/server.ts",
+  ]);
+  droveOnBox(cwd, serverHead, base);
+  const server = identityOn(cwd, serverHead, base);
+  assert.equal(server.steps[0].status, "failed", "a server change needs a preview of its head");
+  assert.equal(server.identity.relation, "none");
+});
+
+test("plan says a new web app check needs no deploy, and that a stopped Mend needs one first", (t) => {
+  const { cwd, head, base } = frontHistory(t);
+  const front = (running) =>
+    boxPlan(cwd, {
+      head,
+      tag: "pr1700",
+      ssh: fakeBox(`${boxSays({ revision: base })}\nrunning=${running}`).ssh,
+    }).steps.find((step) => step.id === "front");
+  assert.equal(front("true").status, "passed");
+  assert.match(front("true").detail, /no preview deploy is needed/);
+  assert.equal(front("false").status, "blocked_by_prerequisite");
+  assert.match(front("false").detail, /Mend is stopped there/);
+  const prepared = boxPrepare(cwd, {
+    head,
+    tag: "pr1700",
+    yes: false,
+    stamp: "x",
+    ssh: fakeBox(`${boxSays({ revision: base })}\nrunning=false`).ssh,
+  });
+  assert.equal(
+    prepared.steps.at(-1).id,
+    "dump",
+    "a stopped Mend never refuses the dump: the deploy comes after it",
+  );
+});
+
+test("release scans the new web app check's evidence and removes its sign-in, only with --yes", async () => {
+  const run = { private: "/p", evidence: "/e" };
+  const seen = [];
+  const front = {
+    read: () => (seen.includes("end") ? null : run),
+    scan: () => (seen.push("scan"), 0),
+    end: () => seen.push("end"),
+  };
+  const dry = fakeBox(boxSays({ hold: ours }));
+  const shown = await box("release", { sshRunner: dry.ssh, front });
+  assert.match(
+    shown.steps.find((step) => step.id === "front").detail,
+    /Would scan \/e and remove \/p/,
+  );
+  assert.deepEqual(seen, []);
+  const real = fakeBox(boxSays({ hold: ours }));
+  const done = await box("release", { sshRunner: real.ssh, yes: true, front });
+  assert.deepEqual(seen, ["scan", "end"]);
+  assert.equal(done.steps.find((step) => step.id === "front").status, "passed");
 });

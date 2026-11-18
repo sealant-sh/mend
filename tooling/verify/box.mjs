@@ -3,6 +3,7 @@ import { mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { join, relative } from "node:path";
 
 import { migrationNames } from "../../scripts/mend-migrations.mjs";
+import { describeFront, endFrontRun, frontOnly, readFrontRun } from "./box-front.mjs";
 import {
   HOLD,
   LIST_BOX,
@@ -14,6 +15,7 @@ import {
   parseTidyRun,
   tidyScript,
 } from "./box-tidy.mjs";
+import { driveResults } from "./evidence.mjs";
 
 // The box-check setup (AGENTS.md, Check Features on the Box; docs/operations/preview-builds.md):
 // what the box runs and whether another check holds it, the database dump before a deploy, a CLI
@@ -21,6 +23,8 @@ import {
 // The check itself stays a person-shaped run by another agent. `plan` and `identity` only read;
 // `prepare`, `cli` and `release` change the box only with --yes. `release` tidies the box first, and
 // `prepare` tidies it when it is short of room for one deploy (box-tidy.mjs says what goes).
+// A change that is only the new web app needs no deploy: `verify drive new-web --box` serves it
+// from this checkout in front of the box's API (box-front.mjs), and identity accepts that drive.
 //
 // The box is named by MEND_VERIFY_BOX_SSH (or --ssh): the ssh arguments that reach it as root, such
 // as `-J root@<proxmox host> root@<vm>`. preview-builds.md, "The box", says what is on it.
@@ -77,6 +81,7 @@ label() { docker inspect --format "{{index .Config.Labels \\"$1\\"}}" mend-mend-
 echo "version=$(label org.opencontainers.image.version)"
 echo "revision=$(label org.opencontainers.image.revision)"
 echo "started=$(docker inspect --format '{{.State.StartedAt}}' mend-mend-1 2>/dev/null)"
+echo "running=$(docker inspect --format '{{.State.Running}}' mend-mend-1 2>/dev/null)"
 echo "live=$(docker exec mend-postgres-1 psql -U postgres -d mend -At -c 'select count(*) from agent_sessions where settled_at is null' 2>/dev/null)"
 echo "free=$(df -B1 --output=avail /var/lib/docker 2>/dev/null | tail -1 | tr -d ' ')"
 echo "hold=$(cat ${HOLD} 2>/dev/null | tr -d '\\n')"
@@ -110,6 +115,7 @@ export const parseState = (text) => {
     version: values.version ?? null,
     revision: /^[0-9a-f]{40}$/.test(values.revision ?? "") ? values.revision : null,
     started: values.started ?? null,
+    running: values.running === "true" ? true : values.running === "false" ? false : null,
     live: /^\d+$/.test(values.live ?? "") ? Number(values.live) : null,
     free: /^\d+$/.test(values.free ?? "") ? Number(values.free) : null,
     now: values.now ?? null,
@@ -240,6 +246,20 @@ const runTidy = (ssh, { hold, tag }) => {
   };
 };
 
+/** frontOnly for the box's revision, fetched when this clone lacks it; never throws. */
+const frontOf = (root, head, revision) => {
+  if (revision !== null && !hasCommit(root, revision))
+    spawnSync("git", ["fetch", "--quiet", "origin", revision], { cwd: root, stdio: "ignore" });
+  try {
+    return frontOnly(root, {
+      head,
+      revision: revision !== null && hasCommit(root, revision) ? revision : null,
+    });
+  } catch {
+    return { front: false, product: [], outside: [], server: null };
+  }
+};
+
 const stateSteps = (root, state, { head, tag, listing }) => {
   const steps = [];
   const next = [];
@@ -268,6 +288,22 @@ const stateSteps = (root, state, { head, tag, listing }) => {
   });
   if (busy)
     next.push("wait until the other check posts its verdict and its sessions settle, then rerun");
+  const front = frontOf(root, head, state.revision);
+  const noDeploy = front.front && ["same", "later"].includes(front.server);
+  // A new web app check drives the box's API as it runs now, so Mend must be running there: a
+  // release that put the data back leaves it stopped until the next deploy.
+  const stopped = noDeploy && state.running === false;
+  if (front.front)
+    steps.push({
+      id: "front",
+      title: "How this check reaches the box",
+      status: stopped ? "blocked_by_prerequisite" : "passed",
+      detail: stopped
+        ? `${describeFront(front, state.revision)}, but Mend is stopped there (a release that put the data back leaves it so): deploy a preview of main after pnpm verify box prepare --yes, then drive`
+        : noDeploy
+          ? `${describeFront(front, state.revision)}. This change is the new web app's alone: pnpm verify drive new-web --box serves it from this checkout in front of the box's API, so no preview deploy is needed`
+          : describeFront(front, state.revision),
+    });
   const problems = schemaProblems(state.migrations, headMigrations(root));
   steps.push({
     id: "schema",
@@ -275,14 +311,16 @@ const stateSteps = (root, state, { head, tag, listing }) => {
     status:
       state.migrations.length === 0
         ? "failed"
-        : problems.length > 0
+        : problems.length > 0 && !noDeploy
           ? "blocked_by_prerequisite"
           : "passed",
     detail:
       state.migrations.length === 0
         ? "No applied migrations could be read"
         : problems.length > 0
-          ? `${problems.join("; ")}. Deploy a build that contains them (a preview branch of this head merged with what the box runs)`
+          ? noDeploy
+            ? `${problems.join("; ")}; this check deploys nothing, so they do not apply`
+            : `${problems.join("; ")}. Deploy a build that contains them (a preview branch of this head merged with what the box runs)`
           : `${state.migrations.length} applied, all in this head`,
   });
   const need = deployNeeds(listing);
@@ -321,7 +359,11 @@ export const boxPrepare = (root, { head, ssh, tag, yes, stamp }) => {
   if (error) return error;
   const { steps, next, need } = stateSteps(root, state, { head, tag, listing });
   const dump = `/root/backups/pre-${tag}-${stamp}.sql`;
-  const blocking = steps.filter((step) => step.status !== "passed" && step.id !== "deployed");
+  // What the box runs, and whether a new web app check needs a deploy first, never refuse the dump:
+  // the deploy comes after it.
+  const blocking = steps.filter(
+    (step) => step.status !== "passed" && !["deployed", "front"].includes(step.id),
+  );
   const onlyShort =
     blocking.length === 1 && blocking[0].id === "disk" && blocking[0].status !== "failed";
   if (blocking.length > 0 && !(yes && onlyShort)) return { steps, next, box: state };
@@ -518,6 +560,43 @@ const restoreStep = (ssh, { state, yes, noRestore, main }) => {
  * release: put back the data a migration main lacks changed, tidy the box while this check still
  * holds it, then lift the hold.
  */
+const FRONT_TITLE =
+  "Scan the new web app check's evidence and remove its sign-in from this machine";
+
+/** Scans what `drive new-web --box` captured with its private registry; returns the exit code. */
+const scanFront = (root, run) =>
+  spawnSync(
+    "node",
+    [
+      join(root, ".agents/skills/verify/scripts/scan-evidence.mjs"),
+      "--dir",
+      run.evidenceRoot ?? run.evidence,
+      "--secrets",
+      run.private,
+      "--delete-hits",
+    ],
+    { cwd: root, stdio: "pipe" },
+  ).status;
+
+/**
+ * The new web app check's local part (`front`: its record, scan and removal, injectable for
+ * tests): its evidence scanned, then its private registry removed.
+ */
+export const FRONT_RUN = { read: readFrontRun, scan: scanFront, end: endFrontRun };
+
+const endFront = (root, front) => {
+  const run = front.read(root);
+  if (run === null) return null;
+  const code = front.scan(root, run);
+  front.end(root);
+  return {
+    id: "front",
+    title: FRONT_TITLE,
+    status: code === 0 ? "passed" : code === 1 ? "evidence_withheld" : "failed",
+    detail: `${code === 0 ? "no hit" : code === 1 ? "hits: those files are deleted (scan.json names them)" : `scan exited ${code}`}; removed ${run.private}; the evidence stays in ${run.evidenceRoot ?? run.evidence}`,
+  };
+};
+
 export const boxRelease = ({
   root,
   ssh,
@@ -525,6 +604,7 @@ export const boxRelease = ({
   yes,
   noRestore = false,
   readMain = mainMigrations,
+  front = FRONT_RUN,
 }) => {
   const { state, listing, error } = readState(ssh);
   if (error) return error;
@@ -548,6 +628,7 @@ export const boxRelease = ({
   if (restore.stop) return { steps: [restore.step], next: [] };
   if (!yes) {
     const choice = chooseTidy({ listing, hold: state.hold, tag });
+    const frontRun = front.read(root);
     return {
       steps: [
         restore.step,
@@ -557,6 +638,16 @@ export const boxRelease = ({
           status: "skipped",
           detail: `Would remove ${describeTidy(choice)}`,
         },
+        ...(frontRun
+          ? [
+              {
+                id: "front",
+                title: FRONT_TITLE,
+                status: "skipped",
+                detail: `Would scan ${frontRun.evidenceRoot ?? frontRun.evidence} and remove ${frontRun.private}`,
+              },
+            ]
+          : []),
         {
           id: "release",
           title: "Lift this check's hold (changes the box)",
@@ -568,11 +659,13 @@ export const boxRelease = ({
     };
   }
   const tidied = runTidy(ssh, { hold: state.hold, tag });
+  const ended = endFront(root, front);
   const run = ssh(`rm -f ${HOLD}`);
   return {
     steps: [
       restore.step,
       tidied.step,
+      ...(ended ? [ended] : []),
       {
         id: "release",
         title: "Lift this check's hold",
@@ -645,6 +738,68 @@ export const relate = (root, { head, revision, limit = 400 }) => {
   return { relation: "none", contains: false, patchId: ours, scanned: candidates.length };
 };
 
+/**
+ * Identity for a change that is the new web app's alone: the box's server is this head's, or at or
+ * after this branch's base (box-front.mjs), and `drive new-web --box` drove this clean head in
+ * front of the build the box runs now. Null when the change is not the front's alone.
+ */
+const frontIdentity = (root, { head, state }) => {
+  const front = frontOf(root, head, state.revision);
+  if (!front.front) return null;
+  const title = "The running build contains this head";
+  const where = describeFront(front, state.revision);
+  if (!["same", "later"].includes(front.server))
+    return {
+      steps: [{ id: "identity", title, status: "failed", detail: `${state.version}: ${where}` }],
+      next: [
+        "build a preview of main or of this head (docs/operations/preview-builds.md) and deploy it after pnpm verify box prepare --yes",
+      ],
+      box: state,
+    };
+  const drives = driveResults(root, head).filter(
+    (result) => result.drive?.surface === "new-web" && result.drive.box,
+  );
+  const passed = drives.filter(
+    (result) => result.status === "passed" && result.drive.box.revision === state.revision,
+  );
+  if (passed.length === 0)
+    return {
+      steps: [
+        {
+          id: "identity",
+          title,
+          status: "failed",
+          detail: `${state.version}: ${where}, but no passing drive new-web --box of this clean head in front of it${
+            drives.length > 0
+              ? ` (${drives.map((result) => `${result.drive.recipe}: ${result.status}, revision ${result.drive.box.revision?.slice(0, 12)}`).join("; ")})`
+              : ""
+          }`,
+        },
+      ],
+      next: ["pnpm verify drive new-web --box --recipe <recipe>", "pnpm verify box identity"],
+      box: state,
+    };
+  return {
+    steps: [
+      {
+        id: "identity",
+        title,
+        status: "passed",
+        detail: `${state.version}: ${where}; the new web app is this head's, served from this checkout by drive new-web --box (${passed.map((result) => result.drive.recipe).join(", ")})`,
+      },
+    ],
+    next: [],
+    box: state,
+    identity: {
+      revision: state.revision,
+      version: state.version,
+      relation: "front",
+      server: front.server,
+      drives: passed.map((result) => result.drive.recipe),
+    },
+  };
+};
+
 export const boxIdentity = (root, { head, ssh }) => {
   const { state, error } = readState(ssh);
   if (error) return error;
@@ -683,6 +838,10 @@ export const boxIdentity = (root, { head, ssh }) => {
     };
   }
   const relation = relate(root, { head, revision: state.revision });
+  if (!relation.contains) {
+    const viaFront = frontIdentity(root, { head, state });
+    if (viaFront !== null) return viaFront;
+  }
   const detail = {
     exact: "the box runs this head",
     descendant: `the box runs ${state.revision.slice(0, 12)}, which has this head in its history`,

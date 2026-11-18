@@ -79,6 +79,8 @@ It records itself in `$P/new-web.json`, which `drive-web.mjs` takes as it takes 
 opens `http://localhost:<port>`, where the browser sends that session's cookie. A recipe that signs
 in on the new app's own page types the account through `account` (`recipes/new-web-sign-in.mjs`).
 `pnpm verify drive new-web` does all of this, and waits for vite's first page before the recipe.
+With `--box` it fronts the box instead (`--outer`, the box declared as the outer server) and signs
+in on the new app's own `/login` with no `--sign-in` (SKILL.md, section 9).
 
 Keep every log and profile **beside** `$P`, never inside it: every file under `$P` joins the secret
 registry, a non-JSON one whole, and its text would then be redacted out of the evidence.

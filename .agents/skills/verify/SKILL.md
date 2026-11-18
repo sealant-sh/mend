@@ -201,6 +201,36 @@ pnpm verify box release --pr <n> --yes
 A check with no PR names itself with `--tag <name>` in place of `--pr <n>`; the scheduled run of
 `main` (`.agents/skills/box-main-run/`) holds the box as `main-<sha12>`.
 
+**A route of the new web app on the box.** The box's image serves only the old app until cut-over.
+`drive new-web --box` serves the new app from this checkout, behind the same proxy as on a stack, in
+front of the box's API. It signs in on the new app's own `/login` as the box's checker account. When
+the change's product source is only `apps/web` and `packages/ui`, the box needs no preview of this
+head: `plan` says so in its `front` line. `identity` then passes on that drive, made from this clean
+head against the build the box runs now. That build must have the same server source as this head,
+or contain this branch's base. A change that also touches the API or a shared package deploys a
+preview of its head as above, and drives it the same way.
+
+```sh
+export MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41'
+export MEND_VERIFY_OUTER_URL=https://yiannis-k8s-arc.tailc79e49.ts.net   # the box's APP_URL
+pnpm verify box plan --pr <n>
+pnpm verify box prepare --pr <n> --yes
+pnpm verify drive new-web --box --recipe new-web-<route>
+pnpm verify box identity
+pnpm verify evidence
+pnpm verify box release --pr <n> --yes   # also scans the drive's evidence and removes its sign-in
+```
+
+The account defaults to the checker account, `boat-check@example.test`, whose password is in
+`~/.local/share/mend-boat-check/password`. Name another with `MEND_VERIFY_BOX_EMAIL` and
+`MEND_VERIFY_BOX_PASSWORD_FILE`. The drive's private sign-in lives under
+`~/.local/state/mend-verify/box-<checkout>/private`, and each head's evidence under
+`evidence/<sha12>` beside it. A recipe's sessions are made on the box with the checker CLI
+(`XDG_CONFIG_HOME=~/.local/share/mend-boat-check/cli`, through `scripts/guard/mend`). The project
+`verify-fixture` there is adopted from `https://github.com/octocat/Spoon-Knife.git` for the recipes
+that name it. Stop every session the recipe started before `release`. When `plan` says Mend is
+stopped on the box, deploy a preview of `main` after `prepare`, then drive.
+
 `run-it` reads `passed` once `box identity` passes on the commit you push. Use the box through the
 `mend` CLI and browser already signed in there. Never sign that CLI in or out, and never read its
 token. A schema the box applied that this head lacks blocks `plan`: deploy a build that contains it.
