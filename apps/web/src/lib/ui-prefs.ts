@@ -65,3 +65,17 @@ export const inboxFolds = createCookieStore(
  * left.
  */
 export const tileArrangements = createCookieStore("mend-tiles", parseKeptArrangements, []);
+
+/** How the Change view lays out its diffs: old and new in one column, or side by side. */
+export type DiffLayout = "unified" | "split";
+
+/** Split only when this browser kept it; anything else is unified. */
+export const parseDiffLayout = (stored: unknown): DiffLayout =>
+  stored === "split" ? "split" : "unified";
+
+/** The Change view's diff layout, kept per browser so the server renders it as it was left. */
+export const diffLayout = createCookieStore<DiffLayout>(
+  "mend-diff-layout",
+  parseDiffLayout,
+  "unified",
+);

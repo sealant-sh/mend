@@ -116,11 +116,13 @@ export function TileTab({
         )}
         <span className={cn("min-w-0 leading-tight", !touch && "truncate")}>{label}</span>
         {tab.kind === "view" && tab.added !== undefined ? (
-          <span className="font-mono text-2xs font-normal text-success">+{tab.added}</span>
+          <span className="font-mono text-2xs font-normal text-success">
+            +{tab.added.toLocaleString("en")}
+          </span>
         ) : null}
         {tab.kind === "view" && tab.removed !== undefined ? (
           <span className="-ml-0.75 font-mono text-2xs font-normal text-destructive">
-            −{tab.removed}
+            −{tab.removed.toLocaleString("en")}
           </span>
         ) : null}
         {tab.kind === "view" && tab.fact !== undefined ? (

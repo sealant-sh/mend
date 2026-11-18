@@ -22,6 +22,7 @@
     "@mend/network": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
     "@mend/ui": "workspace:*",
+    "@pierre/diffs": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
