@@ -8,6 +8,10 @@ import {
   GitAccessView,
   GitAuthorView,
   GitBridgeStatusView,
+  GitKeyCheckAccepted,
+  GitKeyCheckNoKey,
+  GitKeyCheckRefused,
+  GitKeyCheckUnreachable,
   GitKeyView,
   EnvironmentLoadedEntry,
   EnvironmentLoadReport,
@@ -214,6 +218,7 @@ import {
   referenceDirectory,
   preparedRemoteEnvironment,
   checkGitAccess,
+  checkMendKeyWithGitHub,
   type GitRemoteOperation,
   worktreePathOf,
   type DiffFileFact,
@@ -1482,6 +1487,24 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
           publicKey: key.publicKey,
           fingerprint: key.fingerprint,
         });
+      }),
+    )
+    .handle("check", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const check = yield* checkMendKeyWithGitHub(caller.user.id, caller.user.email).pipe(
+          Effect.orDie,
+        );
+        switch (check.state) {
+          case "accepted":
+            return new GitKeyCheckAccepted(check);
+          case "refused":
+            return new GitKeyCheckRefused(check);
+          case "unreachable":
+            return new GitKeyCheckUnreachable(check);
+          case "no-key":
+            return new GitKeyCheckNoKey(check);
+        }
       }),
     )
     .handle("bridgeStatus", () =>

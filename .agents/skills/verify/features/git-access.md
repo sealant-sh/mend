@@ -18,6 +18,9 @@ observed: the key to add, and whether a signer is connected.
   `mend keys show`).
 - `key-card` shows the public key with `Copy` and where to add it, naming the repository's
   deploy-key page on a GitHub project.
+- `key-check` asks GitHub whether it accepts the person's Mend key, with no project:
+  `POST /api/keys/git/check` (tRPC `git.checkKey` in the new web app) answers `accepted` with the
+  GitHub login, `refused`, `unreachable` or `no-key`. No screen calls it yet.
 - `bridge-share` relays the machine's ssh-agent (`mend keys share`, or any attaching `mend` command
   while the mode is `bridge`) and shows `signer connected · <machine>`.
 - `project-override` sets one project's mode on its Setup page (`mend key`, `bridge`).

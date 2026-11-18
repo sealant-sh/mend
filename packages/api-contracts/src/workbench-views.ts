@@ -496,6 +496,62 @@ export class GitKeyView extends Schema.Class<GitKeyView>("GitKeyView")({
 }) {}
 
 /**
+ * GitHub greeted the Mend key (`ssh -T git@github.com`). A key on a GitHub account names its
+ * login; a deploy key names the one repository it is for, and the login is null.
+ */
+export class GitKeyCheckAccepted extends Schema.Class<GitKeyCheckAccepted>("GitKeyCheckAccepted")({
+  state: Schema.Literal("accepted"),
+  githubLogin: Schema.NullOr(Schema.String),
+  deployKeyRepository: Schema.NullOr(Schema.String),
+  /** GitHub's greeting line, as it printed it. */
+  observed: Schema.String,
+  checkedAt: Timestamp,
+}) {}
+
+/** GitHub answered and does not know the key: `Permission denied (publickey)`. */
+export class GitKeyCheckRefused extends Schema.Class<GitKeyCheckRefused>("GitKeyCheckRefused")({
+  state: Schema.Literal("refused"),
+  /** GitHub's refusal line, as it printed it. */
+  observed: Schema.String,
+  checkedAt: Timestamp,
+}) {}
+
+/**
+ * No answer about the key: DNS, the network, a changed GitHub host key, a 30-second timeout, or
+ * ssh itself failed. Says nothing about whether GitHub knows the key.
+ */
+export class GitKeyCheckUnreachable extends Schema.Class<GitKeyCheckUnreachable>(
+  "GitKeyCheckUnreachable",
+)({
+  state: Schema.Literal("unreachable"),
+  /** The line ssh printed, or the timeout, in its own words. */
+  observed: Schema.String,
+  checkedAt: Timestamp,
+}) {}
+
+/** The account has no Mend key yet; the check never creates one (`POST /keys/git` does). */
+export class GitKeyCheckNoKey extends Schema.Class<GitKeyCheckNoKey>("GitKeyCheckNoKey")({
+  state: Schema.Literal("no-key"),
+  checkedAt: Timestamp,
+}) {}
+
+/**
+ * Whether GitHub accepts the calling account's Mend key, with no project: GitHub's SSH greeting,
+ * asked from the Mend server with that key alone. It observes the key, not any repository's
+ * access; a project's own check is `POST /projects/:id/git/check`. Whatever the account's Git
+ * access mode, it checks the Mend key: in bridge mode ("your computer's key") it never asks the
+ * bridge to sign, and answers `no-key` when the account never made a Mend key. Neither the key
+ * nor its path on the server appears in any answer.
+ */
+export const GitKeyCheck = Schema.Union([
+  GitKeyCheckAccepted,
+  GitKeyCheckRefused,
+  GitKeyCheckUnreachable,
+  GitKeyCheckNoKey,
+]);
+export type GitKeyCheck = typeof GitKeyCheck.Type;
+
+/**
  * The ssh-agent bridge, as observed right now: whether a `mend keys share`
  * is connected and what that machine calls itself. Presence is a fact, not
  * a verdict — git ops for bridge-mode projects need it, and fail readably
