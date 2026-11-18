@@ -2,10 +2,11 @@ import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
 import type { WorkbenchEventDto } from "./api.ts";
+import { isConversationKey, makeConversationPatcher } from "./conversation-live.ts";
 import { invalidationsFor } from "./event-scope.ts";
 import { makeInboxPatcher, sessionsButPatched } from "./inbox-live.ts";
 import { signedInOptions } from "./sign-in.ts";
-import { loginWalk, type TrpcProxy, useTRPC } from "./trpc.ts";
+import { loginWalk, type TrpcProxy, useTRPC, useTRPCClient } from "./trpc.ts";
 
 /**
  * One SSE stream per tab, joined by every page that listens (`makeWorkbenchStream`): workbench
@@ -196,6 +197,7 @@ export const closeTabStream = () => tabStream?.close();
  * fetches only what changed while the stream was down.
  */
 export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy) => {
+  // The conversations' pages read on from their feed instead (`makeConversationPatcher`).
   for (const filter of [
     sessionsButPatched(trpc),
     trpc.sessions.inbox.queryFilter(),
@@ -217,11 +219,17 @@ export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy)
 export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void) => {
   const queryClient = useQueryClient();
   const trpc = useTRPC();
+  const client = useTRPCClient();
   useEffect(() => {
     const patchInbox = makeInboxPatcher(queryClient, trpc);
+    const patchConversation = makeConversationPatcher(queryClient, trpc, client);
     const apply = (event: WorkbenchEventDto) => {
       patchInbox(event);
-      for (const filter of invalidationsFor(event, trpc))
+      patchConversation.apply(event);
+      // The conversations' pages are patched above, never read again for an event.
+      for (const filter of invalidationsFor(event, trpc, (query) =>
+        isConversationKey(query.queryKey),
+      ))
         void queryClient.invalidateQueries(filter);
       switch (event.type) {
         case "user":
@@ -275,8 +283,9 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
       reconnected: () => {
         followSignInOrganization();
         refreshAfterReconnect(queryClient, trpc);
+        patchConversation.all();
       },
       onEvent,
     });
-  }, [onEvent, queryClient, trpc]);
+  }, [onEvent, queryClient, trpc, client]);
 };

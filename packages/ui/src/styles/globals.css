@@ -126,6 +126,31 @@
   --spacing-conversation: 704px;
   --spacing-settings: 880px;
   --spacing-palette: 512px;
+
+  /* The lump's motion on a tile tab: a running session kneads, a waiting one lifts now and then. */
+  --animate-lump-knead: lump-knead 2.8s ease-in-out infinite alternate;
+  --animate-lump-lift: lump-lift 5s ease-in-out infinite;
+  @keyframes lump-knead {
+    from {
+      transform: scale(1, 1);
+    }
+    to {
+      transform: scale(1.05, 0.88);
+    }
+  }
+  @keyframes lump-lift {
+    0%,
+    74%,
+    100% {
+      transform: none;
+    }
+    84% {
+      transform: translateY(-1.2px);
+    }
+    94% {
+      transform: none;
+    }
+  }
 }
 
 :root {
@@ -181,10 +206,11 @@
   --removed: #c81e1e;
   --diff-add: rgba(22, 163, 74, 0.075);
   --diff-del: rgba(220, 38, 38, 0.06);
-  --pr-none: #52525b;
-  --pr-open: #15803d;
-  --pr-merged: #8250df;
-  --pr-conflict: #c0262d;
+  /* The lump's pull-request colours, as the canvas's Tile tab and rail draw them. */
+  --pr-none: var(--muted-foreground);
+  --pr-open: var(--success);
+  --pr-merged: color-mix(in oklab, #8250df 80%, var(--foreground));
+  --pr-conflict: var(--destructive);
   --claude: #c76545;
   --mark: #111827;
   --mark-foreground: #ffffff;
@@ -245,10 +271,11 @@
   --removed: #ff8a80;
   --diff-add: rgba(74, 222, 128, 0.085);
   --diff-del: rgba(248, 113, 113, 0.09);
-  --pr-none: #aab3bf;
-  --pr-open: #4ade80;
-  --pr-merged: #a371f7;
-  --pr-conflict: #ff6b6b;
+  /* The lump's pull-request colours, as the canvas's Tile tab and rail draw them. */
+  --pr-none: var(--muted-foreground);
+  --pr-open: var(--success);
+  --pr-merged: color-mix(in oklab, #8250df 80%, var(--foreground));
+  --pr-conflict: var(--destructive);
   --claude: #d97757;
   --mark: #e8eaee;
   --mark-foreground: #0e1013;

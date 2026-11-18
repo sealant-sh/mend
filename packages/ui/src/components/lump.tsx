@@ -27,17 +27,22 @@ const paths: Record<LumpStatus, { d: string; evenOdd?: boolean }> = {
  *
  * It is decorative beside a title. Give it a `label` ("Waiting on you, pull request open") where
  * it stands alone, as in the rail, and screen readers read that instead.
+ *
+ * `moving` is the tile tab's lump: a running session kneads and a waiting one lifts now and then,
+ * and both keep still for a person who asks for reduced motion. The rail's lump keeps still.
  */
 function Lump({
   status = "run",
   pr = "none",
   label,
+  moving = false,
   className,
   ...props
 }: Omit<React.ComponentProps<"svg">, "children"> & {
   status?: LumpStatus;
   pr?: LumpPr;
   label?: string;
+  moving?: boolean;
 }) {
   const path = paths[status];
   return (
@@ -59,6 +64,10 @@ function Lump({
         d={path.d}
         fill="currentColor"
         fillRule={path.evenOdd === true ? "evenodd" : undefined}
+        className={cn(
+          moving && status === "run" && "origin-bottom transform-fill motion-safe:animate-lump-knead",
+          moving && status === "wait" && "motion-safe:animate-lump-lift",
+        )}
       />
     </svg>
   );

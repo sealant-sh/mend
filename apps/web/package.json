@@ -16,6 +16,7 @@
     "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {
+    "@mend/agent-conversation": "workspace:*",
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
@@ -35,6 +36,8 @@
     "nitro": "^3.0.260610-beta",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "react-markdown": "catalog:",
+    "remark-gfm": "catalog:",
     "superjson": "catalog:",
     "tailwindcss": "catalog:"
   },

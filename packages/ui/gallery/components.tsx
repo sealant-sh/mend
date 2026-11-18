@@ -81,6 +81,11 @@ function LumpDemo() {
           </div>
         ))}
       </div>
+      <Row label="On a tile tab, moving: running kneads, waiting lifts (still with reduced motion)">
+        {(["run", "wait", "done"] as const).map((status) => (
+          <Lump key={status} status={status} pr="open" moving className="size-4" />
+        ))}
+      </Row>
       <Row label="In the sidebar rail, with its title as a tooltip">
         {(
           [

@@ -43,7 +43,8 @@ import {
   rowStatus,
   sharedWith,
 } from "#/lib/inbox";
-import { laterPage, sessionPage } from "#/lib/later-pages";
+import { laterPage } from "#/lib/later-pages";
+import { sessionLink } from "#/lib/session-sheet";
 import { useServerHost } from "#/lib/online";
 import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
@@ -518,7 +519,7 @@ export function SidebarRow({
         )}
         render={
           <Link
-            {...sessionPage(sessionId)}
+            {...sessionLink(sessionId)}
             data-session-id={sessionId}
             aria-current={active ? "page" : undefined}
           />
