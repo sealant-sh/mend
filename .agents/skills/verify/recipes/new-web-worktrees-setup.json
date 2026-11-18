@@ -1,0 +1,25 @@
+[
+  {
+    "name": "01-unlanded",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "wt-unlanded",
+      "--",
+      "sh",
+      "-c",
+      "printf 'worktrees\\n' > WORKTREES.md"
+    ]
+  },
+  {
+    "name": "02-clean",
+    "run": ["mend", "run", "--project", "verify-fixture", "--name", "wt-clean", "--", "true"]
+  },
+  {
+    "name": "03-list",
+    "run": ["mend", "worktrees", "--project", "verify-fixture"]
+  }
+]
