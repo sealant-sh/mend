@@ -22,6 +22,7 @@ const trpcClient = browserTrpcClient();
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
+  vi.useRealTimers();
   for (const close of cleanups.splice(0)) await close();
   vi.unstubAllGlobals();
 });
@@ -33,6 +34,20 @@ const click = async (text: string) => {
   );
   if (button === undefined) throw new Error(`No button ${text}`);
   await act(async () => button.click());
+};
+
+const repositoryField = () =>
+  vi.waitFor(() => {
+    const field = document.body.querySelector('input[placeholder="Git URL"]');
+    if (!(field instanceof HTMLInputElement)) throw new Error("No repository field yet");
+    return field;
+  });
+
+const typeInto = async (field: HTMLInputElement, value: string) => {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(field, value);
+    field.dispatchEvent(new Event("input", { bubbles: true }));
+  });
 };
 
 const mount = async (adoption = false, connected = true) => {
@@ -183,19 +198,7 @@ describe("Setup consent", () => {
     "adoption stays complete; %s controls whether setup starts",
     async (choice) => {
       const page = await mount(true);
-      const source = await vi.waitFor(() => {
-        const field = document.body.querySelector('input[placeholder="Git URL"]');
-        if (!(field instanceof HTMLInputElement)) throw new Error("No repository field yet");
-        return field;
-      });
-      if (!(source instanceof HTMLInputElement)) throw new Error("No repository field");
-      await act(async () => {
-        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
-          source,
-          "https://github.com/team/repo.git",
-        );
-        source.dispatchEvent(new Event("input", { bubbles: true }));
-      });
+      await typeInto(await repositoryField(), "https://github.com/team/repo.git");
       await page.click("Adopt");
       await vi.waitFor(() =>
         expect(document.body.textContent).toContain("A setup session studies"),
@@ -236,4 +239,15 @@ describe("Setup consent", () => {
       }
     },
   );
+
+  it("leaves no repository search to fire once the adoption dialog is gone", async () => {
+    await mount(true);
+    const source = await repositoryField();
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    await typeInto(source, "team/repo");
+    for (const close of cleanups.splice(0)) await close();
+    // As after a test file ends: the window is gone when a timer left behind fires (SLNT-1124).
+    vi.stubGlobal("window", undefined);
+    expect(() => vi.runAllTimers()).not.toThrow();
+  });
 });

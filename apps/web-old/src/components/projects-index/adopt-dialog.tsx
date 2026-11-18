@@ -1,7 +1,7 @@
 import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
 import { Button } from "#/components/kit/button";
@@ -233,6 +233,14 @@ function AdoptForm({
   const [typed, setTyped] = useState(failed?.attempt.source ?? "");
   const [searched, setSearched] = useState("");
   const rest = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A search still resting when the form goes would set state after it, and a test file's window
+  // may be gone by then (SLNT-1124).
+  useEffect(
+    () => () => {
+      if (rest.current !== null) clearTimeout(rest.current);
+    },
+    [],
+  );
   const [picked, setPicked] = useState<GhRepo | null>(null);
   const [name, setName] = useState(failed?.attempt.name ?? "");
   const [authOverride, setAuthOverride] = useState<GitAuthModeDto | null>(null);
