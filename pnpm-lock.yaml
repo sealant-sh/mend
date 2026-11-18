@@ -1057,6 +1057,9 @@ importers:
 
   apps/web:
     dependencies:
+      '@mend/agent-conversation':
+        specifier: workspace:*
+        version: link:../../packages/agent-conversation
       '@mend/api-contracts':
         specifier: workspace:*
         version: link:../../packages/api-contracts
@@ -1114,6 +1117,12 @@ importers:
       react-dom:
         specifier: 'catalog:'
         version: 19.2.3(react@19.2.3)
+      react-markdown:
+        specifier: 'catalog:'
+        version: 10.1.0(@types/react@19.2.17)(react@19.2.3)
+      remark-gfm:
+        specifier: 'catalog:'
+        version: 4.0.1
       superjson:
         specifier: 'catalog:'
         version: 2.2.6

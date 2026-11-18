@@ -2,7 +2,7 @@ import { cn } from "@mend/ui/lib/utils";
 import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import { sessionPage } from "#/lib/later-pages";
+import { sessionLink } from "#/lib/session-sheet";
 
 /**
  * One session in a list (Doop "Session row"), at its touch size: the phone inbox's row. The title
@@ -31,7 +31,7 @@ export function SessionRow({
   return (
     <li className="relative flex items-start border-b border-border">
       <Link
-        {...sessionPage(sessionId)}
+        {...sessionLink(sessionId)}
         data-session-id={sessionId}
         className="flex min-h-11 min-w-0 flex-1 items-start gap-3 py-3 pr-4 pl-4 outline-none focus-visible:bg-muted"
       >

@@ -12,7 +12,6 @@ import {
   queueSession,
   type SessionDefaultsDto,
 } from "#/lib/api";
-import { sessionPage } from "#/lib/later-pages";
 import {
   type Agent,
   AGENTS,
@@ -30,6 +29,8 @@ import {
   type WorktreeTarget,
   launchFields,
 } from "#/lib/new-session";
+import { holdOpeningMessage } from "#/lib/opening-messages";
+import { sessionLink } from "#/lib/session-sheet";
 import { signedInOptions } from "#/lib/sign-in";
 import { type StartCalls, startSession } from "#/lib/start-session";
 import { useTRPC } from "#/lib/trpc";
@@ -212,9 +213,11 @@ export function useComposer(): Composer {
       readonly target: WorktreeTarget;
       readonly spec: StartSpec;
     }) => startSession(BROWSER_CALLS, request.projectId, request.target, request.spec),
-    onSuccess: (sessionId) => {
+    onSuccess: (sessionId, request) => {
       void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      void navigate(sessionPage(sessionId));
+      // The session's page shows what was asked while the agent starts and takes it.
+      holdOpeningMessage(sessionId, request.spec.prompt);
+      void navigate(sessionLink(sessionId));
     },
     // The task comes back into the field, so nothing the person wrote is lost.
     onError: (_error, request) => setPrompt(request.spec.prompt),
