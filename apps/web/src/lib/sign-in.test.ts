@@ -84,6 +84,15 @@ describe("a page served to nobody", () => {
     expect(requests).toBe(0);
   });
 
+  it("lets a reset link through, in both its forms, since its person can't sign in", async () => {
+    status = 401;
+    await expect(check({ pathname: "/reset", href: "/reset#abc12345" })).resolves.toBeUndefined();
+    await expect(
+      check({ pathname: "/reset/abc12345", href: "/reset/abc12345" }),
+    ).resolves.toBeUndefined();
+    expect(requests).toBe(0);
+  });
+
   it("shows any other failure as the page's error, not as a walk to sign-in", async () => {
     status = 503;
     const stopped = await thrown(check({ pathname: "/", href: "/" }));

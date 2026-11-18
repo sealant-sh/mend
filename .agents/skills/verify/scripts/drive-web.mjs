@@ -11,14 +11,17 @@
 // closes that browser, and --account and --state do not apply: the app holds its own sign-in.
 //
 // --recipe is a module whose default export is
-// `async ({ page, web, capture, note, typeSecret, registerSecret }) => {}`:
+// `async ({ page, web, capture, note, typeSecret, registerSecret, account }) => {}`:
 // - `capture(name)` saves <out>/<name>.aria.yml (the body's ARIA snapshot) and <out>/<name>.png;
 // - `note(text)` appends a line to <out>/steps.log;
 // - `typeSecret(locator, name, value)` puts a credential into a field: the value goes into the run's
 //   secret registry first (--private, secrets.mjs), then into the field by script, never through
 //   Playwright's `fill` (whose error log would print its argument), and the field is marked as
 //   holding a secret;
-// - `registerSecret(name, value)` registers a credential a page minted (a token, a pairing code).
+// - `registerSecret(name, value)` registers a credential a page minted (a token, a pairing code);
+// - `account`, with --account, is the stack's first account for a recipe that signs in on a page of
+//   its own: `account.email`, and `account.typePassword(locator)`, which types its password through
+//   `typeSecret`. The password itself never reaches the recipe. Without --account it is null.
 // --account signs in at /login with the stack's first account (handover.mjs's account.json),
 // typing its password the same way. --sign-in names the server whose /login it uses, when the page
 // under --web has none of its own (the new web app, which signs in through its stack's: the session
@@ -418,8 +421,8 @@ const typeSecret = async (locator, name, value) => {
 
 let failed = false;
 try {
-  if (accountFile) {
-    const account = JSON.parse(readFileSync(accountFile, "utf8"));
+  const account = accountFile ? JSON.parse(readFileSync(accountFile, "utf8")) : null;
+  if (account) {
     await page.goto(new URL("/login", signIn ?? web).href);
     await page.getByRole("button", { name: "Sign in" }).waitFor();
     await page.getByRole("textbox", { name: "Email" }).fill(account.email);
@@ -436,7 +439,18 @@ try {
     note(`signed in as the stack's first account (${account.email})`);
   }
   const run = (await import(pathToFileURL(resolve(recipe)).href)).default;
-  await run({ page, web, capture, note, typeSecret, registerSecret });
+  await run({
+    page,
+    web,
+    capture,
+    note,
+    typeSecret,
+    registerSecret,
+    account: account && {
+      email: account.email,
+      typePassword: (locator) => typeSecret(locator, "account-password", account.password),
+    },
+  });
   note("recipe ended");
 } catch (error) {
   failed = true;

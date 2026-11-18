@@ -125,12 +125,12 @@ export default async ({ page, web, capture, note }) => {
   await heading("Page not found");
   await capture("recovered-desktop-light");
 
-  // No session: home walks to sign-in, which the new app does not have yet.
+  // No session: home walks to sign-in (recipe new-web-sign-in drives the page itself).
   await page.context().clearCookies();
   await page.goto(`${web}/`);
-  await heading("Page not found");
+  await heading("Sign in");
   const at = new URL(page.url()).pathname;
   if (at !== "/login") throw new Error(`a signed-out visit went to ${at}, not /login`);
-  note("signed out, home goes to /login, which shows the not-found screen until its route lands");
+  note("signed out, home goes to /login and shows sign-in");
   await capture("signed-out-desktop-light");
 };

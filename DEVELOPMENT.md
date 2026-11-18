@@ -19,8 +19,8 @@ pnpm dev
 
 The new web app (`apps/web`), rebuilt one route at a time, runs beside it on **3115** with
 `pnpm dev:web`, against the same API. Add `http://localhost:3115` to `MEND_ALLOWED_ORIGINS` in
-`.env` and restart `pnpm dev`, or the API refuses its calls. It has no sign-in page yet: sign in on
-3105, and the session holds on 3115 too.
+`.env` and restart `pnpm dev`, or the API refuses its calls. Sign in on either app: the session
+holds on both.
 
 ## Environment
 

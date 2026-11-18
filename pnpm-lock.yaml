@@ -1142,6 +1142,9 @@ importers:
       esbuild:
         specifier: 'catalog:'
         version: 0.28.1
+      fast-check:
+        specifier: 'catalog:'
+        version: 4.8.0
       jsdom:
         specifier: 'catalog:'
         version: 28.1.0(@noble/hashes@2.2.0)

@@ -46,6 +46,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "esbuild": "catalog:",
+    "fast-check": "catalog:",
     "jsdom": "catalog:",
     "nanostores": "^1.4.0",
     "typescript": "catalog:",
