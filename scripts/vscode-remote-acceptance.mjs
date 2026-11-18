@@ -32,7 +32,9 @@
  *   MEND_E2E_REMOTE_SSH 0 skips the real Remote-SSH window (step 8)
  *   MEND_E2E_KEEP       1 leaves the server and scratch directory up for inspection
  *   MEND_E2E_EDITOR     off runs with mend.workspaces.bringMyEditor off (the before/after timing)
- *   MEND_E2E_EVIDENCE   a directory to copy result.json and the remote windows' reports into
+ *   MEND_E2E_EVIDENCE   a directory to copy result.json, the remote windows' reports, the
+ *                       editor's gallery requests (editor-network.json) and its windows'
+ *                       renderer.log files into
  *
  * The world (the daemon, the scratch HOME, the editor's install and display) is
  * scripts/vscode-remote-world.mjs, shared with the verify skill's drive-vscode.mjs. Nothing touches
@@ -43,7 +45,11 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { assertEditorEvidence } from "./vscode-acceptance-evidence.mjs";
+import {
+  assertEditorEvidence,
+  isFailedRequest,
+  summarizeNetLog,
+} from "./vscode-acceptance-evidence.mjs";
 import {
   adoptProject,
   buildExtension,
@@ -89,6 +95,10 @@ const log = (line) => console.log(`[acceptance] ${line}`);
 await requireImages(image);
 
 const { scratch, home, sshDir, clientEnv } = makeScratch("mend-vscode-remote");
+// Chromium's own record of the editor's requests. The workbench reports every failed gallery
+// request as `Failed to fetch` (SLNT-1088); this says which request failed, and how.
+const netLog = path.join(scratch, "editor-netlog.json");
+const userData = path.join(scratch, "user-data");
 
 let xvfb = null;
 let dind = null;
@@ -163,7 +173,6 @@ const main = async () => {
     { cwd: repo },
   );
 
-  const userData = path.join(scratch, "user-data");
   const extensions = path.join(scratch, "extensions");
   writeUserSettings(userData, sshDir, editorOff ? { "mend.workspaces.bringMyEditor": "off" } : {});
   const code = process.env.VSCODE_CLI || "code";
@@ -229,6 +238,7 @@ const main = async () => {
         "--password-store=basic",
         "--disable-gpu",
         "--ozone-platform=x11",
+        `--log-net-log=${netLog}`,
       ],
       { env: testEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
@@ -270,6 +280,37 @@ const main = async () => {
   log("PASS the editor suite against the non-loopback server");
 };
 
+/**
+ * The editor's gallery requests, into the evidence, and the failed ones into the log when the run
+ * failed; then each window's renderer.log, where the gallery service logs the URL it gave up on.
+ */
+const saveEditorNetwork = () => {
+  if (fs.existsSync(netLog)) {
+    const requests = summarizeNetLog(fs.readFileSync(netLog, "utf8"));
+    if (requests === null) log(`editor: ${netLog} is not a NetLog`);
+    else {
+      if (evidenceDir) {
+        fs.writeFileSync(
+          path.join(evidenceDir, "editor-network.json"),
+          `${JSON.stringify(requests, null, 2)}\n`,
+        );
+      }
+      if (process.exitCode === 1) {
+        const failed = requests.filter(isFailedRequest);
+        log(`editor: ${failed.length} of ${requests.length} gallery requests did not succeed`);
+        for (const request of failed) log(`editor: ${JSON.stringify(request)}`);
+      }
+    }
+  }
+  const logs = path.join(userData, "logs");
+  if (!evidenceDir || !fs.existsSync(logs)) return;
+  const into = path.join(evidenceDir, "editor-logs");
+  for (const from of fs.globSync("*/window*/renderer.log", { cwd: logs })) {
+    fs.mkdirSync(into, { recursive: true });
+    fs.copyFileSync(path.join(logs, from), path.join(into, from.split(path.sep).join("-")));
+  }
+};
+
 try {
   await main();
 } catch (cause) {
@@ -285,6 +326,11 @@ try {
       const from = path.join(scratch, name);
       if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidenceDir, name));
     }
+  }
+  try {
+    saveEditorNetwork();
+  } catch (cause) {
+    log(`editor: could not save its network evidence: ${String(cause)}`);
   }
   await cleanup();
 }
