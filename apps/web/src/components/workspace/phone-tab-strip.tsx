@@ -49,7 +49,10 @@ export function PhoneTabStrip({
       onValueChange={(value) => {
         if (typeof value === "string") onActiveChange(value);
       }}
-      className={cn("flex h-11.25 shrink-0 flex-row gap-0 border-b bg-background", className)}
+      className={cn(
+        "flex h-11.25 shrink-0 gap-0 border-b bg-background data-horizontal:flex-row",
+        className,
+      )}
     >
       <div className="relative flex min-w-0 flex-1">
         <TabsList
@@ -59,7 +62,7 @@ export function PhoneTabStrip({
           onScroll={(event: UIEvent<HTMLDivElement>) =>
             setOverflow(overflowOf(event.currentTarget))
           }
-          className="h-full min-w-0 flex-1 items-stretch justify-start gap-0.5 overflow-x-auto rounded-none p-0 pr-1 pl-1.5 [scrollbar-width:none]"
+          className="h-full min-w-0 flex-1 items-stretch justify-start gap-0.5 overflow-x-auto rounded-none p-0 pr-1 pl-1.5 [scrollbar-width:none] group-data-horizontal/tabs:h-full"
         >
           {tabs.map((entry) => (
             <Fragment key={entry.value}>{entry.tab}</Fragment>

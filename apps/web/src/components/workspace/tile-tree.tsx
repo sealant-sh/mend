@@ -49,7 +49,13 @@ export function TileTree({
             ids.map((id) => layout[id] ?? 0),
           );
       }}
-      className="min-h-0 min-w-0"
+      // The library lays each panel's own element out with inline styles (the class goes on an
+      // element inside it): a panel off screen is hidden by its data attribute, important.
+      className={cn(
+        "min-h-0 min-w-0",
+        "lg:[&>[data-off-max]]:hidden!",
+        "max-lg:[&>[data-off-phone]]:hidden!",
+      )}
     >
       {node.children.map((child, at) => (
         <Fragment key={child.id}>
@@ -79,11 +85,9 @@ export function TileTree({
           <ResizablePanel
             id={child.id}
             minSize={TILE_MIN_PX}
-            className={cn(
-              "flex min-h-0 min-w-0",
-              maximised !== null && !holdsTile(child, maximised) && "lg:hidden",
-              !holdsTile(child, focus) && "max-lg:hidden",
-            )}
+            className="flex min-h-0 min-w-0"
+            data-off-max={maximised !== null && !holdsTile(child, maximised) ? "" : undefined}
+            data-off-phone={holdsTile(child, focus) ? undefined : ""}
           >
             <TileTree
               node={child}

@@ -235,7 +235,8 @@ flows reuse what earlier ones made:
 - **Mode:** `scripted` (recipes/new-web-tiles.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
-- **Areas:** `apps/web/src/components/workspace/`, `apps/web/src/components/session/session-sheet.tsx`,
+- **Areas:** `apps/web/src/components/workspace/`,
+  `apps/web/src/components/session/session-sheet.tsx`,
   `apps/web/src/components/session/workspace-tabs.tsx`,
   `apps/web/src/components/session/new-session-tab.tsx`, `apps/web/src/lib/tiles.ts`
 

@@ -95,7 +95,7 @@ export function Tile({
         <TabsList
           variant="line"
           aria-label={label}
-          className="h-full min-w-0 items-stretch gap-0.5 overflow-hidden rounded-none p-0"
+          className="h-full min-w-0 items-stretch gap-0.5 overflow-hidden rounded-none p-0 group-data-horizontal/tabs:h-full"
         >
           {tabs.map((entry) => (
             <Fragment key={entry.value}>{entry.tab}</Fragment>

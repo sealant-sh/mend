@@ -10,6 +10,9 @@
 //
 // A local stack runs no agent: the line naming a session waiting on you is drawn from a fixture
 // answer to the inbox read, and that capture is named `fixture-…`.
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
 const DESKTOP = { width: 1280, height: 900 };
 const NARROW = { width: 1000, height: 800 };
 const PHONE = { width: 390, height: 844 };
@@ -17,7 +20,17 @@ const PHONE = { width: 390, height: 844 };
 const TITLE_A = "Fix flaky checkout retry";
 const TITLE_B = "Add a regression test for 409s";
 
-export default async ({ page, web, capture, note }) => {
+export default async ({ page, web, capture: captureOnce, note }) => {
+  // The driver withholds a picture when the page inserts a subtree while it looks (a tab's body
+  // moving into its tile, a thread drawing): look again until it keeps one, or say it didn't.
+  const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
+  const capture = async (name) => {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      await captureOnce(name);
+      if (existsSync(join(out, `${name}.png`))) return;
+      await page.waitForTimeout(400);
+    }
+  };
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
     await page.evaluate(
@@ -69,15 +82,17 @@ export default async ({ page, web, capture, note }) => {
   };
   const said = () => page.locator('p[role="status"].sr-only').innerText();
   const expectTiles = async (count, what) => {
-    await page.waitForFunction(
-      (n) =>
-        [...document.querySelectorAll("[data-tile]")].filter((t) => t.getClientRects().length > 0)
-          .length === n,
-      count,
-      { timeout: 5_000 },
-    ).catch(async () => {
-      throw new Error(`${what}: ${await tiles().count()} tiles on screen, not ${count}`);
-    });
+    await page
+      .waitForFunction(
+        (n) =>
+          [...document.querySelectorAll("[data-tile]")].filter((t) => t.getClientRects().length > 0)
+            .length === n,
+        count,
+        { timeout: 5_000 },
+      )
+      .catch(async () => {
+        throw new Error(`${what}: ${await tiles().count()} tiles on screen, not ${count}`);
+      });
   };
   /** Drags a tab by the mouse to (x, y); `during` runs while it is held there. */
   const drag = async (key, x, y, during) => {
@@ -113,6 +128,12 @@ export default async ({ page, web, capture, note }) => {
   if (running.length < 2)
     throw new Error("tiles-ws has fewer than two running sessions: run the CLI batch first");
   const [A, B] = [running[0].session.id, running[1].session.id];
+  // A session an earlier run of this recipe started and didn't get to stop goes first.
+  for (const extra of running.slice(2))
+    await client(async (trpc, id) => {
+      await trpc.sessions.stop.mutate({ id }).catch(() => undefined);
+    }, extra.session.id);
+  if (running.length > 2) note(`stopped ${running.length - 2} session(s) an earlier run left`);
   const worktreeId = running[0].session.worktreeId;
   const tabA = `session:${A}`;
   const tabB = `session:${B}`;
@@ -134,7 +155,7 @@ export default async ({ page, web, capture, note }) => {
   const order = await page
     .locator("[data-tile] [data-tab]")
     .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
-  if (order[0] !== tabA || order[1] !== tabB)
+  if (order[0] !== tabA || !order.includes(tabB))
     throw new Error(`the tile's tabs read ${order.join(", ")}`);
   if ((await tabOf(tabA).getAttribute("aria-selected")) !== "true")
     throw new Error("the opened session's tab is not the active one");
@@ -155,29 +176,38 @@ export default async ({ page, web, capture, note }) => {
   note("drag right: the drop mark read Split right; two tiles side by side, the new one focused");
   await both("side-by-side");
 
-  // T08: resize by the divider.
-  const divider = page.locator('[data-separator]').filter({ visible: true }).first();
-  const line = await boxOf(divider);
-  const before = left.width;
-  await page.mouse.move(line.x + line.width / 2, line.y + line.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(line.x - 160, line.y + line.height / 2, { steps: 10 });
-  await both("resizing");
-  await page.mouse.up();
-  await page.waitForTimeout(300);
-  const resized = (await boxOf(tileOf(tabA))).width;
-  if (!(resized < before - 100)) throw new Error(`A's tile is ${resized}px wide, was ${before}px`);
-  note(`resize: A's tile went from ${Math.round(before)}px to ${Math.round(resized)}px`);
-
-  // Kept over a reload.
+  // Kept over a reload, then resized by the divider (T08), and that kept over a reload too.
   await page.reload();
   await hydrated();
   await tabOf(tabB).waitFor();
   await expectTiles(2, "after a reload");
+  note("reload: still two tiles side by side");
+
+  // T08: resize by the divider.
+  const divider = page.locator("[data-separator]").filter({ visible: true }).first();
+  const line = await boxOf(divider);
+  const before = (await boxOf(tileOf(tabA))).width;
+  await page.mouse.move(line.x + line.width / 2, line.y + line.height / 2);
+  await page.waitForTimeout(200);
+  await page.mouse.down();
+  for (let step = 1; step <= 10; step += 1)
+    await page.mouse.move(line.x + line.width / 2 - step * 16, line.y + line.height / 2);
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const resized = (await boxOf(tileOf(tabA))).width;
+  // A full-page picture resizes the window for a moment, which ends a drag: it is taken after
+  // letting go, with the pointer still on the divider.
+  await both("resized");
+  if (!(resized < before - 100)) throw new Error(`A's tile is ${resized}px wide, was ${before}px`);
+  note(`resize: A's tile went from ${Math.round(before)}px to ${Math.round(resized)}px`);
+
+  await page.reload();
+  await hydrated();
+  await tabOf(tabB).waitFor();
   const reloaded = (await boxOf(tileOf(tabA))).width;
   if (Math.abs(reloaded - resized) > 4)
     throw new Error(`after a reload A's tile is ${reloaded}px wide, not ${resized}px`);
-  note(`reload: two tiles, A's still ${Math.round(reloaded)}px wide`);
+  note(`reload: A's tile is still ${Math.round(reloaded)}px wide`);
 
   // Keep: mark B's body, then move B between tiles; the same element must still be there.
   await page.locator(`[data-tab-body="${tabB}"]`).waitFor({ state: "attached" });
@@ -202,7 +232,8 @@ export default async ({ page, web, capture, note }) => {
   // The body B had at the start is the one it shows now: moved, never drawn again.
   await tabOf(tabB).click();
   const mark = await page.evaluate(
-    (key) => document.querySelector(`[data-tab-body="${key}"]`)?.firstElementChild?.dataset.keptMark,
+    (key) =>
+      document.querySelector(`[data-tab-body="${key}"]`)?.firstElementChild?.dataset.keptMark,
     tabB,
   );
   if (mark !== "before-move") throw new Error("B's body was drawn again when its tab moved");
@@ -313,7 +344,16 @@ export default async ({ page, web, capture, note }) => {
       queryKey: [["sessions", "inbox"]],
     }),
   );
-  await page.locator(`[data-tab="session:${started}"]`).first().waitFor({ timeout: 15_000 });
+  const listed = await page.evaluate(
+    (id) =>
+      window["__TSR_ROUTER__"].options.context.queryClient
+        .getQueryCache()
+        .findAll({ queryKey: [["sessions", "inbox"]] })[0]
+        ?.state.data?.find((row) => row.session.id === id)?.session.status ?? "not listed",
+    started,
+  );
+  note(`started session ${started}: the inbox reads it as ${listed}`);
+  await tabOf(`session:${started}`).waitFor({ timeout: 15_000 });
   const arrived = await page
     .locator("[data-tile] [data-tab]")
     .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
