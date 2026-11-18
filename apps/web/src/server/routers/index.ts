@@ -18,6 +18,7 @@ import { platformRouter } from "./platform.ts";
 import { previewsRouter } from "./previews.ts";
 import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
+import { queuedSessionsRouter } from "./queued-sessions.ts";
 import { resourcesRouter } from "./resources.ts";
 import { screensRouter } from "./screens.ts";
 import { servicesRouter } from "./services.ts";
@@ -61,6 +62,7 @@ export const appRouter = router({
   projects: projectsRouter,
   previews: previewsRouter,
   queue: queueRouter,
+  queuedSessions: queuedSessionsRouter,
   resources: resourcesRouter,
   screens: screensRouter,
   services: servicesRouter,

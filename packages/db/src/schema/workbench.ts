@@ -45,6 +45,7 @@ import type {
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
+  QueuedSessionId,
   PageId,
   ProofArtifactId,
   PreviewId,
@@ -977,6 +978,42 @@ export const sessionInboxMarks = pgTable(
     markedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [primaryKey({ columns: [table.userId, table.sessionId] })],
+);
+
+/**
+ * A session started while its project still clones (SLNT-1099): what the person asked for, kept
+ * until the clone ends and the session starts. `project_id` is the id the adoption chose for the
+ * project before its row exists, so it has no foreign key. `request` is the create and launch
+ * requests as the API encoded them; the API decodes it. `waiting` → `starting` → `started` with
+ * the session, or `failed` with the step and the reason; each change is one conditional update.
+ * The owner and organization FKs (CASCADE) are declared in the migration.
+ */
+export const queuedSessions = pgTable(
+  "queued_sessions",
+  {
+    id: text().$type<QueuedSessionId>().primaryKey(),
+    ownerUserId: text().notNull(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    adoptionId: text().notNull(),
+    projectName: text().notNull(),
+    projectId: text().$type<ProjectId>().notNull(),
+    request: jsonb().$type<unknown>().notNull(),
+    state: text().$type<"waiting" | "starting" | "started" | "failed">().notNull(),
+    failureStep: text().$type<"clone" | "start">(),
+    failure: text(),
+    sessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("queued_sessions_owner_idx").on(table.ownerUserId, table.organizationId),
+    index("queued_sessions_state_idx").on(table.state),
+  ],
 );
 
 /**

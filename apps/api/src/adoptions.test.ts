@@ -12,6 +12,7 @@ const start = {
   ownerUserId: "alice",
   name: "mend",
   source: "https://github.com/sealant-sh/mend",
+  projectId: ProjectId.make("p-mend"),
 };
 const adopted = new Project(
   makeProject({
@@ -130,6 +131,45 @@ describe("adoptions as they run", () => {
         expect(yield* adoptions.read("alice", ID)).toMatchObject({
           state: "adopted",
           projectId: "p-mend",
+        });
+      }),
+    );
+  });
+
+  it("tells whoever waits on an adoption how it ended, even after the end", async () => {
+    await runWith(
+      Effect.gen(function* () {
+        const adoptions = yield* Adoptions;
+        const finish = yield* Deferred.make<void>();
+        const request = yield* adoptions
+          .run(
+            start,
+            () => Deferred.await(finish).pipe(Effect.as(adopted)),
+            () => ({ failure: "never", gitSaid: null }),
+          )
+          .pipe(Effect.forkChild);
+        yield* Effect.yieldNow;
+        // Only its owner waits on it.
+        expect(yield* adoptions.watch("bob", ID)).toBeNull();
+        const watched = yield* adoptions.watch("alice", ID);
+        expect(watched?.projectId).toBe("p-mend");
+        const waiting = yield* Effect.forkChild(watched?.ended ?? Effect.never);
+        yield* Deferred.succeed(finish, undefined);
+        yield* Fiber.join(request);
+        expect(yield* Fiber.join(waiting)).toEqual({ _tag: "Adopted", projectId: "p-mend" });
+
+        const failing = { ...start, id: "6c0ffee0-1b2c-4d3e-8f4a-5b6c7d8e9f00" };
+        yield* adoptions
+          .run(
+            failing,
+            () => Effect.fail("unreachable"),
+            () => ({ failure: "Mend could not reach the repository.", gitSaid: null }),
+          )
+          .pipe(Effect.flip);
+        const late = yield* adoptions.watch("alice", failing.id);
+        expect(yield* late?.ended ?? Effect.never).toEqual({
+          _tag: "Failed",
+          failure: "Mend could not reach the repository.",
         });
       }),
     );

@@ -1,7 +1,8 @@
 import { AdoptionGitProgress, AdoptionProgress } from "@mend/api-contracts";
+import type { ProjectId } from "@mend/domain";
 import type { Project } from "@mend/domain/workbench";
 import type { AdoptProgress } from "@mend/store";
-import { Cause, Context, Effect, Exit, Fiber, Layer, Option } from "effect";
+import { Cause, Context, Deferred, Effect, Exit, Fiber, Layer, Option } from "effect";
 
 /** One adoption as its request starts it: whose it is, and what it clones. */
 export interface AdoptionStart {
@@ -10,6 +11,21 @@ export interface AdoptionStart {
   readonly ownerUserId: string;
   readonly name: string;
   readonly source: string;
+  /** The id the project gets once cloned, chosen before its row exists. */
+  readonly projectId: ProjectId;
+}
+
+/** How an adoption ended: its project, or Mend's sentence for why it failed. */
+export type AdoptionEnd =
+  | { readonly _tag: "Adopted"; readonly projectId: ProjectId }
+  | { readonly _tag: "Failed"; readonly failure: string };
+
+/** An adoption someone waits on: how far it got now, its project's id, and its end. */
+export interface WatchedAdoption {
+  readonly progress: AdoptionProgress;
+  readonly projectId: ProjectId;
+  /** Answers once the adoption ends, at once when it already has. */
+  readonly ended: Effect.Effect<AdoptionEnd>;
 }
 
 /** What the adoption's work says as it goes. Called from git's output stream: plain callbacks. */
@@ -45,6 +61,11 @@ export class Adoptions extends Context.Service<
     ) => Effect.Effect<Project, E, R>;
     /** How far an adoption got; null for one this server does not know, or another account's. */
     readonly read: (ownerUserId: string, id: string) => Effect.Effect<AdoptionProgress | null>;
+    /**
+     * Wait on an adoption's end, as `read` sees it: null for one this server does not know (a
+     * restart forgets them), or another account's.
+     */
+    readonly watch: (ownerUserId: string, id: string) => Effect.Effect<WatchedAdoption | null>;
   }
 >()("@mend/api/Adoptions") {}
 
@@ -53,6 +74,8 @@ const KEPT_MS = 15 * 60_000;
 
 interface Entry {
   readonly ownerUserId: string;
+  readonly projectId: ProjectId;
+  readonly ended: Deferred.Deferred<AdoptionEnd>;
   progress: AdoptionProgress;
 }
 
@@ -108,6 +131,8 @@ export const AdoptionsLive: Layer.Layer<Adoptions> = Layer.effect(
           return yield* work({ store: () => undefined, recording: () => undefined });
         const entry: Entry = {
           ownerUserId: start.ownerUserId,
+          projectId: start.projectId,
+          ended: yield* Deferred.make<AdoptionEnd>(),
           progress: new AdoptionProgress({
             id: start.id,
             name: start.name,
@@ -124,25 +149,23 @@ export const AdoptionsLive: Layer.Layer<Adoptions> = Layer.effect(
         };
         entries.set(start.id, entry);
         const settle = (exit: Exit.Exit<Project, E>) =>
-          Effect.sync(() => {
+          Effect.sync((): AdoptionEnd => {
             if (Exit.isSuccess(exit)) {
               change(entry, { state: "adopted", projectId: exit.value.id });
-              return;
+              return { _tag: "Adopted", projectId: exit.value.id };
             }
             const error = Cause.findErrorOption(exit.cause);
-            change(
-              entry,
-              Option.isSome(error)
-                ? { state: "failed", ...failureOf(error.value) }
-                : {
-                    state: "failed",
-                    failure: Cause.hasInterruptsOnly(exit.cause)
-                      ? "The adoption was stopped before it finished."
-                      : "Mend could not finish the adoption. The server log has the detail.",
-                    gitSaid: null,
-                  },
-            );
-          });
+            const failed: AdoptionFailure = Option.isSome(error)
+              ? failureOf(error.value)
+              : {
+                  failure: Cause.hasInterruptsOnly(exit.cause)
+                    ? "The adoption was stopped before it finished."
+                    : "Mend could not finish the adoption. The server log has the detail.",
+                  gitSaid: null,
+                };
+            change(entry, { state: "failed", ...failed });
+            return { _tag: "Failed", failure: failed.failure };
+          }).pipe(Effect.flatMap((end) => Deferred.succeed(entry.ended, end)));
         const fiber = yield* work(reporterOf(entry)).pipe(
           Effect.onExit(settle),
           Effect.forkIn(scope),
@@ -156,6 +179,17 @@ export const AdoptionsLive: Layer.Layer<Adoptions> = Layer.effect(
         return entry === undefined || entry.ownerUserId !== ownerUserId ? null : entry.progress;
       });
 
-    return { run, read };
+    const watch = (ownerUserId: string, id: string) =>
+      Effect.sync((): WatchedAdoption | null => {
+        const entry = entries.get(id);
+        if (entry === undefined || entry.ownerUserId !== ownerUserId) return null;
+        return {
+          progress: entry.progress,
+          projectId: entry.projectId,
+          ended: Deferred.await(entry.ended),
+        };
+      });
+
+    return { run, read, watch };
   }),
 );
