@@ -1,5 +1,6 @@
 import { resourceTableNotices, type ResourceDefinition } from "@mend/domain/workbench";
 import { InlineAlert } from "@mend/ui/components/banner";
+import { Status } from "@mend/ui/components/status";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Empty,
@@ -46,6 +47,7 @@ import {
 import {
   NoteLines,
   type PanelLoad,
+  RemovedWords,
   ResourcePanel,
   type ResourceActs,
   StartMenu,
@@ -486,6 +488,11 @@ export function ResourcesTab({ detail }: { readonly detail: ProjectDetailDto }) 
                   declares{" "}
                   <span className="font-mono text-meta text-foreground">@{row.spec.name}</span>
                 </span>
+                {removed.has(row.spec.name) ? (
+                  <Status tone="idle" className="text-row">
+                    Removed, volumes kept
+                  </Status>
+                ) : null}
                 <StartMenu
                   name={row.spec.name}
                   engine={engineWords(row.spec)}
@@ -495,6 +502,9 @@ export function ResourcesTab({ detail }: { readonly detail: ProjectDetailDto }) 
                   onStart={(target) => acts.start(key, row.spec, target)}
                 />
                 <div className="basis-full empty:hidden">
+                  {removed.has(row.spec.name) ? (
+                    <RemovedWords name={row.spec.name} volumes={removed.get(row.spec.name) ?? []} />
+                  ) : null}
                   <NoteLines note={acts.notes.get(key)} onReload={acts.reload} />
                 </div>
               </li>

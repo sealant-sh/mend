@@ -210,16 +210,7 @@ export function ResourcePanel({
           ) : null}
         </div>
       ) : removed !== undefined && project === undefined ? (
-        <p className="mt-2 text-prose text-muted-foreground">
-          {removed.length === 0 ? (
-            "Mend kept its data volumes."
-          ) : (
-            <>
-              Mend kept <span className="font-mono text-meta">{removed.join(", ")}</span>.
-            </>
-          )}{" "}
-          Until someone starts @{panel.name} again, no worktree has it.
-        </p>
+        <RemovedWords name={panel.name} volumes={removed} />
       ) : panel.project === undefined && panel.worktreeInstances.length === 0 ? null : (
         <p className="mt-2 text-prose text-muted-foreground">{levelLine(panel)}</p>
       )}
@@ -575,6 +566,31 @@ export function StartMenu({
 
 function SheetItemText({ children }: { readonly children: ReactNode }) {
   return <span className="min-w-0 flex-1 truncate">{children}</span>;
+}
+
+/**
+ * What a removal kept (Doop "Project · Resources · removed, start menu"): its data volumes, and
+ * that no worktree has the resource until someone starts it again.
+ */
+export function RemovedWords({
+  name,
+  volumes,
+}: {
+  readonly name: string;
+  readonly volumes: ReadonlyArray<string>;
+}) {
+  return (
+    <p className="mt-2 text-prose text-muted-foreground">
+      {volumes.length === 0 ? (
+        "Mend kept its data volumes."
+      ) : (
+        <>
+          Mend kept <span className="font-mono text-meta">{volumes.join(", ")}</span>.
+        </>
+      )}{" "}
+      Until someone starts @{name} again, no worktree has it.
+    </p>
+  );
 }
 
 /** An act's answer in the server's words; a refusal is announced, a stale read offers a reload. */

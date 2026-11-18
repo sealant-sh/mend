@@ -217,6 +217,11 @@ export default async ({ page, web, capture, note }) => {
       .getByRole("radiogroup", { name: `How ${worktree} uses @${name}` })
       .or(panel.getByRole("group", { name: `How ${worktree} uses @${name}` }));
   await visible(uses(b.name)).waitFor();
+  const count = (await nav.getByRole("link", { name: /^Resources/ }).innerText()).replace(
+    /\s+/g,
+    " ",
+  );
+  note(`resources-list: the tab reads "${count}" once @${name} runs`);
   await both("list-desktop");
   note(`resources-list: the panel reads "${(await panel.innerText()).replace(/\s+/g, " ")}"`);
 
@@ -231,6 +236,9 @@ export default async ({ page, web, capture, note }) => {
     30,
   );
   await panel.getByText("No database").waitFor();
+  // The choice is the server's: it is still there after a reload.
+  await open(tab);
+  await panel.getByText("No database").waitFor({ timeout: 30_000 });
   await both("off-desktop");
   await visible(uses(b.name)).getByRole("button", { name: "Shared" }).click();
   await panel.getByText("No database").waitFor({ state: "detached" });
@@ -254,16 +262,12 @@ export default async ({ page, web, capture, note }) => {
     });
   await dialog().getByText("verify-seed.sql").waitFor();
   await both("load-desktop");
-  // Hold the load's reads at a live answer for the capture of a load under way.
-  let release = () => undefined;
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
+  // While this route is in place each read of the load answers as a load under way, for the
+  // capture; the page reads it every second, so the real end arrives once it goes.
   await page.route("**/api/projects/*/resource-loads/*?*", async (route) => {
     if (route.request().method() !== "GET") return route.continue();
     const answer = await route.fetch();
     const live = await answer.json();
-    await Promise.race([held, page.waitForTimeout(20_000)]);
     return route.fulfill({
       response: answer,
       json: {
@@ -282,7 +286,6 @@ export default async ({ page, web, capture, note }) => {
   note(
     `resources-load, under way (a held answer): "${(await panel.getByRole("status").first().innerText()).replace(/\s+/g, " ")}"`,
   );
-  release();
   await page.unroute("**/api/projects/*/resource-loads/*?*");
   await page.getByText(/loaded .* from verify-seed\.sql/).waitFor({ timeout: 120_000 });
   note(
@@ -388,11 +391,13 @@ export default async ({ page, web, capture, note }) => {
   await toast(new RegExp(`@${name} · project · archived · volumes kept`)).waitFor({
     timeout: 120_000,
   });
-  await panel
-    .getByText("Removed, volumes kept")
-    .or(page.getByRole("list", { name: "Declared only in a worktree" }).getByText(`@${name}`))
-    .first()
-    .waitFor();
+  // The table is in res-a's file, not on the default branch, so @name is listed as declared
+  // there again, with what the removal kept.
+  await visible(page.getByText("Removed, volumes kept")).waitFor();
+  await visible(
+    page.getByText(`Until someone starts @${name} again, no worktree has it.`),
+  ).waitFor();
+
   await both("removed-desktop");
   note(
     `resources-remove: the toast and the tab read "${(await visible(page.getByRole("region", { name: "Resources" })).innerText()).replace(/\s+/g, " ").slice(0, 400)}"`,
