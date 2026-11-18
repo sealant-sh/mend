@@ -10,6 +10,7 @@ const you = (key: string, at: string): ConversationRow => ({
   author: "ada",
   at,
   steer: null,
+  outbox: null,
   clientMessageId: null,
 });
 

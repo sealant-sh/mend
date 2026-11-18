@@ -13,7 +13,7 @@ import {
   SessionInboxMarkRequest,
   SharedControlRequest,
 } from "@mend/api-contracts";
-import { AgentRequestId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
+import { AgentRequestId, AgentTurnId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
 import { TRPCError } from "@trpc/server";
 import { Schema } from "effect";
 
@@ -91,8 +91,10 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.pasteImage({ params: { id: i.id }, payload: i.upload })),
     ),
-  // Never `queue`: Send steers or starts a turn as the sender's message setting says, and with
-  // `resume` a stopped conversation comes back to take it. The browser
+  // Never `queue`: Send goes into the sender's own running turn (while their message setting is on,
+  // as it is unless they turned it off), else starts their next turn, and with `resume` a stopped
+  // conversation comes back to take it. `selection` is the model, thinking, speed and permission
+  // the next turn runs with; a steer keeps its turn's. The browser
   // cannot know which account its cookie now names, so the words go only if it is still the one
   // they were written as (`expectedUserId`), read with this request's own credentials.
   sendMessage: procedure
@@ -103,6 +105,7 @@ export const sessionsRouter = router({
           input: SendSessionMessageRequest.fields.input,
           clientMessageId: SendSessionMessageRequest.fields.clientMessageId,
           resume: SendSessionMessageRequest.fields.resume,
+          selection: SendSessionMessageRequest.fields.selection,
           expectedUserId: Schema.String,
         }),
       ),
@@ -230,6 +233,12 @@ export const sessionsRouter = router({
           payload: "decision" in response ? { decision: response.decision, answers: {} } : response,
         }),
       ),
+    ),
+  // Stop turn: the running turn ends where it is; the session and its workspace keep running.
+  interruptTurn: procedure
+    .input(input(Schema.Struct({ turnId: AgentTurnId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.interruptTurn({ params: { id: i.turnId } })),
     ),
   // A shell beside the agent in the session's workspace: the owner's alone (docs/adr/0013).
   openShell: procedure

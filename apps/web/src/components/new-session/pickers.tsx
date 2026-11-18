@@ -30,8 +30,9 @@ import { type Clone, COMPOSER_AGENTS, type Composer } from "./use-composer.ts";
 
 /**
  * The composer's three pickers, each as its desktop menu or popover body and its phone sheet
- * body: the project, the agent and model (with thinking, fast and automatic landing, which the
- * frames don't draw and sit here as the session's own options), and the worktree.
+ * body: the project, the agent and model (with thinking, fast, asking before acting and automatic
+ * landing, which the frames don't draw and sit here as the session's own options), and the
+ * worktree.
  */
 
 /** A row's size: the desktop's menu rows, or the phone's 52px touch rows. */
@@ -226,6 +227,9 @@ const loginWord = (composer: Composer, agent: Agent): string | null =>
 
 const LAND_LABEL = "Land when a turn completes";
 
+/** The permission choice's words: the agent stops for your approval before it acts. */
+export const ASK_LABEL = "Ask before acting";
+
 /** The agent and model menu on the desktop: Agent, Model, Thinking, then the session's options. */
 export function AgentMenuItems({ composer }: { readonly composer: Composer }) {
   const { picker, landing } = composer;
@@ -300,6 +304,12 @@ export function AgentMenuItems({ composer }: { readonly composer: Composer }) {
             <span className="text-meta text-muted-foreground">Uses more of the plan</span>
           </DropdownMenuCheckboxItem>
         ) : null}
+        <DropdownMenuCheckboxItem
+          checked={composer.askFirst}
+          onCheckedChange={composer.setAskFirst}
+        >
+          {ASK_LABEL}
+        </DropdownMenuCheckboxItem>
         {landing === null ? (
           <DropdownMenuItem disabled>{LAND_LABEL}</DropdownMenuItem>
         ) : landing._tag === "project-off" ? (
@@ -425,6 +435,13 @@ export function AgentSheetBody({ composer }: { readonly composer: Composer }) {
             Fast
           </SheetChoice>
         ) : null}
+        <SheetChoice
+          kind="checkbox"
+          picked={composer.askFirst}
+          onPick={() => composer.setAskFirst(!composer.askFirst)}
+        >
+          {ASK_LABEL}
+        </SheetChoice>
         {landing === null || landing._tag === "project-off" ? (
           <SheetChoice
             kind="checkbox"

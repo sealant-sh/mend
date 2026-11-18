@@ -120,6 +120,7 @@ describe("the start request", () => {
         model: null,
         effort: null,
         speed: null,
+        permission: null,
         autoLand: null,
       }),
     ).toEqual({});
@@ -130,9 +131,16 @@ describe("the start request", () => {
         model: "gpt-6.1",
         effort: "high",
         speed: "fast",
+        permission: "ask",
         autoLand: true,
       }),
-    ).toEqual({ prompt: "Fix it", model: "gpt-6.1", effort: "high", speed: "fast" });
+    ).toEqual({
+      prompt: "Fix it",
+      model: "gpt-6.1",
+      effort: "high",
+      speed: "fast",
+      permissionMode: "ask",
+    });
   });
 });
 
@@ -163,6 +171,7 @@ describe("startSession", () => {
     model: "opus",
     effort: null,
     speed: null,
+    permission: null,
     autoLand: false,
   } as const;
 

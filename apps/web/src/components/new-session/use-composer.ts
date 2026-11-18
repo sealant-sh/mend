@@ -1,4 +1,4 @@
-import type { EffortLevel, ModelPicker } from "@mend/domain/workbench";
+import type { EffortLevel, ModelPicker, PermissionMode } from "@mend/domain/workbench";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
@@ -93,6 +93,9 @@ export interface Composer {
   readonly pickEffort: (effort: EffortLevel | null) => void;
   readonly fast: boolean;
   readonly setFast: (fast: boolean) => void;
+  /** The agent asks before it acts, instead of skipping its permission prompts. */
+  readonly askFirst: boolean;
+  readonly setAskFirst: (ask: boolean) => void;
   readonly landing: LandingChoice | null;
   readonly setLand: (land: boolean) => void;
   readonly target: WorktreeTarget;
@@ -174,6 +177,7 @@ export function useComposer(): Composer {
   const picker = pickerFor(catalogs, defaults, agent);
 
   const [fastFor, setFastFor] = useState<KeptFor<Agent, boolean> | null>(null);
+  const [askFor, setAskFor] = useState<KeptFor<Agent, boolean> | null>(null);
   const [landFor, setLandFor] = useState<KeptFor<string, boolean> | null>(null);
   const [targetFor, setTargetFor] = useState<KeptFor<string, WorktreeTarget> | null>(null);
   const [prompt, setPrompt] = useState("");
@@ -241,6 +245,8 @@ export function useComposer(): Composer {
       ? null
       : landingChoice(landingOf, automation.data.effective.autoLand, keptFor(landFor, projectId));
   const fast = picker.fastCapable && keptFor(fastFor, agent) === true;
+  const askFirst = keptFor(askFor, agent) === true;
+  const permission: PermissionMode | null = askFirst ? "ask" : null;
   const target = onClone
     ? { _tag: "new" as const }
     : (keptFor(targetFor, projectId) ?? { _tag: "new" });
@@ -277,6 +283,8 @@ export function useComposer(): Composer {
       save({ harness: agent, byHarness: byHarnessWith(agent, { model: picker.model, effort }) }),
     fast,
     setFast: (value) => setFastFor({ key: agent, value }),
+    askFirst,
+    setAskFirst: (value) => setAskFor({ key: agent, value }),
     landing,
     setLand: (value) => setLandFor({ key: projectId, value }),
     target,
@@ -306,6 +314,7 @@ export function useComposer(): Composer {
         model: picker.model,
         effort: picker.effort,
         speed: fast ? "fast" : null,
+        permission,
         autoLand,
       };
       if (onClone && clone !== null) {

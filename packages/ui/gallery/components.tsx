@@ -366,6 +366,15 @@ function UserMessageDemo() {
           Rotate the staging database password with the terraform module.
         </UserMessage>
       </Row>
+      <Row label="pending: sent into a running turn">
+        <UserMessage
+          className="max-w-conversation"
+          pending
+          byline="Sent into this turn. Claude Code reads it when its current step finishes."
+        >
+          Also cover partial refunds. Each partial refund needs its own key.
+        </UserMessage>
+      </Row>
     </div>
   );
 }
@@ -530,6 +539,17 @@ function PromptInputDemo() {
           harness="Claude Code"
           model={model}
           usage="41k of 200k"
+          onAttach={() => {}}
+        />
+      </Row>
+      <Row label="state running, stopping the turn">
+        <PromptInput
+          className="w-full max-w-conversation"
+          state="running"
+          stopping
+          placeholder="Message Claude Code while it works"
+          harness="Claude Code"
+          model={model}
           onAttach={() => {}}
         />
       </Row>

@@ -27,9 +27,9 @@ Box facts the flows depend on: sessions run on Boat by default, and Docker is of
 runtime is chosen per organization and a worktree keeps the runtime it was made on. One organization
 (Default), one account, single tenancy. Provider logins on 16 Nov: codex and claude connected,
 GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided.
-Three flows run a real agent turn, each with a one-line prompt: `start-session.boat-turn`,
-`start-session.composer` and `send-review-back.deliver`. They use codex: the owner has far more
-Codex capacity than Claude (17 Nov).
+Four flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
+`start-session.composer`, `start-session.web-write` and `send-review-back.deliver`. They use codex:
+the owner has far more Codex capacity than Claude (17 Nov).
 
 For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
 git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
@@ -105,8 +105,9 @@ flows reuse what earlier ones made:
    `provider-accounts.read`, `models.list-picker`
 3. `start-session.boat-turn`, `review-change.web-review`, `now-and-sessions.web-now`,
    `attach-resume.boat-stop-resume`, `send-review-back.deliver`
-4. `start-session.boat-run`, `start-session.composer`, `review-change.web-comments`,
-   `land-change.panel-read`, `pull-change.boat-run`, `attach-resume.rename-web`, `tui.dashboard`
+4. `start-session.boat-run`, `start-session.composer`, `start-session.web-write`,
+   `review-change.web-comments`, `land-change.panel-read`, `pull-change.boat-run`,
+   `attach-resume.rename-web`, `tui.dashboard`
 5. `start-session.docker-run`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `session-shell.live-shell`,
    `shared-control.refuse-script`, `services.cli-run`, `capture-and-save.live-stop`
@@ -201,6 +202,29 @@ flows reuse what earlier ones made:
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web-old/src/`, `apps/api/src/`, `packages/sessions/`
+
+### start-session.web-write
+
+- **Map:** start-session.md `session-page`
+- **Needs:** Boat; real turn (codex); web; `start-session.composer` (its session)
+- **Do:** On `/sessions/<id>` for the session `start-session.composer` started, in the composer
+  under its conversation (the field `Message Codex`): send
+  `Reply with the single word pong and change nothing.` and wait for the turn. Send
+  `Run the shell command sleep 45, then reply with the single word slept.`; while that turn runs,
+  send `Add the word steered after slept.` and wait for the turn. Send
+  `Run the shell command sleep 600, then reply with the word done.`, and once `Stop turn` shows,
+  choose it.
+- **See:** each message shows in the conversation as soon as it is sent, and the field empties; the
+  first is answered `pong`; the one sent while the turn ran reads
+  `Sent into this turn. Codex reads it when its current step finishes.` (then
+  `Codex read this during its turn`) and starts no turn of its own; after `Stop turn` that turn
+  reads `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab
+  reads Idle.
+- **Mode:** `agent`
+- **Box:** after cut-over
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
+  `apps/web/src/lib/session-composer.ts`
 
 ### start-session.boat-run
 

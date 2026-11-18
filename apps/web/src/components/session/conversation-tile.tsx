@@ -1,4 +1,4 @@
-import { conversationActivity } from "@mend/agent-conversation";
+import { conversationActivity, isOpenTurn } from "@mend/agent-conversation";
 import {
   AgentItemKind,
   agentActivity,
@@ -13,22 +13,32 @@ import { TraceRow } from "@mend/ui/components/trace-row";
 import { Button } from "@mend/ui/components/ui/button";
 import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
 import { UserMessage } from "@mend/ui/components/user-message";
+import { cn } from "@mend/ui/lib/utils";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Schema } from "effect";
-import { CircleAlertIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
+import { CircleAlertIcon, ClockIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
 import { useLayoutEffect, type ReactNode } from "react";
 
 import type { TranscriptEventDto } from "#/lib/api";
-import { conversationQuery, heldConversation } from "#/lib/conversation";
+import { type ConversationView, conversationQuery, heldConversation } from "#/lib/conversation";
 import { conversationBody, type ConversationRow, workingOn } from "#/lib/conversation-rows";
 import { activityDetail } from "#/lib/inbox";
 import { releaseOpeningMessage, useOpeningMessage } from "#/lib/opening-messages";
+import {
+  editMessage,
+  type OutboxMessage,
+  retryMessage,
+  UNCONFIRMED,
+  useOutbox,
+} from "#/lib/outbox";
+import { steerNote } from "#/lib/session-composer";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
 import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints } from "#/lib/session-sheet";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { AgentTurn, type PagesById, RequestLine } from "./agent-turn";
+import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
 import { PageEvent } from "./page-view";
 import { RichText } from "./rich-text";
@@ -82,36 +92,124 @@ function MendLines({ facts }: { readonly facts: SessionFacts }) {
   );
 }
 
-/** The byline under a person's message: who sent it, when, and how far a steer got. */
-const bylineOf = (
-  facts: SessionFacts,
-  row: Extract<ConversationRow, { readonly kind: "you" }>,
-  now: Date,
-): string => {
-  const name = row.author === null ? null : facts.nameOf(row.author);
-  const steer =
-    row.steer === null
-      ? null
-      : row.steer.delivery._tag === "Accepted"
-        ? `${facts.agent} read this during its turn`
-        : row.steer.delivery._tag === "Queued"
-          ? "Waits for the next turn"
-          : row.steer.delivery._tag === "NotSent"
-            ? "Not sent"
-            : "Not confirmed";
-  return [name, messageTime(new Date(row.at), now), steer]
-    .filter((part) => part !== null)
-    .join(" · ");
+/** What a message of the person's own still in their outbox says of where it stands. */
+const outboxNote = (message: OutboxMessage): string | null => {
+  switch (message.state._tag) {
+    case "Sending":
+      // A stopped session takes the words once Mend has resumed it.
+      return message.resuming === true ? "Resuming the session…" : "Sending…";
+    case "Sent":
+      return null;
+    case "Unconfirmed":
+      return UNCONFIRMED;
+    case "NotSent":
+      return message.state.words;
+  }
 };
 
-/** A person's message on the right of the thread, sized for the phone under 1024px. */
-function YouMessage({ text, byline }: { readonly text: string; readonly byline: string }) {
+/** What the line under a person's message says: who sent it, when, and how far it got. */
+const noteOf = (
+  facts: SessionFacts,
+  row: Extract<ConversationRow, { readonly kind: "you" }>,
+  conversation: ConversationView | undefined,
+  now: Date,
+): { readonly byline: string; readonly note: string | null; readonly pending: boolean } => {
+  const name = row.author === null ? null : facts.nameOf(row.author);
+  const byline = [name, messageTime(new Date(row.at), now)]
+    .filter((part) => part !== null)
+    .join(" · ");
+  if (row.outbox !== null) {
+    const note = outboxNote(row.outbox);
+    return { byline, note, pending: row.outbox.state._tag !== "Sent" };
+  }
+  if (row.steer === null) return { byline, note: null, pending: false };
+  const turn = conversation?.turns.find((each) => each.id === row.steer?.turnId);
+  const steer = steerNote(row.steer.delivery, facts.agent, turn !== undefined && isOpenTurn(turn));
+  return { byline, note: steer.words, pending: steer.pending };
+};
+
+/** Send again, or take back into the composer, a message of the person's own that didn't arrive. */
+function StuckActions({
+  sessionId,
+  message,
+}: {
+  readonly sessionId: string;
+  readonly message: OutboxMessage;
+}) {
+  const outbox = useOutbox(sessionId);
+  const { scope } = outbox;
+  if (scope === null) return null;
+  return (
+    <span className="flex gap-1">
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="text-primary max-lg:h-11"
+        onClick={() => void retryMessage(outbox.courier, scope, message)}
+      >
+        Try again
+      </Button>
+      <Button
+        type="button"
+        size="sm"
+        variant="ghost"
+        className="text-primary max-lg:h-11"
+        onClick={() => {
+          editMessage(scope, message);
+          document.getElementById(messageInputId(sessionId))?.focus();
+        }}
+      >
+        Edit
+      </Button>
+    </span>
+  );
+}
+
+/**
+ * A person's message on the right of the thread, sized for the phone under 1024px. One the agent
+ * hasn't read yet is dashed, with where it stands under it; one that couldn't send offers Try
+ * again and Edit.
+ */
+function YouMessage({
+  text,
+  byline,
+  note = null,
+  pending = false,
+  stuck = null,
+  sessionId = "",
+}: {
+  readonly text: string;
+  readonly byline: string;
+  readonly note?: string | null;
+  readonly pending?: boolean;
+  /** The person's own message that didn't arrive, which they can send again or take back. */
+  readonly stuck?: OutboxMessage | null;
+  readonly sessionId?: string;
+}) {
+  const line =
+    note === null && stuck === null ? (
+      byline
+    ) : (
+      <span className="flex flex-col items-end gap-1">
+        {byline === "" ? null : <span>{byline}</span>}
+        {note === null ? null : (
+          <span className={cn("text-right", stuck?.state._tag === "NotSent" && "text-destructive")}>
+            {pending && stuck === null ? (
+              <ClockIcon aria-hidden className="mr-1.5 inline size-3.5 align-middle" />
+            ) : null}
+            {note}
+          </span>
+        )}
+        {stuck === null ? null : <StuckActions sessionId={sessionId} message={stuck} />}
+      </span>
+    );
   return (
     <>
-      <UserMessage byline={byline} className="max-lg:hidden">
+      <UserMessage byline={line} pending={pending} className="max-lg:hidden">
         <p className="whitespace-pre-wrap">{text}</p>
       </UserMessage>
-      <UserMessage size="touch" byline={byline} className="lg:hidden">
+      <UserMessage size="touch" byline={line} pending={pending} className="lg:hidden">
         <p className="whitespace-pre-wrap">{text}</p>
       </UserMessage>
     </>
@@ -399,8 +497,9 @@ function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
  * as the reader nears the top; a terminal session reads its record. New messages arrive through
  * the tab's event stream, and the thread follows them while the reader is at its end.
  *
- * It ends without an input: writing to the agent is PR 12's composer, in the Conversation's
- * `footer`, and answering a question PR 14's card, where `RequestLine` stands now.
+ * Its footer is the composer (`SessionComposer`): the person's messages show in the thread the
+ * moment they are sent (`lib/outbox`), and say where they stand until the agent reads them.
+ * Answering a question is PR 14's card, where `RequestLine` stands now.
  */
 export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
   const trpc = useTRPC();
@@ -411,7 +510,12 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
   });
   const opening = useOpeningMessage(facts.session.id);
   const pages = usePages(facts.session.id);
-  const body = conversationBody({ status: conversation.status, data: conversation.data });
+  const outbox = useOutbox(facts.session.id);
+  const body = conversationBody(
+    { status: conversation.status, data: conversation.data },
+    outbox.messages,
+    facts.viewerId,
+  );
   const held = body.rows.length > 0;
   // Once the conversation holds a message, the one this tab held for the start is in it.
   useLayoutEffect(() => {
@@ -457,6 +561,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
           if (event.currentTarget.scrollTop < READ_OLDER_WITHIN) readOlder();
         }}
         className="min-h-0 flex-1"
+        footer={<SessionComposer facts={facts} conversation={conversation.data} />}
       >
         <MendLines facts={facts} />
         <ExecutorCalls facts={facts} />
@@ -511,7 +616,18 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
                 </ConversationItem>
               ) : entry.row.kind === "you" ? (
                 <ConversationItem key={entry.row.key} messageId={entry.row.key}>
-                  <YouMessage text={entry.row.text} byline={bylineOf(facts, entry.row, now)} />
+                  <YouMessage
+                    text={entry.row.text}
+                    sessionId={facts.session.id}
+                    {...noteOf(facts, entry.row, conversation.data, now)}
+                    stuck={
+                      entry.row.outbox !== null &&
+                      (entry.row.outbox.state._tag === "NotSent" ||
+                        entry.row.outbox.state._tag === "Unconfirmed")
+                        ? entry.row.outbox
+                        : null
+                    }
+                  />
                 </ConversationItem>
               ) : (
                 <ConversationItem key={entry.row.key} messageId={entry.row.key}>

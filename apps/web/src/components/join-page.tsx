@@ -17,6 +17,7 @@ import type { ReactNode } from "react";
 import { authClient } from "#/lib/auth-client";
 import { useFragmentSecret } from "#/lib/handed-links";
 import { dayOf, initialsOf, joinState, spentReason, type SpentState } from "#/lib/organization";
+import { forgetMessages } from "#/lib/outbox";
 import { useTRPC } from "#/lib/trpc";
 import type { AppRouter } from "#/server/routers/index";
 
@@ -288,6 +289,7 @@ function SignedInAs({ person, reread }: { readonly person: Person; readonly rere
     mutationFn: async () => {
       const result = await authClient.signOut();
       if (result.error !== null) throw new Error(result.error.message ?? "Signing out failed.");
+      forgetMessages();
     },
     onSuccess: reread,
   });

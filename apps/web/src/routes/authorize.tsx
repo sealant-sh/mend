@@ -19,6 +19,7 @@ import {
   groupCode,
   readAuthorize,
 } from "#/lib/authorize";
+import { forgetMessages } from "#/lib/outbox";
 import { type TrpcClient, useTRPC } from "#/lib/trpc";
 
 /**
@@ -227,6 +228,7 @@ function Decide({
     mutationFn: async () => {
       const result = await authClient.signOut();
       if (result.error !== null) throw new Error(result.error.message ?? "Not signed out.");
+      forgetMessages();
     },
     // A full load: this page reads again with nobody signed in, and offers sign-in for the same
     // request.

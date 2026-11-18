@@ -43,6 +43,7 @@ import {
 } from "#/lib/conversation-rows";
 import { askWords } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
+import { messageTime } from "#/lib/session-sheet";
 import { useTRPC } from "#/lib/trpc";
 
 import { PageEvent } from "./page-view";
@@ -155,15 +156,23 @@ function Steps({
   );
 }
 
-/** "Worked for 2m 4s", the steps it took, and how many failed: a finished turn's steps, folded. */
+/**
+ * "Worked for 2m 4s", the steps it took, and how many failed: a finished turn's steps, folded. A
+ * turn someone stopped reads "Stopped after 1m 14s" (Doop "Stop the turn").
+ */
 function Worked({ row }: { readonly row: AgentRow }) {
   if (row.folded.length === 0) return null;
   const lasted = row.turn === null ? null : turnLasted(row.turn);
-  const stopped = row.turn?.status === "interrupted" || row.turn?.status === "cancelled";
-  const title = [
-    lasted === null ? "Worked" : `Worked for ${durationWords(lasted)}`,
-    ...(stopped ? ["before it stopped"] : []),
-  ].join(" ");
+  const interrupted = row.turn?.status === "interrupted";
+  const withdrawn = row.turn?.status === "cancelled";
+  const title = interrupted
+    ? lasted === null
+      ? "Stopped"
+      : `Stopped after ${durationWords(lasted)}`
+    : [
+        lasted === null ? "Worked" : `Worked for ${durationWords(lasted)}`,
+        ...(withdrawn ? ["before it stopped"] : []),
+      ].join(" ");
   const failed = row.folded.filter(itemFailed).length;
   const steps = `${row.folded.length} step${row.folded.length === 1 ? "" : "s"}`;
   return (
@@ -312,11 +321,26 @@ function CopyError({ text }: { readonly text: string }) {
   );
 }
 
+/**
+ * A turn someone stopped with Stop turn: when, and that what it did stays (Doop "Stop the turn").
+ * Not a failure, so no alert: the conversation carries on from the composer.
+ */
+function TurnStopped({ row, facts }: { readonly row: AgentRow; readonly facts: SessionFacts }) {
+  const at = row.turn?.endedAt ?? row.at;
+  const kept = `What ${facts.agent} changed before then is kept${facts.agentLive ? ", and the workspace is still running" : ""}.`;
+  return (
+    <p className="text-prose text-muted-foreground">
+      This turn was stopped at {messageTime(new Date(at), new Date())}. {kept}
+    </p>
+  );
+}
+
 /** Why a turn didn't finish as asked, in the agent's own words, and what to do next. */
 function TurnEnd({ row, facts }: { readonly row: AgentRow; readonly facts: SessionFacts }) {
   const end = turnEnd(row, useUnreachableHost(row, facts));
   const turn = row.turn;
   if (end === null || turn === null) return null;
+  if (turn.status === "interrupted") return <TurnStopped row={row} facts={facts} />;
   const { agent } = facts;
   const unreachable = (turn.unreachable ?? null) !== null;
   const title =
@@ -324,11 +348,9 @@ function TurnEnd({ row, facts }: { readonly row: AgentRow; readonly facts: Sessi
       ? `${agent} ran out of credit`
       : end.next === "connect-login"
         ? `${agent} couldn't use your login`
-        : turn.status === "interrupted"
-          ? "The turn was interrupted"
-          : turn.status === "cancelled"
-            ? "The turn was withdrawn"
-            : "The turn failed";
+        : turn.status === "cancelled"
+          ? "The turn was withdrawn"
+          : "The turn failed";
   const account = turn.billedAccountName;
   const explanation = unreachable
     ? end.words

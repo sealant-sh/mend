@@ -2,12 +2,14 @@ import { Status } from "@mend/ui/components/status";
 import { buttonVariants } from "@mend/ui/components/ui/button";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { conversationQuery, heldConversation } from "#/lib/conversation";
 import { inboxQuery } from "#/lib/inbox-live";
+import { shownStatus } from "#/lib/session-composer";
 import { lumpPrOf, lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
-import { useTRPC } from "#/lib/trpc";
+import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { PhoneHeader } from "../workspace/phone-header";
 import { Tile, type TileTabEntry } from "../workspace/tile";
@@ -35,6 +37,19 @@ const vscodeOpenUri = (sessionId: string) =>
  */
 function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
   const { session, detail } = facts;
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  // The conversation tile reads the turns; this shares its read, for the status word (Idle once
+  // the person stopped the turn, which the server still calls running).
+  const turns = useInfiniteQuery({
+    ...conversationQuery(trpc, client, session.id),
+    select: (data) => heldConversation(data.pages).turns,
+  });
+  // While the turns are read, or if they can't be, the server's word stands.
+  const status = shownStatus(
+    session.status,
+    turns.isPending || turns.isError ? undefined : turns.data,
+  );
   const conversation = `session:${session.id}`;
   const [active, setActive] = useState(conversation);
   const tab: TileTabEntry = {
@@ -43,9 +58,9 @@ function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
       <TileTab
         value={conversation}
         kind="session"
-        status={lumpStatusOf(session.status)}
+        status={lumpStatusOf(status)}
         pr={lumpPrOf(detail.landings)}
-        statusWords={STATUS_WORDS[session.status]}
+        statusWords={STATUS_WORDS[status]}
         label={facts.title}
         size="auto"
       />

@@ -4,6 +4,7 @@ import {
   loginChoiceOf,
   type ModelPicker,
   modelPickerFor,
+  type PermissionMode,
   type SpeedMode,
 } from "@mend/domain/workbench";
 
@@ -190,6 +191,8 @@ export interface StartSpec {
   readonly model: string | null;
   readonly effort: EffortLevel | null;
   readonly speed: SpeedMode | null;
+  /** `ask`: the agent asks before it acts. Null skips its permission prompts, the default. */
+  readonly permission: PermissionMode | null;
   readonly autoLand: boolean | null;
 }
 
@@ -207,11 +210,13 @@ export const launchFields = (
   readonly model?: string;
   readonly effort?: EffortLevel;
   readonly speed?: SpeedMode;
+  readonly permissionMode?: PermissionMode;
 } => ({
   ...(spec.prompt.trim() === "" ? {} : { prompt: spec.prompt.trim() }),
   ...(spec.model === null ? {} : { model: spec.model }),
   ...(spec.effort === null ? {} : { effort: spec.effort }),
   ...(spec.speed === null ? {} : { speed: spec.speed }),
+  ...(spec.permission === null ? {} : { permissionMode: spec.permission }),
 });
 
 /** The project the composer opens on: the one last used here while it still exists, else the first. */
