@@ -419,6 +419,29 @@
       }
     },
     {
+      // shadcn's generated code meets three rules that are wrong for it (SLNT-1090): a code
+      // block's lines and a line's tokens are positional lists that never reorder, so the index is
+      // their identity; a scrollable code block takes keyboard focus so it can be scrolled without
+      // a mouse (axe's scrollable-region-focusable); and an input group's addon only forwards a
+      // click to its input, which keyboard users reach directly.
+      "files": [
+        "packages/ui/src/components/ui/code-block.tsx",
+        "packages/ui/src/lib/highlighter.tsx"
+      ],
+      "plugins": ["react", "jsx-a11y"],
+      "rules": { "react/no-array-index-key": "off", "jsx-a11y/no-noninteractive-tabindex": "off" }
+    },
+    {
+      "files": ["packages/ui/src/components/ui/input-group.tsx"],
+      "plugins": ["jsx-a11y"],
+      "rules": {
+        "jsx-a11y/no-noninteractive-element-interactions": "off",
+        "jsx-a11y/click-events-have-key-events": "off",
+        // Naming the plugin here turns on its defaults; the kit's rules above leave this one off.
+        "jsx-a11y/prefer-tag-over-role": "off"
+      }
+    },
+    {
       // A test builds a bare router around the one thing it renders.
       "files": ["apps/web/**/*.test.{ts,tsx}", "packages/ui/**/*.test.{ts,tsx}"],
       "rules": { "mend/router-default-states": "off" }

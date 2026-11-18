@@ -1,0 +1,5 @@
+@import "../src/styles/fonts.css";
+@import "../src/styles/globals.css";
+
+@source "../src";
+@source "./";

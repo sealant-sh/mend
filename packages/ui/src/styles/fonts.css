@@ -1,0 +1,7 @@
+/*
+ * Sheet's faces, self-hosted: Instrument Sans for the interface and headings, Geist Mono for ids,
+ * branches, paths and commands. Import this once beside globals.css so every app loads the same
+ * files; globals.css names the families.
+ */
+@import "@fontsource-variable/instrument-sans";
+@import "@fontsource-variable/geist-mono";

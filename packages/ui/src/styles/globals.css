@@ -1,0 +1,268 @@
+/*
+ * Sheet, Mend's look (chosen 14 Nov 2026). The values come from the Doop canvas "Mend"
+ * (eOZgbKdtRc): its tokens and the `mend-system` style guide. shadcn's token names hold Sheet's
+ * values, mapped as `mend-system` says ("How the tokens map"); the tokens after them are the ones
+ * the canvas holds only as raw values. Every colour in the kit comes from here: component files
+ * name a token, never a value.
+ *
+ * Dark is the `.dark` class on <html>, so one theme script serves every app.
+ */
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "./shadcn.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  /* shadcn's tokens. */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+
+  /* Sheet's own tokens. */
+  --color-canvas: var(--canvas);
+  --color-sheet-border: var(--sheet-border);
+  --color-foreground-2: var(--foreground-2);
+  --color-faint: var(--faint);
+  --color-info: var(--info);
+  --color-warning: var(--warning);
+  --color-success: var(--success);
+  --color-destructive-tint: var(--destructive-tint);
+  --color-field: var(--field);
+  --color-hover: var(--hover);
+  --color-selection: var(--selection);
+  --color-selection-inset: var(--selection-inset);
+  --color-band: var(--band);
+  --color-choice: var(--choice);
+  --color-underline: var(--underline);
+  --color-off: var(--off);
+  --color-off-foreground: var(--off-foreground);
+  --color-scrim: var(--scrim);
+  --color-added: var(--added);
+  --color-removed: var(--removed);
+  --color-diff-add: var(--diff-add);
+  --color-diff-del: var(--diff-del);
+  --color-pr-none: var(--pr-none);
+  --color-pr-open: var(--pr-open);
+  --color-pr-merged: var(--pr-merged);
+  --color-pr-conflict: var(--pr-conflict);
+  --color-claude: var(--claude);
+  --color-mark: var(--mark);
+  --color-mark-foreground: var(--mark-foreground);
+
+  /* Shadows: the inset sheet, the floating composer card, and everything that pops over. */
+  --shadow-sheet: var(--sheet-shadow);
+  --shadow-card: var(--card-shadow);
+  --shadow-pop: var(--pop-shadow);
+
+  /*
+   * Radii. base-nova rounds controls, menus and popovers with `rounded-lg` and their rows with
+   * `rounded-md`, so lg is Sheet's 8px control radius. xl is the sheet and the composer card.
+   */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 14px;
+  --radius-2xl: 16px;
+  --radius-3xl: 20px;
+  --radius-4xl: 26px;
+  --radius-chip: 7px;
+  --radius-palette: 12px;
+
+  /* Type. Instrument Sans for the interface and headings, Geist Mono for machine facts. */
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono Variable", ui-monospace, "SFMono-Regular", Menlo, monospace;
+
+  /* Sizes off Tailwind's scale that every frame uses. */
+  --text-2xs: 12px;
+  --text-2xs--line-height: 16px;
+  --text-meta: 12.5px;
+  --text-meta--line-height: 18px;
+  --text-row: 13.5px;
+  --text-row--line-height: 20px;
+  --text-prose: 14.5px;
+  --text-prose--line-height: 22px;
+
+  /* The sheet's geometry: `p-sheet-inset`, `w-sidebar`, `h-header`, `h-tab-strip`, and so on. */
+  --spacing-sheet-inset: 8px;
+  --spacing-sidebar: 268px;
+  --spacing-header: 52px;
+  --spacing-tab-strip: 40px;
+  --spacing-conversation: 704px;
+  --spacing-settings: 880px;
+  --spacing-palette: 512px;
+}
+
+:root {
+  --radius: 8px;
+
+  --background: #ffffff;
+  --foreground: #111827;
+  --card: #ffffff;
+  --card-foreground: #111827;
+  --popover: #ffffff;
+  --popover-foreground: #111827;
+  --primary: #2f5bea;
+  --primary-foreground: #ffffff;
+  --secondary: #f3f4f6;
+  --secondary-foreground: #111827;
+  --muted: #f3f4f6;
+  --muted-foreground: #6b7280;
+  --accent: #f3f4f6;
+  --accent-foreground: #111827;
+  --destructive: #c81e1e;
+  --destructive-foreground: #ffffff;
+  --border: #e7e9ed;
+  --input: #e2e5ea;
+  --ring: #2f5bea;
+  --sidebar: #eceef1;
+  --sidebar-foreground: #111827;
+  --sidebar-primary: #2f5bea;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dcdfe5;
+  --sidebar-accent-foreground: #111827;
+  --sidebar-border: #d9dce2;
+  --sidebar-ring: #2f5bea;
+
+  --canvas: #eceef1;
+  --sheet-border: #d9dce2;
+  --foreground-2: #374151;
+  --faint: #9ca3af;
+  --info: #2f5bea;
+  --warning: #a35407;
+  --success: #15803d;
+  --destructive-tint: #fdf2f2;
+  --field: rgba(255, 255, 255, 0.72);
+  --hover: rgba(255, 255, 255, 0.55);
+  --selection: #dcdfe5;
+  --selection-inset: #eef0f3;
+  --band: #f8f9fb;
+  --choice: #eef2fe;
+  --underline: #c9cdd4;
+  --off: #e5e7eb;
+  --off-foreground: #6b7280;
+  --scrim: rgba(17, 24, 39, 0.32);
+  --added: #15803d;
+  --removed: #c81e1e;
+  --diff-add: rgba(22, 163, 74, 0.075);
+  --diff-del: rgba(220, 38, 38, 0.06);
+  --pr-none: #52525b;
+  --pr-open: #15803d;
+  --pr-merged: #8250df;
+  --pr-conflict: #c0262d;
+  --claude: #c76545;
+  --mark: #111827;
+  --mark-foreground: #ffffff;
+
+  --sheet-shadow: 0 1px 2px rgba(17, 24, 39, 0.04);
+  --card-shadow: 0 1px 2px rgba(17, 24, 39, 0.05), 0 14px 34px -14px rgba(17, 24, 39, 0.2);
+  --pop-shadow: 0 1px 2px rgba(17, 24, 39, 0.06), 0 12px 32px -8px rgba(17, 24, 39, 0.22);
+}
+
+.dark {
+  --background: #181b20;
+  --foreground: #e8eaee;
+  --card: #1e2127;
+  --card-foreground: #e8eaee;
+  --popover: #1e2127;
+  --popover-foreground: #e8eaee;
+  --primary: #4566ee;
+  --primary-foreground: #ffffff;
+  --secondary: #23272e;
+  --secondary-foreground: #e8eaee;
+  --muted: #23272e;
+  --muted-foreground: #959cab;
+  --accent: #23272e;
+  --accent-foreground: #e8eaee;
+  --destructive: #ff7a70;
+  --destructive-foreground: #0e1013;
+  --border: #262a31;
+  --input: #30353d;
+  --ring: #7c98ff;
+  --sidebar: #0e1013;
+  --sidebar-foreground: #e8eaee;
+  --sidebar-primary: #4566ee;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #1f2329;
+  --sidebar-accent-foreground: #e8eaee;
+  --sidebar-border: #2a2e35;
+  --sidebar-ring: #7c98ff;
+
+  --canvas: #0e1013;
+  --sheet-border: #2a2e35;
+  --foreground-2: #c6cbd3;
+  --faint: #737b88;
+  --info: #7c98ff;
+  --warning: #f0b45a;
+  --success: #5ccb8b;
+  --destructive-tint: rgba(255, 122, 112, 0.1);
+  --field: #181b20;
+  --hover: rgba(255, 255, 255, 0.04);
+  --selection: #1f2329;
+  --selection-inset: #22262c;
+  --band: #1c1f24;
+  --choice: rgba(124, 152, 255, 0.13);
+  --underline: #3a3f48;
+  --off: #2a2e35;
+  --off-foreground: #737b88;
+  --scrim: rgba(0, 0, 0, 0.55);
+  --added: #5ccb8b;
+  --removed: #ff8a80;
+  --diff-add: rgba(74, 222, 128, 0.085);
+  --diff-del: rgba(248, 113, 113, 0.09);
+  --pr-none: #aab3bf;
+  --pr-open: #4ade80;
+  --pr-merged: #a371f7;
+  --pr-conflict: #ff6b6b;
+  --claude: #d97757;
+  --mark: #e8eaee;
+  --mark-foreground: #0e1013;
+
+  --sheet-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 12px 32px -16px rgba(0, 0, 0, 0.7);
+  --card-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 18px 40px -18px rgba(0, 0, 0, 0.8);
+  --pop-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 16px 40px -12px rgba(0, 0, 0, 0.75);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    @apply bg-background font-sans text-foreground;
+    font-size: 14px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+}

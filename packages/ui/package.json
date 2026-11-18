@@ -1,0 +1,55 @@
+{
+  "name": "@mend/ui",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Mend's UI kit: shadcn on Base UI, themed to Sheet",
+  "type": "module",
+  "sideEffects": [
+    "**/*.css"
+  ],
+  "exports": {
+    "./styles/globals.css": "./src/styles/globals.css",
+    "./styles/fonts.css": "./src/styles/fonts.css",
+    "./components/ui/*": "./src/components/ui/*.tsx",
+    "./components/*": "./src/components/*.tsx",
+    "./lib/*": "./src/lib/*.ts",
+    "./hooks/*": "./src/hooks/*.ts"
+  },
+  "scripts": {
+    "gallery": "vite --config gallery/vite.config.ts",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware . --no-error-on-unmatched-pattern",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
+  },
+  "dependencies": {
+    "@base-ui/react": "catalog:",
+    "@fontsource-variable/geist-mono": "catalog:",
+    "@fontsource-variable/instrument-sans": "catalog:",
+    "@shadcn/react": "catalog:",
+    "class-variance-authority": "catalog:",
+    "cmdk": "catalog:",
+    "cn": "catalog:",
+    "lucide-react": "catalog:",
+    "react-resizable-panels": "catalog:",
+    "shiki": "catalog:",
+    "tw-animate-css": "catalog:"
+  },
+  "devDependencies": {
+    "@mend/test-ci": "workspace:*",
+    "@mend/typescript": "workspace:*",
+    "@tailwindcss/vite": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "react": "catalog:",
+    "react-dom": "catalog:"
+  }
+}

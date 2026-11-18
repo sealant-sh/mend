@@ -15,6 +15,13 @@ catalog:
   "@aws-sdk/s3-request-presigner": ^3.1131.0
   "@cloudflare/vite-plugin": ^1.30.2
   "@base-ui/react": ^1.7.0
+  # shadcn's own packages and what its generated components import (@mend/ui).
+  "@shadcn/react": ^0.3.0
+  class-variance-authority: ^0.7.1
+  cmdk: ^1.1.1
+  cn: ^0.5.2
+  shiki: ^4.4.1
+  tw-animate-css: ^1.4.0
   react-resizable-panels: ^4.12.3
   "@dnd-kit/core": ^6.3.1
   "@dnd-kit/modifiers": ^9.0.0
@@ -28,6 +35,9 @@ catalog:
   "@fontsource/inter": ^5.2.8
   "@fontsource/jetbrains-mono": ^5.2.8
   "@fontsource/space-grotesk": ^5.2.8
+  # Sheet's faces for @mend/ui (the new web app's kit).
+  "@fontsource-variable/geist-mono": ^5.3.0
+  "@fontsource-variable/instrument-sans": ^5.3.0
   "@pierre/diffs": ^1.2.12
   "@sealant/api-contracts": npm:@sealant/api-contracts-next@0.40.0-next.923
   "@sealant/sdk": npm:@sealant/sdk-next@0.40.0-next.923
