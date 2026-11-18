@@ -33,7 +33,14 @@ const boxOf = async (locator) => {
 export default async ({ page, web, capture: captureOnce, note }) => {
   // The driver may withhold a picture when the page inserts a subtree while it looks: look again.
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
+  // Vite's dev server shows an overlay when its proxy of a closing terminal socket resets
+  // (ECONNRESET): it is the dev server's, not the page's, and it covers the page. Take it away.
+  const dismissOverlay = () =>
+    page.evaluate(() =>
+      document.querySelectorAll("vite-error-overlay").forEach((each) => each.remove()),
+    );
   const capture = async (name) => {
+    await dismissOverlay();
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await captureOnce(name);
       if (existsSync(join(out, `${name}.png`)) || existsSync(join(out, `${name}.png.withheld`)))
@@ -123,6 +130,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     });
   /** The terminal's text, through its Copy (the header's in a wide tile, the picker's in a narrow one). */
   const terminalText = async () => {
+    await dismissOverlay();
     await keepCopies();
     const header = body.getByRole("button", { name: "Copy", exact: true });
     if (await header.isVisible()) await header.click();
@@ -511,6 +519,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await settled();
   const picker = body.getByRole("button", { name: / shells?$/ });
   await picker.waitFor();
+  await dismissOverlay();
   note(`390px: the picker reads "${(await picker.innerText()).replace(/\n/g, " ")}"`);
   await both("terminal-phone");
   await picker.click();
