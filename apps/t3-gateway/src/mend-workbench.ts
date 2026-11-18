@@ -233,6 +233,7 @@ export const MendActiveSession = Schema.Struct({
   id: Schema.String,
   livePeople: Schema.optional(Schema.Array(MendLivePerson)),
   sharedControlEnabledAt: Schema.optional(Schema.NullOr(Schema.String)),
+  sharedControlUserIds: Schema.optional(Schema.Array(Schema.String)),
   workspaceRetirement: Schema.optional(Schema.NullOr(Schema.Literals(["marked", "retiring"]))),
 });
 export type MendActiveSession = typeof MendActiveSession.Type;

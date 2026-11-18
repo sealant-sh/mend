@@ -2,6 +2,7 @@ import {
   canRemoveProject,
   canSteerSession,
   canTypeInTerminal,
+  sharesControl,
   type ProjectTenancy,
   type SessionOrigin,
   type SteeringFacts,
@@ -119,7 +120,7 @@ export const ownerLine = (
   names: ReadonlyMap<string, string> | undefined,
 ): string | null => {
   const origin = originWords(session.origin);
-  const shared = session.sharedControlEnabledAt === null ? null : "shared control on";
+  const shared = sharesControl(session) ? "shared control on" : null;
   if (session.ownerUserId !== null && !own && names === undefined) return null;
   const owner =
     session.ownerUserId === null

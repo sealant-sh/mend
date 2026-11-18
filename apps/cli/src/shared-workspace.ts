@@ -76,12 +76,14 @@ export interface WorkspaceReads {
 export const workspaceReadsOf = (session: {
   readonly livePeople?: ReadonlyArray<LivePersonDto>;
   readonly sharedControlEnabledAt?: string | null;
+  readonly sharedControlUserIds?: ReadonlyArray<string>;
   readonly workspaceRetirement?: "marked" | "retiring" | null;
 }): WorkspaceReads => ({
+  // Shared with everyone, or with one person (docs/adr/0026, decision 7).
   waiting:
     (session.livePeople ?? []).length > 0 &&
-    session.sharedControlEnabledAt !== undefined &&
-    session.sharedControlEnabledAt !== null,
+    ((session.sharedControlEnabledAt ?? null) !== null ||
+      (session.sharedControlUserIds ?? []).length > 0),
   retirement: session.workspaceRetirement !== undefined && session.workspaceRetirement !== null,
 });
 

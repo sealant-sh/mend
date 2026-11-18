@@ -201,7 +201,7 @@ export const OFFLINE_WORDS = "Mend is offline; your comments are kept";
  * disabled, and her comments with it.
  */
 export const sendOffer = (input: {
-  readonly session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt">;
+  readonly session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds">;
   readonly viewer: string | null;
   readonly ownerName: string;
   readonly agent: LiveAgent | null;

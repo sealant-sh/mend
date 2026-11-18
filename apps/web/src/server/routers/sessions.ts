@@ -22,6 +22,8 @@ import { run } from "../api/index.ts";
 import { input, procedure, router } from "./trpc.ts";
 
 const byId = input(Schema.Struct({ id: SessionId }));
+/** One person in a session's shared control: who asked, or who holds it. */
+const byPerson = input(Schema.Struct({ id: SessionId, userId: Schema.String }));
 
 const historyInput = input(
   Schema.Struct({
@@ -125,6 +127,8 @@ export const sessionsRouter = router({
         }),
       );
     }),
+  // The switch for everyone (docs/adr/0003): on lets everyone who can see the project steer; off
+  // leaves only the owner, ending every grant to one person too.
   setSharedControl: procedure
     .input(input(Schema.Struct({ id: SessionId, enabled: Schema.Boolean })))
     .mutation(({ ctx, input: i }) =>
@@ -133,6 +137,46 @@ export const sessionsRouter = router({
           params: { id: i.id },
           payload: new SharedControlRequest({ enabled: i.enabled }),
         }),
+      ),
+    ),
+  // Shared control for one person (docs/adr/0026, decision 7). `sharedControl` reads who holds it
+  // and who asks (the owner reads every ask, anyone else only their own) and what the viewer may
+  // do (`acts`); each step answers the same read as it stands after. A step the session no longer
+  // allows is `SharedControlRefused` (409) with `data.sharedControl.reason`.
+  sharedControl: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.sharedControlPeople({ params: { id: i.id } })),
+    ),
+  askSharedControl: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.askSharedControl({ params: { id: i.id } })),
+    ),
+  withdrawSharedControl: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.withdrawSharedControl({ params: { id: i.id } })),
+    ),
+  grantSharedControl: procedure
+    .input(byPerson)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.grantSharedControl({ params: { id: i.id, userId: i.userId } }),
+      ),
+    ),
+  declineSharedControl: procedure
+    .input(byPerson)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.declineSharedControl({ params: { id: i.id, userId: i.userId } }),
+      ),
+    ),
+  takeBackSharedControl: procedure
+    .input(byPerson)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.takeBackSharedControl({ params: { id: i.id, userId: i.userId } }),
       ),
     ),
   // Stop session (docs/adr/0026, decision 7): when no other session in the workspace is

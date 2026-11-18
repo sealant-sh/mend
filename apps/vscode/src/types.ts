@@ -80,8 +80,13 @@ export interface Session {
    */
   readonly livePeople: ReadonlyArray<LivePerson>;
   readonly resourceStatusLines?: ReadonlyArray<string>;
-  /** When shared control was turned on; null while it is off and from older servers. */
+  /** When shared control with everyone was turned on; null while it is off and from older servers. */
   readonly sharedControlEnabledAt: string | null;
+  /**
+   * The people the owner gave shared control to, one by one (docs/adr/0026, decision 7). Absent
+   * from older servers.
+   */
+  readonly sharedControlUserIds?: ReadonlyArray<string>;
   /**
    * The executor waits to be replaced (docs/adr/0016, decision 14): `marked` or `retiring`. Read
    * with `livePeople`, when per-person homes are possible; null otherwise and from older servers.

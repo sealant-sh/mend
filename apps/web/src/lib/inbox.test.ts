@@ -54,6 +54,7 @@ const row = (
     status,
     ownerUserId: extra.owner ?? "ada",
     sharedControlEnabledAt: null,
+    sharedControlUserIds: [],
     startedAt: minutesAgo(30),
     settledAt: null,
     createdAt: minutesAgo(30),

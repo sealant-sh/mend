@@ -17,6 +17,7 @@ import { queryClient } from "#/lib/queries";
 import {
   SHARED_CONTROL_UNREAD,
   sharedControlConfirmOf,
+  sharedControlOn,
   sharedControlPress,
   sharedControlSwitchTitle,
   type TurnsOnSendersLogin,
@@ -53,7 +54,7 @@ export function SharedControlSwitch({
 }) {
   const toggle = useToggle(session);
   const [confirming, setConfirming] = useState(false);
-  const shared = session.sharedControlEnabledAt !== null;
+  const shared = sharedControlOn(session);
   const confirm = sharedControlConfirmOf(turnsOnSendersLogin);
   const unread = !shared && turnsOnSendersLogin === null;
   return (
@@ -136,7 +137,7 @@ export function SharedControlFact({
 }) {
   const toggle = useToggle(session);
   if (control.own || ownerName === null) return null;
-  const shared = session.sharedControlEnabledAt !== null;
+  const shared = sharedControlOn(session);
   if (!shared && control.steer) return null;
   return (
     <div className="flex h-7 shrink-0 items-center gap-3 border-b border-rule-faint bg-background px-3">

@@ -45,6 +45,7 @@ const session: SessionDto = {
   autoLand: null,
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
+  sharedControlUserIds: [],
   sharedControlEverAt: null,
   livePeople: [],
   resourceStatusLines: [],

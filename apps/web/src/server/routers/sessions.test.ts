@@ -28,8 +28,8 @@ const organizationOf = (userId: string) => ({
 });
 
 /**
- * An API where `signedIn` is signed in and every other request is refused with `refusal` as its
- * 409. It keeps what it was sent.
+ * An API where `signedIn` is signed in and every other request is refused with `refusal`, as a
+ * 409 unless `status` says otherwise. It keeps what it was sent.
  */
 const startApi = async (
   refusal: Record<string, unknown> = {
@@ -40,6 +40,7 @@ const startApi = async (
   signedIn = alice,
   /** Paths answered 200 with these bodies instead of the refusal. */
   answers: Record<string, unknown> = {},
+  status = 409,
 ) => {
   const requests: Array<{ readonly path: string | undefined; readonly body: string }> = [];
   const server = createServer((request, response) => {
@@ -60,7 +61,7 @@ const startApi = async (
         response.end(JSON.stringify(answer));
         return;
       }
-      response.writeHead(409, { "content-type": "application/json" });
+      response.writeHead(status, { "content-type": "application/json" });
       response.end(JSON.stringify(refusal));
     });
   });
@@ -161,6 +162,123 @@ describe("sessions router", () => {
               { sessionId: other, title: "Write tests for retry", ownerName: "Ada Lovelace" },
             ],
             services: [{ name: "api", port: 8080 }],
+          },
+        },
+      },
+    });
+  });
+
+  it("grants one person's ask and answers who holds shared control now (docs/adr/0026)", async () => {
+    const answer = {
+      sessionId,
+      ownerUserId: alice,
+      everyoneSince: null,
+      granted: [
+        {
+          userId: "user-ada",
+          state: "granted",
+          askedAt: "2026-11-18T10:52:00.000Z",
+          grantedAt: "2026-11-18T10:53:00.000Z",
+          grantedByUserId: alice,
+        },
+      ],
+      asked: [],
+      steer: true,
+      acts: { ask: false, withdraw: false, decide: true, takeBack: true },
+      turnsOnSendersLogin: true,
+    };
+    await api.close();
+    api = await startApi(undefined, alice, {
+      [`/api/sessions/${sessionId}/shared-control/people/user-ada/grant`]: answer,
+    });
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const response = await handle(
+      new Request("http://internal-web.invalid/trpc/sessions.grantSharedControl", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin, cookie: "test-cookie=credential" },
+        body: JSON.stringify({ json: { id: sessionId, userId: "user-ada" } }),
+      }),
+    );
+
+    expect(api.requests).toEqual([
+      { path: `/api/sessions/${sessionId}/shared-control/people/user-ada/grant`, body: "" },
+    ]);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      result: {
+        data: {
+          json: { granted: [{ userId: "user-ada", state: "granted" }], acts: { decide: true } },
+        },
+      },
+    });
+  });
+
+  it("a grant of an ask already withdrawn reaches the browser with its reason", async () => {
+    const words = "There is no open ask from this person: it was withdrawn or already answered.";
+    await api.close();
+    api = await startApi({
+      _tag: "SharedControlRefused",
+      sessionId,
+      reason: "not-asked",
+      message: words,
+    });
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const response = await handle(
+      new Request("http://internal-web.invalid/trpc/sessions.grantSharedControl", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin, cookie: "test-cookie=credential" },
+        body: JSON.stringify({ json: { id: sessionId, userId: "user-ada" } }),
+      }),
+    );
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: {
+        json: {
+          message: words,
+          data: { tag: "SharedControlRefused", sharedControl: { reason: "not-asked" } },
+        },
+      },
+    });
+  });
+
+  it("a message refused for the sender's expired login names the login to connect again", async () => {
+    const words =
+      "Your Claude login needs reconnecting. Reconnect Claude to steer this session. Connect it in Settings → Connected accounts, or run mend connect claude.";
+    await api.close();
+    api = await startApi(
+      {
+        _tag: "SessionNotSteerable",
+        sessionId,
+        message: words,
+        login: { provider: "claude", state: "invalid" },
+      },
+      alice,
+      {},
+      403,
+    );
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const response = await handle(
+      new Request("http://internal-web.invalid/trpc/sessions.sendMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin, cookie: "test-cookie=credential" },
+        body: JSON.stringify({
+          json: {
+            id: sessionId,
+            input: "skip 410s on replay",
+            clientMessageId: "0d6f3c1a-2b4e-4f6a-9c8d-7e5f4a3b2c1d",
+            expectedUserId: alice,
+          },
+        }),
+      }),
+    );
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({
+      error: {
+        json: {
+          message: words,
+          data: {
+            tag: "SessionNotSteerable",
+            sharedControl: { login: { provider: "claude", state: "invalid" } },
           },
         },
       },

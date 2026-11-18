@@ -30,6 +30,7 @@ const session = (
     status,
     ownerUserId: extra.owner ?? "ada",
     sharedControlEnabledAt: null,
+    sharedControlUserIds: [],
     startedAt: now,
     settledAt: null,
     createdAt: now,

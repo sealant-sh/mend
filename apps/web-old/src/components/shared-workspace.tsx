@@ -102,7 +102,7 @@ export function WaitingLine({
 }: {
   readonly session: Pick<
     SessionDto,
-    "id" | "ownerUserId" | "livePeople" | "sharedControlEnabledAt"
+    "id" | "ownerUserId" | "livePeople" | "sharedControlEnabledAt" | "sharedControlUserIds"
   >;
   readonly live: boolean;
   readonly viewerId: string | null;

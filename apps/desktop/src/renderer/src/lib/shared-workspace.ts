@@ -70,12 +70,22 @@ export const sharedControlConfirmOf = (
  * is read (with `MEND_HARNESS_LAYOUT=shared`, `livePeople` is always empty: no extra work at all).
  */
 export const readsWaiting = (
-  session: Pick<SessionDto, "livePeople" | "sharedControlEnabledAt"> | null | undefined,
+  session:
+    | Pick<SessionDto, "livePeople" | "sharedControlEnabledAt" | "sharedControlUserIds">
+    | null
+    | undefined,
 ): boolean =>
-  session !== null &&
-  session !== undefined &&
-  session.livePeople.length > 0 &&
-  session.sharedControlEnabledAt !== null;
+  session !== null && session !== undefined && session.livePeople.length > 0 && sharedControlOn(session);
+
+/**
+ * Whether anyone besides the owner may steer: shared with everyone, or with one person the owner
+ * granted it to (docs/adr/0026, decision 7). What the switch's On means here. Servers before
+ * per-person grants send no `sharedControlUserIds`.
+ */
+export const sharedControlOn = (
+  session: Pick<SessionDto, "sharedControlEnabledAt" | "sharedControlUserIds">,
+): boolean =>
+  session.sharedControlEnabledAt !== null || (session.sharedControlUserIds ?? []).length > 0;
 
 /** Whether the session's executor waits to be replaced, as the session's own view says. */
 export const readsRetirement = (

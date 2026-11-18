@@ -32,7 +32,9 @@ export const NO_NOTICES: ThreadNotices = { sharedWorkspace: null, waiting: null,
  * `livePeople` is always empty, and the gateway does no extra work at all.
  */
 export const readsWaiting = (session: MendActiveSession | undefined): boolean =>
-  (session?.livePeople?.length ?? 0) > 0 && (session?.sharedControlEnabledAt ?? null) !== null;
+  (session?.livePeople?.length ?? 0) > 0 &&
+  ((session?.sharedControlEnabledAt ?? null) !== null ||
+    (session?.sharedControlUserIds ?? []).length > 0);
 
 /**
  * Whether a session's retirement is worth reading (`GET /api/sessions/:id/workspace-retirement`,

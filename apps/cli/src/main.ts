@@ -410,6 +410,8 @@ interface SessionDto extends SessionCaptureLike {
   readonly resourceStatusLines?: ReadonlyArray<string>;
   /** When shared control was turned on; null while it is off. Absent on older servers. */
   readonly sharedControlEnabledAt?: string | null;
+  /** The people the owner gave shared control to, one by one; absent on older servers. */
+  readonly sharedControlUserIds?: ReadonlyArray<string>;
   /** The workspace the session runs in now; null when none runs. */
   readonly sealantWorkspaceId?: string | null;
   /**

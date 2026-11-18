@@ -82,6 +82,9 @@ export const parseSession = (value: unknown): Session => {
     resourceStatusLines: parseResourceStatusLines(value["resourceStatusLines"]),
     sharedControlEnabledAt:
       typeof value["sharedControlEnabledAt"] === "string" ? value["sharedControlEnabledAt"] : null,
+    sharedControlUserIds: Array.isArray(value["sharedControlUserIds"])
+      ? value["sharedControlUserIds"].filter((id): id is string => typeof id === "string")
+      : [],
     workspaceRetirement: parseRetirementState(value["workspaceRetirement"]),
     workspaceLauncherUserId:
       typeof value["workspaceLauncherUserId"] === "string"
