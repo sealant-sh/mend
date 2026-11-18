@@ -3,17 +3,24 @@
  * browser's sign-in, and the server ends the event stream it held in the organization it left. So
  * once the server has switched, the page loads `/` afresh: every cached read, the open session
  * and the composer's project belong to the organization that was left, and a full load drops them
- * all. The old app did the same.
+ * all. The old app did the same. Creating an organization and leaving one move the sign-in too,
+ * and load `/` the same way.
  *
- * A full load forgets the page, so the switch leaves a note in this tab's session storage, and the
- * page it lands on reads it once to say "Switched to Acme Labs." with a way back.
+ * A full load forgets the page, so the move leaves a note in this tab's session storage, and the
+ * page it lands on reads it once: "Switched to Acme Labs." with a way back, "Created Difference
+ * Engine. You're its owner.", or "You left Northwind. You're now in Acme Labs."
  */
 
-/** What the page that loads after a switch says, and where "Back to …" goes. */
-export interface SwitchedNote {
-  readonly to: string;
-  readonly from: { readonly id: string; readonly name: string };
-}
+/** What the page that loads after the sign-in moved says, and where "Back to …" goes. */
+export type SwitchedNote =
+  | {
+      readonly kind: "switched";
+      readonly to: string;
+      readonly from: { readonly id: string; readonly name: string };
+    }
+  | { readonly kind: "created"; readonly name: string }
+  /** `now` is null when the organizations didn't read after leaving. */
+  | { readonly kind: "left"; readonly left: string; readonly now: string | null };
 
 const NOTE_KEY = "mend-switched-organization";
 
@@ -29,11 +36,27 @@ export const parseSwitchedNote = (stored: string | null): SwitchedNote | null =>
   } catch {
     return null;
   }
-  if (!isRecord(value) || !isRecord(value["from"])) return null;
-  const { to } = value;
-  const { id, name } = value["from"];
-  if (typeof to !== "string" || typeof id !== "string" || typeof name !== "string") return null;
-  return { to, from: { id, name } };
+  if (!isRecord(value)) return null;
+  switch (value["kind"]) {
+    case "switched": {
+      const { to, from } = value;
+      if (typeof to !== "string" || !isRecord(from)) return null;
+      const { id, name } = from;
+      if (typeof id !== "string" || typeof name !== "string") return null;
+      return { kind: "switched", to, from: { id, name } };
+    }
+    case "created": {
+      const { name } = value;
+      return typeof name === "string" ? { kind: "created", name } : null;
+    }
+    case "left": {
+      const { left, now } = value;
+      if (typeof left !== "string" || (now !== null && typeof now !== "string")) return null;
+      return { kind: "left", left, now };
+    }
+    default:
+      return null;
+  }
 };
 
 /** Where the note lives: this tab's session storage, which a private window may refuse. */
@@ -51,7 +74,7 @@ const browserStore = (): NoteStore | null => {
   }
 };
 
-/** Leaves the note for the page the switch loads. Without storage, the switch says nothing. */
+/** Leaves the note for the page the move loads. Without storage, the move says nothing. */
 export const leaveSwitchedNote = (
   note: SwitchedNote,
   store: NoteStore | null = browserStore(),

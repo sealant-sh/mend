@@ -118,7 +118,8 @@ export default async ({ page, web, capture, note }) => {
   await sidebar.getByRole("link", { name: new RegExp(`^${REVIEW}`) }).waitFor();
 
   // The organization row opens the switcher (frame dnxZc5SyZ4): this server's organizations, the
-  // current one checked, then its settings. Creating one is route PR 35's: no item yet.
+  // current one checked, then its settings. A stack runs one organization, so it offers no
+  // "Create organization…" (new-web-organizations covers that item).
   const orgButton = sidebar.getByRole("button", { name: /, switch organization$/ });
   const organization = (await orgButton.getAttribute("aria-label")).replace(
     /, switch organization$/,
@@ -134,7 +135,7 @@ export default async ({ page, web, capture, note }) => {
     throw new Error(`${organization} is not the checked organization`);
   const orgNames = await menuNames();
   if (orgNames.some((name) => name.startsWith("Create organization")))
-    throw new Error("the switcher offers Create organization…, which route PR 35 adds");
+    throw new Error("a single-tenant server offers Create organization…");
   note(`org-switch-web: the switcher reads "${label}" | ${orgNames.join(" | ")}`);
   await both("switcher-open-desktop");
   await closeMenu();

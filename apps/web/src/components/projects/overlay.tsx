@@ -14,14 +14,15 @@ import {
   SheetTitle,
 } from "@mend/ui/components/ui/sheet";
 import { cn } from "@mend/ui/lib/utils";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 
 import { usePhone } from "#/lib/phone";
 
 /**
  * A dialog on a wide screen and a sheet from the bottom on a phone (Doop "Dialog" and "Phone
  * sheet"), with the same title, words, body and buttons. `size` is the dialog's width: `sm` for a
- * confirmation, `md` for a form.
+ * confirmation, `md` for a form. `finalFocus` is where focus goes when it closes, for a dialog
+ * opened from a menu item that is gone by then.
  */
 export function Overlay({
   open,
@@ -31,6 +32,7 @@ export function Overlay({
   size,
   children,
   footer,
+  finalFocus,
 }: {
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
@@ -39,6 +41,7 @@ export function Overlay({
   readonly size: "sm" | "md";
   readonly children?: ReactNode;
   readonly footer: ReactNode;
+  readonly finalFocus?: RefObject<HTMLElement | null>;
 }) {
   const phone = usePhone();
   if (phone)
@@ -46,6 +49,7 @@ export function Overlay({
       <Sheet open={open} onOpenChange={onOpenChange}>
         <SheetContent
           side="bottom"
+          finalFocus={finalFocus}
           className="max-h-[92dvh] gap-0 rounded-t-xl pb-[env(safe-area-inset-bottom)]"
         >
           <span aria-hidden className="mx-auto mt-2 h-1 w-9 shrink-0 rounded-full bg-border" />
@@ -70,7 +74,7 @@ export function Overlay({
     );
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size={size} className={cn(size === "md" && "gap-5")}>
+      <DialogContent size={size} finalFocus={finalFocus} className={cn(size === "md" && "gap-5")}>
         <DialogHeader className="pr-8">
           <DialogTitle>{title}</DialogTitle>
           {description === undefined ? null : <DialogDescription>{description}</DialogDescription>}

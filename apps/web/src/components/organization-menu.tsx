@@ -13,8 +13,15 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@mend/ui/components/ui/
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { Building2Icon, CheckIcon, ChevronsUpDownIcon, SettingsIcon } from "lucide-react";
-import { useEffect, useState } from "react";
+import {
+  Building2Icon,
+  CheckIcon,
+  ChevronsUpDownIcon,
+  LogOutIcon,
+  PlusIcon,
+  SettingsIcon,
+} from "lucide-react";
+import { type RefObject, useEffect, useRef, useState } from "react";
 
 import type { AccountOrganizationDto } from "#/lib/api";
 import { laterPage } from "#/lib/later-pages";
@@ -25,8 +32,10 @@ import {
   takeSwitchedNote,
   type SwitchedNote,
 } from "#/lib/organization-switch";
+import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
+import { CreateOrganizationDialog, LeaveOrganizationDialog } from "./organization-dialogs.tsx";
 import { SheetHandle, SheetItem, SheetItemBody, sheetItemClass } from "./sheet-item.tsx";
 
 /**
@@ -37,8 +46,11 @@ import { SheetHandle, SheetItem, SheetItemBody, sheetItemClass } from "./sheet-i
  * organization row at the top of the Settings tab, as a sheet.
  *
  * Choosing another organization switches this browser's sign-in and loads home in it
- * (`lib/organization-switch.ts`). Creating an organization and leaving one come with route PR 35;
- * the switcher keeps their place after the settings item.
+ * (`lib/organization-switch.ts`). After the settings item: "Create organization…", only where the
+ * server lets this person create one (`canCreateOrganizations`), and "Leave <organization>…", only
+ * for someone in more than one, since the server never lets anyone leave their only organization.
+ * The frames also offer Leave on Organization General and on your own row in Members (route PRs
+ * 45 and 46), which open the same dialog (`organization-dialogs.tsx`).
  */
 
 /** The organization's mark: its first letter on a dark square. */
@@ -65,6 +77,33 @@ export function OrganizationMark({
 const organizationsOptions = (trpc: ReturnType<typeof useTRPC>) =>
   trpc.organizations.list.queryOptions(undefined, { staleTime: 60_000 });
 
+/** What the switcher offers after the settings item, from what the server says this person may do. */
+const useMembershipActions = (organizations: ReadonlyArray<AccountOrganizationDto>) => {
+  const trpc = useTRPC();
+  const view = useQuery(signedInOptions(trpc));
+  const current = organizations.find((membership) => membership.active);
+  return {
+    // Missing on an older server, or while it can't be read: no item, rather than a dead one.
+    canCreate: view.status === "success" && view.data.canCreateOrganizations,
+    leaving:
+      current !== undefined && organizations.length > 1
+        ? {
+            organization: current.organization,
+            others: organizations
+              .filter((membership) => !membership.active)
+              .map((membership) => membership.organization.name),
+          }
+        : null,
+  };
+};
+
+/** Asks the switcher on screen to open: the toast after leaving offers "Switch organization". */
+const OPEN_SWITCHER = "mend:open-organization-switcher";
+
+const openSwitcher = (): void => {
+  window.dispatchEvent(new Event(OPEN_SWITCHER));
+};
+
 /** What a refused switch says: the organization, then the server's reason. */
 const refusalOf = (name: string, error: unknown): string => {
   const reason = error instanceof Error && error.message !== "" ? ` ${error.message}` : "";
@@ -82,6 +121,7 @@ const useSwitchOrganization = (current: string, currentId: string | undefined) =
       onSuccess: (membership) => {
         if (currentId !== undefined)
           leaveSwitchedNote({
+            kind: "switched",
             to: membership.organization.name,
             from: { id: currentId, name: current },
           });
@@ -110,10 +150,24 @@ export function OrganizationMenu({
   // Once the server has switched, the page is already loading home.
   const busy = switching.isPending || switching.isSuccess;
   const target = switching.variables?.organizationId;
+  const actions = useMembershipActions(memberships);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dialog, setDialog] = useState<"create" | "leave" | null>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // The toast's "Switch organization" opens whichever switcher is on screen: the sidebar's row or
+  // the rail's mark, never one hidden at this width.
+  useEffect(() => {
+    const open = () => {
+      if (triggerRef.current?.offsetParent != null) setMenuOpen(true);
+    };
+    window.addEventListener(OPEN_SWITCHER, open);
+    return () => window.removeEventListener(OPEN_SWITCHER, open);
+  }, []);
   const label = `${organizationName}, switch organization`;
   const trigger =
     place === "sidebar" ? (
       <DropdownMenuTrigger
+        ref={triggerRef}
         aria-label={label}
         className="flex h-9 w-full min-w-0 items-center gap-2.25 rounded-lg px-2 text-left text-prose font-semibold outline-none hover:bg-background/55 focus-visible:ring-3 focus-visible:ring-ring/50 data-popup-open:bg-background/55"
       >
@@ -126,6 +180,7 @@ export function OrganizationMenu({
         <TooltipTrigger
           render={
             <DropdownMenuTrigger
+              ref={triggerRef}
               aria-label={label}
               className="grid h-10 w-8 shrink-0 place-items-center rounded-lg outline-none hover:bg-background/55 focus-visible:ring-3 focus-visible:ring-ring/50 data-popup-open:bg-background/55"
             />
@@ -137,69 +192,133 @@ export function OrganizationMenu({
       </Tooltip>
     );
   return (
-    <DropdownMenu>
-      {trigger}
-      <DropdownMenuContent
-        width="lg"
-        side={place === "sidebar" ? "bottom" : "right"}
-        align="start"
-        sideOffset={place === "sidebar" ? 4 : 8}
-      >
-        <DropdownMenuGroup>
-          <DropdownMenuLabel className="truncate">
-            {host === "" ? "Your organizations" : `Organizations on ${host}`}
-          </DropdownMenuLabel>
-          {organizations.isPending ? (
-            <p role="status" className="px-2 py-1.5 text-row text-muted-foreground">
-              Loading your organizations…
-            </p>
-          ) : organizations.isError ? (
-            <>
-              <p role="alert" className="px-2 py-1.5 text-row text-muted-foreground">
-                Your organizations didn't load.
+    <>
+      <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
+        {trigger}
+        <DropdownMenuContent
+          width="lg"
+          side={place === "sidebar" ? "bottom" : "right"}
+          align="start"
+          sideOffset={place === "sidebar" ? 4 : 8}
+        >
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="truncate">
+              {host === "" ? "Your organizations" : `Organizations on ${host}`}
+            </DropdownMenuLabel>
+            {organizations.isPending ? (
+              <p role="status" className="px-2 py-1.5 text-row text-muted-foreground">
+                Loading your organizations…
               </p>
-              <DropdownMenuItem closeOnClick={false} onClick={() => void organizations.refetch()}>
-                {organizations.isRefetching ? "Trying again…" : "Try again"}
+            ) : organizations.isError ? (
+              <>
+                <p role="alert" className="px-2 py-1.5 text-row text-muted-foreground">
+                  Your organizations didn't load.
+                </p>
+                <DropdownMenuItem closeOnClick={false} onClick={() => void organizations.refetch()}>
+                  {organizations.isRefetching ? "Trying again…" : "Try again"}
+                </DropdownMenuItem>
+              </>
+            ) : (
+              memberships.map((membership) => (
+                <DropdownMenuItem
+                  key={membership.organization.id}
+                  closeOnClick={membership.active}
+                  disabled={busy && !membership.active}
+                  aria-current={membership.active ? "true" : undefined}
+                  onClick={() => {
+                    if (!membership.active)
+                      switching.mutate({ organizationId: membership.organization.id });
+                  }}
+                >
+                  <Building2Icon aria-hidden className="text-muted-foreground" />
+                  <span className="min-w-0 flex-1 truncate">{membership.organization.name}</span>
+                  <MembershipEnd
+                    membership={membership}
+                    switching={busy && target === membership.organization.id}
+                  />
+                </DropdownMenuItem>
+              ))
+            )}
+            {switching.isError ? (
+              <p role="alert" className="px-2 py-1.5 text-meta text-destructive">
+                {refusalOf(
+                  memberships.find((m) => m.organization.id === target)?.organization.name ??
+                    "that organization",
+                  switching.error,
+                )}
+              </p>
+            ) : null}
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem render={<Link {...laterPage("settings/organization")} />}>
+            <SettingsIcon aria-hidden className="text-muted-foreground" />
+            <span className="min-w-0 flex-1 truncate">{organizationName} settings</span>
+          </DropdownMenuItem>
+          {actions.canCreate ? (
+            <DropdownMenuItem onClick={() => setDialog("create")}>
+              <PlusIcon aria-hidden className="text-muted-foreground" />
+              <span className="min-w-0 flex-1 truncate">Create organization…</span>
+            </DropdownMenuItem>
+          ) : null}
+          {actions.leaving === null ? null : (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem variant="destructive" onClick={() => setDialog("leave")}>
+                <LogOutIcon aria-hidden />
+                <span className="min-w-0 flex-1 truncate">Leave {organizationName}…</span>
               </DropdownMenuItem>
             </>
-          ) : (
-            memberships.map((membership) => (
-              <DropdownMenuItem
-                key={membership.organization.id}
-                closeOnClick={membership.active}
-                disabled={busy && !membership.active}
-                aria-current={membership.active ? "true" : undefined}
-                onClick={() => {
-                  if (!membership.active)
-                    switching.mutate({ organizationId: membership.organization.id });
-                }}
-              >
-                <Building2Icon aria-hidden className="text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate">{membership.organization.name}</span>
-                <MembershipEnd
-                  membership={membership}
-                  switching={busy && target === membership.organization.id}
-                />
-              </DropdownMenuItem>
-            ))
           )}
-          {switching.isError ? (
-            <p role="alert" className="px-2 py-1.5 text-meta text-destructive">
-              {refusalOf(
-                memberships.find((m) => m.organization.id === target)?.organization.name ??
-                  "that organization",
-                switching.error,
-              )}
-            </p>
-          ) : null}
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem render={<Link {...laterPage("settings/organization")} />}>
-          <SettingsIcon aria-hidden className="text-muted-foreground" />
-          <span className="min-w-0 flex-1 truncate">{organizationName} settings</span>
-        </DropdownMenuItem>
-      </DropdownMenuContent>
-    </DropdownMenu>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <MembershipDialogs
+        dialog={dialog}
+        onClose={() => setDialog(null)}
+        current={organizationName}
+        leaving={actions.leaving}
+        finalFocus={triggerRef}
+      />
+    </>
+  );
+}
+
+/** The dialogs the switcher's last items open, on the desk or from the phone's sheet. */
+function MembershipDialogs({
+  dialog,
+  onClose,
+  current,
+  leaving,
+  finalFocus,
+}: {
+  readonly dialog: "create" | "leave" | null;
+  readonly onClose: () => void;
+  readonly current: string;
+  readonly leaving: ReturnType<typeof useMembershipActions>["leaving"];
+  readonly finalFocus: RefObject<HTMLElement | null>;
+}) {
+  const host = useServerHost();
+  const onOpenChange = (open: boolean) => {
+    if (!open) onClose();
+  };
+  return (
+    <>
+      <CreateOrganizationDialog
+        open={dialog === "create"}
+        onOpenChange={onOpenChange}
+        current={current}
+        host={host}
+        finalFocus={finalFocus}
+      />
+      {leaving === null ? null : (
+        <LeaveOrganizationDialog
+          open={dialog === "leave"}
+          onOpenChange={onOpenChange}
+          organization={leaving.organization}
+          others={leaving.others}
+          finalFocus={finalFocus}
+        />
+      )}
+    </>
   );
 }
 
@@ -236,9 +355,17 @@ export function PhoneOrganizationRow({ organizationName }: { readonly organizati
   const switching = useSwitchOrganization(organizationName, current?.organization.id);
   const busy = switching.isPending || switching.isSuccess;
   const target = switching.variables?.organizationId;
+  const actions = useMembershipActions(memberships);
+  const [dialog, setDialog] = useState<"create" | "leave" | null>(null);
+  const rowRef = useRef<HTMLButtonElement>(null);
+  const openDialog = (next: "create" | "leave") => {
+    setOpen(false);
+    setDialog(next);
+  };
   return (
     <>
       <button
+        ref={rowRef}
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -323,16 +450,41 @@ export function PhoneOrganizationRow({ organizationName }: { readonly organizati
                 {organizationName} settings
               </SheetItemBody>
             </button>
+            {actions.canCreate ? (
+              <SheetItem icon={<PlusIcon aria-hidden />} onClick={() => openDialog("create")}>
+                Create organization…
+              </SheetItem>
+            ) : null}
           </div>
+          {actions.leaving === null ? null : (
+            <div role="menu" aria-label={`Leave ${organizationName}`} className="border-t py-1">
+              <SheetItem
+                icon={<LogOutIcon aria-hidden />}
+                className="text-destructive [&_svg]:text-destructive"
+                onClick={() => openDialog("leave")}
+              >
+                Leave {organizationName}…
+              </SheetItem>
+            </div>
+          )}
         </SheetContent>
       </Sheet>
+      <MembershipDialogs
+        dialog={dialog}
+        onClose={() => setDialog(null)}
+        current={organizationName}
+        leaving={actions.leaving}
+        finalFocus={rowRef}
+      />
     </>
   );
 }
 
 /**
- * After a switch has loaded home: "Switched to Acme Labs.", with "Back to Northwind" to switch
- * back (Doop "Phone · Inbox · switched to Acme Labs"). Shown once, on the page the switch loaded.
+ * After the sign-in moved and home loaded, once, on the page it loaded: "Switched to Acme Labs."
+ * with "Back to Northwind" (Doop "Phone · Inbox · switched to Acme Labs"), "Created Difference
+ * Engine. You're its owner." ("Organizations · new organization, empty"), or "You left Northwind.
+ * You're now in Acme Labs." with "Switch organization" on the desk ("Members · left Northwind").
  */
 export function SwitchedToast() {
   const client = useTRPCClient();
@@ -345,6 +497,25 @@ export function SwitchedToast() {
 }
 
 const showSwitched = (note: SwitchedNote, client: ReturnType<typeof useTRPCClient>) => {
+  if (note.kind === "created") {
+    toast.add({ description: `Created ${note.name}. You're its owner.` });
+    return;
+  }
+  if (note.kind === "left") {
+    const where = note.now === null ? "" : ` You're now in ${note.now}.`;
+    // On a phone the switcher is a row on the Settings tab, not on this page: no action there.
+    const desk = window.matchMedia("(min-width: 1024px)").matches;
+    toast.add({
+      description: `You left ${note.left}.${where}`,
+      ...(desk
+        ? {
+            priority: "low" as const,
+            actionProps: { children: "Switch organization", onClick: openSwitcher },
+          }
+        : {}),
+    });
+    return;
+  }
   toast.add({
     description: `Switched to ${note.to}.`,
     // An action a screen reader can reach: read out politely, not at once.

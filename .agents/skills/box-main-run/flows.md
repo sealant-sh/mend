@@ -1079,6 +1079,28 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web-old/src/routes/join.$token.tsx`, `apps/web-old/src/routes/join.index.tsx`,
   `apps/web-old/src/routes/settings.organization.invitations.tsx`, `apps/api/src/`
 
+### organization.new-web-create-leave
+
+- **Map:** organization.md `org-create`, `org-leave` (the new web app's organization switcher)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-organizations`: the switcher on a single-tenant server, on the
+  desk and in the phone's Settings sheet; then, with the organization read and list rewritten in the
+  page to say the server allows creating and the account has a second organization, the Create
+  organization dialog with an empty name, a taken name and the server's own refusal, and the Leave
+  dialog for the only owner and for a member, whose Leave the server refuses; then the toasts home
+  shows after a create and a leave.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: no "Create organization…"
+  or "Leave …" item with one organization; `This Mend runs one organization (MEND_TENANCY=single).`
+  in the dialog's alert; `You can't leave yet.` for the only owner;
+  `This is your only organization. Ask one of its owners to remove you instead.` in the Leave
+  dialog's alert. Nothing changes on the server.
+- **Mode:** `scripted` (recipes/new-web-organizations.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/organization-menu.tsx`,
+  `apps/web/src/components/organization-dialogs.tsx`, `apps/web/src/lib/organization-membership.ts`,
+  `apps/web/src/lib/organization-switch.ts`
+
 ### shared-control.two-people
 
 - **Map:** shared-control.md `share-on-web`, `share-off-web`, `share-cli`, `share-refused` (a
