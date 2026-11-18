@@ -430,6 +430,60 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.unroute("**/trpc/**");
   await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.resetQueries());
 
+  // A watcher: the workspace's sessions answered as another member's, with control shared. They
+  // restart and stop Services; only the owner starts one (shared-control.md
+  // `terminal-owner-only`).
+  const OWNER = "fixture-owner";
+  const asWatcher = (answer, path) => {
+    const data = answer?.result?.data;
+    if (data === undefined) return answer;
+    data.meta = data.meta ?? { values: {}, v: 1 };
+    data.meta.values = data.meta.values ?? {};
+    const now = new Date().toISOString();
+    const patch = (session, prefix) => {
+      session.ownerUserId = OWNER;
+      session.sharedControlEnabledAt = now;
+      data.meta.values[`${prefix}session.sharedControlEnabledAt`] = ["Date"];
+    };
+    if (path === "sessions.inbox")
+      data.json.forEach((row, at) => {
+        if (row.session.worktreeId === running[0].session.worktreeId) patch(row.session, `${at}.`);
+      });
+    if (
+      path === "sessions.detail" &&
+      data.json.session.worktreeId === running[0].session.worktreeId
+    )
+      patch(data.json.session, "");
+    if (path === "organization.members" && data.json.length > 0) {
+      const at = data.json.length;
+      data.json.push({
+        ...data.json[0],
+        userId: OWNER,
+        name: "Grace Hopper",
+        email: "grace@example.com",
+      });
+      for (const [key, kind] of Object.entries(data.meta.values))
+        if (key.startsWith("0.")) data.meta.values[`${at}${key.slice(1)}`] = kind;
+    }
+    return answer;
+  };
+  await fixture({
+    "sessions.inbox": asWatcher,
+    "sessions.detail": asWatcher,
+    "organization.members": asWatcher,
+  });
+  await waitText(/Only Grace Hopper starts services in this workspace/, 30_000);
+  await list.getByRole("button", { name: /^web :8000/ }).click();
+  await body.getByRole("button", { name: "Restart service…" }).waitFor();
+  const starts = await list.getByRole("button", { name: /^(Start |Run a command)/ }).count();
+  if (starts !== 0) throw new Error(`a watcher is offered ${starts} ways to start a Service`);
+  note(
+    `fixture, a watcher with shared control: ${JSON.stringify(await textOf(list))}; Restart service… and Stop are there, no Start or Run a command…`,
+  );
+  await both("preview-watcher");
+  await page.unroute("**/trpc/**");
+  await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.resetQueries());
+
   // Stop session, the last running one: the workspace and its services stop with it.
   await list.waitFor({ timeout: 30_000 });
   await client(async (trpc, id) => trpc.sessions.stop.mutate({ id }), A);

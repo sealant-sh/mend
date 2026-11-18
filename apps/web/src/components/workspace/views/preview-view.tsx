@@ -113,7 +113,7 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
   const workspace = useWorkspaceServices(place);
   const { sessions, services, offered, recipes, previews, runs } = workspace;
   const access = shellAccess(sessions, place.sessionId, facts.viewerId);
-  const [, pick] = usePickedService(place.worktreeId);
+  const [, picked] = usePickedService(place.worktreeId);
   const current = useShownService(place, services);
   const onMendHost = useOnMendHost();
   const page = usePageAt();
@@ -140,9 +140,14 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
       if (opensOn === null) throw new Error("Only the owner of a session here starts services.");
       return client.sessions.runServiceRecipe.mutate({ id: opensOn, name: recipe.name });
     },
-    onMutate: (recipe) => pick(recipe.name),
+    onMutate: (recipe) => picked(recipe.name),
     onSettled: settle,
   });
+  // Picking another Service puts a failed start's line away.
+  const pick = (name: string) => {
+    startRecipe.reset();
+    picked(name);
+  };
   const [running, setRunning] = useState(false);
   // Each opening of Run a command starts with empty fields.
   const [opened, setRuns] = useState(0);
@@ -254,12 +259,13 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
 
   // Said under the list rather than on the recipe's row: a start that failed lists the Service
   // that ended, and its recipe row goes.
-  const startFailure = startRecipe.isError ? (
-    <p role="alert" className="text-meta text-destructive">
-      {startRecipe.variables.name} didn't start.{" "}
-      {failureWords(startRecipe.error, "Mend didn't say why. Try again.")}
-    </p>
-  ) : null;
+  const startFailure =
+    startRecipe.isError && runs ? (
+      <p role="alert" className="text-meta text-destructive">
+        {startRecipe.variables.name} didn't start.{" "}
+        {failureWords(startRecipe.error, "Mend didn't say why. Try again.")}
+      </p>
+    ) : null;
   const fileTrouble = recipes.isError ? (
     <InlineAlert
       size={touch === "touch" ? "touch" : "default"}
