@@ -272,6 +272,13 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "projects.adopt",
   // The caller's own adoption by its key; another account's reads as missing (adoptions.test.ts).
   "projects.adoption",
+  // The caller's own queued sessions, on their own adoptions; another account's read as missing
+  // (queued-sessions.test.ts). Starting one checks the project through SessionStart.
+  "queuedSessions.queue",
+  "queuedSessions.list",
+  "queuedSessions.read",
+  "queuedSessions.start",
+  "queuedSessions.cancel",
   // Creation is scoped to the authenticated person's membership: project-creation.test.ts.
   "projects.createNew",
   "projects.ensureScratch",
