@@ -43,16 +43,17 @@ const session = (
   worktreeName: `fix-${id}`,
 });
 
+const labels = (at: Date) => snoozeChoices(at).map((choice) => choice.label);
+const nextWeek = (at: Date) => snoozeChoices(at).at(-1)?.until;
+
 describe("snooze choices", () => {
   it("offers this evening only while it is more than an hour off, and next week from Monday 09:00", () => {
-    const labels = (at: Date) => snoozeChoices(at).map((choice) => choice.label);
     expect(labels(now)).toEqual(["In an hour", "This evening", "Tomorrow morning", "Next week"]);
     expect(labels(new Date("2026-11-18T17:30:00"))).toEqual([
       "In an hour",
       "Tomorrow morning",
       "Next week",
     ]);
-    const nextWeek = (at: Date) => snoozeChoices(at).at(-1)?.until;
     expect(nextWeek(now)).toEqual(new Date("2026-11-23T09:00:00"));
     // On a Monday, next week is the Monday after, not today.
     expect(nextWeek(new Date("2026-11-23T08:00:00"))).toEqual(new Date("2026-11-30T09:00:00"));
