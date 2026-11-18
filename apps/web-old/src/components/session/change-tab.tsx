@@ -616,7 +616,11 @@ function LandButton({
   );
 }
 
-/** The comments not yet sent, the change-level composer, and Send N (screen P2's panel). */
+/**
+ * The comments not yet sent, the change-level composer, and Send N (screen P2's panel). Each one
+ * not sent can be marked addressed or dismissed, which takes it out of the next send; a dismissed
+ * change-level comment shows as a card below that offers Reopen, a line comment in the diff.
+ */
 function CommentsSection({
   facts,
   changeId,
@@ -662,6 +666,7 @@ function CommentsSection({
                   : `${comment.file.split("/").at(-1)}${comment.line === null ? "" : `:${lineLabel(comment.line, comment.endLine)}`}`}
               </span>
               <span className="line-clamp-2 text-ink-2">{comment.body}</span>
+              <CommentStateActions comment={comment} />
             </li>
           ))}
         </ul>

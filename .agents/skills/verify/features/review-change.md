@@ -73,11 +73,11 @@ Preconditions:
   The file body hides and the button reads `Expand all`. Run
   `await page.getByRole("button", { name: "Expand all" }).click()` to restore it.
 - **Change-level comment.** Run
-  `await page.getByRole("textbox", { name: "Comment on the change as a whole…" }).fill("Say why VERIFY.md exists.")`,
+  `await page.getByRole("textbox", { name: "Comment on the whole change" }).fill("Say why VERIFY.md exists.")`,
   then press `Comment` in the sidebar:
-  `await page.getByRole("button", { name: "Comment", exact: true }).click()`. A card under
-  `Change-level comments` shows `<your name> · open` and the text, and the heading line now reads
-  `1 open comment`.
+  `await page.getByRole("button", { name: "Comment", exact: true }).click()`. The panel's heading
+  reads `Comments 1 not sent`, and its list holds the row `whole change` over the text, with the
+  buttons `Mark addressed` and `Dismiss`.
 - **Inline comment.** Click the line number of the added line in the diff. There is no stable handle
   for it (see Gotchas). An inline composer opens under the line, headed `comment · VERIFY.md:1`. Its
   textarea has no label and takes focus as it shows, with nothing clicked: the active element is
@@ -85,14 +85,16 @@ Preconditions:
   `await page.keyboard.type("Add a trailing newline check.")` and press that composer's `Comment`
   button, the last one on the page. The comment renders under line 1 and the file header shows
   `1 comment`.
-- **Comment state.** On the change-level card, run
-  `await page.getByRole("button", { name: "Dismiss" }).first().click()`. The card's state reads
-  `dismissed` and a `Reopen` button replaces the actions. Run
-  `await page.getByRole("button", { name: "Reopen" }).click()`. It reads `open` again.
-- **Mark a checkpoint.** Go back to the session and mark one. Run
-  `await page.goto("<web>/sessions/<id>")`, then
-  `await page.getByRole("button", { name: "Mark checkpoint" }).click()`. The button reads
-  `Marking…`, then the `Checkpoints` list gains a line `<n> · user-mark`.
+- **Comment state.** On the change-level comment's row under `Comments 1 not sent`, run
+  `await page.getByRole("button", { name: "Dismiss" }).first().click()`. The row leaves the list,
+  the heading reads `Comments 0 not sent` and `Send 0 to <agent>` is disabled, and a card below
+  reads `<your name> · dismissed` over the text with a `Reopen` button. Run
+  `await page.getByRole("button", { name: "Reopen" }).click()`. The card goes and the row is back
+  under `Comments 1 not sent`. `Mark addressed` takes a row out of the list the same way, to a card
+  reading `<your name> · addressed`. A line comment's row has the same buttons; once it is
+  dismissed, its `Reopen` is on its card in the diff.
+- **Mark a checkpoint.** On the session page, open `More session actions` and choose
+  `Mark a checkpoint`. It reads `Marking a checkpoint…`, then a line `#<n> user-mark` is added.
 - **Pinned slice.** Reload the review. Run `await page.goto("<web>/changes/<change id>")`. The same
   tab reuses the slice it opened: the `<sha A> → <sha B>` line is unchanged. When the worktree has
   moved since, the page says
@@ -215,12 +217,13 @@ Preconditions:
   it). Its `Comment` button shares its name with the sidebar's change-level `Comment` button. Scope
   by the composer's `comment · <file>:<line>` header, or take the button that appears after the
   composer opens.
-- The change-level textarea has no label either; its accessible name falls back to the placeholder
-  `Comment on the change as a whole…` (with a single ellipsis character).
+- The web's change-level textarea is labelled `Comment on the whole change`. The phone's has no
+  label; its accessible name falls back to the placeholder `Comment on the change as a whole…` (with
+  a single ellipsis character).
 - Sidebar file buttons are named by the path followed by its counts (`VERIFY.md +1 −0`). Diff file
   headers start with the collapse glyph `▶`, then the path, an optional `<n> comment(s)` and the
   counts. Match each with its own anchored regular expression.
-- Section titles (`Files`, `Change-level comments`) are plain paragraphs, not headings or regions.
+- Section titles (`Files`, `Comments`) are plain paragraphs, not headings or regions.
 - Two links are named `session` on the review page: the breadcrumb's and the one in the line under
   the heading. Navigate to the session by URL, or scope the locator.
 - `Dismiss`, `Mark addressed` and `Reopen` repeat on every comment card. In page order the sidebar's
