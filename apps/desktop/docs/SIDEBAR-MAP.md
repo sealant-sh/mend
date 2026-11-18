@@ -2,7 +2,7 @@
 
 Studied at `~/Developer/refs/t3code` nightly **v0.0.34-nightly.20260821.1150** (MIT). The full
 file:line map lives in the session notes; this is the decision record. Mechanics and information
-architecture were copied; styling comes from `DESIGN.md`.
+architecture were copied; styling comes from `docs/design-evidence-review.md`.
 
 ## What t3 does (the nightly, not older notes)
 

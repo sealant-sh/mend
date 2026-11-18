@@ -35,8 +35,9 @@ The synthesis: herdr's information architecture, Mend's session engine, native w
 | agents list          | **inbox**, static order with attention shown through contrast          |
 | the focused pane     | **the terminal**, one dominant surface rather than a terminal grid     |
 
-Product-language rules from the public glossary and `DESIGN.md` apply unchanged: status words are
-observations, "recorded/observed" only when a Sealant run stands behind the claim, no verdicts.
+Product-language rules from the public glossary and `docs/design-evidence-review.md` apply
+unchanged: status words are observations, "recorded/observed" only when a Sealant run stands behind
+the claim, no verdicts.
 
 ## The main screen
 
