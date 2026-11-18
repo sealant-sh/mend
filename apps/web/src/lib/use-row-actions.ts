@@ -15,21 +15,23 @@ import {
 } from "./row-actions.ts";
 import { useTRPC, useTRPCClient } from "./trpc.ts";
 
-/** A toast that says what happened, with Undo when it can be taken back. */
+/** How long a toast with Undo stays: long enough to reach its button. */
+const UNDO_MS = 8_000;
+
+/**
+ * A toast that says what happened, with Undo when it can be taken back. Read out politely: a
+ * high-priority toast is hidden from screen readers until focused, which would hide its Undo.
+ */
 const say = (description: string, undo?: () => void) =>
   toast.add({
     description,
-    priority: undo === undefined ? "low" : "high",
-    actionProps:
-      undo === undefined
-        ? undefined
-        : {
-            children: "Undo",
-            onClick: undo,
-          },
+    priority: "low",
+    ...(undo === undefined
+      ? {}
+      : { timeout: UNDO_MS, actionProps: { children: "Undo", onClick: undo } }),
   });
 
-/** A toast that says the server refused a change, which is back as it was on screen. */
+/** A toast that says the server refused a change, which is back as it was on screen: read out at once. */
 const refused = (verb: string, title: string) => (error: unknown) => {
   toast.add({ description: refusedWords(verb, title, error), priority: "high" });
 };
