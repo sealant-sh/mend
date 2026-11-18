@@ -92,6 +92,9 @@
   --radius-3xl: 20px;
   --radius-4xl: 26px;
   --radius-chip: 7px;
+  /* Menus and toasts: the canvas's --radius-lg, taken as 10px (its md is 8px and xl 14px). */
+  --radius-pop: 10px;
+  --radius-pop-touch: 12px;
   --radius-palette: 12px;
 
   /* Type. Instrument Sans for the interface and headings, Geist Mono for machine facts. */
@@ -104,10 +107,16 @@
   --text-2xs--line-height: 16px;
   --text-meta: 12.5px;
   --text-meta--line-height: 18px;
+  --text-control: 13px;
+  --text-control--line-height: 18px;
   --text-row: 13.5px;
   --text-row--line-height: 20px;
   --text-prose: 14.5px;
   --text-prose--line-height: 22px;
+  --text-lead: 15px;
+  --text-lead--line-height: 20px;
+  --text-title: 17px;
+  --text-title--line-height: 23px;
 
   /* The sheet's geometry: `p-sheet-inset`, `w-sidebar`, `h-header`, `h-tab-strip`, and so on. */
   --spacing-sheet-inset: 8px;

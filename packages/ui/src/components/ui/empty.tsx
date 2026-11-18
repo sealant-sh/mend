@@ -15,7 +15,7 @@ function Empty({
       data-slot="empty"
       data-kind={kind}
       className={cn(
-        "group/empty flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border-dashed p-6 text-center text-balance data-[kind=inline]:flex-none data-[kind=inline]:items-start data-[kind=inline]:gap-0 data-[kind=inline]:rounded-none data-[kind=inline]:px-3 data-[kind=inline]:py-2 data-[kind=inline]:text-left data-[kind=inline]:text-muted-foreground",
+        "group/empty flex w-full min-w-0 flex-1 flex-col items-center justify-center gap-4 rounded-xl border-dashed px-6 py-10 text-center text-balance data-[kind=inline]:flex-none data-[kind=inline]:items-start data-[kind=inline]:gap-0 data-[kind=inline]:rounded-none data-[kind=inline]:px-4 data-[kind=inline]:pt-2.5 data-[kind=inline]:pb-3 data-[kind=inline]:text-left data-[kind=inline]:text-row data-[kind=inline]:text-muted-foreground",
         className,
       )}
       {...props}
@@ -27,7 +27,7 @@ function EmptyHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="empty-header"
-      className={cn("flex max-w-sm flex-col items-center gap-2", className)}
+      className={cn("flex max-w-sm flex-col items-center gap-1", className)}
       {...props}
     />
   );
@@ -67,7 +67,7 @@ function EmptyTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="empty-title"
-      className={cn("text-base font-semibold tracking-tight", className)}
+      className={cn("text-lead font-semibold tracking-tight", className)}
       {...props}
     />
   );

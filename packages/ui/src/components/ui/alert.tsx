@@ -3,7 +3,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import * as React from "react";
 
 const alertVariants = cva(
-  "group/alert relative grid w-full gap-0.5 rounded-lg border px-2.5 py-2 text-left text-sm has-data-[slot=alert-action]:relative has-data-[slot=alert-action]:pr-18 has-[>svg]:grid-cols-[auto_1fr] has-[>svg]:gap-x-2 *:[svg]:row-span-2 *:[svg]:translate-y-0.5 *:[svg]:text-current *:[svg:not([class*='size-'])]:size-4",
+  "group/alert relative grid w-full gap-0.5 rounded-lg border px-3 py-2.5 text-left text-row has-data-[slot=alert-action]:relative has-data-[slot=alert-action]:pr-18 has-[>svg]:grid-cols-[auto_1fr] has-[>svg]:gap-x-2.5 *:[svg]:row-span-2 *:[svg]:translate-y-0.5 *:[svg]:text-current *:[svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -12,7 +12,7 @@ const alertVariants = cva(
           "bg-card text-destructive *:data-[slot=alert-description]:text-destructive/90 *:[svg]:text-current",
         // Sheet's Banner: a flat band across the sheet under its header, with a hairline under it.
         // Its actions take a column of their own on the right, so a long title never runs under them.
-        band: "rounded-none border-x-0 border-t-0 bg-background px-4 py-2.5 has-data-[slot=alert-action]:pr-4",
+        band: "rounded-none border-x-0 border-t-0 bg-background py-2.5 pr-3 pl-4 has-data-[slot=alert-action]:pr-3",
       },
       // Sheet keeps the box neutral: the tone colours only the icon.
       tone: {
@@ -34,7 +34,7 @@ const alertVariants = cva(
         layout: "inline",
         class: "has-[>svg]:has-data-[slot=alert-action]:grid-cols-[auto_1fr_auto]",
       },
-      { variant: "band", layout: "stacked", class: "has-data-[slot=alert-action]:pr-4" },
+      { variant: "band", layout: "stacked", class: "px-4 py-3 has-data-[slot=alert-action]:pr-4" },
     ],
     defaultVariants: {
       variant: "default",
@@ -81,7 +81,7 @@ function AlertDescription({ className, ...props }: React.ComponentProps<"div">) 
     <div
       data-slot="alert-description"
       className={cn(
-        "text-sm text-balance text-muted-foreground md:text-pretty [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
+        "text-row text-balance text-muted-foreground md:text-pretty [&_a]:underline [&_a]:underline-offset-3 [&_a]:hover:text-foreground [&_p:not(:last-child)]:mb-4",
         className,
       )}
       {...props}
@@ -94,7 +94,7 @@ function AlertAction({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="alert-action"
       className={cn(
-        "absolute top-2 right-2 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:static group-data-[variant=band]/alert:group-data-[layout=inline]/alert:col-start-3 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:row-span-2 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:row-start-1 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:self-center group-data-[layout=stacked]/alert:static group-data-[layout=stacked]/alert:col-start-2 group-data-[layout=stacked]/alert:mt-2 group-data-[layout=stacked]/alert:flex group-data-[layout=stacked]/alert:gap-2",
+        "absolute top-2 right-2 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:static group-data-[variant=band]/alert:group-data-[layout=inline]/alert:col-start-3 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:row-span-2 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:row-start-1 group-data-[variant=band]/alert:group-data-[layout=inline]/alert:self-center group-data-[layout=stacked]/alert:static group-data-[layout=stacked]/alert:col-start-2 group-data-[layout=stacked]/alert:mt-2.5 group-data-[layout=stacked]/alert:flex group-data-[layout=stacked]/alert:gap-2 group-data-[layout=stacked]/alert:*:flex-1",
         className,
       )}
       {...props}

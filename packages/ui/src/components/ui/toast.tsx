@@ -14,7 +14,7 @@ import * as React from "react";
 const toast = ToastPrimitive.createToastManager();
 
 // Defaults made once, so each render passes the same element.
-const defaultActionRender = <Button variant="link" size="sm" />;
+const defaultActionRender = <Button variant="ghost" size="sm" />;
 const defaultCloseRender = <Button variant="ghost" size="icon-sm" />;
 
 function ToastProvider({ ...props }: ToastPrimitive.Provider.Props) {
@@ -52,7 +52,7 @@ function Toast({ className, ...props }: ToastPrimitive.Root.Props) {
     <ToastPrimitive.Root
       data-slot="toast"
       className={cn(
-        "group/toast pointer-events-auto absolute right-0 bottom-0 z-[calc(1000-var(--toast-index))] w-full origin-bottom rounded-xl border bg-popover text-popover-foreground shadow-pop will-change-transform outline-none select-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
+        "group/toast pointer-events-auto absolute right-0 bottom-0 z-[calc(1000-var(--toast-index))] w-full origin-bottom rounded-pop border bg-popover group-data-[size=touch]/toast-viewport:rounded-pop-touch text-popover-foreground shadow-pop will-change-transform outline-none select-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50",
         "[--gap:0.75rem] [--height:var(--toast-frontmost-height,var(--toast-height))] [--offset-y:calc(var(--toast-offset-y)*-1+calc(var(--toast-index)*var(--gap)*-1)+var(--toast-swipe-movement-y))] [--peek:0.75rem] [--scale:calc(max(0,1-(var(--toast-index)*0.1)))] [--shrink:calc(1-var(--scale))]",
         "h-(--height) [transform:translateX(var(--toast-swipe-movement-x))_translateY(calc(var(--toast-swipe-movement-y)-(var(--toast-index)*var(--peek))-(var(--shrink)*var(--height))))_scale(var(--scale))] [transition:transform_500ms_cubic-bezier(0.22,1,0.36,1),opacity_500ms,height_150ms]",
         "after:absolute after:top-full after:left-0 after:h-[calc(var(--gap)+1px)] after:w-full after:content-['']",
@@ -79,7 +79,7 @@ function ToastContent({ className, ...props }: ToastPrimitive.Content.Props) {
     <ToastPrimitive.Content
       data-slot="toast-content"
       className={cn(
-        "flex h-full items-center gap-3 overflow-hidden px-4 py-3 transition-opacity group-data-[size=touch]/toast-viewport:min-h-13 group-data-[size=touch]/toast-viewport:py-1 group-data-[size=touch]/toast-viewport:pr-1 duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] data-behind:opacity-0 data-expanded:opacity-100",
+        "flex h-full min-h-10 items-center gap-3 overflow-hidden py-1 pr-1 pl-3.5 transition-opacity group-data-[size=touch]/toast-viewport:min-h-13 group-data-[size=touch]/toast-viewport:pl-4 duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] data-behind:opacity-0 data-expanded:opacity-100",
         className,
       )}
       {...props}
@@ -91,7 +91,10 @@ function ToastTitle({ className, ...props }: ToastPrimitive.Title.Props) {
   return (
     <ToastPrimitive.Title
       data-slot="toast-title"
-      className={cn("text-sm font-medium", className)}
+      className={cn(
+        "text-row font-medium group-data-[size=touch]/toast-viewport:text-prose",
+        className,
+      )}
       {...props}
     />
   );
@@ -103,7 +106,7 @@ function ToastDescription({ className, ...props }: ToastPrimitive.Description.Pr
       data-slot="toast-description"
       // Sheet's toast is one sentence: full colour, muted only under a title.
       className={cn(
-        "text-sm text-foreground group-has-data-[slot=toast-title]/toast:text-muted-foreground",
+        "py-1.5 text-row text-foreground group-has-data-[slot=toast-title]/toast:text-muted-foreground group-data-[size=touch]/toast-viewport:text-prose",
         className,
       )}
       {...props}
@@ -120,7 +123,10 @@ function ToastAction({
     <ToastPrimitive.Action
       data-slot="toast-action"
       render={render}
-      className={cn("shrink-0 group-data-[size=touch]/toast-viewport:h-11", className)}
+      className={cn(
+        "h-[30px] shrink-0 px-2.5 text-info hover:text-info group-data-[size=touch]/toast-viewport:h-11 group-data-[size=touch]/toast-viewport:px-3.5",
+        className,
+      )}
       {...props}
     />
   );

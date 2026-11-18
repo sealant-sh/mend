@@ -8,8 +8,8 @@ import { createCn } from "cn/config";
 export const cn = createCn({
   extend: {
     theme: {
-      text: ["2xs", "meta", "row", "prose"],
-      radius: ["chip", "palette"],
+      text: ["2xs", "meta", "control", "row", "prose", "lead", "title"],
+      radius: ["chip", "palette", "pop", "pop-touch"],
       shadow: ["sheet", "card", "pop"],
       spacing: [
         "sheet-inset",
