@@ -61,8 +61,9 @@ organization and the operator of the instance. After that, the only way in is an
 [invitation](#invite-people). Someone who opens the sign-up form without one is told that
 registration is by invitation.
 
-In `multi`, the operator creates each further organization and invites its first owner; that owner
-invites the rest. See [Operator commands](#operator-commands).
+In `multi`, anyone signed in can also create an organization and becomes its owner, unless the
+operator sets `MEND_ORGANIZATION_CREATION=operator`. The operator can create one too and invite its
+first owner; that owner invites the rest. See [Operator commands](#operator-commands).
 
 ## Roles
 

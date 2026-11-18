@@ -164,7 +164,11 @@ const unused = Layer.mergeAll(
     sessionEndpoint: undefined,
     sessionStore: "captured",
   }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
+  Layer.succeed(TenancyConfig, {
+    mode: "single",
+    organizationCreation: "anyone",
+    gate: Effect.succeed([]),
+  }),
 );
 const dependencies = (startupParameters?: Readonly<Record<string, string>>) =>
   Layer.mergeAll(

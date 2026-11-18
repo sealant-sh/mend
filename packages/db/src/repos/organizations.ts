@@ -134,10 +134,15 @@ export class OrganizationsRepo extends Context.Service<
     /** The only organization; `MEND_TENANCY=single` operations and bootstrap use it. */
     readonly sole: () => Effect.Effect<Organization, NotSoleOrganizationError>;
     readonly byId: (id: OrganizationId) => Effect.Effect<Organization, OrganizationNotFoundError>;
-    /** Create an organization with no members; the operator invites its first owner. */
+    /**
+     * Create an organization. With `ownerUserId` that account is its owner from the same
+     * transaction, so it never exists without one; without it, it has no members and the
+     * operator invites its first owner.
+     */
     readonly create: (
       name: string,
       createdByUserId: string | null,
+      ownerUserId?: string,
     ) => Effect.Effect<Organization, OrganizationNameTakenError>;
     readonly rename: (
       id: OrganizationId,
@@ -398,17 +403,38 @@ export const OrganizationsRepoLive: Layer.Layer<
     const create = Effect.fn("OrganizationsRepo.create")(function* (
       name: string,
       createdByUserId: string | null,
+      ownerUserId?: string,
     ) {
-      const [row] = yield* db
-        .insert(organizations)
-        .values({
-          id: OrganizationId.make(crypto.randomUUID()),
-          name: name.trim(),
-          createdByUserId,
-        })
-        .returning()
-        .pipe(Effect.catchTag("EffectDrizzleQueryError", nameTaken(name)));
-      if (row === undefined) return yield* Effect.die("organization insert returned no row");
+      const row = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const [inserted] = yield* tx
+              .insert(organizations)
+              .values({
+                id: OrganizationId.make(crypto.randomUUID()),
+                name: name.trim(),
+                createdByUserId,
+              })
+              .returning()
+              .pipe(Effect.catchTag("EffectDrizzleQueryError", nameTaken(name)));
+            if (inserted === undefined) {
+              return yield* Effect.die("organization insert returned no row");
+            }
+            if (ownerUserId !== undefined) {
+              yield* tx
+                .insert(organizationMembers)
+                .values({
+                  organizationId: inserted.id,
+                  userId: ownerUserId,
+                  role: "owner",
+                  addedByUserId: ownerUserId,
+                })
+                .pipe(Effect.orDie);
+            }
+            return inserted;
+          }),
+        )
+        .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
       const created = toOrganization(row);
       yield* announce(created.id);
       return created;

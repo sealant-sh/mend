@@ -1103,6 +1103,7 @@ export const createTenancyApi = async (
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, {
         mode: options.tenancy ?? "single",
+        organizationCreation: "anyone",
         gate: Effect.succeed([]),
       }),
       Layer.succeed(ExposureConfig, {

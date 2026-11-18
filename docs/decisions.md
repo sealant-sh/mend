@@ -13,6 +13,12 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-18: on a multi-tenant server, anyone signed in can create an organization.** Put to
+  Yiannis by the web redesign's orchestrator with no objection (SLNT-1139). They become its owner
+  and the sign-in switches to it; the operator can turn it off with
+  `MEND_ORGANIZATION_CREATION=operator`. A single-tenant server still has one organization. Details:
+  [ADR 0003](adr/0003-organizations-and-tenancy.md), "A person creates an organization".
+
 - **2026-11-17: the web app is rebuilt beside the old one, route by route.** Yiannis, with the web
   redesign plan. The current app is `apps/web-old` on `packages/ui-old`, frozen except for Fix Now
   bugs, and keeps shipping until cut-over. The new `apps/web` on a fresh `packages/ui` gains one

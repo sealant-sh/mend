@@ -200,7 +200,11 @@ const unused = Layer.mergeAll(
     sessionEndpoint: undefined,
     sessionStore: "captured",
   }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
+  Layer.succeed(TenancyConfig, {
+    mode: "single",
+    organizationCreation: "anyone",
+    gate: Effect.succeed([]),
+  }),
 );
 const authLayer = AuthLive.pipe(
   Layer.provide(
@@ -884,7 +888,7 @@ describe.skipIf(postgres.skip)("access keys through real Auth and PostgreSQL", (
       }).toEqual({ key: globex, reads: { "a-shared": 404, "b-shared": 200 }, firstKey: acme });
     });
 
-    it("is refused listing, switching, leaving and joining organizations, and changes nothing", async () => {
+    it("is refused listing, switching, leaving, joining and creating organizations, and changes nothing", async () => {
       const invitation = await inWorld(
         Effect.gen(function* () {
           const organizations = yield* OrganizationsRepo;
@@ -905,6 +909,7 @@ describe.skipIf(postgres.skip)("access keys through real Auth and PostgreSQL", (
         await call(fayKey, "PUT", "/account/organizations/active", { organizationId: globex }),
         await call(fayKey, "DELETE", `/account/organizations/${acme}`),
         await call(fayKey, "POST", "/invitations/accept", { token: invitation.token }),
+        await call(fayKey, "POST", "/account/organizations", { name: "Hooli" }),
       ];
       const memberships = await inWorld(
         Effect.flatMap(OrganizationsRepo, (organizations) => organizations.memberships(fay.id)),

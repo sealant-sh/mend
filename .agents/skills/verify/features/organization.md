@@ -42,6 +42,12 @@ someone cannot see answers as a missing one does.
 - `org-access-key` keeps an access key in the organization it was created in while its person's
   sign-ins switch; with a key, `GET /api/account/organizations` and the switch answer
   `403 AccessKeyRefused`, and removal from that organization revokes the key.
+- `org-create` lets a signed-in person create an organization with `POST /api/account/organizations`
+  (`multi` only, and only while `MEND_ORGANIZATION_CREATION` is `anyone`): they own it alone and
+  that sign-in switches to it. A taken, empty or not allowed name answers `OrganizationNameTaken`
+  (409), `OrganizationNameEmpty` or `OrganizationNameNotAllowed` (422); `GET /api/organization` says
+  whether to offer it (`canCreateOrganizations`). No screen offers it yet: the new web app's
+  switcher will (route PR 35).
 - `operator-add-member` adds an existing account to another organization with
   `mend operator org add-member <org> <email> [--role member|owner]` (`multi` only).
 - `take-over` makes an owner the creator of a project whose creator was removed.

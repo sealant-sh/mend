@@ -8,14 +8,31 @@ export const ORGANIZATION_MAX_NAME_LENGTH = 64;
 export const INVITATION_DEFAULT_DAYS = 7;
 export const INVITATION_MAX_DAYS = 30;
 
+/**
+ * Why an organization name is refused: `empty` once trimmed, or `not-allowed` (too long, or a
+ * control character), with the sentence a person reads beside the field.
+ */
+export interface OrganizationNameRefusal {
+  readonly reason: "empty" | "not-allowed";
+  readonly message: string;
+}
+
 /** The caller-visible problem with an organization name, or null when it is accepted. */
-export const organizationNameIssue = (value: string): string | null => {
+export const organizationNameIssue = (value: string): OrganizationNameRefusal | null => {
   const trimmed = value.trim();
-  if (trimmed === "") return "An organization needs a name.";
+  if (trimmed === "") return { reason: "empty", message: "An organization needs a name." };
   if (trimmed.length > ORGANIZATION_MAX_NAME_LENGTH) {
-    return `Organization names are at most ${ORGANIZATION_MAX_NAME_LENGTH} characters.`;
+    return {
+      reason: "not-allowed",
+      message: `Organization names are at most ${ORGANIZATION_MAX_NAME_LENGTH} characters.`,
+    };
   }
-  if (/\p{Cc}/u.test(trimmed)) return "Organization names cannot contain control characters.";
+  if (/\p{Cc}/u.test(trimmed)) {
+    return {
+      reason: "not-allowed",
+      message: "Organization names cannot contain control characters.",
+    };
+  }
   return null;
 };
 

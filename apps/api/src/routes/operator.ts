@@ -19,6 +19,7 @@ import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
+import { createOrganization } from "../organization-creation.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { invitationDays, invitationEmail } from "./organization.ts";
 
@@ -78,36 +79,30 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
     .handle("createOrganization", ({ payload }) =>
       Effect.gen(function* () {
         const actor = yield* operator;
-        if ((yield* TenancyConfig).mode !== "multi") {
-          return yield* rejected(
-            "This Mend runs one organization (MEND_TENANCY=single). Rename it instead.",
-          );
-        }
-        const issue = organizationNameIssue(payload.name);
-        if (issue !== null) return yield* rejected(issue);
-        const created = yield* (yield* OrganizationsRepo)
-          .create(payload.name.trim(), actor)
-          .pipe(
-            Effect.catchTag("OrganizationNameTakenError", () =>
-              Effect.fail(rejected(`An organization named "${payload.name.trim()}" exists.`)),
-            ),
-          );
-        yield* (yield* AuditEventsRepo).record({
-          organizationId: created.id,
+        return yield* createOrganization({
+          name: payload.name,
           actorUserId: actor,
-          action: "organization.created",
-          subjectType: "organization",
-          subjectId: created.id,
-          data: { name: created.name },
-        });
-        return created;
+          owner: false,
+        }).pipe(
+          Effect.catchTags({
+            SingleOrganizationError: () =>
+              Effect.fail(
+                rejected(
+                  "This Mend runs one organization (MEND_TENANCY=single). Rename it instead.",
+                ),
+              ),
+            OrganizationNameRefusedError: (refused) => Effect.fail(rejected(refused.message)),
+            OrganizationNameTakenError: () =>
+              Effect.fail(rejected(`An organization named "${payload.name.trim()}" exists.`)),
+          }),
+        );
       }),
     )
     .handle("renameOrganization", ({ params, payload }) =>
       Effect.gen(function* () {
         const actor = yield* operator;
         const issue = organizationNameIssue(payload.name);
-        if (issue !== null) return yield* rejected(issue);
+        if (issue !== null) return yield* rejected(issue.message);
         const renamed = yield* (yield* OrganizationsRepo)
           .rename(params.id, payload.name.trim())
           .pipe(

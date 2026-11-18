@@ -9,12 +9,32 @@ export class TenancyConfig extends Context.Service<
   {
     readonly mode: TenancyMode;
     /**
+     * `MEND_ORGANIZATION_CREATION`: who may create an organization in `multi`. `anyone` (the
+     * default) lets every signed-in person create one and own it; `operator` keeps it to the
+     * operator's `mend operator org create`. `single` refuses both whatever this says.
+     */
+    readonly organizationCreation: OrganizationCreation;
+    /**
      * The multi mode gate as it stands now, in either mode: configuration as read at start, the
      * operator accounts as they are on each read (the first account registers after start).
      */
     readonly gate: Effect.Effect<ReadonlyArray<GateOutcome>>;
   }
 >()("@mend/api/TenancyConfig") {}
+
+export const OrganizationCreation = Schema.Literals(["anyone", "operator"]);
+export type OrganizationCreation = typeof OrganizationCreation.Type;
+
+/**
+ * Whether a person may create an organization of their own here: only in `multi`, only while the
+ * operator leaves `MEND_ORGANIZATION_CREATION` at `anyone`, and never through an access key, which
+ * acts in one organization and cannot join another (docs/adr/0023, decision 6).
+ */
+export const peopleCreateOrganizations = (
+  tenancy: { readonly mode: TenancyMode; readonly organizationCreation: OrganizationCreation },
+  caller: { readonly accessKey: boolean },
+): boolean =>
+  tenancy.mode === "multi" && tenancy.organizationCreation === "anyone" && !caller.accessKey;
 
 /** The process must not start in the requested tenancy mode; the message says why and what to do. */
 export class TenancyRefused extends Schema.TaggedError<TenancyRefused>()("TenancyRefused", {
@@ -188,6 +208,10 @@ export const TenancyConfigLive: Layer.Layer<
     const mode = yield* Config.schema(TenancyMode, "MEND_TENANCY").pipe(
       Config.withDefault("single"),
     );
+    const organizationCreation = yield* Config.schema(
+      OrganizationCreation,
+      "MEND_ORGANIZATION_CREATION",
+    ).pipe(Config.withDefault("anyone" as const));
     const serviceHosts = yield* Config.String("MEND_SERVICE_HOSTS").pipe(
       Config.withDefault("127.0.0.1"),
     );
@@ -227,6 +251,7 @@ export const TenancyConfigLive: Layer.Layer<
     yield* Effect.logInfo("tenancy").pipe(
       Effect.annotateLogs({
         mode,
+        organizationCreation,
         gate: gate.every((outcome) => outcome.ok) ? "passed" : "not passed",
         failing: gate
           .filter((outcome) => !outcome.ok)
@@ -234,6 +259,6 @@ export const TenancyConfigLive: Layer.Layer<
           .join(","),
       }),
     );
-    return { mode, gate: currentGate };
+    return { mode, organizationCreation, gate: currentGate };
   }),
 );

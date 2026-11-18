@@ -365,7 +365,11 @@ const dependencies = Layer.mergeAll(
           : new UserFacts({ id, name: id === "bob" ? "Bob" : id, email: `${id}@example.invalid` }),
       ),
   }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
+  Layer.succeed(TenancyConfig, {
+    mode: "single",
+    organizationCreation: "anyone",
+    gate: Effect.succeed([]),
+  }),
   Layer.succeed(DeploymentConfig, deployment),
 );
 const api = HttpApi.make("mend").add(organizationGroup).add(invitationsGroup).prefix("/api");

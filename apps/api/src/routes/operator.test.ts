@@ -151,7 +151,11 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.mock(UsersRepo, { byEmail: (email) => Effect.succeed(accounts.get(email) ?? null) }),
   Layer.mock(AuditEventsRepo, { record: (event) => Effect.sync(() => void audited.push(event)) }),
-  Layer.succeed(TenancyConfig, { mode: "single", gate: Effect.succeed([]) }),
+  Layer.succeed(TenancyConfig, {
+    mode: "single",
+    organizationCreation: "anyone",
+    gate: Effect.succeed([]),
+  }),
   Layer.succeed(ExposureConfig, {
     exposure: "private",
     gate: Effect.succeed(OPEN_ITEMS),
