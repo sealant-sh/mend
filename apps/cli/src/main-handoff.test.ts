@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
+import type { ServerResponse } from "node:http";
 import * as path from "node:path";
 
 import { HANDOFF_SNAPSHOT_REF } from "@mend/domain/workbench";
@@ -286,6 +287,83 @@ describe("mend handoff", spawning, () => {
     );
     expect(resumed.bodies[`POST /api/sessions/${SESSION_ID}/resume`]).toEqual({ harness: "shell" });
   }, 30_000);
+
+  describe("a hold the server answers `starting`", () => {
+    const startingAnswer = (response: ServerResponse) =>
+      json(response, received({ status: "starting" }));
+    const reads =
+      (...answers: ReadonlyArray<ReturnType<typeof received>["session"]>) =>
+      (response: ServerResponse, read: number) =>
+        json(response, { session: answers[Math.min(read, answers.length) - 1] });
+    const sessionRead = `GET /api/sessions/${SESSION_ID}`;
+
+    it("is followed until it is held, and says so as on Docker", async () => {
+      const w = world();
+      const dana = newsroom(w);
+      const server = await handoffServer({
+        answer: startingAnswer,
+        read: reads(
+          received({ status: "starting", summary: "preparing the workspace" }).session,
+          received().session,
+        ),
+      });
+      const result = await run(server, [], dana);
+      expect(result.code, result.stderr).toBe(0);
+      const out = lines(result.stdout);
+      expect(out.slice(out.findIndex((line) => line.startsWith("  base")) + 1)).toEqual([
+        "  starting · the hold is still coming up · following it for up to 3 min · Ctrl-C stops watching, not the hold",
+        "  starting · preparing the workspace",
+        "✓ held · idle, no agent",
+        "  attach · mend attach 3f2a1c0d",
+        `  watch · ${server.server.url}/sessions/${SESSION_ID}`,
+      ]);
+      expect(server.routes.filter((route) => route === sessionRead)).toHaveLength(2);
+    }, 30_000);
+
+    it("is followed until it fails, and says the failure with its recovery", async () => {
+      const w = world();
+      const dana = newsroom(w);
+      const server = await handoffServer({
+        answer: startingAnswer,
+        read: reads(
+          received({ status: "failed", summary: "hold failed: the workspace did not start" })
+            .session,
+        ),
+      });
+      const result = await run(server, [], dana);
+      expect(result.code).toBe(1);
+      expect(result.stdout).toContain(
+        "! not held · failed · hold failed: the workspace did not start\n",
+      );
+      expect(result.stdout).not.toContain("✓ held");
+      expect(result.stderr).toBe(
+        "mend: the hold failed · mend resume 3f2a1c0d --project newsroom-api --with shell opens the workspace with a shell\n",
+      );
+    }, 30_000);
+
+    it("stops being watched on Ctrl-C, says the hold goes on, and leaves the session alone", async () => {
+      const w = world();
+      const dana = newsroom(w);
+      const server = await handoffServer({
+        answer: startingAnswer,
+        read: reads(received({ status: "starting" }).session),
+      });
+      const cli = startCli(server.server.url, ["handoff"], {}, dana);
+      await waitFor(() => server.routes.includes(sessionRead));
+      cli.child.kill("SIGINT");
+      const { code } = await cli.exited;
+      await server.server.close();
+      expect(code, cli.stderr()).toBe(130);
+      expect(cli.stderr()).toBe(
+        "mend: stopped watching · the hold goes on · mend sessions shows when session 3f2a1c0d is idle\n",
+      );
+      expect(cli.stdout()).toContain(`  watch · ${server.server.url}/sessions/${SESSION_ID}\n`);
+      expect(cli.stdout()).not.toContain("held ·");
+      expect(server.routes.filter((route) => !route.startsWith("GET"))).toEqual([
+        `POST /api/projects/${project.id}/handoffs?harness=claude&hold=true`,
+      ]);
+    }, 30_000);
+  });
 
   it("says the prompt was not sent when the launch is refused, and the command that sends it", async () => {
     const w = world();

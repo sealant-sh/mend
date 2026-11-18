@@ -852,8 +852,11 @@ flows reuse what earlier ones made:
 - **Do:** Fingerprint the clone with the map's script, `M handoff` with no prompt, fingerprint
   again; read `M sessions --project <p>` and the project page's worktree row; stop the held session
   and remove its worktree with `M worktrees rm <name> --project <p>`.
-- **See:** `✓ held · <status>, no agent`; the two fingerprints identical; `handed off from <host>`
-  on the CLI row and the web row; the worktree gone afterwards.
+- **See:** without a terminal,
+  `  starting · the hold is still coming up · following it for up to 3 min · …`, then
+  `✓ held · idle, no agent` within the 3 minutes, exit `0` (on Docker, `✓ held · idle, no agent`
+  alone); never a last line of `starting` or `still starting`; the two fingerprints identical;
+  `handed off from <host>` on the CLI row and the web row; the worktree gone afterwards.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/cli/src/handoff.ts`, `packages/local-git/`, `apps/api/src/handoff-start.ts`

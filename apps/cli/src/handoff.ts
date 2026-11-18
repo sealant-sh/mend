@@ -36,6 +36,7 @@ import { Schema } from "effect";
 
 import { failureWords, noteRefusal } from "./failure-words.ts";
 import { type Download, type Downloaded, formatBytes } from "./landing.ts";
+import { startingLineOf } from "./launch-follow.ts";
 import type { ApiCall } from "./pair.ts";
 import { askYesNo, confirmPlan } from "./shared-workspace.ts";
 import {
@@ -83,12 +84,14 @@ interface HandoffTerms {
   readonly fileBytes: number;
 }
 
+export interface HeldSession {
+  readonly id: string;
+  readonly status: string;
+  readonly summary: string | null;
+}
+
 export interface HandoffReceived {
-  readonly session: {
-    readonly id: string;
-    readonly status: string;
-    readonly summary: string | null;
-  };
+  readonly session: HeldSession;
   /** `id` is null from a server whose answer names none. */
   readonly worktree: { readonly id: string | null; readonly name: string };
   readonly replayed: boolean;
@@ -116,7 +119,9 @@ export interface HandoffDeps {
   readonly upload: Upload;
   readonly serverVersion: () => Promise<string | null>;
   readonly launch: (sessionId: string, prompt: string) => Promise<Launched>;
-  readonly spin: <T>(label: string, work: Promise<T>) => Promise<T>;
+  /** One read of a session as it stands; throws when the read gets no answer. */
+  readonly readSession: (sessionId: string) => Promise<HeldSession>;
+  readonly spin: <T>(label: string | (() => string), work: Promise<T>) => Promise<T>;
   readonly serverUrl: string;
   /** The account's default git mode, which an adoption takes; null when the server could not say. */
   readonly accountGitAuthMode: () => Promise<GitAuthMode | null>;
@@ -124,8 +129,8 @@ export interface HandoffDeps {
   readonly shareAgent: () => Pick<AgentShareHandle, "ready" | "close"> | null;
 }
 
-/** What a handoff without a prompt needs of the server: everything but a launch. */
-export type HandoffServer = Omit<HandoffDeps, "launch">;
+/** What a handoff into a session nobody starts needs of the server: no launch, no hold to follow. */
+export type HandoffServer = Omit<HandoffDeps, "launch" | "readSession">;
 
 export interface HandoffIo {
   readonly interactive: boolean;
@@ -292,6 +297,108 @@ export const heldLine = (session: HandoffReceived["session"]): string => {
       return `${amber("!")} not held · failed${session.summary === null ? "" : ` · ${session.summary}`}`;
     default:
       return `${amber("·")} the session reads ${session.status}`;
+  }
+};
+
+/** How long `mend handoff` follows a hold the server answered `starting`, and how often it reads. */
+export const HOLD_WATCH_MS = 3 * 60_000;
+const HOLD_READ_MS = 2_000;
+/** How long one read may go unanswered before it is given up and tried again. */
+const HOLD_READ_LIMIT_MS = 10_000;
+
+export type HoldWatched =
+  | { readonly _tag: "settled"; readonly session: HeldSession }
+  | { readonly _tag: "timedOut" };
+
+/**
+ * Reads a held session until it no longer reads `starting` (held, failed, or launched by another
+ * client), or `limitMs` passes. A read that fails or hangs is tried again: a blip says nothing about
+ * the hold. Says each new starting line.
+ */
+export const watchHold = async (options: {
+  /** The session as the handoff's answer read it. */
+  readonly from: HeldSession;
+  readonly read: () => Promise<HeldSession>;
+  readonly onLine: (line: string) => void;
+  readonly sleep: (ms: number) => Promise<void>;
+  readonly now: () => number;
+}): Promise<HoldWatched> => {
+  const deadline = options.now() + HOLD_WATCH_MS;
+  const left = () => Math.max(0, deadline - options.now());
+  let lastLine = startingLineOf(options.from);
+  while (left() > 0) {
+    await options.sleep(Math.min(HOLD_READ_MS, left()));
+    if (left() === 0) break;
+    const read = await Promise.race([
+      options.read().catch(() => null),
+      options.sleep(Math.min(HOLD_READ_LIMIT_MS, left())).then(() => null),
+    ]);
+    if (read === null) continue;
+    if (read.status !== "starting") return { _tag: "settled", session: read };
+    const line = startingLineOf(read);
+    if (line !== lastLine) {
+      lastLine = line;
+      options.onLine(line);
+    }
+  }
+  return { _tag: "timedOut" };
+};
+
+const minutesOf = (ms: number): string => `${Math.round(ms / 60_000)} min`;
+
+/**
+ * Follows a hold the server answered `starting`, behind a spinner on a terminal and a line
+ * elsewhere, until `watchHold` ends or a signal stops the watching. Nothing is sent to the
+ * session either way: the hold goes on without this CLI.
+ */
+type HoldFollowed = HoldWatched | { readonly _tag: "interrupted"; readonly code: number };
+
+const followHold = async (deps: HandoffDeps, session: HeldSession): Promise<HoldFollowed> => {
+  const ctrlC = "Ctrl-C stops watching, not the hold";
+  const coming = "starting · the hold is still coming up";
+  let line = coming;
+  if (!process.stdout.isTTY) {
+    say(dim(`  ${line} · following it for up to ${minutesOf(HOLD_WATCH_MS)} · ${ctrlC}`));
+  }
+  // The timers go when the watching ends: a pending one would hold the process open.
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        resolve();
+      }, ms);
+      timers.add(timer);
+    });
+  const releases: Array<() => void> = [];
+  const interrupted = new Promise<HoldFollowed>((resolve) => {
+    for (const [signal, code] of SIGNALS) {
+      const stop = () => resolve({ _tag: "interrupted", code });
+      process.once(signal, stop);
+      releases.push(() => process.off(signal, stop));
+    }
+  });
+  try {
+    return await deps.spin(
+      () => `${line} · ${ctrlC}`,
+      Promise.race([
+        watchHold({
+          from: session,
+          read: () => deps.readSession(session.id),
+          onLine: (next) => {
+            // A bare `starting` says less than the line already on screen.
+            line = next === "starting" ? coming : next;
+            if (!process.stdout.isTTY) say(dim(`  ${next}`));
+          },
+          sleep,
+          now: Date.now,
+        }),
+        interrupted,
+      ]),
+    );
+  } finally {
+    for (const release of releases) release();
+    for (const timer of timers) clearTimeout(timer);
   }
 };
 
@@ -597,8 +704,21 @@ const sendFrom = async (
   const id8 = sessionId.slice(0, 8);
   const watch = `${dim("  watch")} · ${deps.serverUrl}/sessions/${sessionId}`;
   if (prompt === null) {
-    say(heldLine(received.session));
-    if (received.session.status === "failed") {
+    const watched: HoldFollowed =
+      received.session.status === "starting"
+        ? await followHold(deps, received.session)
+        : { _tag: "settled", session: received.session };
+    const following = `mend sessions shows when session ${id8} is idle`;
+    if (watched._tag === "interrupted") {
+      say(watch);
+      throw new Refusal(`stopped watching · the hold goes on · ${following}`, watched.code);
+    }
+    if (watched._tag === "timedOut") {
+      say(
+        `${amber("·")} still starting after ${minutesOf(HOLD_WATCH_MS)} · the hold goes on · ${following}`,
+      );
+    } else say(heldLine(watched.session));
+    if (watched._tag === "settled" && watched.session.status === "failed") {
       say(watch);
       // A held session never ran a harness, so a shell resume needs no harness state. --project:
       // the session is looked up in a project, and another may share this checkout's origin.
