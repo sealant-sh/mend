@@ -75,6 +75,22 @@ export default async ({ page, web, capture, note }) => {
     await hydrated();
     await settled();
   };
+  /**
+   * The server renders who is signed in and the roster into the page, so rewritten answers only
+   * arrive when the page reads them again: on focus once they are 5 seconds old (the app's stale
+   * time), which this stands in for.
+   */
+  const readCurrentAgain = async () => {
+    await page.waitForTimeout(5_500);
+    const answered = page.waitForResponse(
+      (response) =>
+        response.url().includes("/trpc/") &&
+        decodeURIComponent(response.url()).includes("organization.current"),
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+    await answered;
+    await settled();
+  };
   const menu = () => visible(page.getByRole("menu")).first();
   const menuItem = (name) => visible(page.getByRole("menuitem", { name }));
   const menuNames = () =>
@@ -172,6 +188,7 @@ export default async ({ page, web, capture, note }) => {
   rewrite.multi = true;
   await page.setViewportSize(DESKTOP);
   await open("/");
+  await readCurrentAgain();
   await switcher().click();
   await menuItem("Create organization…").waitFor();
   note(`with the reads rewritten, the switcher reads ${(await menuNames()).join(" | ")}`);
@@ -220,6 +237,7 @@ export default async ({ page, web, capture, note }) => {
   // As a member: the dialog says what leaving does; the server refuses the only organization.
   rewrite.member = true;
   await open("/");
+  await readCurrentAgain();
   await switcher().click();
   await menuItem(`Leave ${organization}…`).click();
   await leave.getByText(`You'll go to ${OTHER.name}, your other organization.`).waitFor();
@@ -236,6 +254,7 @@ export default async ({ page, web, capture, note }) => {
   rewrite.member = false;
   await page.setViewportSize(PHONE);
   await open("/settings");
+  await readCurrentAgain();
   await switcher().click();
   await visible(page.getByRole("menuitem", { name: "Create organization…" })).waitFor();
   await both("multi-switcher-phone");
