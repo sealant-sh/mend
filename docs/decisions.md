@@ -13,6 +13,13 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-16: settings have one home each, and nothing inherits.** Yiannis, with the web redesign.
+  Every setting is stored in one place (you, this device, the organization, the project, the
+  project's `.mend/mend.toml`, you in one project, or the server), with no Inherit value and no
+  instance defaults. A new project gets a copy of the organization's starting image. Organization
+  keys, organization automation, the personal Boat key and several switches are removed. Details:
+  [ADR 0025](adr/0025-one-home-per-setting.md).
+
 - **2026-11-16: an imported conversation travels as the harness's own files and reaches the agent at
   its session's first launch.** Yiannis, on SLNT-895, for someone moving from T3 Code to their own
   Mend server: import their threads, adopt each project, carry each checkout without pushing it, and
