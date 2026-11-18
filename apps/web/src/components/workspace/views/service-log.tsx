@@ -39,10 +39,10 @@ export function LogBar({
     <LogText lines={lines} name={service.name} live={service.live} />
   );
   const bar = (
-    <div className="flex h-10 shrink-0 items-center gap-2 border-t px-3">
+    <div className="flex h-10 shrink-0 items-center gap-2 border-t px-3 max-lg:h-11">
       <Button
         variant="ghost"
-        size="sm"
+        size={asSheet ? "touch" : "sm"}
         aria-expanded={asSheet ? undefined : open}
         onClick={() => onOpenChange(!open)}
         className="min-w-0 flex-1 justify-start gap-2 font-normal"

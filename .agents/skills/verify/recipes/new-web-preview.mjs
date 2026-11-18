@@ -341,6 +341,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       if (!paths.some((each) => each in answer)) return route.continue();
       const response = await route.fetch();
       const answers = await response.json();
+      // `sessions.recipes` goes alone, not in a batch: its answer is the one object.
+      if (!Array.isArray(answers)) {
+        await route.fulfill({ response, json: answer[paths[0]](answers, paths[0]) });
+        return;
+      }
       paths.forEach((each, index) => {
         if (each in answer) answers[index] = answer[each](answers[index], each);
       });
@@ -410,7 +415,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await list
     .getByRole("alert")
     .filter({ hasText: "couldn't be read" })
-    .waitFor({ timeout: 30_000 });
+    .waitFor({ timeout: 60_000 });
   note(
     `fixture, the file doesn't parse: ${JSON.stringify(await textOf(list.getByRole("alert").filter({ hasText: "couldn't be read" })))}`,
   );

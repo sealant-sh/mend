@@ -344,7 +344,8 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
         onOpenChange={setLogOpen}
         asSheet={layout !== "list"}
         actions={
-          steers ? (
+          // On a phone or in a narrow tile the picker's menu holds these.
+          steers && layout === "list" ? (
             <>
               <Button
                 variant="ghost"
@@ -428,7 +429,7 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
         </div>
       ) : null}
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        {pane}
+        <div className="flex min-h-0 flex-1 flex-col">{pane}</div>
         {logBar}
       </div>
       <RunCommandDialog
