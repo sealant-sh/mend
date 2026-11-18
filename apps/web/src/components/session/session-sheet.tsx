@@ -2,21 +2,53 @@ import { Status } from "@mend/ui/components/status";
 import { buttonVariants } from "@mend/ui/components/ui/button";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { type KeyboardEvent, useState, useSyncExternalStore } from "react";
 
-import { conversationQuery, heldConversation } from "#/lib/conversation";
 import { inboxQuery } from "#/lib/inbox-live";
-import { shownStatus } from "#/lib/session-composer";
-import { lumpPrOf, lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
-import { useTRPC, useTRPCClient } from "#/lib/trpc";
+import { lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
+import {
+  activate,
+  addToTile,
+  type Arrangement,
+  closeTab,
+  focusTile,
+  forgetEnded,
+  isNewSessionTab,
+  keepArrangement,
+  maximise,
+  moveTab,
+  openedWith,
+  resizeSplit,
+  type Side,
+  sessionTab,
+  splitTile,
+  tabsOf,
+  tileById,
+  tileOfTab,
+  tilesOf,
+  viewOfTab,
+  withWorkspace,
+  type WorkspaceSession,
+  focusedTab,
+  replaceTab,
+} from "#/lib/tiles";
+import { useTRPC } from "#/lib/trpc";
+import { tileArrangements } from "#/lib/ui-prefs";
 
-import { PhoneHeader } from "../workspace/phone-header";
-import { Tile, type TileTabEntry } from "../workspace/tile";
-import { TileTab } from "../workspace/tile-tab";
-import { WorkspaceHeader } from "../workspace/workspace-header";
-import { ConversationTile } from "./conversation-tile";
-import { type SessionFacts, useSessionFacts } from "./session-facts";
+import { Kept, KeptSlot, useKeptNodes } from "../workspace/kept.tsx";
+import { OpenMenu, PhoneOpenSheet, type ClosedSession } from "../workspace/open-menu.tsx";
+import { PhoneHeader } from "../workspace/phone-header.tsx";
+import { PhoneTabStrip } from "../workspace/phone-tab-strip.tsx";
+import { DraggedTab } from "../workspace/tile-tab.tsx";
+import { TileTree } from "../workspace/tile-tree.tsx";
+import { Tile } from "../workspace/tile.tsx";
+import { chipAt, type DropTarget, useTabDrag } from "../workspace/use-tab-drag.ts";
+import { workspaceView, type ViewPlace } from "../workspace/views.tsx";
+import { WorkspaceHeader } from "../workspace/workspace-header.tsx";
+import { NewSessionTab } from "./new-session-tab.tsx";
+import { type SessionFacts, useSessionFacts } from "./session-facts.ts";
+import { faceOf, type TabLook, WorkspaceTab, WorkspaceTabBody } from "./workspace-tabs.tsx";
 
 /** Under 1024px Back goes to the inbox, which is home there. */
 const BACK_TO_INBOX = { link: { to: "/" }, label: "Back to the inbox" } as const;
@@ -25,81 +57,414 @@ const BACK_TO_INBOX = { link: { to: "/" }, label: "Back to the inbox" } as const
 const vscodeOpenUri = (sessionId: string) =>
   `vscode://sealant-sh.mend/open?session=${encodeURIComponent(sessionId)}`;
 
+/** A session that ended: its tab doesn't open by itself, and closing it needn't be remembered. */
+const ENDED: ReadonlySet<string> = new Set(["completed", "stopped", "failed"]);
+
+/** The keyboard's moves of a tab: Alt+Shift with an arrow. */
+const ARROW_SIDES: Readonly<Record<string, Side>> = {
+  ArrowLeft: "left",
+  ArrowRight: "right",
+  ArrowUp: "top",
+  ArrowDown: "bottom",
+};
+
+const SIDE_WORDS: Readonly<Record<Side, string>> = {
+  left: "on the left",
+  right: "on the right",
+  top: "above",
+  bottom: "below",
+};
+
+const TAB_KEYS =
+  "Delete Alt+Shift+ArrowLeft Alt+Shift+ArrowRight Alt+Shift+ArrowUp Alt+Shift+ArrowDown";
+
+const subscribeToNothing = () => () => undefined;
+
+/** False while the server's page is hydrated, true from then on. */
+const useHydrated = () =>
+  useSyncExternalStore(
+    subscribeToNothing,
+    () => true,
+    () => false,
+  );
+
+/** A New session tab's key, one past the highest the arrangement holds. */
+const newSessionTab = (arrangement: Arrangement): string => {
+  const numbers = tabsOf(arrangement)
+    .filter(isNewSessionTab)
+    .map((tab) => Number(tab.slice("new:".length)) || 0);
+  return `new:${Math.max(0, ...numbers) + 1}`;
+};
+
+/** A view this version of Mend doesn't have (kept by a newer one, or removed) leaves the sheet. */
+const withKnownViews = (arrangement: Arrangement): Arrangement =>
+  tabsOf(arrangement)
+    .filter((tab) => {
+      const view = viewOfTab(tab);
+      return view !== null && workspaceView(view) === undefined;
+    })
+    .reduce((next, tab) => closeTab(next, tab, () => false), arrangement);
+
+/**
+ * The arrangement after `tab` is dropped on `target`. A strip's index counts the dragged tab where
+ * it was; moving it right along its own strip lands one place sooner once it has left.
+ */
+const dropped = (arrangement: Arrangement, tab: string, target: DropTarget): Arrangement => {
+  if (target.drop !== "centre") return splitTile(arrangement, target.tileId, tab, target.drop);
+  const home = tileOfTab(arrangement, tab);
+  const from = home?.id === target.tileId ? home.tabs.indexOf(tab) : -1;
+  const index =
+    target.index === null
+      ? undefined
+      : from !== -1 && from < target.index
+        ? target.index - 1
+        : target.index;
+  return addToTile(arrangement, target.tileId, tab, index);
+};
+
+const sameLayout = (a: Arrangement, b: Arrangement): boolean =>
+  JSON.stringify(a.root) === JSON.stringify(b.root);
+
 /**
  * The session's workspace, as its sheet (ADR 0026): the Workspace header naming the project, the
- * worktree and the branch, then one tile whose one tab is this session's conversation (Doop T01
- * "One tile"). Under 1024px it is the phone's layout instead (T19): the Phone header with Back to
- * the inbox, and the tabs in one strip under it.
+ * worktree and the branch, then the tiles. Every tab is a session's conversation (this session's,
+ * and every other session's in the workspace), a view, or a New session; a person splits the
+ * sheet by dragging a tab onto a tile's edge or with Alt+Shift and an arrow, adds one to a tile by
+ * dropping it in the middle, resizes tiles by their dividers and maximises one. The arrangement is
+ * kept for the workspace in this browser (`tileArrangements`).
  *
- * What attaches here later: the session's other tabs, other sessions of the workspace and the
- * views (PRs 15 and 17 to 23), each a `TileTabEntry` in `tabs`; the workspace "…" and the layout
- * button in the header (PRs 13 and 16); the tile's "+", "…" and maximise (PRs 13 and 15).
+ * Every tab's body is drawn once, into a node of its own that moves into whichever tile shows it
+ * (`Kept`): a conversation keeps its place and a terminal its socket as tabs move. Under 1024px it
+ * is the phone's layout (T19, T23): the Phone header, every tab in one strip, and the focused
+ * tile's body.
+ *
+ * What attaches here later: the views (PRs 17 to 23, `WORKSPACE_VIEWS`), the layout button and the
+ * workspace "…" in the header (PRs 16 and 13), a tab's "…" in a tile's `actions` (PR 13).
  */
-function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
-  const { session, detail } = facts;
+function SessionSheet({
+  facts,
+  full,
+  onLeaveFull,
+}: {
+  readonly facts: SessionFacts;
+  readonly full: boolean;
+  readonly onLeaveFull: () => void;
+}) {
+  const { session } = facts;
+  const worktreeId = session.worktreeId;
+  const opened = sessionTab(session.id);
+  const place: ViewPlace = { sessionId: session.id, worktreeId, projectId: session.projectId };
   const trpc = useTRPC();
-  const client = useTRPCClient();
-  // The conversation tile reads the turns; this shares its read, for the status word (Idle once
-  // the person stopped the turn, which the server still calls running).
-  const turns = useInfiniteQuery({
-    ...conversationQuery(trpc, client, session.id),
-    select: (data) => heldConversation(data.pages).turns,
+  const inbox = useQuery({
+    ...inboxQuery(trpc),
+    select: (rows) => rows.filter((row) => row.session.worktreeId === worktreeId),
   });
-  // While the turns are read, or if they can't be, the server's word stands.
-  const status = shownStatus(
-    session.status,
-    turns.isPending || turns.isError ? undefined : turns.data,
+  const rows = inbox.isPending || inbox.isError ? [] : inbox.data;
+  const sessions: ReadonlyArray<WorkspaceSession> | null =
+    inbox.isPending || inbox.isError
+      ? null
+      : inbox.data.map((row) => ({ id: row.session.id, running: !ENDED.has(row.session.status) }));
+
+  const [kept, setKept] = useState(() =>
+    openedWith(tileArrangements.read().find(([id]) => id === worktreeId)?.[1] ?? null, opened),
   );
-  const conversation = `session:${session.id}`;
-  const [active, setActive] = useState(conversation);
-  const tab: TileTabEntry = {
-    value: conversation,
-    tab: (
-      <TileTab
-        value={conversation}
-        kind="session"
-        status={lumpStatusOf(status)}
-        pr={lumpPrOf(detail.landings)}
-        statusWords={STATUS_WORDS[status]}
-        label={facts.title}
-        size="auto"
-      />
-    ),
-    body: <ConversationTile facts={facts} />,
+  const arrange = (arrangement: Arrangement) =>
+    withWorkspace(withKnownViews(arrangement), sessions ?? []);
+  const shown = arrange(kept);
+  /** A person's change to the arrangement, kept for the workspace in this browser. */
+  const change = (step: (current: Arrangement) => Arrangement) =>
+    setKept((current) => {
+      const next = step(arrange(current));
+      tileArrangements.set(
+        keepArrangement(tileArrangements.read(), worktreeId, forgetEnded(next, sessions)),
+      );
+      return next;
+    });
+
+  // `?full=1` (the old app's full screen) maximises the tile showing this session.
+  const maximised = full ? (tileOfTab(shown, opened)?.id ?? null) : shown.maximised;
+  const focus = full && maximised !== null ? maximised : shown.focus;
+  const tiles = tilesOf(shown.root);
+  const allTabs = tabsOf(shown);
+
+  // A tab's body mounts the first time it shows, and stays mounted from then on.
+  const showing = tiles.map((tile) => tile.active);
+  const [mounted, setMounted] = useState<ReadonlySet<string>>(() => new Set(showing));
+  if (showing.some((tab) => !mounted.has(tab))) setMounted(new Set([...mounted, ...showing]));
+  const hydrated = useHydrated();
+  const nodeOf = useKeptNodes("flex min-h-0 flex-1 flex-col");
+
+  const [said, setSaid] = useState("");
+
+  const drag = useTabDrag({
+    lands: (tab, target) => !sameLayout(dropped(shown, tab, target), shown),
+    onDrop: (tab, target) => change((current) => dropped(current, tab, target)),
+  });
+
+  const closed: ReadonlyArray<ClosedSession> = rows
+    .filter((row) => !allTabs.includes(sessionTab(row.session.id)))
+    .map((row) => ({
+      id: row.session.id,
+      title: row.title,
+      status: lumpStatusOf(row.session.status),
+      pr: "none" as const,
+    }));
+
+  /** Opens `tab` in tile `tileId` (a tab already open shows where it is), after its active tab. */
+  const open = (tileId: string, tab: string) =>
+    change((current) => {
+      if (tileOfTab(current, tab) !== undefined) return activate(current, tab);
+      const tile = tileById(current, tileId);
+      const at = tile === undefined ? undefined : tile.tabs.indexOf(tile.active) + 1;
+      return addToTile(current, tileId, tab, isNewSessionTab(tab) ? at : undefined);
+    });
+  const openNewSession = (tileId: string) =>
+    change((current) => {
+      const tab = newSessionTab(current);
+      const tile = tileById(current, tileId);
+      return addToTile(
+        current,
+        tileId,
+        tab,
+        tile === undefined ? undefined : tile.tabs.indexOf(tile.active) + 1,
+      );
+    });
+
+  /** A press or focus inside a tile focuses it. */
+  const focusOn = (tileId: string | undefined) => {
+    if (tileId !== undefined && tileId !== shown.focus)
+      change((current) => focusTile(current, tileId));
   };
+
+  const closeOne = (tab: string) =>
+    change((current) =>
+      closeTab(
+        current,
+        tab,
+        (id) => sessions?.some((each) => each.id === id && each.running) ?? false,
+      ),
+    );
+
+  const keys = (tab: string, label: string) => (event: KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Delete" && allTabs.length > 1) {
+      event.preventDefault();
+      closeOne(tab);
+      setSaid(`Closed ${label}.`);
+      return;
+    }
+    const side = ARROW_SIDES[event.key];
+    if (side === undefined || !event.altKey || !event.shiftKey) return;
+    event.preventDefault();
+    const next = moveTab(shown, tab, side);
+    if (sameLayout(next, shown)) {
+      setSaid(`${label} can't move ${SIDE_WORDS[side]}.`);
+      return;
+    }
+    const split = tilesOf(next.root).length > tiles.length;
+    change(() => next);
+    setSaid(
+      split
+        ? `Moved ${label} to a new tile ${SIDE_WORDS[side]}.`
+        : `Moved ${label} to the tile ${SIDE_WORDS[side]}.`,
+    );
+    // The tab is drawn again in its new tile: the keyboard stays on it.
+    requestAnimationFrame(() =>
+      document.querySelector<HTMLElement>(`[data-tab="${CSS.escape(tab)}"] [role="tab"]`)?.focus(),
+    );
+  };
+
+  const lookOf = (tab: string, size: "default" | "touch"): TabLook => {
+    const label = faceOf(tab, facts, rows).label;
+    return {
+      size,
+      ghost: drag.drag?.tab === tab,
+      ...(allTabs.length > 1 ? { onClose: () => closeOne(tab) } : {}),
+      ...(size === "default"
+        ? { onPointerDown: drag.begin(tab), onKeyDown: keys(tab, label), keyShortcuts: TAB_KEYS }
+        : {}),
+    };
+  };
+
+  const newSessionBody = (tab: string) => (
+    <NewSessionTab
+      tabId={tab}
+      worktreeName={facts.worktreeName}
+      others={sessions?.length ?? 1}
+      place={{
+        projectId: session.projectId,
+        worktree: { id: worktreeId, branch: session.branch },
+        onStarted: (sessionId) =>
+          change((current) => replaceTab(current, tab, sessionTab(sessionId))),
+      }}
+    />
+  );
+  const bodyOf = (tab: string) => (
+    <WorkspaceTabBody tab={tab} facts={facts} place={place} newSession={newSessionBody} />
+  );
+
+  const maximisedTile = maximised === null ? undefined : tileById(shown, maximised);
+  const waiting =
+    rows.find(
+      (row) =>
+        row.session.status === "waiting" && maximisedTile?.active !== sessionTab(row.session.id),
+    )?.title ?? null;
+
+  const restore = () => {
+    if (full) onLeaveFull();
+    change((current) => maximise(current, null));
+  };
+
+  const dragged = drag.drag === null ? null : faceOf(drag.drag.tab, facts, rows);
+
   return (
     // Exactly the sheet's height, never the content's: the thread scrolls inside its tile.
     <div className="flex h-dvh min-w-0 flex-none flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))]">
-      <WorkspaceHeader
-        project={facts.projectName}
-        worktree={facts.worktreeName}
-        branch={session.branch}
-        className="max-lg:hidden"
-        actions={
-          <a
-            href={vscodeOpenUri(session.id)}
-            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-          >
-            Open in VS Code
-          </a>
-        }
-      />
+      <WorkspaceHeaderRow facts={facts} />
       <PhoneHeader
         title={facts.worktreeName}
         sub={facts.projectName}
         back={BACK_TO_INBOX}
         className="lg:hidden"
       />
-      <div className="flex min-h-0 flex-1">
-        <Tile label="Tabs" size="auto" tabs={[tab]} active={active} onActiveChange={setActive} />
+      <PhoneTabStrip
+        className="lg:hidden"
+        tabs={allTabs.map((tab) => ({
+          value: tab,
+          tab: (
+            <WorkspaceTab
+              tab={tab}
+              facts={facts}
+              rows={rows}
+              place={place}
+              look={lookOf(tab, "touch")}
+            />
+          ),
+        }))}
+        active={focusedTab(shown)}
+        onActiveChange={(tab) => change((current) => activate(current, tab))}
+        add={
+          <PhoneOpenSheet
+            worktree={facts.worktreeName}
+            place={place}
+            closed={closed}
+            onOpen={(tab) => open(shown.focus, tab)}
+            onNewSession={() => openNewSession(shown.focus)}
+          />
+        }
+      />
+      <div className="flex min-h-0 flex-1 max-lg:**:data-tile-strip:hidden">
+        <TileTree
+          node={shown.root}
+          focus={focus}
+          maximised={maximised}
+          onResize={(splitId, sizes) => change((current) => resizeSplit(current, splitId, sizes))}
+          renderTile={(tile) => (
+            <div
+              className="flex size-full min-h-0 min-w-0"
+              onPointerDownCapture={() => focusOn(tile.id)}
+              onFocusCapture={() => focusOn(tile.id)}
+            >
+              <Tile
+                id={tile.id}
+                label={`Tile ${tiles.indexOf(tile) + 1}`}
+                focused={tile.id === focus}
+                active={tile.active}
+                onActiveChange={(tab) => change((current) => activate(current, tab))}
+                tabs={tile.tabs.map((tab) => ({
+                  value: tab,
+                  tab: (
+                    <WorkspaceTab
+                      tab={tab}
+                      facts={facts}
+                      rows={rows}
+                      place={place}
+                      look={lookOf(tab, "default")}
+                    />
+                  ),
+                  body: hydrated ? (
+                    <KeptSlot node={nodeOf(tab)} className="flex min-h-0 flex-1 flex-col" />
+                  ) : tab === tile.active ? (
+                    bodyOf(tab)
+                  ) : null,
+                }))}
+                add={
+                  <OpenMenu
+                    place={place}
+                    closed={closed}
+                    onOpen={(tab) => open(tile.id, tab)}
+                    onNewSession={() => openNewSession(tile.id)}
+                  />
+                }
+                maximised={maximised === tile.id}
+                {...(tiles.length > 1
+                  ? { onMaximise: () => change((current) => maximise(current, tile.id)) }
+                  : {})}
+                onRestore={restore}
+                waiting={waiting}
+                drop={drag.drag?.target?.tileId === tile.id ? drag.drag.target.drop : null}
+              />
+            </div>
+          )}
+        />
       </div>
+      {hydrated
+        ? allTabs
+            .filter((tab) => mounted.has(tab))
+            .map((tab) => (
+              <Kept key={tab} node={nodeOf(tab)}>
+                {/* A press or focus in a body focuses its tile: the body's events reach here, not the tile. */}
+                <div
+                  className="flex min-h-0 flex-1 flex-col"
+                  onPointerDownCapture={() => focusOn(tileOfTab(shown, tab)?.id)}
+                  onFocusCapture={() => focusOn(tileOfTab(shown, tab)?.id)}
+                >
+                  {bodyOf(tab)}
+                </div>
+              </Kept>
+            ))
+        : null}
+      {drag.drag === null || dragged === null ? null : (
+        <DraggedTab ref={drag.chip} at={chipAt(drag.drag.x, drag.drag.y)} {...dragged} />
+      )}
+      <p role="status" className="sr-only">
+        {said}
+      </p>
     </div>
   );
 }
 
+/** The Workspace header with Open in VS Code, from 1024px. */
+function WorkspaceHeaderRow({ facts }: { readonly facts: SessionFacts }) {
+  return (
+    <WorkspaceHeader
+      project={facts.projectName}
+      worktree={facts.worktreeName}
+      branch={facts.session.branch}
+      className="max-lg:hidden"
+      actions={
+        <a
+          href={vscodeOpenUri(facts.session.id)}
+          className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+        >
+          Open in VS Code
+        </a>
+      }
+    />
+  );
+}
+
 /** The session's page, read from the cache its route filled. */
-export function SessionPage({ sessionId }: { readonly sessionId: string }) {
-  return <SessionSheet facts={useSessionFacts(sessionId)} />;
+export function SessionPage({
+  sessionId,
+  full,
+  onLeaveFull,
+}: {
+  readonly sessionId: string;
+  /** The address asks for the session's tile maximised (`?full=1`). */
+  readonly full: boolean;
+  readonly onLeaveFull: () => void;
+}) {
+  return <SessionSheet facts={useSessionFacts(sessionId)} full={full} onLeaveFull={onLeaveFull} />;
 }
 
 /**

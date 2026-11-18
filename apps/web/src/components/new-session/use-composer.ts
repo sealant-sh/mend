@@ -116,12 +116,21 @@ export interface Composer {
   readonly start: (text: string) => void;
 }
 
+/** A composer fixed to one workspace: a New session tab in a session's sheet (ADR 0026). */
+export interface ComposerPlace {
+  readonly projectId: string;
+  readonly worktree: { readonly id: string; readonly branch: string };
+  /** The session exists and its agent is starting; the composer opens nothing itself. */
+  readonly onStarted: (sessionId: string) => void;
+}
+
 /**
  * The New session composer's state: what is picked, what the person last used, whether the
  * picked agent can start, and the start itself. The page's two layouts (desktop and phone) both
- * draw this one state, so a pick in either shows in the other.
+ * draw this one state, so a pick in either shows in the other. With `place`, the session starts
+ * in that worktree, and `place.onStarted` says what happens next instead of opening its page.
  */
-export function useComposer(): Composer {
+export function useComposer(place?: ComposerPlace): Composer {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -167,16 +176,19 @@ export function useComposer(): Composer {
   // The clone is picked when chosen here, when it is the only project there is (the first run),
   // or when the page that opened the composer named it (the cloning project's page).
   const cloneChosen = cloneFor ?? (lastId === attempt?.id ? lastId : null);
-  const onClone = clone !== null && (cloneChosen === clone.id || projects.length === 0);
+  const onClone =
+    place === undefined && clone !== null && (cloneChosen === clone.id || projects.length === 0);
   // Once the picked clone's project is listed, the composer moves onto it.
   const project = onClone
     ? undefined
-    : startingProject(
-        projects,
-        cloneChosen !== null && cloneChosen === attempt?.id && adoptedId !== null
-          ? adoptedId
-          : lastId,
-      );
+    : place !== undefined
+      ? projects.find((row) => row.id === place.projectId)
+      : startingProject(
+          projects,
+          cloneChosen !== null && cloneChosen === attempt?.id && adoptedId !== null
+            ? adoptedId
+            : lastId,
+        );
   const agent = startingAgent(defaults);
   const picker = pickerFor(catalogs, defaults, agent);
 
@@ -225,7 +237,8 @@ export function useComposer(): Composer {
       void queryClient.invalidateQueries(trpc.sessions.pathFilter());
       // The session's page shows what was asked while the agent starts and takes it.
       holdOpeningMessage(sessionId, request.spec.prompt);
-      void navigate(sessionLink(sessionId));
+      if (place !== undefined) place.onStarted(sessionId);
+      else void navigate(sessionLink(sessionId));
     },
     // The task comes back into the field, so nothing the person wrote is lost.
     onError: (_error, request) => setPrompt(request.spec.prompt),
@@ -251,9 +264,11 @@ export function useComposer(): Composer {
   const fast = picker.fastCapable && keptFor(fastFor, agent) === true;
   const askFirst = keptFor(askFor, agent) === true;
   const permission: PermissionMode | null = askFirst ? "ask" : null;
-  const target = onClone
-    ? { _tag: "new" as const }
-    : (keptFor(targetFor, projectId) ?? { _tag: "new" });
+  const target: WorktreeTarget = onClone
+    ? { _tag: "new" }
+    : place !== undefined
+      ? { _tag: "existing", ...place.worktree }
+      : (keptFor(targetFor, projectId) ?? { _tag: "new" });
 
   const logins: Logins =
     identity.isPending || identity.isError
@@ -336,7 +351,7 @@ export function useComposer(): Composer {
       if (project === undefined) return;
       run.reset();
       queue.reset();
-      lastProject.set(project.id);
+      if (place === undefined) lastProject.set(project.id);
       run.mutate({ projectId: project.id, target, spec });
     },
   };

@@ -7,17 +7,14 @@ import { conversationQuery } from "#/lib/conversation";
 import { sessionDetailQuery } from "#/lib/session-queries";
 
 interface SessionSearch {
-  /**
-   * The old app's full screen: the conversation alone (`?full=1`). With one tile the conversation
-   * already fills the sheet; PR 15 maximises the conversation's tile with it.
-   */
+  /** The old app's full screen (`?full=1`): the tile showing the session's conversation, maximised. */
   readonly full?: true;
   /** The old app's Desktop panel (`?view=desktop`), read only to be dropped. */
   readonly view?: "desktop";
 }
 
 /**
- * A session: its workspace's sheet, with the session's conversation as the tab of its one tile
+ * A session: its workspace's sheet, with the session's conversation tab showing and focused
  * (ADR 0026). Other programs open this address (the CLI, VS Code, Slack, pull request
  * descriptions), so its old forms keep working: `?view=desktop` (the old Desktop panel) lands
  * here until the Screen view exists (PR 19), and `#checkpoint-N` (a landed pull request's link)
@@ -63,11 +60,20 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
 
 function SessionRoute() {
   const { sessionId } = Route.useParams();
+  const full = Route.useSearch({ select: (search) => search.full === true });
+  const navigate = Route.useNavigate();
   useCheckpointHash(sessionId);
   return (
     <CatchBoundary getResetKey={() => sessionId} errorComponent={RouteErrorScreen}>
       <Suspense key={sessionId} fallback={<SessionPending sessionId={sessionId} />}>
-        <SessionPage key={sessionId} sessionId={sessionId} />
+        <SessionPage
+          key={sessionId}
+          sessionId={sessionId}
+          full={full}
+          onLeaveFull={() =>
+            void navigate({ search: {}, hash: (hash) => hash ?? "", replace: true })
+          }
+        />
       </Suspense>
     </CatchBoundary>
   );
