@@ -1,4 +1,4 @@
-import type { AgentItemDto, AgentRequestDto } from "@mend/agent-conversation";
+import type { AgentItemDto } from "@mend/agent-conversation";
 import { describe, expect, it } from "vitest";
 
 import { stepCommand } from "./checks.ts";
@@ -18,6 +18,7 @@ import {
   type ConversationPage,
   type ConversationView,
   heldConversation,
+  type RequestView,
   type TurnView,
 } from "./conversation.ts";
 import type { OutboxMessage } from "./outbox.ts";
@@ -58,7 +59,7 @@ const item = (
   };
 };
 
-const request = (turnId: string, at: string): AgentRequestDto => ({
+const request = (turnId: string, at: string): RequestView => ({
   id: "r-1",
   turnId,
   kind: "command-approval",
@@ -69,6 +70,8 @@ const request = (turnId: string, at: string): AgentRequestDto => ({
   decision: null,
   answers: null,
   createdAt: at,
+  decidedBy: null,
+  decidedAt: null,
 });
 
 describe("the conversation's rows", () => {

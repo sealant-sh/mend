@@ -146,4 +146,135 @@ function ApprovalCommand({
   );
 }
 
-export { Approval, ApprovalCommand, type ApprovalChoice };
+type DiffLine = {
+  /** Where the line sits in the diff, which never reorders: its key. */
+  readonly at: number;
+  readonly kind: "hunk" | "add" | "remove" | "context";
+  readonly text: string;
+};
+
+/** A unified diff's lines, each with what it does; the file headers (`---`, `+++`) are dropped. */
+const diffLines = (diff: string): readonly DiffLine[] =>
+  diff
+    .replace(/\n$/, "")
+    .split("\n")
+    .filter((line) => !line.startsWith("--- ") && !line.startsWith("+++ "))
+    .map((line, at) =>
+      line.startsWith("@@")
+        ? { at, kind: "hunk", text: line }
+        : line.startsWith("+")
+          ? { at, kind: "add", text: line.slice(1) }
+          : line.startsWith("-")
+            ? { at, kind: "remove", text: line.slice(1) }
+            : { at, kind: "context", text: line.startsWith(" ") ? line.slice(1) : line },
+    );
+
+const diffMarks: Record<DiffLine["kind"], string> = {
+  hunk: "",
+  add: "+",
+  remove: "−",
+  context: "",
+};
+
+/**
+ * The edit an Approval would make to one file: its path (the folder muted, the file's name in
+ * full), the lines it adds and removes, and Copy for the path, then the diff, `+` lines on the
+ * added tint and `−` lines on the removed tint. `diff` is a unified diff; a new file can pass its
+ * whole content with every line starting `+`.
+ */
+function ApprovalDiff({
+  path,
+  diff,
+  className,
+}: {
+  path: string;
+  diff: string;
+  className?: string;
+}) {
+  const lines = diffLines(diff);
+  const added = lines.filter((line) => line.kind === "add").length;
+  const removed = lines.filter((line) => line.kind === "remove").length;
+  const cut = path.lastIndexOf("/") + 1;
+  return (
+    <CodeBlock
+      data-slot="approval-diff"
+      className={cn("border-border bg-card dark:bg-card", className)}
+    >
+      <CodeBlockHeader className="h-7.5 gap-2 border-b bg-card py-0 pr-1 pl-3 font-mono text-2xs group-data-[size=touch]/approval:h-8 group-data-[size=touch]/approval:pr-0">
+        <span className="min-w-0 truncate">
+          <span className="text-muted-foreground">{path.slice(0, cut)}</span>
+          <span className="font-medium text-foreground">{path.slice(cut)}</span>
+        </span>
+        <span className="shrink-0 tabular-nums">
+          <span className="text-added">+{added}</span>{" "}
+          <span className="text-removed">−{removed}</span>
+        </span>
+        <CodeBlockCopyButton
+          value={path}
+          className="ms-auto group-data-[size=touch]/approval:h-8 group-data-[size=touch]/approval:w-10"
+        />
+      </CodeBlockHeader>
+      <div className="max-h-60 overflow-auto py-1 font-mono text-2xs leading-relaxed">
+        {lines.map((line) => (
+          <div
+            key={line.at}
+            data-kind={line.kind}
+            className="flex min-w-max gap-2 pr-3 pl-2 data-[kind=add]:bg-diff-add data-[kind=hunk]:bg-muted data-[kind=hunk]:text-muted-foreground data-[kind=remove]:bg-diff-del"
+          >
+            <span
+              aria-hidden="true"
+              className="w-3 shrink-0 text-center data-[kind=add]:text-added data-[kind=remove]:text-removed"
+              data-kind={line.kind}
+            >
+              {diffMarks[line.kind]}
+            </span>
+            {line.kind === "add" || line.kind === "remove" ? (
+              <span className="sr-only">{line.kind === "add" ? "Added: " : "Removed: "}</span>
+            ) : null}
+            <span className="whitespace-pre">{line.text === "" ? " " : line.text}</span>
+          </div>
+        ))}
+      </div>
+    </CodeBlock>
+  );
+}
+
+/**
+ * A tool's arguments in an Approval: a muted line naming the tool (`name`, such as
+ * "linear · create_issue"), then each argument's name and value in two mono columns, values
+ * wrapped. Under 1024px (`size="touch"` on the Approval) the name sits over its value.
+ */
+function ApprovalArguments({
+  name,
+  icon,
+  entries,
+  className,
+}: {
+  name: React.ReactNode;
+  icon?: React.ReactNode;
+  entries: readonly (readonly [string, string])[];
+  className?: string;
+}) {
+  return (
+    <div data-slot="approval-arguments" className={cn("grid gap-2", className)}>
+      <p className="flex items-center gap-2 font-mono text-meta [&_svg]:size-3.5 [&_svg]:shrink-0">
+        {icon}
+        <span className="min-w-0 wrap-anywhere">{name}</span>
+      </p>
+      {entries.length === 0 ? null : (
+        <dl className="grid max-h-60 grid-cols-[minmax(0,10rem)_minmax(0,1fr)] gap-x-4 gap-y-1.5 overflow-auto rounded-lg bg-muted px-3 py-2.5 font-mono text-2xs leading-relaxed group-data-[size=touch]/approval:grid-cols-1 group-data-[size=touch]/approval:gap-y-0.5">
+          {entries.map(([key, value]) => (
+            <React.Fragment key={key}>
+              <dt className="truncate text-muted-foreground group-data-[size=touch]/approval:mt-1.5 group-data-[size=touch]/approval:first:mt-0">
+                {key}
+              </dt>
+              <dd className="m-0 whitespace-pre-wrap text-foreground wrap-anywhere">{value}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+export { Approval, ApprovalArguments, ApprovalCommand, ApprovalDiff, type ApprovalChoice };

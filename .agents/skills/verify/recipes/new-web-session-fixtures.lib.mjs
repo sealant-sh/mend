@@ -24,7 +24,12 @@ export const history = ({ turns, items, requests = [] }) => ({
   ),
   "sessions.historyRequests": superjson(
     { requests },
-    requests.map((_, index) => `requests.${index}.createdAt`),
+    requests.flatMap((request, index) => [
+      `requests.${index}.createdAt`,
+      ...(request.decidedAt === null || request.decidedAt === undefined
+        ? []
+        : [`requests.${index}.decidedAt`]),
+    ]),
   ),
 });
 
@@ -70,6 +75,31 @@ export const item = (turnId, kind, status, start, end, fields = {}) => {
   };
 };
 
+/**
+ * A request the agent asked in `turnId`, waiting unless `fields` settle it. Each kind's `detail` is
+ * what its adapter records: Codex's params for a command or file change, Claude's tool name and
+ * input for a tool permission.
+ */
+export const request = (id, turnId, kind, createdAt, fields = {}) => ({
+  id,
+  sessionId: "fixture",
+  processId: "fixture-process",
+  turnId,
+  kind,
+  providerRequestId: `${id}-provider`,
+  providerItemId: null,
+  title: null,
+  detail: null,
+  questions: null,
+  status: "pending",
+  decision: null,
+  decidedBy: null,
+  answers: null,
+  createdAt,
+  decidedAt: null,
+  ...fields,
+});
+
 export const command = (turnId, status, start, end, text) =>
   item(turnId, "command-execution", status, start, end, {
     title: text,
@@ -98,6 +128,9 @@ export const patchDetail = (data, patch) => {
     json.currentAgent.protocolOptions = { model: null, effort: null, permissionMode: "bypass" };
     delete values["currentAgent.exitedAt"];
   }
+  // Someone who may not steer the session, which another member owns: no controls.
+  if (patch.viewerSteers === false) json.control = { ...json.control, steer: false, own: false };
+  if ("ownerUserId" in patch) json.session.ownerUserId = patch.ownerUserId;
   if (patch.dropAgent === true) {
     json.currentAgent = null;
     json.processes = [];

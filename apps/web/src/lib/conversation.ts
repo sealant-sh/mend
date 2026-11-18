@@ -28,7 +28,14 @@ export interface TurnView extends AgentTurnDto {
   readonly selection?: TurnSelection | null;
 }
 
-export type ConversationView = AgentConversation<TurnView>;
+/** A request as the conversation reads it: the shared shape plus who answered it, and when. */
+export interface RequestView extends AgentRequestDto {
+  /** The Mend user who answered or decided it; null while it waits, or when nobody did. */
+  readonly decidedBy: string | null;
+  readonly decidedAt: string | null;
+}
+
+export type ConversationView = AgentConversation<TurnView, AgentItemDto, RequestView>;
 
 const iso = (date: Date): string => date.toISOString();
 const isoOrNull = (date: Date | null): string | null => (date === null ? null : iso(date));
@@ -78,7 +85,7 @@ const itemView = (item: WireItem): AgentItemDto => ({
   updatedAt: iso(item.updatedAt),
 });
 
-const requestView = (request: WireRequest): AgentRequestDto => ({
+const requestView = (request: WireRequest): RequestView => ({
   id: request.id,
   turnId: request.turnId,
   kind: request.kind,
@@ -89,6 +96,8 @@ const requestView = (request: WireRequest): AgentRequestDto => ({
   decision: request.decision,
   answers: request.answers,
   createdAt: iso(request.createdAt),
+  decidedBy: request.decidedBy,
+  decidedAt: isoOrNull(request.decidedAt),
 });
 
 /** Where a session's conversation pages are cached (`conversationQuery`): the tRPC factory's key. */
@@ -167,7 +176,7 @@ export const heldConversation = (
 ): ConversationView & { readonly feed: number } => {
   const turns = new Map<string, TurnView>();
   const items = new Map<string, AgentItemDto>();
-  const requests = new Map<string, AgentRequestDto>();
+  const requests = new Map<string, RequestView>();
   // Newest window first: the first copy seen is the newest.
   for (const page of pages) {
     for (const turn of page.turns) if (!turns.has(turn.id)) turns.set(turn.id, turn);
