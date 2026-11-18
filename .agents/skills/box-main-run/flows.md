@@ -241,6 +241,31 @@ flows reuse what earlier ones made:
   `apps/web/src/components/session/workspace-tabs.tsx`,
   `apps/web/src/components/session/new-session-tab.tsx`, `apps/web/src/lib/tiles.ts`
 
+### session-page.new-web-terminal
+
+- **Map:** session-shell.md `shell-holds`; mobile.md `mobile-terminal-embed`; shared-control.md
+  `terminal-owner-only`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-terminal-sessions.json` (a `sleep` session in the worktree
+  `term-ws`), then drive the recipe `new-web-terminal`: open the old shell address, open New shell,
+  type a command, Ctrl and click a printed link, move the Terminal tab to a tile of its own,
+  maximise it, put it under the conversation and back, Close shell…, watch as a member with shared
+  control (a fixture), look at 390px, load `/tty-embed` with an upgrade ticket and no cookie, and
+  stop the session. Stop the batch session at the end if the recipe didn't.
+- **See:** each step's note in the recipe's `steps.log`: the redirect to `/sessions/<id>/terminal`
+  with the Terminal tab showing, the command's output read through Copy, the link's new tab, the
+  shell's column count falling in half a sheet and rising when maximised with the same terminal
+  element, the closed shell's row, "Only <owner> types here. You're watching.", the ticket trade
+  answering 200 and the socket's first output, and the stopped workspace's line.
+- **Mode:** `scripted` (recipes/new-web-terminal.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/views/`, `apps/web/src/components/terminal/`,
+  `apps/web/src/lib/workspace-shells.ts`, `apps/web/src/lib/terminal-links.ts`,
+  `apps/web/src/lib/embed-exchange.ts`, `apps/web/src/routes/tty-embed.tsx`,
+  `apps/web/src/routes/_inbox.sessions.$sessionId.$view.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.shell.$sessionId.tsx`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

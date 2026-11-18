@@ -24,6 +24,8 @@ const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([
   "reset",
   "authorize",
   "join",
+  // The phone app's terminal: its URL carries a ticket in place of a cookie.
+  "tty-embed",
 ]);
 
 export const opensSignedOut = (pathname: string): boolean =>

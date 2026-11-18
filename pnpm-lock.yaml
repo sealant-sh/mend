@@ -1110,6 +1110,9 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.5
+      ghostty-web:
+        specifier: 'catalog:'
+        version: 0.4.0
       lucide-react:
         specifier: 'catalog:'
         version: 0.545.0(react@19.2.3)

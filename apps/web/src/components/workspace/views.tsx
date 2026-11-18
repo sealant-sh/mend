@@ -1,5 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 
+import { TERMINAL_VIEW } from "./views/terminal-view.tsx";
+
 /** Where a view opens: the workspace of the session whose page this is. */
 export interface ViewPlace {
   readonly sessionId: string;
@@ -35,7 +37,7 @@ export interface WorkspaceView {
 }
 
 /** The views built so far, in the "+" menu's order: Change, Checks, Preview, Terminal, … */
-export const WORKSPACE_VIEWS: ReadonlyArray<WorkspaceView> = [];
+export const WORKSPACE_VIEWS: ReadonlyArray<WorkspaceView> = [TERMINAL_VIEW];
 
 export const workspaceView = (id: string): WorkspaceView | undefined =>
   WORKSPACE_VIEWS.find((view) => view.id === id);
