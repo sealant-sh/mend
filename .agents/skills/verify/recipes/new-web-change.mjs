@@ -277,8 +277,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     ),
   ).waitFor();
   await visible(page.getByText("37 files changed. Mend folds generated files.")).waitFor();
-  await section("docs/README.md").getByText("Renamed").waitFor();
-  await section("public/og/checkout.png").getByText("Binary").waitFor();
+  await section("docs/README.md").getByText("Renamed", { exact: true }).waitFor();
+  await section("public/og/checkout.png").getByText("Binary", { exact: true }).waitFor();
   note("big change: 37 files; pnpm-lock.yaml folded as generated; README renamed; the png binary");
   await both("big-desktop");
   await fileRow(/rows\.ts/).click();
