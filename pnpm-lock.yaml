@@ -1066,6 +1066,9 @@ importers:
       '@mend/network':
         specifier: workspace:*
         version: link:../../packages/network
+      '@mend/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@tailwindcss/vite':
         specifier: 'catalog:'
         version: 4.3.2(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
@@ -1099,6 +1102,9 @@ importers:
       effect:
         specifier: 'catalog:'
         version: 4.0.5
+      lucide-react:
+        specifier: 'catalog:'
+        version: 0.545.0(react@19.2.3)
       nitro:
         specifier: ^3.0.260610-beta
         version: 3.0.260610-beta(@azure/identity@4.13.2)(chokidar@5.0.0)(dotenv@16.6.1)(ioredis@5.11.1)(jiti@2.7.0)(lru-cache@11.5.1)(miniflare@4.20260701.0)(rollup@4.62.2)(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))(wrangler@4.107.0)

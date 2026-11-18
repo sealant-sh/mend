@@ -1,1 +1,8 @@
-@import "tailwindcss";
+/*
+ * Sheet (DESIGN.md): the kit's faces and tokens, and Tailwind over this app's source and the kit's
+ * components, whose classes it generates too.
+ */
+@import "@mend/ui/styles/fonts.css";
+@import "@mend/ui/styles/globals.css";
+
+@source "../../../packages/ui/src";

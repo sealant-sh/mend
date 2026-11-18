@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, queryOptions, useQuery } from "@tanstack/react-query";
 import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
@@ -23,7 +23,7 @@ function Projects({
   readonly read: () => Promise<ReadonlyArray<string>>;
   readonly empty?: ReactNode;
 }) {
-  const query = useQuery({ queryKey: ["projects"], queryFn: read, retry: false });
+  const query = useQuery(queryOptions({ queryKey: ["projects"], queryFn: read, retry: false }));
   return (
     <QueryView query={query} empty={empty}>
       {(names) => (
@@ -97,7 +97,7 @@ describe("QueryView", () => {
 
 /** Typechecked, never run: a loaded child written for `undefined` data does not compile. */
 export function OptionalChildRefused({ read }: { readonly read: () => Promise<string> }) {
-  const query = useQuery({ queryKey: ["name"], queryFn: read });
+  const query = useQuery(queryOptions({ queryKey: ["name"], queryFn: read }));
   return (
     // @ts-expect-error The loaded child takes data that is always there, never `undefined`.
     <QueryView query={query}>{(name: string | undefined) => <p>{name ?? "nobody"}</p>}</QueryView>

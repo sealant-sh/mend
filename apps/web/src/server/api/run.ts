@@ -63,9 +63,9 @@ const clientOf = (ctx: TrpcContext): MendApiClient => {
  */
 export const run = async <A, E>(
   ctx: TrpcContext,
-  use: (api: MendApiClient) => Effect.Effect<A, E>,
+  call: (api: MendApiClient) => Effect.Effect<A, E>,
 ): Promise<A> => {
-  const exit = await runtime.runPromiseExit(use(clientOf(ctx)));
+  const exit = await runtime.runPromiseExit(call(clientOf(ctx)));
   if (Exit.isSuccess(exit)) {
     // The client decodes into Schema.Class INSTANCES; superjson only walks
     // plain data, so Dates/bigints inside instances would dodge the
