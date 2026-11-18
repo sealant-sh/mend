@@ -126,6 +126,11 @@ export const runCheck = async (
   for (const [id, title, args] of [
     ["typecheck", "Typecheck, forced", ["exec", "turbo", "typecheck", "--force", ...cap]],
     ["lint", "Lint, forced", ["exec", "turbo", "lint", "--force", ...cap]],
+    [
+      "recipes-lint",
+      "Verify recipes lint",
+      ["exec", "oxlint", "--deny-warnings", ".agents/skills/verify/recipes"],
+    ],
   ]) {
     steps.push(
       await timed({ id, title, command: `pnpm ${args.join(" ")}` }, async () => {
@@ -181,6 +186,7 @@ export const runCheck = async (
             "node",
             [
               "--test",
+              ...(concurrency === undefined ? [] : [`--test-concurrency=${concurrency}`]),
               "--test-reporter=spec",
               "--test-reporter-destination=stdout",
               "--test-reporter=./scripts/ci-test-report.mjs",

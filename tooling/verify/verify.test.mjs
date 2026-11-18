@@ -108,6 +108,23 @@ const runnerSkipping =
 
 const noPostgres = { ...process.env, MEND_SKIP_POSTGRES_TESTS: "1" };
 
+test("the pre-PR gate fails when verify recipe lint fails", async (t) => {
+  const { root, commit } = fixture(t);
+  commit(".agents/skills/verify/recipes/example.mjs");
+  const result = await runVerb(
+    root,
+    "check",
+    options({
+      env: noPostgres,
+      runner: async (...call) =>
+        call[2].includes("oxlint") ? 1 : runnerSkipping(root, [])(...call),
+    }),
+  );
+  const lint = result.steps.find((step) => step.id === "recipes-lint");
+  assert.equal(lint.status, "failed");
+  assert.match(lint.command, /oxlint --deny-warnings \.agents\/skills\/verify\/recipes/);
+});
+
 test("statuses roll up worst first and map to the shared exit codes", () => {
   assert.equal(rollUp(["passed", "skipped", "requires_external_observer"]), "skipped");
   assert.equal(rollUp(["skipped", "blocked_by_prerequisite"]), "blocked_by_prerequisite");

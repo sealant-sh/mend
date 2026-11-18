@@ -30,6 +30,35 @@ import { VERSION } from "../scripts/fixtures/claude-protocol-standin.mjs";
 import { redact } from "../scripts/redact.mjs";
 import { loadSecrets, redactValues } from "../scripts/secrets.mjs";
 
+const groupOf = (seen, name) => seen.groups.find((group) => group.group === name) ?? null;
+
+const rowAnywhere = (seen, session) => {
+  for (const group of seen.groups) {
+    const row = group.rows.find((one) => one.startsWith(`${session} · `));
+    if (row !== undefined) return { group: group.group, row };
+  }
+  return null;
+};
+
+const summary = (seen) =>
+  `badge "${seen.badge}" · status bar ${JSON.stringify(seen.statusBar)} · message "${seen.message}" · groups ${JSON.stringify(seen.groups.map(({ group, count, rows }) => ({ group, count, rows })))}`;
+
+const sessionRead = (id, call) => call(`/sessions/${id}`);
+
+const liveProtocol = (detail) =>
+  detail.processes.find((row) => row.kind === "agent-protocol" && row.exitedAt === null) ?? null;
+
+const pending = (session) => session.call(`/sessions/${session.id}/requests?pending=1`);
+
+const requestById = async (session, id) =>
+  (await session.call(`/sessions/${session.id}/requests`)).find((one) => one.id === id) ?? null;
+
+const respond = (session, request, body) =>
+  session.call(`/requests/${request.id}/respond`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+
 export const world = await import(
   pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
 );
@@ -255,16 +284,10 @@ export default async (h) => {
     badge: await badge("Mend"),
     statusBar: await mendStatus(),
   });
-  const groupOf = (seen, name) => seen.groups.find((group) => group.group === name) ?? null;
+
   const rowIn = (seen, name, session) =>
     groupOf(seen, name)?.rows.find((row) => row.startsWith(`${session} · `)) ?? null;
-  const rowAnywhere = (seen, session) => {
-    for (const group of seen.groups) {
-      const row = group.rows.find((one) => one.startsWith(`${session} · `));
-      if (row !== undefined) return { group: group.group, row };
-    }
-    return null;
-  };
+
   const until = async (what, check, limit = 60_000) => {
     let last = null;
     try {
@@ -277,11 +300,12 @@ export default async (h) => {
         limit,
       );
     } catch (error) {
-      throw new Error(`${error.message} · last read: ${last === null ? "none" : summary(last)}`);
+      throw new Error(`${error.message} · last read: ${last === null ? "none" : summary(last)}`, {
+        cause: error,
+      });
     }
   };
-  const summary = (seen) =>
-    `badge "${seen.badge}" · status bar ${JSON.stringify(seen.statusBar)} · message "${seen.message}" · groups ${JSON.stringify(seen.groups.map(({ group, count, rows }) => ({ group, count, rows })))}`;
+
   const toastButtons = (pattern) =>
     page()
       .locator(".notifications-toasts .notification-toast-container", { hasText: pattern })
@@ -401,10 +425,6 @@ export default async (h) => {
     };
   };
 
-  const sessionRead = (id, call) => call(`/sessions/${id}`);
-  const liveProtocol = (detail) =>
-    detail.processes.find((row) => row.kind === "agent-protocol" && row.exitedAt === null) ?? null;
-
   /** A claude session run as a terminal agent, the stand-in put in its workspace, then launched again as a conversation that asks. */
   const conversationWithStandin = async (label, call, who) => {
     const created = await call(`/projects/${project.id}/sessions`, {
@@ -491,11 +511,6 @@ export default async (h) => {
       stoppedAs: stopped.session.status,
     };
   };
-
-  /** Mend's pending requests for a session, as `GET /sessions/:id/requests?pending=1` lists them. */
-  const pending = (session) => session.call(`/sessions/${session.id}/requests?pending=1`);
-  const requestById = async (session, id) =>
-    (await session.call(`/sessions/${session.id}/requests`)).find((one) => one.id === id) ?? null;
 
   /** The open turn ended, so the next turn opens at once. */
   const settled = (session) =>
@@ -587,12 +602,6 @@ export default async (h) => {
     return observed;
   };
 
-  const respond = (session, request, body) =>
-    session.call(`/requests/${request.id}/respond`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-
   /** Waits for the request's toast in the window in front: its text and buttons. */
   const toastFor = async (kind) => {
     const pattern = `${NAME} asks: ${QUESTION[kind]}`;
@@ -644,7 +653,7 @@ export default async (h) => {
     async () => {
       const request = await nextRequest(dana);
       const raised = asked(request, "permission");
-      let shown = "answered through the API";
+      let shownHere = "answered through the API";
       if (ui) {
         const seen = await until(
           `${NAME} in Needs you`,
@@ -661,7 +670,7 @@ export default async (h) => {
           `buttons ${JSON.stringify(buttons)}`,
         );
         await toast.click("Allow");
-        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · ${summary(seen)}`;
+        shownHere = `toast "${words}" · buttons ${JSON.stringify(buttons)} · ${summary(seen)}`;
       } else await respond(dana, request, { decision: "accept" });
       const result = await answered(dana, request, { decision: "accept", behavior: "allow" });
       let after = "";
@@ -674,7 +683,10 @@ export default async (h) => {
         await shot("2-allowed");
         after = ` · then ${summary(seen)}`;
       }
-      return { observed: `${raised} · ${shown} · ${result.observed}${after}`, request: request.id };
+      return {
+        observed: `${raised} · ${shownHere} · ${result.observed}${after}`,
+        request: request.id,
+      };
     },
     { via: ui ? "dom" : "api" },
   );
@@ -685,15 +697,15 @@ export default async (h) => {
     async () => {
       const request = await nextRequest(dana, "mend-ask:permission run the migrations again");
       const raised = asked(request, "permission");
-      let shown = "answered through the API";
+      let shownHere = "answered through the API";
       if (ui) {
         const { toast, words, buttons } = await toastFor("permission");
         await shot("3-deny-toast");
         await toast.click("Deny");
-        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)}`;
+        shownHere = `toast "${words}" · buttons ${JSON.stringify(buttons)}`;
       } else await respond(dana, request, { decision: "decline" });
       const result = await answered(dana, request, { decision: "decline", behavior: "deny" });
-      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+      return { observed: `${raised} · ${shownHere} · ${result.observed}`, request: request.id };
     },
     { via: ui ? "dom" : "api" },
   );
@@ -706,7 +718,7 @@ export default async (h) => {
     async () => {
       const request = await nextRequest(dana, "mend-ask:question which database?");
       const raised = asked(request, "question");
-      let shown = "answered through the API";
+      let shownHere = "answered through the API";
       if (ui) {
         const { toast, words, buttons } = await toastFor("question");
         expect(
@@ -724,10 +736,10 @@ export default async (h) => {
           `quick pick "${title}" · items ${JSON.stringify(items)}`,
         );
         await writeAnswer(typed, "4-typed");
-        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · quick pick "${title}" ${JSON.stringify(items)} · typed "${typed}"`;
+        shownHere = `toast "${words}" · buttons ${JSON.stringify(buttons)} · quick pick "${title}" ${JSON.stringify(items)} · typed "${typed}"`;
       } else await respond(dana, request, { answers: { target: [typed] } });
       const result = await answered(dana, request, { answers: { target: [typed] } });
-      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+      return { observed: `${raised} · ${shownHere} · ${result.observed}`, request: request.id };
     },
     { via: ui ? "dom" : "api" },
   );
@@ -739,7 +751,7 @@ export default async (h) => {
     async () => {
       const request = await nextRequest(dana, "mend-ask:text name the migration");
       const raised = asked(request, "text");
-      let shown = "answered through the API";
+      let shownHere = "answered through the API";
       if (ui) {
         const { toast, words, buttons } = await toastFor("text");
         expect(
@@ -754,10 +766,10 @@ export default async (h) => {
           `rows ${JSON.stringify(rows)}`,
         );
         await writeAnswer(named, "4b-typed");
-        shown = `toast "${words}" · buttons ${JSON.stringify(buttons)} · first rows ${JSON.stringify(rows)}`;
+        shownHere = `toast "${words}" · buttons ${JSON.stringify(buttons)} · first rows ${JSON.stringify(rows)}`;
       } else await respond(dana, request, { answers: { name: [named] } });
       const result = await answered(dana, request, { answers: { name: [named] } });
-      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+      return { observed: `${raised} · ${shownHere} · ${result.observed}`, request: request.id };
     },
     { via: ui ? "dom" : "api" },
   );
@@ -768,7 +780,7 @@ export default async (h) => {
     async () => {
       const request = await nextRequest(dana, "mend-ask:question which database now?");
       const raised = asked(request, "question");
-      let shown = "answered through the API";
+      let shownHere = "answered through the API";
       if (ui) {
         await until(
           `${NAME} waiting in Needs you`,
@@ -781,10 +793,10 @@ export default async (h) => {
         const items = (await quickInput.rows()).map((row) => row.label);
         await shot("5-row-answer");
         await quickInput.pick("production", { exact: true });
-        shown = `row action "${found.title}" · quick pick "${title}" ${JSON.stringify(items)}`;
+        shownHere = `row action "${found.title}" · quick pick "${title}" ${JSON.stringify(items)}`;
       } else await respond(dana, request, { answers: { target: ["production"] } });
       const result = await answered(dana, request, { answers: { target: ["production"] } });
-      return { observed: `${raised} · ${shown} · ${result.observed}`, request: request.id };
+      return { observed: `${raised} · ${shownHere} · ${result.observed}`, request: request.id };
     },
     { via: ui ? "dom" : "api" },
   );

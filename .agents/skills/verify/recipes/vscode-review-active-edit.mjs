@@ -24,6 +24,8 @@ import {
   said,
 } from "./vscode-review.lib.mjs";
 
+const comments = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
+
 const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
 const FIRST = "Use the shared limiter from guard.ts";
 const TYPED = "Count the burst per key, and test the sixth request";
@@ -56,7 +58,6 @@ export default async (h) => {
   });
   const base = (await h.api(`/projects/${project.id}`)).project.defaultBranch;
 
-  const comments = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
   const select = async (what, holds) => {
     await view("Mend");
     await revealSession(SESSION);

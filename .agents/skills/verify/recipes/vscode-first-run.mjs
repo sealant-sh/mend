@@ -32,7 +32,6 @@ const CONNECT = "Connect VS Code to your Mend server.";
 const SET_UP = "Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend";
 const PLAIN_HTTP = "Plain http: the token travels unencrypted";
 const CONSENT = "Set up workspace SSH to open sessions (one Host block in ~/.ssh/config)";
-const SETTING_UP = "Setting up: Remote-SSH · an SSH key for Mend · one Host block in ~/.ssh/config";
 const WARM = "fresh worktree";
 
 const expect = (holds, message) => {
@@ -48,7 +47,7 @@ const shown = (seen) =>
 const mendHostBlocks = (state) =>
   readFileSync(join(state.sshDir, "config"), "utf8")
     .split("\n")
-    .filter((line) => /^Host mend-ws-/.test(line));
+    .filter((line) => line.startsWith("Host mend-ws-"));
 
 const userSettings = (state) =>
   JSON.parse(readFileSync(join(state.userData, "User", "settings.json"), "utf8"));
@@ -241,7 +240,7 @@ async function signedOut(h) {
   const web = await browser();
   /** The editor's devices under Settings → Devices, as Mend lists them. */
   const devices = async () =>
-    (await api("/me/devices")).filter((device) => /^VS Code on /.test(device.name));
+    (await api("/me/devices")).filter((device) => device.name.startsWith("VS Code on "));
   /** One Connect walk from its URL input, authorized in the browser, to its one success toast. */
   const authorize = async () => {
     const walk = await toApprovePage(h, { url: origin });
@@ -583,8 +582,8 @@ async function signedOut(h) {
       await shot("edge-refused-token");
       const toastText = await toast.text();
       const items = await accounts({ shot: "edge-refused-accounts-menu" });
-      const signedOut = (seen?.toasts ?? []).filter((text) => text.includes("sign in again"));
-      expect(signedOut.length === 1, `sign-in toasts ${JSON.stringify(seen?.toasts)}`);
+      const signedOutHere = (seen?.toasts ?? []).filter((text) => text.includes("sign in again"));
+      expect(signedOutHere.length === 1, `sign-in toasts ${JSON.stringify(seen?.toasts)}`);
       expect(toastText.includes("Connect to server"), `the toast reads "${toastText}"`);
       expect(!items.some((item) => item.includes(email)), `Accounts menu ${JSON.stringify(items)}`);
       return `toast "${toastText}" · ${shown(seen)} · welcome ${JSON.stringify(said.lines)} · Accounts menu ${JSON.stringify(items)}`;

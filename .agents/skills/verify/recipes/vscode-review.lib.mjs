@@ -7,6 +7,11 @@ import { pathToFileURL } from "node:url";
 
 import { FAKES } from "../scripts/fakes.mjs";
 
+const idOnly = (id) => {
+  if (!/^[0-9a-f-]+$/.test(id)) throw new Error(`not an id: ${id}`);
+  return id;
+};
+
 export const world = await import(
   pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
 );
@@ -146,6 +151,7 @@ export const reviewWorld = (h) => {
       { via: "setup" },
     );
 
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- The default API belongs to this recipe's world.
   const sessionRead = (id, call = api) => call(`/sessions/${id}`);
 
   /** A claude terminal agent in its own worktree, running at its prompt. */
@@ -369,10 +375,6 @@ export const reviewWorld = (h) => {
     );
   };
 
-  const idOnly = (id) => {
-    if (!/^[0-9a-f-]+$/.test(id)) throw new Error(`not an id: ${id}`);
-    return id;
-  };
   const jsonRows = async (sql) =>
     (await psql(`select row_to_json(t) from (${sql}) t`)).map((line) => JSON.parse(line));
 
@@ -427,6 +429,7 @@ export const changeRows = (h) =>
         "change",
     );
     if (pane === undefined) return { found: false, title: "", message: "", rows: [] };
+    // oxlint-disable-next-line unicorn/consistent-function-scoping -- page.evaluate serializes this callback with its helper.
     const label = (row) => row.querySelector(".monaco-icon-label");
     const letter = (row) => {
       const found = label(row);

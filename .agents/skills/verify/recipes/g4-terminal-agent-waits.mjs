@@ -537,15 +537,15 @@ export default async (h) => {
           fail(
             `the live claude's --settings runs the helper for ${check.wired.join(", ") || "nothing"}, not ${check.missing.join(", ")}`,
           );
-        for (const type of ["permission_prompt", "elicitation_dialog", "idle_prompt"])
-          if (!check.notificationTypes[type])
-            fail(`the Notification matcher does not admit ${type}`);
+        for (const typeHere of ["permission_prompt", "elicitation_dialog", "idle_prompt"])
+          if (!check.notificationTypes[typeHere])
+            fail(`the Notification matcher does not admit ${typeHere}`);
         return {
           observed: `pid ${found.cmdline[0]?.pid} ${found.cmdline[0]?.argv0} · --session-id ${agentSessionId} recorded on the row · hooks for ${check.wired.join(", ")} · Notification admits ${Object.entries(
             check.notificationTypes,
           )
             .filter(([, admitted]) => admitted)
-            .map(([type]) => type)
+            .map(([typeHere]) => typeHere)
             .join("|")}`,
           sessionId: agentSessionId,
           check,

@@ -27,6 +27,11 @@ import {
   said,
 } from "./vscode-review.lib.mjs";
 
+const lettered = (now) =>
+  now.rows.filter((row) => row.level === 2).every((row) => row.letter !== "");
+
+const rowOf = (seen, label) => seen.rows.find((row) => row.label === label) ?? null;
+
 // A world that already ran this recipe names its next session apart: `MEND_REVIEW_SESSION`.
 const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
 const OPEN = /^Mend: Open$/;
@@ -78,9 +83,6 @@ export default async (h) => {
       },
       limit,
     );
-  const lettered = (now) =>
-    now.rows.filter((row) => row.level === 2).every((row) => row.letter !== "");
-  const rowOf = (seen, label) => seen.rows.find((row) => row.label === label) ?? null;
 
   const d1 = await step(
     "d1 · she selects the session row: the Change section shows main → now, its files, Comments and Checkpoints",

@@ -60,6 +60,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32, deflateSync } from "node:zlib";
 
+const parse = (payload) => {
+  try {
+    return JSON.parse(String(payload));
+  } catch {
+    return null;
+  }
+};
+
+const decoded = (image, width) => async () =>
+  (await image.count()) > 0 &&
+  (await image.evaluate((element, w) => element.complete && element.naturalWidth === w, width));
+
+const rangeStart = (entry) => Number(/^bytes=(\d+)-/.exec(entry.range ?? "")?.[1] ?? -1);
+
 const P = process.env.MEND_VERIFY_PRIVATE;
 const REFUSAL = "A queued user message can only be sent now while the thread is stopped.";
 const SVG_POLICY = "default-src 'none'; style-src 'unsafe-inline'; sandbox";
@@ -113,13 +127,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const watchSocket = (target, tab) =>
     target.on("websocket", (socket) => {
       if (!socket.url().startsWith(gateway.replace(/^http/, "ws"))) return;
-      const parse = (payload) => {
-        try {
-          return JSON.parse(String(payload));
-        } catch {
-          return null;
-        }
-      };
+
       socket.on("framesent", ({ payload }) => {
         const frame = parse(payload);
         if (frame?._tag !== "Request") return;
@@ -261,6 +269,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     };
   };
 
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- The default target is this recipe's page.
   const toasts = async (target = page) =>
     (await target.getByRole("region", { name: "Notifications" }).allInnerTexts())
       .join(" ")
@@ -312,7 +321,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const devices = await api("/api/me/devices");
   const labels = (Array.isArray(devices.body) ? devices.body : (devices.body?.devices ?? []))
     .map((device) => device.label ?? device.name)
-    .filter((label) => /^t3code/.test(label ?? ""));
+    .filter((label) => (label ?? "").startsWith("t3code"));
   note(`observed · Mend's devices (via api, HTTP ${devices.status}): ${JSON.stringify(labels)}`);
 
   if (process.env.MEND_VERIFY_T3_RETENTION) {
@@ -673,10 +682,10 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await page.waitForTimeout(500);
     for (let at = 0; at < script.length; at += 16_384)
       await input.evaluate(
-        (input, text) => {
+        (inputHere, text) => {
           const data = new DataTransfer();
           data.setData("text/plain", text);
-          input.dispatchEvent(
+          inputHere.dispatchEvent(
             new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }),
           );
         },
@@ -761,7 +770,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     rpc.mints
       .slice(from)
       .filter((mint) => mint.name === name)
-      .map(({ ms, ok, message }) => ({ ms, ok, ...(message ? { message } : {}) }));
+      .map(({ ms, ok: mintOk, message }) => ({ ms, ok: mintOk, ...(message ? { message } : {}) }));
   /** Opens a file until it previews, reopening while the client reads it unavailable. */
   const previewed = async (trail, rendered, reopen, attempts = 4) => {
     const name = trail.at(-1);
@@ -802,9 +811,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     );
     await shot(name);
   };
-  const decoded = (image, width) => async () =>
-    (await image.count()) > 0 &&
-    (await image.evaluate((element, w) => element.complete && element.naturalWidth === w, width));
+
   const decodes = (image, width) =>
     until(`the image decodes at ${width} px`, () =>
       image.evaluate((element, w) => element.complete && element.naturalWidth === w, width),
@@ -1087,7 +1094,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     `raw GET at the checkpoint · preview/version.txt · still the checkpoint's version one · ${JSON.stringify(stillOne)}`,
   );
   const before = (await api(`/api/worktrees/${worktreeId}`)).body?.checkpoints ?? [];
-  const earliest = before.find((item) => item.ordinal === 0);
+  const earliest = before.find((itemHere) => itemHere.ordinal === 0);
   if (earliest !== undefined) {
     const absent = await raw("preview/version.txt", { at: earliest.id });
     ok(
@@ -1144,7 +1151,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   note("window · big.mp4 · seeks · ends");
   await video.evaluate((element) => element.pause());
   const seeks = assets.slice(seekFrom).filter((entry) => entry.path.endsWith("/big.mp4"));
-  const rangeStart = (entry) => Number(/^bytes=(\d+)-/.exec(entry.range ?? "")?.[1] ?? -1);
+
   ok(
     seeks.some((entry) => entry.status === 206 && rangeStart(entry) >= FAR) &&
       seeks.every((entry) => entry.status === 206 && entry.range !== null),
@@ -1229,7 +1236,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     "after a reload the message's image loads again",
   );
 
-  const calls = [...new Set(rpc.calls.values())].sort();
+  const calls = [...new Set(rpc.calls.values())].toSorted();
   note(`rpc · methods the client called: ${calls.join(", ")}`);
   const refused = new Map();
   for (const { tag, message } of rpc.failures) {
@@ -1266,12 +1273,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   for (const [name, url] of minted)
     ok(curl(url).status === 200, `curl · before the revoke · ${name} · 200`);
   while ((await paired.count()) > 0) {
-    const before = await paired.count();
+    const beforeHere = await paired.count();
     await paired.first().getByRole("button", { name: "Revoke t3code · T3 Code Web" }).click();
     const dialog = page.getByRole("dialog", { name: "Revoke t3code · T3 Code Web?" });
     await dialog.getByRole("button", { name: "Revoke", exact: true }).click();
     await dialog.waitFor({ state: "hidden" });
-    await until("the revoked device leaves the list", async () => (await paired.count()) < before);
+    await until(
+      "the revoked device leaves the list",
+      async () => (await paired.count()) < beforeHere,
+    );
   }
   const revokedAt = Date.now();
   await shot("23-devices-revoked");
@@ -1433,19 +1443,21 @@ function writeBig(fs, crypto, bytes) {
   const top = {};
   for (let at = 0; at < clip.length; at += clip.readUInt32BE(at))
     top[clip.toString("latin1", at + 4, at + 8)] = { at, size: clip.readUInt32BE(at) };
-  const parse = (buffer, from, to) => {
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- writeBig is sent as source to the workspace, including its helpers.
+  const parseHere = (buffer, from, to) => {
     const boxes = [];
     for (let at = from; at < to; at += buffer.readUInt32BE(at)) {
       const size = buffer.readUInt32BE(at);
       const type = buffer.toString("latin1", at + 4, at + 8);
       boxes.push(
         ["moov", "trak", "mdia", "minf", "stbl"].includes(type)
-          ? { type, children: parse(buffer, at + 8, at + size) }
+          ? { type, children: parseHere(buffer, at + 8, at + size) }
           : { type, body: Buffer.from(buffer.subarray(at + 8, at + size)) },
       );
     }
     return boxes;
   };
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- writeBig is sent as source to the workspace, including its helpers.
   const serialize = (box) => {
     const body = box.children ? Buffer.concat(box.children.map(serialize)) : box.body;
     const head = Buffer.alloc(8);
@@ -1453,6 +1465,7 @@ function writeBig(fs, crypto, bytes) {
     head.write(box.type, 4, "latin1");
     return Buffer.concat([head, body]);
   };
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- writeBig is sent as source to the workspace, including its helpers.
   const find = (boxes, type) => {
     for (const box of boxes) {
       if (box.type === type) return box;
@@ -1461,7 +1474,7 @@ function writeBig(fs, crypto, bytes) {
     }
     return undefined;
   };
-  const moov = parse(clip, top.moov.at, top.moov.at + top.moov.size)[0];
+  const moov = parseHere(clip, top.moov.at, top.moov.at + top.moov.size)[0];
   const stsz = find([moov], "stsz").body;
   const stsc = find([moov], "stsc");
   const stco = find([moov], "stco");
@@ -1569,6 +1582,7 @@ const terminalStatesOf = (value) => {
     .map(({ threadId, status, kind }) => ({ threadId, status, kind }));
 };
 
+// oxlint-disable-next-line no-control-regex -- Match the terminal escape character to strip ANSI sequences.
 const stripAnsi = (text) => text.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, "").replace(/\r/g, "");
 
 /** The first readable message in an Effect RPC failure cause. */

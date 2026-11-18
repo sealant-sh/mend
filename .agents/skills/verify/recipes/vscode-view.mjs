@@ -29,6 +29,14 @@ import { pathToFileURL } from "node:url";
 import { FAKES } from "../scripts/fakes.mjs";
 import { register } from "../scripts/secrets.mjs";
 
+const groupOf = (seen, name) => seen.groups.find((group) => group.group === name) ?? null;
+
+const summary = (seen) =>
+  `badge "${seen.badge}" · status bar ${JSON.stringify(seen.statusBar)} · message "${seen.message}" · groups ${JSON.stringify(seen.groups.map(({ group, count, expanded, rows }) => ({ group, count, expanded, rows })))}`;
+
+const toasts = (seen) =>
+  seen === null ? 0 : seen.toasts.filter((text) => text.includes("view-rate-limit")).length;
+
 const world = await import(
   pathToFileURL(join(import.meta.dirname, "../../../../scripts/vscode-remote-world.mjs")).href
 );
@@ -170,7 +178,7 @@ export default async (h) => {
     badge: await badge("Mend"),
     statusBar: await mendStatus(),
   });
-  const groupOf = (seen, name) => seen.groups.find((group) => group.group === name) ?? null;
+
   const rowsOf = (seen, name) => groupOf(seen, name)?.rows ?? [];
   /** A local window always shows its groups; an empty one stays and reads `nothing`. */
   const empty = (seen, name) =>
@@ -186,8 +194,6 @@ export default async (h) => {
       },
       limit,
     );
-  const summary = (seen) =>
-    `badge "${seen.badge}" · status bar ${JSON.stringify(seen.statusBar)} · message "${seen.message}" · groups ${JSON.stringify(seen.groups.map(({ group, count, expanded, rows }) => ({ group, count, expanded, rows })))}`;
 
   // ── the world's sessions, set up through the API ──
   await step(
@@ -204,6 +210,7 @@ export default async (h) => {
     { via: "setup" },
   );
 
+  // oxlint-disable-next-line unicorn/consistent-function-scoping -- The default API belongs to this recipe's world.
   const sessionRead = (id, call = api) => call(`/sessions/${id}`);
   const startClaude = async (label, call = api) => {
     const created = await call(`/projects/${project.id}/sessions`, {
@@ -654,10 +661,10 @@ export default async (h) => {
         rmSync(scratch, { recursive: true, force: true });
       }
       const started = await startClaude("view-ana", asAna);
-      const { session: read } = await sessionRead(started.id, asAna);
-      expect(read.sharedControlEnabledAt === null, "shared control is on");
+      const { session: readHere } = await sessionRead(started.id, asAna);
+      expect(readHere.sharedControlEnabledAt === null, "shared control is on");
       return {
-        observed: `view-ana ${started.id.slice(0, 8)} · ${read.status} · launcher is Ana ${read.workspaceLauncherUserId === read.ownerUserId} · shared control off`,
+        observed: `view-ana ${started.id.slice(0, 8)} · ${readHere.status} · launcher is Ana ${readHere.workspaceLauncherUserId === readHere.ownerUserId} · shared control off`,
         ...started,
       };
     },
@@ -725,7 +732,7 @@ export default async (h) => {
         // session `waiting`. The view follows Mend; the steps after this one do not rest on it.
         const one = await sessionRead(ana.id, asAna);
         note(
-          `Mend still reads view-ana ${one.session.status} 60 s after her stop · processes ${JSON.stringify(one.processes.map((row) => [row.kind, row.exitedAt]))}`,
+          `Mend still reads view-ana ${one.session.status} 60 s after her stop · processes ${JSON.stringify(one.processes.map((rowHere) => [rowHere.kind, rowHere.exitedAt]))}`,
         );
       }
       return `${observed} · then Ana stopped it (api): Mend reads ${settled ?? "waiting, see the note"}`;
@@ -786,8 +793,7 @@ export default async (h) => {
       const homeSeen = await homeWatch.stop();
       const homeBadge = await badge("Mend");
       await shot("two-windows-home");
-      const toasts = (seen) =>
-        seen === null ? 0 : seen.toasts.filter((text) => text.includes("view-rate-limit")).length;
+
       const toasted = [homeSeen, secondSeen].filter((seen) => toasts(seen) > 0).length;
       const focused = focusAtEvent.filter((one) => one.focused === true).length;
       await rateHooks.fire("PostToolUse");

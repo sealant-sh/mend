@@ -29,6 +29,8 @@ const READ_SCOPE = String.raw`p=$(find ~/.vscode-server/extensions -maxdepth 2 -
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const merged = (...lists) => [...new Set(lists.flat())];
 
+const relevant = (texts) => texts.filter((text) => /extension|sync|SSH/i.test(text));
+
 export default async (h) => {
   const {
     page,
@@ -115,7 +117,7 @@ export default async (h) => {
     const startedAt = Date.now();
     const watching = await watch();
     const sampled = { dialogs: [], toasts: [], statusBar: [] };
-    const relevant = (texts) => texts.filter((text) => /extension|sync|SSH/i.test(text));
+
     for (;;) {
       if (Date.now() - startedAt > SETTLE_MS)
         throw new Error(
@@ -205,7 +207,7 @@ export default async (h) => {
     page().evaluate(() =>
       [...document.querySelectorAll(".output-view .view-lines .view-line")]
         .map((line) => ({ top: Number.parseFloat(line.style.top) || 0, text: line.textContent }))
-        .sort((a, b) => a.top - b.top)
+        .toSorted((a, b) => a.top - b.top)
         .map((line) => line.text ?? "")
         .join("")
         .replace(/\u00a0/g, " "),
@@ -231,7 +233,10 @@ export default async (h) => {
         Math.max(deadline - Date.now(), 1_000),
       );
     } catch (cause) {
-      throw new Error(`${cause.message} · the log's end reads ${JSON.stringify(last.slice(-400))}`);
+      throw new Error(
+        `${cause.message} · the log's end reads ${JSON.stringify(last.slice(-400))}`,
+        { cause: cause },
+      );
     }
   };
 

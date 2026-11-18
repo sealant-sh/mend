@@ -45,6 +45,10 @@ import {
   world,
 } from "./vscode-review.lib.mjs";
 
+const commentsOf = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
+
+const key = (row) => row.split("|")[0];
+
 // A world that already ran this recipe names its next sessions apart: `MEND_REVIEW_SESSION`.
 const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
 const STOPPED = `${SESSION}-stopped`;
@@ -110,7 +114,7 @@ export default async (h) => {
       },
       limit,
     );
-  const commentsOf = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
+
   /**
    * Her row when the view shows it and no other row's name holds hers (`add-rate-limit` is in
    * `add-rate-limit-stopped`); else Mend: Review change, which picks the session by its whole name.
@@ -938,7 +942,7 @@ export default async (h) => {
         const activity = await lane.serverActivity().catch((error) => [`unread: ${error.message}`]);
         throw new Error(`${cause.message} · Mend's connections ${JSON.stringify(activity)}`);
       });
-      const key = (row) => row.split("|")[0];
+
       expect(
         before.length === 1 && key(before[0]) === key(rows[0]),
         `the retry used another key: ${JSON.stringify([before, rows])}`,
