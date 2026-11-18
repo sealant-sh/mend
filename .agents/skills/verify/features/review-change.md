@@ -73,7 +73,7 @@ Preconditions:
   The file body hides and the button reads `Expand all`. Run
   `await page.getByRole("button", { name: "Expand all" }).click()` to restore it.
 - **Change-level comment.** Run
-  `await page.getByRole("textbox", { name: "Comment on the change as a whole…" }).fill("Say why VERIFY.md exists.")`,
+  `await page.getByRole("textbox", { name: "Comment on the whole change" }).fill("Say why VERIFY.md exists.")`,
   then press `Comment` in the sidebar:
   `await page.getByRole("button", { name: "Comment", exact: true }).click()`. The panel's heading
   reads `Comments 1 not sent`, and its list holds the row `whole change` over the text, with the
@@ -217,8 +217,9 @@ Preconditions:
   it). Its `Comment` button shares its name with the sidebar's change-level `Comment` button. Scope
   by the composer's `comment · <file>:<line>` header, or take the button that appears after the
   composer opens.
-- The change-level textarea has no label either; its accessible name falls back to the placeholder
-  `Comment on the change as a whole…` (with a single ellipsis character).
+- The web's change-level textarea is labelled `Comment on the whole change`. The phone's has no
+  label; its accessible name falls back to the placeholder `Comment on the change as a whole…` (with
+  a single ellipsis character).
 - Sidebar file buttons are named by the path followed by its counts (`VERIFY.md +1 −0`). Diff file
   headers start with the collapse glyph `▶`, then the path, an optional `<n> comment(s)` and the
   counts. Match each with its own anchored regular expression.
