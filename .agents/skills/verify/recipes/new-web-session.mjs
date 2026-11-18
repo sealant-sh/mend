@@ -17,6 +17,9 @@
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
+/** The one of a locator's matches a person sees: the desktop and phone layouts are both in the page. */
+const visible = (locator) => locator.filter({ visible: true }).first();
+
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
@@ -57,7 +60,6 @@ export default async ({ page, web, capture, note }) => {
   };
   /** Moves through the router, as a click on a link would: the browser reads what isn't held. */
   const go = (path) => page.evaluate((to) => window["__TSR_ROUTER__"].navigate({ href: to }), path);
-  const visible = (locator) => locator.filter({ visible: true }).first();
   const tile = () => visible(page.getByRole("tablist"));
   const tab = () => visible(page.getByRole("tab"));
   const pathname = () => new URL(page.url()).pathname;
