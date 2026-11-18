@@ -67,7 +67,34 @@ const run = (root, command, args, { env, log }) =>
     child.once("close", (code) => out.end(() => resolve(code ?? 1)));
   });
 
-const timed = async (step, work) => {
+/**
+ * Every step the gate can report, in order. CI must run each one too, so a commit CI passes also
+ * passes this gate: scripts/ci-workflow.test.mjs says which CI job runs each step, or why CI cannot,
+ * and fails when this list names a step it does not.
+ */
+export const GATE_STEPS = [
+  { id: "build", title: "Generated route trees" },
+  { id: "typecheck", title: "Typecheck, forced", args: ["exec", "turbo", "typecheck", "--force"] },
+  { id: "lint", title: "Lint, forced", args: ["exec", "turbo", "lint", "--force"] },
+  {
+    id: "recipes-lint",
+    title: "Verify recipes lint",
+    args: ["exec", "oxlint", "--deny-warnings", ".agents/skills/verify/recipes"],
+  },
+  { id: "tests", title: "Affected packages' tests" },
+  { id: "format", title: "Format check", args: ["format:check"] },
+];
+
+/** A gate step by id. A step missing from GATE_STEPS throws, so it cannot dodge CI's parity test. */
+const gateStep = (id) => {
+  const step = GATE_STEPS.find((candidate) => candidate.id === id);
+  if (step === undefined) throw new Error(`verify check: ${id} is not in GATE_STEPS`);
+  return step;
+};
+
+const timed = async ({ id, ...fields }, work) => {
+  const { args: _args, ...known } = gateStep(id);
+  const step = { ...known, ...fields };
   const started = Date.now();
   process.stderr.write(`verify check: ${step.title}…\n`);
   const result = await work();
@@ -112,8 +139,8 @@ export const runCheck = async (
     return {
       steps: [
         {
-          id: "build",
-          title: "Generated route trees",
+          id: gateStep("build").id,
+          title: gateStep("build").title,
           status: "blocked_by_prerequisite",
           detail: "Typecheck needs the route trees pnpm build generates",
         },
@@ -123,17 +150,11 @@ export const runCheck = async (
     };
   }
 
-  for (const [id, title, args] of [
-    ["typecheck", "Typecheck, forced", ["exec", "turbo", "typecheck", "--force", ...cap]],
-    ["lint", "Lint, forced", ["exec", "turbo", "lint", "--force", ...cap]],
-    [
-      "recipes-lint",
-      "Verify recipes lint",
-      ["exec", "oxlint", "--deny-warnings", ".agents/skills/verify/recipes"],
-    ],
-  ]) {
+  for (const id of ["typecheck", "lint", "recipes-lint"]) {
+    // Turbo's steps take the shared machine's cap; oxlint is one process.
+    const args = [...gateStep(id).args, ...(id === "recipes-lint" ? [] : cap)];
     steps.push(
-      await timed({ id, title, command: `pnpm ${args.join(" ")}` }, async () => {
+      await timed({ id, command: `pnpm ${args.join(" ")}` }, async () => {
         const code = await runner(root, "pnpm", args, { env, log: logOf(id) });
         return { status: code === 0 ? "passed" : "failed", log: relLog(root, logOf(id)) };
       }),
@@ -233,8 +254,11 @@ export const runCheck = async (
   );
 
   steps.push(
-    await timed({ id: "format", title: "Format check", command: "pnpm format:check" }, async () => {
-      const code = await runner(root, "pnpm", ["format:check"], { env, log: logOf("format") });
+    await timed({ id: "format", command: "pnpm format:check" }, async () => {
+      const code = await runner(root, "pnpm", gateStep("format").args, {
+        env,
+        log: logOf("format"),
+      });
       if (code !== 0) next.push("pnpm format:fix");
       return { status: code === 0 ? "passed" : "failed", log: relLog(root, logOf("format")) };
     }),
