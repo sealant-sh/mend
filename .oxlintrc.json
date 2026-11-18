@@ -243,6 +243,223 @@
         "promise/no-nesting": "off",
         "import/no-cycle": "off"
       }
+    },
+    {
+      // The web app and its UI kit, rebuilt on the Sheet design, are held to the rules below; the
+      // old app and kit, desktop, marketing and mobile are not. tooling/oxlint-plugin-mend/README.md
+      // says what each mend/ rule flags and allows. New code passes them without disable comments.
+      "files": [
+        "apps/web/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
+        "packages/ui/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"
+      ],
+      "plugins": ["typescript", "import", "promise", "node", "unicorn", "react", "jsx-a11y"],
+      "jsPlugins": [
+        { "name": "mend", "specifier": "./tooling/oxlint-plugin-mend/src/index.ts" },
+        { "name": "@tanstack/query", "specifier": "@tanstack/eslint-plugin-query" },
+        { "name": "@tanstack/router", "specifier": "@tanstack/eslint-plugin-router" }
+      ],
+      "rules": {
+        "mend/query-states": "error",
+        "mend/router-default-states": "error",
+        "mend/no-raw-colors": "error",
+        "mend/no-arbitrary-type-or-radius": "error",
+        "mend/no-use-client": "error",
+        "mend/no-effect-fetch": "error",
+        "mend/no-state-copy-effect": "error",
+
+        "@tanstack/query/exhaustive-deps": "error",
+        "@tanstack/query/no-rest-destructuring": "error",
+        "@tanstack/query/stable-query-client": "error",
+        "@tanstack/query/no-unstable-deps": "error",
+        "@tanstack/query/infinite-query-property-order": "error",
+        "@tanstack/query/no-void-query-fn": "error",
+        "@tanstack/query/mutation-property-order": "error",
+        // Query options come from factories (`sessionsQuery()`, `trpc.x.queryOptions()`), so a
+        // component calls useQuery itself and mend/query-states sees what it reads.
+        "@tanstack/query/prefer-query-options": "error",
+        "@tanstack/router/create-route-property-order": "error",
+        "@tanstack/router/route-param-names": "error",
+
+        // An override's plugins don't take the base categories, so each rule is named. The
+        // class-component rules are left off: the app has no class components.
+        "react/rules-of-hooks": "error",
+        "react/exhaustive-deps": "error",
+        "react/forward-ref-uses-ref": "error",
+        "react/jsx-key": "error",
+        "react/jsx-no-duplicate-props": "error",
+        "react/jsx-no-undef": "error",
+        "react/jsx-props-no-spread-multi": "error",
+        "react/no-children-prop": "error",
+        "react/no-danger-with-children": "error",
+        "react/no-render-return-value": "error",
+        "react/no-this-in-sfc": "error",
+        "react/void-dom-elements-no-children": "error",
+        "react/jsx-no-comment-textnodes": "error",
+        "react/jsx-no-script-url": "error",
+        "react/no-namespace": "error",
+        "react/style-prop-object": "error",
+        "react/button-has-type": "error",
+        "react/no-array-index-key": "error",
+        "react/no-unstable-nested-components": "error",
+        "react/jsx-no-constructed-context-values": "error",
+        "react/no-object-type-as-default-prop": "error",
+        "react/checked-requires-onchange-or-readonly": "error",
+        "react/no-danger": "error",
+        // The JSX transform needs no React in scope.
+        "react/react-in-jsx-scope": "off",
+        // Session previews frame the person's own dev server, which needs scripts and its own
+        // origin together; that is the combination this rule refuses.
+        "react/iframe-missing-sandbox": "off",
+
+        "jsx-a11y/alt-text": "error",
+        "jsx-a11y/anchor-has-content": "error",
+        "jsx-a11y/anchor-is-valid": "error",
+        "jsx-a11y/aria-activedescendant-has-tabindex": "error",
+        "jsx-a11y/aria-props": "error",
+        "jsx-a11y/aria-proptypes": "error",
+        "jsx-a11y/aria-role": "error",
+        "jsx-a11y/aria-unsupported-elements": "error",
+        "jsx-a11y/autocomplete-valid": "error",
+        "jsx-a11y/click-events-have-key-events": "error",
+        "jsx-a11y/control-has-associated-label": "error",
+        "jsx-a11y/heading-has-content": "error",
+        "jsx-a11y/html-has-lang": "error",
+        "jsx-a11y/iframe-has-title": "error",
+        "jsx-a11y/img-redundant-alt": "error",
+        "jsx-a11y/interactive-supports-focus": "error",
+        "jsx-a11y/label-has-associated-control": "error",
+        "jsx-a11y/lang": "error",
+        "jsx-a11y/media-has-caption": "error",
+        "jsx-a11y/mouse-events-have-key-events": "error",
+        "jsx-a11y/no-access-key": "error",
+        "jsx-a11y/no-aria-hidden-on-focusable": "error",
+        "jsx-a11y/no-distracting-elements": "error",
+        "jsx-a11y/no-interactive-element-to-noninteractive-role": "error",
+        "jsx-a11y/no-noninteractive-element-interactions": "error",
+        "jsx-a11y/no-noninteractive-element-to-interactive-role": "error",
+        "jsx-a11y/no-noninteractive-tabindex": "error",
+        "jsx-a11y/no-redundant-roles": "error",
+        "jsx-a11y/no-static-element-interactions": "error",
+        "jsx-a11y/role-has-required-aria-props": "error",
+        "jsx-a11y/role-supports-aria-props": "error",
+        "jsx-a11y/scope": "error",
+        "jsx-a11y/tabindex-no-positive": "error",
+        // Opening a session focuses its composer on purpose.
+        "jsx-a11y/no-autofocus": "off",
+        // It asks for <output> in place of role="status", which is the live region a status
+        // line needs.
+        "jsx-a11y/prefer-tag-over-role": "off"
+      }
+    },
+    {
+      "files": ["apps/web/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@base-ui/react",
+                "message": "Import primitives from @mend/ui, which themes them to the design; never from Base UI directly."
+              },
+              {
+                "name": "@tanstack/react-query",
+                "importNames": ["QueryClient"],
+                "allowTypeImports": true,
+                "message": "One QueryClient: the router builds it in src/router.tsx. Read it with useQueryClient()."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["@base-ui/react/*", "@radix-ui/*"],
+                "message": "Import primitives from @mend/ui, which themes them to the design; never from Base UI or Radix directly."
+              },
+              {
+                "regex": "(^|/)(web-old|ui-old)(/|$)",
+                "message": "The new web app never imports the old app or kit. Copy what a route needs, with its tests."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // The router builds the app's one QueryClient, and tests build their own.
+      "files": ["apps/web/src/router.tsx", "apps/web/**/*.test.{ts,tsx}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@base-ui/react",
+                "message": "Import primitives from @mend/ui, which themes them to the design; never from Base UI directly."
+              },
+              {
+                "name": "@mend/ui-old",
+                "message": "The new web app never imports the old kit. Build what you need in @mend/ui."
+              },
+              {
+                "name": "@mend/web-old",
+                "message": "The new web app never imports the old one. Copy what a route needs, with its tests."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["@base-ui/react/*", "@radix-ui/*"],
+                "message": "Import primitives from @mend/ui, which themes them to the design; never from Base UI or Radix directly."
+              },
+              {
+                "regex": "(^|/)(web-old|ui-old)(/|$)",
+                "message": "The new web app never imports the old app or kit. Copy what a route needs, with its tests."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      // A test builds a bare router around the one thing it renders.
+      "files": ["apps/web/**/*.test.{ts,tsx}", "packages/ui/**/*.test.{ts,tsx}"],
+      "rules": { "mend/router-default-states": "off" }
+    },
+    {
+      "files": ["packages/ui/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "@mend/web",
+                "message": "The kit imports nothing from an app."
+              },
+              {
+                "name": "@mend/api-contracts",
+                "message": "The kit knows nothing of Mend's data. Take what a component shows as props."
+              },
+              {
+                "name": "@mend/domain",
+                "message": "The kit knows nothing of Mend's data. Take what a component shows as props."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["@mend/web/*", "@mend/api-contracts/*", "@mend/domain/*"],
+                "message": "The kit imports nothing from an app, and knows nothing of Mend's data."
+              },
+              {
+                "group": ["@trpc/*"],
+                "message": "The kit knows nothing of Mend's data. Take what a component shows as props."
+              },
+              {
+                "regex": "(^|/)(apps/|web-old(/|$)|ui-old(/|$))",
+                "message": "The kit imports nothing from an app or the old kit."
+              }
+            ]
+          }
+        ]
+      }
     }
   ]
 }
