@@ -149,7 +149,15 @@ export function QueryError({
       <AlertTitle>This didn't load.</AlertTitle>
       <AlertDescription>{messageOf(error)}</AlertDescription>
       <AlertAction>
-        <Button type="button" variant="outline" size="sm" onClick={retry} disabled={retrying}>
+        {/* A 44px touch target on a phone, as every control there is. */}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="max-lg:h-11 max-lg:px-4 max-lg:text-lead"
+          onClick={retry}
+          disabled={retrying}
+        >
           {retrying ? "Trying again…" : "Try again"}
         </Button>
       </AlertAction>
