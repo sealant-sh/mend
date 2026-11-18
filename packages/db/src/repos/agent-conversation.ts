@@ -43,6 +43,7 @@ import {
   type AgentEventItem,
   type AgentEventRequest,
   type AgentInputAnswers,
+  type AgentItemKind,
   type AgentTurnStatus,
   type AgentTurnUsage,
   type UnreachableCause,
@@ -235,6 +236,14 @@ export interface OpenAgentRequestInput extends AgentEventRequest {
 export interface AgentTaskActivity {
   readonly running: number;
   readonly lastUpdatedAt: Date | null;
+}
+
+/** A session's newest conversation item, by its change-feed `seq`: what it touched last. */
+export interface NewestAgentItem {
+  readonly sessionId: SessionId;
+  readonly kind: AgentItemKind;
+  readonly title: string | null;
+  readonly data: unknown;
 }
 
 export interface AgentProtocolCursor {
@@ -568,6 +577,13 @@ export class AgentConversationRepo extends Context.Service<
     readonly oldestPendingRequests: (
       sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<AgentRequest>>;
+    /**
+     * Each session's newest item (the highest `seq`, so the one updated last), in one statement
+     * that reads one index entry per session; sessions with no item are absent.
+     */
+    readonly newestItems: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyArray<NewestAgentItem>>;
     /**
      * The background tasks one agent process reported (`task` items): how many still run, and
      * when any last changed.
@@ -2518,6 +2534,40 @@ export const AgentConversationRepoLive: Layer.Layer<
       },
     );
 
+    const newestItems = Effect.fn("AgentConversationRepo.newestItems")(function* (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) {
+      if (sessionIds.length === 0) return [];
+      // LATERAL with LIMIT 1: one step down `agent_items_session_seq_idx` per session, however
+      // long its conversation.
+      const newest = db
+        .select({ kind: agentItems.kind, title: agentItems.title, data: agentItems.data })
+        .from(agentItems)
+        .where(eq(agentItems.sessionId, agentSessions.id))
+        .orderBy(desc(agentItems.seq))
+        .limit(1)
+        .as("newest");
+      const rows = yield* db
+        .select({
+          sessionId: agentSessions.id,
+          kind: newest.kind,
+          title: newest.title,
+          data: newest.data,
+        })
+        .from(agentSessions)
+        .crossJoinLateral(newest)
+        .where(inArray(agentSessions.id, [...sessionIds]))
+        .pipe(Effect.orDie);
+      return rows.map(
+        (row): NewestAgentItem => ({
+          sessionId: row.sessionId,
+          kind: row.kind,
+          title: row.title,
+          data: row.data,
+        }),
+      );
+    });
+
     const prepareRequestResponse = Effect.fn("AgentConversationRepo.prepareRequestResponse")(
       function* (id: AgentRequestId, response: ResolveAgentRequestInput, decidedBy: string) {
         const [existing] = yield* db
@@ -2860,6 +2910,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       byRequestId,
       listRequests,
       oldestPendingRequests,
+      newestItems,
       hasPendingRequests,
       prepareRequestResponse,
       completeRequestResponse,

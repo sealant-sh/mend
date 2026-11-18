@@ -3,7 +3,7 @@ import { QueryClient, type QueryKey } from "@tanstack/react-query";
 import { serialize } from "superjson";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { makeInboxPatcher, rowsAbout, withRow } from "./inbox-live.ts";
+import { ACTIVITY_READ_GAP_MS, makeInboxPatcher, rowsAbout, withRow } from "./inbox-live.ts";
 import { makeTrpcProxy } from "./trpc.ts";
 
 /** A row with only what the patcher reads; the rest of the DTO never matters here. */
@@ -113,6 +113,30 @@ describe("the inbox kept live from the event stream", () => {
     await settled();
     await vi.waitFor(() => expect(list()?.[0]?.session.status).toBe("completed"));
     expect(urls).toHaveLength(2);
+  });
+
+  it("re-reads a running row as its conversation moves, at most once a gap, and never an ended one", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "Date"] });
+    try {
+      const { patch } = world([row("a", "running"), row("b", "completed")]);
+      const moved = { type: "agent-conversation", sessionId: "a", projectId: "p" } as const;
+      answerRow("a", row("a", "running"));
+      patch(moved);
+      await settled();
+      // Three more items within the gap: one read when it ends, not three.
+      answerRow("a", row("a", "running"));
+      patch(moved);
+      patch(moved);
+      patch(moved);
+      patch({ type: "agent-conversation", sessionId: "b", projectId: "p" });
+      await Promise.resolve();
+      expect(urls).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(ACTIVITY_READ_GAP_MS);
+      await settled();
+      expect(urls).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("reads the whole list again for an event that names no row", async () => {

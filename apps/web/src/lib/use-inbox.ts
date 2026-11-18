@@ -1,4 +1,4 @@
-import { useQueries, useQuery, useSuspenseQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { useMemo, useSyncExternalStore } from "react";
 
 import { inboxQuery } from "./inbox-live.ts";
@@ -61,8 +61,8 @@ export type InboxState =
   | { readonly status: "success"; readonly view: InboxView };
 
 /**
- * The inbox's reads put together: its rows, the person's marks, who they are (for "Mine"), the
- * filters this browser keeps, and, for each Idle session, how many files its change has.
+ * The inbox's reads put together: its rows, the person's marks, who they are (for "Mine"), and the
+ * filters this browser keeps.
  */
 export const useInbox = (): InboxState => {
   const trpc = useTRPC();
@@ -72,36 +72,10 @@ export const useInbox = (): InboxState => {
   const marks = useQuery(inboxMarksQuery(trpc));
   // The root route read who is signed in before any signed-in page renders.
   const viewer = useSuspenseQuery(signedInOptions(trpc));
-  const idleChanges = useMemo(
-    () => [
-      ...new Set(
-        (inbox.data ?? []).flatMap((row) =>
-          row.session.status === "idle" && row.annotation?.changeId != null
-            ? [row.annotation.changeId]
-            : [],
-        ),
-      ),
-    ],
-    [inbox.data],
-  );
-  // An Idle session's change, read for its file count; one that hasn't answered counts as none.
-  const changedFiles = useQueries({
-    queries: idleChanges.map((id) =>
-      trpc.changes.stats.queryOptions({ id }, { staleTime: 60_000 }),
-    ),
-    // A plain object, which Query shares structurally: it keeps its identity while no count moves.
-    combine: (results): Readonly<Record<string, number>> =>
-      Object.fromEntries(
-        results.flatMap((result, index) => {
-          const id = idleChanges[index];
-          return id === undefined || result.data === undefined ? [] : [[id, result.data.files]];
-        }),
-      ),
-  });
   const me = viewer.data.userId;
   const all = useMemo(
-    () => inboxRows({ rows: inbox.data ?? [], marks: marks.data ?? [], changedFiles, now }),
-    [inbox.data, marks.data, changedFiles, now],
+    () => inboxRows({ rows: inbox.data ?? [], marks: marks.data ?? [], now }),
+    [inbox.data, marks.data, now],
   );
   const groups = useMemo(
     () => groupRows(all.filter((row) => matchesFilters(row, filters, me))),

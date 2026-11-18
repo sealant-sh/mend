@@ -5690,4 +5690,11 @@ export const migrations = {
       ON queued_sessions (owner_user_id, organization_id)`;
     yield* sql`CREATE INDEX IF NOT EXISTS queued_sessions_state_idx ON queued_sessions (state)`;
   }),
+  // How many files a change has, counted at each head refresh, so the inbox can say whether a
+  // finished session changed files without reading its worktree (SLNT-1113).
+  "0226_change_file_count": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE worktree_changes ADD COLUMN IF NOT EXISTS file_count integer
+      CHECK (file_count >= 0)`;
+  }),
 };

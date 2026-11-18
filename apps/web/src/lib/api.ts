@@ -78,6 +78,8 @@ export type SessionInboxMarkDto = Outputs["sessions"]["inboxMarks"][number];
 /** One row of the Sessions inbox: the session, its project's name, its title, why it waits. */
 export type SessionInboxRowDto = Outputs["sessions"]["inbox"][number];
 export type SessionAskDto = NonNullable<SessionInboxRowDto["ask"]>;
+/** What a running agent is doing, from its newest conversation item. */
+export type AgentActivityDto = NonNullable<SessionInboxRowDto["activity"]>;
 export type WorktreeDto = Outputs["projects"]["detail"]["worktrees"][number];
 export type WorktreeAnnotationDto = Outputs["projects"]["detail"]["worktreeAnnotations"][number];
 export type SessionStatusDto = SessionDto["status"];

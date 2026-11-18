@@ -44,6 +44,7 @@ import {
   ServiceRecipe,
   ServiceView,
   Session,
+  AgentActivity,
   SessionAsk,
   SessionControlEvent,
   SessionProcess,
@@ -53,7 +54,7 @@ import {
   WorkspaceRetirement,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
@@ -381,6 +382,11 @@ export const SessionInboxAnnotation = Schema.Struct({
   liveServices: Schema.Int,
   /** The kind of the session's current agent process: whether the row's menu offers Resume. */
   currentAgent: Schema.NullOr(Schema.Struct({ kind: SessionProcessKind })),
+  /**
+   * How many files the change has against its base, as Mend counted it at its last checkpoint;
+   * null when no checkpoint was counted yet, and from servers before the count (SLNT-1113).
+   */
+  fileCount: Schema.NullOr(Schema.Int).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 });
 export type SessionInboxAnnotation = typeof SessionInboxAnnotation.Type;
 
@@ -399,6 +405,24 @@ export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInbox
   annotation: Schema.NullOr(SessionInboxAnnotation),
   /** The oldest request still open; null when nothing waits on a person. */
   ask: Schema.NullOr(SessionAsk),
+  /**
+   * The session's worktree's name as lists show it (`worktreeTitle`): what a row names when
+   * sessions share a workspace. Null when the worktree row is gone, and from older servers.
+   */
+  worktreeName: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+  /**
+   * Why a failed session ended, as Mend recorded it when the session settled ("launch failed:
+   * …", "harness exited with code 1"); null for any other status, and from older servers.
+   */
+  failure: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * What a running session's agent is doing, from its newest conversation item; null when it isn't
+   * running, runs in terminal mode (no items), its newest item says nothing about work under way,
+   * and from older servers.
+   */
+  activity: Schema.NullOr(AgentActivity).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 const historyQuery = {

@@ -1,0 +1,124 @@
+import { PgClient } from "@effect/sql-pg";
+import { ChangeId, SessionId, Sha } from "@mend/domain";
+import { Effect, Layer, Redacted } from "effect";
+import { SqlClient } from "effect/sql";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { MendDBLive } from "../src/client.ts";
+import { migrations } from "../src/migrations.ts";
+import {
+  AgentConversationRepo,
+  AgentConversationRepoLive,
+} from "../src/repos/agent-conversation.ts";
+import { WorktreeChangesRepo, WorktreeChangesRepoLive } from "../src/repos/worktree-changes.ts";
+import { postgresTestConfig } from "./postgres.ts";
+
+const postgres = postgresTestConfig();
+const database = `mend_inbox_row_facts_${process.pid}_${Date.now()}`;
+const url = new URL(postgres.adminUrl);
+url.pathname = `/${database}`;
+const adminLayer = PgClient.layer({ url: Redacted.make(postgres.adminUrl) });
+const scratchLayer = PgClient.layer({ url: Redacted.make(url.toString()) });
+const reposLayer = Layer.mergeAll(AgentConversationRepoLive, WorktreeChangesRepoLive).pipe(
+  Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
+);
+const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+  Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
+const withRepos = <A, E>(
+  effect: Effect.Effect<A, E, AgentConversationRepo | WorktreeChangesRepo | SqlClient.SqlClient>,
+) => Effect.runPromise(effect.pipe(Effect.provide(reposLayer), Effect.scoped));
+
+const base = Sha.make("a".repeat(40));
+const CHANGE = ChangeId.make("change-1");
+
+/**
+ * One worktree and its change, and three sessions in it: `talks` with a conversation whose items
+ * were written out of order, `quiet` with none.
+ */
+const seed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const [, migration] of Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b)))
+    yield* migration;
+  yield* sql`INSERT INTO "user" (id, name, email, "createdAt") VALUES ('u-1', 'u-1', 'u-1@example.invalid', '2026-01-01T00:00:00Z')`;
+  yield* sql`INSERT INTO projects (id,name,store_path,default_branch,organization_id,created_by_user_id)
+    VALUES ('proj-1','fixture','/store/fixture/repo.git','main',(SELECT id FROM organizations LIMIT 1),'u-1')`;
+  yield* sql`INSERT INTO worktrees (id,project_id,name,directory,branch,base_sha)
+    VALUES ('wt-1','proj-1','fixture','fixture','mend/fixture',${base})`;
+  for (const id of ["talks", "quiet"])
+    yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,owner_user_id,harness,worktree,branch,base_sha,status)
+      VALUES (${id},'proj-1','wt-1','u-1','codex','fixture','mend/fixture',${base},'running')`;
+  yield* sql`INSERT INTO worktree_changes (id,project_id,worktree_id,session_id,branch,base_sha)
+    VALUES (${CHANGE},'proj-1','wt-1','talks','mend/fixture',${base})`;
+  yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status)
+    VALUES ('p-1','talks','ws-1','agent-protocol','codex','running')`;
+  yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, author, input, status)
+    VALUES ('t-1', 'talks', 'p-1', 1, 'u-1', 'go', 'running')`;
+  // The command started first and was updated last (seq 3): it is what the agent touched last,
+  // though the reply was created after it.
+  const items = [
+    ["i-reply", 2, "assistant-message", null],
+    ["i-command", 3, "command-execution", "pnpm test"],
+    ["i-read", 1, "reasoning", null],
+  ] as const;
+  for (const [id, seq, kind, title] of items)
+    yield* sql`INSERT INTO agent_items (id, session_id, process_id, turn_id, seq, provider_item_id, provider_output_process_id, provider_output_seq, provider_event_index, kind, status, title)
+      VALUES (${id}, 'talks', 'p-1', 't-1', ${seq}, ${id}, 'p-1', ${seq}, 0, ${kind}, 'in-progress', ${title})`;
+});
+
+describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktree", () => {
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        yield* (yield* SqlClient.SqlClient).unsafe(`CREATE DATABASE ${database}`);
+      }),
+    );
+    await withRepos(seed);
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        yield* (yield* SqlClient.SqlClient).unsafe(
+          `DROP DATABASE IF EXISTS ${database} WITH (FORCE)`,
+        );
+      }),
+    );
+  });
+
+  it("keeps a change's file count for its head, and never lets a count for an older head replace it", async () => {
+    const counts = await withRepos(
+      Effect.gen(function* () {
+        const changes = yield* WorktreeChangesRepo;
+        const countOf = () =>
+          changes
+            .annotationsForSessions([SessionId.make("talks")])
+            .pipe(Effect.map((rows) => rows[0]?.fileCount));
+        const uncounted = yield* countOf();
+        const first = Sha.make("1".repeat(40));
+        const second = Sha.make("2".repeat(40));
+        yield* changes.refreshHead(CHANGE, first, SessionId.make("talks"));
+        yield* changes.recordFileCount(CHANGE, first, 3);
+        const counted = yield* countOf();
+        // A newer checkpoint moves the head; the count for the older head lands after its own.
+        yield* changes.refreshHead(CHANGE, second, SessionId.make("talks"));
+        yield* changes.recordFileCount(CHANGE, second, 0);
+        yield* changes.recordFileCount(CHANGE, first, 5);
+        return { uncounted, counted, newest: yield* countOf() };
+      }),
+    );
+    expect(counts).toEqual({ uncounted: null, counted: 3, newest: 0 });
+  });
+
+  it("reads each session's newest item by its feed position, and nothing for a session with none", async () => {
+    const newest = await withRepos(
+      Effect.gen(function* () {
+        return yield* (yield* AgentConversationRepo).newestItems([
+          SessionId.make("talks"),
+          SessionId.make("quiet"),
+        ]);
+      }),
+    );
+    expect(newest.map(({ sessionId, kind, title }) => ({ sessionId, kind, title }))).toEqual([
+      { sessionId: "talks", kind: "command-execution", title: "pnpm test" },
+    ]);
+  });
+});

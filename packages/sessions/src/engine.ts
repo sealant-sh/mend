@@ -890,6 +890,7 @@ import {
 import { writeWorktreeFileOnHost } from "./worktree-file-write.ts";
 import { changeWorktreeBranch, makeWorktreeGitGate } from "./worktree-git.ts";
 import { pullWorktree } from "./worktree-pull.ts";
+import { WorktreeReads } from "./worktree-reads.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
 /**
@@ -3810,7 +3811,8 @@ type SessionEngineRequirements =
   | HarnessLayoutConfig
   | WorkspaceHostUserNamespaces
   | PreviewUrls
-  | NetworkConfig;
+  | NetworkConfig
+  | WorktreeReads;
 
 /**
  * The executor answered an ask: its evidence fence now clears only with a publication (review
@@ -9469,6 +9471,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const socketHost = yield* SessionSocketHost;
       const projects = yield* ProjectsRepo;
       const changes = yield* WorktreeChangesRepo;
+      const worktreeReads = yield* WorktreeReads;
       const worktreesRepo = yield* WorktreesRepo;
       const removalFences = yield* RemovalFencesRepo;
       const checkpoints = yield* CheckpointsRepo;
@@ -9824,8 +9827,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const change = yield* changes.byWorktree(session.worktreeId);
         if (change === null) return;
         const latest = yield* checkpoints.latestForWorktree(session.worktreeId);
+        if (latest === null) return;
         // The refresh stamps this session as the change's last contributor.
-        if (latest !== null) yield* changes.refreshHead(change.id, latest.sha, session.id);
+        yield* changes.refreshHead(change.id, latest.sha, session.id);
+        // How many files the change has, kept beside the head so the inbox can tell a session
+        // that changed nothing from one with work to review without reading the worktree
+        // (SLNT-1113). Counted off the caller's path: a Stop or a turn never waits on it, and a
+        // count that lands after a newer refresh is refused by the head it was counted at.
+        yield* worktreeReads.changedFiles(change.projectId, change.worktreeId, change.baseSha).pipe(
+          Effect.flatMap((files) =>
+            changes.recordFileCount(change.id, latest.sha, files.value.length),
+          ),
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: change files not counted").pipe(
+              Effect.annotateLogs({ changeId: change.id, error: String(error) }),
+            ),
+          ),
+          Effect.forkIn(scope),
+        );
       });
 
       const supervise = Effect.fn("SessionEngine.supervise")(function* (

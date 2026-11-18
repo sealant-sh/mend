@@ -26,9 +26,9 @@ export const sessionsButPatched = (trpc: TrpcProxy): QueryFilters => {
   };
 };
 
-/** What patching reads of a row: which session, worktree and change it is. */
+/** What patching reads of a row: which session, worktree and change it is, and its status. */
 export interface PatchableRow {
-  readonly session: { readonly id: string; readonly worktreeId: string };
+  readonly session: { readonly id: string; readonly worktreeId: string; readonly status: string };
   readonly annotation: { readonly changeId: string | null } | null;
 }
 
@@ -64,6 +64,13 @@ const ROW_EVENTS: ReadonlySet<string> = new Set([
   "review-comment",
   "worktree",
 ]);
+/**
+ * A running row says what its agent is doing, which moves with every item of its conversation: an
+ * `agent-conversation` event reads it again, at most once in this long, so a streaming reply costs
+ * one row read every two seconds, not one per item.
+ */
+export const ACTIVITY_READ_GAP_MS = 2_000;
+
 /** The event types that can move rows the event does not name: the list is read again. */
 const LIST_EVENTS: ReadonlySet<string> = new Set(["project", "organization", "resync"]);
 
@@ -107,10 +114,33 @@ export const makeInboxPatcher = (queryClient: QueryClient, trpc: TrpcProxy) => {
     }
   };
 
+  // When each running row was last read for its activity, and the reads put off until the gap ends.
+  const activityReadAt = new Map<string, number>();
+  const activityLater = new Set<string>();
+  const readActivity = (id: string): void => {
+    if (activityLater.has(id)) return;
+    const wait = (activityReadAt.get(id) ?? -Infinity) + ACTIVITY_READ_GAP_MS - Date.now();
+    const read = () => {
+      activityLater.delete(id);
+      activityReadAt.set(id, Date.now());
+      void readRow(id);
+    };
+    if (wait <= 0) return read();
+    activityLater.add(id);
+    setTimeout(read, wait);
+  };
+
   return (event: WorkbenchEventDto): void => {
     const rows = queryClient.getQueryData<Rows>(key);
     // Nothing cached: the inbox reads the whole list when it mounts.
     if (rows === undefined) return;
+    if (event.type === "agent-conversation") {
+      const running = rows.find(
+        (row) => row.session.id === event.sessionId && row.session.status === "running",
+      );
+      if (running !== undefined) readActivity(running.session.id);
+      return;
+    }
     if (LIST_EVENTS.has(event.type)) {
       void queryClient.invalidateQueries({ queryKey: key, exact: true });
       return;

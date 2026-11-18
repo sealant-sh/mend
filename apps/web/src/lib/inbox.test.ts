@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionInboxRowDto } from "./api.ts";
 import {
+  activityDetail,
   age,
   askDetail,
   DEFAULT_INBOX_FILTERS,
@@ -33,9 +34,12 @@ const row = (
       readonly id: string;
       readonly comments?: number;
       readonly followUp?: boolean;
+      /** How many files the server counted; unset is a change it hasn't counted. */
+      readonly files?: number;
     };
     readonly ask?: SessionInboxRowDto["ask"];
     readonly imported?: boolean;
+    readonly activity?: SessionInboxRowDto["activity"];
   } = {},
 ): SessionInboxRowDto => ({
   session: {
@@ -65,35 +69,34 @@ const row = (
           pendingFollowUp: extra.change.followUp ?? false,
           liveServices: 0,
           currentAgent: null,
+          fileCount: extra.change.files ?? null,
         },
   ask: extra.ask ?? null,
+  worktreeName: null,
+  failure: null,
+  activity: extra.activity ?? null,
 });
 
 const place = (
   rows: ReadonlyArray<SessionInboxRowDto>,
-  options: {
-    readonly marks?: ReadonlyArray<InboxMark>;
-    readonly changedFiles?: Readonly<Record<string, number>>;
-  } = {},
+  options: { readonly marks?: ReadonlyArray<InboxMark> } = {},
 ) =>
   Object.fromEntries(
-    inboxRows({
-      rows,
-      marks: options.marks ?? [],
-      changedFiles: options.changedFiles ?? {},
-      now,
-    }).map((each) => [each.session.id, each.group]),
+    inboxRows({ rows, marks: options.marks ?? [], now }).map((each) => [
+      each.session.id,
+      each.group,
+    ]),
   );
 
 describe("the inbox's groups", () => {
-  it("puts a waiting session under Waiting on you, a live one under Running, a fresh change under To review", () => {
+  it("puts a waiting session under Waiting on you, a live one under Running, an ended change with files under To review", () => {
     expect(
       place([
         row("asks", "waiting"),
         row("works", "running"),
         row("starts", "starting"),
         row("saves", "stopping"),
-        row("ended", "completed", { change: { id: "c-ended" } }),
+        row("ended", "completed", { change: { id: "c-ended", files: 2 } }),
       ]),
     ).toEqual({
       asks: "waiting",
@@ -104,18 +107,38 @@ describe("the inbox's groups", () => {
     });
   });
 
-  it("puts a failed or stopped session's unread change under To review, and says Failed in red", () => {
-    const rows = inboxRows({
-      rows: [
-        row("failed", "failed", { change: { id: "c-f" } }),
-        row("stopped", "stopped", { change: { id: "c-s" } }),
-      ],
+  it("puts a finished, stopped or failed session under To review when it changed files, and under Done when it changed none", () => {
+    expect(
+      place([
+        row("completed-files", "completed", { change: { id: "c-1", files: 3 } }),
+        row("completed-none", "completed", { change: { id: "c-2", files: 0 } }),
+        row("stopped-files", "stopped", { change: { id: "c-3", files: 1 } }),
+        row("stopped-none", "stopped", { change: { id: "c-4", files: 0 } }),
+        row("failed-files", "failed", { change: { id: "c-5", files: 1 } }),
+        row("failed-none", "failed", { change: { id: "c-6", files: 0 } }),
+      ]),
+    ).toEqual({
+      "completed-files": "review",
+      "completed-none": "done",
+      "stopped-files": "review",
+      "stopped-none": "done",
+      "failed-files": "review",
+      "failed-none": "done",
+    });
+  });
+
+  it("keeps an ended session whose files weren't counted under To review, so no change is hidden", () => {
+    expect(place([row("uncounted", "stopped", { change: { id: "c-u" } })])).toEqual({
+      uncounted: "review",
+    });
+  });
+
+  it("says Failed in red", () => {
+    const [failed] = inboxRows({
+      rows: [row("failed", "failed", { change: { id: "c-f", files: 1 } })],
       marks: [],
-      changedFiles: {},
       now,
     });
-    expect(rows.map((each) => each.group)).toEqual(["review", "review"]);
-    const failed = rows.find((each) => each.session.id === "failed");
     if (failed === undefined) throw new Error("no failed row");
     expect(rowStatus(failed, now)).toEqual({ word: "Failed", failed: true });
   });
@@ -123,31 +146,26 @@ describe("the inbox's groups", () => {
   it("files an ended session under Done once someone commented on its change, or it ended a week ago", () => {
     expect(
       place([
-        row("commented", "completed", { change: { id: "c-1", comments: 2 } }),
-        row("old", "completed", { change: { id: "c-2" }, updated: minutesAgo(8 * DAYS) }),
+        row("commented", "completed", { change: { id: "c-1", comments: 2, files: 4 } }),
+        row("old", "completed", { change: { id: "c-2", files: 4 }, updated: minutesAgo(8 * DAYS) }),
         row("nothing", "stopped"),
       ]),
     ).toEqual({ commented: "done", old: "done", nothing: "done" });
   });
 
-  it("puts an Idle session with changed files under To review, and one without, or not yet read, under Running", () => {
+  it("puts an Idle session with changed files under To review, one with none under Done, and one not yet counted under Running", () => {
     const rows = [
-      row("changed", "idle", { change: { id: "c-changed" } }),
-      row("clean", "idle", { change: { id: "c-clean" } }),
-      row("unread", "idle", { change: { id: "c-unread" } }),
+      row("changed", "idle", { change: { id: "c-changed", files: 3 } }),
+      row("clean", "idle", { change: { id: "c-clean", files: 0 } }),
+      row("uncounted", "idle", { change: { id: "c-uncounted" } }),
     ];
-    expect(place(rows, { changedFiles: { "c-changed": 3, "c-clean": 0 } })).toEqual({
-      changed: "review",
-      clean: "running",
-      unread: "running",
-    });
+    expect(place(rows)).toEqual({ changed: "review", clean: "done", uncounted: "running" });
   });
 
   it("keeps a follow-up that wasn't sent under To review, and says so", () => {
     const [kept] = inboxRows({
       rows: [row("follow", "completed", { change: { id: "c-1", comments: 1, followUp: true } })],
       marks: [],
-      changedFiles: {},
       now,
     });
     expect(kept?.group).toBe("review");
@@ -158,8 +176,8 @@ describe("the inbox's groups", () => {
   it("lists one To review row per change, the newest session's", () => {
     expect(
       place([
-        row("older", "completed", { change: { id: "shared" }, updated: minutesAgo(20) }),
-        row("newer", "completed", { change: { id: "shared" }, updated: minutesAgo(2) }),
+        row("older", "completed", { change: { id: "shared", files: 1 }, updated: minutesAgo(20) }),
+        row("newer", "completed", { change: { id: "shared", files: 1 }, updated: minutesAgo(2) }),
       ]),
     ).toEqual({ newer: "review", older: "done" });
   });
@@ -193,7 +211,6 @@ describe("the two filters", () => {
       row("mine-infra", "running", { project: "infra" }),
     ],
     marks: [],
-    changedFiles: {},
     now,
   });
   const ids = (filters: Parameters<typeof matchesFilters>[1]) =>
@@ -224,7 +241,6 @@ describe("a row's words", () => {
     const [waiting] = inboxRows({
       rows: [row("asks", "waiting", { ask: { kind: "command", subject: "terraform apply" } })],
       marks: [],
-      changedFiles: {},
       now,
     });
     if (waiting === undefined) throw new Error("no row");
@@ -236,11 +252,22 @@ describe("a row's words", () => {
     expect(askDetail({ kind: "edit", subject: null })).toBe("Wants to edit a file");
   });
 
+  it("says what a running agent is doing, naming what it named on a phone", () => {
+    const [running] = inboxRows({
+      rows: [row("works", "running", { activity: { kind: "command", subject: "pnpm test" } })],
+      marks: [],
+      now,
+    });
+    if (running === undefined) throw new Error("no row");
+    expect(rowStatus(running, now).word).toBe("Running a command");
+    expect(activityDetail({ kind: "command", subject: "pnpm test" })).toBe("Running pnpm test");
+    expect(activityDetail({ kind: "edit", subject: null })).toBe("Editing files");
+  });
+
   it("calls an imported session waiting for its first message that, whatever its status", () => {
     const [imported] = inboxRows({
       rows: [row("imported", "running", { imported: true })],
       marks: [],
-      changedFiles: {},
       now,
     });
     if (imported === undefined) throw new Error("no row");
@@ -263,7 +290,6 @@ describe("a row's words", () => {
         row("alone", "running"),
       ],
       marks: [],
-      changedFiles: {},
       now,
     });
     const shared = Object.fromEntries(

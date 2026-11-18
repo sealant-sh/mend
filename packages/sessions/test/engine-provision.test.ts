@@ -52,6 +52,7 @@ import { HarnessLayoutConfigShared } from "../src/harness-layout-steps.ts";
 import { HARNESS_UPDATES_OFF_ENV, NO_PAGER_ENV } from "../src/harness-seeds.ts";
 import { ResourceRuntimeNone } from "../src/resources/runtime.ts";
 import { ResourceStatusReadsNone } from "../src/resources/status-reads.ts";
+import { WorktreeReads } from "../src/worktree-reads.ts";
 import {
   agentBridgeStubLayer,
   agentConversationStubLayer,
@@ -659,6 +660,7 @@ describe("SessionEngine", () => {
 
         const worktree = path.join(tmp, "store", "fixture", "worktrees", session.worktree);
         fs.writeFileSync(path.join(worktree, "app.ts"), "export const answer = 42\n");
+        world.changedFiles.set(session.worktreeId, 1);
 
         const checkpoint = yield* engine.checkpointNow(session.id, "user-mark");
         expect(checkpoint.trigger).toBe("user-mark");
@@ -669,6 +671,12 @@ describe("SessionEngine", () => {
         const change = world.changes.get(session.worktreeId);
         expect(change?.headSha).toBe(checkpoint.sha);
         expect(change?.sessionId).toBe(session.id);
+        // And counts the change's files for that head, off the checkpoint's own path, so the
+        // inbox can tell work to review from none.
+        const changeId = String(change?.id);
+        for (let turn = 0; turn < 100 && !world.fileCounts.has(changeId); turn += 1)
+          yield* Effect.yieldNow;
+        expect(world.fileCounts.get(changeId)).toBe(1);
 
         // The slice cp0..cp2 carries exactly the edit.
         const store = yield* Store;
@@ -1136,6 +1144,7 @@ describe("SessionEngine", () => {
           HarnessLayoutConfigShared,
           ResourceRuntimeNone,
           ResourceStatusReadsNone,
+          Layer.mock(WorktreeReads, {}),
         ),
       ),
     );

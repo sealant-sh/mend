@@ -1,6 +1,11 @@
 import { REVIEW_WAIT_MS } from "@mend/domain/workbench";
 
-import type { SessionAskDto, SessionInboxMarkDto, SessionInboxRowDto } from "./api.ts";
+import type {
+  AgentActivityDto,
+  SessionAskDto,
+  SessionInboxMarkDto,
+  SessionInboxRowDto,
+} from "./api.ts";
 
 /**
  * The sidebar inbox: every session a person can see, placed in one of five groups. The server
@@ -42,6 +47,12 @@ export interface InboxRow {
   readonly title: string;
   /** Why a waiting session waits, when the read says. */
   readonly ask: SessionAskDto | null;
+  /** The worktree's name, for the note of sessions sharing a workspace; null when unknown. */
+  readonly worktreeName: string | null;
+  /** Why a failed session ended, as the server recorded it; null otherwise. */
+  readonly failure: string | null;
+  /** What a running agent is doing, when the server knows. */
+  readonly activity: AgentActivityDto | null;
   readonly group: InboxGroup;
   /** When a snooze ends, for Snoozed rows. */
   readonly snoozedUntil: Date | null;
@@ -49,19 +60,22 @@ export interface InboxRow {
   readonly doneAt: Date | null;
 }
 
-const RUNNING: ReadonlySet<InboxSession["status"]> = new Set([
-  "starting",
-  "running",
-  "idle",
-  "stopping",
-]);
+const RUNNING: ReadonlySet<InboxSession["status"]> = new Set(["starting", "running", "stopping"]);
 
 const ENDED: ReadonlySet<InboxSession["status"]> = new Set(["completed", "stopped", "failed"]);
 
 /**
+ * Whether the session's change has files, as the server last counted them; null when it hasn't
+ * counted them yet (a session from before the count, or one whose count failed).
+ */
+const changedFiles = ({ annotation }: SessionInboxRowDto): boolean | null =>
+  annotation?.fileCount == null ? null : annotation.fileCount > 0;
+
+/**
  * A follow-up waits to be sent, or the session ended (however it ended) within `REVIEW_WAIT_MS`
- * and its change has no review comment yet. The server lists the same sessions past its cap
- * (`SessionsRepo.listForInbox`).
+ * and its change has files and no review comment yet. A change whose files weren't counted waits
+ * too: it is never hidden for want of a count. The server lists the same sessions past its cap
+ * (`SessionsRepo.listForInbox`), counted or not.
  */
 const endedToReview = (row: SessionInboxRowDto, now: Date): boolean => {
   const { session, annotation } = row;
@@ -71,27 +85,25 @@ const endedToReview = (row: SessionInboxRowDto, now: Date): boolean => {
       (ENDED.has(session.status) &&
         now.getTime() - session.updatedAt.getTime() <= REVIEW_WAIT_MS &&
         annotation.changeId !== null &&
-        annotation.totalComments === 0))
+        annotation.totalComments === 0 &&
+        changedFiles(row) !== false))
   );
 };
 
 /**
  * Every session the person can see, in its group, newest activity first.
  *
- * `changedFiles` holds, by change id, how many files an Idle session's change has, for the Idle
- * sessions whose change has been read: an Idle session with changed files is to review, as a
- * stopped one is. The inbox read carries no file count, so until its change is read an Idle
- * session stays under Running, where it was.
+ * A session that ended, or sits Idle, goes under To review when its change has files and under
+ * Done when it has none (Yiannis, 16 Nov 2026). Until the server has counted a change's files, an
+ * ended session waits under To review and an Idle one stays under Running, where they were.
  */
 export function inboxRows({
   rows,
   marks,
-  changedFiles,
   now,
 }: {
   readonly rows: ReadonlyArray<SessionInboxRowDto>;
   readonly marks: ReadonlyArray<InboxMark>;
-  readonly changedFiles: Readonly<Record<string, number>>;
   readonly now: Date;
 }): ReadonlyArray<InboxRow> {
   const markOf = new Map(marks.map((mark) => [mark.sessionId, mark]));
@@ -106,6 +118,9 @@ export function inboxRows({
         annotation,
         title: row.title,
         ask: row.ask,
+        worktreeName: row.worktreeName,
+        failure: row.failure,
+        activity: row.activity,
         snoozedUntil: null,
         doneAt: null,
       };
@@ -115,8 +130,11 @@ export function inboxRows({
         return { ...base, group: "snoozed", snoozedUntil: mark.snoozedUntil };
       if (session.status === "waiting") return { ...base, group: "waiting" };
       if (session.status === "idle") {
-        const files = annotation?.changeId == null ? 0 : changedFiles[annotation.changeId];
-        return { ...base, group: files === undefined || files === 0 ? "running" : "review" };
+        const files = changedFiles(row);
+        if (files === null) return { ...base, group: "running" };
+        return files
+          ? { ...base, group: "review" }
+          : { ...base, group: "done", doneAt: session.updatedAt };
       }
       if (RUNNING.has(session.status)) return { ...base, group: "running" };
       // One row per change: the worktree's sessions share it, so only the newest one is listed.
@@ -207,7 +225,53 @@ export const rowStatus = (row: InboxRow, now: Date): RowStatus => {
   if (row.group === "waiting") return plain(askWords(row.ask));
   if (row.group === "review" && row.annotation?.pendingFollowUp === true)
     return plain("Follow-up not sent");
+  if (row.activity !== null) return plain(activityWords(row.activity));
   return { word: SESSION_WORDS[session.status], failed: session.status === "failed" };
+};
+
+/** What a running agent is doing, in the sidebar's short words: "Running a command". */
+export const activityWords = (activity: AgentActivityDto): string => {
+  switch (activity.kind) {
+    case "command":
+      return "Running a command";
+    case "edit":
+      return "Editing files";
+    case "search":
+      return "Searching the web";
+    case "tool":
+      return "Using a tool";
+    case "thinking":
+      return "Thinking";
+    case "writing":
+      return "Writing a reply";
+    case "planning":
+      return "Planning";
+    case "task":
+      return "Running a task";
+  }
+};
+
+/**
+ * What a running agent is doing, naming what it named, for the phone row's second line:
+ * "Running pnpm test", "Editing src/checkout.ts".
+ */
+export const activityDetail = (activity: AgentActivityDto): string => {
+  if (activity.subject === null) return activityWords(activity);
+  switch (activity.kind) {
+    case "command":
+    case "task":
+      return `Running ${activity.subject}`;
+    case "edit":
+      return `Editing ${activity.subject}`;
+    case "search":
+      return `Searching for ${activity.subject}`;
+    case "tool":
+      return `Using ${activity.subject}`;
+    case "thinking":
+    case "writing":
+    case "planning":
+      return activityWords(activity);
+  }
 };
 
 /** Why a waiting session waits, in the sidebar's short words: "Wants to run a command". */

@@ -2705,6 +2705,12 @@ export const worktreeChanges = pgTable("worktree_changes", {
   branch: text().notNull(),
   baseSha: text().$type<Sha>().notNull(),
   headSha: text().$type<Sha>(),
+  /**
+   * How many files the change has against its base, counted when the engine last refreshed
+   * `headSha` (0226), so a list can say whether a change has files without reading the worktree.
+   * Null until a head was counted.
+   */
+  fileCount: integer(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
