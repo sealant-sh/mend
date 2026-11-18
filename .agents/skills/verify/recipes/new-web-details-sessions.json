@@ -1,0 +1,10 @@
+[
+  {
+    "name": "01-sessions",
+    "run": [
+      "sh",
+      "-c",
+      "W=details-ws-$(date +%s) && mend run --project verify-fixture --name \"$W\" --detach --json -- sh -c 'mkdir -p .mend && cat > .mend/mend.toml <<TOML\n[service.web]\ncommand = \"python3 -m http.server 8000\"\nport = 8000\nbrowserScheme = \"http\"\nTOML\nexec sleep 7241' && mend run --project verify-fixture --name \"$W\" --detach --json -- sleep 7242"
+    ]
+  }
+]

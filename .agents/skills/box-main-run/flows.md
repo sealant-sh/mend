@@ -287,6 +287,34 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.sessions.$sessionId.$view.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.shell.$sessionId.tsx`
 
+### session-page.new-web-details
+
+- **Map:** models.md `model-shown`; per-person-homes.md `shared-workspace-line`, `layout-fallback`;
+  repositories-in-session.md `repo-session-card`; handoff.md `handoff-row`; land-change.md
+  `land-session-line`; shared-control.md `share-on-web`, `share-off-web`, `who-pays`,
+  `viewer-lines`, `org-owner-off`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-details-sessions.json` (two `sleep` sessions in one worktree
+  `details-ws-<time>`, the first declaring a `web` Service in `.mend/mend.toml`), then drive the
+  recipe `new-web-details`: start the `web` Service, open `/sessions/<id>/details`, follow "Shared
+  with 1 other session", turn shared control on (through its dialog) and off, open Details from the
+  other session's tile "+", read the fixture lines (a pull request, a handoff, a second repository,
+  checks with edits since, a model, a per-person workspace and a layout fallback; shared control
+  granted to the viewer alone), follow Preview to its tab, and a pull request read that fails with
+  Try again.
+- **See:** each step's note in the recipe's `steps.log`: the Details tab selected; the Workspace
+  group's worktree, branch, base and "None yet"; "web :8000" Running under Services; both sessions
+  with owner, agent and status; focus on "Sessions in this workspace"; the who-pays line and the
+  dialog's words; `sharedControlEnabledAt` set after Turn on and null after Turn off; Details in the
+  "+" menu; the Preview tab selected from Preview; the fixture lines; "This didn't load." then "None
+  yet" after Try again.
+- **Mode:** `scripted` (recipes/new-web-details.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/details-view.tsx`,
+  `apps/web/src/components/workspace/shared-control-row.tsx`,
+  `apps/web/src/components/workspace/views/details-view.tsx`, `apps/web/src/lib/session-details.ts`
+
 ### session-stop.new-web-session-actions
 
 - **Map:** start-session.md `session-stop`, `session-stop-shared`; attach-resume.md `resume-web`,

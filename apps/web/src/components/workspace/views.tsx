@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 
 import { CHANGE_VIEW } from "./views/change-view.tsx";
+import { detailsView } from "./views/details-view.tsx";
 import { PREVIEW_VIEW } from "./views/preview-view.tsx";
 import { TERMINAL_VIEW } from "./views/terminal-view.tsx";
 
@@ -43,6 +44,8 @@ export const WORKSPACE_VIEWS: ReadonlyArray<WorkspaceView> = [
   CHANGE_VIEW,
   PREVIEW_VIEW,
   TERMINAL_VIEW,
+  // Details links to the views registered beside it; asked when it draws, not here.
+  detailsView((id) => workspaceView(id) !== undefined),
 ];
 
 export const workspaceView = (id: string): WorkspaceView | undefined =>
