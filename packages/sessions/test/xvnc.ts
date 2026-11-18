@@ -45,6 +45,7 @@ export interface Xvnc {
   readonly start: (...argv: ReadonlyArray<string>) => void;
   /** Writes new passwords over Xvnc's password file, through stdin, as a screen's script does. */
   readonly signWith: (full: string, viewOnly: string) => void;
+  /** Hands the container to Docker to kill and delete, and returns without waiting for it. */
   readonly remove: () => void;
 }
 
@@ -56,7 +57,10 @@ export const startXvnc = (name: string): Xvnc => {
     "exec Xvnc :0 -geometry 1280x800 -depth 24 -SecurityTypes VncAuth -PasswordFile /tmp/passwd -rfbport 5900 -SendCutText=0 -nolisten tcp",
   ].join(" && ");
   docker("run", "-d", "--rm", "--name", name, "-p", "127.0.0.1::5900", image, "sh", "-c", xvnc);
-  const remove = () => void execFileSync("docker", ["rm", "-f", name], { stdio: "ignore" });
+  // A busy daemon can take longer than a hook's budget to delete a container, and no test claims
+  // anything about that wait (SLNT-1108). Detached, the removal outlives the worker that asked.
+  const remove = () =>
+    spawn("docker", ["rm", "-f", name], { detached: true, stdio: "ignore" }).unref();
   try {
     const port = Number(docker("port", name, "5900").trim().split(":").at(-1));
     const x = (command: string) => docker("exec", "-e", "DISPLAY=:0", name, "sh", "-c", command);
