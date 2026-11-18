@@ -18,27 +18,28 @@ const here = fileURLToPath(new URL("../", import.meta.url));
 const testFile =
   /(?:\.(?:test|spec)\.[cm]?[jt]sx?$)|(?:^|\/)vitest(?:\.[\w-]+)?\.config\.[cm]?[jt]s$/;
 
+/** Nitro stamps its build time. */
+const nitroBuildTime = (text) =>
+  text.replace(/^(\s{2}"date": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/m, '$1"<build time>"');
+
+/** Nitro's public-asset map: each entry's file mtime, and the entries' order. */
+const nitroAssetMap = (text) =>
+  text.replace(/^var public_assets_data_default = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
+    const entries = body
+      .split(/\n(?=\t")/)
+      .map((entry) =>
+        entry.replace(/,$/, "").replace(/("mtime": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/, '$1"<mtime>"'),
+      );
+    return `var public_assets_data_default = {\n${entries.toSorted().join(",\n")}\n};`;
+  });
+
 /** Output fields that change on every build, by path: each normalizer touches only its field. */
 export const VOLATILE = [
-  {
-    // Nitro stamps its build time.
-    glob: "apps/web-old/.output/nitro.json",
-    normalize: (text) =>
-      text.replace(/^(\s{2}"date": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/m, '$1"<build time>"'),
-  },
-  {
-    // Nitro's public-asset map: each entry's file mtime, and the entries' order.
-    glob: "apps/web-old/.output/server/index.mjs",
-    normalize: (text) =>
-      text.replace(/^var public_assets_data_default = \{\n([\s\S]*?)\n\};$/m, (_, body) => {
-        const entries = body
-          .split(/\n(?=\t")/)
-          .map((entry) =>
-            entry.replace(/,$/, "").replace(/("mtime": )"\d{4}-\d\d-\d\dT[\d:.]+Z"/, '$1"<mtime>"'),
-          );
-        return `var public_assets_data_default = {\n${entries.toSorted().join(",\n")}\n};`;
-      }),
-  },
+  // Both web apps, the old one and the new one built beside it, are Nitro builds.
+  ...["apps/web-old", "apps/web"].flatMap((app) => [
+    { glob: `${app}/.output/nitro.json`, normalize: nitroBuildTime },
+    { glob: `${app}/.output/server/index.mjs`, normalize: nitroAssetMap },
+  ]),
   {
     // TanStack Router's dehydrated matches carry the time they were rendered.
     glob: "apps/marketing/dist/**/*.html",

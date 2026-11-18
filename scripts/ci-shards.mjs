@@ -31,6 +31,7 @@ const shards = {
   ],
   "clients-b": [
     "@mend/docs",
+    "@mend/web",
     "@mend/web-old",
     "@mend/domain",
     "@mend/local-git",

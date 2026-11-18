@@ -65,12 +65,10 @@ const unscopedTests = () =>
     .map((job) => job.job);
 
 test("product source owes a judgement, a run and screenshots; its tests and docs do not", () => {
-  assert.deepEqual(ids(["apps/web-old/src/routes/index.tsx"]), [
-    "pre-pr-checks",
-    "judge",
-    "run-it",
-    "screenshots",
-  ]);
+  // Both web apps: the old one, and the new one rebuilt beside it one route at a time.
+  for (const route of ["apps/web-old/src/routes/index.tsx", "apps/web/src/routes/index.tsx"]) {
+    assert.deepEqual(ids([route]), ["pre-pr-checks", "judge", "run-it", "screenshots"]);
+  }
   assert.deepEqual(ids(["packages/db/src/repos/sessions.ts"]), [
     "pre-pr-checks",
     "judge",

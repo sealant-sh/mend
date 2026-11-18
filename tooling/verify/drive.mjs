@@ -15,13 +15,16 @@ import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 // commit with a clean tree and every capture was taken after that build.
 //
 // web, desktop and mobile-web drive the stack `verify stack up` started, as its first account;
+// new-web drives the new web app (apps/web) from this checkout, served by drive-mobile.mjs --client
+// new-web in front of that stack and signed in through the stack's own sign-in page;
 // t3 drives the t3code client serve-t3-client.mjs serves for that stack; vscode drives the world
 // `drive-vscode.mjs up` made, which is its own server. Evidence lands in the run's evidence
 // directory, <evidence>/<recipe>/<surface>.
 
 const SKILL = ".agents/skills/verify";
-export const SURFACES = ["web", "cli", "tui", "desktop", "mobile-web", "vscode", "t3"];
+export const SURFACES = ["web", "new-web", "cli", "tui", "desktop", "mobile-web", "vscode", "t3"];
 const PREFIX = {
+  "new-web-": "new-web",
   "vscode-": "vscode",
   "g4-": "vscode",
   "t3-": "t3",
@@ -171,6 +174,7 @@ export const drive = async (
     exec = runCommand,
     background = spawn,
     wait = sleep,
+    fetch = globalThis.fetch,
     timeoutMs,
   },
 ) => {
@@ -347,6 +351,9 @@ export const drive = async (
     }
   }
 
+  if (surface === "new-web")
+    return driveNewWeb({ root, skill, state, stepEnv, web, found, out, background, wait, fetch });
+
   // mobile-web: the proxy in front of the stack, for as long as the recipe runs.
   const recorded = join(state.private, "mobile.json");
   const proxy = background(
@@ -378,6 +385,81 @@ export const drive = async (
     }
     const result = await web("http://127.0.0.1:18305", ["--viewport", "390x844"]);
     return finished(surface, found, out, result.code);
+  } finally {
+    proxy.kill("SIGTERM");
+  }
+};
+
+/**
+ * The new web app: its vite server and the stack's API on one origin (drive-mobile.mjs --client
+ * new-web), for as long as the recipe runs. Its first page compiles on demand, so the recipe starts
+ * once the app answers through the proxy (any answer but the proxy's own 502).
+ */
+const driveNewWeb = async ({
+  root,
+  skill,
+  state,
+  stepEnv,
+  web,
+  found,
+  out,
+  background,
+  wait,
+  fetch,
+}) => {
+  const port = 18315;
+  const recorded = join(state.private, "new-web.json");
+  const proxy = background(
+    "node",
+    [
+      join(skill, "drive-mobile.mjs"),
+      "--client",
+      "new-web",
+      "--app",
+      join(root, "apps/web"),
+      "--web",
+      state.web,
+      "--port",
+      String(port),
+      "--expo-port",
+      "18316",
+      "--log",
+      `${state.private}.new-web.log`,
+    ],
+    { cwd: root, env: stepEnv, stdio: "ignore" },
+  );
+  const answers = async () => {
+    try {
+      return (await fetch(`http://127.0.0.1:${port}/login`)).status !== 502;
+    } catch {
+      return false;
+    }
+  };
+  try {
+    let up = await waitFor(() => existsSync(recorded), 120_000, wait);
+    const deadline = Date.now() + 120_000;
+    while (up && !(await answers())) {
+      if (Date.now() >= deadline) up = false;
+      else await wait(1000);
+    }
+    if (!up) {
+      return finished(
+        "new-web",
+        found,
+        out,
+        1,
+        `the new web app did not answer within 4 minutes (${state.private}.new-web.log)`,
+      );
+    }
+    const result = await web(`http://localhost:${port}`, [
+      "--account",
+      join(state.private, "account.json"),
+      "--sign-in",
+      state.web,
+      "--state",
+      join(state.private, "browser.json"),
+    ]);
+    return finished("new-web", found, out, result.code);
   } finally {
     proxy.kill("SIGTERM");
   }

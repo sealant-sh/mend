@@ -5,6 +5,7 @@
     { "path": "./apps/marketing" },
     { "path": "./apps/vscode" },
     { "path": "./apps/api" },
+    { "path": "./apps/web" },
     { "path": "./apps/web-old" },
     { "path": "./packages/api-contracts" },
     { "path": "./packages/auth" },

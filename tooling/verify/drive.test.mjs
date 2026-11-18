@@ -190,6 +190,41 @@ test("mobile-web keeps its proxy only for the recipe, and stops it when the reci
   );
 });
 
+test("new-web drives the new app once it answers, signed in through the stack, and stops it after", async (t) => {
+  const { root, state, exec, calls } = world(t);
+  writeFileSync(join(state.private, "new-web.json"), "{}");
+  let killed = null;
+  const background = (_command, args) => {
+    calls.push({ line: args.join(" ") });
+    return { kill: (signal) => (killed = signal) };
+  };
+  // The proxy answers 502 until vite has compiled the first page.
+  const answers = [502, 502, 404];
+  const fetch = async () => ({ status: answers.shift() ?? 404 });
+  const result = await drive(root, {
+    surface: "new-web",
+    recipe: join(root, ".agents/skills/verify/recipes/web-projects.mjs"),
+    exec,
+    background,
+    wait: async () => {},
+    fetch,
+  });
+  assert.equal(result.steps[0].status, "passed");
+  assert.equal(killed, "SIGTERM");
+  assert.equal(answers.length, 0, "the recipe waited for the app to answer");
+  const [proxy, driven] = calls.map((call) => call.line);
+  assert.match(
+    proxy,
+    /drive-mobile\.mjs --client new-web --app \S+\/apps\/web --web http:\/\/localhost:3373/,
+  );
+  for (const part of [
+    "--web http://localhost:18315",
+    `--account ${state.private}/account.json`,
+    `--sign-in ${state.web}`,
+  ])
+    assert.ok(driven.includes(part), part);
+});
+
 test("evidence takes only this head's clean drives, sorts what each made, and writes the verdict", async (t) => {
   const { root, state, exec, calls } = world(t);
   const head = { sha: "a".repeat(40), branch: "b", dirty: false };

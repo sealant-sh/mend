@@ -1,0 +1,55 @@
+{
+  "name": "@mend/web",
+  "private": true,
+  "description": "The Mend web app being rebuilt to the Sheet design, one route at a time",
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*"
+  },
+  "scripts": {
+    "build": "vite build && node scripts/build-server.mjs",
+    "dev": "node scripts/dev.mjs",
+    "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware .",
+    "preview": "vite preview",
+    "start": "node --experimental-strip-types src/entry/main.ts",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
+  },
+  "dependencies": {
+    "@mend/api-contracts": "workspace:*",
+    "@mend/domain": "workspace:*",
+    "@mend/network": "workspace:*",
+    "@mend/ui": "workspace:*",
+    "@tailwindcss/vite": "catalog:",
+    "@tanstack/react-query": "catalog:",
+    "@tanstack/react-router": "catalog:",
+    "@tanstack/react-router-ssr-query": "catalog:",
+    "@tanstack/react-start": "catalog:",
+    "@tanstack/router-plugin": "catalog:",
+    "@trpc/client": "catalog:",
+    "@trpc/server": "catalog:",
+    "@trpc/tanstack-react-query": "catalog:",
+    "better-auth": "catalog:",
+    "effect": "catalog:",
+    "lucide-react": "catalog:",
+    "nitro": "^3.0.260610-beta",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "superjson": "catalog:",
+    "tailwindcss": "catalog:"
+  },
+  "devDependencies": {
+    "@mend/test-ci": "workspace:*",
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "esbuild": "catalog:",
+    "jsdom": "catalog:",
+    "nanostores": "^1.4.0",
+    "typescript": "catalog:",
+    "vite": "catalog:start",
+    "vitest": "catalog:"
+  }
+}

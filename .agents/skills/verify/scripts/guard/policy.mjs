@@ -23,7 +23,8 @@
 // drive-mobile.mjs --outer: a server drive-web.mjs may drive directly anyway). drive-mobile.mjs
 // refuses any other server, and its proxy sends the API to that one and nothing else. The same
 // holds for the t3code client serve-t3-client.mjs serves ($MEND_VERIFY_PRIVATE/t3-client.json),
-// whose `web` is the Mend its T3 gateway serves: it refuses a gateway serving any other.
+// whose `web` is the Mend its T3 gateway serves: it refuses a gateway serving any other, and for
+// the new web app drive-mobile.mjs --client new-web serves ($MEND_VERIFY_PRIVATE/new-web.json).
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -153,6 +154,8 @@ export const allowedTargets = (env) => {
 export const MOBILE_RECORD = "mobile.json";
 /** The file serve-t3-client.mjs records its t3code client in, in the private directory. */
 export const T3_CLIENT_RECORD = "t3-client.json";
+/** The file drive-mobile.mjs --client new-web records the new web app's proxy in. */
+export const NEW_WEB_RECORD = "new-web.json";
 
 /**
  * The URLs of a client page this run serves (`record`: the mobile proxy, or the t3code client),
@@ -187,7 +190,8 @@ const clientTargets = (env, targets, record) => {
 /**
  * Refuses unless `url` is one of the run's servers. `clients` (drive-web.mjs only) also lets the
  * run's own client pages through: the mobile proxy drive-mobile.mjs serves in front of the run's
- * tunnel, and the t3code client serve-t3-client.mjs serves for the run's T3 gateway.
+ * tunnel, the new web app it serves the same way, and the t3code client serve-t3-client.mjs serves
+ * for the run's T3 gateway.
  */
 export const checkTarget = (url, env, { clients = false } = {}) => {
   const targets = allowedTargets(env);
@@ -195,11 +199,12 @@ export const checkTarget = (url, env, { clients = false } = {}) => {
     targets.push(
       ...clientTargets(env, [...targets], MOBILE_RECORD),
       ...clientTargets(env, [...targets], T3_CLIENT_RECORD),
+      ...clientTargets(env, [...targets], NEW_WEB_RECORD),
     );
   const wanted = normalizeUrl(url);
   if (wanted === null || !targets.includes(wanted))
     refuse(
-      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel${clients ? ", mobile proxy or t3code client" : ""}`,
+      `${url || "no server"} is neither the declared outer (${targets[0]}) nor this run's tunnel${clients ? ", mobile proxy, t3code client or new web app" : ""}`,
     );
   return wanted;
 };

@@ -48,7 +48,7 @@ const VERBS = {
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
   drive:
-    "Run a recipe against web, desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
+    "Run a recipe against web, the new web app (new-web), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };

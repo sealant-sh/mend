@@ -60,6 +60,7 @@ const fixture = (t) => {
   }
   write(".gitignore", ".verify/\n");
   write("apps/web-old/src/routeTree.gen.ts", "// generated\n");
+  write("apps/web/src/routeTree.gen.ts", "// generated\n");
   git("init", "-b", "main");
   git("add", "-A");
   git("commit", "-m", "base");

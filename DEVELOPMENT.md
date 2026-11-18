@@ -17,6 +17,11 @@ pnpm dev
 `pnpm dev` starts Postgres (port 5434) and Garage (3900) from `compose.dev.yaml`, the web app on
 **3105** and the API on **3101**, then runs migrations. Open `http://localhost:3105`.
 
+The new web app (`apps/web`), rebuilt one route at a time, runs beside it on **3115** with
+`pnpm dev:web`, against the same API. Add `http://localhost:3115` to `MEND_ALLOWED_ORIGINS` in
+`.env` and restart `pnpm dev`, or the API refuses its calls. It has no sign-in page yet: sign in on
+3105, and the session holds on 3115 too.
+
 ## Environment
 
 `.env.example` is a working set for a Linux Docker host. `pnpm dev` loads `.env`; a variable set in

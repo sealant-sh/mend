@@ -118,6 +118,7 @@ what to do on each surface and what proves it. Drive a recipe with the surface's
 ```sh
 pnpm verify drive web --recipe web-projects        # a checked-in recipe, or a path to yours
 pnpm verify drive <desktop|mobile-web|vscode|t3> --recipe <name|path>
+pnpm verify drive new-web --recipe new-web-shell   # the new web app (apps/web), beside the stack
 pnpm verify drive cli --recipe <steps.json>        # a CLI batch: steps.mjs runs it on the stack
 pnpm verify drive tui --recipe <name>              # records drive-tui.sh's captures in <evidence>/<name>/tui
 ```
@@ -134,6 +135,14 @@ tree and every capture is newer than that build, so build again after each commi
 - The terminal, desktop, mobile web and T3 drivers:
   [references/surfaces.md](references/surfaces.md).
 - VS Code, which runs against a world of its own: [references/vscode.md](references/vscode.md).
+
+The new web app (`apps/web`, rebuilt one route at a time) is not in the stack's image.
+`drive new-web` serves it from this checkout with `vite dev` in front of the stack, signs in on the
+stack's own sign-in page (the session cookie is for `localhost` on any port), and drives
+`http://localhost:18315`. A route PR copies `recipes/new-web-shell.mjs`: open the route, capture it
+in light and dark at desktop and 390px, and force its failure the way that recipe does. On your own
+machine, `pnpm dev:web` runs it on 3115 beside `pnpm dev`; add `http://localhost:3115` to
+`MEND_ALLOWED_ORIGINS` in the root `.env`, and sign in through the old app on 3105.
 
 Capture the inner record (sessions, the session page) before step 8: it goes with the stack.
 

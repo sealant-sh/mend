@@ -61,6 +61,7 @@ test("selects dependent jobs from committed paths while root, manifests and unkn
     ["docs/operations/notes.md", only()],
     ["apps/api/src/route.ts", only({ packaging: true })],
     ["apps/web-old/src/view.tsx", only({ packaging: true })],
+    ["apps/web/src/view.tsx", only({ packaging: true })],
     ["scripts/vscode-remote-acceptance.mjs", full],
     ["apps/mobile/src/view.tsx", only({ mobile: true, packaging: true })],
     ["packages/domain/src/id.ts", only({ mobile: true, packaging: true, store: true })],
