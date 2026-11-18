@@ -345,8 +345,9 @@ export const agentOutcome = (
 
 /**
  * What a session reads once its agent is no longer live while its Services keep the workspace up
- * (`agent stopped · 3 services keep the workspace up`); null otherwise. A stop leaves Services
- * running, so the status word alone would hide a workspace that is still up.
+ * (`agent stopped · 3 services keep the workspace up`); null otherwise. Services outlive a stop
+ * while another session runs in the workspace, and an idle stop, so the status word alone would
+ * hide a workspace that is still up.
  */
 export const servicesHoldOf = (
   session: { readonly status: string },

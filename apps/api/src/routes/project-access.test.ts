@@ -805,6 +805,7 @@ const CASES: ReadonlyArray<AccessCase> = [
     "sessions.steerTurn",
   ),
   session("project-read", "GET", "/waiting")("sessions.conversationWait"),
+  session("project-read", "GET", "/stop-preview")("sessions.stopPreview"),
   // docs/adr/0016, decision 14: anyone who sees the session reads it; the engine lets only the
   // change's owner replace the workspace.
   session("project-read", "GET", "/workspace-retirement")("sessions.workspaceRetirement"),
@@ -1293,6 +1294,7 @@ const ADMITTED: Readonly<
   "sessions.interruptTurn": { status: 500, calls: ["engine.interruptTurn"] },
   "sessions.steerTurn": { status: 500, calls: ["engine.steerTurn"] },
   "sessions.conversationWait": { status: 500, calls: ["engine.conversationWait"] },
+  "sessions.stopPreview": { status: 500, calls: ["engine.stopSessionReach"] },
   "sessions.workspaceRetirement": {
     status: 200,
     calls: ["engine.workspaceRetirement"],
@@ -1339,7 +1341,7 @@ const ADMITTED: Readonly<
   "sessions.discardUnsaved": { status: 500, calls: ["engine.discardUnsavedAndStop"] },
   "sessions.label": { status: 500, calls: ["sessions.setLabel"] },
   "sessions.setInboxMark": { status: 500, calls: ["inboxMarks.set"] },
-  "sessions.stop": { status: 500, calls: ["engine.stop"] },
+  "sessions.stop": { status: 500, calls: ["engine.stopSession"] },
   "sessions.stopServices": { status: 500, calls: ["engine.stopServices"] },
   "sessions.stopServiceStarts": { status: 500, calls: ["engine.stopServiceStarts"] },
   "sessions.sharedControl": {
@@ -2061,9 +2063,10 @@ describe("owners stop sessions in their organization", () => {
         implement: {
           engine: {
             launchUnderWay: () => false,
-            stop: (sessionId) =>
+            stopSession: (sessionId) =>
               Effect.sync(() => {
                 stopped.push(sessionId);
+                return { workspace: "none", runningSessions: [], services: [] } as const;
               }),
           },
           controlEvents: {

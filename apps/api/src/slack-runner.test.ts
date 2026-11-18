@@ -804,12 +804,12 @@ const world = (options: WorldOptions = {}) => {
           steeringChecks.push({ sessionId: session.id, sender });
           return options.steeringRefused ?? null;
         }),
-      stop: (sessionId) =>
-        note(`engine.stop:${sessionId}`).pipe(
+      stopSession: (sessionId) =>
+        note(`engine.stopSession:${sessionId}`).pipe(
           Effect.andThen(
             options.stopFails === true
               ? Effect.fail(new SessionNotFoundError({ sessionId }))
-              : Effect.void,
+              : Effect.succeed({ workspace: "none", runningSessions: [], services: [] } as const),
           ),
         ),
       submitTurn: (sessionId, input, author) =>
@@ -1756,7 +1756,7 @@ describe("the Slack runner, switching a session's project", () => {
     ).toEqual([
       // The new session first; the one it replaces is stopped only once it exists.
       `start.createAs:alice:${billing.id}:claude:null:slack`,
-      "engine.stop:session-1",
+      "engine.stopSession:session-1",
       "controls.record:session-1:stop:alice",
       // The reporter shows the stop, from all it reads: the runner writes no status of its own.
       "reports.request:session-1",
@@ -1787,7 +1787,7 @@ describe("the Slack runner, switching a session's project", () => {
     await start();
     await switchTo(w, billing.id);
 
-    expect(w.effects.some((entry) => entry.startsWith("engine.stop"))).toBe(false);
+    expect(w.effects.some((entry) => entry.startsWith("engine.stopSession"))).toBe(false);
     expect(w.effects.some((entry) => entry.startsWith("controls.record"))).toBe(false);
     expect(posts(w, "postMessage").at(-1)?.text).toBe(
       "not started · budget reached · 1 unsettled session for one account · nothing running was stopped",
@@ -1801,7 +1801,7 @@ describe("the Slack runner, switching a session's project", () => {
     await start();
     await switchTo(w, billing.id);
 
-    expect(w.effects).toContain("engine.stop:session-1");
+    expect(w.effects).toContain("engine.stopSession:session-1");
     expect(w.effects.some((entry) => entry.startsWith("controls.record"))).toBe(false);
     expect(posts(w, "postEphemeral").at(-1)?.text).toBe(
       "switched · the earlier session could not be stopped · stop it in Mend",
@@ -1831,7 +1831,7 @@ describe("the Slack runner, switching a session's project", () => {
       "not switched · the session's first turn has completed · mention Mend again to start another session",
       "not switched · the session's first turn has completed · mention Mend again to start another session",
     ]);
-    expect(w.effects.some((entry) => entry.startsWith("engine.stop"))).toBe(false);
+    expect(w.effects.some((entry) => entry.startsWith("engine.stopSession"))).toBe(false);
     expect(w.effects.filter((entry) => entry.startsWith("start.createAs"))).toHaveLength(1);
   });
 });

@@ -27,7 +27,12 @@ reads as an observation ("Running · recording", "Completed · observed").
   review.
 - `session-attach-resume` takes a live session's terminal (`a` in the dashboard), or resumes a
   settled one (`r`, the desktop's `resume`, the phone's `Resume`).
-- `session-stop` stops the agent; the record and the review remain.
+- `session-stop` stops the agent; the record and the review remain. When no other session in the
+  workspace is running, the workspace stops too, with its Services and shells, once saved
+  (docs/adr/0026, decision 7).
+- `session-stop-shared` with another session running in the workspace, stops only the session:
+  `GET /api/sessions/<id>/stop-preview` reads `keeps-running` and names that session, and
+  `mend stop` prints `the workspace keeps running for <title> (<owner>)`.
 
 ## How to get to it (user POV)
 
@@ -114,8 +119,9 @@ Preconditions:
   (`page.getByRole("link", { name: "Review the change" })`) and the button `Mark checkpoint` are
   present.
 - **Stop.** Run `await page.getByRole("button", { name: "Stop", exact: true }).click()`. The button
-  reads `Stopping…`; with no live Services the status then reads `Stopped` (while Services keep the
-  workspace up, a hold line takes its place), and `resume with:` buttons appear for the owner.
+  reads `Stopping…`; the status then reads `Stopped` once saved, with the workspace's Services
+  stopped too (while another session runs in the workspace and Services keep it up, a hold line
+  takes its place), and `resume with:` buttons appear for the owner.
 - **CLI run.** Run a command as a session. Run
   `mend run --project <project> -- sh -c 'printf "verified\n" > VERIFY.md'`. Stdout shows
   `✓ project <project>`, `✓ worktree <name> · branch <branch>`, `✓ base … · session <id8>`,

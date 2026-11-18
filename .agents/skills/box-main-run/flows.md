@@ -367,15 +367,20 @@ flows reuse what earlier ones made:
 ### services.cli-run
 
 - **Map:** services.md `service-run-cli`, `service-observe`, `service-connect`, `service-logs`,
-  `service-restart-stop`, `service-hold`
+  `service-restart-stop`, `service-hold`; start-session.md `session-stop-shared`
 - **Needs:** Boat; no turn; CLI and web; `start-session.boat-live`
 - **Do:** On the live session, as services.md's CLI steps:
   `M service run <id8> --port 8000 --name web --http --no-connect -- python3 -m http.server 8000`,
   `service list`, `service connect web --port 18000` with one curl, `service logs`,
-  `service restart`; then `M stop <id8>` and `M stop --services <id8>`.
+  `service restart`. Start a second session in the worktree to keep the workspace running:
+  `M run --project <p> --name main-run-live-<sha8> --detach --json -- sleep 1800`; record `<k8>`. In
+  the owner's browser open `<web>/api/sessions/<id>/stop-preview`. Then `M stop <id8>` and
+  `M stop --services <id8>`.
 - **See:** the session page's `Services` card lists `web` ending at `reachable`; curl prints `200`;
-  `mend stop` names what keeps the workspace up ending `· mend stop --services <id8>`; then
-  `✓ stopped 1 service · …` and `no live services — …` from `service list`.
+  the preview reads `"workspace":"keeps-running"` naming `<k8>`'s session and listing `web`;
+  `mend stop` prints `the workspace keeps running for …` and names what keeps the workspace up
+  ending `· mend stop --services <id8>`; then `✓ stopped 1 service · …` and `no live services — …`
+  from `service list`. `<k8>` stays running for `capture-and-save.live-stop`.
 - **Mode:** `agent` · a recipe would make it cheaper (the card half)
 - **Box-only:** `boat`
 - **Areas:** `packages/sessions/`, `apps/api/src/`, `apps/cli/src/`, `packages/network/`
@@ -780,14 +785,15 @@ flows reuse what earlier ones made:
 ### capture-and-save.live-stop
 
 - **Map:** capture-and-save.md `capture-stop-line`, `capture-sessions`; session-shell.md
-  `shell-holds` (end)
-- **Needs:** Boat; no turn; TUI and CLI; `services.cli-run`
+  `shell-holds` (end); start-session.md `session-stop`
+- **Needs:** Boat; no turn; TUI and CLI; `services.cli-run` (its keeper session `<k8>`)
 - **Do:** Rejoin the open shell from the dashboard as session-shell.md's "Rejoin" says, `cat` the
-  file and `exit`; then read `M sessions` and `M sessions --project <p> --all --json` until the
-  session settles.
-- **See:** `no live terminal · rejoining the open shell` and `from the shell`; while it saves, a
-  `stopping` row with a `saving …` line and a `capture` object with `"notSaved": false`; then the
-  session settled. A drain that ends before the first read is reported as not seen.
+  file and `exit`; then `M stop <k8>`, the last session running in the workspace, and read
+  `M sessions` and `M sessions --project <p> --all --json` until both sessions settle.
+- **See:** `no live terminal · rejoining the open shell` and `from the shell`; `M stop <k8>` prints
+  no `keeps running` line; while it saves, a `stopping` row with a `saving …` line and a `capture`
+  object with `"notSaved": false`; then both sessions settled. A drain that ends before the first
+  read is reported as not seen.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `packages/sessions/`, `packages/store/`, `apps/api/src/`, `apps/cli/src/`

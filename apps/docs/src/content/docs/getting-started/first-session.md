@@ -176,9 +176,11 @@ with:
 mend stop 01MEND
 ```
 
-The record and review remain. Services keep running after a stop, and a running Service keeps the
-workspace up; the stop then says so, for example `agent stopped · 3 services keep the workspace up`.
-Stop the Services too with:
+The record and review remain. When no other session is running in the workspace, the workspace stops
+too, with its Services, once the session's work is saved. When another session is running there, the
+workspace keeps running for it and the stop says so, for example
+`the workspace keeps running for Write tests for retry (Ada Lovelace)`. Stop this session's Services
+anyway with:
 
 ```sh
 mend stop --services 01MEND

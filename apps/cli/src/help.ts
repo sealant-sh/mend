@@ -543,8 +543,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "stop the agent; the record and the review remain",
     synopsis: ["[session-id-prefix]", "--all [--project <p>]", "--services [session-id-prefix]"],
     description: [
-      "Ends the agent process. The workspace harvests the harness state and closes. The worktree, the record, and the review stay, and mend resume brings the conversation back.",
-      "Services keep running after a stop, and a running Service keeps the workspace up. The stop then prints, for example, agent stopped · 3 services keep the workspace up. --services stops all of them. Once nothing is live, the workspace closes.",
+      "Ends the agent process and saves the session's work. When no other session is running in the workspace, the workspace stops too, with its Services and shells. The worktree, the record, and the review stay, and mend resume brings the conversation back.",
+      "When another session is running in the workspace, only this session stops: the stop prints the workspace keeps running for <session>, and the Services keep running, for example agent stopped · 3 services keep the workspace up. --services stops this session's Services. Once nothing is live, the workspace closes.",
       sessionArg,
     ],
     options: [
