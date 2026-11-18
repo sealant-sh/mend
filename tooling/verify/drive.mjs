@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 
+import { choosePorts, stopDrive } from "./ports.mjs";
 import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 
 // `verify drive <surface> --recipe <name|path>`: run an existing recipe with the verify skill's own
@@ -407,7 +408,18 @@ const driveNewWeb = async ({
   wait,
   fetch,
 }) => {
-  const port = 18315;
+  const [port, vitePort] = await choosePorts([
+    stepEnv.MEND_VERIFY_NEW_WEB_PORT,
+    stepEnv.MEND_VERIFY_NEW_WEB_VITE_PORT,
+  ]);
+  const address = `http://localhost:${port}`;
+  const finish = (code, why) => {
+    const result = finished("new-web", found, out, code, why);
+    result.drive.web = address;
+    result.drive.vitePort = vitePort;
+    result.steps[0].detail = `${address}${result.steps[0].detail ? `; ${result.steps[0].detail}` : ""}`;
+    return result;
+  };
   const recorded = join(state.private, "new-web.json");
   const proxy = background(
     "node",
@@ -422,12 +434,20 @@ const driveNewWeb = async ({
       "--port",
       String(port),
       "--expo-port",
-      "18316",
+      String(vitePort),
       "--log",
       `${state.private}.new-web.log`,
     ],
-    { cwd: root, env: stepEnv, stdio: "ignore" },
+    { cwd: root, env: stepEnv, stdio: "ignore", detached: true },
   );
+  let interrupted;
+  const interrupt = (signal) => {
+    interrupted ??= stopDrive(proxy, [port, vitePort]).then(() =>
+      process.exit(signal === "SIGINT" ? 130 : 143),
+    );
+  };
+  process.on("SIGINT", interrupt);
+  process.on("SIGTERM", interrupt);
   const answers = async () => {
     try {
       return (await fetch(`http://127.0.0.1:${port}/login`)).status !== 502;
@@ -443,15 +463,12 @@ const driveNewWeb = async ({
       else await wait(1000);
     }
     if (!up) {
-      return finished(
-        "new-web",
-        found,
-        out,
+      return finish(
         1,
         `the new web app did not answer within 4 minutes (${state.private}.new-web.log)`,
       );
     }
-    const result = await web(`http://localhost:${port}`, [
+    const result = await web(address, [
       "--account",
       join(state.private, "account.json"),
       "--sign-in",
@@ -459,9 +476,11 @@ const driveNewWeb = async ({
       "--state",
       join(state.private, "browser.json"),
     ]);
-    return finished("new-web", found, out, result.code);
+    return finish(result.code);
   } finally {
-    proxy.kill("SIGTERM");
+    await stopDrive(proxy, [port, vitePort]);
+    process.off("SIGINT", interrupt);
+    process.off("SIGTERM", interrupt);
   }
 };
 

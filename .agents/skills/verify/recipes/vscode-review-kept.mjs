@@ -15,6 +15,8 @@ import {
   said,
 } from "./vscode-review.lib.mjs";
 
+const pendingCount = (seen) => seen.rows.find((row) => row.label === "Comments")?.description ?? "";
+
 const run = promisify(execFile);
 
 const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
@@ -59,8 +61,6 @@ export default async (h) => {
   const base = (await h.api(`/projects/${project.id}`)).project.defaultBranch;
   const file = async () => join(await folder(), `${encodeURIComponent(session.id)}.json`);
 
-  const pendingCount = (seen) =>
-    seen.rows.find((row) => row.label === "Comments")?.description ?? "";
   const select = async (pending) => {
     await view("Mend");
     await revealSession(SESSION);

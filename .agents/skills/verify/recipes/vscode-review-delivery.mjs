@@ -16,6 +16,9 @@ import {
   world,
 } from "./vscode-review.lib.mjs";
 
+const moved = (now) =>
+  now.rows.some((row) => row.label.startsWith("worktree changed since this review"));
+
 const PREFIX = process.env.MEND_REVIEW_SESSION ?? `dlv${Date.now().toString(36).slice(-4)}`;
 const EMPTY = `${PREFIX}-empty`;
 const REPIN = `${PREFIX}-repin`;
@@ -263,8 +266,6 @@ export default async (h) => {
   );
 
   await step("d5 · Review the newer change pins the newer slice", async () => {
-    const moved = (now) =>
-      now.rows.some((row) => row.label.startsWith("worktree changed since this review"));
     const seen = await sectionUntil("the worktree-changed line", moved, 90_000).catch(async () => {
       await h.palette("Mend: Read the change again");
       return sectionUntil("the worktree-changed line", moved, 60_000);

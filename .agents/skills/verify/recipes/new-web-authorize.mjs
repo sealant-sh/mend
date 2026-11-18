@@ -152,10 +152,7 @@ export default async ({ page, web, capture, note, registerSecret, account }) => 
   await captureAll("authorize");
 
   // Approving…, held; then a request that never reached the server.
-  let release = () => {};
-  const held = new Promise((done) => {
-    release = done;
-  });
+  const { promise: held, resolve: release } = Promise.withResolvers();
   await page.route("**/trpc/devices.approveCliAuth**", async (route) => {
     await held;
     await route.abort("connectionrefused");
@@ -300,10 +297,7 @@ export default async ({ page, web, capture, note, registerSecret, account }) => 
   await page.getByText("K7QF-2MXU", { exact: true }).waitFor();
   note("the fixture request (lookup answered in the browser), for its pictures");
   await captureAll("authorize-fixture");
-  let releaseFixture = () => {};
-  const heldFixture = new Promise((done) => {
-    releaseFixture = done;
-  });
+  const { promise: heldFixture, resolve: releaseFixture } = Promise.withResolvers();
   await page.route("**/trpc/devices.approveCliAuth**", async (route) => {
     await heldFixture;
     await route.abort("connectionrefused");

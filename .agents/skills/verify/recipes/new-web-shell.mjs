@@ -15,7 +15,7 @@ export default async ({ page, web, capture, note }) => {
   await page.addInitScript(() => {
     new MutationObserver((_, observer) => {
       if (document.body === null) return;
-      window.__darkAtFirstPaint = document.documentElement.classList.contains("dark");
+      window.darkAtFirstPaint = document.documentElement.classList.contains("dark");
       observer.disconnect();
     }).observe(document, { childList: true, subtree: true });
   });
@@ -26,7 +26,7 @@ export default async ({ page, web, capture, note }) => {
     await page.goto(`${web}${path}`);
     const want = theme === "dark";
     if ((await dark()) !== want) throw new Error(`the page is not ${theme}`);
-    if ((await page.evaluate(() => window.__darkAtFirstPaint)) !== want)
+    if ((await page.evaluate(() => window.darkAtFirstPaint)) !== want)
       throw new Error(`the page was not ${theme} before its first paint`);
   };
   // A page's actions on a phone are 44px touch targets. The kit's buttons animate a size change,
@@ -91,8 +91,8 @@ export default async ({ page, web, capture, note }) => {
     }),
   );
   // The router the page hydrated with (TanStack Router keeps it on `window` in a browser).
-  await page.waitForFunction(() => window.__TSR_ROUTER__ !== undefined);
-  await page.evaluate(() => window.__TSR_ROUTER__.navigate({ to: "/forced-error" }));
+  await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
+  await page.evaluate(() => window["__TSR_ROUTER__"].navigate({ to: "/forced-error" }));
   await heading("This page didn't load");
   await page.getByText("The verify recipe failed this read on purpose.").waitFor();
   note("a failed read shows the error screen with what the server said");

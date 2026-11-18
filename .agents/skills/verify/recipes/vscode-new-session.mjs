@@ -1345,10 +1345,10 @@ export default async (h) => {
   await step(
     "Retry on the stale toast: Mend refuses it (409, the session moved on), nothing more is sent, and VS Code says how the session reads now",
     async () => {
-      const before = await launchStatuses(stale.id);
-      const shown = await watch();
+      const beforeHere = await launchStatuses(stale.id);
+      const shownHere = await watch();
       await notification(stale.toast).click("Retry");
-      const said = await waitUntil(
+      const saidHere = await waitUntil(
         "VS Code to say the session moved on",
         async () => {
           const all = await notifications();
@@ -1359,16 +1359,16 @@ export default async (h) => {
       );
       await shot("stale-retry-moved-on");
       await sleep(5_000);
-      const caught = await shown.stop();
+      const caught = await shownHere.stop();
       const after = await launchStatuses(stale.id);
       const now = await api(`/sessions/${stale.id}`);
-      const observed = `launch answers ${JSON.stringify(before)} → ${JSON.stringify(after)} · toast "${said}" · the server reads ${now.session.status} · settled ${now.session.settledAt} · processes ${movedOn.processes} → ${now.processes.length} · seen ${JSON.stringify(caught?.toasts ?? [])}`;
-      expect(after.length === before.length + 1 && after.at(-1) === 409, observed);
+      const observed = `launch answers ${JSON.stringify(beforeHere)} → ${JSON.stringify(after)} · toast "${saidHere}" · the server reads ${now.session.status} · settled ${now.session.settledAt} · processes ${movedOn.processes} → ${now.processes.length} · seen ${JSON.stringify(caught?.toasts ?? [])}`;
+      expect(after.length === beforeHere.length + 1 && after.at(-1) === 409, observed);
       expect(now.session.status === "failed", observed);
       expect(now.session.settledAt === movedOn.settledAt, observed);
       expect(now.processes.length === movedOn.processes, observed);
-      expect(said.startsWith(`${stale.label} moved on · failed · `), observed);
-      expect(said.includes("nothing launched"), observed);
+      expect(saidHere.startsWith(`${stale.label} moved on · failed · `), observed);
+      expect(saidHere.includes("nothing launched"), observed);
       // The later failure was another client's launch: this window offers no Retry of its own.
       expect(
         !(caught?.toasts ?? []).some(

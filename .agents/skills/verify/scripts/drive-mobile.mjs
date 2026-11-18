@@ -111,6 +111,10 @@ const expo =
           env: {
             ...process.env,
             APP_URL: `http://localhost:${port}`,
+            MEND_ALLOWED_ORIGINS: JSON.stringify([
+              `http://localhost:${port}`,
+              `http://127.0.0.1:${port}`,
+            ]),
             MEND_API_URL: `http://127.0.0.1:${port}`,
           },
         },

@@ -21,6 +21,27 @@ import { redact } from "../scripts/redact.mjs";
 import { loadSecrets, redactValues } from "../scripts/secrets.mjs";
 import { expect, fail, grouped, heredoc, world } from "./vscode-answer.mjs";
 
+const rowIn = (seen, name, session) =>
+  seen.groups
+    .find((group) => group.group === name)
+    ?.rows.find((row) => row.startsWith(`${session} · `)) ?? null;
+
+const rowAnywhere = (seen, session) => {
+  for (const group of seen.groups) {
+    const row = group.rows.find((one) => one.startsWith(`${session} · `));
+    if (row !== undefined) return { group: group.group, row };
+  }
+  return null;
+};
+
+const summary = (seen) =>
+  `badge "${seen.badge}" · status bar ${JSON.stringify(seen.statusBar)} · message "${seen.message}" · groups ${JSON.stringify(seen.groups.map(({ group, count, rows }) => ({ group, count, rows })))}`;
+
+const sessionRead = (id, call) => call(`/sessions/${id}`);
+
+const livePty = (detail) =>
+  detail.processes.find((row) => row.kind === "agent-pty" && row.exitedAt === null) ?? null;
+
 const HOOK_STANDIN = join(import.meta.dirname, "../scripts/fixtures/claude-standin.mjs");
 const ANA_HOLDS = "ana-holds-workspace";
 const DANA_TERMINAL = "dana-in-anas-workspace";
@@ -106,19 +127,7 @@ export default async (h) => {
     badge: await badge("Mend"),
     statusBar: await mendStatus(),
   });
-  const rowIn = (seen, name, session) =>
-    seen.groups
-      .find((group) => group.group === name)
-      ?.rows.find((row) => row.startsWith(`${session} · `)) ?? null;
-  const rowAnywhere = (seen, session) => {
-    for (const group of seen.groups) {
-      const row = group.rows.find((one) => one.startsWith(`${session} · `));
-      if (row !== undefined) return { group: group.group, row };
-    }
-    return null;
-  };
-  const summary = (seen) =>
-    `badge "${seen.badge}" · status bar ${JSON.stringify(seen.statusBar)} · message "${seen.message}" · groups ${JSON.stringify(seen.groups.map(({ group, count, rows }) => ({ group, count, rows })))}`;
+
   const until = async (what, check, limit = 60_000) => {
     let last = null;
     try {
@@ -131,7 +140,9 @@ export default async (h) => {
         limit,
       );
     } catch (error) {
-      throw new Error(`${error.message} · last read: ${last === null ? "none" : summary(last)}`);
+      throw new Error(`${error.message} · last read: ${last === null ? "none" : summary(last)}`, {
+        cause: error,
+      });
     }
   };
   /** The row's inline actions as drawn on hover: title and whether VS Code shows it disabled. */
@@ -152,7 +163,6 @@ export default async (h) => {
       );
   };
 
-  const sessionRead = (id, call) => call(`/sessions/${id}`);
   /** A shell beside a session over `/api/tty`, its text kept as it arrives. */
   const tty = async (sessionId, call) => {
     const opened = await call(`/sessions/${sessionId}/shell`, { method: "POST", body: "{}" });
@@ -283,8 +293,7 @@ export default async (h) => {
       failures.push(error.message);
       return null;
     });
-  const livePty = (detail) =>
-    detail.processes.find((row) => row.kind === "agent-pty" && row.exitedAt === null) ?? null;
+
   const runningPty = (label, id, call) =>
     waitUntil(
       `${label} running with a live agent-pty`,
@@ -348,6 +357,7 @@ export default async (h) => {
       } catch (error) {
         throw new Error(
           `${error.message} · server log: ${await tail(/worktrees|launch|refus|denied|forbidden/i)}`,
+          { cause: error },
         );
       }
       await runningPty(danaLabel, created.id, api);

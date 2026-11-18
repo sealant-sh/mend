@@ -138,11 +138,15 @@ tree and every capture is newer than that build, so build again after each commi
 
 The new web app (`apps/web`, rebuilt one route at a time) is not in the stack's image.
 `drive new-web` serves it from this checkout with `vite dev` in front of the stack, signs in on the
-stack's own sign-in page (the session cookie is for `localhost` on any port), and drives
-`http://localhost:18315`. A route PR copies `recipes/new-web-shell.mjs`: open the route, capture it
-in light and dark at desktop and 390px, and force its failure the way that recipe does. On your own
-machine, `pnpm dev:web` runs it on 3115 beside `pnpm dev`; add `http://localhost:3115` to
-`MEND_ALLOWED_ORIGINS` in the root `.env`, and sign in through the old app on 3105.
+stack's own sign-in page (the session cookie is for `localhost` on any port), and drives a free
+`http://localhost:<port>`, printed in the drive result. Vite also gets a free port. Set
+`MEND_VERIFY_NEW_WEB_PORT` and/or `MEND_VERIFY_NEW_WEB_VITE_PORT` to pin either port. The drive
+stops its servers on completion, failure or interrupt. Separate checkouts can drive at once; give
+each stack a different tunnel with `verify stack up --port <port>`. A route PR copies
+`recipes/new-web-shell.mjs`: open the route, capture it in light and dark at desktop and 390px, and
+force its failure the way that recipe does. On your own machine, `pnpm dev:web` runs it on 3115
+beside `pnpm dev`; add `http://localhost:3115` to `MEND_ALLOWED_ORIGINS` in the root `.env`, and
+sign in through the old app on 3105.
 
 Capture the inner record (sessions, the session page) before step 8: it goes with the stack.
 

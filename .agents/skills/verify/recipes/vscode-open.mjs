@@ -793,7 +793,7 @@ export default async (h) => {
       const row = treeItem(stoppedName);
       const before = await row.description();
       let redrawn = before;
-      for (const until = Date.now() + 60_000; Date.now() < until && /^running/.test(redrawn); )
+      for (const until = Date.now() + 60_000; Date.now() < until && redrawn.startsWith("running"); )
         redrawn = await row.description();
       await row.inline(OPEN);
       await stopping;
@@ -809,7 +809,7 @@ export default async (h) => {
       const bar = await statusBarItems();
       await shot("stopping-opened");
       const observed = `the server read "${atClick}" · the row read "${before}", then "${redrawn}" at the click · windows opened ${opened.length} · its status bar ${JSON.stringify(bar.filter((text) => text.includes(stoppedName) || text.includes("SSH:")))} · opens ${opensBefore} → ${opensAfter} · resumes ${resumesBefore} → ${resumesAfter} · ${shown(seen)}`;
-      expect(!/^running/.test(redrawn), `the row never turned from running: ${observed}`);
+      expect(!redrawn.startsWith("running"), `the row never turned from running: ${observed}`);
       expect(seen !== null && seen.dialogs.length === 0, `dialogs: ${observed}`);
       expect(
         !seen.quickInputs.some((title) => title.includes("Choose a session")),
@@ -1367,7 +1367,7 @@ export default async (h) => {
     async () => {
       const { session: before } = await api(`/sessions/${second.id}`);
       await api(`/sessions/${second.id}/stop`, { method: "POST", body: "{}" });
-      const stopped = await waitUntil(
+      const stoppedHere = await waitUntil(
         `${second.name} to settle`,
         async () => {
           const { session: read } = await api(`/sessions/${second.id}`);
@@ -1376,9 +1376,9 @@ export default async (h) => {
         120_000,
       );
       const { session: holder } = await api(`/sessions/${agent.id}`);
-      const observed = `${second.name} ${stopped.status} · workspace ${before.sealantWorkspaceId} → ${stopped.sealantWorkspaceId} · ${agent.name} ${holder.status} in ${holder.sealantWorkspaceId}`;
+      const observed = `${second.name} ${stoppedHere.status} · workspace ${before.sealantWorkspaceId} → ${stoppedHere.sealantWorkspaceId} · ${agent.name} ${holder.status} in ${holder.sealantWorkspaceId}`;
       expect(
-        stopped.sealantWorkspaceId === before.sealantWorkspaceId &&
+        stoppedHere.sealantWorkspaceId === before.sealantWorkspaceId &&
           holder.sealantWorkspaceId === before.sealantWorkspaceId,
         `the workspace moved: ${observed}`,
       );

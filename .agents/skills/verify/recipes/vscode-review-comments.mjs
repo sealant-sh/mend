@@ -30,6 +30,8 @@ import {
   writeComment,
 } from "./vscode-review.lib.mjs";
 
+const commentsRow = (seen) => seen.rows.find((row) => row.label === "Comments") ?? null;
+
 // A world that already ran this recipe names its next session apart: `MEND_REVIEW_SESSION`.
 const SESSION = process.env.MEND_REVIEW_SESSION ?? "add-rate-limit";
 const COMMENT = "Use the shared limiter from guard.ts";
@@ -72,7 +74,6 @@ export default async (h) => {
       },
       limit,
     );
-  const commentsRow = (seen) => seen.rows.find((row) => row.label === "Comments") ?? null;
 
   const select = async () => {
     await view("Mend");
@@ -106,8 +107,10 @@ export default async (h) => {
           const row = seen.rows.find((one) => one.label.startsWith("Mend is reading · "));
           if (row !== undefined) return { reading: row.label };
           const toasts = await h.notifications();
-          const said = toasts.find((toast) => toast.startsWith("Mend could not read this change"));
-          return said === undefined ? null : { toast: said };
+          const saidHere = toasts.find((toast) =>
+            toast.startsWith("Mend could not read this change"),
+          );
+          return saidHere === undefined ? null : { toast: saidHere };
         },
         60_000,
       );

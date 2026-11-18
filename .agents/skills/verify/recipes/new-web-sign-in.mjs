@@ -123,10 +123,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await captureAll("sign-in-wrong-password");
 
   // Signing in, held, then a server that doesn't answer.
-  let release = () => {};
-  const held = new Promise((resolve) => {
-    release = resolve;
-  });
+  const { promise: held, resolve: release } = Promise.withResolvers();
   await page.route("**/api/auth/sign-in/email", async (route) => {
     await held;
     await route.abort("connectionrefused");
