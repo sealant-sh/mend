@@ -374,6 +374,24 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await page.waitForURL((url) => url.pathname === "/welcome/first-project");
   note("Continue went to /welcome/first-project");
 
+  // Without Git access the step sends the person back to it. The account has its Mend key, so the
+  // Git access read says it has none, made in the browser; making a key is refused too, so the
+  // stack's key stays as it is and /welcome shows its error screen.
+  await rewrite("git.access", (read) => ({
+    ...read,
+    mode: "mend-key",
+    key: { ...read.key, exists: false, publicKey: null },
+  }));
+  await page.route("**/trpc/git.initKey**", (route) => route.abort("connectionrefused"));
+  await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
+  await page.evaluate(() => window["__TSR_ROUTER__"].navigate({ to: "/welcome/agent-login" }));
+  await page.waitForURL((url) => url.pathname === "/welcome");
+  note(
+    "fixture, no Git access (git.access answered in the browser): opening /welcome/agent-login went to /welcome, the Git access step",
+  );
+  await page.unroute("**/trpc/git.initKey**");
+  await page.unroute("**/trpc/**");
+
   // A page whose reads fail, then Try again.
   await open("/welcome/agent-login");
   await heading("Agent login");
