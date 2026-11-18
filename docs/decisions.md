@@ -13,6 +13,15 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-17: the web app is rebuilt beside the old one, route by route.** Yiannis, with the web
+  redesign plan. The current app is `apps/web-old` on `packages/ui-old`, frozen except for Fix Now
+  bugs, and keeps shipping until cut-over. The new `apps/web` on a fresh `packages/ui` gains one
+  route or feature per PR; tRPC routers and tested `lib` logic are copied, not shared. Cut-over
+  needs every old route and feature accounted for and a box check of the whole app. Also recorded
+  there: agent logins are connected with `mend connect claude|codex`, Send always steers your own
+  running turn, and the first account on a new server is its operator. Details:
+  [ADR 0027](adr/0027-web-app-rebuilt-beside-the-old-one.md).
+
 - **2026-11-16: session screens are tabs and tiles, and sessions share a workspace.** Yiannis, with
   the web redesign. The sheet is the workspace; every conversation and view is a tab in a tile;
   Details is a view, not a panel. Anyone can join a running workspace without asking, and its owner
