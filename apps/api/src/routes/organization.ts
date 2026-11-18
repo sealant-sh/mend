@@ -12,6 +12,9 @@ import {
   MendApi,
   NotFound,
   MemberRemoved,
+  OrganizationNameEmpty,
+  OrganizationNameNotAllowed,
+  OrganizationNameTaken,
   OrganizationRejected,
   OrganizationView,
 } from "@mend/api-contracts";
@@ -38,7 +41,8 @@ import { HttpApiBuilder } from "effect/http-api";
 
 import { signInOf } from "../access.ts";
 import { MemberRemoval } from "../member-removal.ts";
-import { TenancyConfig } from "../tenancy.ts";
+import { createOrganization } from "../organization-creation.ts";
+import { peopleCreateOrganizations, TenancyConfig } from "../tenancy.ts";
 import {
   organizationRuntime,
   organizationRuntimeSwitch,
@@ -73,6 +77,11 @@ const LAST_OWNER =
 
 const LAST_OWNER_LEAVING =
   "An organization needs an owner. Make someone else an owner before you leave.";
+
+const SINGLE_ORGANIZATION = "This Mend runs one organization (MEND_TENANCY=single).";
+
+const OPERATOR_CREATES =
+  "On this Mend, the operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask them for one.";
 
 const ONLY_ORGANIZATION =
   "This is your only organization. Ask one of its owners to remove you instead.";
@@ -141,14 +150,18 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const caller = yield* CurrentUser;
         const organizations = yield* OrganizationsRepo;
         const roles = yield* InstanceRolesRepo;
+        const tenancy = yield* TenancyConfig;
         return new OrganizationView({
           organization: found.organization,
           userId: caller.user.id,
           role: found.role,
           memberCount: yield* organizations.memberCount(found.organization.id),
           operator: yield* roles.isOperator(caller.user.id),
-          tenancy: (yield* TenancyConfig).mode,
+          tenancy: tenancy.mode,
           mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "sources" : "bind",
+          canCreateOrganizations: peopleCreateOrganizations(tenancy, {
+            accessKey: accessKeyIdOf(caller.credential) !== undefined,
+          }),
         });
       }),
     )
@@ -469,6 +482,47 @@ export const AccountOrganizationsGroupLive = HttpApiBuilder.group(
                 }),
             )
             .toSorted((a, b) => a.organization.name.localeCompare(b.organization.name));
+        }),
+      )
+      .handle("create", ({ payload }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const tenancy = yield* TenancyConfig;
+          // The contract refuses a key first (`PersonCredentialOnly`).
+          if (
+            tenancy.mode === "multi" &&
+            !peopleCreateOrganizations(tenancy, { accessKey: false })
+          ) {
+            return yield* new OrganizationRejected({ message: OPERATOR_CREATES });
+          }
+          const created = yield* createOrganization({
+            name: payload.name,
+            actorUserId: caller.user.id,
+            owner: true,
+          }).pipe(
+            Effect.catchTags({
+              SingleOrganizationError: () =>
+                Effect.fail(new OrganizationRejected({ message: SINGLE_ORGANIZATION })),
+              OrganizationNameRefusedError: ({ reason, message }) =>
+                Effect.fail(
+                  reason === "empty"
+                    ? new OrganizationNameEmpty({ message })
+                    : new OrganizationNameNotAllowed({ message }),
+                ),
+              OrganizationNameTakenError: ({ name }) =>
+                Effect.fail(
+                  new OrganizationNameTaken({
+                    name,
+                    message: `There's already an organization called ${name}. Pick another name.`,
+                  }),
+                ),
+            }),
+          );
+          // Like accepting an invitation: the sign-in that asked moves into what it made.
+          const switched = yield* (yield* OrganizationsRepo)
+            .switchActive(signInOf(caller), created.id)
+            .pipe(Effect.orDie);
+          return new AccountOrganization({ ...switched, active: true });
         }),
       )
       .handle("switch", ({ payload }) =>

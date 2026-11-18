@@ -1,7 +1,8 @@
 # Organizations and tenancy: one boundary for single-user, team and multi-tenant Mend
 
-Status: accepted 2026-09-17; built in #263 to #280. Amended 2026-10-30 (removed projects, #1253) and
-2026-11-08 (organization switching, #1542). Settles the product decisions that team support findings
+Status: accepted 2026-09-17; built in #263 to #280. Amended 2026-10-30 (removed projects, #1253),
+2026-11-08 (organization switching, #1542) and 2026-11-18 (a person creates an organization,
+SLNT-1139). Settles the product decisions that team support findings
 (`0dd4b4bf:docs/archive/reviews/team-support-findings.md`) asked for before permissions are
 implemented, and the Mend half of the account and authorization blockers in public exposure findings
 (`0dd4b4bf:docs/archive/reviews/public-exposure-findings.md`). Budgets (MEND-05, CORE-04) are
@@ -107,8 +108,9 @@ code), and letting organization owners administer the machine (there is no singl
 - Enrollment is by invitation only, in both modes. There is no self-serve registration.
   - `single`: the first account registers. After that, registration closes.
   - `multi`: the operator creates an organization and invites its first owner. That owner invites
-    the rest. The operator may also add an existing account of another organization, which is
-    recorded in that organization's audit log like an owner grant.
+    the rest. Anyone signed in may also create one and own it (amended 2026-11-18, "A person creates
+    an organization"). The operator may also add an existing account of another organization, which
+    is recorded in that organization's audit log like an owner grant.
   - Invitations are single-use links: a 32-byte random token hashed at rest, with an expiry and an
     optional email binding, revocable, and accepted under a row lock. An owner copies the link and
     shares it. Mend sends no email in v1. A signed-in person accepts a link as their current
@@ -320,6 +322,29 @@ between them.
   Executor links, the audit log and budgets stay per organization.
 - `single` is unchanged: one organization, the operator cannot create a second or add anyone to one,
   and nothing about switching shows.
+
+### A person creates an organization (2026-11-18)
+
+Decided for the web redesign, whose organization switcher offers "Create organization…"; put to
+Yiannis on 18 Nov 2026 with no objection.
+
+- In `multi`, anyone signed in may create an organization by name. They become its owner and only
+  member in the same transaction, and the sign-in that asked switches to it. It is the operator's
+  creation with an owner: the same name rules, the same `organization.created` entry in its audit
+  log, and nothing seeded, so its settings, runtime and starting image are the server's until an
+  owner sets its own. Nothing from the organization it was made from is shared with it.
+- Names stay unique across the server in any letter case, as before. So a person learns that a name
+  is taken even by an organization they cannot see, which the design shows on purpose. A taken,
+  empty or not allowed name is refused by its own tag (`OrganizationNameTaken`,
+  `OrganizationNameEmpty`, `OrganizationNameNotAllowed`).
+- An operator who runs an open server can keep creation to themselves with
+  `MEND_ORGANIZATION_CREATION=operator` (default `anyone`). `GET /organization` says whether this
+  sign-in may create one (`canCreateOrganizations`), so clients offer it only then.
+- Registration is still by invitation: creating an organization needs an account. An access key
+  cannot create one, as it cannot join one.
+- `single` is unchanged: nobody creates a second organization.
+- Not decided: a limit on how many organizations one person may create. It belongs with budgets
+  ("Multi mode gate"); until then `MEND_ORGANIZATION_CREATION=operator` is the operator's control.
 
 ## Consequences
 

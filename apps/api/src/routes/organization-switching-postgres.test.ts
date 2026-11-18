@@ -62,6 +62,7 @@ const A = OrganizationId.make("org-a");
 const B = OrganizationId.make("org-b");
 
 let tenancy: "single" | "multi" = "multi";
+let organizationCreation: "anyone" | "operator" = "anyone";
 const effects: Array<string> = [];
 
 const admin = (statement: string) =>
@@ -145,6 +146,9 @@ const recorded = Layer.mergeAll(
   Layer.succeed(TenancyConfig, {
     get mode() {
       return tenancy;
+    },
+    get organizationCreation() {
+      return organizationCreation;
     },
     gate: Effect.succeed([]),
   }),
@@ -296,7 +300,8 @@ beforeAll(async () => {
           ('carol', 'Carol', 'carol@example.com', '2026-01-03T00:00:00Z'),
           ('erin', 'Erin', 'erin@example.com', '2026-01-04T00:00:00Z'),
           ('oscar', 'Oscar', 'oscar@example.com', '2026-01-05T00:00:00Z'),
-          ('gus', 'Gus', 'gus@example.com', '2026-01-06T00:00:00Z')`;
+          ('gus', 'Gus', 'gus@example.com', '2026-01-06T00:00:00Z'),
+          ('ada', 'Ada', 'ada@example.com', '2026-01-07T00:00:00Z')`;
       yield* sql`INSERT INTO organizations (id, name) VALUES ('org-a', 'Acme'), ('org-b', 'Beta')`;
       yield* sql`INSERT INTO instance_roles (user_id, role) VALUES ('oscar', 'operator')`;
     }),
@@ -305,6 +310,7 @@ beforeAll(async () => {
   await join(A, "erin", "owner");
   await join(A, "carol", "member");
   await join(B, "bob", "owner");
+  await join(A, "ada", "member");
   await query(
     (sql) =>
       sql`INSERT INTO organization_members (organization_id, user_id, role, created_at)
@@ -318,6 +324,8 @@ beforeAll(async () => {
     ["erin", "erin-cli"],
     ["oscar", "oscar"],
     ["gus", "gus"],
+    ["ada", "ada-web"],
+    ["ada", "ada-cli"],
   ] as const) {
     await signIn(userId, token);
   }
@@ -339,6 +347,7 @@ afterAll(async () => {
 beforeEach(() => {
   effects.length = 0;
   tenancy = "multi";
+  organizationCreation = "anyone";
 });
 
 describe.skipIf(postgres.skip)("organization switching (PostgreSQL)", () => {
@@ -494,5 +503,100 @@ describe.skipIf(postgres.skip)("organization switching (PostgreSQL)", () => {
     expect(effects).toContain("closeAll:erin");
     expect(effects).toContain("sshKeys:erin");
     expect((await call("erin-web", "GET", "/api/account/organizations")).status).toBe(401);
+  });
+});
+
+describe.skipIf(postgres.skip)("a person creates an organization (PostgreSQL)", () => {
+  const organizationCount = async () =>
+    (
+      await query(
+        (sql) => sql<{ readonly n: number }>`SELECT count(*)::int AS n FROM organizations`,
+      )
+    )[0]?.n;
+  const offered = async (bearer: string) =>
+    field((await call(bearer, "GET", "/api/organization")).body, "canCreateOrganizations");
+
+  it("a member creates one: they own it alone, this sign-in moves to it, the CLI's stays, and its log says so", async () => {
+    expect(await offered("ada-web")).toBe(true);
+    // The CLI's sign-in acts once first; one that never has starts where the account went last.
+    expect(await activeOf("ada-cli")).toBe(A);
+    const created = await call("ada-web", "POST", "/api/account/organizations", {
+      name: "  Difference Engine  ",
+    });
+    expect([
+      created.status,
+      field(created.body, "organization", "name"),
+      field(created.body, "role"),
+      field(created.body, "active"),
+    ]).toEqual([200, "Difference Engine", "owner", true]);
+    const id = OrganizationId.make(String(field(created.body, "organization", "id")));
+    expect(await membershipsOf("ada")).toEqual([`org-a:member`, `${id}:owner`].toSorted());
+    expect(await activeOf("ada-web")).toBe(id);
+    expect(await activeOf("ada-cli")).toBe(A);
+    const view = (await call("ada-web", "GET", "/api/organization")).body;
+    expect([field(view, "role"), field(view, "memberCount")]).toEqual(["owner", 1]);
+    expect(await auditIn(id)).toEqual([
+      { action: "organization.created", actorUserId: "ada", subjectId: id },
+    ]);
+    // Creating is written to the new organization's log only, never to the one it was made from.
+    expect((await auditIn(A)).filter((event) => event.actorUserId === "ada")).toEqual([]);
+  });
+
+  it("a taken name, in any letter case, is refused by its tag and makes nothing", async () => {
+    const before = await organizationCount();
+    const taken = await call("ada-cli", "POST", "/api/account/organizations", { name: "acme" });
+    expect([taken.status, field(taken.body, "_tag"), field(taken.body, "name")]).toEqual([
+      409,
+      "OrganizationNameTaken",
+      "acme",
+    ]);
+    expect(await organizationCount()).toBe(before);
+    expect(await activeOf("ada-cli")).toBe(A);
+  });
+
+  it("an empty name and a name that is not allowed are refused by their own tags", async () => {
+    const before = await organizationCount();
+    const empty = await call("ada-cli", "POST", "/api/account/organizations", { name: "   " });
+    expect([empty.status, field(empty.body, "_tag")]).toEqual([422, "OrganizationNameEmpty"]);
+    const long = await call("ada-cli", "POST", "/api/account/organizations", {
+      name: "a".repeat(65),
+    });
+    expect([long.status, field(long.body, "_tag")]).toEqual([422, "OrganizationNameNotAllowed"]);
+    expect(await organizationCount()).toBe(before);
+  });
+
+  it("with MEND_TENANCY=single nobody creates one and the read says so", async () => {
+    tenancy = "single";
+    const before = await organizationCount();
+    expect(await offered("ada-cli")).toBe(false);
+    const refused = await call("ada-cli", "POST", "/api/account/organizations", {
+      name: "Initech",
+    });
+    expect([refused.status, field(refused.body, "_tag")]).toEqual([422, "OrganizationRejected"]);
+    const operator = await call("oscar", "POST", "/api/operator/organizations", {
+      name: "Initech",
+    });
+    expect([operator.status, field(operator.body, "_tag")]).toEqual([422, "OrganizationRejected"]);
+    expect(await organizationCount()).toBe(before);
+  });
+
+  it("with MEND_ORGANIZATION_CREATION=operator only the operator creates one, empty, as before", async () => {
+    organizationCreation = "operator";
+    expect(await offered("ada-cli")).toBe(false);
+    const refused = await call("ada-cli", "POST", "/api/account/organizations", {
+      name: "Initech",
+    });
+    expect([refused.status, field(refused.body, "_tag")]).toEqual([422, "OrganizationRejected"]);
+    const created = await call("oscar", "POST", "/api/operator/organizations", { name: "Initech" });
+    expect([created.status, field(created.body, "name")]).toEqual([200, "Initech"]);
+    const id = OrganizationId.make(String(field(created.body, "id")));
+    const members = await query(
+      (sql) =>
+        sql`SELECT count(*)::int AS n FROM organization_members WHERE organization_id = ${id}`,
+    );
+    expect(members).toEqual([{ n: 0 }]);
+    expect(await auditIn(id)).toEqual([
+      { action: "organization.created", actorUserId: "oscar", subjectId: id },
+    ]);
   });
 });

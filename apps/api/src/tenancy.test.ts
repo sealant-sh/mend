@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   evaluateGate,
   exposedServiceHosts,
+  peopleCreateOrganizations,
   TenancyConfig,
   TenancyConfigLive,
   tenancyRefusal,
@@ -105,6 +106,37 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
   it("refuses an unknown mode", async () => {
     const result = await build({ MEND_TENANCY: "shared" }, 1);
     expect(Result.isFailure(result)).toBe(true);
+  });
+});
+
+describe("MEND_ORGANIZATION_CREATION", () => {
+  it("lets anyone create one unless the operator keeps it, and refuses an unknown value", async () => {
+    const creation = async (env: Record<string, string>) => {
+      const result = await build(env, 1);
+      return Result.isSuccess(result) ? result.success.organizationCreation : "refused";
+    };
+    expect(await creation({})).toBe("anyone");
+    expect(await creation({ MEND_ORGANIZATION_CREATION: "operator" })).toBe("operator");
+    expect(await creation({ MEND_ORGANIZATION_CREATION: "members" })).toBe("refused");
+  });
+
+  it("offers a person creation only in multi, while anyone may, and never through an access key", () => {
+    const person = { accessKey: false };
+    expect(
+      peopleCreateOrganizations({ mode: "multi", organizationCreation: "anyone" }, person),
+    ).toBe(true);
+    expect(
+      peopleCreateOrganizations({ mode: "single", organizationCreation: "anyone" }, person),
+    ).toBe(false);
+    expect(
+      peopleCreateOrganizations({ mode: "multi", organizationCreation: "operator" }, person),
+    ).toBe(false);
+    expect(
+      peopleCreateOrganizations(
+        { mode: "multi", organizationCreation: "anyone" },
+        { accessKey: true },
+      ),
+    ).toBe(false);
   });
 });
 

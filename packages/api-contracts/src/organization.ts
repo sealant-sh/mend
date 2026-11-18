@@ -19,7 +19,7 @@ import {
   OrganizationRole,
   Project,
 } from "@mend/domain/workbench";
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
 import { NotFound } from "./accounts.ts";
@@ -35,6 +35,27 @@ import { SettingsFailure, WorkspacePackageResolutionView } from "./workbench-vie
 /** A request the organization rules refuse; the message says which rule. */
 export class OrganizationRejected extends Schema.TaggedError<OrganizationRejected>()(
   "OrganizationRejected",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
+/** Another organization on this server already has that name, in any letter case. */
+export class OrganizationNameTaken extends Schema.TaggedError<OrganizationNameTaken>()(
+  "OrganizationNameTaken",
+  { name: Schema.String, message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/** The organization name is empty once trimmed. */
+export class OrganizationNameEmpty extends Schema.TaggedError<OrganizationNameEmpty>()(
+  "OrganizationNameEmpty",
+  { message: Schema.String },
+  { httpApiStatus: 422 },
+) {}
+
+/** The organization name is too long or holds a control character; the message says which. */
+export class OrganizationNameNotAllowed extends Schema.TaggedError<OrganizationNameNotAllowed>()(
+  "OrganizationNameNotAllowed",
   { message: Schema.String },
   { httpApiStatus: 422 },
 ) {}
@@ -58,6 +79,15 @@ export class OrganizationView extends Schema.Class<OrganizationView>("Organizati
   tenancy: Schema.Literals(["single", "multi"]),
   /** `none`: selected folders are recorded but not mounted into captured workspaces yet. */
   mountDelivery: Schema.Literals(["bind", "sources"]),
+  /**
+   * Whether this sign-in may create an organization of its own (`POST /account/organizations`):
+   * only in `multi`, only while the operator leaves `MEND_ORGANIZATION_CREATION` at `anyone`, and
+   * never with an access key. Older servers omit it, which reads as no.
+   */
+  canCreateOrganizations: Schema.Boolean.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(false)),
+    Schema.withConstructorDefault(Effect.succeed(false)),
+  ),
 }) {}
 
 /** One audit event with the name of the account that acted, departed members included. */
@@ -364,6 +394,13 @@ export class AccountOrganization extends Schema.Class<AccountOrganization>("Acco
   active: Schema.Boolean,
 }) {}
 
+/** The name of the organization to create; trimmed before it is checked and stored. */
+export class CreateOrganizationRequest extends Schema.Class<CreateOrganizationRequest>(
+  "CreateOrganizationRequest",
+)({
+  name: Schema.String,
+}) {}
+
 export class SwitchOrganizationRequest extends Schema.Class<SwitchOrganizationRequest>(
   "SwitchOrganizationRequest",
 )({
@@ -395,6 +432,21 @@ export const accountOrganizationsGroup = HttpApiGroup.make("accountOrganizations
   .add(
     HttpApiEndpoint.get("list", "/account/organizations", {
       success: Schema.Array(AccountOrganization),
+    }),
+  )
+  .add(
+    // `multi` only, unless the operator keeps creation to themselves: the caller becomes its
+    // owner and this sign-in switches to it. A name refusal has its own tag, for the field;
+    // anything else that refuses is `OrganizationRejected`.
+    HttpApiEndpoint.post("create", "/account/organizations", {
+      payload: CreateOrganizationRequest,
+      success: AccountOrganization,
+      error: [
+        OrganizationNameEmpty,
+        OrganizationNameNotAllowed,
+        OrganizationNameTaken,
+        OrganizationRejected,
+      ],
     }),
   )
   .add(

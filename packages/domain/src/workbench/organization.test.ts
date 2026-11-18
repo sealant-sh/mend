@@ -147,12 +147,17 @@ describe("organization names", () => {
   });
 
   it("refuses empty, over-long and control-character names", () => {
-    expect(organizationNameIssue("   ")).toBe("An organization needs a name.");
-    expect(organizationNameIssue("a".repeat(65))).toBe(
-      "Organization names are at most 64 characters.",
-    );
-    expect(organizationNameIssue(`Acme${String.fromCharCode(7)}`)).toBe(
-      "Organization names cannot contain control characters.",
-    );
+    expect(organizationNameIssue("   ")).toEqual({
+      reason: "empty",
+      message: "An organization needs a name.",
+    });
+    expect(organizationNameIssue("a".repeat(65))).toEqual({
+      reason: "not-allowed",
+      message: "Organization names are at most 64 characters.",
+    });
+    expect(organizationNameIssue(`Acme${String.fromCharCode(7)}`)).toEqual({
+      reason: "not-allowed",
+      message: "Organization names cannot contain control characters.",
+    });
   });
 });
