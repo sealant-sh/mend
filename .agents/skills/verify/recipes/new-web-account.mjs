@@ -24,6 +24,7 @@ const RUNNING = "row-running";
 const REVIEW = "row-review";
 const ACCOUNT_ITEMS = ["Profile", "Pair a phone…", "Theme", "Docs", "Sign out"];
 const REFUSAL = "The verify recipe refused this on purpose.";
+const visible = (locator) => locator.filter({ visible: true });
 
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
@@ -56,7 +57,6 @@ export default async ({ page, web, capture, note }) => {
     else await page.goto(`${web}${path}`);
     await hydrated();
   };
-  const visible = (locator) => locator.filter({ visible: true });
   const button = (name) => visible(page.getByRole("button", { name }));
   const menu = () => visible(page.getByRole("menu")).first();
   const menuItem = (name) => visible(page.getByRole("menuitem", { name }));
@@ -127,7 +127,8 @@ export default async ({ page, web, capture, note }) => {
   await orgButton.click();
   await menuItem(`${organization} settings`).waitFor();
   const label = await menu().locator("[data-slot=dropdown-menu-label]").first().textContent();
-  if (!/^Organizations on /.test(label ?? "")) throw new Error(`the switcher reads "${label}"`);
+  if (!(label ?? "").startsWith("Organizations on "))
+    throw new Error(`the switcher reads "${label}"`);
   const current = menu().locator("[aria-current=true]");
   if ((await current.count()) !== 1 || !(await current.textContent()).includes(organization))
     throw new Error(`${organization} is not the checked organization`);

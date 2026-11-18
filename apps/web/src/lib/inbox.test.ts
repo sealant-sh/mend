@@ -352,9 +352,10 @@ describe("what this browser keeps", () => {
   });
 });
 
+const ids = (rows: ReadonlyArray<{ readonly session: { readonly id: string } }>) =>
+  rows.map((each) => each.session.id);
+
 describe("the collapsed sidebar", () => {
-  const ids = (rows: ReadonlyArray<{ readonly session: { readonly id: string } }>) =>
-    rows.map((each) => each.session.id);
   const grouped = (rows: ReadonlyArray<SessionInboxRowDto>) =>
     groupRows(inboxRows({ rows, marks: [], now }));
 

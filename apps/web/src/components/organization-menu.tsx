@@ -319,7 +319,7 @@ export function PhoneOrganizationRow({ organizationName }: { readonly organizati
                 void navigate(laterPage("settings/organization"));
               }}
             >
-              <SheetItemBody icon={<SettingsIcon aria-hidden />}>
+              <SheetItemBody icon={<SettingsIcon aria-hidden />} chevron>
                 {organizationName} settings
               </SheetItemBody>
             </button>
