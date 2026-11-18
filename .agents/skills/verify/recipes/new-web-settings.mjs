@@ -432,19 +432,39 @@ export default async ({ page, web, capture, note, account }) => {
 
   // --- A failed read --------------------------------------------------------------------------
   await open("/settings/appearance");
-  await page.route("**/api/auth/get-session**", (route) =>
-    route.fulfill({
-      status: 500,
+  // The roster names the account: its read fails, one answer per call in a batch.
+  await page.route("**/trpc/**", async (route) => {
+    const paths = decodeURIComponent(
+      new URL(route.request().url()).pathname.replace(/^\/trpc\//, ""),
+    )
+      .split(",")
+      .filter((p) => p !== "");
+    if (!paths.includes("organization.members")) return route.continue();
+    const response = await route.fetch();
+    const answers = await response.json();
+    const list = Array.isArray(answers) ? answers : [answers];
+    const failure = {
+      error: {
+        json: {
+          message: "The verify recipe failed this read on purpose.",
+          code: -32603,
+          data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500 },
+        },
+      },
+    };
+    const changed = paths.map((p, index) => (p === "organization.members" ? failure : list[index]));
+    await route.fulfill({
+      status: paths.length === 1 ? 500 : 207,
       contentType: "application/json",
-      body: JSON.stringify({ message: "The verify recipe failed this read on purpose." }),
-    }),
-  );
+      body: JSON.stringify(Array.isArray(answers) ? changed : changed[0]),
+    });
+  });
   await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
   await navigate("/settings/profile");
   await heading("This page didn't load");
   note("Profile's read failing shows the error screen with Try again");
   await shot("profile-error-desktop-light");
-  await page.unroute("**/api/auth/get-session**");
+  await page.unroute("**/trpc/**");
   await visible(page.getByRole("button", { name: "Try again" })).click();
   await heading("Profile");
   note("Try again reads the account again and Profile draws");

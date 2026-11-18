@@ -6,7 +6,6 @@ import { Link } from "@tanstack/react-router";
 import { useState } from "react";
 
 import {
-  accountOptions,
   MIN_PASSWORD,
   nameProblem,
   newPasswordProblem,
@@ -18,6 +17,7 @@ import {
 import { accountNameOptions, authClient } from "#/lib/auth-client";
 import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
+import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/use-viewer";
 
@@ -33,10 +33,15 @@ const CONTROL = "h-9 max-lg:h-11 max-lg:text-base";
 /**
  * Settings → Account → Profile (Doop "Settings · Account · Profile"): the account's name, which
  * people in the organization see, its email, its password, and signing this browser out. The
- * route's loader read the account before the page drew.
+ * route's loader read the organization's roster, which names the account, before the page drew.
  */
 export function ProfilePage() {
-  const account = useSuspenseQuery(accountOptions()).data;
+  const trpc = useTRPC();
+  const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
+  const members = useSuspenseQuery(trpc.organization.members.queryOptions()).data;
+  // The roster names every member, the signed-in one included.
+  const me = members.find((member) => member.userId === viewer.userId);
+  const account = { name: me?.name ?? "", email: me?.email ?? "" };
   return (
     <SettingsPage
       page="a-profile"
@@ -87,7 +92,6 @@ function NameRow({ name }: { readonly name: string }) {
     },
     onSuccess: () =>
       Promise.all([
-        queryClient.invalidateQueries({ queryKey: accountOptions().queryKey }),
         queryClient.invalidateQueries({ queryKey: accountNameOptions().queryKey }),
         queryClient.invalidateQueries(trpc.organization.members.queryFilter()),
       ]),

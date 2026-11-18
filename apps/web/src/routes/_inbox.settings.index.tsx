@@ -3,7 +3,6 @@ import { useEffect } from "react";
 
 import { PhoneSettings } from "#/components/settings/phone-settings";
 import { ProfilePage } from "#/components/settings/profile-page";
-import { accountOptions } from "#/lib/account";
 import { oldAnchorPath } from "#/lib/settings-pages";
 
 /**
@@ -13,7 +12,9 @@ import { oldAnchorPath } from "#/lib/settings-pages";
  * now.
  */
 export const Route = createFileRoute("/_inbox/settings/")({
-  loader: ({ context: { queryClient } }) => queryClient.ensureQueryData(accountOptions()),
+  // The roster names the account; the layout's loader already asked for it.
+  loader: ({ context: { queryClient, trpc } }) =>
+    queryClient.ensureQueryData(trpc.organization.members.queryOptions()),
   component: SettingsHome,
 });
 

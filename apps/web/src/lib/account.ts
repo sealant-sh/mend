@@ -3,31 +3,12 @@ import { queryOptions } from "@tanstack/react-query";
 import { authClient } from "./auth-client.ts";
 
 /**
- * The signed-in account as Settings → Profile shows and changes it, through Better Auth's own
- * endpoints, which the API serves whole under `/api/auth`: the name (`update-user`) and the
- * password (`change-password`). The email can't change: Better Auth's change-email is off, and
- * Mend sends no email to confirm one.
+ * The signed-in account as Settings → Profile changes it, through Better Auth's own endpoints,
+ * which the API serves whole under `/api/auth`: the name (`update-user`) and the password
+ * (`change-password`). The email can't change: Better Auth's change-email is off, and Mend sends no
+ * email to confirm one. Profile reads the name and email from the organization's roster, which the
+ * server renders.
  */
-
-export interface AccountView {
-  readonly name: string;
-  readonly email: string;
-}
-
-export const accountOptions = () =>
-  queryOptions({
-    queryKey: ["auth", "account"],
-    queryFn: async (): Promise<AccountView> => {
-      const session = await authClient.getSession();
-      if (session.error !== null) {
-        throw new Error(session.error.message ?? "Mend couldn't tell who is signed in.");
-      }
-      const user = session.data?.user;
-      if (user === undefined) throw new Error("Nobody is signed in.");
-      return { name: user.name, email: user.email };
-    },
-    staleTime: 60_000,
-  });
 
 /** When the password was set, and last changed; null when the account has none. */
 export interface PasswordDates {
