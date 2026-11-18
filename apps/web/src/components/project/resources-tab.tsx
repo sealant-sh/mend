@@ -459,6 +459,7 @@ export function ResourcesTab({ detail }: { readonly detail: ProjectDetailDto }) 
               acts={acts}
               load={loads.get(panel.name)}
               removed={panel.project === undefined ? removed.get(panel.name) : undefined}
+              loadNote={loadNotes.get(panel.name)}
               onLoadData={() => setLoadingInto(panel.name)}
               onRemove={(entry: ResourceSettingView, worktree) =>
                 setRemoving({
@@ -469,7 +470,6 @@ export function ResourcesTab({ detail }: { readonly detail: ProjectDetailDto }) 
                 })
               }
             />
-            <NoteLines note={loadNotes.get(panel.name)} onReload={acts.reload} />
           </div>
         ))}
       </div>

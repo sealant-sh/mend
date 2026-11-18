@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   choiceLabel,
   declaredFile,
+  failureWords,
   githubFileUrl,
   levelLine,
   panelWord,
@@ -285,5 +286,14 @@ describe("ports typed into Add a resource", () => {
       "port7701=7701/udp",
     ]);
     expect(portFlags("  ")).toEqual([]);
+  });
+});
+
+describe("a failed start", () => {
+  it("says why in the server's words, after `failed · `", () => {
+    expect(
+      failureWords("@db · postgres:17 · failed · exited with code 1 · project · observed 2 s ago"),
+    ).toBe("exited with code 1 · project · observed 2 s ago");
+    expect(failureWords("@db · not observed")).toBe("@db · not observed");
   });
 });

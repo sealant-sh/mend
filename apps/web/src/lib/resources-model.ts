@@ -248,9 +248,17 @@ export const rowWords = (
   return usedRunning(row) ? what : `${what} · not running`;
 };
 
-/** The tone of a worktree's row: red when what it uses failed, muted otherwise. */
-export const rowTone = (row: WorktreeRow): StatusTone =>
-  row.failed !== null || (row.own ?? row.use)?.instance === "failed" ? "bad" : "idle";
+/** The tone of a worktree's row: red only when its own read failed; the panel says why a start did. */
+export const rowTone = (row: WorktreeRow): StatusTone => (row.failed === null ? "idle" : "bad");
+
+/**
+ * Why a start failed, from the instance's status line: what follows `failed · `
+ * (`@db · postgres:17 · failed · exited with code 1 · project` → `exited with code 1 · project`).
+ */
+export const failureWords = (statusLine: string): string => {
+  const at = statusLine.indexOf("failed · ");
+  return at === -1 ? statusLine : statusLine.slice(at + "failed · ".length);
+};
 
 /** Whether Stop does something for an instance as last observed. */
 export const canStop = (entry: ResourceSettingView | undefined): boolean =>

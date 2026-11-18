@@ -29,6 +29,7 @@ import {
   canStop,
   choiceOptions,
   engineWords,
+  failureWords,
   levelLine,
   panelWord,
   type ResourcePanelModel,
@@ -82,6 +83,7 @@ export function ResourcePanel({
   acts,
   load,
   removed,
+  loadNote,
   onLoadData,
   onRemove,
 }: {
@@ -92,6 +94,8 @@ export function ResourcePanel({
   readonly load: PanelLoad | undefined;
   /** The volumes Mend kept when this resource's project instance was just removed. */
   readonly removed: ReadonlyArray<string> | undefined;
+  /** How the last load here ended, in the server's words. */
+  readonly loadNote: ItemNote | undefined;
   readonly onLoadData: () => void;
   readonly onRemove: (entry: ResourceSettingView, worktree: string | null) => void;
 }) {
@@ -186,6 +190,7 @@ export function ResourcePanel({
         {controls}
       </div>
       <NoteLines note={note} onReload={acts.reload} />
+      {loading ? null : <NoteLines note={loadNote} onReload={acts.reload} />}
       {failed ? (
         <InlineAlert
           className="mt-3 max-w-2xl"
@@ -193,7 +198,7 @@ export function ResourcePanel({
           title={`@${panel.name} didn't start.`}
           actions={start(`Start @${panel.name} again`)}
         >
-          {withoutName(panel.statusLine, panel.name).replace(/^failed · /, "")}
+          {failureWords(panel.statusLine)}
         </InlineAlert>
       ) : null}
       {loading && load?.progress !== null && load?.progress !== undefined ? (
@@ -290,15 +295,25 @@ function WorktreeUses({
         ? load.target
         : null;
 
+  // Only whoever owns the worktree's change chooses for it (ADR 0019); others read the choice.
   const segment = (row: WorktreeRow) => (
-    <Segmented
-      aria-label={`How ${row.name} uses @${panel.name}`}
-      size={phone ? "touch" : "default"}
-      value={row.choice}
-      disabled={row.use?.canChoose !== true || pendingFor === row.worktreeId}
-      options={choiceOptions(panel.spec)}
-      onValueChange={(mode) => choose.mutate({ row, mode })}
-    />
+    <span
+      className="inline-flex"
+      title={
+        row.use === undefined || row.use.canChoose
+          ? undefined
+          : "Only the owner of this worktree's change chooses how it uses this."
+      }
+    >
+      <Segmented
+        aria-label={`How ${row.name} uses @${panel.name}`}
+        size={phone ? "touch" : "default"}
+        value={row.choice}
+        disabled={row.use?.canChoose !== true || pendingFor === row.worktreeId}
+        options={choiceOptions(panel.spec)}
+        onValueChange={(mode) => choose.mutate({ row, mode })}
+      />
+    </span>
   );
   const ownActions = (row: WorktreeRow) => {
     const own = row.own;
@@ -402,7 +417,7 @@ function WorktreeUses({
                 <span className="block truncate font-mono text-meta text-foreground">
                   {row.name}
                 </span>
-                {panel.choosing ? (
+                {panel.choosing && rowWords(row, panel, loadingInto(row)).includes(" · ") ? (
                   <span className="block text-row text-muted-foreground">
                     {rowWords(row, panel, loadingInto(row))}
                   </span>
@@ -585,7 +600,8 @@ export function RemovedWords({
         "Mend kept its data volumes."
       ) : (
         <>
-          Mend kept <span className="font-mono text-meta">{volumes.join(", ")}</span>.
+          Mend kept its {volumes.length === 1 ? "volume" : "volumes"}{" "}
+          <span className="font-mono text-meta">{volumes.join(", ")}</span>.
         </>
       )}{" "}
       Until someone starts @{name} again, no worktree has it.

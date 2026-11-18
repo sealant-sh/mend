@@ -140,12 +140,46 @@ export default async ({ page, web, capture, note }) => {
   const name = `vdb${suffix}`;
 
   // Two worktrees: one the table is written into and started from, one that only uses it.
+  // What an earlier run left when it stopped partway goes first: its resources, shells, worktrees.
   const LEFT = /^res-[ab]-[a-z0-9]{4}$/;
-  for (const worktree of (await call("projects.detail", { id: fixture.id })).worktrees)
-    if (LEFT.test(worktree.name))
-      await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
-        () => undefined,
+  const left = await call("resources.list", {
+    projectId: fixture.id,
+    timeZone: zone,
+    worktreeId: null,
+    allInstances: true,
+  });
+  for (const entry of left.settings)
+    if (/^vdb[a-z0-9]{4}$/.test(entry.spec.name))
+      await call(
+        "resources.remove",
+        {
+          projectId: fixture.id,
+          name: entry.spec.name,
+          level: entry.level,
+          worktreeId: entry.worktreeId,
+        },
+        "mutate",
+      ).catch(() => undefined);
+  const earlier = await call("projects.detail", { id: fixture.id });
+  for (const worktree of earlier.worktrees)
+    if (LEFT.test(worktree.name)) {
+      for (const session of earlier.sessions)
+        if (session.worktreeId === worktree.id)
+          await call("sessions.stop", { id: session.id }, "mutate").catch(() => undefined);
+      // A stopped session saves before its worktree can go: try until it has gone.
+      await waitFor(
+        `${worktree.name} removed`,
+        async () => {
+          await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
+            () => undefined,
+          );
+          return !(await call("projects.detail", { id: fixture.id })).worktrees.some(
+            (each) => each.id === worktree.id,
+          );
+        },
+        180,
       );
+    }
   const a = await call(
     "worktrees.create",
     { projectId: fixture.id, worktree: { name: `res-a-${suffix}`, base: null } },
@@ -156,7 +190,22 @@ export default async ({ page, web, capture, note }) => {
     { projectId: fixture.id, worktree: { name: `res-b-${suffix}`, base: null } },
     "mutate",
   );
-  note(`made worktrees ${a.name} and ${b.name} in verify-fixture`);
+  // Add writes into a worktree's live files: a shell keeps res-a's workspace up for the drive.
+  const shell = await call(
+    "worktrees.createSession",
+    { id: a.id, session: { harness: "shell", label: null } },
+    "mutate",
+  );
+  await call("sessions.launch", { id: shell.id, request: {} }, "mutate");
+  await waitFor(
+    `the shell in ${a.name} running`,
+    async () =>
+      (await call("projects.detail", { id: fixture.id })).sessions.find(
+        (session) => session.id === shell.id,
+      )?.status === "running",
+    180,
+  );
+  note(`made worktrees ${a.name} and ${b.name} in verify-fixture; a shell runs in ${a.name}`);
 
   // The tab, from the project's tabs. What verify-fixture declares decides what shows first.
   await go(`/projects/${fixture.id}`);
@@ -225,25 +274,29 @@ export default async ({ page, web, capture, note }) => {
   await both("list-desktop");
   note(`resources-list: the panel reads "${(await panel.innerText()).replace(/\s+/g, " ")}"`);
 
-  // resources-list: res-b turns its database off, then back to Shared.
-  await visible(uses(b.name)).getByRole("button", { name: "Off" }).click();
+  // resources-list: res-a turns its database off, then back to Shared. Only the owner of a
+  // worktree's change chooses for it: res-b has no session yet, so nobody owns it and its choice
+  // is read-only.
+  await visible(uses(a.name)).getByRole("button", { name: "Off" }).click();
   await waitFor(
-    `${b.name} off`,
+    `${a.name} off`,
     async () =>
       (
-        await call("resources.list", { projectId: fixture.id, timeZone: zone, worktreeId: b.id })
+        await call("resources.list", { projectId: fixture.id, timeZone: zone, worktreeId: a.id })
       ).settings.find((entry) => entry.spec.name === name)?.choice === "off",
     30,
   );
-  await panel.getByText("No database").waitFor();
+  await visible(panel.getByText("No database")).waitFor();
+  if (!(await visible(uses(b.name)).getByRole("button", { name: "Off" }).isDisabled()))
+    throw new Error(`${b.name}, with no change owner, offers a choice`);
   // The choice is the server's: it is still there after a reload.
   await open(tab);
-  await panel.getByText("No database").waitFor({ timeout: 30_000 });
+  await visible(panel.getByText("No database")).waitFor({ timeout: 30_000 });
   await both("off-desktop");
-  await visible(uses(b.name)).getByRole("button", { name: "Shared" }).click();
-  await panel.getByText("No database").waitFor({ state: "detached" });
+  await visible(uses(a.name)).getByRole("button", { name: "Shared" }).click();
+  await visible(panel.getByText("No database")).waitFor({ state: "detached" });
   note(
-    `resources-list: ${b.name} chose Off ("No database"), then Shared again; the server stored each`,
+    `resources-list: ${a.name} chose Off ("No database"), then Shared again; the server stored each`,
   );
 
   // resources-load: a plain SQL dump into the shared database.
@@ -474,9 +527,19 @@ export default async ({ page, web, capture, note }) => {
   note("a failed read shows Resources didn't load. with Try again, which reads it again");
 
   // Put back what this drive changed: the worktrees go, with the table written into res-a.
+  await call("sessions.stop", { id: shell.id }, "mutate").catch(() => undefined);
   for (const worktree of [a, b])
-    await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
-      () => undefined,
+    await waitFor(
+      `${worktree.name} removed`,
+      async () => {
+        await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
+          () => undefined,
+        );
+        return !(await call("projects.detail", { id: fixture.id })).worktrees.some(
+          (each) => each.id === worktree.id,
+        );
+      },
+      180,
     );
   note(
     `removed ${a.name} and ${b.name}; @${name}'s project instance was removed above, its volumes kept`,
