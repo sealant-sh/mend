@@ -14,7 +14,10 @@
 // - `vscode-connect`, `desktop-connect`: a request opened with VS Code's and the desktop's `client`
 //   reads "Authorize VS Code?" and "Authorize the Mend app?".
 //
-// Every state is captured light and dark, at 1280px and 390px.
+// Every state is captured light and dark, at 1280px and 390px. The driver withholds the picture of
+// any page that shows a live code (drive-web.mjs), so the request's own states are proven by their
+// ARIA snapshots; the last pass answers the lookup with a fixture whose code no server makes (a U is
+// outside the code alphabet), for pictures of those states beside their frames.
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -64,7 +67,11 @@ export default async ({ page, web, capture, note, registerSecret, account }) => 
     const run = mend(["login", "--url", tunnel, "--no-open"]);
     for (let waited = 0; waited < 60_000; waited += 250) {
       const code = /code\s+([0-9A-Z]{4}-[0-9A-Z]{4})/.exec(run.output())?.[1];
-      if (code !== undefined) return { ...run, code };
+      if (code !== undefined) {
+        // A live code: redacted from every note and snapshot from here on.
+        registerSecret("cli-login-code", code);
+        return { ...run, code };
+      }
       if ((await Promise.race([run.exited, page.waitForTimeout(250)])) !== undefined)
         throw new Error(`mend login ended before it printed a code:\n${run.output()}`);
     }
@@ -270,4 +277,45 @@ export default async ({ page, web, capture, note, registerSecret, account }) => 
     await heading(client === "vscode" ? "VS Code denied" : "Mend app denied");
     await capture(`authorize-${client}-denied-desktop-light`);
   }
+
+  // Pictures of the request, Approving… and a failed approval, with the lookup answered by a fixture.
+  const now = Date.now();
+  const fixture = {
+    code: "K7QF-2MXU",
+    name: "ada-laptop",
+    client: "cli",
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + 570_000).toISOString(),
+    expiresIn: 570,
+  };
+  await page.route("**/trpc/devices.cliAuthRequest**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([{ result: { data: { json: fixture } } }]),
+    }),
+  );
+  await open("/authorize?code=fixture");
+  await heading("Authorize this terminal?");
+  await page.getByText("K7QF-2MXU", { exact: true }).waitFor();
+  note("the fixture request (lookup answered in the browser), for its pictures");
+  await captureAll("authorize-fixture");
+  let releaseFixture = () => {};
+  const heldFixture = new Promise((done) => {
+    releaseFixture = done;
+  });
+  await page.route("**/trpc/devices.approveCliAuth**", async (route) => {
+    await heldFixture;
+    await route.abort("connectionrefused");
+  });
+  await button("Approve").click();
+  await button("Approving…").waitFor();
+  await captureAll("authorize-fixture-approving");
+  releaseFixture();
+  await page
+    .getByText("Mend's server didn't answer, so nothing was approved. Try again.")
+    .waitFor();
+  await captureAll("authorize-fixture-approve-failed");
+  await page.unroute("**/trpc/devices.approveCliAuth**");
+  await page.unroute("**/trpc/devices.cliAuthRequest**");
 };
