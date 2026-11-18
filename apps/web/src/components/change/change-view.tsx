@@ -23,6 +23,7 @@ import {
   orderedFiles,
 } from "#/lib/change-files";
 import { inboxQuery } from "#/lib/inbox-live";
+import { AGENTS } from "#/lib/new-session";
 import {
   openReviewQuery,
   opensCurrentChange,
@@ -89,6 +90,16 @@ const readFailed = (error: unknown, retry: () => void) => (
   </div>
 );
 
+/** Why there is nothing to review, naming the agent when one works here alone. */
+const nothingYetWords = (harness: string, sessions: number): string => {
+  if (sessions > 1)
+    return "No session in this workspace has changed a file yet. The change shows up here as soon as one does.";
+  const agent = AGENTS.find((each) => each.id === harness)?.label;
+  return agent === undefined
+    ? "This session hasn't changed any files. The change shows up here as soon as a file changes."
+    : `${agent} hasn't changed any files in this session. The change shows up here as soon as it edits one.`;
+};
+
 /** Nothing to review yet: no file differs from the base. */
 function NothingYet({
   detail,
@@ -105,13 +116,9 @@ function NothingYet({
           <FileDiffIcon aria-hidden className="size-6 text-muted-foreground" />
         </EmptyMedia>
         <EmptyTitle>No changes yet</EmptyTitle>
-        <EmptyDescription>
-          {sessions > 1
-            ? "No session in this workspace has changed a file yet. The change shows up here as soon as one does."
-            : `${harnessName(detail.session.harness)} hasn't changed any files in this session. The change shows up here as soon as it edits one.`}
-        </EmptyDescription>
+        <EmptyDescription>{nothingYetWords(detail.session.harness, sessions)}</EmptyDescription>
       </EmptyHeader>
-      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-5 gap-y-1.5 text-row">
+      <dl className="mt-3 grid grid-cols-[auto_1fr] gap-x-5 gap-y-1.5 text-left text-row">
         <dt className="text-muted-foreground">Branch</dt>
         <dd className="font-mono">{detail.session.branch}</dd>
         {base === null ? null : (

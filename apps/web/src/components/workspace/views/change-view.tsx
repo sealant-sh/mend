@@ -25,7 +25,11 @@ const useChangeFacts = (place: ViewPlace): ViewFacts => {
   // While the counts are read, or if they can't be, the tab shows its name alone.
   if (stats.isPending || stats.isError) return {};
   if (stats.data.additions + stats.data.deletions === 0) return {};
-  return { added: stats.data.additions, removed: stats.data.deletions };
+  // An empty count hides, as the canvas's tab draws "+31" alone.
+  return {
+    ...(stats.data.additions > 0 ? { added: stats.data.additions } : {}),
+    ...(stats.data.deletions > 0 ? { removed: stats.data.deletions } : {}),
+  };
 };
 
 /** The Change view: this workspace's change, file by file (route PR 23). */

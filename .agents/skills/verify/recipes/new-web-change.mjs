@@ -10,7 +10,7 @@
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-change-moves.json
 //
 // The first batch makes three worktrees with `mend run` (no agent): `change-small`, three files in
-// one folder and the README, written by one session and added to by a second; `change-big`, 38
+// one folder and the README, written by one session and added to by a second; `change-big`, 37
 // files with a lock file, a picture, a rename and a 3,000-line file; `change-empty`, a session that
 // changed nothing. The second batch edits a file in `change-small` while the page shows it.
 //
@@ -273,10 +273,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       "Mend folded this file because a tool generated it. You rarely need to read it.",
     ),
   ).waitFor();
-  await visible(page.getByText("38 files changed. Mend folds generated files.")).waitFor();
+  await visible(page.getByText("37 files changed. Mend folds generated files.")).waitFor();
   await section("docs/README.md").getByText("Renamed").waitFor();
   await section("public/og/checkout.png").getByText("Binary").waitFor();
-  note("big change: 38 files; pnpm-lock.yaml folded as generated; README renamed; the png binary");
+  note("big change: 37 files; pnpm-lock.yaml folded as generated; README renamed; the png binary");
   await both("big-desktop");
   await fileRow(/rows\.ts/).click();
   await page.waitForTimeout(1_500);
@@ -312,8 +312,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   note(`/changes/<id>#land went to ${path()}${hash}`);
 
   // A narrow tile: the Change view beside the conversation.
+  // The session's own page first, then its Change view: the view's tab opens beside the
+  // conversation's, in one tile.
   await page.context().clearCookies({ name: "mend-tiles" });
-  await open(`/sessions/${small.id}/change`);
+  await open(`/sessions/${small.id}`);
+  await visible(page.locator(`[data-tab="session:${small.id}"]`)).waitFor();
+  await go(`/sessions/${small.id}/change`);
   await section("src/payments/retry.ts").waitFor({ timeout: 60_000 });
   const tile = await boxOf(visible(page.locator("[data-tile]")));
   const tab = await boxOf(changeTab());
@@ -344,7 +348,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await open(`/sessions/${big.id}/change`);
   await section("pnpm-lock.yaml").waitFor({ timeout: 60_000 });
   await both("big-phone");
-  await visible(page.getByRole("button", { name: /^File \d+ of 38: / })).click();
+  await visible(page.getByRole("button", { name: /^File \d+ of 37: / })).click();
   await visible(page.getByRole("dialog")).waitFor();
   await page.waitForTimeout(600);
   note("on a phone the picker opens the files as a sheet from the bottom");
