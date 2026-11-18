@@ -1,0 +1,72 @@
+[
+  {
+    "name": "01-review",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "inbox-review",
+      "--",
+      "sh",
+      "-c",
+      "printf 'verified\\n' > VERIFY.md"
+    ]
+  },
+  {
+    "name": "02-failed",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "inbox-failed",
+      "--",
+      "sh",
+      "-c",
+      "printf 'half\\n' > HALF.md; exit 3"
+    ]
+  },
+  {
+    "name": "03-done",
+    "run": ["mend", "run", "--project", "verify-fixture", "--name", "inbox-done", "--", "true"]
+  },
+  {
+    "name": "04-running",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "inbox-running",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "05-snooze",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "inbox-snooze",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "07-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]

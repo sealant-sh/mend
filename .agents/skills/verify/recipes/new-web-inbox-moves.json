@@ -1,0 +1,19 @@
+[
+  {
+    "name": "01-moves",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "inbox-moves",
+      "--detach",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "sleep 150; printf 'moved\\n' > MOVED.md"
+    ]
+  }
+]

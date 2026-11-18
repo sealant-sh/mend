@@ -13,7 +13,7 @@ import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
 import { type ErrorComponentProps, useRouter } from "@tanstack/react-router";
 import { CircleX, SearchX } from "lucide-react";
-import type { ReactNode } from "react";
+import { createContext, type ReactNode, useContext } from "react";
 
 /**
  * The router's default screens (pending, error, not found) and a query's default pending and error
@@ -37,15 +37,28 @@ function GoHome({ variant }: { readonly variant: "default" | "outline" }) {
   );
 }
 
+/**
+ * Inside the signed-in frame (`routes/_inbox.tsx`) the desk, the sidebar and the sheet are already
+ * drawn: a default screen there is only its column, on the frame's sheet.
+ */
+const InSheetContext = createContext(false);
+
+export function InSheet({ children }: { readonly children: ReactNode }) {
+  return <InSheetContext.Provider value>{children}</InSheetContext.Provider>;
+}
+
+const COLUMN = "mx-auto w-full max-w-140 px-5 pt-10 pb-10 md:pt-16";
+
 /** The desk with Mend's name on it, and the sheet a page sits on, holding one column. */
 function SheetPage({ children }: { readonly children: ReactNode }) {
+  if (useContext(InSheetContext)) return <div className={COLUMN}>{children}</div>;
   return (
     <div className="flex min-h-dvh flex-col bg-canvas p-sheet-inset md:flex-row">
       <div className="px-3 pt-2 pb-3 text-lead font-semibold text-foreground md:w-sidebar md:shrink-0 md:px-3 md:pt-3">
         Mend
       </div>
       <main className="flex-1 rounded-xl border border-sheet-border bg-background shadow-sheet">
-        <div className="mx-auto w-full max-w-140 px-5 pt-10 pb-10 md:pt-16">{children}</div>
+        <div className={COLUMN}>{children}</div>
       </main>
     </div>
   );

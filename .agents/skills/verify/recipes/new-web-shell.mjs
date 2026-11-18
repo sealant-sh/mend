@@ -1,8 +1,8 @@
-// The new web app (apps/web) with no routes yet, signed in as the stack's first account through the
-// stack's own sign-in page: home shows the not-found screen in light and dark, on a desktop and at
-// phone width; a read that fails shows the error screen, and Try again recovers with a tRPC call
-// from the browser; a visit with no session goes to sign-in. The pattern every route PR's recipe
-// copies (SKILL.md, Drive):
+// The new web app (apps/web), signed in as the stack's first account through the stack's own sign-in
+// page: a path no route owns shows the not-found screen on the sheet beside the sidebar inbox, in
+// light and dark, on a desktop and at phone width; a read that fails shows the error screen, and Try
+// again recovers with a tRPC call from the browser; a visit with no session goes to sign-in. The
+// pattern every route PR's recipe copies (SKILL.md, Drive):
 //
 //   pnpm verify drive new-web --recipe new-web-shell
 const DESKTOP = { width: 1280, height: 900 };
@@ -52,15 +52,16 @@ export default async ({ page, web, capture, note }) => {
   await heading("Page not found");
   if (new URL(page.url()).pathname !== "/")
     throw new Error(`a signed-in visit went to ${page.url()}`);
-  await page.getByText("Mend", { exact: true }).first().waitFor();
-  note("signed in, home stays at / and shows the not-found screen on the sheet, Mend on the desk");
+  await page.getByRole("navigation", { name: "Inbox" }).waitFor();
+  note("signed in, home stays at / and shows the not-found screen on the sheet, beside the inbox");
   for (const [viewport, size] of [
     ["desktop", DESKTOP],
     ["phone", PHONE],
   ]) {
     await page.setViewportSize(size);
     for (const theme of ["light", "dark"]) {
-      await withTheme(theme, "/");
+      // Home is the inbox on a phone (recipe new-web-inbox); a path no route owns is not found.
+      await withTheme(theme, "/no-such-page");
       await heading("Page not found");
       if (viewport === "phone") await touchTargets();
       await capture(`not-found-${viewport}-${theme}`);
