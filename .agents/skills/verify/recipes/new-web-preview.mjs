@@ -7,8 +7,8 @@
 // runs a one-off command (`service-run-web`) and, empty, adopts a port (`service-add`); a recipe
 // that fails says so (`service-observe`); a Mend-served preview on another site, and the file that
 // doesn't parse (`toml-parse-error`), as fixtures; the phone's picker; the view's failure; and the
-// workspace stopped by Stop session. Run the CLI batch first, once per stack: it starts a `sleep`
-// session in a new worktree `preview-ws-<time>` whose `.mend/mend.toml` declares `web` (python3's
+// workspace stopped by Stop session. Run the CLI batch first, once per run: it starts two `sleep`
+// sessions in a new worktree `preview-ws-<time>`, whose `.mend/mend.toml` declares `web` (python3's
 // http.server on 8000) and `broken` (exits 3).
 //
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-preview-sessions.json
@@ -24,6 +24,19 @@ const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const TITLE = "Fix flaky checkout retry";
 const VIEW = "view:preview";
+
+const textOf = async (locator) => (await locator.innerText()).replace(/\s+/g, " ").trim();
+
+/** A tRPC answer that failed on purpose, as the server words one. */
+const failed = (message) => (_answer, procedure) => ({
+  error: {
+    json: {
+      message,
+      code: -32603,
+      data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path: procedure },
+    },
+  },
+});
 
 export default async ({ page, web, capture: captureOnce, note }) => {
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
@@ -107,7 +120,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const body = page.locator(`[data-tab-body="${VIEW}"]`).filter({ visible: true });
   const list = body.getByRole("navigation", { name: "This workspace's services" });
   const pane = body.getByRole("status").first();
-  const textOf = async (locator) => (await locator.innerText()).replace(/\s+/g, " ").trim();
   const waitText = (pattern, timeout = 90_000) =>
     page.waitForFunction(
       ([key, source]) => {
@@ -139,10 +151,17 @@ export default async ({ page, web, capture: captureOnce, note }) => {
         !["completed", "stopped", "failed"].includes(row.session.status),
     )
     .toSorted((a, b) => String(b.session.createdAt).localeCompare(String(a.session.createdAt)));
+  // The newest worktree's two sessions: A wrote the file, B keeps it company.
+  const worktree = running[0]?.worktreeName;
+  const pair = running
+    .filter((row) => row.worktreeName === worktree)
+    .toSorted((a, b) => String(a.session.createdAt).localeCompare(String(b.session.createdAt)));
   if (running.length === 0)
     throw new Error("no preview-ws-<time> worktree has a running session: run the CLI batch first");
-  const A = running[0].session.id;
-  note(`the batch session is ${A}; the recipe stops it at the end (Stop session)`);
+  if (pair.length !== 2) throw new Error(`${worktree} has ${pair.length} running sessions, not 2`);
+  const A = pair[0].session.id;
+  const B = pair[1].session.id;
+  note(`the batch sessions are ${A} and ${B} in ${worktree}; the recipe stops both at the end`);
   await client(
     async (trpc, [id, label]) => trpc.sessions.setLabel.mutate({ id, label }),
     [A, TITLE],
@@ -172,6 +191,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     `/sessions/<id>/preview: the Preview tab shows; the list reads ${JSON.stringify(await textOf(list))}`,
   );
   note(`pane before a start: ${JSON.stringify(await textOf(pane))}`);
+  await waitText(
+    /Both sessions in preview-ws-\d+ use these services\. If you restart one, it restarts for both\./,
+  );
+  note(
+    'the list\'s foot: "Both sessions in <worktree> use these services. If you restart one, it restarts for both."',
+  );
   await both("preview-recipes");
 
   // Start web from the file: Starting, then Running, picked, with its port on the tab.
@@ -242,7 +267,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       ([key, source]) =>
         new RegExp(source).test(
           [...document.querySelectorAll(`[data-tab-body="${key}"] button`)].find(
-            (each) => each.getClientRects().length > 0 && /^Logs/.test(each.textContent ?? ""),
+            (each) =>
+              each.getClientRects().length > 0 && (each.textContent ?? "").startsWith("Logs"),
           )?.textContent ?? "",
         ),
       [VIEW, pattern.source],
@@ -273,6 +299,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const restart = page.getByRole("dialog", { name: "Restart web?" });
   await restart.waitFor();
   note(`Restart dialog: ${JSON.stringify(await textOf(restart))}`);
+  if (
+    !/Every session in this workspace uses it, so it restarts for them too/.test(
+      await textOf(restart),
+    )
+  )
+    throw new Error("the Restart dialog doesn't say the other session uses it");
   await settled();
   await both("preview-restart-dialog");
   await restart.getByRole("button", { name: "Restart", exact: true }).click();
@@ -354,15 +386,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.resetQueries());
     await settled();
   };
-  const failed = (message) => (_answer, path) => ({
-    error: {
-      json: {
-        message,
-        code: -32603,
-        data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path },
-      },
-    },
-  });
 
   // A preview Mend serves, on a site other than this page's: the reason and the way forward.
   const webId = (await client(async (trpc) => trpc.services.list.query({ all: true }), null)).find(
@@ -378,8 +401,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
         {
           preview: {
             id: "pv-web",
-            projectId: running[0].session.projectId,
-            worktreeId: running[0].session.worktreeId,
+            projectId: pair[0].session.projectId,
+            worktreeId: pair[0].session.worktreeId,
             serviceName: "web",
             label: "aaaaaaaaaaaaaaaaaaaaaaaaaa",
             state: "kept",
@@ -434,7 +457,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // restart and stop Services; only the owner starts one (shared-control.md
   // `terminal-owner-only`).
   const OWNER = "fixture-owner";
-  const asWatcher = (answer, path) => {
+  const asWatcher = (answer, procedure) => {
     const data = answer?.result?.data;
     if (data === undefined) return answer;
     data.meta = data.meta ?? { values: {}, v: 1 };
@@ -445,16 +468,16 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       session.sharedControlEnabledAt = now;
       data.meta.values[`${prefix}session.sharedControlEnabledAt`] = ["Date"];
     };
-    if (path === "sessions.inbox")
+    if (procedure === "sessions.inbox")
       data.json.forEach((row, at) => {
-        if (row.session.worktreeId === running[0].session.worktreeId) patch(row.session, `${at}.`);
+        if (row.session.worktreeId === pair[0].session.worktreeId) patch(row.session, `${at}.`);
       });
     if (
-      path === "sessions.detail" &&
-      data.json.session.worktreeId === running[0].session.worktreeId
+      procedure === "sessions.detail" &&
+      data.json.session.worktreeId === pair[0].session.worktreeId
     )
       patch(data.json.session, "");
-    if (path === "organization.members" && data.json.length > 0) {
+    if (procedure === "organization.members" && data.json.length > 0) {
       const at = data.json.length;
       data.json.push({
         ...data.json[0],
@@ -484,8 +507,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.unroute("**/trpc/**");
   await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.resetQueries());
 
-  // Stop session, the last running one: the workspace and its services stop with it.
+  // Stop session on both, A last: the workspace and its services stop with the last one.
   await list.waitFor({ timeout: 30_000 });
+  // B first: while it runs, the workspace keeps running for it.
+  await client(async (trpc, id) => trpc.sessions.stop.mutate({ id }), B);
   await client(async (trpc, id) => trpc.sessions.stop.mutate({ id }), A);
   await waitText(/This workspace isn't running/, 120_000);
   note(
