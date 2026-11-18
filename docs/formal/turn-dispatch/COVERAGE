@@ -4,7 +4,11 @@
 # sync: the commit whose code the model was last confirmed to describe (SLNT-1017's full run).
 # Move it only as the skill's step 1 and full run say. 987a04461d is mend#1739's commit on the
 # SLNT-895 feature branch rebased on main; its covered files are the ones SLNT-1017's run checked.
-sync 987a04461ddf0a39354ba0413e5f2b0d4952a10e
+# 225d463a4c is the SLNT-1113 branch: agent-conversation.ts gained newestItems, a read of each
+# session's newest item for the inbox, and nothing else. It claims, binds, completes or cancels no
+# turn, so no action models it; SLNT-895's squash changed no covered function. Full run at
+# 225d463a4c: every row as expected.
+sync 225d463a4c5a38aa3b4aa89a551835231ee978f3
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
