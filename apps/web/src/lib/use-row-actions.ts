@@ -126,7 +126,8 @@ export const useRowActions = () => {
     rename: (row: InboxRow, text: string) => {
       void rename(row, text);
     },
-    copyLink: (row: InboxRow) => {
+    /** Copies the session's address; a tab whose row the inbox doesn't hold copies it too. */
+    copyLink: (row: { readonly session: { readonly id: string }; readonly title: string }) => {
       void copyTextChecked(sessionUrl(window.location.origin, row.session.id)).then((copied) =>
         copied
           ? say(doneWords.copied(row.title))

@@ -266,6 +266,28 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.sessions.$sessionId.$view.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.shell.$sessionId.tsx`
 
+### session-stop.new-web-session-actions
+
+- **Map:** start-session.md `session-stop`, `session-stop-shared`; attach-resume.md `resume-web`,
+  `rename-web`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-session-actions-sessions.json` (two sessions in the worktree
+  `actions-ws` and one in `actions-solo`, each a `sleep`), then drive the recipe
+  `new-web-session-actions`: right-click a session tab, open its tile's "…" and the workspace "…",
+  Copy branch name, New session in this workspace, rename by F2, open Stop session… on a session
+  that shares its workspace and on one alone in its own, stop each, resume the lone one, and open
+  the phone's "…" sheet and its Stop session sheet at 390px.
+- **See:** each step's note in the recipe's `steps.log`: the tab menu holds the session's actions
+  and no workspace action, the workspace menu holds no session action; the dialog names the session
+  that keeps the workspace running, and says the workspace stops too for the lone one; the stopped
+  banner and "You stopped the session at …" with what the workspace does now; the session running
+  again after Resume session.
+- **Mode:** `scripted` (recipes/new-web-session-actions.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/session/session-actions.tsx`,
+  `apps/web/src/components/session/stopped-banner.tsx`, `apps/web/src/lib/session-stop.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

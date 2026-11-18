@@ -5,7 +5,9 @@ import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { type KeyboardEvent, useState, useSyncExternalStore } from "react";
 
+import type { InboxRow } from "#/lib/inbox";
 import { inboxQuery } from "#/lib/inbox-live";
+import { rowActions } from "#/lib/row-actions";
 import { lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
 import {
   activate,
@@ -23,6 +25,7 @@ import {
   type Side,
   sessionTab,
   splitTile,
+  sessionOfTab,
   tabsOf,
   tileById,
   tileOfTab,
@@ -36,6 +39,7 @@ import {
 } from "#/lib/tiles";
 import { useTRPC } from "#/lib/trpc";
 import { tileArrangements } from "#/lib/ui-prefs";
+import { useInbox } from "#/lib/use-inbox";
 
 import { Kept, KeptSlot, useKeptNodes } from "../workspace/kept.tsx";
 import { OpenMenu, PhoneOpenSheet, type ClosedSession } from "../workspace/open-menu.tsx";
@@ -48,6 +52,19 @@ import { chipAt, type DropTarget, useTabDrag } from "../workspace/use-tab-drag.t
 import { workspaceView, type ViewPlace } from "../workspace/views.tsx";
 import { WorkspaceHeader } from "../workspace/workspace-header.tsx";
 import { NewSessionTab } from "./new-session-tab.tsx";
+import {
+  PhoneSessionActions,
+  type RenameDialogState,
+  RenameSessionDialog,
+  SessionTabMenu,
+  type SessionMenuContext,
+  type StopDialogState,
+  StopSessionDialog,
+  type TabLayout,
+  TileMenuButton,
+  type WorkspaceFacts,
+  WorkspaceMenuButton,
+} from "./session-actions.tsx";
 import { type SessionFacts, useSessionFacts } from "./session-facts.ts";
 import { faceOf, type TabLook, WorkspaceTab, WorkspaceTabBody } from "./workspace-tabs.tsx";
 
@@ -77,7 +94,7 @@ const SIDE_WORDS: Readonly<Record<Side, string>> = {
 };
 
 const TAB_KEYS =
-  "Delete Alt+Shift+ArrowLeft Alt+Shift+ArrowRight Alt+Shift+ArrowUp Alt+Shift+ArrowDown";
+  "Delete F2 Alt+Shift+ArrowLeft Alt+Shift+ArrowRight Alt+Shift+ArrowUp Alt+Shift+ArrowDown";
 
 const subscribeToNothing = () => () => undefined;
 
@@ -139,8 +156,11 @@ const sameLayout = (a: Arrangement, b: Arrangement): boolean =>
  * is the phone's layout (T19, T23): the Phone header, every tab in one strip, and the focused
  * tile's body.
  *
- * What attaches here later: the views (PRs 17 to 23, `WORKSPACE_VIEWS`), the layout button and the
- * workspace "…" in the header (PRs 16 and 13), a tab's "…" in a tile's `actions` (PR 13).
+ * A session's own actions are on its tab: its right-click menu, the "…" of the tile that shows it,
+ * and on a phone the header's "…" (`session-actions.tsx`); the workspace's are in the header's "…".
+ *
+ * What attaches here later: the views (PRs 17 to 23, `WORKSPACE_VIEWS`) and the layout button in
+ * the header (PR 16).
  */
 function SessionSheet({
   facts,
@@ -207,6 +227,20 @@ function SessionSheet({
 
   const [said, setSaid] = useState("");
 
+  // The inbox's rows, for what a session's menu offers and its writers act on.
+  const inboxState = useInbox();
+  const inboxAll = inboxState.status === "success" ? inboxState.view.all : [];
+  const rowOf = (sessionId: string): InboxRow | null =>
+    inboxAll.find((row) => row.session.id === sessionId) ?? null;
+  const [stopDialog, setStopDialog] = useState<StopDialogState>({ open: false, target: null });
+  const [renameDialog, setRenameDialog] = useState<RenameDialogState>({ open: false, row: null });
+  const menus: SessionMenuContext = {
+    rowOf,
+    viewerId: facts.viewerId,
+    onRename: (row) => setRenameDialog({ open: true, row }),
+    onStop: (target) => setStopDialog({ open: true, target }),
+  };
+
   const drag = useTabDrag({
     lands: (tab, target) => !sameLayout(dropped(shown, tab, target), shown),
     onDrop: (tab, target) => change((current) => dropped(current, tab, target)),
@@ -257,6 +291,13 @@ function SessionSheet({
     );
 
   const keys = (tab: string, label: string) => (event: KeyboardEvent<HTMLButtonElement>) => {
+    const tabSession = sessionOfTab(tab);
+    const row = tabSession === null ? null : rowOf(tabSession);
+    if (event.key === "F2" && row !== null && rowActions(row, facts.viewerId).rename) {
+      event.preventDefault();
+      menus.onRename(row);
+      return;
+    }
     if (event.key === "Delete" && allTabs.length > 1) {
       event.preventDefault();
       closeOne(tab);
@@ -284,17 +325,54 @@ function SessionSheet({
     );
   };
 
+  /** What a tab's menus can do to the tiles, from the tile that holds it. */
+  const layoutOf = (tab: string): TabLayout => {
+    const tile = tileOfTab(shown, tab);
+    return {
+      ...(tile !== undefined && tiles.length > 1 && maximised !== tile.id
+        ? { onMaximise: () => change((current) => maximise(current, tile.id)) }
+        : {}),
+      // A tab alone in its tile has nothing to split from.
+      ...(tile !== undefined && tile.tabs.length > 1
+        ? {
+            onSplit: (side: Side) => change((current) => splitTile(current, tile.id, tab, side)),
+          }
+        : {}),
+      ...(allTabs.length > 1 ? { onClose: () => closeOne(tab) } : {}),
+    };
+  };
+
   const lookOf = (tab: string, size: "default" | "touch"): TabLook => {
     const label = faceOf(tab, facts, rows).label;
+    const tabSession = sessionOfTab(tab);
     return {
       size,
       ghost: drag.drag?.tab === tab,
       ...(allTabs.length > 1 ? { onClose: () => closeOne(tab) } : {}),
       ...(size === "default"
-        ? { onPointerDown: drag.begin(tab), onKeyDown: keys(tab, label), keyShortcuts: TAB_KEYS }
+        ? {
+            onPointerDown: drag.begin(tab),
+            onKeyDown: keys(tab, label),
+            keyShortcuts: TAB_KEYS,
+            ...(tabSession === null
+              ? {}
+              : {
+                  contextMenu: (
+                    <SessionTabMenu sessionId={tabSession} layout={layoutOf(tab)} context={menus} />
+                  ),
+                }),
+          }
         : {}),
     };
   };
+
+  const workspace: WorkspaceFacts = {
+    worktreeName: facts.worktreeName,
+    branch: session.branch,
+    worktreePath: session.worktree,
+    onNewSession: () => openNewSession(shown.focus),
+  };
+  const focusedSession = sessionOfTab(focusedTab(shown));
 
   const newSessionBody = (tab: string) => (
     <NewSessionTab
@@ -330,12 +408,22 @@ function SessionSheet({
   return (
     // Exactly the sheet's height, never the content's: the thread scrolls inside its tile.
     <div className="flex h-dvh min-w-0 flex-none flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))]">
-      <WorkspaceHeaderRow facts={facts} />
+      <WorkspaceHeaderRow facts={facts} workspace={workspace} />
       <PhoneHeader
         title={facts.worktreeName}
         sub={facts.projectName}
         back={BACK_TO_INBOX}
         className="lg:hidden"
+        actions={
+          focusedSession === null ? undefined : (
+            <PhoneSessionActions
+              sessionId={focusedSession}
+              layout={layoutOf(focusedTab(shown))}
+              context={menus}
+              workspace={workspace}
+            />
+          )
+        }
       />
       <PhoneTabStrip
         className="lg:hidden"
@@ -406,6 +494,14 @@ function SessionSheet({
                     onNewSession={() => openNewSession(tile.id)}
                   />
                 }
+                actions={
+                  <TileMenuButton
+                    sessionId={sessionOfTab(tile.active)}
+                    label={faceOf(tile.active, facts, rows).label}
+                    layout={layoutOf(tile.active)}
+                    context={menus}
+                  />
+                }
                 maximised={maximised === tile.id}
                 {...(tiles.length > 1
                   ? { onMaximise: () => change((current) => maximise(current, tile.id)) }
@@ -441,12 +537,27 @@ function SessionSheet({
       <p role="status" className="sr-only">
         {said}
       </p>
+      <StopSessionDialog
+        state={stopDialog}
+        viewerId={facts.viewerId}
+        onOpenChange={(next) => setStopDialog((current) => ({ ...current, open: next }))}
+      />
+      <RenameSessionDialog
+        state={renameDialog}
+        onOpenChange={(next) => setRenameDialog((current) => ({ ...current, open: next }))}
+      />
     </div>
   );
 }
 
-/** The Workspace header with Open in VS Code, from 1024px. */
-function WorkspaceHeaderRow({ facts }: { readonly facts: SessionFacts }) {
+/** The Workspace header with Open in VS Code and the workspace's "…", from 1024px. */
+function WorkspaceHeaderRow({
+  facts,
+  workspace,
+}: {
+  readonly facts: SessionFacts;
+  readonly workspace: WorkspaceFacts;
+}) {
   return (
     <WorkspaceHeader
       project={facts.projectName}
@@ -454,12 +565,15 @@ function WorkspaceHeaderRow({ facts }: { readonly facts: SessionFacts }) {
       branch={facts.session.branch}
       className="max-lg:hidden"
       actions={
-        <a
-          href={vscodeOpenUri(facts.session.id)}
-          className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
-        >
-          Open in VS Code
-        </a>
+        <>
+          <a
+            href={vscodeOpenUri(facts.session.id)}
+            className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
+          >
+            Open in VS Code
+          </a>
+          <WorkspaceMenuButton workspace={workspace} />
+        </>
       }
     />
   );
