@@ -210,15 +210,12 @@ function NoProjects({ touch = false }: { readonly touch?: boolean }) {
           <h2>No projects yet</h2>
         </EmptyTitle>
         <EmptyDescription>
-          A session runs in a project. Adopt a repository on the Projects page, then start a session
-          in it here.
+          A session runs in a project. Add one on the Projects page, then start a session in it
+          here.
         </EmptyDescription>
       </EmptyHeader>
       <EmptyContent>
-        <Link
-          {...laterPage("projects")}
-          className={buttonVariants({ size: touch ? "touch" : "default" })}
-        >
+        <Link to="/projects" className={buttonVariants({ size: touch ? "touch" : "default" })}>
           Go to Projects
         </Link>
       </EmptyContent>

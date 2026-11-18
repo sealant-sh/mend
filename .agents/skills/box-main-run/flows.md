@@ -154,6 +154,25 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web-old/src/routes/projects.index.tsx`, `apps/web-old/src/components/project/`,
   `apps/api/src/adoptions.ts`
 
+### adopt-project.new-web-projects
+
+- **Map:** adopt-project.md `projects-directory`, `adopt-web`, `adopt-invalid-url`,
+  `adopt-visibility`; project-settings.md `settings-remove`, `settings-retention`
+- **Needs:** no session; no turn; web; GitHub reachable from the box
+- **Do:** Drive the recipe `new-web-projects` (after the composer's CLI batch
+  `new-web-composer-setup.json`): Projects lists the projects, searches and filters them; Add
+  project refuses a local path, clones a small public repository shared with the organization,
+  clones a big one while a session queued in the composer waits for it, and reports a clone the key
+  can't read and a clone that fails; Remove project…, Restore and Purge… under Removed projects.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the session queued on the
+  clone starts by itself; every project the recipe made is purged at its end.
+- **Mode:** `scripted` (recipes/new-web-projects.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/projects/`, `apps/web/src/routes/_inbox.projects.index.tsx`,
+  `apps/web/src/lib/projects.ts`, `apps/web/src/lib/clone-state.ts`,
+  `apps/web/src/lib/project-removal.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

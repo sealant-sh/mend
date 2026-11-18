@@ -76,6 +76,8 @@ describe("parseAttempt", () => {
       id: "k",
       name: "mobile-app",
       startedAt: 1,
+      source: null,
+      visibility: null,
     });
     expect(parseAttempt(JSON.stringify({ id: "k" }))).toBeNull();
     expect(parseAttempt("not json")).toBeNull();

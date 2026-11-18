@@ -1,13 +1,13 @@
 import { useSyncExternalStore } from "react";
 
-import type { AdoptionProgressDto } from "./api.ts";
+import type { AdoptionProgressDto, ProjectDto } from "./api.ts";
 import type { TrpcProxy } from "./trpc.ts";
 
 /**
  * The clone this browser started, apart from the page that started it: the server knows a clone
  * only by the key its client chose (`projects.adoption`), and no read lists a person's clones, so
- * the browser keeps that key for its account. The setup step that adopts a first project, and
- * Projects' Adopt, write it with `rememberAdoption` as they start one. The composer reads it to
+ * the browser keeps that key for its account. The setup step that adds a first project, and
+ * Projects' Add project, write it with `rememberAdoption` as they start one. The composer reads it to
  * offer the cloning project and queue a session on its clone (`queuedSessions.queue`).
  *
  * Kept in this browser's local storage, under the account that started it; never in the query
@@ -20,6 +20,12 @@ export interface AdoptionAttempt {
   readonly name: string;
   /** Epoch milliseconds. */
   readonly startedAt: number;
+  /**
+   * The address and visibility it was asked for, so Projects can try a failed clone again. Null
+   * in a clone kept before Projects wrote them.
+   */
+  readonly source: string | null;
+  readonly visibility: ProjectDto["visibility"] | null;
 }
 
 const keyOf = (userId: string) => `mend-adoption.${userId}`;
@@ -58,7 +64,16 @@ export const parseAttempt = (raw: string | null): AdoptionAttempt | null => {
       typeof value["name"] === "string" &&
       typeof value["startedAt"] === "number"
     )
-      attempt = { id: value["id"], name: value["name"], startedAt: value["startedAt"] };
+      attempt = {
+        id: value["id"],
+        name: value["name"],
+        startedAt: value["startedAt"],
+        source: typeof value["source"] === "string" ? value["source"] : null,
+        visibility:
+          value["visibility"] === "private" || value["visibility"] === "shared"
+            ? value["visibility"]
+            : null,
+      };
   } catch {
     // Not what this app wrote: no clone to show.
   }

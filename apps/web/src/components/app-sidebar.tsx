@@ -216,7 +216,12 @@ function NavItem({
       <SidebarMenuButton
         isActive={active}
         className={navClass}
-        render={<Link {...laterPage(to)} aria-current={active ? "page" : undefined} />}
+        render={
+          <Link
+            {...(to === "projects" ? { to: "/projects" } : laterPage(to))}
+            aria-current={active ? "page" : undefined}
+          />
+        }
       >
         {icon}
         <span>{children}</span>
