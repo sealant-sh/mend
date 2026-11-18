@@ -44,6 +44,7 @@ import { PageEvent } from "./page-view";
 import { RequestLine } from "./request-card";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
+import { StoppedBanner, StoppedLine } from "./stopped-banner";
 
 /** An item kind this app knows; a newer server's kind says nothing about the work under way. */
 const isItemKind = Schema.is(AgentItemKind);
@@ -559,6 +560,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
           {facts.session.summary ?? `${facts.agent} didn't start.`}
         </Banner>
       ) : null}
+      <StoppedBanner facts={facts} />
       <Conversation
         label={`Conversation: ${facts.title}`}
         keepPlaceOnPrepend
@@ -658,6 +660,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
           <Note id="empty">Nothing said yet.</Note>
         ) : null}
         <SessionFailure facts={facts} rows={body.rows} />
+        <StoppedLine facts={facts} />
       </Conversation>
     </div>
   );

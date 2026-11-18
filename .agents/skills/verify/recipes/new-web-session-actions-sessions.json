@@ -1,0 +1,50 @@
+[
+  {
+    "name": "01-first",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "actions-ws",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7211"
+    ]
+  },
+  {
+    "name": "02-second",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "actions-ws",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7212"
+    ]
+  },
+  {
+    "name": "03-alone",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "actions-solo",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7213"
+    ]
+  }
+]

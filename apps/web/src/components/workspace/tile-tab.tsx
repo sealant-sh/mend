@@ -1,4 +1,5 @@
 import { Lump, type LumpPr, type LumpStatus } from "@mend/ui/components/lump";
+import { ContextMenu, ContextMenuTrigger } from "@mend/ui/components/ui/context-menu";
 import { TabsTrigger } from "@mend/ui/components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@mend/ui/components/ui/tooltip";
 import { cn } from "@mend/ui/lib/utils";
@@ -33,6 +34,8 @@ export interface TileTabHandlers {
   readonly onKeyDown?: (event: KeyboardEvent<HTMLButtonElement>) => void;
   /** The keys the tab answers to beyond the tab list's own, for screen readers. */
   readonly keyShortcuts?: string;
+  /** The tab's right-click menu (`ContextMenuContent`): a session tab's own actions. */
+  readonly contextMenu?: ReactNode;
 }
 
 /**
@@ -42,7 +45,8 @@ export interface TileTabHandlers {
  * has the cobalt underline; the Tile turns it grey when the tile loses focus.
  *
  * `onClose` adds the close button, shown on the active tab and on hover; the keyboard closes with
- * Delete (the tile's handlers). `ghost` is the tab while it is dragged away.
+ * Delete (the tile's handlers). `ghost` is the tab while it is dragged away. `contextMenu` is what
+ * a right-click on the tab opens.
  */
 export function TileTab({
   value,
@@ -53,6 +57,7 @@ export function TileTab({
   onPointerDown,
   onKeyDown,
   keyShortcuts,
+  contextMenu,
   className,
   ...tab
 }: TileTabKind &
@@ -66,17 +71,18 @@ export function TileTab({
   }) {
   const touch = size === "touch";
   const closable = onClose !== undefined && !touch;
-  return (
-    <div
-      data-tab={value}
-      className={cn(
-        "group/tab relative flex h-full shrink-0",
-        // A session's title gives way first on a desktop strip; on the phone's, labels stay whole.
-        tab.kind === "session" && !touch && "max-w-max min-w-30 shrink",
-        ghost && "opacity-40",
-        className,
-      )}
-    >
+  const frame = {
+    "data-tab": value,
+    className: cn(
+      "group/tab relative flex h-full shrink-0",
+      // A session's title gives way first on a desktop strip; on the phone's, labels stay whole.
+      tab.kind === "session" && !touch && "max-w-max min-w-30 shrink",
+      ghost && "opacity-40",
+      className,
+    ),
+  };
+  const parts = (
+    <>
       <TabsTrigger
         value={value}
         data-size={size}
@@ -149,7 +155,14 @@ export function TileTab({
           <TooltipContent>Close tab</TooltipContent>
         </Tooltip>
       ) : null}
-    </div>
+    </>
+  );
+  if (contextMenu === undefined) return <div {...frame}>{parts}</div>;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<div {...frame} />}>{parts}</ContextMenuTrigger>
+      {contextMenu}
+    </ContextMenu>
   );
 }
 

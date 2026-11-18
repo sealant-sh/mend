@@ -149,6 +149,13 @@ export const sessionsRouter = router({
     .query(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.stopPreview({ params: { id: i.id } })),
     ),
+  // Who interrupted, attached, opened a shell, stopped or shared control; oldest first. The
+  // stopped session's line names who stopped it.
+  controlEvents: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.controlEvents({ params: { id: i.id } })),
+    ),
   // The owner's "discard unsaved and stop" (docs/adr/0002): the page arms it with a second click.
   discardUnsaved: procedure.input(byId).mutation(({ ctx, input: i }) =>
     run(ctx, (api) =>

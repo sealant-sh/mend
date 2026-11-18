@@ -4,6 +4,7 @@ import {
   ContextMenuGroup,
   ContextMenuItem,
   ContextMenuLabel,
+  ContextMenuSeparator,
   ContextMenuShortcut,
   ContextMenuSub,
   ContextMenuSubContent,
@@ -15,6 +16,7 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuShortcut,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -52,17 +54,20 @@ import { SheetHandle, SheetItem } from "./sheet-item.tsx";
  * header's "…" and the Change view. Approving from a row is the phone app's alone.
  *
  * On the desk they are the row's "…" menu and its right-click menu, the same items in both; on a
- * phone, a sheet. Stop session… (route PR 13) goes last in each, after a separator.
+ * phone, a sheet. Stop session… is on the session's own tab (`session-actions.tsx`), where its
+ * dialog says what else stops.
  */
 
 /** The parts of a menu, so the "…" menu and the right-click menu draw the same items. */
-interface MenuParts {
+export interface MenuParts {
   readonly Group: ComponentType<{ readonly children: ReactNode }>;
   readonly Label: ComponentType<{ readonly children: ReactNode; readonly className?: string }>;
   readonly Item: ComponentType<{
     readonly onClick?: () => void;
+    readonly variant?: "default" | "destructive";
     readonly children: ReactNode;
   }>;
+  readonly Separator: ComponentType;
   readonly Sub: ComponentType<{ readonly children: ReactNode }>;
   readonly SubTrigger: ComponentType<{ readonly children: ReactNode }>;
   readonly SubContent: ComponentType<{
@@ -72,20 +77,22 @@ interface MenuParts {
   readonly Shortcut: ComponentType<{ readonly children: ReactNode; readonly className?: string }>;
 }
 
-const DROPDOWN: MenuParts = {
+export const DROPDOWN: MenuParts = {
   Group: DropdownMenuGroup,
   Label: DropdownMenuLabel,
   Item: DropdownMenuItem,
+  Separator: DropdownMenuSeparator,
   Sub: DropdownMenuSub,
   SubTrigger: DropdownMenuSubTrigger,
   SubContent: DropdownMenuSubContent,
   Shortcut: DropdownMenuShortcut,
 };
 
-const CONTEXT: MenuParts = {
+export const CONTEXT: MenuParts = {
   Group: ContextMenuGroup,
   Label: ContextMenuLabel,
   Item: ContextMenuItem,
+  Separator: ContextMenuSeparator,
   Sub: ContextMenuSub,
   SubTrigger: ContextMenuSubTrigger,
   SubContent: ContextMenuSubContent,
@@ -101,18 +108,18 @@ export interface RowMenuProps {
 }
 
 /** A value on a menu item's right ("F2", "Thu 09:00"), in plain muted text on one line. */
-const META = "pl-4 tracking-normal whitespace-nowrap tabular-nums";
+export const META = "pl-4 tracking-normal whitespace-nowrap tabular-nums";
 
 /** The desk's menu items, in the frame's order: open, snooze, mark done, rename, copy link. */
 function RowMenuItems({
-  parts: { Group, Label, Item, Sub, SubTrigger, SubContent, Shortcut },
+  parts,
   row,
   actions,
   handlers,
   onRename,
 }: RowMenuProps & { readonly parts: MenuParts }) {
+  const { Group, Label, Item, Shortcut } = parts;
   const navigate = useNavigate();
-  const now = new Date();
   return (
     <Group>
       <Label className="truncate">{row.title}</Label>
@@ -121,6 +128,35 @@ function RowMenuItems({
         Open session
         <Shortcut className={META}>↵</Shortcut>
       </Item>
+      <MarkItems parts={parts} row={row} actions={actions} handlers={handlers} />
+      {actions.rename ? (
+        <Item onClick={onRename}>
+          <PencilIcon aria-hidden />
+          Rename
+          <Shortcut className={META}>F2</Shortcut>
+        </Item>
+      ) : null}
+      <Item onClick={() => handlers.copyLink(row)}>
+        <LinkIcon aria-hidden />
+        Copy link
+      </Item>
+    </Group>
+  );
+}
+
+/**
+ * Snooze, Unsnooze, Mark done and Mark not done, as the row's state allows: the same items in a
+ * row's menu and a session tab's.
+ */
+export function MarkItems({
+  parts: { Item, Sub, SubTrigger, SubContent, Shortcut },
+  row,
+  actions,
+  handlers,
+}: Omit<RowMenuProps, "onRename"> & { readonly parts: MenuParts }) {
+  const now = new Date();
+  return (
+    <>
       {actions.snooze ? (
         <Sub>
           <SubTrigger>
@@ -155,18 +191,7 @@ function RowMenuItems({
           Mark not done
         </Item>
       ) : null}
-      {actions.rename ? (
-        <Item onClick={onRename}>
-          <PencilIcon aria-hidden />
-          Rename
-          <Shortcut className={META}>F2</Shortcut>
-        </Item>
-      ) : null}
-      <Item onClick={() => handlers.copyLink(row)}>
-        <LinkIcon aria-hidden />
-        Copy link
-      </Item>
-    </Group>
+    </>
   );
 }
 
@@ -268,7 +293,17 @@ const localInput = (date: Date): string => {
  * 52px rows. Snooze and Pick a time are second pages of the same sheet; Rename is a sheet with
  * the name selected, and Cancel and Save.
  */
-export function PhoneRowActions({ row, actions, handlers }: Omit<RowMenuProps, "onRename">) {
+export function PhoneRowActions({
+  row,
+  actions,
+  handlers,
+  triggerClassName = "mt-1.5 mr-1",
+  more,
+}: Omit<RowMenuProps, "onRename"> & {
+  readonly triggerClassName?: string;
+  /** Rows after Copy link (a session tab's own, its workspace's); pressing one closes the sheet. */
+  readonly more?: ReactNode;
+}) {
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<Page>("actions");
   const [name, setName] = useState(row.title);
@@ -320,7 +355,7 @@ export function PhoneRowActions({ row, actions, handlers }: Omit<RowMenuProps, "
         aria-expanded={open}
         aria-label={`Actions for ${row.title}`}
         onClick={() => show(true)}
-        className={cn(buttonVariants({ variant: "ghost", size: "icon-touch" }), "mt-1.5 mr-1")}
+        className={cn(buttonVariants({ variant: "ghost", size: "icon-touch" }), triggerClassName)}
       >
         <EllipsisIcon aria-hidden className="size-5" />
       </button>
@@ -379,6 +414,21 @@ export function PhoneRowActions({ row, actions, handlers }: Omit<RowMenuProps, "
                 >
                   Copy link
                 </SheetItem>
+                {more === undefined ? null : (
+                  // A press on any of its rows closes the sheet, as the rows above do.
+                  <div
+                    className="contents"
+                    onClickCapture={(event) => {
+                      if (
+                        event.target instanceof Element &&
+                        event.target.closest("[role=menuitem]")
+                      )
+                        setOpen(false);
+                    }}
+                  >
+                    {more}
+                  </div>
+                )}
               </div>
             </>
           ) : null}
