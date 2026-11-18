@@ -495,6 +495,15 @@ export default async ({ page, web, capture, note, account }) => {
   await visible(page.getByRole("link", { name: "Profile" })).click();
   await page.waitForURL((url) => url.pathname === "/settings/profile");
   await heading("Profile");
+  for (const [label, locator] of [
+    ["Name", page.getByLabel("Name", { exact: true })],
+    ["Change password…", page.getByRole("button", { name: "Change password…" })],
+    ["Sign out", page.getByRole("button", { name: "Sign out", exact: true })],
+  ]) {
+    const height = (await visible(locator).boundingBox())?.height ?? 0;
+    if (height < 44) throw new Error(`${label} is ${height}px tall on a phone, under 44px`);
+  }
+  note("Profile's field and buttons are 44px touch targets on a phone");
   for (const theme of ["light", "dark"]) {
     await paint(theme);
     await shot(`phone-profile-${theme}`);
@@ -505,6 +514,19 @@ export default async ({ page, web, capture, note, account }) => {
   note("the phone header's Back returns to the Settings tab");
   await visible(page.getByRole("link", { name: "Appearance" })).click();
   await heading("Appearance");
+  // A phone's controls are 44px touch targets.
+  const touch = async (label, locator) => {
+    const height = (await visible(locator).boundingBox())?.height ?? 0;
+    if (height < 44) throw new Error(`${label} is ${height}px tall on a phone, under 44px`);
+    return `${label} ${height}px`;
+  };
+  note(
+    `touch sizes: ${[
+      await touch("Terminal font", page.getByLabel("Terminal font", { exact: true })),
+      await touch("Terminal font size", page.getByLabel("Terminal font size")),
+      await touch("Theme", page.getByRole("group", { name: "Theme" })),
+    ].join(", ")}`,
+  );
   for (const theme of ["light", "dark"]) {
     await paint(theme);
     await shot(`phone-appearance-${theme}`);

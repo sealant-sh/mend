@@ -574,6 +574,11 @@ function FormDemo() {
           <NativeSelectOption value="light">Light</NativeSelectOption>
           <NativeSelectOption value="dark">Dark</NativeSelectOption>
         </NativeSelect>
+        <NativeSelect size="field" defaultValue="13" aria-label="Terminal font size">
+          <NativeSelectOption value="12">12 px</NativeSelectOption>
+          <NativeSelectOption value="13">13 px</NativeSelectOption>
+          <NativeSelectOption value="15">15 px</NativeSelectOption>
+        </NativeSelect>
       </Row>
     </div>
   );

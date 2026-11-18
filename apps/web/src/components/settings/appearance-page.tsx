@@ -20,9 +20,6 @@ const THEMES: ReadonlyArray<{ readonly value: ThemePreference; readonly label: s
   { value: "dark", label: "Dark" },
 ];
 
-/** A select's height: 36px on the desk, a 44px touch target on a phone. */
-const SELECT = "h-9 max-lg:h-11 max-lg:text-base";
-
 /**
  * Settings → This device → Appearance (Doop "Settings · This device · Appearance"): theme, text
  * size and the terminal's font, for this browser only (docs/adr/0025). The theme is the same
@@ -82,7 +79,8 @@ export function AppearancePage() {
               id="terminal-font"
               value={font.face}
               onChange={(event) => terminalFont.set({ ...font, face: event.target.value })}
-              className={`${SELECT} w-56 max-lg:w-full`}
+              size="field"
+              className="w-56 max-lg:w-full"
             >
               {TERMINAL_FACES.map((face) => (
                 <NativeSelectOption key={face.id} value={face.id}>
@@ -102,7 +100,8 @@ export function AppearancePage() {
               id="terminal-font-size"
               value={String(font.size)}
               onChange={(event) => terminalFont.set({ ...font, size: Number(event.target.value) })}
-              className={`${SELECT} w-28 max-lg:w-full`}
+              size="field"
+              className="w-28 max-lg:w-full"
             >
               {TERMINAL_SIZES.map((option) => (
                 <NativeSelectOption key={option} value={String(option)}>
