@@ -234,4 +234,52 @@ describe("sessions router", () => {
       },
     });
   });
+
+  it("sends the next turn's model, thinking, speed and permission with the message", async () => {
+    const selection = {
+      harness: "claude",
+      model: "opus",
+      effort: "high",
+      interactionMode: "default",
+      speed: "fast",
+      permissionMode: "ask",
+    };
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    await handle(
+      new Request("http://internal-web.invalid/trpc/sessions.sendMessage", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin, cookie: "test-cookie=credential" },
+        body: JSON.stringify({
+          json: { id: sessionId, input: "carry on", selection, expectedUserId: alice },
+        }),
+      }),
+    );
+
+    const sent = api.requests.find((request) => request.path?.endsWith("/messages"));
+    expect(JSON.parse(sent?.body ?? "{}")).toEqual({ input: "carry on", selection });
+  });
+
+  it("stops a turn through its interrupt, and a refusal reaches the browser in words", async () => {
+    const turnId = "turn-7";
+    const words = "The conversation's agent isn't running.";
+    await api.close();
+    api = await startApi({
+      _tag: "ProtocolSessionNotLive",
+      processId: "process-1",
+      message: words,
+    });
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const response = await handle(
+      new Request("http://internal-web.invalid/trpc/sessions.interruptTurn", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin, cookie: "test-cookie=credential" },
+        body: JSON.stringify({ json: { turnId } }),
+      }),
+    );
+
+    expect(api.requests).toEqual([{ path: `/api/turns/${turnId}/interrupt`, body: "" }]);
+    expect(response.status).toBe(409);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({ error: { json: { data: { tag: "ProtocolSessionNotLive" } } } });
+  });
 });

@@ -14,6 +14,16 @@
 // states only an agent's turn makes (the turn that completes, out of credit, the live line, a
 // session that is starting or couldn't start) are drawn from fixture answers to the session's
 // reads, laid over real sessions; every capture taken that way is named `fixture-…`.
+import {
+  command,
+  empty,
+  history,
+  item,
+  patchDetail,
+  superjson,
+  turn,
+} from "./new-web-session-fixtures.lib.mjs";
+
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
@@ -362,80 +372,6 @@ export default async ({ page, web, capture, note }) => {
   await page.unroute("**/trpc/**");
 };
 
-/** superjson's answer for plain JSON with ISO dates at `datePaths` (dotted). */
-const superjson = (json, datePaths) => ({
-  json,
-  meta: { values: Object.fromEntries(datePaths.map((path) => [path, ["Date"]])), v: 1 },
-});
-
-/** One conversation window, as the three history reads answer it. */
-const history = ({ turns, items, requests = [] }) => ({
-  "sessions.historyTurns": superjson(
-    { turns },
-    turns.flatMap((turn, index) =>
-      ["createdAt", "startedAt", "endedAt"]
-        .filter((field) => turn[field] !== null)
-        .map((field) => `turns.${index}.${field}`),
-    ),
-  ),
-  "sessions.historyItems": superjson(
-    { items, next: null, feed: items.length },
-    items.flatMap((_, index) => [`items.${index}.createdAt`, `items.${index}.updatedAt`]),
-  ),
-  "sessions.historyRequests": superjson(
-    { requests },
-    requests.map((_, index) => `requests.${index}.createdAt`),
-  ),
-});
-
-const empty = () => history({ turns: [], items: [] });
-
-const turn = (sessionId, me, ordinal, status, input, start, end, extra = {}) => ({
-  id: `fixture-turn-${ordinal + 1}`,
-  sessionId,
-  ordinal,
-  origin: "request",
-  author: me,
-  billedUserId: me,
-  billedAccountName: null,
-  steerSender: null,
-  fromSteer: null,
-  clientMessageId: null,
-  steers: [],
-  input,
-  status,
-  error: null,
-  createdAt: start,
-  startedAt: start,
-  endedAt: end,
-  unreachable: null,
-  ...extra,
-});
-
-let seq = 0;
-const item = (turnId, kind, status, start, end, fields = {}) => {
-  seq += 1;
-  return {
-    id: `fixture-item-${seq}`,
-    seq,
-    turnId,
-    kind,
-    status,
-    title: null,
-    text: null,
-    data: null,
-    createdAt: start,
-    updatedAt: end,
-    ...fields,
-  };
-};
-
-const command = (turnId, status, start, end, text) =>
-  item(turnId, "command-execution", status, start, end, {
-    title: text,
-    data: { type: "commandExecution", command: text, exitCode: status === "failed" ? 1 : 0 },
-  });
-
 const turnCompletes = (sessionId, me, at) => {
   const t1 = turn(
     sessionId,
@@ -590,24 +526,3 @@ try { const theme = JSON.parse(raw); for (const [k, v] of Object.entries(theme.v
 addEventListener("message", (e) => { const v = e.data?.params?.styles?.variables; if (v) for (const [k, x] of Object.entries(v)) document.documentElement.style.setProperty(k, x); });
 parent.postMessage({ jsonrpc: "2.0", method: "ui/notifications/size-changed", params: { height: document.body.scrollHeight } }, "*");
 </script>`;
-
-/**
- * The session's real detail with a fixture's status and summary in place, and, for a session the
- * fixture never let start, no agent: its date fields leave superjson's meta with it.
- */
-const patchDetail = (data, patch) => {
-  const json = structuredClone(data.json);
-  const values = { ...data.meta?.values };
-  json.session.status = patch.status;
-  if ("summary" in patch) json.session.summary = patch.summary;
-  if ("sealantRunId" in patch) json.session.sealantRunId = patch.sealantRunId;
-  // The fixtures are an agent's turns: the session reads as Claude Code's, not a command's.
-  if ("harness" in patch) json.session.harness = patch.harness;
-  if (patch.dropAgent === true) {
-    json.currentAgent = null;
-    json.processes = [];
-    for (const key of Object.keys(values))
-      if (key.startsWith("currentAgent") || key.startsWith("processes")) delete values[key];
-  }
-  return { json, meta: { ...data.meta, values } };
-};

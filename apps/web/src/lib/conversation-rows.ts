@@ -15,6 +15,7 @@ import {
 } from "@mend/domain/workbench";
 
 import type { ConversationView, TurnView } from "./conversation.ts";
+import { arrivedIn, type OutboxMessage } from "./outbox.ts";
 import { clockTime } from "./session-view.ts";
 import { parentToolUseId, subAgentOf, toolUseId, type SubAgentView } from "./sub-agents.ts";
 
@@ -47,6 +48,12 @@ export type ConversationRow =
       readonly steer: AgentTurnSteerDto | null;
       /** The key it was sent under, when it was sent with one. */
       readonly clientMessageId: string | null;
+      /**
+       * The sender's own message as this tab holds it, while it is on its way or after it did not
+       * arrive: its bubble says so and offers Try again and Edit. Null once the server's own turn
+       * or steer shows it.
+       */
+      readonly outbox: OutboxMessage | null;
     }
   | {
       readonly kind: "agent";
@@ -235,6 +242,7 @@ export const conversationRows = (
             at: entry.turn.createdAt,
             steer: null,
             clientMessageId,
+            outbox: null,
           });
         }
         break;
@@ -250,6 +258,7 @@ export const conversationRows = (
           at: entry.steer.createdAt,
           steer: entry.steer,
           clientMessageId,
+          outbox: null,
         });
         break;
       }
@@ -288,26 +297,73 @@ export const conversationRows = (
 const messageKey = (clientMessageId: string | null, fallback: string): string =>
   clientMessageId === null ? fallback : `message:${clientMessageId}`;
 
+/**
+ * The conversation with the sender's own outbox laid over it (`lib/outbox`): every message not
+ * yet in the server's conversation is a bubble at the end, in the order sent; one the server
+ * recorded and refused stays the server's row and carries its Try again and Edit. A message that
+ * arrived shows once, as the server's row.
+ */
+export const withOutbox = (
+  rows: ReadonlyArray<ConversationRow>,
+  conversation: ConversationView,
+  outbox: ReadonlyArray<OutboxMessage>,
+  author: string,
+): ReadonlyArray<ConversationRow> => {
+  if (outbox.length === 0) return rows;
+  const refused = new Map(
+    outbox.flatMap((message) =>
+      message.state._tag === "NotSent" ? [[message.clientMessageId, message] as const] : [],
+    ),
+  );
+  const shown = rows.map((row) => {
+    if (row.kind !== "you" || row.clientMessageId === null) return row;
+    const message = refused.get(row.clientMessageId);
+    return message === undefined ? row : { ...row, outbox: message };
+  });
+  const waiting = outbox.filter((message) => !arrivedIn(conversation, message));
+  return [
+    ...shown,
+    ...waiting.map(
+      (message): ConversationRow => ({
+        kind: "you",
+        key: messageKey(message.clientMessageId, message.clientMessageId),
+        text: message.text,
+        author,
+        at: message.sentAt,
+        steer: null,
+        clientMessageId: message.clientMessageId,
+        outbox: message,
+      }),
+    ),
+  ];
+};
+
 const EMPTY_HISTORY: ConversationView = { turns: [], items: [], requests: [] };
 
 /**
- * What the conversation shows. The history's read may still be on its way or have failed; a
- * failed re-read keeps the history already held, and the read's state shows beside it.
+ * What the conversation shows. The history's read may still be on its way or have failed; the
+ * person's own outbox shows regardless, so a message sent meanwhile is never hidden behind it,
+ * and the read's state shows beside it. A failed re-read keeps the history already held.
  */
-export const conversationBody = (history: {
-  readonly status: "pending" | "error" | "success";
-  readonly data: ConversationView | undefined;
-}): {
+export const conversationBody = (
+  history: {
+    readonly status: "pending" | "error" | "success";
+    readonly data: ConversationView | undefined;
+  },
+  outbox: ReadonlyArray<OutboxMessage>,
+  author: string,
+): {
   readonly notice: "reading" | "failed" | null;
   /** The protocol rows, a terminal session's record, or nothing yet. */
   readonly list: "protocol" | "transcript" | null;
   readonly rows: ReadonlyArray<ConversationRow>;
 } => {
   const held = history.data ?? EMPTY_HISTORY;
+  const protocol = held.turns.length > 0 || outbox.length > 0;
   return {
     notice: history.status === "pending" ? "reading" : history.status === "error" ? "failed" : null,
-    list: held.turns.length > 0 ? "protocol" : history.data === undefined ? null : "transcript",
-    rows: conversationRows(held),
+    list: protocol ? "protocol" : history.data === undefined ? null : "transcript",
+    rows: withOutbox(conversationRows(held), held, outbox, author),
   };
 };
 

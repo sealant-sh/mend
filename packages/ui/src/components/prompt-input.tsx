@@ -14,7 +14,7 @@ type PromptInputState = "default" | "running" | "locked";
  * - `default`: send is off while the field is empty, unless `allowEmpty` (a picked Question
  *   choice is an answer on its own).
  * - `running`: the agent is working. Enter steers it (`onSteer`), and Stop turn (`onStop`) sits
- *   beside Steer.
+ *   beside Steer. `stopping` keeps Stop turn off and says so while the stop is on its way.
  * - `locked`: the viewer can't message the session. Only `notice` shows, and nothing sends.
  *
  * In a narrow tile the context count hides first, then the harness name. `size="touch"` gives
@@ -41,6 +41,7 @@ function PromptInput({
   onSubmit,
   onSteer,
   onStop,
+  stopping = false,
   onAttach,
   submitLabel,
   blocked = false,
@@ -64,6 +65,7 @@ function PromptInput({
   onSubmit?: (text: string) => void;
   onSteer?: (text: string) => void;
   onStop?: () => void;
+  stopping?: boolean;
   onAttach?: () => void;
   submitLabel?: string;
   blocked?: boolean;
@@ -81,7 +83,7 @@ function PromptInput({
   const trimmed = text.trim();
   const running = state === "running";
   const canSend = state === "default" && !blocked && (trimmed !== "" || allowEmpty);
-  const canSteer = running && trimmed !== "";
+  const canSteer = running && !blocked && trimmed !== "";
 
   const send = () => {
     if (canSend) {
@@ -187,10 +189,11 @@ function PromptInput({
                   type="button"
                   variant="secondary"
                   className={cn(touch && "h-11")}
+                  disabled={stopping}
                   onClick={onStop}
                 >
                   <SquareIcon className="size-3" />
-                  Stop turn
+                  {stopping ? "Stopping…" : "Stop turn"}
                 </Button>
               </>
             ) : submitLabel !== undefined ? (

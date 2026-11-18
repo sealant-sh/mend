@@ -7,9 +7,14 @@ import * as React from "react";
  * What the person sent the agent: a grey bubble on the right of the thread, with a muted byline
  * under it ("Ada Lovelace · 13 Nov, 10:42"). Files they attached go in `attachments`, above the
  * bubble. No avatar and no card. `size="touch"` is the phone size: a 320px bubble at 14px.
+ *
+ * `pending` draws a message the agent hasn't read yet: on its way, sent into a turn that is still
+ * running, or one that couldn't send. Its bubble is dashed and its words muted; the byline says
+ * where it stands.
  */
 function UserMessage({
   size = "default",
+  pending = false,
   byline,
   attachments,
   children,
@@ -17,6 +22,7 @@ function UserMessage({
   ...props
 }: React.ComponentProps<"div"> & {
   size?: "default" | "touch";
+  pending?: boolean;
   byline?: React.ReactNode;
   attachments?: React.ReactNode;
 }) {
@@ -24,6 +30,7 @@ function UserMessage({
     <Message
       data-slot="user-message"
       data-size={size}
+      data-pending={pending || undefined}
       align="end"
       className={cn("group/user-message", className)}
       {...props}
@@ -37,7 +44,12 @@ function UserMessage({
         <Bubble
           variant="muted"
           align="end"
-          className="max-w-135 group-data-[size=touch]/user-message:max-w-80"
+          className={cn(
+            "max-w-135 group-data-[size=touch]/user-message:max-w-80",
+            // Dashed and muted until the agent reads it; merged over the muted variant's fill.
+            pending &&
+              "*:data-[slot=bubble-content]:border-dashed *:data-[slot=bubble-content]:border-input *:data-[slot=bubble-content]:bg-transparent *:data-[slot=bubble-content]:text-muted-foreground",
+          )}
         >
           <BubbleContent className="rounded-xl px-3.5 py-2.5 text-prose leading-normal text-pretty group-data-[size=touch]/user-message:px-3 group-data-[size=touch]/user-message:py-2.25 group-data-[size=touch]/user-message:text-sm">
             {children}

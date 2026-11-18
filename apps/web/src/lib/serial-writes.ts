@@ -6,8 +6,9 @@ const chainsOf = new WeakMap<QueryClient, Map<string, Promise<unknown>>>();
 /**
  * Sends `leave` once every earlier write on the same chain has settled, whatever its outcome, and
  * stores its answer with `store` before the next write on the chain leaves, so that write builds
- * on what the server answered rather than on an optimistic copy. A chain is one document: the
- * documents `lib/optimistic.ts` writes chain one each.
+ * on what the server answered rather than on an optimistic copy. A chain is one document (the
+ * documents `lib/optimistic.ts` writes chain one each), or one person's messages to one session
+ * (`lib/outbox.ts`).
  */
 export const sendInTurn = <A>(
   queryClient: QueryClient,
