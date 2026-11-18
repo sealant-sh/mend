@@ -55,7 +55,7 @@ export const projectTabs = (
     },
     {
       label: "Worktrees",
-      link: laterPage(`projects/${id}/worktrees`),
+      link: { to: "/projects/$projectId/worktrees", params: { projectId: id } },
       path: `/projects/${id}/worktrees`,
       count: detail.worktrees.length,
     },

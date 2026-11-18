@@ -21,6 +21,14 @@ import {
   AttachmentDescription,
   AttachmentTitle,
 } from "@mend/ui/components/ui/attachment";
+import {
+  Autocomplete,
+  AutocompleteContent,
+  AutocompleteEmpty,
+  AutocompleteInput,
+  AutocompleteItem,
+  AutocompleteList,
+} from "@mend/ui/components/ui/autocomplete";
 import { Avatar, AvatarFallback } from "@mend/ui/components/ui/avatar";
 import { Badge } from "@mend/ui/components/ui/badge";
 import {
@@ -500,6 +508,23 @@ function FormDemo() {
         <FieldLabel htmlFor="g-name">Project name</FieldLabel>
         <Input id="g-name" placeholder="checkout-api" />
         <FieldDescription>Everyone who can open the project sees this name.</FieldDescription>
+      </Field>
+      <Field>
+        <FieldLabel htmlFor="g-base">Start from</FieldLabel>
+        <Autocomplete items={["main", "release/2.4", "fix-checkout-retry"]}>
+          <AutocompleteInput id="g-base" placeholder="main" className="w-full font-mono" />
+          <AutocompleteContent>
+            <AutocompleteEmpty>No branch matches. Mend tries what you typed.</AutocompleteEmpty>
+            <AutocompleteList>
+              {(branch: string) => (
+                <AutocompleteItem key={branch} value={branch} className="font-mono">
+                  {branch}
+                </AutocompleteItem>
+              )}
+            </AutocompleteList>
+          </AutocompleteContent>
+        </Autocomplete>
+        <FieldDescription>Any branch, tag or commit. Empty starts from main.</FieldDescription>
       </Field>
       <Field>
         <FieldLabel htmlFor="g-notes">Notes</FieldLabel>

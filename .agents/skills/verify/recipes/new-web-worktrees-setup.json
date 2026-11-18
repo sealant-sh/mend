@@ -1,0 +1,18 @@
+[
+  {
+    "name": "01-unlanded",
+    "run": [
+      "sh",
+      "-c",
+      "mend run --project verify-fixture --name wt-unlanded-$(date +%s) -- sh -c \"printf 'worktrees\\n' > WORKTREES.md\""
+    ]
+  },
+  {
+    "name": "02-clean",
+    "run": ["sh", "-c", "mend run --project verify-fixture --name wt-clean-$(date +%s) -- true"]
+  },
+  {
+    "name": "03-list",
+    "run": ["mend", "worktrees", "--project", "verify-fixture"]
+  }
+]
