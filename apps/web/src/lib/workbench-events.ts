@@ -212,6 +212,8 @@ export const refreshAfterReconnect = (queryClient: QueryClient, trpc: TrpcProxy)
     // The person's own switches and new-session defaults, saved on another device meanwhile.
     trpc.platform.automation.pathFilter(),
     trpc.platform.sessionDefaults.pathFilter(),
+    // An agent login connected from a terminal meanwhile (`mend connect`), for setup's Agent login.
+    trpc.platform.sealantIdentity.pathFilter(),
   ])
     void queryClient.invalidateQueries(filter);
 };

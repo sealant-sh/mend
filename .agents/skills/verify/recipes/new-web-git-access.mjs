@@ -13,7 +13,7 @@
 //   then GitHub's real answer about a key it has never seen. "Key works" needs a key GitHub knows,
 //   and none is added anywhere: its picture, and those of whichever of refused or unreachable GitHub
 //   didn't give, come from answers made in the browser. Continue opens only on "key works", and
-//   goes to /welcome/agent-login (not found until that step's route lands).
+//   goes to /welcome/agent-login, the Agent login step.
 // - `mode-choice` and `bridge-share`: choosing "Your computer's key" saves it, and the page shows
 //   the two commands the CLI has today, waiting for the computer. The verify guard gives the CLI no
 //   ssh-agent, so `mend keys share` can't run here: "<machine> connected." and Continue opening
@@ -249,8 +249,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await page.unroute("**/trpc/git.checkKey**");
   await button("Continue").click();
   await page.waitForURL((url) => url.pathname === "/welcome/agent-login");
-  await heading("Page not found");
-  note("Continue went to /welcome/agent-login (not found until the Agent login step lands)");
+  await heading("Agent login");
+  note("Continue went to /welcome/agent-login, the Agent login step");
 
   // The member has a key now and the organization has a project, but no agent login: reopening
   // /welcome stays on Git access.

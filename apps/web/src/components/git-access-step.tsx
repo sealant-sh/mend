@@ -6,8 +6,7 @@ import { RadioGroup, RadioGroupItem } from "@mend/ui/components/ui/radio-group";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { CircleCheck } from "lucide-react";
-import { type ReactNode, useId, useMemo, useState, useSyncExternalStore } from "react";
+import { type ReactNode, useId, useState } from "react";
 
 import { accountNameOptions } from "#/lib/auth-client";
 import {
@@ -25,23 +24,11 @@ import {
   waitedFor,
   whenSince,
 } from "#/lib/git-access";
-import { laterPage } from "#/lib/later-pages";
 import { usePhone } from "#/lib/phone";
 import { useTRPC } from "#/lib/trpc";
+import { useSecond } from "#/lib/use-second";
 
-import { SetupActions, SetupFrame, TOUCH } from "./setup-frame.tsx";
-
-const everySecond = (onChange: () => void) => {
-  const timer = setInterval(onChange, 1_000);
-  return () => clearInterval(timer);
-};
-const nowSecond = () => Math.floor(Date.now() / 1_000);
-
-/** The current second, so "Checking the key with GitHub · 3s" and "Checked 12s ago" stay true. */
-const useSecond = (): Date => {
-  const second = useSyncExternalStore(everySecond, nowSecond, nowSecond);
-  return useMemo(() => new Date(second * 1_000), [second]);
-};
+import { SectionTitle, SetupActions, SetupFrame, TOUCH, WorksLine } from "./setup-frame.tsx";
 
 const DESCRIPTIONS: Readonly<Record<GitAccessMode, ReactNode>> = {
   "mend-key":
@@ -148,7 +135,7 @@ export function GitAccessStep() {
         <Button
           size={phone ? "touch" : "default"}
           disabled={!works || setAccess.isPending}
-          onClick={() => void navigate(laterPage("welcome/agent-login"))}
+          onClick={() => void navigate({ to: "/welcome/agent-login" })}
         >
           Continue
         </Button>
@@ -206,37 +193,6 @@ function ModeChoice({
         </label>
       ))}
     </RadioGroup>
-  );
-}
-
-/** A section's heading inside the step, under the choice. */
-function SectionTitle({ children }: { readonly children: string }) {
-  return (
-    <h2 className="mt-8 mb-3 text-lead font-semibold text-foreground max-lg:mt-6">{children}</h2>
-  );
-}
-
-/** A line Mend observed, with a tick: the key works, the computer connected. */
-function WorksLine({
-  line,
-  detail,
-  action,
-}: {
-  readonly line: string;
-  readonly detail: ReactNode;
-  readonly action?: ReactNode;
-}) {
-  return (
-    <div role="status" className="flex items-start gap-3 max-lg:flex-col">
-      <div className="flex min-w-0 flex-1 items-start gap-3">
-        <CircleCheck aria-hidden className="mt-0.5 size-4.5 flex-none text-foreground" />
-        <div className="grid min-w-0 gap-0.5">
-          <p className="text-prose text-pretty text-foreground max-lg:text-sm">{line}</p>
-          <p className="text-row text-muted-foreground">{detail}</p>
-        </div>
-      </div>
-      {action}
-    </div>
   );
 }
 
