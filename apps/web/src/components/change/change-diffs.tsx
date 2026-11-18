@@ -8,7 +8,7 @@ import {
   type VirtualFileMetrics,
 } from "@pierre/diffs";
 import { FileDiff, Virtualizer } from "@pierre/diffs/react";
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
 
 /**
  * Which files the person folded or opened by hand. A viewed file folds by itself; flipping it
@@ -29,6 +29,9 @@ export const useFolds = () => {
     fold: (path: string, folded: boolean, viewed: boolean) => set(path, folded !== viewed),
     /** Back to what the file does by itself: after a Viewed mark changes. */
     reset: (path: string) => set(path, false),
+    /** The folds as they are, to put back later (the tour does, when it ends). */
+    saved: flipped,
+    restore: (saved: ReadonlySet<string>) => setFlipped(saved),
   };
 };
 
@@ -102,24 +105,73 @@ export interface BetweenLines<A> {
   readonly render: (annotation: DiffLineAnnotation<A>) => ReactNode;
 }
 
+/**
+ * Lines of a file marked with the cobalt bar on their left edge (a tour stop's): new-side lines
+ * `from` to `to`, and the removed lines between them by their old-side numbers.
+ */
+export interface MarkedLines {
+  readonly from: number;
+  readonly to: number;
+  readonly removed: ReadonlyArray<number>;
+}
+
+/**
+ * Where to bring the diffs' scroll to: a file's header (`path`), or the top of the diffs
+ * (`path: null`), then, when `target` names an element under it, that element just under the
+ * file headers. The nonce lets the same place be asked for twice.
+ */
+export interface DiffsFocus {
+  readonly path: string | null;
+  readonly nonce: number;
+  readonly target?: string;
+  /** How much of the diff to leave showing between the file's header and `target`, in px. */
+  readonly above?: number;
+}
+
+/**
+ * The renderer's own rows live in a shadow root: what Mend adds there. The number column beside a
+ * row put between the lines (a comment, a tour stop) takes that row's band.
+ */
+const BETWEEN_CSS = `[data-gutter-buffer="annotation"] {
+  background-color: var(--color-band);
+  box-shadow: inset 0 1px 0 var(--color-border), inset 0 -1px 0 var(--color-border);
+}`;
+
+/** The renderer's stylesheet for the bar on `marked`'s lines. */
+const markedCss = (marked: MarkedLines | null): string | undefined => {
+  if (marked === null) return undefined;
+  // A row's number cell carries its number: the new side's for added and unchanged lines, the
+  // old side's for removed ones.
+  const cells: Array<string> = [];
+  for (let line = marked.from; line <= marked.to; line += 1)
+    cells.push(`[data-column-number="${line}"]:not([data-line-type="change-deletion"])`);
+  for (const line of marked.removed)
+    cells.push(`[data-column-number="${line}"][data-line-type="change-deletion"]`);
+  return `${cells.join(",\n")} { box-shadow: inset 2px 0 0 var(--color-info); }`;
+};
+
 function FileLines<A>({
   file,
   layout,
   compact,
   sides,
   between,
+  marked,
 }: {
   readonly file: ChangeFile;
   readonly layout: DiffLayout;
   readonly compact: boolean;
   readonly sides: DiffSides;
   readonly between: BetweenLines<A> | undefined;
+  readonly marked: MarkedLines | null;
 }) {
   const parsed = useMemo(() => parsedFile(file.file.patch), [file.file.patch]);
   const split = layout === "split" && !compact;
   // The renderer draws again when these change: keep them the same object while they hold.
+  const css = [BETWEEN_CSS, markedCss(marked)].filter((part) => part !== undefined).join("\n");
   const options = useMemo(
     () => ({
+      unsafeCSS: css,
       theme: THEME,
       diffStyle: split ? ("split" as const) : ("unified" as const),
       diffIndicators: "classic" as const,
@@ -129,7 +181,7 @@ function FileLines<A>({
       disableFileHeader: true,
       lineHoverHighlight: "line" as const,
     }),
-    [split, compact],
+    [split, compact, css],
   );
   const annotations = useMemo(
     () => (between === undefined ? [] : [...between.annotations(file)]),
@@ -173,8 +225,10 @@ function FileLines<A>({
  *
  * `above` is the place over the diffs (Mend's description, PR 25); `after` sits under the last
  * file (proof artifacts). `between` puts rows between a file's lines (comments, PR 24; tour stops,
- * PR 25). `focus` brings a file to the top (its nonce asks again); `onShowing` says which file is
- * at the top as the person scrolls.
+ * PR 25); `under` puts one under a file's header, and `marked` gives a file's header or lines the
+ * cobalt bar (a tour stop). `focus` brings a file, or the top, into view (its nonce asks again);
+ * `onShowing` says which file is at the top as the person scrolls. `scrollRef` is given the element
+ * that scrolls, for a caller that keeps its place.
  */
 export function ChangeDiffs<A = undefined>({
   files,
@@ -189,6 +243,9 @@ export function ChangeDiffs<A = undefined>({
   above,
   after,
   between,
+  under,
+  marked,
+  scrollRef,
 }: {
   readonly files: ReadonlyArray<ChangeFile>;
   readonly layout: DiffLayout;
@@ -197,27 +254,63 @@ export function ChangeDiffs<A = undefined>({
   readonly isViewed: (file: ChangeFile) => boolean;
   readonly onViewed: (file: ChangeFile, viewed: boolean) => void;
   readonly folds: Folds;
-  readonly focus: { readonly path: string; readonly nonce: number } | null;
+  readonly focus: DiffsFocus | null;
   readonly onShowing: (path: string) => void;
   readonly above?: ReactNode;
   readonly after?: ReactNode;
   readonly between?: BetweenLines<A>;
+  readonly under?: (file: ChangeFile) => ReactNode;
+  /** The file's header (`"header"`) or some of its lines carry the bar; null for neither. */
+  readonly marked?: (file: ChangeFile) => "header" | MarkedLines | null;
+  readonly scrollRef?: RefObject<HTMLElement | null>;
 }) {
   // Generated files whose diff the person asked to see.
   const [shown, setShown] = useState<ReadonlySet<string>>(new Set());
   const content = useRef<HTMLDivElement>(null);
 
-  // A file picked from a list: unfold it and bring its header to the top of the scroll. Scrolling
-  // is the browser's, after layout; the nonce lets the same file be asked for twice.
+  // The element that scrolls, for a caller that keeps its place. The virtualizer's own element
+  // scrolls: it holds a content element, which holds this.
+  useEffect(() => {
+    if (scrollRef === undefined) return;
+    scrollRef.current = content.current?.parentElement?.parentElement ?? null;
+  }, [scrollRef]);
+
+  // A file picked from a list: unfold it and bring its header to the top of the scroll; or the
+  // top of the diffs. Then a `target` under it, once the virtualizer has drawn it, just under the
+  // file's header. Scrolling is the browser's, after layout; the nonce lets the same place be
+  // asked for twice.
   useEffect(() => {
     if (focus === null) return;
-    const frame = requestAnimationFrame(() => {
-      const section = content.current?.querySelector<HTMLElement>(
-        `[data-file="${CSS.escape(focus.path)}"]`,
-      );
-      const scroller = content.current?.parentElement?.parentElement;
-      if (section === undefined || section === null || scroller == null) return;
-      scroller.scrollTop = section.offsetTop;
+    let frame = 0;
+    let tries = 0;
+    const toTarget = () => {
+      frame = 0;
+      const scroll = content.current?.parentElement?.parentElement;
+      if (scroll == null || focus.target === undefined) return;
+      const target = content.current?.querySelector<HTMLElement>(focus.target);
+      if (target == null) {
+        // Rows near the view are drawn a frame or two after it moves.
+        tries += 1;
+        if (tries < 30) frame = requestAnimationFrame(toTarget);
+        return;
+      }
+      const header = target.closest("[data-file]")?.querySelector<HTMLElement>(".sticky");
+      const gap = (header?.offsetHeight ?? 0) + (focus.above ?? 0);
+      scroll.scrollTop +=
+        target.getBoundingClientRect().top - scroll.getBoundingClientRect().top - gap;
+    };
+    frame = requestAnimationFrame(() => {
+      const scroll = content.current?.parentElement?.parentElement;
+      if (scroll == null) return;
+      if (focus.path === null) scroll.scrollTop = 0;
+      else {
+        const section = content.current?.querySelector<HTMLElement>(
+          `[data-file="${CSS.escape(focus.path)}"]`,
+        );
+        if (section == null) return;
+        scroll.scrollTop = section.offsetTop;
+      }
+      frame = requestAnimationFrame(toTarget);
     });
     return () => cancelAnimationFrame(frame);
   }, [focus]);
@@ -261,10 +354,12 @@ export function ChangeDiffs<A = undefined>({
         {files.map((file) => {
           const viewed = isViewed(file);
           const asked = shown.has(file.path);
+          const bar = marked?.(file) ?? null;
           return (
             <DiffFile
               key={file.path}
               file={file}
+              marked={bar === "header"}
               folded={folds.isFolded(file.path, viewed)}
               onFoldedChange={(folded) => folds.fold(file.path, folded, viewed)}
               viewed={viewed}
@@ -275,6 +370,7 @@ export function ChangeDiffs<A = undefined>({
               }}
               size={compact ? "compact" : "default"}
             >
+              {under?.(file)}
               {file.generated && !asked ? (
                 <BodyNote>
                   <span>
@@ -295,6 +391,7 @@ export function ChangeDiffs<A = undefined>({
                   compact={compact}
                   sides={sides}
                   between={between}
+                  marked={bar === null || bar === "header" ? null : bar}
                 />
               )}
             </DiffFile>

@@ -24,6 +24,7 @@ import {
 } from "#/lib/change-files";
 import { inboxQuery } from "#/lib/inbox-live";
 import { AGENTS } from "#/lib/new-session";
+import { usePhone } from "#/lib/phone";
 import {
   openReviewQuery,
   opensCurrentChange,
@@ -33,14 +34,17 @@ import {
 } from "#/lib/review-open";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { harnessName } from "#/lib/session-view";
+import { removedWithin, type StopPlace, stopPlace } from "#/lib/tour";
 import { useTRPC } from "#/lib/trpc";
 import { diffLayout } from "#/lib/ui-prefs";
 import { isViewed, markViewed, viewedFiles } from "#/lib/viewed-files";
 
-import { ChangeDiffs, useFolds } from "./change-diffs.tsx";
+import { ChangeDescription, useTourCurrent } from "./change-description.tsx";
+import { ChangeDiffs, type DiffsFocus, type MarkedLines, useFolds } from "./change-diffs.tsx";
 import { ChangeFileTree, FILTER_FROM, FileFilter } from "./change-file-tree.tsx";
 import { ChangeProofArtifacts } from "./change-proof-artifacts.tsx";
 import { ChangeToolbar } from "./change-toolbar.tsx";
+import { type TourMoves, TourNote, TourRail } from "./change-tour.tsx";
 import { FilePicker } from "./file-picker.tsx";
 import { useChangeLanding } from "./land-dialog.tsx";
 
@@ -248,7 +252,9 @@ function ReviewBody({
   readonly sessions: ReadonlyArray<SessionInboxRowDto>;
   readonly box: RefObject<HTMLElement | null>;
 }) {
+  const trpc = useTRPC();
   const narrow = useNarrow(box);
+  const phone = usePhone();
   const layout = diffLayout.use();
   const viewedStore = viewedFiles(changeId);
   const marks = viewedStore.use();
@@ -256,12 +262,26 @@ function ReviewBody({
   const groups = useMemo(() => fileGroups(files), [files]);
   const ordered = useMemo(() => orderedFiles(groups), [groups]);
   const [filter, setFilter] = useState("");
-  const [focus, setFocus] = useState<{ readonly path: string; readonly nonce: number } | null>(
-    null,
-  );
+  const [focus, setFocus] = useState<DiffsFocus | null>(null);
   const [showing, setShowing] = useState<string | null>(null);
   const folds = useFolds();
   const landing = useChangeLanding({ detail, changeId, review, sessions });
+  const tourRead = useQuery(trpc.changes.tour.queryOptions({ id: changeId }));
+  const passesRead = useQuery(trpc.changes.passes.queryOptions({ id: changeId }));
+  const tour = tourRead.isSuccess ? tourRead.data : null;
+  const tourCurrent = useTourCurrent(tour, review);
+  // A first look opens the description; a later one (a file already viewed) folds it.
+  const [laterLook] = useState(() =>
+    ordered.some((file) => isViewed(marks, file.path, file.fingerprint)),
+  );
+  // The stop the tour is on, and how the view was before it started, to go back to.
+  const [stopAt, setStopAt] = useState<number | null>(null);
+  const before = useRef<{
+    readonly top: number;
+    readonly folds: ReadonlySet<string>;
+    readonly showing: string | null;
+  } | null>(null);
+  const scroller = useRef<HTMLElement | null>(null);
 
   if (ordered.length === 0)
     return (
@@ -276,14 +296,74 @@ function ReviewBody({
     viewedStore.set(markViewed(marks, file.path, file.fingerprint, viewed));
   const viewedCount = ordered.filter(viewedOf).length;
   const current = ordered.find((file) => file.path === showing) ?? ordered[0] ?? null;
-  const select = (path: string) => {
+  const nextFocus = (path: string | null, target?: Pick<DiffsFocus, "target" | "above">) =>
+    setFocus((was) => ({ path, nonce: (was?.nonce ?? 0) + 1, ...target }));
+  const select = (path: string, target?: Pick<DiffsFocus, "target" | "above">) => {
     const file = ordered.find((each) => each.path === path);
     if (file !== undefined) folds.fold(path, false, viewedOf(file));
     setShowing(path);
-    setFocus((was) => ({ path, nonce: (was?.nonce ?? 0) + 1 }));
+    nextFocus(path, target);
   };
   const generated = ordered.some((file) => file.generated);
   const base = detail.session.baseRef ?? "the base";
+
+  // The tour: one stop at a time, its note at its place in the diffs, the stop list above Files.
+  const stops = tour?.stops ?? [];
+  const at = stopAt !== null && stopAt < stops.length ? stopAt : null;
+  const stop = at === null ? undefined : stops[at];
+  const place: StopPlace | null = stop === undefined ? null : stopPlace(stop, ordered);
+  const go = (index: number) => {
+    const next = stops[index];
+    if (next === undefined) return;
+    setStopAt(index);
+    const where = stopPlace(next, ordered);
+    // A stop with no file sits under the description, at the top; one on lines leaves a line
+    // or so of the diff showing above its note; one on a whole file sits under the header.
+    if (where.kind === "change") nextFocus(null);
+    else
+      select(where.path, {
+        target: "[data-tour-note]",
+        ...(where.kind === "line" ? { above: 30 } : {}),
+      });
+  };
+  const moves: TourMoves = {
+    go,
+    end: () => {
+      const was = before.current;
+      setStopAt(null);
+      if (was === null) return;
+      before.current = null;
+      folds.restore(was.folds);
+      setShowing(was.showing);
+      // Back where the person was, once the note has left and the folds are back.
+      requestAnimationFrame(() =>
+        requestAnimationFrame(() => {
+          if (scroller.current !== null) scroller.current.scrollTop = was.top;
+        }),
+      );
+    },
+  };
+  const startTour = () => {
+    before.current = {
+      top: scroller.current?.scrollTop ?? 0,
+      folds: folds.saved,
+      showing,
+    };
+    go(0);
+  };
+  const note =
+    tour === null || at === null || place === null ? null : (
+      <TourNote tour={tour} index={at} place={place} touch={phone} moves={moves} />
+    );
+  const marked = (file: ChangeFile): "header" | MarkedLines | null => {
+    if (place === null || place.kind === "change" || place.path !== file.path) return null;
+    if (place.kind === "file") return "header";
+    return {
+      from: place.from,
+      to: place.to,
+      removed: removedWithin(file.file.patch, place.from, place.to),
+    };
+  };
 
   return (
     <>
@@ -336,6 +416,7 @@ function ReviewBody({
           aria-label="Files"
           className="flex w-[264px] shrink-0 flex-col overflow-y-auto border-r @max-3xl/change:hidden"
         >
+          {tour === null || at === null ? null : <TourRail tour={tour} index={at} moves={moves} />}
           <section className="grid gap-2 px-3 py-4">
             <ColumnTitle title="Files" fact={`${viewedCount} of ${ordered.length} viewed`} />
             {ordered.length >= FILTER_FROM ? (
@@ -379,6 +460,36 @@ function ReviewBody({
             folds={folds}
             focus={focus}
             onShowing={setShowing}
+            scrollRef={scroller}
+            above={
+              <>
+                <ChangeDescription
+                  changeId={changeId}
+                  review={review}
+                  tour={tourRead}
+                  passes={passesRead}
+                  current={tourCurrent}
+                  folded={laterLook || narrow || phone}
+                  touch={phone}
+                  touring={at !== null}
+                  onStartTour={startTour}
+                />
+                {place?.kind === "change" ? note : null}
+              </>
+            }
+            {...(place?.kind === "line"
+              ? {
+                  between: {
+                    annotations: (file: ChangeFile) =>
+                      file.path === place.path
+                        ? [{ side: "additions" as const, lineNumber: place.after }]
+                        : [],
+                    render: () => note,
+                  },
+                }
+              : {})}
+            under={(file) => (place?.kind === "file" && place.path === file.path ? note : null)}
+            marked={marked}
             after={<ChangeProofArtifacts changeId={changeId} />}
           />
         </div>
@@ -470,8 +581,10 @@ function ChangeReview({
  * The Change view (Doop page 4): this workspace's change, the worktree against its base, which
  * every session in the workspace adds to. Reading it is this view; what attaches later:
  *
- * - Mend's description and "Start tour" (PR 25): `ChangeDiffs`'s `above`, shown only while the
- *   range is the whole change; tour stops between lines through `between`.
+ * - Mend's description and "Start tour" (PR 25): `ChangeDescription` in `ChangeDiffs`'s `above`
+ *   (the range is always the whole change today; a narrower range shows no description). The
+ *   tour's stop list sits above Files; a stop's note goes between lines through `between`, under
+ *   a file's header through `under`, or under the description.
  * - Comments (PR 24): rows between lines through `ChangeDiffs`'s `between`, the Comments and
  *   "Drafts from Mend" sections under Files in the column, Send comments in the toolbar's
  *   `actions`, and the toolbar's note ("Click a line to comment…").
