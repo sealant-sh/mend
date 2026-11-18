@@ -7016,6 +7016,8 @@ const main = async () => {
           upload: upload(config),
           serverVersion: async () => (await fetchServerVersion(config.url)).version,
           launch: (sessionId, prompt) => launchHandoff(config, sessionId, prompt),
+          readSession: async (sessionId) =>
+            (await request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`)).session,
           spin: (label, work) => withSpinner(label, work),
           serverUrl: config.url,
           accountGitAuthMode: () => readGitAccessMode(config),

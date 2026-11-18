@@ -76,6 +76,8 @@ export const mainHandoffFixtures = () => {
       readonly terms?: (response: ServerResponse) => void;
       readonly answer?: (response: ServerResponse, attempt: number) => void;
       readonly launch?: (response: ServerResponse) => void;
+      /** The answer to the n-th read of the session (`GET /sessions/:id`), from 1. */
+      readonly read?: (response: ServerResponse, read: number) => void;
       readonly mountDelivery?: "bind" | "sources";
       readonly socket?: "end" | "drop";
       readonly accountMode?: "mend-key" | "bridge";
@@ -113,6 +115,10 @@ export const mainHandoffFixtures = () => {
             json(response, { ...received().session, status: "running", summary: null });
           } else options.launch(response);
         });
+      } else if (route === `GET /api/sessions/${SESSION_ID}`) {
+        const reads = fake.routes.filter((seen) => seen === route).length;
+        if (options.read === undefined) json(response, { session: received().session });
+        else options.read(response, reads);
       } else if (route === "POST /api/projects") {
         withBody(request, (body) => {
           fake.adoptions.push(JSON.parse(body.toString()));

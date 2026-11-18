@@ -12,8 +12,11 @@ against the merge base `M`.
 
 ## Sub-features
 
-- `handoff-held` hands off with no prompt: a held workspace, `✓ held · <status>, no agent`, where
-  `<status>` is the session status the server answered with.
+- `handoff-held` hands off with no prompt: a held workspace, `✓ held · idle, no agent`. A server
+  that answers before the hold is up (Boat: `starting`) is followed until the session is held or has
+  failed, for up to 3 minutes, behind
+  `starting · the hold is still coming up · … · Ctrl-C stops watching, not the hold`; a failed hold
+  reads `! not held · failed · <words>`.
 - `handoff-unchanged` leaves the checkout byte-identical: every file under it, `.git` included, has
   the same bytes, mode, size, mtime and ctime, and no file appears.
 - `handoff-row` shows `handed off from <host>` on the worktree and session lines (web project page),
@@ -84,8 +87,11 @@ Steps:
   `  left out · big.bin · 8.6 MiB, over the 8 MiB file limit`,
   `  bundling 2 commits · 4 files → uploading <size> → creating worktree`,
   `✓ handed off as verify-handoff · your checkout is unchanged · as of <hh:mm:ss>`,
-  `  base main <M7> · session <id8>`, `✓ held · <status>, no agent`, `  attach · mend attach <id8>`
-  and `  watch · <web>/sessions/<id>`. Exit code `0`. Note `<id8>`, `<id>` and `<status>`.
+  `  base main <M7> · session <id8>`, `✓ held · idle, no agent`, `  attach · mend attach <id8>` and
+  `  watch · <web>/sessions/<id>`. Exit code `0`. Note `<id8>` and `<id>`. On Boat, where the server
+  answers while the VM boots, `✓ held` comes after
+  `  starting · the hold is still coming up · following it for up to 3 min · Ctrl-C stops watching, not the hold`
+  and any `  starting · <phase>` lines (a spinner on a TTY), usually within a minute.
 - **Fingerprint after.** Run the same command into `<evidence>/handoff-after.txt`, then
   `diff <evidence>/handoff-before.txt <evidence>/handoff-after.txt`. It prints nothing and exits
   `0`.
@@ -195,3 +201,9 @@ Steps:
   file contents, and the evidence scan reads a line shaped like `TOKEN=` as a credential field: it
   deletes the file and fails the run.
 - The handed-off lines print dim labels; strip ANSI codes before matching when stdout is a TTY.
+- A hold still `starting` after 3 minutes ends the watching with
+  `· still starting after 3 min · the hold goes on · mend sessions shows when session <id8> is idle`,
+  exit code `0`. Ctrl-C while it watches prints the `watch` line, then on stderr
+  `mend: stopped watching · the hold goes on · mend sessions shows when session <id8> is idle`, exit
+  code `130`; the CLI sends nothing to the session, and it goes on to `idle`. The CLI tests cover
+  both, and a failed hold.

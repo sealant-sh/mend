@@ -189,6 +189,7 @@ const inProcess = (projects: ReadonlyArray<unknown>) => {
     },
     serverVersion: async () => "0.36.0",
     launch: async () => ({ _tag: "running" }),
+    readSession: async () => received().session,
     spin: (_label, work) => work,
     serverUrl: "http://localhost:3105",
     accountGitAuthMode: async () => "mend-key",

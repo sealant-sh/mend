@@ -60,10 +60,15 @@ mend handoff
 ```
 
 Mend holds the workspace with a shell and no agent, and the last block reads
-`✓ held · idle, no agent`. A hold still coming up reads `  starting · the hold is still coming up`.
-The session row reads `idle · handed off from dana-mbp`, where `dana-mbp` is the name of the machine
-you handed off from, and `mend sessions` names the machine the same way. Attach to it, start an
-agent in it later, or open it from another device.
+`✓ held · idle, no agent`. When the server answers before the hold is up, as it does while a Boat VM
+boots, the command follows the session until it is held or has failed, for up to 3 minutes, and says
+so while it waits:
+`starting · the hold is still coming up · … · Ctrl-C stops watching, not the hold`. Ctrl-C stops
+only the watching; the hold goes on, and `mend sessions` shows when it is idle. A hold still
+starting after 3 minutes reads `· still starting after 3 min · the hold goes on`. The session row
+reads `idle · handed off from dana-mbp`, where `dana-mbp` is the name of the machine you handed off
+from, and `mend sessions` names the machine the same way. Attach to it, start an agent in it later,
+or open it from another device.
 
 When the hold fails, the block reads `! not held · failed · <why>`, the command exits with code 1,
 and `mend resume <session> --project <project> --with shell` opens the workspace with a shell.
