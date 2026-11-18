@@ -16,7 +16,17 @@ import { CircleAlertIcon, EllipsisIcon, PencilIcon, Trash2Icon, XIcon } from "lu
 import { type ReactNode, useState } from "react";
 
 import type { SkillDetailDto } from "#/lib/api";
-import { laterPage } from "#/lib/later-pages";
+import {
+  canChangeSkills,
+  projectPanelWhen,
+  projectSavedUseWords,
+  projectUsedWords,
+  revisionWhen,
+  skillAt,
+  type SkillOwner,
+  skillsHome,
+  whoCanChangeWords,
+} from "#/lib/project-skills";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import {
   fileSearch,
@@ -29,22 +39,26 @@ import {
   whenWords,
 } from "#/lib/skills";
 import { useTRPC } from "#/lib/trpc";
-import { useSkillTwins } from "#/lib/use-skill-twins";
+import { useSkillTwins, useYourSkillNamed } from "#/lib/use-skill-twins";
 
 import { PhoneHeader } from "../workspace/phone-header.tsx";
 import { RemoveSkill } from "./remove-skill.tsx";
 
 /**
- * A skill open to read (Doop "Skills · a skill open", "Phone · Skill"): its name, when it last
- * changed and where it is used, then its files. On a desk it is the panel beside the list; on a
- * phone its own screen. Edit skill opens the editor in its place; the "…" also holds Remove skill….
+ * A skill open to read (Doop "Skills · a skill open", "Phone · Skill", "Project · Skills tab · a
+ * skill open" and "read only"): its name, when it last changed and where it is used, then its
+ * files. On a desk it is the panel beside the list; on a phone its own screen. Edit skill opens the
+ * editor in its place; the "…" also holds Remove skill…. A project's skill says who may change it,
+ * and offers neither to anyone else.
  */
 export function SkillPanel({
   skillId,
   file,
+  owner,
 }: {
   readonly skillId: string;
   readonly file: string | undefined;
+  readonly owner: SkillOwner;
 }) {
   const trpc = useTRPC();
   const detail = useQuery(trpc.skills.detail.queryOptions({ skillId }));
@@ -62,6 +76,7 @@ export function SkillPanel({
     case "error":
       return (
         <PanelProblem
+          owner={owner}
           gone={refusalTagOf(detail.error) === "NotFound"}
           words={failureWords(detail.error, "Check your connection, then try again.")}
           retrying={detail.isFetching}
@@ -69,16 +84,22 @@ export function SkillPanel({
         />
       );
     case "success":
-      return <SkillReader detail={detail.data} file={file} />;
+      return <SkillReader detail={detail.data} file={file} owner={owner} />;
   }
 }
 
+/** "Back to your skills", "Back to checkout-api's skills". */
+const backWords = (owner: SkillOwner): string =>
+  owner.kind === "you" ? "Back to your skills" : `Back to ${owner.projectName}'s skills`;
+
 function PanelProblem({
+  owner,
   gone,
   words,
   retrying,
   onRetry,
 }: {
+  readonly owner: SkillOwner;
   readonly gone: boolean;
   readonly words: string;
   readonly retrying: boolean;
@@ -94,7 +115,9 @@ function PanelProblem({
               {gone ? "This skill isn't here." : "Couldn't load this skill."}
             </strong>{" "}
             {gone
-              ? "It was removed, from another browser or with mend skills push --prune."
+              ? owner.kind === "you"
+                ? "It was removed, from another browser or with mend skills push --prune."
+                : `It was removed from ${owner.projectName}, from another browser or with mend skills push --project --prune.`
               : words}
           </p>
           <div className="mt-2.5 flex gap-2">
@@ -110,13 +133,13 @@ function PanelProblem({
               </Button>
             )}
             <Link
-              to="/skills"
+              {...skillsHome(owner)}
               className={cn(
                 buttonVariants({ variant: "outline", size: "sm" }),
                 "max-lg:h-11 max-lg:px-4",
               )}
             >
-              Back to your skills
+              {backWords(owner)}
             </Link>
           </div>
         </AlertDescription>
@@ -128,83 +151,106 @@ function PanelProblem({
 function SkillReader({
   detail,
   file,
+  owner,
 }: {
   readonly detail: SkillDetailDto;
   readonly file: string | undefined;
+  readonly owner: SkillOwner;
 }) {
   const navigate = useNavigate();
   const { skill } = detail;
-  const twins = useSkillTwins([skill]).get(skill.name) ?? [];
+  const twins = useSkillTwins(owner.kind === "you" ? [skill] : undefined).get(skill.name) ?? [];
+  // On a project's skill: your own of the same name, which this one is used instead of.
+  const yours = useYourSkillNamed(owner.kind === "project" ? skill.name : undefined);
   const [removing, setRemoving] = useState(false);
   const files = orderedFiles(detail.files);
   const shown = shownFile(files, file);
   const now = new Date();
-  const when = panelWhen(skill, now);
-  const used = justSaved(skill, now)
-    ? savedUseWords(skill.revision)
-    : usedInWords(skill.name, twins);
+  const saved = justSaved(skill, now);
+  const changeable = canChangeSkills(owner);
+  const when =
+    owner.kind === "you" ? panelWhen(skill, now) : projectPanelWhen(owner.projectName, skill, now);
+  const used =
+    owner.kind === "you"
+      ? saved
+        ? savedUseWords(skill.revision)
+        : usedInWords(skill.name, twins)
+      : saved
+        ? projectSavedUseWords(owner.projectName, skill.revision)
+        : projectUsedWords(owner.projectName, yours !== undefined);
+  const who = owner.kind === "project" && !saved ? whoCanChangeWords(owner) : null;
   const twin = twins.length === 1 ? twins[0] : undefined;
-  const edit = () =>
-    void navigate({
-      to: "/skills/$skillId",
-      params: { skillId: skill.id },
-      search: fileSearch(shown?.path, true),
-    });
+  const edit = () => void navigate(skillAt(owner, skill.id, fileSearch(shown?.path, true)));
+  const other = saved ? null : twin !== undefined ? (
+    <Link
+      to="/projects/$projectId/skills/$skillId"
+      params={{ projectId: twin.projectId, skillId: twin.skillId }}
+      className="text-info hover:underline"
+    >
+      Open {twin.projectName}'s skill
+    </Link>
+  ) : yours !== undefined ? (
+    <Link
+      to="/skills/$skillId"
+      params={{ skillId: yours.id }}
+      className="text-info hover:underline"
+    >
+      Open your skill
+    </Link>
+  ) : null;
   const usedLine = (
     <>
       {used}
-      {twin === undefined || justSaved(skill, now) ? null : (
-        <>
-          {" "}
-          <Link
-            {...laterPage(`projects/${twin.projectId}/skills/${twin.skillId}`)}
-            className="text-info hover:underline"
-          >
-            Open {twin.projectName}'s skill
-          </Link>
-        </>
-      )}
+      {other === null ? null : <> {other}</>}
     </>
   );
+  const sub = owner.kind === "you" ? "Your skill" : `${owner.projectName}'s skill`;
+  const phoneWhen = owner.kind === "you" ? whenWords(skill, now) : revisionWhen(skill, now);
 
   return (
     <article aria-label={skill.name} className="flex min-h-0 flex-1 flex-col">
       <PhoneHeader
         className="lg:hidden"
         title={skill.name}
-        sub="Your skill"
-        back={{ link: { to: "/skills" }, label: "Back to your skills" }}
+        sub={sub}
+        back={{ link: skillsHome(owner), label: backWords(owner) }}
         actions={
-          <PhoneActions name={skill.name} onEdit={edit} onRemove={() => setRemoving(true)} />
+          changeable ? (
+            <PhoneActions name={skill.name} onEdit={edit} onRemove={() => setRemoving(true)} />
+          ) : undefined
         }
       />
       <header className="border-b px-8 pt-5 pb-4 max-lg:hidden">
         <div className="flex items-center gap-2">
           <h2 className="min-w-0 flex-1 truncate font-mono text-lead font-medium">{skill.name}</h2>
-          <Button variant="outline" size="sm" onClick={edit}>
-            Edit skill
-          </Button>
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label={`More for ${skill.name}`}
-              className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
-            >
-              <EllipsisIcon aria-hidden />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="min-w-48">
-              <DropdownMenuItem onClick={edit}>
-                <PencilIcon aria-hidden />
+          {changeable ? (
+            <>
+              <Button variant="outline" size="sm" onClick={edit}>
                 Edit skill
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem variant="destructive" onClick={() => setRemoving(true)}>
-                <Trash2Icon aria-hidden />
-                Remove skill…
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+              </Button>
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  aria-label={`More for ${skill.name}`}
+                  className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
+                >
+                  <EllipsisIcon aria-hidden />
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-48">
+                  <DropdownMenuItem onClick={edit}>
+                    <PencilIcon aria-hidden />
+                    Edit skill
+                  </DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem variant="destructive" onClick={() => setRemoving(true)}>
+                    <Trash2Icon aria-hidden />
+                    Remove skill…
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </>
+          ) : null}
           <Link
-            to="/skills"
+            {...skillsHome(owner)}
             aria-label={`Close ${skill.name}`}
             className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
           >
@@ -213,19 +259,21 @@ function SkillReader({
         </div>
         <p className="mt-2.5 text-row text-muted-foreground">{when}</p>
         <p className="mt-1.5 text-row text-muted-foreground">{usedLine}</p>
+        {who === null ? null : <p className="mt-1.5 text-row text-muted-foreground">{who}</p>}
       </header>
-      <p className="border-b bg-muted/40 px-4 py-3 text-prose text-muted-foreground lg:hidden">
-        {whenWords(skill, now)} {usedLine}
-      </p>
+      <div className="border-b bg-muted/40 px-4 py-3 text-prose text-muted-foreground lg:hidden">
+        <p>
+          {phoneWhen} {usedLine}
+        </p>
+        {who === null ? null : <p className="mt-1.5">{who}</p>}
+      </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
         {files.length > 1 ? (
           <nav aria-label="Files" className="flex flex-wrap gap-1.5 px-8 pt-4 max-lg:px-4">
             {files.map((entry) => (
               <Link
                 key={entry.path}
-                to="/skills/$skillId"
-                params={{ skillId: skill.id }}
-                search={fileSearch(entry.path, false)}
+                {...skillAt(owner, skill.id, fileSearch(entry.path, false))}
                 aria-current={entry.path === shown?.path ? "page" : undefined}
                 className="rounded-md px-2 py-1 font-mono text-meta text-muted-foreground outline-none hover:text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 aria-[current=page]:bg-muted aria-[current=page]:text-foreground max-lg:py-2.5"
               >
@@ -247,7 +295,9 @@ function SkillReader({
           </pre>
         )}
       </div>
-      <RemoveSkill skill={detail} open={removing} onOpenChange={setRemoving} />
+      {changeable ? (
+        <RemoveSkill skill={detail} owner={owner} open={removing} onOpenChange={setRemoving} />
+      ) : null}
     </article>
   );
 }

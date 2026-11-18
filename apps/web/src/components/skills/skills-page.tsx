@@ -17,7 +17,7 @@ import {
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery, type UseQueryResult } from "@tanstack/react-query";
-import { Link, Outlet, useMatch } from "@tanstack/react-router";
+import { Link, type LinkProps, Outlet, useMatch } from "@tanstack/react-router";
 import {
   ChevronRightIcon,
   CircleAlertIcon,
@@ -29,8 +29,8 @@ import {
 import { Fragment, useState } from "react";
 
 import type { SkillDto } from "#/lib/api";
-import { laterPage } from "#/lib/later-pages";
 import { usePhone } from "#/lib/phone";
+import { YOU } from "#/lib/project-skills";
 import { failureWords } from "#/lib/refusal";
 import {
   highlighted,
@@ -160,6 +160,7 @@ export function SkillsPage() {
         open={creating}
         onOpenChange={setCreating}
         taken={skills.status === "success" ? skills.data.map((skill) => skill.name) : []}
+        owner={YOU}
       />
     </div>
   );
@@ -288,7 +289,7 @@ function SkillsList({
             <ul className="flex flex-col">
               {shown.map((skill) => (
                 <li key={skill.id} className="border-b">
-                  <SkillRow
+                  <YourSkillRow
                     skill={skill}
                     query={query}
                     open={skill.id === openId}
@@ -323,7 +324,63 @@ const listHeading = (words: string) => (
   </h2>
 );
 
-function SkillRow({
+/**
+ * A skill in a list: its name and description, with words on the right (when it changed, or which
+ * skill wins where). On a phone those words go under the description, or in its place.
+ */
+export function SkillRow({
+  skill,
+  query,
+  open,
+  link,
+  side,
+  phoneNote,
+}: {
+  readonly skill: SkillDto;
+  readonly query: string;
+  readonly open: boolean;
+  readonly link: LinkProps;
+  readonly side: string;
+  /** What a phone says under the name: after the description, or in its place. */
+  readonly phoneNote: { readonly words: string; readonly replaces: boolean } | null;
+}) {
+  return (
+    <Link
+      {...link}
+      aria-current={open ? "page" : undefined}
+      className={cn(
+        "flex items-center gap-4 px-3.5 py-3 outline-none hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 max-lg:min-h-15 max-lg:px-4 lg:my-px lg:rounded-lg",
+        open && "bg-muted hover:bg-muted",
+      )}
+    >
+      <span className="grid min-w-0 flex-1 gap-1">
+        <span className="truncate font-mono text-meta text-foreground max-lg:text-lead">
+          <Marked text={skill.name} query={query} />
+        </span>
+        <span className="truncate text-row text-muted-foreground max-lg:text-prose">
+          <span className={cn(phoneNote?.replaces === true && "max-lg:hidden")}>
+            {skill.description === "" ? (
+              "No description"
+            ) : (
+              <Marked text={skill.description} query={query} />
+            )}
+          </span>
+          {phoneNote === null ? null : (
+            <span className="lg:hidden">
+              {phoneNote.replaces ? "" : " "}
+              {phoneNote.words}.
+            </span>
+          )}
+        </span>
+      </span>
+      <span className="shrink-0 text-row text-muted-foreground max-lg:hidden">{side}</span>
+      <ChevronRightIcon aria-hidden className="size-5 shrink-0 text-muted-foreground lg:hidden" />
+    </Link>
+  );
+}
+
+/** One of your skills: when it changed, or the projects that use their own of its name. */
+function YourSkillRow({
   skill,
   query,
   open,
@@ -336,34 +393,14 @@ function SkillRow({
 }) {
   const side = twins.length > 0 ? twinRowWords(twins) : rowWhen(skill, new Date());
   return (
-    <Link
-      to="/skills/$skillId"
-      params={{ skillId: skill.id }}
-      aria-current={open ? "page" : undefined}
-      className={cn(
-        "flex items-center gap-4 px-3.5 py-3 outline-none hover:bg-muted/60 focus-visible:ring-3 focus-visible:ring-ring/50 max-lg:min-h-15 max-lg:px-4 lg:my-px lg:rounded-lg",
-        open && "bg-muted hover:bg-muted",
-      )}
-    >
-      <span className="grid min-w-0 flex-1 gap-1">
-        <span className="truncate font-mono text-meta text-foreground max-lg:text-lead">
-          <Marked text={skill.name} query={query} />
-        </span>
-        <span className="truncate text-row text-muted-foreground max-lg:text-prose">
-          {/* On a phone the line under the name says where a project uses its own. */}
-          <span className={cn(twins.length > 0 && "max-lg:hidden")}>
-            {skill.description === "" ? (
-              "No description"
-            ) : (
-              <Marked text={skill.description} query={query} />
-            )}
-          </span>
-          {twins.length > 0 ? <span className="lg:hidden">{side}.</span> : null}
-        </span>
-      </span>
-      <span className="shrink-0 text-row text-muted-foreground max-lg:hidden">{side}</span>
-      <ChevronRightIcon aria-hidden className="size-5 shrink-0 text-muted-foreground lg:hidden" />
-    </Link>
+    <SkillRow
+      skill={skill}
+      query={query}
+      open={open}
+      link={{ to: "/skills/$skillId", params: { skillId: skill.id } }}
+      side={side}
+      phoneNote={twins.length > 0 ? { words: side, replaces: true } : null}
+    />
   );
 }
 
@@ -390,7 +427,11 @@ function ProjectNote({ twins }: { readonly twins: ReadonlyArray<ProjectTwin> }) 
       {projects.map(([id, name], at) => (
         <Fragment key={id}>
           {at === 0 ? " " : " · "}
-          <Link {...laterPage(`projects/${id}/skills`)} className="text-info hover:underline">
+          <Link
+            to="/projects/$projectId/skills"
+            params={{ projectId: id }}
+            className="text-info hover:underline"
+          >
             Skills in {name}
           </Link>
         </Fragment>
