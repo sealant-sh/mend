@@ -238,6 +238,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "harnessModels.list",
   "gitKeys.show",
   "gitKeys.init",
+  "gitKeys.check",
   "gitKeys.bridgeStatus",
   "gitKeys.access",
   "gitKeys.setAccess",

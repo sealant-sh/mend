@@ -41,6 +41,7 @@ import {
   GitAccessView,
   GitAuthorView,
   GitBridgeStatusView,
+  GitKeyCheck,
   GitKeyView,
   SetGitAccessRequest,
   SetGitAuthorRequest,
@@ -385,6 +386,8 @@ export const projectsGroup = HttpApiGroup.make("projects")
 export const gitKeysGroup = HttpApiGroup.make("gitKeys")
   .add(HttpApiEndpoint.get("show", "/keys/git", { success: GitKeyView }))
   .add(HttpApiEndpoint.post("init", "/keys/git", { success: GitKeyView, error: StoreFailure }))
+  // Asks GitHub whether it accepts the caller's Mend key; no project needed (see GitKeyCheck).
+  .add(HttpApiEndpoint.post("check", "/keys/git/check", { success: GitKeyCheck }))
   .add(HttpApiEndpoint.get("bridgeStatus", "/keys/bridge", { success: GitBridgeStatusView }))
   .add(HttpApiEndpoint.get("access", "/me/git-access", { success: GitAccessView }))
   .add(

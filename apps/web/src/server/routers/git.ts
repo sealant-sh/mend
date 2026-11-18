@@ -23,6 +23,8 @@ export const gitRouter = router({
     ),
   key: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.show())),
   initKey: procedure.mutation(({ ctx }) => run(ctx, (api) => api.gitKeys.init())),
+  /** Asks GitHub whether it accepts the caller's Mend key; needs no project (`GitKeyCheck`). */
+  checkKey: procedure.mutation(({ ctx }) => run(ctx, (api) => api.gitKeys.check())),
   bridgeStatus: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.bridgeStatus())),
   access: procedure.query(({ ctx }) => run(ctx, (api) => api.gitKeys.access())),
   setAccess: procedure

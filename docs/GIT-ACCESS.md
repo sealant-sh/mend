@@ -106,6 +106,18 @@ off. Confused-deputy shape: an agent rewrites a ref, the user later publishes it
 Review-before-landing is the mitigation today. Candidate fix, own timeline: read-only common dir +
 per-session writable admin/objects overlay.
 
+## Checking the Mend key without a project
+
+A project's Git access check (`POST /projects/:id/git/check`) runs `git ls-remote` and a push
+dry-run against that project's origin. Before a person has a project there is no origin to try, so
+`POST /keys/git/check` asks GitHub's SSH greeting instead: `ssh -T git@github.com` on the Mend
+server, with the same ssh options as every host-side remote op and the account's Mend key as the
+only identity. GitHub greets a key it knows with the account's login (a deploy key's greeting names
+its repository) and refuses one it does not with `Permission denied (publickey)`. The answer is
+`accepted`, `refused`, `unreachable` (no answer about the key) or `no-key`. It reads the key and
+never creates one, and it checks the Mend key in either mode: the bridge is never asked to sign. It
+says nothing about a particular repository; the project's own check does that.
+
 ## Which remotes Mend's git reaches
 
 Mend clones and fetches on its own behalf for adoption, reference repositories, dotfiles and project
