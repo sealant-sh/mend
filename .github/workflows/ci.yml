@@ -146,6 +146,7 @@ jobs:
           tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
           tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
           tooling/verify/formal.test.mjs tooling/verify/gate.test.mjs
+          tooling/verify/box-tidy.test.mjs tooling/verify/ports.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
@@ -177,6 +178,10 @@ jobs:
           fi
       # Cached builds restore generated routes before their own typecheck.
       - run: node scripts/ci-turbo.mjs build typecheck lint
+      # The recipes belong to no package, so Turbo's lint never reads them; `pnpm verify check`
+      # lints them with this command (tooling/verify/check.mjs, GATE_STEPS).
+      - name: Verify recipes lint
+        run: pnpm exec oxlint --deny-warnings .agents/skills/verify/recipes
       - run: pnpm format:check
       # This was unconditional in checks, so it remains independent of packaging scope.
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
@@ -637,6 +642,8 @@ jobs:
           .agents/skills/verify/scripts/doctor.test.mjs
           .agents/skills/verify/scripts/drive-vscode.test.mjs
           .agents/skills/verify/scripts/fingerprint.test.mjs
+          .agents/skills/verify/scripts/fixtures/claude-standin.test.mjs
+          .agents/skills/verify/scripts/fixtures/claude-protocol-standin.test.mjs
       # The published tarball, installed from npm the way a person installs it: a CLI that packs
       # and installs but cannot start fails here (apps/cli/scripts/test-package.mjs).
       - name: Installed-CLI smoke from the packed tarball

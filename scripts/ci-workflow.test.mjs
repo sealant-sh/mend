@@ -2,13 +2,14 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, globSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { Evaluator, Lexer, Parser, data } from "@actions/expressions";
 import { parse } from "yaml";
 
+import { GATE_STEPS, scriptTests } from "../tooling/verify/check.mjs";
 import { CI_RUNNER } from "./ci-measure-workflow.mjs";
 import { readCoverages } from "./formal-coverage.mjs";
 
@@ -199,6 +200,70 @@ test("static checks, all test shards and packaging can start without another exe
   assert.match(jobs["vscode-e2e"].if, /needs\.changes\.outputs\.vscode != 'false'/);
   assert.equal(jobs.changes.outputs.vscode, "${{ steps.scope.outputs.vscode }}");
   assert.deepEqual(commands("vscode-e2e").at(-1), "pnpm --filter ./apps/vscode test:e2e");
+});
+
+// Where CI runs each step of `pnpm verify check` (tooling/verify/check.mjs, GATE_STEPS), so a
+// commit CI passes also passes the gate every agent runs before a PR. Each step names the job and
+// command that run the same thing there; `local: true` means CI's command is the gate's own. A
+// step CI cannot run gives `why` instead. The recipes lint ran only locally until SLNT-1114.
+const GATE_IN_CI = {
+  // CI builds the route trees before its typecheck, in the same Turbo run. A Turbo cache hit
+  // replays a task whose inputs have not changed, which is what the gate's --force reruns.
+  build: [{ job: "static", command: "node scripts/ci-turbo.mjs build typecheck lint" }],
+  typecheck: [{ job: "static", command: "node scripts/ci-turbo.mjs build typecheck lint" }],
+  lint: [{ job: "static", command: "node scripts/ci-turbo.mjs build typecheck lint" }],
+  "recipes-lint": [{ job: "static", local: true }],
+  // Every package's tests across the four shards (ci-shards.mjs --check fails a package no shard
+  // runs), and the node --test files the gate picks, which the next test holds to CI.
+  tests: [
+    { job: "static", command: "node scripts/ci-shards.mjs --check" },
+    { job: "test-engines", command: "node scripts/ci-shards.mjs engines" },
+    { job: "test-engines-b", command: "node scripts/ci-shards.mjs engines-b" },
+    { job: "test-clients-a", command: "node scripts/ci-shards.mjs clients-a" },
+    { job: "test-clients-b", command: "node scripts/ci-shards.mjs clients-b" },
+  ],
+  format: [{ job: "static", local: true }],
+};
+
+test("CI runs every step of the local gate, or the list says why it cannot", () => {
+  const ids = GATE_STEPS.map((step) => step.id);
+  for (const step of GATE_STEPS) {
+    const places = GATE_IN_CI[step.id];
+    assert.ok(
+      places,
+      `verify check's "${step.id}" step runs nowhere in CI: add it to a CI job and to GATE_IN_CI here, or say in GATE_IN_CI why CI cannot run it`,
+    );
+    for (const place of places) {
+      if (place.why !== undefined) {
+        assert.ok(place.why.trim().length > 0, `${step.id}: an excuse needs its reason`);
+        continue;
+      }
+      const command = place.local ? `pnpm ${step.args.join(" ")}` : place.command;
+      assert.ok(
+        commands(place.job).some((run) => run.trim() === command),
+        `${step.id}: CI's ${place.job} job must run \`${command}\``,
+      );
+    }
+  }
+  assert.deepEqual(Object.keys(GATE_IN_CI), ids, "GATE_IN_CI names a step the gate does not have");
+});
+
+test("every node --test file the local gate can pick also runs in CI", () => {
+  const path = fileURLToPath(root);
+  const roots = ["scripts", "tooling/verify", ".agents/skills/verify/scripts"];
+  const sources = roots.flatMap((dir) =>
+    globSync(`${dir}/**/*.mjs`, { cwd: root, exclude: (name) => name === "node_modules" }),
+  );
+  // Any workflow counts: build-input-probe.yml runs its probe's test when the probe changes.
+  const runs = globSync(".github/workflows/*.yml", { cwd: root }).flatMap((file) =>
+    Object.values(parse(readFileSync(new URL(file, root), "utf8")).jobs).flatMap((job) =>
+      (job.steps ?? []).flatMap((step) => (step.run ? [step.run] : [])),
+    ),
+  );
+  const named = (file) =>
+    runs.some((run) => run.includes(file) || run.includes(`${dirname(file)}/*.test.mjs`));
+  const missing = scriptTests(path, sources).filter((file) => !named(file));
+  assert.deepEqual(missing, [], "verify check runs these node tests; name each in a CI job too");
 });
 
 // What CI's formal job allows besides a model's budget: checkout, setup, and building tlx on a

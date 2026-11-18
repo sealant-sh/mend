@@ -128,6 +128,7 @@ jobs:
           tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
           tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
           tooling/verify/formal.test.mjs tooling/verify/gate.test.mjs
+          tooling/verify/box-tidy.test.mjs tooling/verify/ports.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
@@ -155,6 +156,8 @@ jobs:
         env:
           CI_MEASUREMENT_CACHE: ${{ inputs.cache }}
           CI_MEASUREMENT_RUNNER: ${{ inputs.runner }}
+      - name: Verify recipes lint
+        run: pnpm exec oxlint --deny-warnings .agents/skills/verify/recipes
       - run: pnpm format:check
       - run: helm lint deploy/helm/mend -f deploy/helm/mend/ci/obc-values.yaml
       - name: Archive Turbo task hashes and cache outcomes
@@ -569,6 +572,8 @@ jobs:
           .agents/skills/verify/scripts/doctor.test.mjs
           .agents/skills/verify/scripts/drive-vscode.test.mjs
           .agents/skills/verify/scripts/fingerprint.test.mjs
+          .agents/skills/verify/scripts/fixtures/claude-standin.test.mjs
+          .agents/skills/verify/scripts/fixtures/claude-protocol-standin.test.mjs
       - name: Installed-CLI smoke from the packed tarball
         run: pnpm --filter @sealant/mend test:package
       - name: Archive per-file test timings
