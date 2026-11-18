@@ -148,7 +148,7 @@ export function ProjectsPage() {
 
   return (
     <Toaster toastManager={toasts} size={phone ? "touch" : "default"}>
-      <div className="flex min-w-0 flex-col max-lg:min-h-dvh max-lg:pb-14 lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))] lg:flex-none">
+      <div className="flex min-w-0 flex-col max-lg:min-h-dvh max-lg:pb-14 lg:min-h-0 lg:flex-1">
         <header className="flex h-header shrink-0 items-center gap-3 border-b bg-background pr-2.5 pl-5 max-lg:sticky max-lg:top-0 max-lg:z-10 max-lg:h-auto max-lg:border-0 max-lg:pt-3 max-lg:pr-1 max-lg:pb-1 max-lg:pl-4">
           <h1 className="flex-1 text-prose font-semibold max-lg:text-2xl max-lg:tracking-tight">
             Projects

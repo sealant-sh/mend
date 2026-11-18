@@ -52,12 +52,16 @@ function InboxLayout() {
   const { organizationName, account } = useViewer();
   // Open in full or folded to its rail, as this browser left it; the server renders it that way.
   const expanded = sidebarExpanded.use();
+  // On a wide screen the frame is the window, and the sheet takes what its margins leave, its
+  // border included. A page fills the sheet (`lg:min-h-0 lg:flex-1`) and scrolls inside it, never
+  // working out the window's height itself: a page sized to the window minus the margins left the
+  // sheet's 1px border top and bottom over, 2px of scroll on every desktop page.
   return (
     <SidebarProvider
       open={expanded}
       onOpenChange={sidebarExpanded.set}
       style={{ "--sidebar-width": SIDEBAR_WIDTH, "--sidebar-width-icon": SIDEBAR_RAIL_WIDTH }}
-      className="bg-canvas"
+      className="bg-canvas lg:h-dvh"
     >
       {/* Search from anywhere: ⌘K, the sidebar's field, the phone inbox's search. */}
       <SearchProvider organizationName={organizationName} inbox={inbox}>
@@ -70,7 +74,7 @@ function InboxLayout() {
             online={online}
           />
         </div>
-        <SidebarInset className="min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
+        <SidebarInset className="min-h-0 min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
           {home ? (
             <PhoneInbox
               organizationName={organizationName}
@@ -79,7 +83,12 @@ function InboxLayout() {
               className="lg:hidden"
             />
           ) : null}
-          <div className={cn("flex min-h-0 flex-1 flex-col", home && "max-lg:hidden")}>
+          <div
+            className={cn(
+              "flex min-h-0 flex-1 flex-col lg:overflow-y-auto",
+              home && "max-lg:hidden",
+            )}
+          >
             <InSheet>
               <Outlet />
             </InSheet>

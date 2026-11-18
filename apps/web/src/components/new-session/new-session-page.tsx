@@ -41,6 +41,7 @@ import { WorkspacesRefusedBanner } from "#/components/host-user-namespaces";
 import { laterPage } from "#/lib/later-pages";
 import { loginBlock } from "#/lib/new-session";
 
+import { ComposerResources } from "./composer-resources.tsx";
 import {
   AgentMenuItems,
   AgentSheetBody,
@@ -330,6 +331,13 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
               {composer.onClone && clone !== null && composer.projects.length === 0 ? (
                 <CloneNotice clone={clone} />
               ) : null}
+              {composer.target._tag === "existing" && project !== undefined ? (
+                <ComposerResources
+                  key={composer.target.id}
+                  projectId={project.id}
+                  worktreeId={composer.target.id}
+                />
+              ) : null}
               <PromptInput
                 id={PROMPT_IDS[0]}
                 placeholder={PLACEHOLDER}
@@ -550,6 +558,14 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
           <div className="px-5 pb-3">
             <Hint composer={composer} phone />
           </div>
+          {composer.target._tag === "existing" && project !== undefined ? (
+            <ComposerResources
+              key={composer.target.id}
+              projectId={project.id}
+              worktreeId={composer.target.id}
+              touch
+            />
+          ) : null}
           <div className="border-b border-border">
             <PhoneRow
               icon={<FolderGit2Icon aria-hidden />}

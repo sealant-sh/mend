@@ -19,6 +19,7 @@ import { FileAttachment } from "@mend/ui/components/file-attachment";
 import { Lump, type LumpPr, type LumpStatus } from "@mend/ui/components/lump";
 import { ComposerCard, PromptInput, PromptInputModel } from "@mend/ui/components/prompt-input";
 import { Question, QuestionEarlier } from "@mend/ui/components/question";
+import { Segmented } from "@mend/ui/components/segmented";
 import { Status } from "@mend/ui/components/status";
 import { TraceRow } from "@mend/ui/components/trace-row";
 import { Button } from "@mend/ui/components/ui/button";
@@ -874,12 +875,58 @@ function ConversationDemo() {
   );
 }
 
+function SegmentedDemo() {
+  const [uses, setUses] = useState<"project" | "worktree" | "off">("project");
+  const [from, setFrom] = useState<"file" | "url">("file");
+  return (
+    <div className="flex flex-col gap-4">
+      <Row label="Default">
+        <Segmented
+          aria-label="How fix-checkout-retry uses @db"
+          value={uses}
+          onValueChange={setUses}
+          options={[
+            { value: "project", label: "Shared" },
+            { value: "worktree", label: "Own" },
+            { value: "off", label: "Off" },
+          ]}
+        />
+        <Segmented
+          aria-label="How try-vitest-4 uses @db"
+          disabled
+          value="off"
+          onValueChange={() => undefined}
+          options={[
+            { value: "project", label: "Shared" },
+            { value: "worktree", label: "Own" },
+            { value: "off", label: "Off" },
+          ]}
+        />
+      </Row>
+      <Row label="Touch">
+        <Segmented
+          aria-label="Load from"
+          size="touch"
+          className="w-full"
+          value={from}
+          onValueChange={setFrom}
+          options={[
+            { value: "file", label: "Dump file" },
+            { value: "url", label: "Postgres URL" },
+          ]}
+        />
+      </Row>
+    </div>
+  );
+}
+
 export const componentSections: ReadonlyArray<{
   id: string;
   title: string;
   Demo: () => React.ReactNode;
 }> = [
   { id: "status", title: "Status", Demo: StatusDemo },
+  { id: "segmented", title: "Segmented", Demo: SegmentedDemo },
   { id: "lump", title: "Lump", Demo: LumpDemo },
   { id: "copy-field", title: "Copy box (CopyField)", Demo: CopyFieldDemo },
   { id: "banner", title: "Banner", Demo: BannerDemo },

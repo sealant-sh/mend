@@ -73,7 +73,7 @@ function ProjectCloning({ progress }: { readonly progress: AdoptionProgressDto }
     void navigate({ to: phone ? "/new" : "/" });
   };
   return (
-    <div className="flex min-w-0 flex-col max-lg:min-h-dvh lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))] lg:flex-none">
+    <div className="flex min-w-0 flex-col max-lg:min-h-dvh lg:min-h-0 lg:flex-1">
       <header className="flex h-header shrink-0 items-center gap-2 border-b bg-background pr-2.5 pl-3 max-lg:hidden">
         <SidebarToggle />
         <span aria-hidden className="h-4 w-px shrink-0 bg-border" />

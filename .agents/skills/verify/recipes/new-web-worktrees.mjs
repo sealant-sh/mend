@@ -63,12 +63,6 @@ export default async ({ page, web, capture, note }) => {
     for (let second = 0; second < 10; second += 1) if ((await changesInASecond()) === 0) return;
   };
   const both = async (name) => {
-    // The desktop sidebar's wrapper is 2px taller than the window, so a full-page capture resizes
-    // the window, and the driver then withholds every later picture ("screenshot inspection
-    // unavailable"). Clip it to the window for the capture.
-    await page.addStyleTag({
-      content: "[data-slot=sidebar-wrapper]{max-height:100dvh;overflow:hidden}",
-    });
     // Hovering what was last clicked changes the page under the driver's check: park the mouse.
     await page.mouse.move(1, 1);
     for (const theme of ["light", "dark"]) {
