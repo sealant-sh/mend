@@ -11,11 +11,33 @@ const PHONE = { width: 390, height: 844 };
 export default async ({ page, web, capture, note }) => {
   const heading = (name) => page.getByRole("heading", { name, exact: true }).waitFor();
   const dark = () => page.evaluate(() => document.documentElement.classList.contains("dark"));
-  // The person's theme, as the old app stores it; the page applies it before first paint.
+  // Whether <html> was dark when <body> first appeared, before anything painted.
+  await page.addInitScript(() => {
+    new MutationObserver((_, observer) => {
+      if (document.body === null) return;
+      window.__darkAtFirstPaint = document.documentElement.classList.contains("dark");
+      observer.disconnect();
+    }).observe(document, { childList: true, subtree: true });
+  });
+  // The person's theme, under the key the old app stores it by; the page applies it before first
+  // paint, so it never flashes the other one.
   const withTheme = async (theme, path) => {
     await page.evaluate((value) => localStorage.setItem("mend-theme", value), theme);
     await page.goto(`${web}${path}`);
-    if ((await dark()) !== (theme === "dark")) throw new Error(`the page is not ${theme}`);
+    const want = theme === "dark";
+    if ((await dark()) !== want) throw new Error(`the page is not ${theme}`);
+    if ((await page.evaluate(() => window.__darkAtFirstPaint)) !== want)
+      throw new Error(`the page was not ${theme} before its first paint`);
+  };
+  // A page's actions on a phone are 44px touch targets.
+  const touchTargets = async () => {
+    for (const name of ["Go home", "Try again"]) {
+      const control = page.getByRole(name === "Go home" ? "link" : "button", { name });
+      if ((await control.count()) === 0) continue;
+      const box = await control.boundingBox();
+      if (box === null || box.height < 44)
+        throw new Error(`${name} is ${box?.height ?? 0}px tall on a phone, under 44px`);
+    }
   };
 
   // Timers the recipe can move: the signed-in read is fresh for a minute, and the error below
@@ -26,7 +48,8 @@ export default async ({ page, web, capture, note }) => {
   await heading("Page not found");
   if (new URL(page.url()).pathname !== "/")
     throw new Error(`a signed-in visit went to ${page.url()}`);
-  note("signed in, home stays at / and shows the not-found screen");
+  await page.getByText("Mend", { exact: true }).first().waitFor();
+  note("signed in, home stays at / and shows the not-found screen on the sheet, Mend on the desk");
   for (const [viewport, size] of [
     ["desktop", DESKTOP],
     ["phone", PHONE],
@@ -35,6 +58,7 @@ export default async ({ page, web, capture, note }) => {
     for (const theme of ["light", "dark"]) {
       await withTheme(theme, "/");
       await heading("Page not found");
+      if (viewport === "phone") await touchTargets();
       await capture(`not-found-${viewport}-${theme}`);
     }
   }
@@ -67,9 +91,19 @@ export default async ({ page, web, capture, note }) => {
   await heading("This page didn't load");
   await page.getByText("The verify recipe failed this read on purpose.").waitFor();
   note("a failed read shows the error screen with what the server said");
-  await capture("error-desktop-light");
-  await page.setViewportSize(PHONE);
-  await capture("error-phone-light");
+  // Dark as the theme module sets it, without a reload that would read the page again.
+  for (const theme of ["light", "dark"]) {
+    await page.evaluate(
+      (on) => document.documentElement.classList.toggle("dark", on),
+      theme === "dark",
+    );
+    await page.setViewportSize(DESKTOP);
+    await capture(`error-desktop-${theme}`);
+    await page.setViewportSize(PHONE);
+    await touchTargets();
+    await capture(`error-phone-${theme}`);
+  }
+  await page.evaluate(() => document.documentElement.classList.remove("dark"));
   await page.setViewportSize(DESKTOP);
 
   // Try again reads it again from the browser, through the app's /trpc, and the page recovers.
