@@ -1096,6 +1096,34 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.projects.$projectId.worktrees.tsx`,
   `apps/web/src/lib/project-worktrees.ts`, `apps/web/src/lib/worktree-removal.ts`
 
+### resources.new-web-resources
+
+- **Map:** ADR 0019 resources, as the new web app's Resources tab shows them (no feature file): the
+  list with each worktree's Shared · Own · Off, Add a resource…, Start and Stop, a failed start,
+  Load data…, Remove…, no resources yet, the New session composer's resource line, and "New
+  worktrees use project resources"
+- **Needs:** no turn; web; `verify-fixture` (or `<p>` on the box); a runtime that runs resources
+  (Docker)
+- **Do:** Drive the recipe `new-web-resources`: on `verify-fixture` it makes two worktrees, writes a
+  Postgres table into one with Add a resource…, starts it from that worktree as the project's
+  resource, turns the other worktree's database Off and back, loads a small SQL dump, stops and
+  starts it, removes it, and opens the home composer on the first worktree.
+- **See:** each step's note in the recipe's `steps.log`: the table Mend wrote; the panel reads
+  Running with both worktrees and their choices; the load ends `loaded … from verify-seed.sql`; Stop
+  reads Stopped; Remove's toast says `archived · volumes kept`; the composer reads
+  `Resources @<name> shared database`; the home, project and session pages are no taller than the
+  window.
+- **Mode:** `scripted` (recipes/new-web-resources.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/project/resources-tab.tsx`,
+  `apps/web/src/components/project/resource-panel.tsx`,
+  `apps/web/src/components/project/resource-dialogs.tsx`,
+  `apps/web/src/components/new-session/composer-resources.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.resources.tsx`, `apps/web/src/lib/resources.ts`,
+  `apps/web/src/lib/resources-card.ts`, `apps/web/src/lib/resources-model.ts`,
+  `apps/web/src/lib/resource-load.ts`
+
 ### pull-change.boat-run
 
 - **Map:** pull-change.md `pull-fetch`, `pull-again`, `pull-not-a-clone`

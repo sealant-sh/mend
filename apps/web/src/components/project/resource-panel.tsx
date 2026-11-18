@@ -177,8 +177,9 @@ export function ResourcePanel({
         <span className="flex-1" />
         <Status tone={tone} title={panel.statusLine} className="text-row">
           {word}
-          <span className="sr-only"> · {panel.statusLine}</span>
         </Status>
+        {/* The word is what was observed; the server's whole line stays on hover and here. */}
+        <span className="sr-only">{panel.statusLine}</span>
         <div className="flex items-center gap-1.5 max-lg:hidden">{controls}</div>
       </div>
       <div className="mt-3 flex flex-wrap items-center gap-2 empty:hidden lg:hidden">
