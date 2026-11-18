@@ -28,6 +28,7 @@ import {
   tileOfTab,
   tilesOf,
   viewOfTab,
+  viewTab,
   withWorkspace,
   type WorkspaceSession,
   focusedTab,
@@ -143,16 +144,20 @@ const sameLayout = (a: Arrangement, b: Arrangement): boolean =>
  */
 function SessionSheet({
   facts,
+  view,
   full,
   onLeaveFull,
 }: {
   readonly facts: SessionFacts;
+  readonly view: string | undefined;
   readonly full: boolean;
   readonly onLeaveFull: () => void;
 }) {
   const { session } = facts;
   const worktreeId = session.worktreeId;
-  const opened = sessionTab(session.id);
+  const own = sessionTab(session.id);
+  // The tab the address names: the session's own, or a view's (`/sessions/<id>/terminal`).
+  const opened = view === undefined ? own : viewTab(view);
   const place: ViewPlace = { sessionId: session.id, worktreeId, projectId: session.projectId };
   const trpc = useTRPC();
   const inbox = useQuery({
@@ -168,6 +173,12 @@ function SessionSheet({
   const [kept, setKept] = useState(() =>
     openedWith(tileArrangements.read().find(([id]) => id === worktreeId)?.[1] ?? null, opened),
   );
+  // The address moved between the session and one of its views: that tab shows, focused.
+  const [openedLast, setOpenedLast] = useState(opened);
+  if (openedLast !== opened) {
+    setOpenedLast(opened);
+    setKept((current) => openedWith(current, opened));
+  }
   const arrange = (arrangement: Arrangement) =>
     withWorkspace(withKnownViews(arrangement), sessions ?? []);
   const shown = arrange(kept);
@@ -182,7 +193,7 @@ function SessionSheet({
     });
 
   // `?full=1` (the old app's full screen) maximises the tile showing this session.
-  const maximised = full ? (tileOfTab(shown, opened)?.id ?? null) : shown.maximised;
+  const maximised = full ? (tileOfTab(shown, own)?.id ?? null) : shown.maximised;
   const focus = full && maximised !== null ? maximised : shown.focus;
   const tiles = tilesOf(shown.root);
   const allTabs = tabsOf(shown);
@@ -457,15 +468,25 @@ function WorkspaceHeaderRow({ facts }: { readonly facts: SessionFacts }) {
 /** The session's page, read from the cache its route filled. */
 export function SessionPage({
   sessionId,
+  view,
   full,
   onLeaveFull,
 }: {
   readonly sessionId: string;
+  /** The view the address names (`/sessions/<id>/<view>`), whose tab shows and is focused. */
+  readonly view?: string;
   /** The address asks for the session's tile maximised (`?full=1`). */
   readonly full: boolean;
   readonly onLeaveFull: () => void;
 }) {
-  return <SessionSheet facts={useSessionFacts(sessionId)} full={full} onLeaveFull={onLeaveFull} />;
+  return (
+    <SessionSheet
+      facts={useSessionFacts(sessionId)}
+      view={view}
+      full={full}
+      onLeaveFull={onLeaveFull}
+    />
+  );
 }
 
 /**

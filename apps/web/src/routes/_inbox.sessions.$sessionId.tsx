@@ -1,4 +1,10 @@
-import { CatchBoundary, createFileRoute, redirect, useLocation } from "@tanstack/react-router";
+import {
+  CatchBoundary,
+  createFileRoute,
+  redirect,
+  useLocation,
+  useParams,
+} from "@tanstack/react-router";
 import { Suspense, useEffect } from "react";
 
 import { RouteErrorScreen } from "#/components/route-screens";
@@ -61,6 +67,8 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
 function SessionRoute() {
   const { sessionId } = Route.useParams();
   const full = Route.useSearch({ select: (search) => search.full === true });
+  // A view's own address (`/sessions/<id>/terminal`, the child route) names the tab to show.
+  const view = useParams({ strict: false, select: (params) => params.view });
   const navigate = Route.useNavigate();
   useCheckpointHash(sessionId);
   return (
@@ -69,9 +77,10 @@ function SessionRoute() {
         <SessionPage
           key={sessionId}
           sessionId={sessionId}
+          {...(view === undefined ? {} : { view })}
           full={full}
           onLeaveFull={() =>
-            void navigate({ search: {}, hash: (hash) => hash ?? "", replace: true })
+            void navigate({ to: ".", search: {}, hash: (hash) => hash ?? "", replace: true })
           }
         />
       </Suspense>

@@ -33,6 +33,7 @@
     "@trpc/tanstack-react-query": "catalog:",
     "better-auth": "catalog:",
     "effect": "catalog:",
+    "ghostty-web": "catalog:",
     "lucide-react": "catalog:",
     "nitro": "^3.0.260610-beta",
     "react": "catalog:",
