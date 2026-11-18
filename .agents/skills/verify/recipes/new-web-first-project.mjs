@@ -26,7 +26,8 @@ const PHONE = { width: 390, height: 844 };
 const SMALL_REPOSITORY = "https://github.com/octocat/Spoon-Knife.git";
 // Big enough (about 40 seconds) to start a session while it clones.
 const BIG_REPOSITORY = "https://github.com/godotengine/godot.git";
-// Doesn't exist: over HTTPS, the clone fails.
+// Neither exists: over SSH, GitHub refuses Mend's key; over HTTPS, the clone fails.
+const UNREADABLE_REPOSITORY = "git@github.com:sealant-sh/mend-verify-no-such-repository.git";
 const MISSING_REPOSITORY = "https://github.com/sealant-sh/mend-verify-no-such-repository.git";
 const HOUR = 3_600_000;
 const pushed = (hours) => new Date(Date.now() - hours * HOUR).toISOString();
@@ -329,6 +330,18 @@ export default async ({ page, web, capture, note }) => {
   if ((await address.inputValue()) !== MISSING_REPOSITORY)
     throw new Error("Change details lost the address");
   note("Change details went back to the form with the address and name kept");
+
+  // Over SSH the clone signs with Mend's key: the failure offers the key to add on GitHub.
+  await address.fill(UNREADABLE_REPOSITORY);
+  await button("Add project").click();
+  await text("The clone failed.").waitFor({ timeout: 120_000 });
+  await button("Show Mend's key").click();
+  await text(/Add this key to the repository|You have no Mend key yet/).waitFor();
+  await both("failed-ssh-desktop");
+  note(
+    `a clone over SSH that GitHub refuses (${UNREADABLE_REPOSITORY}) offers Show Mend's key, which shows the key to add`,
+  );
+  await button("Change details").click();
 
   // adopt-web and adopt-visibility: a small public repository, shared, watched to the end.
   await address.fill(SMALL_REPOSITORY);
