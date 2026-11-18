@@ -7,7 +7,7 @@ import {
   InputGroupInput,
 } from "@mend/ui/components/ui/input-group";
 import { Eye, EyeOff } from "lucide-react";
-import type { Ref } from "react";
+import type { ReactNode, Ref } from "react";
 
 /**
  * The fields of the account forms (sign-in, the first account, a reset link, and joining from an
@@ -28,6 +28,8 @@ interface FieldProps {
   readonly hint?: string | undefined;
   /** What is wrong with the value, shown under the field once the form was sent. */
   readonly problem?: string | undefined;
+  /** A way out of the problem (a Button), beside it on a desktop and under it on a phone. */
+  readonly action?: ReactNode;
   readonly inputRef?: Ref<HTMLInputElement>;
 }
 
@@ -35,12 +37,25 @@ interface FieldProps {
 const describedBy = (id: string, hint: string | undefined, problem: string | undefined) =>
   problem !== undefined ? `${id}-problem` : hint !== undefined ? `${id}-hint` : undefined;
 
-function Below({ id, hint, problem }: Pick<FieldProps, "id" | "hint" | "problem">) {
+function Below({
+  id,
+  hint,
+  problem,
+  action,
+}: Pick<FieldProps, "id" | "hint" | "problem" | "action">) {
   if (problem !== undefined) {
-    return (
+    const error = (
       <FieldError id={`${id}-problem`} className="text-row max-lg:text-sm">
         {problem}
       </FieldError>
+    );
+    return action === undefined ? (
+      error
+    ) : (
+      <div className="flex items-center justify-between gap-3 max-lg:flex-col max-lg:items-stretch">
+        {error}
+        {action}
+      </div>
     );
   }
   return hint === undefined ? null : (
@@ -59,6 +74,7 @@ export function TextField({
   autoComplete,
   hint,
   problem,
+  action,
   inputRef,
 }: FieldProps & { readonly type: "text" | "email" }) {
   return (
@@ -78,7 +94,7 @@ export function TextField({
         aria-describedby={describedBy(id, hint, problem)}
         className={HEIGHT}
       />
-      <Below id={id} hint={hint} problem={problem} />
+      <Below id={id} hint={hint} problem={problem} action={action} />
     </Field>
   );
 }

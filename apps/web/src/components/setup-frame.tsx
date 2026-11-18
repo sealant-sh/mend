@@ -18,7 +18,7 @@ export const TOUCH = "max-lg:h-11 max-lg:px-4 max-lg:text-lead";
 const noChange = () => () => {};
 
 /** The address people reach this server at, as the browser has it; empty while rendering on the server. */
-const useServerHost = (): string =>
+export const useServerHost = (): string =>
   useSyncExternalStore(
     noChange,
     () => window.location.host,
@@ -120,15 +120,18 @@ export function SetupFrame({
  * The foot of a setup page's form: a note and the page's buttons. On a desktop they share a row
  * under a hairline, the note on the left. On a phone the buttons are pinned to the bottom of the
  * screen at full width, and the note stays in the page above them; a `status` (what is left to
- * fix) goes in the pinned bar, over the buttons.
+ * fix) goes in the pinned bar, over the buttons. A `secondary` button (a way back) sits on the
+ * left on a desktop, in place of a note, and first in the pinned row on a phone.
  */
 export function SetupActions({
   note,
   status,
+  secondary,
   children,
 }: {
   readonly note?: ReactNode;
   readonly status?: string | null;
+  readonly secondary?: ReactNode;
   readonly children: ReactNode;
 }) {
   return (
@@ -145,7 +148,15 @@ export function SetupActions({
             {status}
           </p>
         )}
-        <div className="flex gap-2 max-lg:*:flex-1 lg:ml-auto">{children}</div>
+        <div
+          className={cn(
+            "flex gap-2 max-lg:*:flex-1",
+            secondary === undefined ? "lg:ml-auto" : "lg:flex-1 lg:justify-between",
+          )}
+        >
+          {secondary}
+          {children}
+        </div>
       </div>
     </div>
   );
