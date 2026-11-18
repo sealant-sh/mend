@@ -414,7 +414,7 @@ export function PhoneTabBar({
     { key: "inbox", link: { to: "/" }, label: "Inbox", icon: <InboxIcon /> },
     { key: "projects", link: { to: "/projects" }, label: "Projects", icon: <FolderIcon /> },
     { key: "skills", link: laterPage("skills"), label: "Skills", icon: <SparklesIcon /> },
-    { key: "settings", link: laterPage("settings"), label: "Settings", icon: <SettingsIcon /> },
+    { key: "settings", link: { to: "/settings" }, label: "Settings", icon: <SettingsIcon /> },
   ] as const;
   return (
     <nav

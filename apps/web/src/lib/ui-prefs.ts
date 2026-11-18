@@ -38,6 +38,19 @@ export const inboxFilters = createCookieStore(
   DEFAULT_INBOX_FILTERS,
 );
 
+/** Whether the sidebar is open in full; anything but a kept `false` opens it. */
+export const parseSidebarExpanded = (stored: unknown): boolean => stored !== false;
+
+/**
+ * The sidebar open in full or folded to its rail, kept per browser in a cookie, so the server
+ * renders the page the way it was left and nothing jumps as it hydrates.
+ */
+export const sidebarExpanded = createCookieStore(
+  "mend-sidebar-expanded",
+  parseSidebarExpanded,
+  true,
+);
+
 /** Which inbox groups are open, kept per browser. */
 export const inboxFolds = createCookieStore(
   "mend-inbox-folds",

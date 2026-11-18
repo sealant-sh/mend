@@ -1,3 +1,4 @@
+import { useSidebar } from "@mend/ui/components/ui/sidebar";
 import {
   Toast,
   ToastAction,
@@ -21,13 +22,15 @@ import { usePhone } from "#/lib/phone";
  */
 export function Toaster() {
   const phone = usePhone();
+  const rail = useSidebar().state === "collapsed";
   return (
     <ToastProvider toastManager={toast}>
       <ToastPortal>
         <ToastViewport
           size={phone ? "touch" : "default"}
-          // Centred on the sheet, right of the 264px sidebar; on a phone, above the tab bar.
-          className={cn(phone ? "data-[size=touch]:bottom-18" : "left-66")}
+          // Centred on the sheet, right of the 264px sidebar or its 48px rail; on a phone, above
+          // the tab bar.
+          className={cn(phone ? "data-[size=touch]:bottom-18" : rail ? "left-12" : "left-66")}
         >
           <ToastList />
         </ToastViewport>

@@ -203,6 +203,32 @@ export const DEFAULT_INBOX_FOLDS: InboxFolds = {
 /** How many rows a group lists before "Show N more". */
 export const GROUP_ROWS = 5;
 
+/**
+ * The rows a group lists: the first `GROUP_ROWS`, every row once "Show N more" is pressed, and
+ * the open session wherever it falls in its group.
+ */
+export const shownRows = (
+  rows: ReadonlyArray<InboxRow>,
+  openId: string | undefined,
+  showAll: boolean,
+): ReadonlyArray<InboxRow> => {
+  if (showAll || rows.length <= GROUP_ROWS) return rows;
+  return rows.filter((row, index) => index < GROUP_ROWS || row.session.id === openId);
+};
+
+/**
+ * The sessions the collapsed sidebar shows, one glyph each: the rows the full sidebar lists in its
+ * open groups, in the same order, Waiting on you first.
+ */
+export const railRows = (
+  groups: Readonly<Record<InboxGroup, ReadonlyArray<InboxRow>>>,
+  folds: InboxFolds,
+  openId: string | undefined,
+): ReadonlyArray<InboxRow> =>
+  INBOX_GROUPS.flatMap(({ group }) =>
+    folds[group] ? shownRows(groups[group], openId, false) : [],
+  );
+
 const SESSION_WORDS: Readonly<Record<InboxSession["status"], string>> = {
   starting: "Starting",
   running: "Running",
