@@ -167,6 +167,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "accountOrganizations.switch",
   "accountOrganizations.leave",
   "accountOrganizations.acceptInvitation",
+  // A new organization the caller will own, not one they reach: organization-switching-postgres.test.ts.
+  "accountOrganizations.create",
   // The caller's own Slack link and a link code from a mention: slack.test.ts.
   "slack.me",
   "slack.unlink",
@@ -1643,6 +1645,7 @@ const PERSON_CREDENTIAL_ONLY = [
   "accessKeys.list",
   "accessKeys.revoke",
   "accountOrganizations.acceptInvitation",
+  "accountOrganizations.create",
   "accountOrganizations.leave",
   "accountOrganizations.list",
   "accountOrganizations.switch",
