@@ -200,7 +200,7 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
         disabled={open.isPending}
         onClick={() => open.mutate(opensOn)}
       >
-        {opening ?? (runs ? "New shell" : "Start the workspace and open a shell")}
+        {opening ?? (runs ? "New shell" : "Resume and open a shell")}
       </Button>
     );
   const openFailed = open.isError ? (
@@ -221,6 +221,7 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
           onPick={setPicked}
           line={(shell) => shellLine(shell, facts.nameOf, (date) => age(date, now))}
           sessions={sessions.length}
+          runs={runs}
           newShell={newShell}
           failure={openFailed}
         />
@@ -239,6 +240,8 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
               ? () => setClosing(current)
               : null
           }
+          onCopy={current === null ? null : () => void copy()}
+          onClear={current === null ? null : () => terminal.current?.clear()}
           failure={openFailed}
         />
       ) : null}
@@ -366,6 +369,7 @@ function ShellList({
   onPick,
   line,
   sessions,
+  runs,
   newShell,
   failure,
 }: {
@@ -374,6 +378,7 @@ function ShellList({
   readonly onPick: (key: string) => void;
   readonly line: (shell: WorkspaceShell) => string;
   readonly sessions: number;
+  readonly runs: boolean;
   readonly newShell: ReactNode;
   readonly failure: ReactNode;
 }) {
@@ -408,6 +413,11 @@ function ShellList({
         ))}
       </ul>
       <div className="flex flex-col items-start gap-2 px-4 pt-3">
+        {runs ? null : (
+          <p className="text-meta text-muted-foreground">
+            This workspace isn't running. Its shells stopped when its last session stopped.
+          </p>
+        )}
         {newShell}
         {failure}
       </div>
@@ -429,6 +439,8 @@ function ShellPicker({
   onNewShell,
   opening,
   onClose,
+  onCopy,
+  onClear,
   failure,
 }: {
   readonly shells: ReadonlyArray<WorkspaceShell>;
@@ -439,6 +451,8 @@ function ShellPicker({
   readonly onNewShell: (() => void) | null;
   readonly opening: string | null;
   readonly onClose: (() => void) | null;
+  readonly onCopy: (() => void) | null;
+  readonly onClear: (() => void) | null;
   readonly failure: ReactNode;
 }) {
   return (
@@ -483,7 +497,17 @@ function ShellPicker({
                 ))}
               </DropdownMenuRadioGroup>
             </DropdownMenuGroup>
-            {onNewShell === null && onClose === null ? null : <DropdownMenuSeparator />}
+            <DropdownMenuSeparator />
+            {onCopy === null ? null : (
+              <DropdownMenuItem className="min-h-11" onClick={onCopy}>
+                Copy text
+              </DropdownMenuItem>
+            )}
+            {onClear === null ? null : (
+              <DropdownMenuItem className="min-h-11" onClick={onClear}>
+                Clear
+              </DropdownMenuItem>
+            )}
             {onNewShell === null ? null : (
               <DropdownMenuItem className="min-h-11" onClick={onNewShell}>
                 New shell
