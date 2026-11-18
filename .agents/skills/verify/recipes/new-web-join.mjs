@@ -87,16 +87,16 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   /** The owner's API, from the signed-in page: what Settings and `mend invite` call. */
   const api = (method, url, body) =>
     page.evaluate(
-      async ({ method, url, body }) => {
-        const response = await fetch(url, {
-          method,
+      async ({ verb, address, payload }) => {
+        const response = await fetch(address, {
+          method: verb,
           headers: { "content-type": "application/json" },
-          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+          ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
         });
         const text = await response.text();
         return { status: response.status, body: text === "" ? null : JSON.parse(text) };
       },
-      { method, url, body },
+      { verb: method, address: url, payload: body },
     );
 
   // The owner signs in on the new app and makes two links, then revokes the second.
