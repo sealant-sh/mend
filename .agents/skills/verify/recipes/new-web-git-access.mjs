@@ -130,6 +130,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   // one), Mend for one with a key and a project.
   if (ownerLanded === "/welcome") await heading("Git access");
   else if (!ownerHasProject) throw new Error(`an owner with no project went to ${ownerLanded}`);
+  else await heading("New session");
 
   // A new member: an invitation from the owner, and an account made from it.
   const created = await api("POST", "/api/organization/invitations", { role: "member" });
@@ -363,6 +364,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await button("Sign in").click();
   await page.waitForURL((url) => url.pathname !== "/login");
   if (path() !== "/") throw new Error(`the member's sign-in went to ${path()}`);
+  await heading("New session");
   note(
     "the member (Git access in place, a project in the organization) signing in again went to /",
   );
