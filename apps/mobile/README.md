@@ -43,7 +43,7 @@ channel.
 
 ## Design
 
-Evidence Review, same family as web (`DESIGN.md` at the repo root). Tokens come from
+Evidence Review, same family as the old web app (`docs/design-evidence-review.md`). Tokens come from
 `@mend/ui-old/tokens` — a TypeScript transcription of the CSS sheet in
 `packages/ui-old/src/styles/globals.css`; keep the two in sync. Fonts are loaded in
 `src/app/_layout.tsx` (Inter, Space Grotesk, JetBrains Mono via Expo Google Fonts). Light and dark

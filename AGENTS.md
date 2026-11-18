@@ -73,7 +73,8 @@ Linear with the `sealant` label instead of working around it.
   and proof artifacts, or Executor, read that area's section of the public glossary,
   `apps/docs/src/content/docs/reference/product-language.md`.
 - The product model is `apps/docs/src/content/docs/concepts/product-model.md`. The full glossary and
-  voice rules are in the public glossary above; design language and UX rules in `DESIGN.md`.
+  voice rules are in the public glossary above; design language and UX rules in `DESIGN.md` (Sheet,
+  for `apps/web` and `packages/ui`) and `docs/design-evidence-review.md` (the apps not yet redone).
 
 ## Linear, Fixes and PRs
 
@@ -217,8 +218,10 @@ the box as `main-<sha12>`: wait, as for any other hold.
 - All backend code is Effect v4; see Effect below.
 - Write TypeScript to the `coding-standards` skill
   (`../agent-home/.agents/skills/coding-standards/`), including its rules on `any` and casts.
-- Before any non-tiny UI change, read `DESIGN.md` and follow it as the design source of truth. Mend
-  shares Sealant's Evidence Review design language, and must look like part of the same family.
+- Before any non-tiny UI change, read `DESIGN.md` and follow it as the design source of truth. It
+  describes Sheet, the look of the new web app and its kit. Desktop, marketing, mobile, the VS Code
+  extension and the old web app keep Evidence Review, Sealant's look, until each is redone; a change
+  there follows `docs/design-evidence-review.md`.
 - This repo is not Next.js: write no `"use client"` directives.
 - In React, derive data from props, state and loaders; reach for `useEffect` only when no cleaner
   data flow exists.

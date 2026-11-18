@@ -853,16 +853,16 @@ What the build changed against this text, with the PR that carries each. Yiannis
 
 - **A screen starts a styled XFCE session** (2026-10-31). Someone opening any screen used to see a
   black display and a narrow browser window. Every start now seeds its own XFCE configuration, a
-  full-bleed warm canvas gradient from DESIGN.md, a thin clock bar, and a small dock for Chromium,
-  Thunar and the terminal. Adwaita light windows use Mend's own traffic-light xfwm4 theme. Chromium,
-  once the agent opens it, starts maximized. There are no setup dialogs, desktop icons, lockers,
-  screensavers or clipboard managers. XFCE does not manage the keyboard layout, so the hand keeps
-  Xvnc's dynamic keysym bindings. The probe observes this display's xfwm4, including its restarts by
-  xfce4-session. sealant's portable `xfce`, `dbus` and `ffmpeg` ids replace `openbox` in the screen
-  package request. Fedora 41 refuses `ffmpeg` because its repository build lacks libx264. Ubuntu
-  support follows the amendment dated 2026-11-05. Nix refuses `dbus` because its workspace image
-  lacks the session bus configuration. The screen stays an X display with the same hand and screen
-  log.
+  full-bleed warm canvas gradient of Evidence Review, a thin clock bar, and a small dock for
+  Chromium, Thunar and the terminal. Adwaita light windows use Mend's own traffic-light xfwm4 theme.
+  Chromium, once the agent opens it, starts maximized. There are no setup dialogs, desktop icons,
+  lockers, screensavers or clipboard managers. XFCE does not manage the keyboard layout, so the hand
+  keeps Xvnc's dynamic keysym bindings. The probe observes this display's xfwm4, including its
+  restarts by xfce4-session. sealant's portable `xfce`, `dbus` and `ffmpeg` ids replace `openbox` in
+  the screen package request. Fedora 41 refuses `ffmpeg` because its repository build lacks libx264.
+  Ubuntu support follows the amendment dated 2026-11-05. Nix refuses `dbus` because its workspace
+  image lacks the session bus configuration. The screen stays an X display with the same hand and
+  screen log.
 
 - **Ubuntu screens use a pinned upstream Chromium build** (2026-11-05, sealant#448, pinned from
   0.40.0-next.792). On amd64 Ubuntu, sealant installs the official `chromium-browser-snapshots`
