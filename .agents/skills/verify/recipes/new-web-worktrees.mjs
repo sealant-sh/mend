@@ -21,6 +21,13 @@ const PHONE = { width: 390, height: 844 };
 
 const visible = (locator) => locator.filter({ visible: true }).first();
 
+// The CLI batch names its worktrees with the time (a removed worktree's branch keeps its name), so
+// each run reads the newest of each.
+const newest = (worktrees, prefix) =>
+  worktrees
+    .filter((w) => w.name.startsWith(`${prefix}-`))
+    .toSorted((a, b) => b.name.localeCompare(a.name))[0]?.name;
+
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
   // A capture is withheld when the page changes during it: let live reads land first.
@@ -32,29 +39,29 @@ export default async ({ page, web, capture, note }) => {
     );
     await settled();
   };
-  /**
-   * The driver withholds a picture when the page changes while it is taken (the sidebar's live
-   * inbox, a toast leaving): wait until nothing has changed for a second, for at most ten.
-   */
-  const still = () =>
+  /** How many times the page's DOM gained or lost nodes in one second. */
+  const changesInASecond = () =>
     page.evaluate(
       () =>
         new Promise((resolve) => {
-          let timer = setTimeout(done, 1_000);
-          const giveUp = setTimeout(done, 10_000);
-          const observer = new MutationObserver(() => {
-            clearTimeout(timer);
-            timer = setTimeout(done, 1_000);
+          let changes = 0;
+          const observer = new MutationObserver((records) => {
+            changes += records.length;
           });
-          function done() {
-            observer.disconnect();
-            clearTimeout(timer);
-            clearTimeout(giveUp);
-            resolve(undefined);
-          }
           observer.observe(document.body, { childList: true, subtree: true });
+          setTimeout(() => {
+            observer.disconnect();
+            resolve(changes);
+          }, 1_000);
         }),
     );
+  /**
+   * The driver withholds a picture when the page changes while it is taken (a toast leaving):
+   * wait for a quiet second, for at most ten.
+   */
+  const still = async () => {
+    for (let second = 0; second < 10; second += 1) if ((await changesInASecond()) === 0) return;
+  };
   const both = async (name) => {
     // The desktop sidebar's wrapper is 2px taller than the window, so a full-page capture resizes
     // the window, and the driver then withholds every later picture ("screenshot inspection
@@ -156,12 +163,6 @@ export default async ({ page, web, capture, note }) => {
       await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
         () => undefined,
       );
-  // The CLI batch names its worktrees with the time (a removed worktree's branch keeps its name),
-  // so each run reads the newest of each.
-  const newest = (worktrees, prefix) =>
-    worktrees
-      .filter((w) => w.name.startsWith(`${prefix}-`))
-      .toSorted((a, b) => b.name.localeCompare(a.name))[0]?.name;
   const seeded = (await call("projects.detail", { id: fixture.id })).worktrees;
   const unlanded = newest(seeded, "wt-unlanded");
   const clean = newest(seeded, "wt-clean");
