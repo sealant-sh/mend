@@ -70,7 +70,6 @@ export default async ({ page, web, capture, note }) => {
       },
       { path, input, kind },
     );
-  const pathname = () => new URL(page.url()).pathname;
   const expectPath = async (want, what) => {
     await page
       .waitForFunction((path) => location.pathname === path, want)
@@ -268,9 +267,14 @@ export default async ({ page, web, capture, note }) => {
   await page.keyboard.press("Enter");
   await expectPath(`/skills/${landingSkill.id}`, "the skill");
 
-  // The sidebar's Search field, and the actions.
-  await visible(page.getByRole("button", { name: /^Search/ })).click();
+  // The sidebar's Search field, and the actions. Off a Mac the keys read Ctrl K and Ctrl B.
+  const sidebarField = visible(page.getByRole("button", { name: /^Search/ }));
+  const fieldWords = (await sidebarField.innerText()).replace(/\s+/g, " ");
+  if (!fieldWords.includes("Ctrl K")) throw new Error(`the sidebar's field reads ${fieldWords}`);
+  await sidebarField.click();
   await field().waitFor();
+  const collapseWords = (await option("Collapse sidebar").innerText()).replace(/\s+/g, " ");
+  if (!collapseWords.includes("Ctrl B")) throw new Error(`the action reads ${collapseWords}`);
   await typeQuery("collapse");
   await option("Collapse sidebar").click();
   await visible(page.getByRole("navigation", { name: "Sidebar rail" })).waitFor();
@@ -362,6 +366,8 @@ export default async ({ page, web, capture, note }) => {
   await both("phone-no-results");
   await screen.getByRole("button", { name: "Clear" }).click();
   if ((await input.inputValue()) !== "") throw new Error("Clear left the field full");
+  if (!(await input.evaluate((element) => element === document.activeElement)))
+    throw new Error("Clear took focus out of the field");
   await screen.getByRole("button", { name: "Cancel" }).click();
   await screen.waitFor({ state: "detached" });
   await visible(page.getByRole("button", { name: "Search", exact: true })).click();
@@ -369,7 +375,7 @@ export default async ({ page, web, capture, note }) => {
   await input.press("Enter");
   await expectPath(`/skills/${landingSkill.id}`, "the phone's search key");
   note(
-    "phone: results, no results, Clear, Cancel back to the inbox, the search key opened the first result",
+    "phone: results, no results, Clear (focus stays in the field), Cancel back to the inbox, the search key opened the first result",
   );
   await page.setViewportSize(DESKTOP);
 
