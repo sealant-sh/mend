@@ -80,10 +80,20 @@ export interface CheckpointMark {
   readonly at: string;
 }
 
-/** One entry of the conversation: a message, or a checkpoint between messages. */
+/** A landing as the conversation marks it (`landingMarks` in `lib/landing.ts`). */
+export interface LandingEntryMark {
+  readonly key: string;
+  readonly label: string;
+  readonly sha: string;
+  readonly at: string;
+  readonly pullRequest: { readonly url: string } | null;
+}
+
+/** One entry of the conversation: a message, or a checkpoint or a landing between messages. */
 export type ConversationEntry =
   | { readonly kind: "row"; readonly row: ConversationRow }
-  | { readonly kind: "checkpoint"; readonly key: string; readonly mark: CheckpointMark };
+  | { readonly kind: "checkpoint"; readonly key: string; readonly mark: CheckpointMark }
+  | { readonly kind: "landing"; readonly key: string; readonly mark: LandingEntryMark };
 
 /**
  * The session's own checkpoints laid between its messages, each after the last message that began
@@ -130,4 +140,26 @@ export const withCheckpoints = (
   }
   markUntil(null);
   return entries;
+};
+
+const entryAt = (entry: ConversationEntry): string =>
+  entry.kind === "row" ? entry.row.at : entry.mark.at;
+
+/**
+ * The session's landings laid into its conversation, each after the last entry that came before
+ * it (Doop "Session · landed": "Checkpoint 9 landed as pull request #412" after checkpoint 9). A
+ * landing older than every entry held belongs to an earlier window, as checkpoints do.
+ */
+export const withLandings = (
+  entries: ReadonlyArray<ConversationEntry>,
+  marks: ReadonlyArray<LandingEntryMark>,
+  fromStart: boolean,
+): ReadonlyArray<ConversationEntry> => {
+  const out = [...entries];
+  for (const mark of marks.toSorted((a, b) => a.at.localeCompare(b.at))) {
+    const index = out.findLastIndex((entry) => entryAt(entry) <= mark.at) + 1;
+    if (index === 0 && out.length > 0 && !fromStart) continue;
+    out.splice(index, 0, { kind: "landing", key: mark.key, mark });
+  }
+  return out;
 };

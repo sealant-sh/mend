@@ -23,6 +23,7 @@ import type { TranscriptEventDto } from "#/lib/api";
 import { type ConversationView, conversationQuery, heldConversation } from "#/lib/conversation";
 import { conversationBody, type ConversationRow, workingOn } from "#/lib/conversation-rows";
 import { activityDetail } from "#/lib/inbox";
+import { landingMarks } from "#/lib/landing";
 import { releaseOpeningMessage, useOpeningMessage } from "#/lib/opening-messages";
 import {
   editMessage,
@@ -34,7 +35,7 @@ import {
 import { steerNote } from "#/lib/session-composer";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
 import { noRunWords } from "#/lib/session-record";
-import { messageTime, withCheckpoints } from "#/lib/session-sheet";
+import { messageTime, withCheckpoints, withLandings } from "#/lib/session-sheet";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { AgentTurn, type PagesById } from "./agent-turn";
@@ -531,10 +532,14 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
       void conversation.fetchNextPage();
   };
   const now = new Date();
-  const entries = withCheckpoints(
-    body.rows,
-    facts.detail.checkpoints,
-    facts.session.id,
+  const entries = withLandings(
+    withCheckpoints(
+      body.rows,
+      facts.detail.checkpoints,
+      facts.session.id,
+      !conversation.hasNextPage,
+    ),
+    landingMarks(facts.detail.landings, facts.detail.checkpoints, facts.session.id),
     !conversation.hasNextPage,
   );
   const working =
@@ -621,6 +626,22 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
                     label={`Checkpoint ${entry.mark.ordinal}`}
                     sha={entry.mark.sha}
                     className="scroll-mt-6"
+                  />
+                </ConversationItem>
+              ) : entry.kind === "landing" ? (
+                <ConversationItem key={entry.key} messageId={entry.key}>
+                  <ConversationMarker
+                    label={entry.mark.label}
+                    sha={entry.mark.sha}
+                    {...(entry.mark.pullRequest === null
+                      ? {}
+                      : {
+                          link: (
+                            <a href={entry.mark.pullRequest.url} target="_blank" rel="noreferrer">
+                              View pull request
+                            </a>
+                          ),
+                        })}
                   />
                 </ConversationItem>
               ) : entry.row.kind === "you" ? (

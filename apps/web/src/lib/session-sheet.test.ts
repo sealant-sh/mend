@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ConversationRow } from "./conversation-rows.ts";
-import { messageTime, withCheckpoints } from "./session-sheet.ts";
+import { messageTime, withCheckpoints, withLandings } from "./session-sheet.ts";
 
 const you = (key: string, at: string): ConversationRow => ({
   kind: "you",
@@ -32,7 +32,21 @@ const checkpoint = (ordinal: number, at: string, sessionId = "s-1") => ({
 });
 
 const shown = (entries: ReturnType<typeof withCheckpoints>) =>
-  entries.map((entry) => (entry.kind === "row" ? entry.row.key : `#${entry.mark.ordinal}`));
+  entries.map((entry) =>
+    entry.kind === "row"
+      ? entry.row.key
+      : entry.kind === "checkpoint"
+        ? `#${entry.mark.ordinal}`
+        : entry.key,
+  );
+
+const landed = (key: string, at: string) => ({
+  key,
+  label: key,
+  sha: "3f2a1c0",
+  at,
+  pullRequest: null,
+});
 
 describe("checkpoints between the messages", () => {
   const rows = [
@@ -88,5 +102,31 @@ describe("a message's time", () => {
   it("names the day before today, and the year before this one", () => {
     expect(messageTime(new Date(2026, 10, 13, 10, 42), now)).toBe("13 Nov, 10:42");
     expect(messageTime(new Date(2025, 11, 30, 8, 0), now)).toBe("30 Dec 2025, 08:00");
+  });
+});
+
+describe("landings between the messages", () => {
+  const rows = [
+    you("ask-1", "2026-11-13T10:00:00.000Z"),
+    agent("reply-1", "2026-11-13T10:00:05.000Z"),
+    you("ask-2", "2026-11-13T10:10:00.000Z"),
+  ];
+
+  it("follows the checkpoint it landed, before the next message", () => {
+    const entries = withLandings(
+      withCheckpoints(rows, [checkpoint(1, "2026-11-13T10:04:00.000Z")], "s-1", true),
+      [landed("landing:1", "2026-11-13T10:05:00.000Z")],
+      true,
+    );
+    expect(shown(entries)).toEqual(["ask-1", "reply-1", "#1", "landing:1", "ask-2"]);
+  });
+
+  it("leaves a landing older than the held window to that window", () => {
+    const entries = withLandings(
+      withCheckpoints(rows.slice(2), [], "s-1", false),
+      [landed("landing:1", "2026-11-13T10:05:00.000Z")],
+      false,
+    );
+    expect(shown(entries)).toEqual(["ask-2"]);
   });
 });

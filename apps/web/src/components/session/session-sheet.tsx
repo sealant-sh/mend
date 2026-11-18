@@ -380,6 +380,12 @@ function SessionSheet({
     branch: session.branch,
     worktreePath: session.worktree,
     onNewSession: () => openNewSession(shown.focus),
+    onLand: () =>
+      void navigate({
+        to: "/sessions/$sessionId/$view",
+        params: { sessionId: session.id, view: "change" },
+        hash: "land",
+      }),
   };
   const focusedSession = sessionOfTab(focusedTab(shown));
 

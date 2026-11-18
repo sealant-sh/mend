@@ -19,6 +19,7 @@ import {
   EllipsisIcon,
   FolderIcon,
   GitBranchIcon,
+  GitPullRequestIcon,
   LinkIcon,
   Maximize2Icon,
   PencilIcon,
@@ -71,8 +72,8 @@ import { SheetItem } from "../sheet-item.tsx";
  * A session's status, its age and its own actions (Rename…, Snooze, Mark done, Copy link, Stop
  * session…) are on its tab: the tab's right-click menu and the "…" of the tile that shows it,
  * with what the tile can do to the tab. The workspace's "…" holds the workspace's: New session in
- * this workspace, Copy branch name, Copy worktree path. Land… joins it with route PR 26. On a
- * phone, one sheet holds both, the session's first.
+ * this workspace, Copy branch name, Copy worktree path and Land…, which opens the Change view's Land
+ * dialog. On a phone, one sheet holds both, the session's first.
  *
  * Rename, snooze, mark done and copy link write through the sidebar row's writers
  * (`useRowActions`), so a change shows in the tab and the sidebar at once.
@@ -359,6 +360,8 @@ export interface WorkspaceFacts {
   readonly branch: string;
   readonly worktreePath: string;
   readonly onNewSession: () => void;
+  /** Opens the Change view with the Land dialog (`/sessions/<id>/change#land`). */
+  readonly onLand: () => void;
 }
 
 /** Copies `text`, and says in a toast that it did, or that this browser wouldn't. */
@@ -405,6 +408,13 @@ export function WorkspaceMenuButton({ workspace }: { readonly workspace: Workspa
           <DropdownMenuItem onClick={() => copy(workspace.worktreePath, "worktree path")}>
             <FolderIcon aria-hidden />
             Copy worktree path
+          </DropdownMenuItem>
+        </DropdownMenuGroup>
+        <DropdownMenuSeparator />
+        <DropdownMenuGroup>
+          <DropdownMenuItem onClick={workspace.onLand}>
+            <GitPullRequestIcon aria-hidden />
+            Land…
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>
@@ -457,6 +467,9 @@ export function PhoneSessionActions({
             onClick={() => copy(workspace.branch, "branch name")}
           >
             Copy branch name
+          </SheetItem>
+          <SheetItem icon={<GitPullRequestIcon aria-hidden />} onClick={workspace.onLand}>
+            Land…
           </SheetItem>
           {stop === null ? null : (
             <>

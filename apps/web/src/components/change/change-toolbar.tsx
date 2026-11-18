@@ -11,8 +11,8 @@ import type { DiffLayout } from "#/lib/ui-prefs";
  * it keeps the range and the actions; the diffs are unified there, so the switch goes.
  *
  * The range is a chip with no menu while the server opens a review only over the whole change; a
- * range picker (S6) makes it a menu. Land… goes in `actions` (PR 26), and Send comments beside it
- * (PR 24).
+ * range picker (S6) makes it a menu. Land… goes in `actions` (`land-dialog.tsx`), and Send
+ * comments beside it (PR 24).
  */
 export function ChangeToolbar({
   range,

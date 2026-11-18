@@ -21,7 +21,7 @@ import { usePhone } from "#/lib/phone";
 /**
  * A dialog on a wide screen and a sheet from the bottom on a phone (Doop "Dialog" and "Phone
  * sheet"), with the same title, words, body and buttons. `size` is the dialog's width: `sm` for a
- * confirmation, `md` for a form. `finalFocus` is where focus goes when it closes, for a dialog
+ * confirmation, `md` for a form, `lg` for a long form that scrolls inside the dialog. `finalFocus` is where focus goes when it closes, for a dialog
  * opened from a menu item that is gone by then.
  */
 export function Overlay({
@@ -38,7 +38,7 @@ export function Overlay({
   readonly onOpenChange: (open: boolean) => void;
   readonly title: string;
   readonly description?: ReactNode;
-  readonly size: "sm" | "md";
+  readonly size: "sm" | "md" | "lg";
   readonly children?: ReactNode;
   readonly footer: ReactNode;
   readonly finalFocus?: RefObject<HTMLElement | null>;
@@ -74,7 +74,14 @@ export function Overlay({
     );
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent size={size} finalFocus={finalFocus} className={cn(size === "md" && "gap-5")}>
+      <DialogContent
+        size={size}
+        finalFocus={finalFocus}
+        className={cn(
+          size !== "sm" && "gap-5",
+          size === "lg" && "max-h-[calc(100dvh-3rem)] overflow-y-auto",
+        )}
+      >
         <DialogHeader className="pr-8">
           <DialogTitle>{title}</DialogTitle>
           {description === undefined ? null : <DialogDescription>{description}</DialogDescription>}

@@ -42,6 +42,7 @@ import { ChangeFileTree, FILTER_FROM, FileFilter } from "./change-file-tree.tsx"
 import { ChangeProofArtifacts } from "./change-proof-artifacts.tsx";
 import { ChangeToolbar } from "./change-toolbar.tsx";
 import { FilePicker } from "./file-picker.tsx";
+import { useChangeLanding } from "./land-dialog.tsx";
 
 /** Narrower than this, the view drops its file column for a picker over the diffs. */
 const NARROW_PX = 768;
@@ -260,8 +261,15 @@ function ReviewBody({
   );
   const [showing, setShowing] = useState<string | null>(null);
   const folds = useFolds();
+  const landing = useChangeLanding({ detail, changeId, review, sessions });
 
-  if (ordered.length === 0) return <NothingYet detail={detail} sessions={sessions.length} />;
+  if (ordered.length === 0)
+    return (
+      <>
+        <NothingYet detail={detail} sessions={sessions.length} />
+        {landing.dialog}
+      </>
+    );
 
   const viewedOf = (file: ChangeFile) => isViewed(marks, file.path, file.fingerprint);
   const setViewed = (file: ChangeFile, viewed: boolean) =>
@@ -284,18 +292,23 @@ function ReviewBody({
         detail={`${base} to checkpoint ${review.checkpointB.ordinal}`}
         layout={layout}
         onLayoutChange={diffLayout.set}
+        actions={landing.action ?? undefined}
         note={
-          <>
-            {sessions.length > 1 ? (
-              <span className="block font-medium text-foreground">
-                This workspace's change, from {sessions.length} sessions.
-              </span>
-            ) : null}
-            {plural(ordered.length, "file", "files")} changed.
-            {generated ? " Mend folds generated files." : ""}
-          </>
+          landing.note ?? (
+            <>
+              {sessions.length > 1 ? (
+                <span className="block font-medium text-foreground">
+                  This workspace's change, from {sessions.length} sessions.
+                </span>
+              ) : null}
+              {plural(ordered.length, "file", "files")} changed.
+              {generated ? " Mend folds generated files." : ""}
+            </>
+          )
         }
       />
+      {landing.band}
+      {landing.dialog}
       {review.worktreeChangedSinceSnapshot ? (
         <div
           role="status"
@@ -462,7 +475,8 @@ function ChangeReview({
  * - Comments (PR 24): rows between lines through `ChangeDiffs`'s `between`, the Comments and
  *   "Drafts from Mend" sections under Files in the column, Send comments in the toolbar's
  *   `actions`, and the toolbar's note ("Click a line to comment…").
- * - Land… (PR 26): the toolbar's `actions`; `#land` opens its dialog.
+ * - Land… (`land-dialog.tsx`): the toolbar's `actions` and, once something landed, its note;
+ *   `#land` opens the dialog.
  */
 export function ChangeBody({ place }: { readonly place: ViewPlace }) {
   const trpc = useTRPC();
