@@ -158,6 +158,7 @@ export function SessionTerminal({
   token,
   startingLabel = "the agent",
   starting,
+  announceStart = true,
   readOnly = false,
   pasteImage,
   controls,
@@ -183,6 +184,11 @@ export function SessionTerminal({
   readonly startingLabel?: string;
   /** When the agent started and on what machine; the line counts from the socket's open without it. */
   readonly starting?: AgentStartingFacts;
+  /**
+   * Whether a session's own terminal says its agent is starting while it has drawn nothing. A
+   * command that prints nothing for a while (`mend run -- sleep 600`) isn't starting: it is off.
+   */
+  readonly announceStart?: boolean;
   /**
    * Output only: no keys, resizes or images go up. Someone other than the session's owner watches
    * its terminals this way, and the server drops their input anyway (docs/adr/0013).
@@ -283,7 +289,7 @@ export function SessionTerminal({
       let drawn = false;
       // Only a session's own terminal says its agent is starting; a shell draws its prompt at once.
       const ticker =
-        processId === undefined
+        processId === undefined && announceStart
           ? window.setInterval(() => {
               if (!drawn) setNow(Date.now());
             }, 500)
@@ -364,7 +370,7 @@ export function SessionTerminal({
           // The server replays from 0: the screen is replaced, not appended.
           term.reset();
           drawn = false;
-          if (processId === undefined) {
+          if (processId === undefined && announceStart) {
             setWaitingSince(Date.now());
             setNow(Date.now());
           }
@@ -434,7 +440,18 @@ export function SessionTerminal({
       });
       const onResize = term.onResize(() => sendResize());
       // A tile resized, a tab moved to another tile, the window resized: the grid follows the box.
-      const observer = new ResizeObserver(refit);
+      // ghostty-web's fit ignores a call within 50ms of its last resize, so a burst of sizes (a tab
+      // moving, a divider dragged) would leave the grid at one from the middle of it: fit now, and
+      // again once the burst is over.
+      let settle: number | null = null;
+      const observer = new ResizeObserver(() => {
+        refit();
+        if (settle !== null) window.clearTimeout(settle);
+        settle = window.setTimeout(() => {
+          settle = null;
+          refit();
+        }, 120);
+      });
       observer.observe(element);
       connect();
 
@@ -488,6 +505,7 @@ export function SessionTerminal({
         element.removeEventListener("drop", onDrop);
         window.removeEventListener("focus", onFocus);
         if (timer !== null) window.clearTimeout(timer);
+        if (settle !== null) window.clearTimeout(settle);
         if (ticker !== null) window.clearInterval(ticker);
         observer.disconnect();
         onData.dispose();
@@ -502,7 +520,7 @@ export function SessionTerminal({
       cancelled = true;
       teardown?.();
     };
-  }, [sessionId, processId, embedTicket, token, readOnly, autoFocus]);
+  }, [sessionId, processId, embedTicket, token, readOnly, autoFocus, announceStart]);
 
   const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
   const startingLine =

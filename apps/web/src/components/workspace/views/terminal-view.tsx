@@ -303,6 +303,8 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
               sessionId={current.sessionId}
               {...(current.processId === null ? {} : { processId: current.processId })}
               startingLabel={current.program}
+              // Only an agent says it is starting; a command of the person's own may print nothing.
+              announceStart={current.processId === null && current.agent}
               starting={agentStartingFacts(
                 facts.detail.currentAgent,
                 facts.detail.processes,

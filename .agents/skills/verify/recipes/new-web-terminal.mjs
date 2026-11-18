@@ -122,7 +122,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     const header = body.getByRole("button", { name: "Copy", exact: true });
     if (await header.isVisible()) await header.click();
     else {
-      await body.getByRole("button", { name: /^Shell \d+ · / }).click();
+      await body.getByRole("button", { name: / shells?$/ }).click();
       await page.getByRole("menuitem", { name: "Copy text" }).click();
     }
     await page.waitForFunction(() => window["__copied"].length > 0);
@@ -266,7 +266,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await live();
   await stillMarked("moved to a tile of its own");
   const narrow = await columns();
-  if (!(narrow < wide))
+  // Half the sheet, less the list the wide tile had beside it: well over half the columns.
+  if (!(narrow < wide && narrow > wide / 2))
     throw new Error(`the shell is ${narrow} columns in half the width, ${wide} before`);
   const kept = await terminalText();
   if (!kept.includes("cols=")) throw new Error("the scrollback is gone after the move");
@@ -409,7 +410,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // The phone: the picker over the terminal.
   await page.setViewportSize(PHONE);
   await settled();
-  const picker = body.getByRole("button", { name: /^Shell \d+ · / });
+  const picker = body.getByRole("button", { name: / shells?$/ });
   await picker.waitFor();
   note(`390px: the picker reads "${(await picker.innerText()).replace(/\n/g, " ")}"`);
   await both("terminal-phone");

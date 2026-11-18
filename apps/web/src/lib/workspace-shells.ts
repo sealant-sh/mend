@@ -1,4 +1,4 @@
-import { canSteerSession, canTypeInTerminal } from "@mend/domain/workbench";
+import { canSteerSession, canTypeInTerminal, resumesOwnHarness } from "@mend/domain/workbench";
 
 import type { SessionProcessDto, SessionStatusDto } from "./api.ts";
 
@@ -33,6 +33,8 @@ export interface WorkspaceShell {
   readonly name: string;
   /** What runs in it: "zsh", "Claude Code". */
   readonly program: string;
+  /** A coding agent runs in it (a session's own terminal on Claude Code, Codex…), not a command. */
+  readonly agent: boolean;
   readonly live: boolean;
   /** The shell was stopped (Close shell, or its workspace stopping) rather than exiting itself. */
   readonly stopped: boolean;
@@ -100,6 +102,7 @@ export const workspaceShells = (
         processId: null,
         name: session.title,
         program: session.harness === "shell" ? programOf(agent.argv) : programName(session.harness),
+        agent: resumesOwnHarness(session.harness) && session.harness !== "shell",
         live: true,
         stopped: false,
         exitCode: null,
@@ -123,6 +126,7 @@ export const workspaceShells = (
         processId: process.id,
         name: shellName(process.label, `shell ${index + 1}`),
         program: programOf(process.argv),
+        agent: false,
         live: isLive(process),
         stopped: process.status === "stopped",
         exitCode: process.exitCode,
