@@ -20,6 +20,7 @@ const landing = (overrides: Partial<ChangeLandingDto> = {}): ChangeLandingDto =>
   commitSha: null,
   remoteBranch: "mend/fix-login",
   pushedSha,
+  oneOff: false,
   trigger: "manual",
   pullRequest: null,
   pullRequestCrossRepository: false,
