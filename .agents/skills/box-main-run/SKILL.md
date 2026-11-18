@@ -282,11 +282,14 @@ Start a subagent with T3's `delegate_task`: `target`
 `result.txt` or your own notes). Wait for its completion, then read its evidence.
 
 **Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
-driver's `steps.log` and its screenshots show every part of the flow's See line. Read them for every
-flow; open screenshots where the See line names a screen. A flow the subagent marked `failed`, or
-whose evidence falls short, you see again yourself before reporting it as failed or filing a ticket.
-When a subagent's work on a group falls short on more than one flow, do the whole group yourself and
-say so in the report. Note per flow who drove it (Sol, or Opus) and whether you re-did it.
+driver's `steps.log` and its screenshots show every part of the flow's See line. Read each
+`restored · … · read back:` line too: a `not restored` line, or a restore the Do line names with no
+read-back, is yours to put right before the next flow that touches the same thing, and goes in the
+report. Read them for every flow; open screenshots where the See line names a screen. A flow the
+subagent marked `failed`, or whose evidence falls short, you see again yourself before reporting it
+as failed or filing a ticket. When a subagent's work on a group falls short on more than one flow,
+do the whole group yourself and say so in the report. Note per flow who drove it (Sol, or Opus) and
+whether you re-did it.
 
 How a flow is driven, by you or a subagent:
 

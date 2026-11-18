@@ -46,7 +46,10 @@ fi
 [[ $(M doctor 2>&1) == *"$WEB"* ]] || { echo "fixtures.sh: the first account's CLI does not name $WEB" >&2; exit 2; }
 
 # 1. The git service: git daemon on the Mend containers' bridge gateway, serving /srv/mend-git with
-# pushes allowed. Only the server and the containers on that bridge reach it.
+# pushes allowed. The server reaches it (adoption, references, landings). A Boat workspace does not,
+# and cannot on any address of the box: a Boat VM sits on its own network and reaches the box only
+# through Tailscale Funnel's public HTTPS ports (checked 18 Nov, SLNT-1102). So the flows that clone
+# inside a Boat workspace use GitHub-hosted projects instead.
 gw=$(box "docker inspect --format '{{range .NetworkSettings.Networks}}{{.Gateway}} {{end}}' mend-mend-1" | awk '{print $1}')
 if [[ ! $gw =~ ^[0-9.]+$ ]]; then
   say git-service "failed: no bridge gateway read from mend-mend-1"
@@ -90,25 +93,49 @@ rm -rf \$t")
   [[ $state == failed || -z $state ]] && failed=1
 done
 
-# 3. The projects adopted from them.
+# 3. The projects adopted from them. A project adopted from another origin is removed, purged and
+# adopted again from $GIT: a project's origin is fixed at adoption, and its worktrees go with it.
 projects=$(M projects --json 2>/dev/null)
 for r in "${REPOS[@]}"; do
   name=main-run-$r
-  if jq -e --arg n "$name" '.. | objects | select(.name? == $n)' <<<"$projects" >/dev/null 2>&1; then
+  origin=$(jq -r --arg n "$name" '[.. | objects | select(.name? == $n) | .originUrl // empty][0] // empty' <<<"$projects")
+  id=$(jq -r --arg n "$name" '[.. | objects | select(.name? == $n) | .id // empty][0] // empty' <<<"$projects")
+  if [[ -n $id && $origin == "$GIT/$r.git" ]]; then
     say "project $name" present
-  elif M adopt "$GIT/$r.git" --name "$name" --json >/dev/null 2>&1; then
-    say "project $name" made
+    continue
+  fi
+  if [[ -n $id ]]; then
+    # A worktree whose change never landed holds the project, and mend refuses to remove it: remove
+    # those worktrees first, one plain command each, as the refusal says to.
+    for wt in $(M worktrees --project "$name" --json 2>/dev/null | jq -r '.worktrees[]?.name // empty'); do
+      M worktrees rm "$wt" --force --project "$name" >/dev/null 2>&1
+    done
+    if ! M projects rm "$id" >/dev/null 2>&1 || ! M projects purge "$id" --confirm "$name" >/dev/null 2>&1; then
+      say "project $name" "failed: could not remove the project adopted from $origin"
+      failed=1
+      continue
+    fi
+  fi
+  if M adopt "$GIT/$r.git" --name "$name" --json >/dev/null 2>&1; then
+    say "project $name" "made${origin:+ (was $origin)}"
   else
     say "project $name" "failed: mend adopt $GIT/$r.git --name $name refused"
     failed=1
   fi
 done
 
-# 4. The project boat-check-ubuntu and its Docker worktree, made by hand once (flows.md, Fixtures).
+# 4. The GitHub-hosted projects boat-check-ubuntu and boat-check-arch, and boat-check-ubuntu's
+# Docker worktree, made by hand once (flows.md, Fixtures).
 if jq -e '.. | objects | select(.name? == "boat-check-ubuntu")' <<<"$projects" >/dev/null 2>&1; then
   say "project boat-check-ubuntu" present
 else
   say "project boat-check-ubuntu" "manual: M adopt https://github.com/octocat/Hello-World.git --name boat-check-ubuntu"
+  manual=1
+fi
+if jq -e '.. | objects | select(.name? == "boat-check-arch")' <<<"$projects" >/dev/null 2>&1; then
+  say "project boat-check-arch" present
+else
+  say "project boat-check-arch" "manual: M adopt https://github.com/octocat/Spoon-Knife.git --name boat-check-arch"
   manual=1
 fi
 if M worktrees --project boat-check-ubuntu 2>/dev/null | grep -q 'main-run-docker'; then

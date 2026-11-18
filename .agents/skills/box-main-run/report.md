@@ -14,7 +14,10 @@ Only what the scan passed leaves this machine.
 
 ## 2. The report
 
-One comment on SLNT-1050, every line an observation in Mend's words ("seen", never "works"):
+One comment on SLNT-1050, every line an observation in Mend's words ("seen", never "works"). Say how
+the run was started only when the prompt that started you says it (the scheduled task's prompt
+does); otherwise leave it out. A guess (on 18 Nov, "Started by hand" for a scheduled run) is not an
+observation.
 
 ```markdown
 **Main on the box · <commit:12> · <UTC date>**

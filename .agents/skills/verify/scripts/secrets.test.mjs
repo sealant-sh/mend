@@ -193,6 +193,13 @@ test("the scan stays strict: cookies, stored tokens, snake_case logins and real 
   });
 });
 
+test("the doctor bundle's own [redacted] is a placeholder, not a credential; a value beside it still is", () => {
+  const bundle =
+    '{"inputTokens":"[redacted]","secret":"[redacted]","cookie": [redacted], "apiKey":"[redacted]"}';
+  assert.equal(redact(bundle), bundle);
+  assert.equal(redact('{"secret":"q8Rt5Lm2Np7Xv4Zw9Ab3"}'), '{"secret":"<redacted>"}');
+});
+
 test("a handed-over link's secret is redacted by shape in its fragment form and its older path form", () => {
   const token = "Kq3v_9zX-2mB0aLwYtE7rN4cHdUjF8sPiQ1oGxVbZeA";
   assert.equal(
