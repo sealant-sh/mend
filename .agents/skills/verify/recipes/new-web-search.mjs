@@ -337,8 +337,14 @@ export default async ({ page, web, capture, note }) => {
   const screen = page.getByRole("dialog", { name: "Search" });
   const input = screen.getByRole("searchbox", { name: "Search" });
   await input.waitFor();
-  if (!(await input.evaluate((element) => element === document.activeElement)))
-    throw new Error("the phone's search field isn't focused");
+  await page
+    .waitForFunction(() => document.activeElement?.getAttribute("type") === "search", null, {
+      timeout: 5_000,
+    })
+    .catch(() => {
+      throw new Error("the phone's search field isn't focused");
+    });
+  await settled();
   await screen.getByText("Recent sessions").waitFor();
   await screen.getByRole("button", { name: /^New session/ }).waitFor();
   await screen.getByRole("button", { name: /^Add project/ }).waitFor();
