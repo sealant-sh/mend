@@ -859,6 +859,19 @@ const CASES: ReadonlyArray<AccessCase> = [
   // (shared-control.test.ts); off leaves the world unshared for every other case.
   session("stop", "PUT", "/shared-control", { enabled: false })("sessions.sharedControl"),
   session("project-read", "GET", "/control-events")("sessions.controlEvents"),
+  // Shared control for one person (docs/adr/0026): anyone who sees the session reads it, asks and
+  // withdraws their own ask; the session owner alone grants or declines; the owner or an
+  // organization owner takes a grant back.
+  session("project-read", "GET", "/shared-control")("sessions.sharedControlPeople"),
+  session("project-read", "POST", "/shared-control/ask")("sessions.askSharedControl"),
+  session("project-read", "POST", "/shared-control/withdraw")("sessions.withdrawSharedControl"),
+  session("steer", "POST", "/shared-control/people/carol/grant")("sessions.grantSharedControl"),
+  session("steer", "POST", "/shared-control/people/carol/decline")("sessions.declineSharedControl"),
+  session(
+    "stop",
+    "POST",
+    "/shared-control/people/carol/take-back",
+  )("sessions.takeBackSharedControl"),
   session("project-read", "POST", "/checkpoints", { trigger: "user-mark" })("sessions.checkpoint"),
   session("steer", "POST", "/launch", { argv: ["codex"] })("sessions.launch"),
   session("project-read", "GET", "/transcript")("sessions.transcript"),
@@ -1356,6 +1369,58 @@ const ADMITTED: Readonly<
     ],
   },
   "sessions.controlEvents": { status: 500, calls: ["controlEvents.listForSession"] },
+  "sessions.sharedControlPeople": {
+    status: 200,
+    calls: ["sharedControl.people", "engine.steersPerPerson"],
+  },
+  "sessions.askSharedControl": {
+    status: 200,
+    calls: [
+      "sharedControl.ask",
+      "controlEvents.record",
+      "sharedControl.people",
+      "engine.steersPerPerson",
+    ],
+  },
+  "sessions.withdrawSharedControl": {
+    status: 200,
+    calls: [
+      "sharedControl.withdraw",
+      "controlEvents.record",
+      "sharedControl.people",
+      "engine.steersPerPerson",
+    ],
+  },
+  "sessions.grantSharedControl": {
+    status: 200,
+    calls: [
+      "sharedControl.grant",
+      "controlEvents.record",
+      "audit.record",
+      "sharedControl.people",
+      "engine.steersPerPerson",
+    ],
+  },
+  "sessions.declineSharedControl": {
+    status: 200,
+    calls: [
+      "sharedControl.decline",
+      "controlEvents.record",
+      "sharedControl.people",
+      "engine.steersPerPerson",
+    ],
+  },
+  "sessions.takeBackSharedControl": {
+    status: 200,
+    calls: [
+      "sharedControl.takeBack",
+      "engine.cancelQueuedTurnsBy",
+      "controlEvents.record",
+      "audit.record",
+      "sharedControl.people",
+      "engine.steersPerPerson",
+    ],
+  },
   "sessions.checkpoint": { status: 500, calls: ["engine.checkpointNow"] },
   // The launch effect is built before engine.detach defects; no actual launch ran.
   "sessions.launch": { status: 500, calls: ["engine.launch", "engine.detach"] },
@@ -1375,6 +1440,7 @@ const ADMITTED: Readonly<
       "services.liveCountsForSessions",
       "conversation.oldestPendingRequests",
       "conversation.newestItems",
+      "sharedControl.asksOnOwnSessions",
       "importedConversations.undeliveredAmong",
       "engine.launchUnderWay",
     ],
@@ -1853,6 +1919,9 @@ describe("fork authorization in the session engine", () => {
 
 /** Capture expected fixture DTOs before a request can mutate the in-memory world. */
 const admittedBody = (endpoint: string, target: Target): unknown => {
+  // Who holds and asks for it, as each viewer reads it: session-steering.test.ts checks the view.
+  if (endpoint.endsWith("SharedControl") || endpoint === "sessions.sharedControlPeople")
+    return expect.objectContaining({ sessionId: ids(target).session });
   // The row's own facts; session-inbox.test.ts checks it against the list it patches.
   if (endpoint === "sessions.inboxRow")
     return expect.objectContaining({

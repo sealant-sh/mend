@@ -72,6 +72,8 @@ describe("the sessions inbox read", () => {
         "processes.listForSessions",
         "services.liveCountsForSessions",
         "sessions.listForInbox",
+        // The open asks for shared control of the reader's own sessions (docs/adr/0026).
+        "sharedControl.asksOnOwnSessions",
         "worktrees.listByIds",
       ].toSorted(),
     );

@@ -51,6 +51,12 @@ const row = (
   livePeople: Row["livePeople"] = [],
 ): Row => ({ worktreeId, ownerUserId, status, livePeople });
 const alice = { accountId: "alice", name: "Alice" };
+/** What the waiting line is decided from: who is live, and who shares control. */
+const facts = (
+  livePeople: ReadonlyArray<typeof alice>,
+  sharedControlEnabledAt: Date | null,
+  sharedControlUserIds: ReadonlyArray<string> = [],
+) => ({ livePeople, ownerUserId: "owner", sharedControlEnabledAt, sharedControlUserIds });
 const bob = { accountId: "bob", name: "Bob" };
 const dana = { accountId: "dana", name: "Dana" };
 
@@ -244,11 +250,6 @@ describe("a replacement", () => {
 
 describe("what the session page asks for", () => {
   const on = new Date("2026-10-08T09:00:00Z");
-  const facts = (
-    livePeople: ReadonlyArray<typeof alice>,
-    sharedControlEnabledAt: Date | null,
-    sharedControlUserIds: ReadonlyArray<string> = [],
-  ) => ({ livePeople, ownerUserId: "owner", sharedControlEnabledAt, sharedControlUserIds });
 
   it("asks for the waiting line only where people run and control is shared", () => {
     expect(waitingLineRelevant(facts([alice], on))).toBe(true);

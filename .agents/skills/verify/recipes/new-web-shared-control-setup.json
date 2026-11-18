@@ -1,0 +1,10 @@
+[
+  {
+    "name": "01-session-and-switch",
+    "run": [
+      "sh",
+      "-c",
+      "id=$(mend run --project verify-fixture --name share-$(date +%s) --detach --json -- sleep 1800 | sed -n 's/.*\"sessionId\": *\"\\([0-9a-f]\\{8\\}\\).*/\\1/p') && echo \"session $id\" && mend session share \"$id\" on --yes && mend session share \"$id\" off"
+    ]
+  }
+]
