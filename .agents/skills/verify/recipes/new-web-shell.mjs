@@ -95,16 +95,20 @@ export default async ({ page, web, capture, note }) => {
   await heading("This page didn't load");
   await page.getByText("The verify recipe failed this read on purpose.").waitFor();
   note("a failed read shows the error screen with what the server said");
-  // Dark as the theme module sets it, without a reload that would read the page again.
+  // Dark as the theme module sets it, without a reload that would read the page again. The kit's
+  // controls animate colour and size changes, so each capture waits for them to finish.
+  const settled = () => page.waitForTimeout(500);
   for (const theme of ["light", "dark"]) {
     await page.evaluate(
       (on) => document.documentElement.classList.toggle("dark", on),
       theme === "dark",
     );
     await page.setViewportSize(DESKTOP);
+    await settled();
     await capture(`error-desktop-${theme}`);
     await page.setViewportSize(PHONE);
     await touchTargets();
+    await settled();
     await capture(`error-phone-${theme}`);
   }
   await page.evaluate(() => document.documentElement.classList.remove("dark"));
