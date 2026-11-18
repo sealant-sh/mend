@@ -397,12 +397,19 @@ export default async ({ page, web, capture, note, account }) => {
       body: JSON.stringify(Array.isArray(answers) ? list : list[0]),
     });
   });
+  // The server renders who is looking from the real answer, so the browser reads it again
+  // (signed-in reads refetch when the tab is shown) and the rewritten answer arrives.
   const viewAs = async (role, operator) => {
     as.role = role;
     as.operator = operator;
-    await page.reload();
-    await hydrated();
-    await heading("Appearance");
+    const answered = page.waitForResponse(
+      (response) =>
+        response.url().includes("/trpc/") &&
+        decodeURIComponent(response.url()).includes("organization.current"),
+    );
+    await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
+    await answered;
+    await settled();
   };
   await viewAs("member", false);
   let seen = await sidebarEntries();
@@ -410,20 +417,19 @@ export default async ({ page, web, capture, note, account }) => {
     if (seen.some((entry) => entry === hidden)) throw new Error(`a member sees ${hidden}`);
   note(`a member's sidebar: ${seen.join(" | ")}`);
   await shot("sidebar-member-desktop-light");
-  await page.goto(`${web}/settings/organization/audit-log`);
+  // By address, through the router, which reads who is looking from the page's own answer.
+  await navigate("/settings/organization/audit-log");
   await page.waitForURL((url) => url.pathname === "/settings/profile");
   note("a member opening /settings/organization/audit-log by address lands on Profile");
-  await page.goto(`${web}/settings/server`);
+  await navigate("/settings/server");
   await page.waitForURL((url) => url.pathname === "/settings/profile");
   note("a member opening /settings/server by address lands on Profile");
-  await open("/settings/appearance");
   await viewAs("member", true);
   seen = await sidebarEntries();
   if (!seen.includes("Server")) throw new Error("an operator doesn't see Server");
   if (seen.includes("Audit log")) throw new Error("an operator who isn't an owner sees Audit log");
   note(`an operator who is a member: ${seen.join(" | ")}`);
-  await page.goto(`${web}/settings/server`);
-  await hydrated();
+  await navigate("/settings/server");
   await heading("Page not found");
   if (path() !== "/settings/server")
     throw new Error(`an operator's /settings/server went to ${path()}`);
