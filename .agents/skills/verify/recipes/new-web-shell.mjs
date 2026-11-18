@@ -29,14 +29,18 @@ export default async ({ page, web, capture, note }) => {
     if ((await page.evaluate(() => window.__darkAtFirstPaint)) !== want)
       throw new Error(`the page was not ${theme} before its first paint`);
   };
-  // A page's actions on a phone are 44px touch targets.
+  // A page's actions on a phone are 44px touch targets. The kit's buttons animate a size change,
+  // so after a resize the check waits out the transition.
   const touchTargets = async () => {
     for (const name of ["Go home", "Try again"]) {
       const control = page.getByRole(name === "Go home" ? "link" : "button", { name });
       if ((await control.count()) === 0) continue;
-      const box = await control.boundingBox();
-      if (box === null || box.height < 44)
-        throw new Error(`${name} is ${box?.height ?? 0}px tall on a phone, under 44px`);
+      let height = 0;
+      for (let tries = 0; tries < 20 && height < 44; tries += 1) {
+        if (tries > 0) await page.waitForTimeout(100);
+        height = (await control.boundingBox())?.height ?? 0;
+      }
+      if (height < 44) throw new Error(`${name} is ${height}px tall on a phone, under 44px`);
     }
   };
 
