@@ -12,6 +12,7 @@ import {
   type QueuedRow,
   queuedRows,
 } from "./inbox.ts";
+import { labelsWriter, marksWriter } from "./row-actions.ts";
 import { signedInOptions } from "./sign-in.ts";
 import { useTRPC } from "./trpc.ts";
 import { inboxFilters } from "./ui-prefs.ts";
@@ -65,6 +66,8 @@ export interface InboxView {
   readonly readAt: Date;
   readonly filters: InboxFilters;
   readonly now: Date;
+  /** Who is signed in: only a session's owner renames it. */
+  readonly viewerId: string;
   /** Reads the rows and the marks again. */
   readonly refresh: () => void;
 }
@@ -113,9 +116,13 @@ export const useInbox = (): InboxState => {
     };
   }, [queuedList, filters.projectId]);
   const me = viewer.data.userId;
+  // What the person sees: the server's rows and marks, with their renames and marks still on
+  // their way laid over them (a row's actions, `lib/row-actions.ts`).
+  const visibleRows = labelsWriter.useVisible(inbox.data);
+  const visibleMarks = marksWriter.useVisible(marks.data);
   const all = useMemo(
-    () => inboxRows({ rows: inbox.data ?? [], marks: marks.data ?? [], now }),
-    [inbox.data, marks.data, now],
+    () => inboxRows({ rows: visibleRows ?? [], marks: visibleMarks ?? [], now }),
+    [visibleRows, visibleMarks, now],
   );
   const groups = useMemo(
     () => groupRows(all.filter((row) => matchesFilters(row, filters, me))),
@@ -150,6 +157,7 @@ export const useInbox = (): InboxState => {
       readAt: new Date(inbox.dataUpdatedAt),
       filters,
       now,
+      viewerId: me,
       refresh: () => {
         void inbox.refetch();
         void marks.refetch();

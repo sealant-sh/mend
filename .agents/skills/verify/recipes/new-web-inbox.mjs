@@ -158,8 +158,8 @@ export default async ({ page, web, capture, note }) => {
   if (failedColour === mutedColour) throw new Error("Failed is not set apart from Completed");
   note(`To review: inbox-review Completed (${mutedColour}), inbox-failed Failed (${failedColour})`);
 
-  // Snooze one running session and mark one to review done, through the API the row menu (PR 8)
-  // will use.
+  // Snooze one running session and mark one to review done, through the API the row menu
+  // uses.
   await setOpen("Running", true);
   await row("Running", "inbox-running").waitFor();
   // The session the moves batch just started: the one under Running, by its id. A batch run for an
@@ -177,7 +177,7 @@ export default async ({ page, web, capture, note }) => {
   await setOpen("Snoozed", true);
   await setOpen("Done", true);
   await row("Snoozed", "inbox-snooze")
-    .getByText(/^Until /)
+    .getByText(/^Back /)
     .waitFor();
   await showAll("Done");
   await row("Done", "inbox-failed").waitFor();

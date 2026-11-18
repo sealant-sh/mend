@@ -59,6 +59,8 @@ export interface InboxRow {
   readonly snoozedUntil: Date | null;
   /** When the row went to Done: marked done by hand, or when the session ended. */
   readonly doneAt: Date | null;
+  /** In Done because the person marked it done, not because of how the session ended. */
+  readonly markedDone: boolean;
 }
 
 const RUNNING: ReadonlySet<InboxSession["status"]> = new Set(["starting", "running", "stopping"]);
@@ -125,9 +127,11 @@ export function inboxRows({
         activity: row.activity ?? null,
         snoozedUntil: null,
         doneAt: null,
+        markedDone: false,
       };
       const mark = markOf.get(session.id);
-      if (mark?.state === "settled") return { ...base, group: "done", doneAt: mark.markedAt };
+      if (mark?.state === "settled")
+        return { ...base, group: "done", doneAt: mark.markedAt, markedDone: true };
       if (mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now)
         return { ...base, group: "snoozed", snoozedUntil: mark.snoozedUntil };
       if (session.status === "waiting") return { ...base, group: "waiting" };
@@ -222,7 +226,8 @@ const plain = (word: string): RowStatus => ({ word, failed: false });
 /** What a row says a session is doing, is waiting on, or how it ended. */
 export const rowStatus = (row: InboxRow, now: Date): RowStatus => {
   const { session } = row;
-  if (row.group === "snoozed") return plain(`Until ${whenAhead(row.snoozedUntil ?? now, now)}`);
+  if (row.group === "snoozed") return plain(`Back ${backAt(row.snoozedUntil ?? now, now)}`);
+  if (row.markedDone) return plain("Marked done");
   if (session.importedConversationWaiting) return plain("Waiting for a first message");
   if (row.group === "waiting") return plain(askWords(row.ask));
   if (row.group === "review" && row.annotation?.pendingFollowUp === true)
@@ -348,13 +353,26 @@ const clock = (date: Date) =>
 const dayStart = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
 
-/** "16:00", "tomorrow 09:00", "Mon 09:00": when a snooze ends. */
+const daysAhead = (date: Date, now: Date): number =>
+  Math.round((dayStart(date) - dayStart(now)) / DAY);
+
+const weekday = (date: Date) => date.toLocaleDateString(undefined, { weekday: "short" });
+
+/** "16:00", "Sat 09:00", "Mon 23 Nov, 09:00": a snooze choice's time, beside its name. */
 export const whenAhead = (date: Date, now: Date): string => {
-  const days = Math.round((dayStart(date) - dayStart(now)) / DAY);
+  const days = daysAhead(date, now);
   if (days <= 0) return clock(date);
-  if (days === 1) return `tomorrow ${clock(date)}`;
-  if (days < 7) return `${date.toLocaleDateString(undefined, { weekday: "short" })} ${clock(date)}`;
-  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  if (days < 7) return `${weekday(date)} ${clock(date)}`;
+  return `${weekday(date)} ${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })}, ${clock(date)}`;
+};
+
+/** "today at 18:00", "tomorrow at 09:00", "Mon at 09:00", "23 Nov at 09:00": when a snooze ends. */
+export const backAt = (date: Date, now: Date): string => {
+  const days = daysAhead(date, now);
+  if (days <= 0) return `today at ${clock(date)}`;
+  if (days === 1) return `tomorrow at ${clock(date)}`;
+  if (days < 7) return `${weekday(date)} at ${clock(date)}`;
+  return `${date.toLocaleDateString(undefined, { day: "numeric", month: "short" })} at ${clock(date)}`;
 };
 
 /** The clock time an offline inbox was read at: "9:38". */

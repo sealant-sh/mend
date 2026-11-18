@@ -6,6 +6,7 @@ import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
 import { AppSidebar, SIDEBAR_WIDTH } from "#/components/app-sidebar";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
+import { Toaster } from "#/components/toaster";
 import { inboxQuery } from "#/lib/inbox-live";
 import { useOnline } from "#/lib/online";
 import { signedInOptions } from "#/lib/sign-in";
@@ -80,6 +81,7 @@ function InboxLayout() {
           </InSheet>
         </div>
       </SidebarInset>
+      <Toaster />
     </SidebarProvider>
   );
 }

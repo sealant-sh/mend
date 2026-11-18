@@ -5,6 +5,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@mend/ui/components/ui/collapsible";
+import { ContextMenu, ContextMenuTrigger } from "@mend/ui/components/ui/context-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -28,7 +29,8 @@ import {
   SquarePenIcon,
   WifiOffIcon,
 } from "lucide-react";
-import { Fragment, memo, type ReactNode, useState } from "react";
+import { Fragment, memo, type ReactNode, type Ref, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 
 import {
   activity,
@@ -45,12 +47,15 @@ import {
 } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
+import { rowActions } from "#/lib/row-actions";
 import { sessionLink } from "#/lib/session-sheet";
 import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
+import { useRowActions } from "#/lib/use-row-actions";
 
 import { InboxFilterMenu } from "./inbox-filters.tsx";
 import { QueuedSidebarRow } from "./queued-session-row.tsx";
+import { RenameField, RowContextMenuContent, RowMenuButton } from "./row-actions.tsx";
 
 /**
  * The app's left sidebar on the desk (Doop "App sidebar", "Sidebar group", "Sidebar row"): the
@@ -59,7 +64,7 @@ import { QueuedSidebarRow } from "./queued-session-row.tsx";
  * lives here, grouped by what they need.
  *
  * Seams for the PRs after this one: the organization row and the account row take the switcher
- * and the account menu (PR 9), and a row's `actions` take its "…" menu (PR 8).
+ * and the account menu (PR 9). A session row's menu is `row-actions.tsx`.
  */
 
 /** The sidebar's width on the desk, as the canvas draws it. */
@@ -327,6 +332,7 @@ function InboxGroups({
               all={view.all}
               now={view.now}
               openId={openId}
+              viewerId={view.viewerId}
             />
           ))
         )}
@@ -350,6 +356,7 @@ function SidebarInboxGroup({
   all,
   now,
   openId,
+  viewerId,
 }: {
   readonly group: InboxGroup;
   readonly label: string;
@@ -360,6 +367,7 @@ function SidebarInboxGroup({
   readonly all: ReadonlyArray<InboxRow>;
   readonly now: Date;
   readonly openId: string | undefined;
+  readonly viewerId: string | null;
 }) {
   const [showAll, setShowAll] = useState(false);
   // The open session stays listed, wherever it falls in its group.
@@ -422,6 +430,7 @@ function SidebarInboxGroup({
                     shared={sharedWith(row, all)}
                     now={now}
                     active={row.session.id === openId}
+                    viewerId={viewerId}
                   />
                 ))}
               </SidebarMenu>
@@ -447,15 +456,46 @@ const InboxRowItem = memo(function InboxRowItem({
   shared,
   now,
   active,
+  viewerId,
 }: {
   readonly row: InboxRow;
   readonly shared: number | null;
   readonly now: Date;
   readonly active: boolean;
+  readonly viewerId: string | null;
 }) {
   const status = rowStatus(row, now);
+  const handlers = useRowActions();
+  const actions = rowActions(row, viewerId);
+  const [renaming, setRenaming] = useState(false);
+  const link = useRef<HTMLAnchorElement>(null);
+  const startRename = () => {
+    if (actions.rename) setRenaming(true);
+  };
+  // Back on the row once the box closes, so the keyboard carries on from where it was.
+  const endRename = () => {
+    flushSync(() => setRenaming(false));
+    link.current?.focus();
+  };
+  const menu = { row, actions, handlers, onRename: startRename };
   return (
     <SidebarRow
+      link={link}
+      renaming={
+        renaming ? (
+          <RenameField
+            title={row.title}
+            onSave={(text) => {
+              handlers.rename(row, text);
+              endRename();
+            }}
+            onCancel={endRename}
+          />
+        ) : undefined
+      }
+      onRenameKey={actions.rename ? startRename : undefined}
+      contextMenu={<RowContextMenuContent {...menu} />}
+      actions={<RowMenuButton {...menu} />}
       sessionId={row.session.id}
       title={row.title}
       project={row.project.name}
@@ -478,7 +518,9 @@ const InboxRowItem = memo(function InboxRowItem({
 /**
  * One session in the inbox (Doop "Sidebar row"): its title, then one muted line of project, what
  * it is doing or how it ended, and how long ago, and an optional note line (the workspace it
- * shares). Only "Failed" is red. The row opens the session; `actions` is where its "…" goes.
+ * shares). Only "Failed" is red. The row opens the session; `actions` is its "…" (shown on hover,
+ * focus, and while its menu is open), `contextMenu` the menu a right-click opens, and `renaming`
+ * takes the row's place while its title is edited.
  */
 export function SidebarRow({
   sessionId,
@@ -490,6 +532,10 @@ export function SidebarRow({
   note,
   active = false,
   actions,
+  contextMenu,
+  renaming,
+  onRenameKey,
+  link,
 }: {
   readonly sessionId: string;
   readonly title: string;
@@ -501,27 +547,44 @@ export function SidebarRow({
   readonly note?: ReactNode;
   readonly active?: boolean;
   readonly actions?: ReactNode;
+  readonly contextMenu?: ReactNode;
+  readonly renaming?: ReactNode | undefined;
+  /** F2 on the row starts renaming it. */
+  readonly onRenameKey?: (() => void) | undefined;
+  readonly link?: Ref<HTMLAnchorElement>;
 }) {
   const parts = [
     { key: "project", text: project, className: "" },
     { key: "status", text: status, className: failed ? "text-destructive" : "" },
     { key: "age", text: ago, className: "" },
   ].filter((part) => part.text !== "");
-  return (
-    <SidebarMenuItem className="group/row">
+  const body = (
+    <>
       <SidebarMenuButton
         isActive={active}
         className={cn(
           "block h-auto rounded-lg pt-1.5 pr-2 pb-1.75 pl-6 leading-snug font-normal",
           HOVER,
           "data-active:bg-sidebar-accent",
-          actions === undefined ? "" : "group-hover/row:pr-9 group-focus-within/row:pr-9",
+          // Its menu is open: a ring round the row it acts on.
+          "group-data-popup-open/row:ring-1 group-data-popup-open/row:ring-ring group-has-data-popup-open/row:ring-1 group-has-data-popup-open/row:ring-ring",
+          actions === undefined
+            ? ""
+            : "group-hover/row:pr-9 group-focus-within/row:pr-9 group-has-data-popup-open/row:pr-9",
+          renaming === undefined ? "" : "hidden",
         )}
         render={
           <Link
             {...sessionLink(sessionId)}
+            ref={link}
             data-session-id={sessionId}
             aria-current={active ? "page" : undefined}
+            onKeyDown={(event) => {
+              if (event.key === "F2" && onRenameKey !== undefined) {
+                event.preventDefault();
+                onRenameKey();
+              }
+            }}
           />
         }
       >
@@ -545,11 +608,22 @@ export function SidebarRow({
           <span className="mt-px block truncate text-meta text-muted-foreground">{note}</span>
         )}
       </SidebarMenuButton>
-      {actions === undefined ? null : (
-        <span className="absolute top-1/2 right-1.5 hidden -translate-y-1/2 group-focus-within/row:flex group-hover/row:flex">
+      {renaming}
+      {actions === undefined || renaming !== undefined ? null : (
+        <span className="absolute top-1/2 right-1.5 hidden -translate-y-1/2 group-focus-within/row:flex group-hover/row:flex group-has-data-popup-open/row:flex">
           {actions}
         </span>
       )}
-    </SidebarMenuItem>
+    </>
+  );
+  if (contextMenu === undefined || renaming !== undefined)
+    return <SidebarMenuItem className="group/row">{body}</SidebarMenuItem>;
+  return (
+    <ContextMenu>
+      <ContextMenuTrigger render={<SidebarMenuItem className="group/row select-auto" />}>
+        {body}
+      </ContextMenuTrigger>
+      {contextMenu}
+    </ContextMenu>
   );
 }

@@ -1,0 +1,37 @@
+[
+  {
+    "name": "01-review",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "row-review",
+      "--",
+      "sh",
+      "-c",
+      "printf 'row actions\\n' > ROW.md"
+    ]
+  },
+  {
+    "name": "02-running",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "row-running",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "03-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]
