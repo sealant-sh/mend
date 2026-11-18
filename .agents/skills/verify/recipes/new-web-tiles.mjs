@@ -3,7 +3,8 @@
 // tile by dropping it in the middle, resized, maximised and restored, a tile's last tab closed,
 // the arrangement kept over a reload, `?full=1`, a New session tab, a session that starts in the
 // workspace opening as a tab, a tab's body kept while it moves, and the one strip under 1024px.
-// Run the CLI batch first, once per stack: it starts two sessions in the worktree `tiles-ws`.
+// Run the CLI batch first, once per stack: it gives the account a fake Codex login and starts two
+// sessions in the worktree `tiles-ws`.
 //
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-tiles-sessions.json
 //   pnpm verify drive new-web --recipe new-web-tiles
@@ -335,6 +336,46 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.keyboard.press("Delete");
   await page.locator(`[data-tab="${draft}"]`).waitFor({ state: "detached" });
   note("Delete on the New session tab closed it");
+
+  // Start session in a New session tab: the session starts in tiles-ws and the tab becomes its
+  // tab, on this page. Codex has the batch's (fake) login; the person's last agent comes back after.
+  const defaults = await client((trpc) => trpc.platform.sessionDefaults.query());
+  await tileOf(tabA).getByRole("button", { name: "Open a view" }).click();
+  await page.getByRole("menuitem", { name: "New session in this workspace" }).click();
+  await page.getByRole("heading", { name: "New session", level: 2 }).waitFor();
+  const draftAgain = (
+    await page
+      .locator("[data-tile] [data-tab]")
+      .evaluateAll((tabs) => tabs.map((t) => t.dataset.tab))
+  ).find((tab) => tab.startsWith("new:"));
+  const pageBefore = page.url();
+  await page
+    .getByRole("button", { name: /^Agent and model: / })
+    .filter({ visible: true })
+    .click();
+  await page.getByRole("menuitemradio", { name: /^Codex/ }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("textbox", { name: "Task" }).filter({ visible: true }).fill("Say ready.");
+  await page.getByRole("button", { name: "Start session" }).filter({ visible: true }).click();
+  await page.locator(`[data-tab="${draftAgain}"]`).waitFor({ state: "detached", timeout: 30_000 });
+  const afterStart = await page
+    .locator("[data-tile] [data-tab]")
+    .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
+  const startedHere = afterStart[afterStart.indexOf(tabA) + 1] ?? "";
+  if (!startedHere.startsWith("session:") || [tabA, tabB].includes(startedHere))
+    throw new Error(`after Start session the tabs read ${afterStart.join(", ")}`);
+  if (page.url() !== pageBefore) throw new Error(`Start session left the page for ${page.url()}`);
+  note(
+    `Start session in the New session tab: its tab became ${startedHere}'s, in the same place, and the page stayed at ${new URL(pageBefore).pathname}`,
+  );
+  await both("new-session-started");
+  await client(
+    async (trpc, [id, saved]) => {
+      await trpc.sessions.stop.mutate({ id }).catch(() => undefined);
+      await trpc.platform.setSessionDefaults.mutate(saved).catch(() => undefined);
+    },
+    [startedHere.slice("session:".length), defaults],
+  );
 
   // A session that starts in the workspace from elsewhere opens beside the active session tab.
   await tabOf(tabA).click();
