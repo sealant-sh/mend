@@ -141,7 +141,7 @@ export const rowActions = (row: InboxRow, viewerId: string | null): RowActions =
 });
 
 /** The address a copied link opens: the session's page on this server. */
-export const sessionLink = (origin: string, id: string): string => `${origin}/sessions/${id}`;
+export const sessionUrl = (origin: string, id: string): string => `${origin}/sessions/${id}`;
 
 /** What a toast says once a change is made. */
 export const doneWords = {

@@ -11,7 +11,7 @@ import {
   markBefore,
   marksWriter,
   refusedWords,
-  sessionLink,
+  sessionUrl,
 } from "./row-actions.ts";
 import { useTRPC, useTRPCClient } from "./trpc.ts";
 
@@ -125,7 +125,7 @@ export const useRowActions = () => {
       void rename(row, text);
     },
     copyLink: (row: InboxRow) => {
-      void copyTextChecked(sessionLink(window.location.origin, row.session.id)).then((copied) =>
+      void copyTextChecked(sessionUrl(window.location.origin, row.session.id)).then((copied) =>
         copied
           ? say(doneWords.copied(row.title))
           : toast.add({

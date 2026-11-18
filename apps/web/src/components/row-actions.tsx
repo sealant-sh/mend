@@ -41,7 +41,7 @@ import {
 import { type ComponentType, type ReactNode, useRef, useState } from "react";
 
 import { whenAhead, type InboxRow } from "#/lib/inbox";
-import { sessionPage } from "#/lib/later-pages";
+import { sessionLink } from "#/lib/session-sheet";
 import { type RowActions, snoozeChoices } from "#/lib/row-actions";
 import type { RowActionHandlers } from "#/lib/use-row-actions";
 
@@ -112,7 +112,7 @@ function RowMenuItems({
   return (
     <Group>
       <Label className="truncate">{row.title}</Label>
-      <Item onClick={() => void navigate(sessionPage(row.session.id))}>
+      <Item onClick={() => void navigate(sessionLink(row.session.id))}>
         <ArrowUpRightIcon aria-hidden />
         Open session
         <Shortcut>↵</Shortcut>
