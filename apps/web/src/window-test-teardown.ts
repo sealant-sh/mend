@@ -12,3 +12,10 @@ afterAll(async () => {
   const { authClient } = await import("#/lib/auth-client");
   cleanStores(authClient.$store.atoms.session);
 });
+
+/** The tab's event stream, closed while the window that opened it is still there. */
+afterAll(async () => {
+  if (typeof window === "undefined") return;
+  const { closeTabStream } = await import("#/lib/workbench-events");
+  closeTabStream();
+});
