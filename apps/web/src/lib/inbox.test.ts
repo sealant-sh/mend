@@ -201,6 +201,36 @@ describe("the inbox's groups", () => {
       ),
     ).toEqual({ done: "done", later: "snoozed", back: "running", kept: "review" });
   });
+
+  it("says when a snoozed row comes back, and that a row marked done was marked by hand", () => {
+    const rows = inboxRows({
+      rows: [row("later", "running"), row("tomorrow", "running"), row("done", "waiting")],
+      marks: [
+        {
+          sessionId: "later",
+          state: "snoozed",
+          snoozedUntil: new Date("2026-11-18T18:00:00"),
+          markedAt: now,
+        },
+        {
+          sessionId: "tomorrow",
+          state: "snoozed",
+          snoozedUntil: new Date("2026-11-19T09:00:00"),
+          markedAt: now,
+        },
+        { sessionId: "done", state: "settled", snoozedUntil: null, markedAt: now },
+      ],
+      now,
+    });
+    const word = (id: string) => {
+      const found = rows.find((each) => each.session.id === id);
+      if (found === undefined) throw new Error(`no row ${id}`);
+      return rowStatus(found, now).word;
+    };
+    expect(word("later")).toBe("Back today at 18:00");
+    expect(word("tomorrow")).toBe("Back tomorrow at 09:00");
+    expect(word("done")).toBe("Marked done");
+  });
 });
 
 describe("the two filters", () => {

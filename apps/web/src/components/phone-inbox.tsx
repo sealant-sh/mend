@@ -44,15 +44,18 @@ import {
 } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
+import { rowActions } from "#/lib/row-actions";
 import { useSeenAfterIdle } from "#/lib/seen";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFolds } from "#/lib/ui-prefs";
 import type { InboxState, InboxView } from "#/lib/use-inbox";
+import { useRowActions } from "#/lib/use-row-actions";
 
 import { OfflineBand, queuedIn } from "./app-sidebar.tsx";
 import { filterWords, InboxFilterSheet } from "./inbox-filters.tsx";
 import { QueuedPhoneRow } from "./queued-session-row.tsx";
+import { PhoneRowActions } from "./row-actions.tsx";
 import { SessionRow } from "./session-row.tsx";
 
 /**
@@ -245,6 +248,7 @@ function PhoneGroups({ view }: { readonly view: InboxView }) {
           open={folds[group]}
           onOpenChange={(open) => inboxFolds.set({ ...folds, [group]: open })}
           now={view.now}
+          viewerId={view.viewerId}
         />
       ))}
     </nav>
@@ -260,6 +264,7 @@ function PhoneGroup({
   open,
   onOpenChange,
   now,
+  viewerId,
 }: {
   readonly group: InboxGroup;
   readonly label: string;
@@ -268,6 +273,7 @@ function PhoneGroup({
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly now: Date;
+  readonly viewerId: string;
 }) {
   const [showAll, setShowAll] = useState(false);
   const shown = showAll ? rows : rows.slice(0, GROUP_ROWS);
@@ -313,7 +319,7 @@ function PhoneGroup({
         ) : rows.length === 0 ? null : (
           <ul>
             {shown.map((row) => (
-              <PhoneRow key={row.session.id} row={row} now={now} />
+              <PhoneRow key={row.session.id} row={row} now={now} viewerId={viewerId} />
             ))}
           </ul>
         )}
@@ -334,8 +340,17 @@ function PhoneGroup({
   );
 }
 
-function PhoneRow({ row, now }: { readonly row: InboxRow; readonly now: Date }) {
+function PhoneRow({
+  row,
+  now,
+  viewerId,
+}: {
+  readonly row: InboxRow;
+  readonly now: Date;
+  readonly viewerId: string;
+}) {
   const status = rowStatus(row, now);
+  const handlers = useRowActions();
   const changeId = row.annotation?.changeId ?? null;
   let last: ReactNode = status.word;
   if (row.group === "waiting") last = askDetail(row.ask);
@@ -356,6 +371,9 @@ function PhoneRow({ row, now }: { readonly row: InboxRow; readonly now: Date }) 
       last={last}
       bad={status.failed}
       when={row.group === "snoozed" ? "" : age(new Date(activity(row)), now)}
+      actions={
+        <PhoneRowActions row={row} actions={rowActions(row, viewerId)} handlers={handlers} />
+      }
     />
   );
 }
