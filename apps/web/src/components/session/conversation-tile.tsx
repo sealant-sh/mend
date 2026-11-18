@@ -44,6 +44,7 @@ import { PageEvent } from "./page-view";
 import { RequestLine } from "./request-card";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
+import { SessionNotices } from "./session-notices";
 import { StoppedBanner, StoppedLine } from "./stopped-banner";
 
 /** An item kind this app knows; a newer server's kind says nothing about the work under way. */
@@ -561,6 +562,7 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
         </Banner>
       ) : null}
       <StoppedBanner facts={facts} />
+      <SessionNotices facts={facts} />
       <Conversation
         label={`Conversation: ${facts.title}`}
         keepPlaceOnPrepend

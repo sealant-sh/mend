@@ -288,6 +288,27 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/session/session-actions.tsx`,
   `apps/web/src/components/session/stopped-banner.tsx`, `apps/web/src/lib/session-stop.ts`
 
+### session-stop.new-web-session-ended
+
+- **Map:** capture-and-save.md `capture-stop-line`, `capture-not-saved`, `capture-discard`;
+  workspace-replace.md `retire-line`, `retire-evidence`, `replace-web`, `replace-refused`,
+  `replacing-line`; services.md `service-hold`; attach-resume.md `delete-web`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-session-ended-sessions.json` (one `sleep` session in `ended-a`
+  and one in `ended-b`), then drive the recipe `new-web-session-ended`: read the bands a stopped
+  session shows while it saves, when work isn't saved (Discard…), while Services keep the workspace
+  up (Stop services) and while the workspace waits to be replaced (Replace this workspace now), then
+  stop the other session and delete it from its tab's menu.
+- **See:** each step's note in the recipe's `steps.log`: each band's line in the domain's words, the
+  server's answer to Discard and stop, Stop services and Replace this workspace now; no Delete
+  session… on a running session; the Delete dialog's "What stays"; home after Delete with "Deleted …
+  Its worktree and change are still in …", and the session gone from the inbox.
+- **Mode:** `scripted` (recipes/new-web-session-ended.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/session/session-notices.tsx`,
+  `apps/web/src/lib/shared-workspace.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

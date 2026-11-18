@@ -25,6 +25,7 @@ import {
   Rows2Icon,
   SquareIcon,
   SquarePenIcon,
+  Trash2Icon,
   XIcon,
 } from "lucide-react";
 import { Fragment, useState } from "react";
@@ -39,11 +40,15 @@ import { sessionDetailQuery } from "#/lib/session-queries";
 import { STATUS_WORDS } from "#/lib/session-sheet";
 import {
   actorOf,
+  deletedToast,
+  offersDelete,
   offersStop,
   type Sentence,
   stoppedToast,
+  type StaysRow,
   type StopSubject,
   stopWords,
+  whatStays,
 } from "#/lib/session-stop";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useRowActions } from "#/lib/use-row-actions";
@@ -81,6 +86,33 @@ export type StopTarget = StopSubject & {
   readonly worktreeName: string;
 };
 
+/** The session a Delete dialog is about, with what stays once it goes. */
+export interface DeleteTarget {
+  readonly sessionId: string;
+  readonly title: string;
+  readonly projectName: string;
+  readonly stays: ReadonlyArray<StaysRow>;
+}
+
+/** The Delete dialog's subject, from the session's detail and its inbox row. */
+const deleteTargetOf = (detail: SessionDetailDto, row: InboxRow | null): DeleteTarget => {
+  const pullRequest = detail.landings.find((landing) => landing.pullRequest !== null)?.pullRequest;
+  return {
+    sessionId: detail.session.id,
+    title: row?.title ?? detail.session.label ?? detail.session.branch,
+    projectName: row?.project.name ?? "",
+    stays: whatStays({
+      worktreeName: row?.worktreeName ?? detail.session.branch,
+      branch: detail.session.branch,
+      checkpoints: detail.checkpoints.filter((checkpoint) => checkpoint.ordinal > 0).length,
+      pullRequest:
+        pullRequest === undefined || pullRequest === null
+          ? null
+          : `#${pullRequest.number} ${pullRequest.state}`,
+    }),
+  };
+};
+
 /** What a tab's menu can do to the tiles: each left out where it can't. */
 export interface TabLayout {
   readonly onMaximise?: () => void;
@@ -94,6 +126,7 @@ export interface SessionMenuContext {
   readonly viewerId: string;
   readonly onRename: (row: InboxRow) => void;
   readonly onStop: (target: StopTarget) => void;
+  readonly onDelete: (target: DeleteTarget) => void;
 }
 
 /** The Stop dialog's subject, from the session's detail and its inbox row. */
@@ -136,6 +169,17 @@ const useMenuFacts = (sessionId: string, context: SessionMenuContext) => {
       )
         ? stopTargetOf(detail, row)
         : null,
+    // Offered to the owner once the session is stopped or Done.
+    remove:
+      detail !== null &&
+      offersDelete({
+        own: detail.control.own,
+        agentLive: agentIsLive(detail.session, detail.currentAgent),
+        status: detail.session.status,
+        group: row?.group ?? null,
+      })
+        ? deleteTargetOf(detail, row)
+        : null,
     title: row?.title ?? detail?.session.label ?? "Session",
   };
 };
@@ -161,7 +205,7 @@ function SessionMenuItems({
   const { Group, Label, Item, Separator, Shortcut } = parts;
   const handlers = useRowActions();
   const facts = useMenuFacts(sessionId, context);
-  const { row, actions, stop } = facts;
+  const { row, actions, stop, remove } = facts;
   const tiles = [
     where === "tab" && layout.onSplit !== undefined
       ? [
@@ -223,6 +267,15 @@ function SessionMenuItems({
           <Item variant="destructive" onClick={() => context.onStop(stop)}>
             <SquareIcon aria-hidden />
             Stop session…
+          </Item>
+        </>
+      )}
+      {remove === null ? null : (
+        <>
+          <Separator />
+          <Item variant="destructive" onClick={() => context.onDelete(remove)}>
+            <Trash2Icon aria-hidden />
+            Delete session…
           </Item>
         </>
       )}
@@ -376,7 +429,7 @@ export function PhoneSessionActions({
 }) {
   const handlers = useRowActions();
   const facts = useMenuFacts(sessionId, context);
-  const stop = facts.stop;
+  const { stop, remove } = facts;
   // A session the inbox doesn't list has no row to act on; its workspace's actions are on the
   // desktop's header until it does.
   if (facts.row === null || facts.actions === null) return null;
@@ -414,6 +467,18 @@ export function PhoneSessionActions({
                 onClick={() => context.onStop(stop)}
               >
                 Stop session…
+              </SheetItem>
+            </>
+          )}
+          {remove === null ? null : (
+            <>
+              <hr className="my-1 border-border" />
+              <SheetItem
+                icon={<Trash2Icon aria-hidden className="text-destructive!" />}
+                className="text-destructive"
+                onClick={() => context.onDelete(remove)}
+              >
+                Delete session…
               </SheetItem>
             </>
           )}
@@ -733,6 +798,137 @@ function RenameOverlay({
           An empty name goes back to the worktree&apos;s name.
         </p>
       </form>
+    </Overlay>
+  );
+}
+
+/** The Delete dialog's open state, kept with its target so the dialog can close with its words. */
+export interface DeleteDialogState {
+  readonly open: boolean;
+  readonly target: DeleteTarget | null;
+}
+
+/**
+ * Delete this session? (Doop "Session · Delete session dialog", "Phone · Session · Delete session
+ * sheet"): the session goes from every list with its conversation and record; its worktree,
+ * branch, change and pull request stay. A removal the server can't finish yet (its workspace is
+ * still saving) says what it waits on.
+ */
+export function DeleteSessionDialog({
+  state,
+  onOpenChange,
+  onDeleted,
+}: {
+  readonly state: DeleteDialogState;
+  readonly onOpenChange: (open: boolean) => void;
+  /** After the session is gone: the sheet closes its tab, or leaves the page. */
+  readonly onDeleted: (sessionId: string) => void;
+}) {
+  const target = state.target;
+  if (target === null) return null;
+  return (
+    <DeleteOverlay
+      key={target.sessionId}
+      open={state.open}
+      target={target}
+      onOpenChange={onOpenChange}
+      onDeleted={onDeleted}
+    />
+  );
+}
+
+function DeleteOverlay({
+  open,
+  target,
+  onOpenChange,
+  onDeleted,
+}: {
+  readonly open: boolean;
+  readonly target: DeleteTarget;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly onDeleted: (sessionId: string) => void;
+}) {
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const phone = usePhone();
+  const [failure, setFailure] = useState<string | null>(null);
+  const remove = useMutation({
+    mutationFn: () => client.sessions.remove.mutate({ id: target.sessionId }),
+    onMutate: () => setFailure(null),
+    onSuccess: (report) => {
+      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+      if (!report.removed) {
+        // Removed after its workspace: a removal asked while it saves says what it waits on.
+        setFailure(report.leftover ?? "Mend couldn't delete it yet. Try again in a moment.");
+        return;
+      }
+      onOpenChange(false);
+      toast.add({ description: deletedToast(target.title, target.projectName), priority: "low" });
+      onDeleted(target.sessionId);
+    },
+    onError: (cause) =>
+      setFailure(`The session wasn't deleted. ${failureWords(cause, "Try again.")}`),
+  });
+  const size = phone ? "touch" : "default";
+  return (
+    <Overlay
+      open={open}
+      onOpenChange={(next) => {
+        if (!remove.isPending) onOpenChange(next);
+      }}
+      title="Delete this session?"
+      size="md"
+      description={`${target.title} goes from every list, with its conversation and its record. This can't be undone.`}
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            size={size}
+            disabled={remove.isPending}
+            onClick={() => onOpenChange(false)}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="destructive"
+            size={size}
+            disabled={remove.isPending}
+            onClick={() => remove.mutate()}
+          >
+            {remove.isPending ? "Deleting…" : "Delete session"}
+          </Button>
+        </>
+      }
+    >
+      <section aria-label="What stays" className="flex flex-col">
+        <h3 className="pb-2 font-semibold text-foreground">What stays</h3>
+        <dl className="flex flex-col border-t">
+          {target.stays.map((row) => (
+            <div
+              key={row.term}
+              className="flex items-baseline justify-between gap-4 border-b py-2.5"
+            >
+              <dt className="text-foreground">{row.term}</dt>
+              <dd
+                className={cn(
+                  "min-w-0 truncate text-right text-muted-foreground",
+                  row.mono && "font-mono text-meta",
+                )}
+              >
+                {row.value}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      </section>
+      {failure === null ? null : (
+        <p role="alert" className="text-destructive">
+          {failure}
+        </p>
+      )}
     </Overlay>
   );
 }

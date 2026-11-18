@@ -296,3 +296,66 @@ export const stoppedLine = (
 /** Whether Stop session is offered: the agent is live, and the viewer may stop it. */
 export const offersStop = (agentLive: boolean, status: SessionStatusDto, canStop: boolean) =>
   canStop && agentLive && status !== "stopping";
+
+/**
+ * Whether Delete session… is offered: to the session's owner only, once it is stopped or Done
+ * (Yiannis, 18 Nov 2026). The server refuses a live session anyway.
+ */
+export const offersDelete = (facts: {
+  readonly own: boolean;
+  readonly agentLive: boolean;
+  readonly status: SessionStatusDto;
+  /** The session's group in the inbox, when the inbox lists it. */
+  readonly group: string | null;
+}): boolean =>
+  facts.own &&
+  !facts.agentLive &&
+  facts.status !== "stopping" &&
+  (facts.status === "stopped" || facts.group === "done");
+
+/** One row of the Delete dialog's "What stays": its name, and its value in mono or words. */
+export interface StaysRow {
+  readonly term: string;
+  readonly value: string;
+  readonly mono: boolean;
+}
+
+/** What a deleted session leaves: its worktree, its branch, its change and checkpoints, its PR. */
+export const whatStays = (facts: {
+  readonly worktreeName: string;
+  readonly branch: string;
+  /** The worktree's checkpoints, past its starting one. */
+  readonly checkpoints: number;
+  /** The newest pull request, "#412 open"; null when there is none. */
+  readonly pullRequest: string | null;
+}): ReadonlyArray<StaysRow> => [
+  { term: "Worktree", value: facts.worktreeName, mono: true },
+  { term: "Branch", value: facts.branch, mono: true },
+  {
+    term:
+      facts.checkpoints === 0
+        ? "Its change"
+        : `Its change and ${facts.checkpoints} ${facts.checkpoints === 1 ? "checkpoint" : "checkpoints"}`,
+    value: "In the worktree",
+    mono: false,
+  },
+  { term: "Pull request", value: facts.pullRequest ?? "None yet", mono: false },
+];
+
+/** The toast once a session is deleted: where its work still is. */
+export const deletedToast = (title: string, projectName: string): string =>
+  projectName === ""
+    ? `Deleted "${title}". Its worktree and change are still there.`
+    : `Deleted "${title}". Its worktree and change are still in ${projectName}.`;
+
+/**
+ * The saving band's lead, from the domain's capture line (`captureStatusLine`): saving while a
+ * stop drains the workspace, discarded once the owner discarded what wasn't saved, and otherwise
+ * (not saved, failing, refused, a step past its bound) that some work isn't saved.
+ */
+export const savingTitle = (line: string): { readonly title: string; readonly settled: boolean } =>
+  line.startsWith("saving")
+    ? { title: "Saving the session's work.", settled: true }
+    : line.startsWith("unsaved work discarded")
+      ? { title: "Unsaved work was discarded.", settled: true }
+      : { title: "Some work isn't saved.", settled: false };
