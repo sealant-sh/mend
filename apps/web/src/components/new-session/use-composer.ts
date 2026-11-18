@@ -29,9 +29,9 @@ import {
   type WorktreeTarget,
   launchFields,
 } from "#/lib/new-session";
-import { signedInOptions } from "#/lib/sign-in";
 import { holdOpeningMessage } from "#/lib/opening-messages";
 import { sessionLink } from "#/lib/session-sheet";
+import { signedInOptions } from "#/lib/sign-in";
 import { type StartCalls, startSession } from "#/lib/start-session";
 import { useTRPC } from "#/lib/trpc";
 
