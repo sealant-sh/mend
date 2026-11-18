@@ -18,6 +18,8 @@ export interface ShellSession {
   readonly status: SessionStatusDto;
   readonly ownerUserId: string | null;
   readonly sharedControlEnabledAt: Date | null;
+  /** The people its owner gave shared control to, one by one (docs/adr/0026, decision 7). */
+  readonly sharedControlUserIds: ReadonlyArray<string>;
   /** Its processes, once read; null until then (or when reading them failed). */
   readonly processes: ReadonlyArray<SessionProcessDto> | null;
 }
