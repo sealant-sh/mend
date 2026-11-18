@@ -244,6 +244,7 @@ const changesLayer = (world: TestWorld): Layer.Layer<WorktreeChangesRepo> =>
           openComments: 0,
           totalComments: 0,
           pendingFollowUp: false,
+          fileCount: null,
         })),
       ),
   });

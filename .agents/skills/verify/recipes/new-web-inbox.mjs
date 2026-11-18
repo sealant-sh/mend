@@ -138,14 +138,18 @@ export default async ({ page, web, capture, note }) => {
   });
   await open();
 
-  // The sessions the CLI batch started, where their status puts them.
+  // The sessions the CLI batch started, where their status and their change put them: inbox-done
+  // changed no file, so it is done by itself (SLNT-1113).
   await showAll("To review");
+  await setOpen("Done", true);
+  await showAll("Done");
   for (const [label, title] of [
     ["To review", "inbox-review"],
     ["To review", "inbox-failed"],
-    ["To review", "inbox-done"],
+    ["Done", "inbox-done"],
   ])
     await row(label, title).waitFor();
+  await setOpen("Done", false);
   const failedWord = row("To review", "inbox-failed").getByText("Failed", { exact: true });
   const failedColour = await failedWord.evaluate((element) => getComputedStyle(element).color);
   const mutedColour = await row("To review", "inbox-review")
@@ -154,7 +158,8 @@ export default async ({ page, web, capture, note }) => {
   if (failedColour === mutedColour) throw new Error("Failed is not set apart from Completed");
   note(`To review: inbox-review Completed (${mutedColour}), inbox-failed Failed (${failedColour})`);
 
-  // Snooze one running session and mark one done, through the API the row menu (PR 8) will use.
+  // Snooze one running session and mark one to review done, through the API the row menu (PR 8)
+  // will use.
   await setOpen("Running", true);
   await row("Running", "inbox-running").waitFor();
   // The session the moves batch just started: the one under Running, by its id. A batch run for an
@@ -167,14 +172,15 @@ export default async ({ page, web, capture, note }) => {
   const moving = await idOf("Running", "inbox-moves");
   const until = new Date(Date.now() + 3 * 60 * 60_000).toISOString();
   await mark(await idOf("Running", "inbox-snooze"), { _tag: "Snoozed", until });
-  await mark(await idOf("To review", "inbox-done"), { _tag: "Settled" });
+  await mark(await idOf("To review", "inbox-failed"), { _tag: "Settled" });
   await open();
   await setOpen("Snoozed", true);
   await setOpen("Done", true);
   await row("Snoozed", "inbox-snooze")
     .getByText(/^Until /)
     .waitFor();
-  await row("Done", "inbox-done").waitFor();
+  await showAll("Done");
+  await row("Done", "inbox-failed").waitFor();
   note(
     `counts: ${(await Promise.all(GROUPS.map(async (label) => `${label} ${await countOf(label)}`))).join(", ")}`,
   );
@@ -484,8 +490,13 @@ const fixtureRow = (index, { title, project, status, owner, minutes, ask = null 
     pendingFollowUp: false,
     liveServices: 0,
     currentAgent: null,
+    // Every ended fixture session changed files, so it waits under To review as the frame draws.
+    fileCount: 5,
   },
   ask,
+  worktreeName: null,
+  failure: status === "failed" ? "Type check found 12 errors" : null,
+  activity: status === "running" ? { kind: "command", subject: "pnpm test" } : null,
 });
 
 /** What a fixture row's agent asked: a question, or a command to approve. */

@@ -118,9 +118,10 @@ export function inboxRows({
         annotation,
         title: row.title,
         ask: row.ask,
-        worktreeName: row.worktreeName,
-        failure: row.failure,
-        activity: row.activity,
+        // Absent from a server before SLNT-1113: read as unknown.
+        worktreeName: row.worktreeName ?? null,
+        failure: row.failure ?? null,
+        activity: row.activity ?? null,
         snoozedUntil: null,
         doneAt: null,
       };

@@ -62,13 +62,13 @@ describe("why a waiting session waits", () => {
   });
 });
 
-describe("what a running agent is doing", () => {
-  const item = (
-    kind: Parameters<typeof agentActivity>[0]["kind"],
-    title: string | null,
-    data: unknown,
-  ) => agentActivity({ kind, title, data });
+const item = (
+  kind: Parameters<typeof agentActivity>[0]["kind"],
+  title: string | null,
+  data: unknown,
+) => agentActivity({ kind, title, data });
 
+describe("what a running agent is doing", () => {
   it("names Codex's command and file from the item's title", () => {
     expect(item("command-execution", "pnpm test", { command: "pnpm test" })).toEqual({
       kind: "command",
