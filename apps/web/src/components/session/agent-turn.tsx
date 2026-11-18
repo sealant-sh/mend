@@ -329,7 +329,8 @@ export function AgentTurn({
   readonly facts: SessionFacts;
   readonly renderRequest: (request: AgentRequestDto) => ReactNode;
 }) {
-  const header = row.turn === null ? facts.agent : `${facts.agent} · turn ${row.turn.ordinal}`;
+  // A session's turns are numbered from 0; people count them from 1.
+  const header = row.turn === null ? facts.agent : `${facts.agent} · turn ${row.turn.ordinal + 1}`;
   return (
     <Message>
       <MessageContent className="gap-3">

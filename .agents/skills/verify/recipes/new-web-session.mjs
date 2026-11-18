@@ -320,7 +320,7 @@ const history = ({ turns, items, requests = [] }) => ({
 const empty = () => history({ turns: [], items: [] });
 
 const turn = (sessionId, me, ordinal, status, input, start, end, extra = {}) => ({
-  id: `fixture-turn-${ordinal}`,
+  id: `fixture-turn-${ordinal + 1}`,
   sessionId,
   ordinal,
   origin: "request",
@@ -369,17 +369,17 @@ const turnCompletes = (sessionId, me, at) => {
   const t1 = turn(
     sessionId,
     me,
-    1,
+    0,
     "completed",
     "Find why checkout fails 1 in 50 runs.",
     at(40),
     at(36),
   );
-  const t2 = turn(sessionId, me, 2, "completed", "Add a test for the retry.", at(30), at(28));
+  const t2 = turn(sessionId, me, 1, "completed", "Add a test for the retry.", at(30), at(28));
   const t3 = turn(
     sessionId,
     me,
-    3,
+    2,
     "completed",
     "Checkout fails about 1 in 50 CI runs with a duplicate charge. Find out why and fix it without changing the public API.",
     at(20),
@@ -410,7 +410,7 @@ const outOfCredit = (sessionId, me, at) => {
   const t1 = turn(
     sessionId,
     me,
-    1,
+    0,
     "failed",
     "Also cover partial refunds. Each partial refund needs its own key, so two partial refunds on the same order can both go through.",
     at(12),
@@ -438,7 +438,7 @@ const working = (sessionId, me, at) => {
   const t1 = turn(
     sessionId,
     me,
-    1,
+    0,
     "running",
     "Run the checkout tests and fix what fails.",
     at(2),
