@@ -85,6 +85,14 @@ export default async ({ page, web, capture, note }) => {
         .waitFor({ timeout: TURN_MS })
         .then(() => true),
       replied(before).then(() => false),
+      // A workspace that never became ready (the runtime's own failure) ends the run at once.
+      visible(page.getByText(/^The session couldn't start\./))
+        .waitFor({ timeout: TURN_MS })
+        .then(async () => {
+          throw new Error(
+            `the session didn't start: ${await visible(page.getByRole("alert")).innerText()}`,
+          );
+        }),
     ]);
     if (!asked) throw new Error("Codex replied without asking before acting");
     return approvalCard(page).innerText();
