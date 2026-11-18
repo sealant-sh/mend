@@ -12,6 +12,8 @@ interface SessionSearch {
    * already fills the sheet; PR 15 maximises the conversation's tile with it.
    */
   readonly full?: true;
+  /** The old app's Desktop panel (`?view=desktop`), read only to be dropped. */
+  readonly view?: "desktop";
 }
 
 /**
@@ -22,16 +24,19 @@ interface SessionSearch {
  * scrolls to that checkpoint's marker in the conversation until the Record view takes it (PR 20).
  */
 export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
-  // `?full=1` reads as the number 1; `full: true` from a link writes `?full=true`.
-  validateSearch: (search: Record<string, unknown>): SessionSearch =>
-    search["full"] === true || search["full"] === 1 || search["full"] === "1" ? { full: true } : {},
-  beforeLoad: ({ location, params }) => {
-    const raw = location.searchStr;
-    if (new URLSearchParams(raw).get("view") === "desktop") {
+  validateSearch: (search: Record<string, unknown>): SessionSearch => ({
+    // `?full=1` reads as the number 1; `full: true` from a link writes `?full=true`.
+    ...(search["full"] === true || search["full"] === 1 || search["full"] === "1"
+      ? { full: true }
+      : null),
+    ...(search["view"] === "desktop" ? { view: "desktop" } : null),
+  }),
+  beforeLoad: ({ search, location, params }) => {
+    if (search.view === "desktop") {
       throw redirect({
         to: "/sessions/$sessionId",
         params,
-        search: (prior) => prior,
+        search: search.full === true ? { full: true } : {},
         hash: location.hash,
         replace: true,
       });
