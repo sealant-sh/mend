@@ -17,6 +17,13 @@ const DESKTOP = { width: 1280, height: 900 };
 const NARROW = { width: 1000, height: 800 };
 const PHONE = { width: 390, height: 844 };
 
+/** Where an element is on screen; the recipe can't go on without it. */
+const boxOf = async (locator) => {
+  const box = await locator.boundingBox();
+  if (box === null) throw new Error("an element the recipe needs isn't on screen");
+  return box;
+};
+
 const TITLE_A = "Fix flaky checkout retry";
 const TITLE_B = "Add a regression test for 409s";
 
@@ -75,11 +82,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     page.locator(`[data-tab="${key}"]`).filter({ visible: true }).getByRole("tab");
   const tileOf = (key) =>
     page.locator("[data-tile]").filter({ has: page.locator(`[data-tab="${key}"]`) });
-  const boxOf = async (locator) => {
-    const box = await locator.boundingBox();
-    if (box === null) throw new Error("an element the recipe needs isn't on screen");
-    return box;
-  };
   const said = () => page.locator('p[role="status"].sr-only').innerText();
   const expectTiles = async (count, what) => {
     await page
@@ -227,6 +229,13 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const [top, bottom] = [await boxOf(tileOf(tabA)), await boxOf(tileOf(tabB))];
   if (!(bottom.y > top.y + 100)) throw new Error("B's tile isn't under A's");
   note(`keyboard down: B's tile is under A's; the page said "${await said()}"`);
+  // B is alone in the bottom tile, with nothing under it: it stays, and the page says so.
+  await tabOf(tabB).focus();
+  await page.keyboard.press("Alt+Shift+ArrowDown");
+  await expectTiles(2, "after Alt+Shift+Down with nothing below");
+  if (!(await said()).includes("can't move below"))
+    throw new Error(`a move nowhere said "${await said()}"`);
+  note(`keyboard down again: still two tiles; the page said "${await said()}"`);
   await both("split-below");
 
   // The body B had at the start is the one it shows now: moved, never drawn again.
@@ -382,6 +391,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // T19/T27/T28: the phone. Picking a tab in the strip shows its body; "+" opens a sheet.
   await page.setViewportSize(PHONE);
   await settled();
+  const sideways = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  if (sideways > 0) throw new Error(`at 390px the page scrolls ${sideways}px sideways`);
+  note("390px: the page doesn't scroll sideways; the strip does");
   await both("phone");
   await strip.getByRole("tab", { name: new RegExp(TITLE_B) }).click();
   await page.locator(`[data-tab-body="${tabB}"]`).filter({ visible: true }).waitFor();
