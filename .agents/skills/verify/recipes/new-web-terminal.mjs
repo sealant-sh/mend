@@ -163,17 +163,19 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   /** The shell's width in columns, as the shell itself reads it. */
   // Each probe prints its own marker: the replay after a reconnect holds every earlier one.
   let probes = 0;
-  const columns = async () => {
+  /** A number the shell prints (`tput cols`), under a marker of this probe's own. */
+  const probe = async (command) => {
     probes += 1;
     const marker = `cols${probes}x`;
-    await typeLine(`echo ${marker}=$(tput cols)`);
+    await typeLine(`echo ${marker}=$(${command})`);
     for (let attempt = 0; attempt < 10; attempt += 1) {
       const found = (await terminalText()).match(new RegExp(`^${marker}=(\\d+)`, "m"));
       if (found !== null) return Number(found[1]);
       await page.waitForTimeout(500);
     }
-    throw new Error(`the shell didn't print its width (${marker})`);
+    throw new Error(`the shell didn't print ${command} (${marker})`);
   };
+  const columns = () => probe("tput cols");
   /** The terminal's canvas carries this mark while the same terminal stays in the page. */
   const markTerminal = () =>
     body
@@ -262,7 +264,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const typed = await terminalText();
   if (!typed.includes("mend-42"))
     throw new Error(`the terminal shows no output: ${typed.slice(-200)}`);
-  note("typed `echo mend-$((6*7))`: the terminal's text (read through Copy) holds mend-42");
+  await page
+    .getByRole("region", { name: "Notifications" })
+    .getByText("Copied the terminal's text.")
+    .first()
+    .waitFor({ timeout: 5_000 });
+  note(
+    "typed `echo mend-$((6*7))`: the terminal's text (read through Copy) holds mend-42; Copy said \"Copied the terminal's text.\"",
+  );
 
   // A link in the output opens in a new tab with Ctrl and a click.
   const link = `${web}/terminal-link-check`;
@@ -311,6 +320,27 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     `moved to a tile on the right: the same terminal element, the shell went from ${wide} to ${narrow} columns, the scrollback is there`,
   );
   await both("terminal-beside-conversation");
+
+  // A link longer than the half-width terminal wraps over two rows: Ctrl and a click on its second
+  // row opens the whole address.
+  const lines = await probe("tput lines");
+  const wrapped = `${web}/terminal-link-check/wrapped-${"x".repeat(narrow)}`;
+  await typeLine(`clear; echo ${wrapped}`);
+  const half = await boxOf(body.locator("canvas").first());
+  const rowHeight = half.height / lines;
+  const openedWrapped = page.context().waitForEvent("page", { timeout: 10_000 });
+  await page.keyboard.down("Control");
+  await page.mouse.click(half.x + cell * 4.5, half.y + rowHeight * 1.5);
+  await page.keyboard.up("Control");
+  const wrappedTab = await openedWrapped;
+  await wrappedTab.waitForURL(/wrapped-x+$/, { timeout: 10_000 }).catch(() => undefined);
+  const wrappedUrl = wrappedTab.url();
+  await wrappedTab.close();
+  if (!wrappedUrl.endsWith(`wrapped-${"x".repeat(narrow)}`))
+    throw new Error(`Ctrl and a click on the wrapped link's second row opened ${wrappedUrl}`);
+  note(
+    `a link wrapped over two rows of the ${narrow}-column terminal: Ctrl and a click on its second row opened the whole address (${new URL(wrappedUrl).pathname.length} characters of path)`,
+  );
 
   // Maximised: the same terminal, wider again; then the layout back.
   await tileOf(VIEW).getByRole("button", { name: "Maximise tile" }).click();
@@ -373,8 +403,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     { timeout: 60_000 },
   );
   await live();
-  const processes = await client(async (trpc, id) => trpc.sessions.processes.query({ id }), A);
-  const shell = processes.find((each) => each.kind === "shell" && each.exitedAt === null);
+  const shellRows = await client(async (trpc, id) => trpc.sessions.processes.query({ id }), A);
+  const shell = shellRows.find((each) => each.kind === "shell" && each.exitedAt === null);
   if (shell === undefined) throw new Error("no live shell after New shell");
 
   /**

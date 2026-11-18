@@ -177,9 +177,10 @@ describe("who watches and who types", () => {
   });
 });
 
+const ago = () => "9m";
+const nameOf = (id: string) => (id === "ada" ? "Ada Lovelace" : null);
+
 describe("what a shell's row says", () => {
-  const ago = () => "9m";
-  const nameOf = (id: string) => (id === "ada" ? "Ada Lovelace" : null);
   const [running, exited, closed] = workspaceShells(
     [
       session("a", {
