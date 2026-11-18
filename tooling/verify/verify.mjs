@@ -48,7 +48,7 @@ const VERBS = {
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
   drive:
-    "Run a recipe against web, the new web app (new-web), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
+    "Run a recipe against web, the new web app (new-web, or --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
@@ -83,6 +83,7 @@ export const parseArgs = (argv) => {
     else if (arg === "--full") options.full = true;
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--no-restore") options.noRestore = true;
+    else if (arg === "--box") options.box = true;
     else if (arg === "--self") options.self = true;
     else if (arg === "--body") {
       const value = argv[++index];
@@ -178,7 +179,7 @@ const help = () =>
     "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n> or --tag <name>, --yes and --no-restore (box),",
     "--url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
-    "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms> (drive). Results:",
+    "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms>, --box (drive). Results:",
     ".verify/latest/<verb>.json. Exit: 0 passed, 1 failed, 2 usage, 3 blocked by a",
     "prerequisite, 4 any other status.",
   ].join("\n");
@@ -221,11 +222,14 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     });
   }
   if (verb === "drive") {
+    const sshArgs = options.ssh ?? process.env.MEND_VERIFY_BOX_SSH;
     const { steps, next, ...rest } = await drive(root, {
       surface: options.subverb,
       recipe: options.recipe,
       head,
       timeoutMs: options.timeoutMs,
+      box: options.box === true,
+      ssh: options.sshRunner ?? (sshArgs ? sshRunner(sshArgs.trim().split(/\s+/)) : null),
       ...(options.env ? { env: options.env } : {}),
       ...(options.exec ? { exec: options.exec } : {}),
       ...(options.background ? { background: options.background } : {}),
@@ -309,6 +313,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
           root,
           noRestore: options.noRestore === true,
           ...(options.readMain ? { readMain: options.readMain } : {}),
+          ...(options.front ? { front: options.front } : {}),
         }),
     }[options.subverb]();
     return createResult({ verb: `box ${options.subverb}`, head, startedAt, steps, next, ...rest });

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 
+import { readFrontRun } from "./box-front.mjs";
 import { rollUp } from "./result.mjs";
 import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 
@@ -24,7 +25,9 @@ export const driveResults = (root, head) => {
     .filter((result) => result.head.sha === head.sha && !result.head.dirty)
     .filter((result) => {
       const key = result.verb;
-      const drove = result.drive ? `${result.drive.surface}/${result.drive.recipe}` : key;
+      const drove = result.drive
+        ? `${result.drive.surface}${result.drive.box ? "@box" : ""}/${result.drive.recipe}`
+        : key;
       if (seen.has(drove)) return false;
       seen.add(drove);
       return true;
@@ -94,7 +97,9 @@ export const evidence = async (
   // The scan: the stack run's registry while it lives, else the scan `stack down` left; VS Code
   // worlds scan their own evidence when they come down.
   const state = readRun(root);
-  const onStack = drives.filter((result) => result.drive && result.drive.surface !== "vscode");
+  const onStack = drives.filter(
+    (result) => result.drive && result.drive.surface !== "vscode" && !result.drive.box,
+  );
   if (onStack.length > 0) {
     if (state && existsSync(state.private)) {
       const scan = await exec(
@@ -135,6 +140,50 @@ export const evidence = async (
       });
     }
   }
+  // The new web app on the box: its own registry while it lives, else the scan `box release` left.
+  const front = readFrontRun(root);
+  const onBox = drives.filter((result) => result.drive?.box);
+  if (onBox.length > 0) {
+    const dir = front?.evidence ?? join(onBox[0].drive.out, "../..");
+    if (front && existsSync(front.private)) {
+      const scan = await exec(
+        "node",
+        [
+          join(root, SKILL, "scripts/scan-evidence.mjs"),
+          "--dir",
+          front.evidence,
+          "--secrets",
+          front.private,
+          "--delete-hits",
+        ],
+        { cwd: root, env, log: join(front.evidence, "scan.log") },
+      );
+      steps.push({
+        id: "scan-box",
+        title: "Secret scan of the box check's evidence",
+        status: scan.code === 0 ? "passed" : scan.code === 1 ? "evidence_withheld" : "failed",
+        log: join(front.evidence, "scan.json"),
+        detail:
+          scan.code === 0
+            ? "no hit"
+            : scan.code === 1
+              ? "hits: those files are deleted (scan.json names them)"
+              : `scan exited ${scan.code}`,
+      });
+    } else {
+      const hits = scanHits(dir);
+      steps.push({
+        id: "scan-box",
+        title: "Secret scan of the box check's evidence",
+        status:
+          hits === null ? "blocked_by_prerequisite" : hits === 0 ? "passed" : "evidence_withheld",
+        detail:
+          hits === null
+            ? "the box check's registry is gone and it left no scan.json"
+            : `box release's scan: ${hits} hits`,
+      });
+    }
+  }
   const worlds = drives.filter((result) => result.drive?.surface === "vscode");
   if (worlds.length > 0) {
     const dirs = [...new Set(worlds.map((result) => join(result.drive.out, "..")))];
@@ -162,9 +211,15 @@ export const evidence = async (
     state && existsSync(join(state.evidence, "doctor/doctor.txt"))
       ? readFileSync(join(state.evidence, "doctor/doctor.txt"), "utf8")
       : "";
-  const buildLines = doctor
-    .split("\n")
-    .filter((line) => /^(ok|NOT)\s+(web version|mend at|sealant at|sealantd at)/.test(line));
+  const buildLines = [
+    ...doctor
+      .split("\n")
+      .filter((line) => /^(ok|NOT)\s+(web version|mend at|sealant at|sealantd at)/.test(line)),
+    ...[...new Set(onBox.map((result) => JSON.stringify(result.drive.box)))].map((text) => {
+      const box = JSON.parse(text);
+      return `the box ${box.web} runs ${box.version}, revision ${box.revision}; the new web app from this checkout`;
+    }),
+  ];
   const verdictDir = join(root, ".verify/evidence", head.sha.slice(0, 12));
   mkdirSync(verdictDir, { recursive: true });
   const verdict = join(verdictDir, "verdict.md");
@@ -182,7 +237,7 @@ export const evidence = async (
       "**Driven:**",
       ...sections.map(({ result, found, where }) =>
         found
-          ? `- ${result.drive.surface} · \`${result.drive.recipe}\` · ${result.status} · ${found.screenshots.length} screenshots (${found.withheld.length} withheld), ${found.snapshots.length} ARIA snapshots, ${found.transcripts.length} transcripts${found.failures.length ? `, ${found.failures.length} failure captures` : ""} · \`${where}\``
+          ? `- ${result.drive.surface}${result.drive.box ? " on the box" : ""} · \`${result.drive.recipe}\` · ${result.status} · ${found.screenshots.length} screenshots (${found.withheld.length} withheld), ${found.snapshots.length} ARIA snapshots, ${found.transcripts.length} transcripts${found.failures.length ? `, ${found.failures.length} failure captures` : ""} · \`${where}\``
           : `- ${result.verb} · ${result.status}`,
       ),
       "",

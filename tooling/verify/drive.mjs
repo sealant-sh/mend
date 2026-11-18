@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, resolve } from "node:path";
 
+import { normalizeUrl } from "../../.agents/skills/verify/scripts/guard/policy.mjs";
+import { READ_FRONT, parseFront, startFrontRun } from "./box-front.mjs";
 import { choosePorts, stopDrive } from "./ports.mjs";
 import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 
@@ -18,6 +20,8 @@ import { readRun, run as runCommand, runEnv } from "./stack.mjs";
 // web, desktop and mobile-web drive the stack `verify stack up` started, as its first account;
 // new-web drives the new web app (apps/web) from this checkout, served by drive-mobile.mjs --client
 // new-web in front of that stack and signed in through the stack's own sign-in page;
+// with --box, new-web needs no stack: the same proxy fronts the box's API, declared as the outer
+// server (box-front.mjs), and the app signs in on its own /login as the box's account;
 // t3 drives the t3code client serve-t3-client.mjs serves for that stack; vscode drives the world
 // `drive-vscode.mjs up` made, which is its own server. Evidence lands in the run's evidence
 // directory, <evidence>/<recipe>/<surface>.
@@ -177,6 +181,8 @@ export const drive = async (
     wait = sleep,
     fetch = globalThis.fetch,
     timeoutMs,
+    box = false,
+    ssh = null,
   },
 ) => {
   // The terminal's recipe is the name of its captures' directory: there is no module to resolve.
@@ -195,6 +201,23 @@ export const drive = async (
   }
   const skill = join(root, SKILL, "scripts");
   const timeout = timeoutMs ? ["--timeout", String(timeoutMs)] : [];
+
+  if (box && surface !== "new-web")
+    return notImplemented(surface, "only new-web drives the box from this checkout (--box)");
+  if (box)
+    return driveNewWebOnBox({
+      root,
+      skill,
+      found,
+      head,
+      env,
+      ssh,
+      exec,
+      background,
+      wait,
+      fetch,
+      timeout,
+    });
 
   if (surface === "vscode") {
     const world = env.MEND_VERIFY_VSCODE_RUN;
@@ -353,7 +376,27 @@ export const drive = async (
   }
 
   if (surface === "new-web")
-    return driveNewWeb({ root, skill, state, stepEnv, web, found, out, background, wait, fetch });
+    return driveNewWeb({
+      root,
+      skill,
+      privateDir: state.private,
+      fronts: ["--web", state.web],
+      signIn: [
+        "--account",
+        join(state.private, "account.json"),
+        "--sign-in",
+        state.web,
+        "--state",
+        join(state.private, "browser.json"),
+      ],
+      stepEnv,
+      web,
+      found,
+      out,
+      background,
+      wait,
+      fetch,
+    });
 
   // mobile-web: the proxy in front of the stack, for as long as the recipe runs.
   const recorded = join(state.private, "mobile.json");
@@ -392,14 +435,122 @@ export const drive = async (
 };
 
 /**
- * The new web app: its vite server and the stack's API on one origin (drive-mobile.mjs --client
- * new-web), for as long as the recipe runs. Its first page compiles on demand, so the recipe starts
- * once the app answers through the proxy (any answer but the proxy's own 502).
+ * The new web app on the box: no stack, and nothing on the box changes. The box must be the
+ * declared outer server (MEND_VERIFY_OUTER_URL, its APP_URL as the box itself reports it), which is
+ * what lets the guard pass the proxy and the driver. The app signs in on its own /login as the box
+ * account (box-front.mjs), and the result names the build the box ran, for `box identity`.
+ */
+const driveNewWebOnBox = async ({
+  root,
+  skill,
+  found,
+  head,
+  env,
+  ssh,
+  exec,
+  background,
+  wait,
+  fetch,
+  timeout,
+}) => {
+  if (ssh === null)
+    return blocked("box", "Reach the box over ssh", "No box named: set MEND_VERIFY_BOX_SSH", [
+      "export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'",
+    ]);
+  const read = ssh(READ_FRONT);
+  const box = parseFront(read.code === 0 ? read.stdout : "");
+  if (box.appUrl === null)
+    return blocked(
+      "box",
+      "Reach the box over ssh",
+      `the box reported no APP_URL (ssh exited ${read.code})`,
+      [],
+    );
+  if (!box.running)
+    return blocked(
+      "box",
+      "Mend running on the box",
+      `mend-mend-1 (${box.version ?? "no version"}) is not running: a release that put the data back leaves it stopped until the next deploy`,
+      ["deploy a preview of main (docs/operations/preview-builds.md), then drive again"],
+    );
+  const declared = normalizeUrl(env.MEND_VERIFY_OUTER_URL ?? "");
+  if (declared !== normalizeUrl(box.appUrl))
+    return blocked(
+      "outer",
+      "The box declared as the outer server",
+      `MEND_VERIFY_OUTER_URL is ${declared ?? "not set"}; the box's APP_URL is ${box.appUrl}`,
+      [`export MEND_VERIFY_OUTER_URL=${box.appUrl}`],
+    );
+  const started = startFrontRun(root, { head, box, env });
+  if (started.error)
+    return blocked("account", "The box account's sign-in", started.error, [
+      "export MEND_VERIFY_BOX_EMAIL=<email> MEND_VERIFY_BOX_PASSWORD_FILE=<file holding its password>",
+    ]);
+  const { run } = started;
+  const stepEnv = {
+    ...env,
+    PATH: `${join(root, SKILL, "scripts/guard")}:${env.PATH}`,
+    MEND_VERIFY_PRIVATE: run.private,
+    MEND_VERIFY_MACHINE_XDG: env.MEND_VERIFY_MACHINE_XDG ?? "",
+  };
+  const out = join(run.evidence, found.name, "new-web");
+  mkdirSync(out, { recursive: true });
+  const web = (target, extra) =>
+    exec(
+      "node",
+      [
+        join(skill, "drive-web.mjs"),
+        "--web",
+        target,
+        "--out",
+        out,
+        "--private",
+        run.private,
+        "--recipe",
+        found.path,
+        ...extra,
+        ...timeout,
+      ],
+      { cwd: root, env: stepEnv, log: join(out, "drive.log") },
+    );
+  const result = await driveNewWeb({
+    root,
+    skill,
+    privateDir: run.private,
+    fronts: ["--outer"],
+    signIn: [
+      "--account",
+      join(run.private, "account.json"),
+      "--state",
+      join(run.private, "browser.json"),
+    ],
+    stepEnv,
+    web,
+    found,
+    out,
+    background,
+    wait,
+    fetch,
+  });
+  result.drive.box = { web: box.appUrl, revision: box.revision, version: box.version };
+  result.steps[0].detail += `; in front of the box's API (${box.version}, revision ${box.revision?.slice(0, 12) ?? "unknown"})`;
+  if (result.steps[0].status === "passed")
+    result.next = ["pnpm verify box identity", "pnpm verify evidence"];
+  return result;
+};
+
+/**
+ * The new web app: its vite server and a Mend API on one origin (drive-mobile.mjs --client
+ * new-web), for as long as the recipe runs. `fronts` names that API: the stack's tunnel, or the
+ * declared outer (--outer, the box). Its first page compiles on demand, so the recipe starts once
+ * the app answers through the proxy (any answer but the proxy's own 502).
  */
 const driveNewWeb = async ({
   root,
   skill,
-  state,
+  privateDir,
+  fronts,
+  signIn,
   stepEnv,
   web,
   found,
@@ -420,7 +571,7 @@ const driveNewWeb = async ({
     result.steps[0].detail = `${address}${result.steps[0].detail ? `; ${result.steps[0].detail}` : ""}`;
     return result;
   };
-  const recorded = join(state.private, "new-web.json");
+  const recorded = join(privateDir, "new-web.json");
   const proxy = background(
     "node",
     [
@@ -429,14 +580,13 @@ const driveNewWeb = async ({
       "new-web",
       "--app",
       join(root, "apps/web"),
-      "--web",
-      state.web,
+      ...fronts,
       "--port",
       String(port),
       "--expo-port",
       String(vitePort),
       "--log",
-      `${state.private}.new-web.log`,
+      `${privateDir}.new-web.log`,
     ],
     { cwd: root, env: stepEnv, stdio: "ignore", detached: true },
   );
@@ -465,17 +615,10 @@ const driveNewWeb = async ({
     if (!up) {
       return finish(
         1,
-        `the new web app did not answer within 4 minutes (${state.private}.new-web.log)`,
+        `the new web app did not answer within 4 minutes (${privateDir}.new-web.log)`,
       );
     }
-    const result = await web(address, [
-      "--account",
-      join(state.private, "account.json"),
-      "--sign-in",
-      state.web,
-      "--state",
-      join(state.private, "browser.json"),
-    ]);
+    const result = await web(address, signIn);
     return finish(result.code);
   } finally {
     await stopDrive(proxy, [port, vitePort]);

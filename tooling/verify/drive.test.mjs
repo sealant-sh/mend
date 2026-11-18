@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { fork, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { readFrontRun } from "./box-front.mjs";
 import { drive, listRecipes, resolveRecipe, surfaceOf } from "./drive.mjs";
 import { artifacts, driveResults, evidence } from "./evidence.mjs";
 import { choosePorts } from "./ports.mjs";
@@ -418,4 +427,167 @@ test("a scan hit withholds the evidence instead of passing it", async (t) => {
   );
   const result = await evidence(root, { head, exec: async () => ({ code: 1, stdout: "" }) });
   assert.equal(result.steps.find((step) => step.id === "scan").status, "evidence_withheld");
+});
+
+// The box as `drive new-web --box` meets it: READ_FRONT's answer, and the account it signs in as.
+const boxWorld = (t, { appUrl = "https://box.example.test", running = "true" } = {}) => {
+  const { root, exec, calls } = world(t);
+  const head = { sha: "d".repeat(40), branch: "b", dirty: false };
+  const password = join(root, "password");
+  writeFileSync(password, "box-check-password\n");
+  const env = {
+    PATH: process.env.PATH,
+    HOME: root,
+    XDG_STATE_HOME: join(root, "state"),
+    MEND_VERIFY_OUTER_URL: appUrl,
+    MEND_VERIFY_BOX_EMAIL: "check@example.test",
+    MEND_VERIFY_BOX_PASSWORD_FILE: password,
+  };
+  const ssh = () => ({
+    code: 0,
+    stdout: [
+      "version=0.37.0-next.1.preview.9",
+      `revision=${"e".repeat(40)}`,
+      `running=${running}`,
+      "APP_URL=https://box.example.test",
+    ].join("\n"),
+    stderr: "",
+  });
+  const privateDir = join(root, "state/mend-verify", `box-${basename(root)}`, "private");
+  return { root, exec, calls, head, env, ssh, privateDir };
+};
+
+test("new-web --box fronts the declared box from this checkout and signs in on the app's own page", async (t) => {
+  const { root, exec, calls, head, env, ssh, privateDir } = boxWorld(t);
+  let child;
+  const background = (_command, args, options) => {
+    calls.push({ line: args.join(" ") });
+    writeFileSync(join(privateDir, "new-web.json"), "{}");
+    child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+      ...options,
+      stdio: "ignore",
+    });
+    return child;
+  };
+  const result = await drive(root, {
+    surface: "new-web",
+    recipe: join(root, ".agents/skills/verify/recipes/web-projects.mjs"),
+    head,
+    env,
+    exec,
+    ssh,
+    box: true,
+    background,
+    wait: async () => {},
+    fetch: async () => ({ status: 200 }),
+  });
+  assert.equal(result.steps[0].status, "passed");
+  assert.equal(child.signalCode, "SIGTERM");
+  const [proxy, driven] = calls.map((call) => call.line);
+  assert.match(proxy, /drive-mobile\.mjs --client new-web --app \S+\/apps\/web --outer --port/);
+  assert.doesNotMatch(proxy, /--web /, "the proxy fronts the declared outer, nothing named");
+  assert.ok(driven.includes(`--account ${privateDir}/account.json`));
+  assert.ok(driven.includes(`--state ${privateDir}/browser.json`));
+  assert.doesNotMatch(driven, /--sign-in/, "the new app signs in on its own /login");
+  assert.equal(calls[1].env.MEND_VERIFY_PRIVATE, privateDir);
+  assert.deepEqual(result.drive.box, {
+    web: "https://box.example.test",
+    revision: "e".repeat(40),
+    version: "0.37.0-next.1.preview.9",
+  });
+  assert.deepEqual(JSON.parse(readFileSync(join(privateDir, "account.json"), "utf8")), {
+    email: "check@example.test",
+    password: "box-check-password",
+  });
+  assert.equal(statSync(privateDir).mode & 0o777, 0o700);
+  assert.equal(statSync(join(privateDir, "account.json")).mode & 0o777, 0o600);
+  assert.equal(readFrontRun(root).revision, "e".repeat(40));
+  assert.equal(
+    readFrontRun(root).evidence,
+    join(root, "state/mend-verify", `box-${basename(root)}`, "evidence", head.sha.slice(0, 12)),
+    "each head's evidence apart, under one private directory per checkout",
+  );
+  assert.deepEqual(result.next, ["pnpm verify box identity", "pnpm verify evidence"]);
+});
+
+test("new-web --box refuses a box it was not told of, a stopped Mend, no ssh, and other surfaces", async (t) => {
+  const go = (world, extra = {}) =>
+    drive(world.root, {
+      surface: "new-web",
+      recipe: join(world.root, ".agents/skills/verify/recipes/web-projects.mjs"),
+      head: world.head,
+      env: world.env,
+      exec: world.exec,
+      ssh: world.ssh,
+      box: true,
+      ...extra,
+    });
+  const elsewhere = boxWorld(t, { appUrl: "https://someone-else.example.test" });
+  const refused = await go(elsewhere);
+  assert.equal(refused.steps[0].status, "blocked_by_prerequisite");
+  assert.equal(refused.steps[0].id, "outer");
+  assert.deepEqual(refused.next, ["export MEND_VERIFY_OUTER_URL=https://box.example.test"]);
+  assert.equal(readFrontRun(elsewhere.root), null, "nothing written for a box it may not reach");
+
+  const stopped = await go(boxWorld(t, { running: "false" }));
+  assert.equal(stopped.steps[0].status, "blocked_by_prerequisite");
+  assert.match(stopped.steps[0].detail, /is not running/);
+
+  const unnamed = await go(boxWorld(t), { ssh: null });
+  assert.equal(unnamed.steps[0].status, "blocked_by_prerequisite");
+
+  const web = await go(boxWorld(t), { surface: "web" });
+  assert.equal(web.steps[0].status, "not_implemented");
+});
+
+test("evidence scans a box drive with the box check's own registry and names the box's build", async (t) => {
+  const { root, exec, calls } = world(t);
+  rmSync(join(root, ".verify/stack/current.json"));
+  const head = { sha: "f".repeat(40), branch: "b", dirty: false };
+  const front = {
+    head: head.sha,
+    web: "https://box.example.test",
+    revision: "e".repeat(40),
+    version: "0.37.0-next.1.preview.9",
+    private: join(root, "box/private"),
+    evidence: join(root, "box/evidence"),
+  };
+  mkdirSync(front.private, { recursive: true });
+  mkdirSync(join(root, ".verify/box"), { recursive: true });
+  writeFileSync(join(root, ".verify/box/front.json"), JSON.stringify(front));
+  const results = join(root, ".verify/results");
+  mkdirSync(results, { recursive: true });
+  const box = { web: front.web, revision: front.revision, version: front.version };
+  for (const [name, drove] of [
+    [
+      "drive-new-web-20261118T000001Z.json",
+      { box, out: join(front.evidence, "new-web-inbox/new-web") },
+    ],
+    ["drive-new-web-20261118T000002Z.json", { out: join(root, "evidence/new-web-inbox/new-web") }],
+  ])
+    writeFileSync(
+      join(results, name),
+      JSON.stringify({
+        verb: "drive new-web",
+        status: "passed",
+        head: { sha: head.sha, dirty: false },
+        drive: { surface: "new-web", recipe: "new-web-inbox", ...drove },
+      }),
+    );
+  assert.equal(driveResults(root, head).length, 2, "a box drive and a stack drive of one recipe");
+  const result = await evidence(root, { head, exec });
+  assert.equal(result.steps.find((step) => step.id === "scan-box").status, "passed");
+  assert.ok(
+    calls.some((call) =>
+      call.line.includes(
+        `scan-evidence.mjs --dir ${front.evidence} --secrets ${front.private} --delete-hits`,
+      ),
+    ),
+  );
+  const verdict = readFileSync(join(root, result.evidence[0].path), "utf8");
+  assert.match(
+    verdict,
+    /the box https:\/\/box\.example\.test runs 0\.37\.0-next\.1\.preview\.9, revision e{40}/,
+  );
+  assert.match(verdict, /new-web on the box · `new-web-inbox`/);
 });
