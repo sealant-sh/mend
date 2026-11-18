@@ -87,7 +87,7 @@ export function PhoneSearch({
             variant="ghost"
             size="touch"
             onClick={onClose}
-            className="px-3 text-lead font-medium text-primary hover:text-primary"
+            className="px-3 text-lead font-medium text-primary hover:bg-transparent hover:text-primary/80"
           >
             Cancel
           </Button>
