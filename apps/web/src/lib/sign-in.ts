@@ -6,10 +6,8 @@ import type { TrpcProxy } from "./trpc.ts";
 
 /**
  * Where a page with no signed-in person walks: `/login`, carrying the page to come back to in its
- * fragment (`#next=…`) when there is one, the form the old app's sign-in page reads.
- *
- * The new app has no sign-in page yet: until its route lands, `/login` here shows the not-found
- * screen, and a person signs in through the old app, whose session cookie this app shares.
+ * fragment (`#next=…`) when there is one. The sign-in page (`routes/login.tsx`) reads it back with
+ * `continuationOf` (lib/onboarding.ts).
  */
 export const SIGN_IN_PATH = "/login";
 
@@ -18,9 +16,10 @@ export const signInPath = (next: string): string =>
 
 /**
  * The first path segments of the pages a signed-out person may open: sign-in itself, or the walk
- * would loop. A route PR for another such page (an invitation, a password reset) adds its segment.
+ * would loop, and setting a password from a reset link. A route PR for another such page (an
+ * invitation, the Slack link) adds its segment.
  */
-const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([SIGN_IN_PATH.slice(1)]);
+const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([SIGN_IN_PATH.slice(1), "reset"]);
 
 export const opensSignedOut = (pathname: string): boolean =>
   SIGNED_OUT_PAGES.has(pathname.split("/")[1] ?? "");

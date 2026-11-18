@@ -74,9 +74,10 @@ node $skill/scripts/drive-web.mjs --web http://127.0.0.1:18305 --viewport 390x84
 **New web app.** `drive-mobile.mjs --client new-web --app <checkout>/apps/web` serves the new web
 app the same way: `vite dev` on `--expo-port` in place of Expo, with the app's own server calling
 the API through the proxy (`MEND_API_URL`) and taking the browser's origin as its own (`APP_URL`).
-It records itself in `$P/new-web.json`, which `drive-web.mjs` takes as it takes `mobile.json`. The
-app has no sign-in page yet, so `drive-web.mjs --sign-in "$web"` signs in on the stack's, and the
-recipe opens `http://localhost:<port>`, where the browser sends that session's cookie.
+It records itself in `$P/new-web.json`, which `drive-web.mjs` takes as it takes `mobile.json`.
+`drive-web.mjs --sign-in "$web"` signs in on the stack's page before the recipe runs, and the recipe
+opens `http://localhost:<port>`, where the browser sends that session's cookie. A recipe that signs
+in on the new app's own page types the account through `account` (`recipes/new-web-sign-in.mjs`).
 `pnpm verify drive new-web` does all of this, and waits for vite's first page before the recipe.
 
 Keep every log and profile **beside** `$P`, never inside it: every file under `$P` joins the secret
