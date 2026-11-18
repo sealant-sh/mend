@@ -61,3 +61,93 @@ export function describeHealthProbes(state) {
       `${String(probe.Start)} exit ${String(probe.ExitCode)}: ${String(probe.Output ?? "").trim() || "(no output)"}`,
   );
 }
+
+/** The editor's own gallery hosts: the Marketplace, its CDNs and the extension resource host. */
+export const GALLERY_HOSTS =
+  /(^|\.)(marketplace\.visualstudio\.com|vscode-unpkg\.net|vsassets\.io|vscode-cdn\.net)$/;
+
+/**
+ * Each request Chromium made to a host `hosts` matches, from the NetLog that `--log-net-log`
+ * writes: its method, URL, wall-clock start, HTTP status line, `Retry-After`, whether the response
+ * allowed a cross-origin read, and the network error it ended with. In the workbench every gallery
+ * failure reads `Failed to fetch` (a DNS or connect failure, a reset, and a response without CORS
+ * headers alike); the NetLog tells them apart. A VS Code that is killed leaves the log truncated
+ * mid-event, so it is read line by line, as Chromium writes it, and a request with no end is
+ * `unfinished`. Returns null when the text is not a NetLog.
+ */
+export function summarizeNetLog(text, hosts = GALLERY_HOSTS) {
+  const [head = "", , ...rest] = text.split("\n");
+  let constants;
+  try {
+    constants = JSON.parse(`${head.replace(/,\s*$/, "")}}`).constants;
+  } catch {
+    return null;
+  }
+  if (!constants?.logEventTypes || !constants.logSourceType) return null;
+  const type = Object.fromEntries(
+    Object.entries(constants.logEventTypes).map(([name, id]) => [id, name]),
+  );
+  const errorName = Object.fromEntries(
+    Object.entries(constants.netError ?? {}).map(([name, code]) => [code, name]),
+  );
+  const offset = Number(constants.timeTickOffset ?? 0);
+  const requests = new Map();
+  for (const line of rest) {
+    const trimmed = line.trim().replace(/,$/, "");
+    if (!trimmed.startsWith("{")) continue;
+    let event;
+    try {
+      event = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (event.source?.type !== constants.logSourceType.URL_REQUEST) continue;
+    const name = type[event.type];
+    const params = event.params ?? {};
+    let request = requests.get(event.source.id);
+    if (name === "REQUEST_ALIVE" && event.phase === constants.logEventPhase.PHASE_BEGIN) {
+      request = { unfinished: true };
+      requests.set(event.source.id, request);
+    }
+    if (request === undefined) continue;
+    if (name === "URL_REQUEST_START_JOB" && typeof params.url === "string" && !request.url) {
+      request.url = params.url;
+      request.method = params.method;
+      request.at = new Date(offset + Number(event.time)).toISOString();
+    }
+    if (name === "HTTP_TRANSACTION_READ_RESPONSE_HEADERS" && Array.isArray(params.headers)) {
+      const [status, ...headers] = params.headers.map(String);
+      const header = (key) =>
+        headers.find((line) => line.toLowerCase().startsWith(`${key}:`))?.slice(key.length + 1);
+      request.status = status;
+      const retryAfter = header("retry-after")?.trim();
+      if (retryAfter !== undefined) request.retryAfter = retryAfter;
+      request.allowsCrossOrigin = header("access-control-allow-origin") !== undefined;
+    }
+    if (typeof params.net_error === "number" && params.net_error !== 0) {
+      request.error = errorName[params.net_error] ?? String(params.net_error);
+    }
+    if (name === "REQUEST_ALIVE" && event.phase === constants.logEventPhase.PHASE_END) {
+      request.unfinished = false;
+    }
+  }
+  return [...requests.values()]
+    .filter((request) => {
+      try {
+        return request.url !== undefined && hosts.test(new URL(request.url).hostname);
+      } catch {
+        return false;
+      }
+    })
+    .map(({ unfinished, ...request }) => (unfinished ? { ...request, unfinished } : request));
+}
+
+/**
+ * A summarized request that ended in a network error, never ended, or got no 2xx or 3xx answer.
+ * A 2xx without `Access-Control-Allow-Origin` is not counted: the main process reads those without
+ * CORS, so only the workbench's own requests would fail on it, and `allowsCrossOrigin` shows it.
+ */
+export function isFailedRequest(request) {
+  const code = Number(/^HTTP\/[\d.]+ (\d{3})/.exec(request.status ?? "")?.[1]);
+  return request.error !== undefined || request.unfinished === true || !(code >= 200 && code < 400);
+}
