@@ -16,6 +16,7 @@ import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/m
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
+import { Schema } from "effect";
 import {
   BotIcon,
   CircleAlertIcon,
@@ -28,7 +29,6 @@ import {
   WrenchIcon,
   CircleDotIcon,
 } from "lucide-react";
-import { Schema } from "effect";
 import { Fragment, type ReactNode, useState } from "react";
 
 import { stepCommand } from "#/lib/checks";
@@ -155,9 +155,7 @@ function SubAgent({
         {segment.segments.length === 0 ? null : (
           <AgentSegments segments={segment.segments} renderRequest={renderRequest} />
         )}
-        {task?.error == null ? null : (
-          <p className="text-row text-destructive">{task.error}</p>
-        )}
+        {task?.error == null ? null : <p className="text-row text-destructive">{task.error}</p>}
         {result === null ? null : <RichText text={result} />}
       </div>
     </TraceRow>

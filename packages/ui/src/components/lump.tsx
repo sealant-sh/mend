@@ -65,7 +65,9 @@ function Lump({
         fill="currentColor"
         fillRule={path.evenOdd === true ? "evenodd" : undefined}
         className={cn(
-          moving && status === "run" && "origin-bottom transform-fill motion-safe:animate-lump-knead",
+          moving &&
+            status === "run" &&
+            "origin-bottom transform-fill motion-safe:animate-lump-knead",
           moving && status === "wait" && "motion-safe:animate-lump-lift",
         )}
       />

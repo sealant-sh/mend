@@ -96,7 +96,7 @@ export default async ({ page, web, capture, note }) => {
 
   // session-page: a real session, read on the server, at its own address.
   await open(`/sessions/${ids["session-record"]}`);
-  await visible(page.getByRole("banner")).waitFor();
+  await visible(page.getByRole("heading", { level: 1 })).waitFor();
   const header = await visible(page.getByRole("heading", { level: 1 })).innerText();
   if (!header.includes("verify-fixture") || !header.includes("session-record"))
     throw new Error(`the Workspace header reads "${header}"`);

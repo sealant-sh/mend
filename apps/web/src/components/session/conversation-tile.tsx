@@ -10,12 +10,12 @@ import { Banner } from "@mend/ui/components/banner";
 import { Conversation, ConversationItem } from "@mend/ui/components/conversation";
 import { ConversationMarker } from "@mend/ui/components/conversation-marker";
 import { TraceRow } from "@mend/ui/components/trace-row";
-import { UserMessage } from "@mend/ui/components/user-message";
 import { Button } from "@mend/ui/components/ui/button";
 import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
+import { UserMessage } from "@mend/ui/components/user-message";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import { CircleAlertIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
 import { Schema } from "effect";
+import { CircleAlertIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
 import { useLayoutEffect, type ReactNode } from "react";
 
 import type { TranscriptEventDto } from "#/lib/api";
@@ -23,8 +23,8 @@ import { conversationQuery, heldConversation } from "#/lib/conversation";
 import { conversationBody, type ConversationRow, workingOn } from "#/lib/conversation-rows";
 import { activityDetail } from "#/lib/inbox";
 import { releaseOpeningMessage, useOpeningMessage } from "#/lib/opening-messages";
-import { noRunWords } from "#/lib/session-record";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
+import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints } from "#/lib/session-sheet";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -138,7 +138,10 @@ function StartingLines({
         <ConversationItem messageId="opening">
           <YouMessage
             text={opening.text}
-            byline={[facts.nameOf(facts.viewerId), messageTime(new Date(opening.sentAt), new Date())]
+            byline={[
+              facts.nameOf(facts.viewerId),
+              messageTime(new Date(opening.sentAt), new Date()),
+            ]
               .filter((part) => part !== null)
               .join(" · ")}
           />
@@ -230,7 +233,10 @@ function LiveLine({
   readonly item: ReturnType<typeof workingOn>;
 }) {
   const kind = item?.kind ?? null;
-  const doing = item === null || !isItemKind(kind) ? null : agentActivity({ kind, title: item.title, data: item.data });
+  const doing =
+    item === null || !isItemKind(kind)
+      ? null
+      : agentActivity({ kind, title: item.title, data: item.data });
   return (
     <ConversationItem messageId="live">
       <div role="status">
@@ -247,7 +253,11 @@ type TranscriptEvent = { readonly key: string; readonly event: TranscriptEventDt
 
 type TranscriptGroup =
   | { readonly kind: "you"; readonly key: string; readonly text: string }
-  | { readonly kind: "agent"; readonly key: string; readonly events: ReadonlyArray<TranscriptEvent> };
+  | {
+      readonly kind: "agent";
+      readonly key: string;
+      readonly events: ReadonlyArray<TranscriptEvent>;
+    };
 
 /**
  * The record's events as messages: each person's line, then everything the agent did after it.
@@ -260,7 +270,8 @@ const transcriptGroups = (
   const groups: Array<TranscriptGroup> = [];
   let agent: Array<TranscriptEvent> = [];
   const flush = () => {
-    if (agent.length > 0) groups.push({ kind: "agent", key: `record:${groups.length}`, events: agent });
+    if (agent.length > 0)
+      groups.push({ kind: "agent", key: `record:${groups.length}`, events: agent });
     agent = [];
   };
   events.forEach((event, at) => {
@@ -296,8 +307,7 @@ function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
     refetchInterval: facts.agentLive ? 2_000 : false,
   });
   if (!recorded)
-    return facts.session.status === "starting" ||
-      startFailed(facts) ? null : (
+    return facts.session.status === "starting" || startFailed(facts) ? null : (
       <Note id="no-record">
         {facts.agentLive
           ? "The workspace is starting. The conversation shows here once the agent runs."
@@ -500,7 +510,10 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
         {body.list === "protocol" && working && conversation.data !== undefined ? (
           <LiveLine facts={facts} item={workingOn(conversation.data)} />
         ) : null}
-        {body.list === "protocol" && !held && !failedStart && facts.session.status !== "starting" ? (
+        {body.list === "protocol" &&
+        !held &&
+        !failedStart &&
+        facts.session.status !== "starting" ? (
           <Note id="empty">Nothing said yet.</Note>
         ) : null}
         <SessionFailure facts={facts} rows={body.rows} />

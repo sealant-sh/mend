@@ -132,7 +132,10 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
           </>
         )}
       </div>
-      <p role="status" className="mx-auto w-full max-w-conversation px-4 py-6 text-row text-muted-foreground">
+      <p
+        role="status"
+        className="mx-auto w-full max-w-conversation px-4 py-6 text-row text-muted-foreground"
+      >
         Reading the conversation…
       </p>
     </div>

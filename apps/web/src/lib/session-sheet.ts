@@ -54,7 +54,9 @@ export const STATUS_WORDS: Readonly<Record<SessionStatusDto, string>> = {
 };
 
 const sameDay = (a: Date, b: Date): boolean =>
-  a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  a.getFullYear() === b.getFullYear() &&
+  a.getMonth() === b.getMonth() &&
+  a.getDate() === b.getDate();
 
 /**
  * When a message was sent, for its byline: the clock time today ("10:42"), the day and the time

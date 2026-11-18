@@ -47,6 +47,8 @@ export function TileTab({
     <TabsTrigger
       value={value}
       data-size={size}
+      // A session tab's name carries its status, which the lump only draws.
+      aria-label={tab.kind === "session" ? `${label}, ${tab.statusWords}` : undefined}
       className={cn(
         // The kit's trigger, reset to the canvas's tab: no pill, a 2px underline inset 10px.
         "h-full flex-none gap-1.75 rounded-none border-0 px-2.5 py-0 text-control font-medium text-muted-foreground tabular-nums",
@@ -77,7 +79,6 @@ export function TileTab({
         </span>
       )}
       <span className={cn("min-w-0 leading-tight", size === "default" && "truncate")}>{label}</span>
-      {tab.kind === "session" ? <span className="sr-only">, {tab.statusWords}</span> : null}
       {tab.kind === "view" && tab.added !== undefined ? (
         <span className="font-mono text-2xs font-normal text-success">+{tab.added}</span>
       ) : null}

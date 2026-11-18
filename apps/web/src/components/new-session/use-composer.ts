@@ -12,8 +12,6 @@ import {
   queueSession,
   type SessionDefaultsDto,
 } from "#/lib/api";
-import { holdOpeningMessage } from "#/lib/opening-messages";
-import { sessionLink } from "#/lib/session-sheet";
 import {
   type Agent,
   AGENTS,
@@ -32,6 +30,8 @@ import {
   launchFields,
 } from "#/lib/new-session";
 import { signedInOptions } from "#/lib/sign-in";
+import { holdOpeningMessage } from "#/lib/opening-messages";
+import { sessionLink } from "#/lib/session-sheet";
 import { type StartCalls, startSession } from "#/lib/start-session";
 import { useTRPC } from "#/lib/trpc";
 

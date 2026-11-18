@@ -12,10 +12,7 @@ import {
   turnLasted,
   workingOn,
 } from "./conversation-rows.ts";
-import {
-  type ConversationView,
-  type TurnView,
-} from "./conversation.ts";
+import { type ConversationView, type TurnView } from "./conversation.ts";
 
 const turn = (id: string, ordinal: number, status: string, at: string): TurnView => ({
   id,
