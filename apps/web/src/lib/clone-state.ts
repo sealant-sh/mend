@@ -71,3 +71,30 @@ export const cloneWords = (progress: AdoptionProgressDto | null): string => {
     }
   }
 };
+
+const COUNT = new Intl.NumberFormat("en");
+
+/**
+ * The line under a running clone's bar, split for its two ends: git's step with its count
+ * ("Receiving objects: 18,240 of 28,500 (64%)"), and what has arrived and how fast, in git's own
+ * units ("41.20 MiB at 6.20 MiB/s"), when git has said.
+ */
+export const cloneDetail = (
+  progress: AdoptionProgressDto | null,
+): { readonly step: string; readonly transfer: string | null } => {
+  const git = progress?.phase === "cloning" ? progress.git : null;
+  if (git === null || git === undefined) return { step: cloneWords(progress), transfer: null };
+  const count =
+    git.total === null
+      ? git.percent === null
+        ? ""
+        : ` (${git.percent}%)`
+      : `: ${COUNT.format(git.done)} of ${COUNT.format(git.total)}${git.percent === null ? "" : ` (${git.percent}%)`}`;
+  const transfer =
+    git.received === null
+      ? null
+      : git.rate === null
+        ? git.received
+        : `${git.received} at ${git.rate}`;
+  return { step: `${git.step}${count}`, transfer };
+};

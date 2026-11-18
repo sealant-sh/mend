@@ -1,5 +1,4 @@
 import { InlineAlert } from "@mend/ui/components/banner";
-import { CopyField } from "@mend/ui/components/copy-field";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { CodeBlock, CodeBlockContent } from "@mend/ui/components/ui/code-block";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@mend/ui/components/ui/field";
@@ -19,16 +18,9 @@ import { Link } from "@tanstack/react-router";
 import { BookMarkedIcon, CheckIcon, SearchIcon } from "lucide-react";
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
 
-import {
-  type AdoptionAttempt,
-  adoptionProgressOptions,
-  clonePercent,
-  forgetAdoption,
-  rememberAdoption,
-  useAdoptionAttempt,
-} from "#/lib/adoptions";
+import { type AdoptionAttempt, clonePercent } from "#/lib/adoptions";
 import type { AdoptionProgressDto, ProjectDto } from "#/lib/api";
-import { type CloneState, cloneStateOf, cloneWords } from "#/lib/clone-state";
+import { type CloneState, cloneWords } from "#/lib/clone-state";
 import { laterPage } from "#/lib/later-pages";
 import { usePhone } from "#/lib/phone";
 import {
@@ -42,90 +34,17 @@ import {
 } from "#/lib/projects";
 import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
+import { type Clone, type CloneRequest, retryOf } from "#/lib/use-clone";
 
+import { MendKeyHelp } from "./mend-key-help.tsx";
 import { Overlay } from "./overlay.tsx";
+import { RepositoryAddressField } from "./repository-address.tsx";
 
 type Visibility = ProjectDto["visibility"];
 type Source = "github" | "url" | "empty";
 
-/** What a person asked to clone: kept so a failed clone can be tried again as it was. */
-interface CloneRequest {
-  readonly name: string;
-  readonly source: string;
-  readonly visibility: Visibility;
-}
-
 /** How long typing rests before the repository search asks GitHub. */
 const SEARCH_REST_MS = 250;
-
-/**
- * The clone this browser started (`lib/adoptions`) and where it stands, shared by the Add project
- * dialog and the row that stands for the clone in the list. `start` begins a new one in its place.
- */
-export function useClone(userId: string) {
-  const trpc = useTRPC();
-  const queryClient = useQueryClient();
-  const attempt = useAdoptionAttempt(userId);
-  const progress = useQuery({
-    ...adoptionProgressOptions(trpc, attempt?.id ?? ""),
-    // The first read can reach the server before the clone does; ask again before giving up.
-    retry: 3,
-    retryDelay: 1_000,
-    enabled: attempt !== null,
-  });
-  const adopt = useMutation(
-    trpc.projects.adopt.mutationOptions({
-      // The list gains the project, and the Projects list's clone row goes, however it ended.
-      onSettled: () => queryClient.invalidateQueries({ queryKey: trpc.projects.list.queryKey() }),
-    }),
-  );
-  const ownRequest = attempt !== null && adopt.variables?.adoptionId === attempt.id;
-  const state =
-    attempt === null
-      ? null
-      : cloneStateOf(
-          {
-            data: progress.isPending || progress.isError ? undefined : progress.data,
-            failed: progress.isError,
-          },
-          {
-            pending: ownRequest && adopt.isPending,
-            project: ownRequest ? adopt.data : undefined,
-            error: ownRequest ? adopt.error : null,
-          },
-        );
-  const added = state?._tag === "Added" ? state.projectId : null;
-  // The clone ended in a project: the list reads it from the server now.
-  useEffect(() => {
-    if (added !== null)
-      void queryClient.invalidateQueries({ queryKey: trpc.projects.list.queryKey() });
-  }, [added, queryClient, trpc]);
-  const start = (request: CloneRequest) => {
-    const id = crypto.randomUUID();
-    rememberAdoption(userId, {
-      id,
-      name: request.name,
-      startedAt: Date.now(),
-      source: request.source,
-      visibility: request.visibility,
-    });
-    adopt.mutate({
-      name: request.name,
-      source: request.source,
-      visibility: request.visibility,
-      adoptionId: id,
-    });
-  };
-  return { attempt, state, start, forget: () => forgetAdoption(userId) };
-}
-
-export type Clone = ReturnType<typeof useClone>;
-
-/** A failed clone's request, when the browser kept what it asked for. */
-const retryOf = (attempt: AdoptionAttempt): CloneRequest | null =>
-  attempt.source === null
-    ? null
-    : { name: attempt.name, source: attempt.source, visibility: attempt.visibility ?? "private" };
 
 /**
  * Add project (Doop "Add project · choose a repository", "Phone · Add project"): a repository the
@@ -419,27 +338,14 @@ function AddProjectForm({
           )}
         </TabsContent>
         <TabsContent value="url" className="flex min-w-0 flex-col">
-          <Field data-invalid={touched && addressIssue !== null ? true : undefined}>
-            <FieldLabel htmlFor={`${ids}-address`}>Repository address</FieldLabel>
-            <Input
-              id={`${ids}-address`}
-              value={address}
-              autoComplete="off"
-              spellCheck={false}
-              placeholder="https://github.com/owner/repository"
-              aria-invalid={touched && addressIssue !== null ? true : undefined}
-              className={cn("font-mono", phone && "h-11")}
-              onChange={(event) => setAddress(event.target.value)}
-              onBlur={() => setTouched(address.trim() !== "")}
-            />
-            {touched && addressIssue !== null ? (
-              <FieldError>{addressIssue}</FieldError>
-            ) : (
-              <FieldDescription>
-                An HTTPS or SSH address. Mend clones it with your Git access.
-              </FieldDescription>
-            )}
-          </Field>
+          <RepositoryAddressField
+            value={address}
+            onChange={setAddress}
+            onBlur={() => setTouched(address.trim() !== "")}
+            issue={addressIssue}
+            showIssue={touched}
+            touch={phone}
+          />
         </TabsContent>
         <TabsContent value="empty">
           <p className="text-row text-muted-foreground">
@@ -738,10 +644,6 @@ function Added({
   );
 }
 
-/** Whether a clone of this address signs with a key (SSH or SCP-style), where Mend's key matters. */
-const signsWithKey = (source: string | null): boolean =>
-  source !== null && /^(ssh:\/\/|[^/@:]+@[^/:]+:)/.test(source.trim());
-
 const durationWords = (from: Date | null, to: Date | null): string | null => {
   if (from === null || to === null) return null;
   const seconds = Math.max(0, Math.round((to.getTime() - from.getTime()) / 1_000));
@@ -764,11 +666,8 @@ function CloneFailed({
   readonly onRetry: (() => void) | null;
   readonly onEdit: () => void;
 }) {
-  const trpc = useTRPC();
   const phone = usePhone();
   const size = phone ? "touch" : "default";
-  const [showKey, setShowKey] = useState(false);
-  const access = useQuery({ ...trpc.git.access.queryOptions(), enabled: showKey });
   const took = durationWords(failure.startedAt, failure.endedAt);
   return (
     <Overlay
@@ -798,37 +697,7 @@ function CloneFailed({
       {took === null ? null : (
         <p className="text-row text-muted-foreground">Failed after {took}.</p>
       )}
-      {!signsWithKey(attempt.source) ? null : showKey ? (
-        access.isPending ? (
-          <p role="status" className="text-row text-muted-foreground">
-            Reading Mend's key…
-          </p>
-        ) : access.isError ? (
-          <InlineAlert size={phone ? "touch" : "default"} title="Mend's key couldn't be read.">
-            {failureWords(access.error, "The Mend server didn't answer.")}
-          </InlineAlert>
-        ) : access.data.key.publicKey === null ? (
-          <p className="text-row text-muted-foreground">
-            You have no Mend key yet. Make one in Settings under Git access.
-          </p>
-        ) : (
-          <div className="flex flex-col gap-1.5">
-            <p className="text-row text-muted-foreground">
-              Add this key to the repository as a deploy key, or to a GitHub account that can read
-              it. Then try again.
-            </p>
-            <CopyField
-              value={access.data.key.publicKey}
-              label="Copy key"
-              size={phone ? "touch" : "default"}
-            />
-          </div>
-        )
-      ) : (
-        <Button variant="link" className="self-start" onClick={() => setShowKey(true)}>
-          Show Mend's key
-        </Button>
-      )}
+      <MendKeyHelp source={attempt.source} touch={phone} />
     </Overlay>
   );
 }

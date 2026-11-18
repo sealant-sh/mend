@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseAttempt } from "#/lib/adoptions";
 import type { AdoptionProgressDto } from "#/lib/api";
-import { cloneStateOf, cloneWords } from "#/lib/clone-state";
+import { cloneDetail, cloneStateOf, cloneWords } from "#/lib/clone-state";
 import { refusedWith } from "#/lib/refusal-fixture";
 
 const startedAt = new Date("2026-11-18T10:00:00Z");
@@ -93,6 +93,39 @@ describe("where a clone stands", () => {
         }),
       ),
     ).toBe("Receiving objects · 1.20 MiB");
+  });
+});
+
+describe("the line under a running clone's bar", () => {
+  const git = {
+    step: "Receiving objects",
+    remote: false,
+    percent: 64,
+    done: 18_240,
+    total: 28_500,
+    received: "41.20 MiB",
+    rate: "6.20 MiB/s",
+  };
+
+  it("gives git's step with its count, and what arrived at what speed", () => {
+    expect(cloneDetail(progress({ git }))).toEqual({
+      step: "Receiving objects: 18,240 of 28,500 (64%)",
+      transfer: "41.20 MiB at 6.20 MiB/s",
+    });
+  });
+
+  it("drops what git hasn't said", () => {
+    expect(
+      cloneDetail(progress({ git: { ...git, total: null, percent: null, rate: null } })),
+    ).toEqual({ step: "Receiving objects", transfer: "41.20 MiB" });
+  });
+
+  it("names Mend's own step before git reports, and after it", () => {
+    expect(cloneDetail(null)).toEqual({ step: "Starting", transfer: null });
+    expect(cloneDetail(progress({ phase: "checking", git }))).toEqual({
+      step: "Checking the repository",
+      transfer: null,
+    });
   });
 });
 

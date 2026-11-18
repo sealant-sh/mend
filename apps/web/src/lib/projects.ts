@@ -145,3 +145,44 @@ export const nameIssue = (
 /** Why an address can't be cloned, in Mend's words, or null when it can. */
 export const sourceIssue = (source: string): string | null =>
   source.trim() === "" ? null : repositoryCloneUrlIssue(source.trim());
+
+/** How many repositories `github.repos` lists at most (`REPO_LIMIT` in the API's GitHub routes). */
+export const LISTED_REPOSITORIES = 30;
+
+/**
+ * Where a search of the person's repositories looks. A list shorter than the server's limit is all
+ * of them, so the page filters it as the person types; a full list may be cut short, so the server
+ * searches GitHub instead.
+ */
+export const searchesOnPage = (listed: number): boolean => listed < LISTED_REPOSITORIES;
+
+/** The listed repositories whose `owner/name` holds the typed words, ignoring case. */
+export const repositoriesMatching = (
+  repositories: ReadonlyArray<GithubRepository>,
+  query: string,
+): ReadonlyArray<GithubRepository> => {
+  const words = query.trim().toLowerCase();
+  return words === ""
+    ? repositories
+    : repositories.filter((repository) => repository.nameWithOwner.toLowerCase().includes(words));
+};
+
+const MINUTE_MS = 60_000;
+
+/** "Pushed 20m ago", "Pushed yesterday", "Pushed 2 weeks ago", from GitHub's last push. */
+export const pushedAgo = (pushedAt: string | null, now: Date): string => {
+  const at = pushedAt === null ? Number.NaN : Date.parse(pushedAt);
+  if (Number.isNaN(at)) return "";
+  const minutes = Math.max(0, Math.floor((now.getTime() - at) / MINUTE_MS));
+  if (minutes < 1) return "Pushed just now";
+  if (minutes < 60) return `Pushed ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Pushed ${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "Pushed yesterday";
+  if (days < 14) return `Pushed ${days} days ago`;
+  if (days < 60) return `Pushed ${Math.floor(days / 7)} weeks ago`;
+  if (days < 365) return `Pushed ${Math.floor(days / 30)} months ago`;
+  const years = Math.floor(days / 365);
+  return `Pushed ${years} ${years === 1 ? "year" : "years"} ago`;
+};

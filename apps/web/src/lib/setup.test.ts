@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { afterSignIn, hasAgentLogin, signInEntry, welcomeEntry } from "./setup.ts";
+import {
+  afterSignIn,
+  firstProjectEntry,
+  firstProjectSkippable,
+  hasAgentLogin,
+  signInEntry,
+  welcomeEntry,
+} from "./setup.ts";
 
 const noKey = {
   mode: "mend-key",
@@ -47,6 +54,27 @@ describe("where /welcome sends a person", () => {
     expect(await welcomeEntry({ access: withKey, hasProject: true, hasAgentLogin: loggedIn })).toBe(
       "home",
     );
+  });
+});
+
+describe("where /welcome/first-project sends a person", () => {
+  it("sends someone without Git access back to that step", () => {
+    expect(firstProjectEntry({ access: noKey, hasProject: false })).toBe("git-access");
+  });
+
+  it("shows the step to someone with Git access and no project, whatever their agent login", () => {
+    expect(firstProjectEntry({ access: bridge, hasProject: false })).toBe("first-project");
+  });
+
+  it("sends someone who can see a project on to Mend, such as a member of an organization that shares one", () => {
+    expect(firstProjectEntry({ access: withKey, hasProject: true })).toBe("home");
+  });
+});
+
+describe("who may skip First project", () => {
+  it("lets a member of an organization with others skip, but not its only account", () => {
+    expect(firstProjectSkippable(1)).toBe(false);
+    expect(firstProjectSkippable(2)).toBe(true);
   });
 });
 

@@ -29,10 +29,11 @@ import {
 } from "#/lib/projects";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
+import { useClone } from "#/lib/use-clone";
 import { useInbox } from "#/lib/use-inbox";
 
 import { PhoneTabBar } from "../phone-inbox.tsx";
-import { AddProject, useClone } from "./add-project.tsx";
+import { AddProject } from "./add-project.tsx";
 import {
   type CloneEntry,
   type ProjectActions,
