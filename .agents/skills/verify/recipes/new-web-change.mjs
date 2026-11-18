@@ -314,6 +314,31 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   if (hash !== "#land") throw new Error(`/changes/<id>#land arrived with hash "${hash}"`);
   note(`/changes/<id>#land went to ${path()}${hash}`);
 
+  // A worktree no session has worked in: its change has no session to open.
+  const lonely = await client(
+    async (trpc, [projectId, name]) => {
+      const made = await trpc.worktrees.create.mutate({
+        projectId,
+        worktree: { name, base: null },
+      });
+      const id = made.id;
+      const detail = await trpc.worktrees.detail.query({ id });
+      return { id, change: detail.change?.id ?? null };
+    },
+    [small.projectId, `change-lonely-${Date.now()}`],
+  );
+  if (lonely.change === null)
+    note("a new worktree no session has worked in has no change yet: no /changes/<id> to open");
+  else {
+    await open(`/changes/${lonely.change}`);
+    await visible(page.getByRole("heading", { name: "Nothing to review yet" })).waitFor();
+    note("/changes/<id> of a worktree no session has worked in reads 'Nothing to review yet'");
+    await both("no-session-desktop");
+  }
+  await client(async (trpc, id) => {
+    await trpc.worktrees.remove.mutate({ id, force: true }).catch(() => undefined);
+  }, lonely.id);
+
   // A narrow tile: the Change view beside the conversation.
   // The session's own page first, then its Change view: the view's tab opens beside the
   // conversation's, in one tile.
