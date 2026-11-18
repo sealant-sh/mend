@@ -27,7 +27,7 @@ export function Toaster() {
         <ToastViewport
           size={phone ? "touch" : "default"}
           // Centred on the sheet, right of the 264px sidebar; on a phone, above the tab bar.
-          className={cn(phone ? "bottom-18" : "left-66")}
+          className={cn(phone ? "data-[size=touch]:bottom-18" : "left-66")}
         >
           <ToastList />
         </ToastViewport>

@@ -41,8 +41,8 @@ import {
 import { type ComponentType, type ReactNode, useRef, useState } from "react";
 
 import { whenAhead, type InboxRow } from "#/lib/inbox";
-import { sessionLink } from "#/lib/session-sheet";
 import { type RowActions, snoozeChoices } from "#/lib/row-actions";
+import { sessionLink } from "#/lib/session-sheet";
 import type { RowActionHandlers } from "#/lib/use-row-actions";
 
 /**
@@ -68,7 +68,7 @@ interface MenuParts {
     readonly children: ReactNode;
     readonly width?: "sm" | "md" | "lg";
   }>;
-  readonly Shortcut: ComponentType<{ readonly children: ReactNode }>;
+  readonly Shortcut: ComponentType<{ readonly children: ReactNode; readonly className?: string }>;
 }
 
 const DROPDOWN: MenuParts = {
@@ -99,6 +99,9 @@ export interface RowMenuProps {
   readonly onRename: () => void;
 }
 
+/** A value on a menu item's right ("F2", "Thu 09:00"), in plain muted text on one line. */
+const META = "pl-4 tracking-normal whitespace-nowrap tabular-nums";
+
 /** The desk's menu items, in the frame's order: open, snooze, mark done, rename, copy link. */
 function RowMenuItems({
   parts: { Group, Label, Item, Sub, SubTrigger, SubContent, Shortcut },
@@ -115,7 +118,7 @@ function RowMenuItems({
       <Item onClick={() => void navigate(sessionLink(row.session.id))}>
         <ArrowUpRightIcon aria-hidden />
         Open session
-        <Shortcut>↵</Shortcut>
+        <Shortcut className={META}>↵</Shortcut>
       </Item>
       {actions.snooze ? (
         <Sub>
@@ -123,11 +126,11 @@ function RowMenuItems({
             <AlarmClockIcon aria-hidden />
             Snooze
           </SubTrigger>
-          <SubContent width="sm">
+          <SubContent width="md">
             {snoozeChoices(now).map((choice) => (
               <Item key={choice.label} onClick={() => handlers.snooze(row, choice.until)}>
                 {choice.label}
-                <Shortcut>{whenAhead(choice.until, now)}</Shortcut>
+                <Shortcut className={META}>{whenAhead(choice.until, now)}</Shortcut>
               </Item>
             ))}
           </SubContent>
@@ -155,7 +158,7 @@ function RowMenuItems({
         <Item onClick={onRename}>
           <PencilIcon aria-hidden />
           Rename
-          <Shortcut>F2</Shortcut>
+          <Shortcut className={META}>F2</Shortcut>
         </Item>
       ) : null}
       <Item onClick={() => handlers.copyLink(row)}>
@@ -357,6 +360,10 @@ export function PhoneRowActions({ row, actions, handlers }: Omit<RowMenuProps, "
           showCloseButton={false}
           className="max-h-[85dvh] gap-0 rounded-t-pop-touch pb-[env(safe-area-inset-bottom)]"
         >
+          <span
+            aria-hidden
+            className="mx-auto mt-1.5 mb-0.5 block h-1.25 w-9 rounded-full bg-muted-foreground/35"
+          />
           {page === "actions" ? (
             <>
               {header(row.title)}
