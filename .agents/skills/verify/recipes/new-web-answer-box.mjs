@@ -1,8 +1,8 @@
 // Answering the agent on the box, with a real Codex turn (route PR 14, SLNT-1138): Codex asks
 // before acting, an approval approved and one refused from the composer card, the session's row
-// leaving Waiting on you without a reload, a question answered if Codex asks one, and an approval
-// answered first in a second browser. Run it as the verify skill's section 9 says, under your own
-// hold, and stop the session it starts before release:
+// leaving Waiting on you without a reload, an approval answered first in a second browser, and a
+// question Codex asks, answered by a choice. Run it as the verify skill's section 9 says, under
+// your own hold, and stop the session it starts before release:
 //
 //   pnpm verify drive new-web --box --recipe new-web-answer-box
 //
@@ -11,16 +11,19 @@
 // on, and prints its id; stop it with the checker CLI. The states a real agent can't be made to
 // reach on demand (an answer that couldn't send, someone else answering) are driven locally with
 // fixtures (new-web-answer).
+//
+// Codex runs in the workspace with full access, so with Ask before acting (approval on request)
+// it asks only before a command it counts as dangerous, such as `rm -f`: each approval here is one.
+// Codex asks questions with its own tool only in plan mode, which no control of the new web app
+// sets yet: the question's turn is sent through the app's own tRPC client with
+// `interactionMode: "plan"`, and the card that answers it is the page's.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const TURN_MS = 600_000;
-const ASK_MS = 240_000;
-/**
- * Codex runs in the workspace with full access, so "Ask before acting" (approval on request) asks
- * only when Codex itself asks for escalated permissions: each prompt tells it to.
- */
-const ESCALATE =
-  " Run it with escalated permissions (sandbox_permissions require_escalated, with a one-line justification), so I am asked to approve it first.";
+const ASK_MS = 300_000;
+/** A turn Codex asks about: it makes a file, then deletes it with a command it asks before. */
+const DELETE = (file) =>
+  `Run the shell command \`printf ok > ${file}\`, then delete the file by running exactly \`rm -f ${file}\`. Reply with the single word deleted if the file is gone, or kept if the deletion didn't run.`;
 
 /** The one of a locator's matches a person sees: the desktop and phone layouts are both in the page. */
 const visible = (locator) => locator.filter({ visible: true }).first();
@@ -30,12 +33,13 @@ const approvalCard = (page) =>
   visible(page.getByText(/^Codex wants to (run a command|edit a file|edit \d+ files|use a tool)$/));
 
 export default async ({ page, web, capture, note }) => {
-  const field = (on = page) => visible(on.getByRole("textbox", { name: "Message Codex" }));
+  const field = () => visible(page.getByRole("textbox", { name: "Message Codex" }));
   const send = async (words) => {
     await field().fill(words);
     await page.keyboard.press("Enter");
   };
   const stopTurn = () => visible(page.getByRole("button", { name: "Stop turn" }));
+  const turnOver = () => stopTurn().waitFor({ state: "hidden", timeout: TURN_MS });
   const both = async (name) => {
     await capture(`${name}-desktop-light`);
     await page.setViewportSize(PHONE);
@@ -58,6 +62,24 @@ export default async ({ page, web, capture, note }) => {
     }
     return null;
   };
+  /** Codex asks before a command: the card, or a clear failure saying it ran without asking. */
+  const asks = async () => {
+    const asked = await Promise.race([
+      approvalCard(page)
+        .waitFor({ timeout: ASK_MS })
+        .then(() => true),
+      page
+        .waitForTimeout(20_000)
+        .then(() => turnOver())
+        .then(() => false),
+    ]);
+    if (!asked) throw new Error("Codex finished the turn without asking before acting");
+    return approvalCard(page).innerText();
+  };
+  const lastReply = async () => {
+    const replies = page.getByText(/^(deleted|kept)\.?$/i).filter({ visible: true });
+    return (await replies.count()) > 0 ? replies.last().innerText() : "(no one-word reply)";
+  };
 
   await page.setViewportSize(DESKTOP);
   await page.goto(`${web}/`);
@@ -79,21 +101,22 @@ export default async ({ page, web, capture, note }) => {
   const ask = page.getByRole("menuitemcheckbox", { name: "Ask before acting" });
   if ((await ask.getAttribute("aria-checked")) !== "true") await ask.click();
   await page.keyboard.press("Escape").catch(() => undefined);
-  await visible(page.getByRole("textbox", { name: "Task" })).fill(
-    `Create a file named approval-check.txt holding the word ok by running the shell command \`printf ok > approval-check.txt\`.${ESCALATE} Then reply with the single word created.`,
-  );
+  await visible(page.getByRole("textbox", { name: "Task" })).fill(DELETE("approval-check.txt"));
   await visible(page.getByRole("button", { name: "Start session" })).click();
   await page.waitForURL(/\/sessions\/[0-9a-f-]+$/, { timeout: 120_000 });
   const id = new URL(page.url()).pathname.split("/").at(-1);
   note(`started session ${id} with Ask before acting; stop it with the checker CLI before release`);
 
-  // Codex asks before running the command: the card in the composer, the marker in the thread,
-  // and the row under Waiting on you.
-  await approvalCard(page).waitFor({ timeout: TURN_MS });
-  const asked = await approvalCard(page).innerText();
+  // Codex asks before deleting: the card in the composer, the marker in the thread, and the row
+  // under Waiting on you.
+  const asked = await asks();
   await visible(page.getByText(/· Waiting for your approval$/)).waitFor();
-  await waiting(id).first().waitFor({ timeout: 60_000 });
-  note(`Codex asked: "${asked}"; the row is under Waiting on you`);
+  const listed = await waiting(id)
+    .first()
+    .waitFor({ timeout: 60_000 })
+    .then(() => true)
+    .catch(() => false);
+  note(`Codex asked: "${asked}"; the row is ${listed ? "" : "not "}under Waiting on you`);
   await both("box-approval-asked");
 
   await visible(page.getByRole("button", { name: "Approve", exact: true })).click();
@@ -103,70 +126,25 @@ export default async ({ page, web, capture, note }) => {
   note(
     `Approve: the card went, the thread reads "${approvedLine}", and the row ${left === null ? "stayed under Waiting on you for 30s" : `left Waiting on you ${left}ms later, with no reload`}`,
   );
-  await visible(page.getByText(/^created\.?$/i)).waitFor({ timeout: TURN_MS });
-  await stopTurn().waitFor({ state: "hidden", timeout: TURN_MS });
+  await turnOver();
+  note(`after the approval Codex replied "${await lastReply()}"`);
   await both("box-approval-approved");
 
   // A second approval, refused: Codex carries on without running it.
-  await send(
-    `Delete approval-check.txt by running the shell command \`rm approval-check.txt\`.${ESCALATE} If you couldn't run it, reply with the single word kept; otherwise reply with the single word deleted.`,
-  );
-  await approvalCard(page).waitFor({ timeout: TURN_MS });
+  await send(DELETE("refused-check.txt"));
+  await asks();
   await visible(page.getByRole("button", { name: "Deny", exact: true })).click();
   await approvalCard(page).waitFor({ state: "hidden", timeout: 60_000 });
   const deniedLine = await visible(page.getByText(/^You denied/)).innerText();
   note(`Deny: the card went and the thread reads "${deniedLine}"`);
-  const after = visible(page.getByText(/^(kept|deleted)\.?$/i));
-  await after.waitFor({ timeout: TURN_MS }).catch(() => undefined);
-  note(
-    `after the denial Codex replied "${(await after.count()) > 0 ? await after.innerText() : "(no one-word reply)"}"`,
-  );
-  await stopTurn().waitFor({ state: "hidden", timeout: TURN_MS });
+  await turnOver();
+  note(`after the denial Codex replied "${await lastReply()}"`);
   await both("box-approval-denied");
-
-  // A question, if Codex will ask one with its tool for asking: picked by choice.
-  await send(
-    "Use your tool for asking the user a question to ask me whether approval-check.txt should be kept or deleted, offering exactly the two choices Keep and Delete. Wait for my answer, then reply with the single word I chose and do nothing else.",
-  );
-  const question = visible(page.getByText(/^Asked you a question · Waiting for your answer$/));
-  const askedQuestion = await Promise.race([
-    question.waitFor({ timeout: ASK_MS }).then(() => true),
-    stopTurn()
-      .waitFor({ state: "hidden", timeout: ASK_MS })
-      .then(async () => {
-        await page.waitForTimeout(3_000);
-        return (await question.count()) > 0;
-      }),
-  ]).catch(() => false);
-  if (askedQuestion) {
-    await both("box-question-asked");
-    await visible(page.getByRole("radio", { name: /^Keep/ })).click();
-    await page.keyboard.press("Enter").catch(() => undefined);
-    await visible(page.getByRole("button", { name: "Send" }))
-      .click()
-      .catch(() => undefined);
-    await visible(page.getByText(/^You chose Keep/)).waitFor({ timeout: 60_000 });
-    await visible(page.getByText(/^Keep\.?$/i))
-      .waitFor({ timeout: TURN_MS })
-      .catch(() => undefined);
-    note(
-      "Codex asked a question with Keep and Delete; Keep was picked and sent, and the thread reads You chose Keep",
-    );
-    await both("box-question-answered");
-  } else
-    note(
-      "Codex didn't ask a question with its tool when told to (it answered in words, or not at all within 4 minutes): the question states are shown from fixtures in new-web-answer",
-    );
-  await stopTurn()
-    .waitFor({ state: "hidden", timeout: TURN_MS })
-    .catch(() => undefined);
 
   // Answered first on another device: a second browser, signed in as the same person, approves
   // while this one shows the card.
-  await send(
-    `Create a file named second-check.txt holding the word ok by running the shell command \`printf ok > second-check.txt\`.${ESCALATE} Then reply with the single word created.`,
-  );
-  await approvalCard(page).waitFor({ timeout: TURN_MS });
+  await send(DELETE("second-check.txt"));
+  await asks();
   const other = await page
     .context()
     .browser()
@@ -181,12 +159,58 @@ export default async ({ page, web, capture, note }) => {
   } finally {
     await other.close();
   }
-  await visible(page.getByText("Already answered on another device.")).waitFor({ timeout: 60_000 });
+  await visible(page.getByText("Already answered on another device.")).waitFor({
+    timeout: 60_000,
+  });
   note(
     "approved in a second browser first: this one's card went and the band says it was answered on another device, with Dismiss",
   );
   await both("box-approval-answered-elsewhere");
-  await visible(page.getByText(/^created\.?$/i).nth(1))
-    .waitFor({ timeout: TURN_MS })
-    .catch(() => undefined);
+  await visible(page.getByRole("button", { name: "Dismiss" })).click();
+  await turnOver();
+
+  // A question: Codex asks with its own tool in plan mode; Keep is picked and sent from the card.
+  const question =
+    "Use your request_user_input tool to ask me one question: should the file approval-check.txt be kept or deleted, with exactly two options, Keep and Delete. Wait for my answer, then reply with the single word I chose and do nothing else.";
+  await page.evaluate(
+    async ({ sessionId, words }) => {
+      const { trpcClient } = window["__TSR_ROUTER__"].options.context;
+      await trpcClient.sessions.sendMessage.mutate({
+        id: sessionId,
+        input: words,
+        clientMessageId: crypto.randomUUID(),
+        selection: {
+          harness: "codex",
+          model: null,
+          effort: null,
+          interactionMode: "plan",
+          permissionMode: "ask",
+        },
+      });
+    },
+    { sessionId: id, words: question },
+  );
+  const asking = visible(page.getByText(/^Asked you a question · Waiting for your answer$/));
+  const askedQuestion = await Promise.race([
+    asking.waitFor({ timeout: ASK_MS }).then(() => true),
+    page
+      .waitForTimeout(20_000)
+      .then(() => turnOver())
+      .then(() => false),
+  ]).catch(() => false);
+  if (!askedQuestion) {
+    note(
+      "Codex, in plan mode, didn't ask a question with its tool when told to: the question states are shown from fixtures in new-web-answer",
+    );
+    return;
+  }
+  await both("box-question-asked");
+  await visible(page.getByRole("radio", { name: /^Keep/ })).click();
+  await visible(page.getByRole("button", { name: "Send" })).click();
+  await visible(page.getByText(/^You chose Keep/)).waitFor({ timeout: 60_000 });
+  note(
+    "Codex asked a question with Keep and Delete; Keep was picked and sent with the composer's send button, and the thread reads You chose Keep",
+  );
+  await turnOver().catch(() => undefined);
+  await both("box-question-answered");
 };

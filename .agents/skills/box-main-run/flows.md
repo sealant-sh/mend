@@ -253,18 +253,16 @@ flows reuse what earlier ones made:
 - **Needs:** Boat; real turn (codex); web; `start-session.composer` (its session)
 - **Do:** On `/sessions/<id>` for the session `start-session.composer` started, open the composer's
   model menu, tick `Ask before acting`, and send
-  `Create a file named approval-check.txt holding the word ok by running the shell command printf ok > approval-check.txt. Run it with escalated permissions (sandbox_permissions require_escalated, with a one-line justification), so I am asked to approve it first. Then reply with the single word created.`
-  (Codex runs with full access in the workspace, so it asks only when it asks for escalation.) When
-  the composer card asks (`Codex wants to run a command` or `Codex wants to edit a file`), choose
-  `Approve`. Then send
-  `Delete approval-check.txt by running the shell command rm approval-check.txt. Run it with escalated permissions (sandbox_permissions require_escalated, with a one-line justification), so I am asked to approve it first. Then reply with the single word deleted, or kept if you couldn't.`
-  and choose `Deny` when it asks.
-- **See:** while Codex waits, the card shows the command (or the edit's diff) with `Approve once`,
-  `Always allow …`, `Deny` and `Approve`, the conversation reads
-  `Wants to run a command · Waiting for your approval`, and the session's sidebar row is under
-  `Waiting on you`; after `Approve` the card goes, the conversation reads
-  `You approved the command once`, the row leaves `Waiting on you` with no reload, and the turn
-  replies `created`; after `Deny` it reads `You denied` and Codex carries on without running it.
+  `Run the shell command printf ok > approval-check.txt, then delete the file by running exactly rm -f approval-check.txt. Reply with the single word deleted if the file is gone, or kept if the deletion didn't run.`
+  Codex runs with full access in the workspace, so it asks only before a command it counts as
+  dangerous, such as `rm -f`. When the composer card asks (`Codex wants to run a command`), choose
+  `Approve`. Send the same message again with `refused-check.txt` and choose `Deny` when it asks.
+- **See:** while Codex waits, the card shows the command with `Approve once`, `Always allow …`,
+  `Deny` and `Approve`, the conversation reads `Wants to run a command · Waiting for your approval`,
+  and the session's sidebar row is under `Waiting on you`; after `Approve` the card goes, the
+  conversation reads `You approved the command once`, the row leaves `Waiting on you` with no
+  reload, and the turn replies `deleted`; after `Deny` it reads `You denied` and Codex replies
+  `kept`.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
