@@ -70,9 +70,11 @@ export function FilePicker({
     </button>
   );
   const list = (
-    <div className="grid gap-2">
+    <div className="grid min-w-0 gap-2">
       {files.length >= FILTER_FROM ? (
-        <FileFilter value={filter} onChange={setFilter} size={phone ? "touch" : "default"} />
+        <div className={phone ? "px-4 pb-1" : undefined}>
+          <FileFilter value={filter} onChange={setFilter} size={phone ? "touch" : "default"} />
+        </div>
       ) : null}
       <ChangeFileTree
         groups={shown}
@@ -101,9 +103,7 @@ export function FilePicker({
                   {viewedCount} of {files.length} viewed
                 </SheetDescription>
               </SheetHeader>
-              <div className="min-h-0 overflow-y-auto py-3 [&>div>div:first-child]:mx-4">
-                {list}
-              </div>
+              <div className="min-h-0 overflow-x-hidden overflow-y-auto py-3">{list}</div>
             </SheetContent>
           </Sheet>
         </>
