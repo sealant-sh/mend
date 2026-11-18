@@ -13,6 +13,13 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-16: session screens are tabs and tiles, and sessions share a workspace.** Yiannis, with
+  the web redesign. The sheet is the workspace; every conversation and view is a tab in a tile;
+  Details is a view, not a panel. Anyone can join a running workspace without asking, and its owner
+  sees it. Stop session stops the workspace only when no other session runs there, and landing is
+  not blocked by another session still editing. Shared control goes to the person who asked.
+  Details: [ADR 0026](adr/0026-tabs-and-tiles.md).
+
 - **2026-11-16: settings have one home each, and nothing inherits.** Yiannis, with the web redesign.
   Every setting is stored in one place (you, this device, the organization, the project, the
   project's `.mend/mend.toml`, you in one project, or the server), with no Inherit value and no

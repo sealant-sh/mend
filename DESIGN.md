@@ -159,7 +159,8 @@ The sheet's geometry has tokens: `p-sheet-inset` (8px), `w-sidebar` (268px), `h-
   Preview with its port, Screen, Terminal, Record, Checks, Details). One tile has focus, and its
   active tab has the cobalt underline; another tile's active tab has the `underline` grey. Below
   1024px wide the tiles become one strip of tabs, as on the phone, and the layout button hides. The
-  page "Session layouts · Tabs and tiles" draws each state.
+  page "Session layouts · Tabs and tiles" draws each state, and
+  [ADR 0026](docs/adr/0026-tabs-and-tiles.md) records the rules.
 - **The conversation** is a 704px column. The agent's question and the composer form one floating
   card at that width (`rounded-xl`, `shadow-card`): the question, a hairline, then the input and its
   toolbar. In a tile narrower than 760px the column fills the tile with 22 to 28px of side padding,

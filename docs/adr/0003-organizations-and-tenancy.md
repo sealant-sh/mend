@@ -184,6 +184,9 @@ Linux user; a steered turn runs in an agent process of the steerer's user on the
 continuing the one shared conversation, and "Runs as \<owner\>" no longer describes a steered
 session.
 
+**Changed by [ADR 0026](0026-tabs-and-tiles.md):** shared control goes to the person who asked for
+it, not to everyone who can see the project.
+
 ### Removing a member
 
 Removal is per organization. Steps 1 to 4 concern the organization the member is removed from. Step
