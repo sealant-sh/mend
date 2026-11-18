@@ -265,7 +265,7 @@ export function PageEvent({ page }: { readonly page: PageRef }) {
       </figcaption>
       <PageFrame page={page} />
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="max-w-5xl">
+        <DialogContent size="lg">
           <DialogHeader>
             <DialogTitle>{page.title}</DialogTitle>
             <DialogDescription>Published at {published}</DialogDescription>
