@@ -53,7 +53,8 @@ function SessionSheet({ facts }: { readonly facts: SessionFacts }) {
     body: <ConversationTile facts={facts} />,
   };
   return (
-    <div className="flex h-dvh min-h-0 min-w-0 flex-1 flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))]">
+    // Exactly the sheet's height, never the content's: the thread scrolls inside its tile.
+    <div className="flex h-dvh min-w-0 flex-none flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))]">
       <WorkspaceHeader
         project={facts.projectName}
         worktree={facts.worktreeName}
@@ -99,7 +100,7 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
   });
   const listed = row.isPending || row.isError ? null : row.data;
   return (
-    <div aria-busy className="flex h-dvh min-w-0 flex-1 flex-col lg:h-auto">
+    <div aria-busy className="flex h-dvh min-w-0 flex-none flex-col lg:h-auto">
       <div className="flex h-header shrink-0 items-center gap-3 border-b px-5 max-lg:h-14">
         {listed === null ? (
           <Skeleton className="h-4 w-56" />

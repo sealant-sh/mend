@@ -249,6 +249,8 @@ export default async ({ page, web, capture, note }) => {
   note(
     "fixture turn completes: turn 3's header, Worked for 2 min 4 s with 3 steps · 1 failed, opened to its steps",
   );
+  // The fold opens with an animation: capture it open.
+  await settled();
   await capture("fixture-turn-steps-desktop-light");
 
   // Out of credit (Doop 4SRZGM5MQX): why the turn stopped, the agent's words, Open agent logins.
