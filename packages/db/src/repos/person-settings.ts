@@ -1,4 +1,4 @@
-import { inheritedPersonSettings, PersonSettings } from "@mend/domain";
+import { defaultPersonSettings, PersonSettings } from "@mend/domain";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -6,12 +6,12 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { userAutomationSettings } from "../schema/workbench.ts";
 
-/** One stored row as the domain reads it; no row is a person who chose nothing. */
+/** One stored row as the domain reads it; no row is a person who never saved, on Mend's defaults. */
 export const personSettingsFromRow = (
   row: typeof userAutomationSettings.$inferSelect | undefined,
 ): PersonSettings =>
   row === undefined
-    ? inheritedPersonSettings
+    ? defaultPersonSettings
     : new PersonSettings({
         autoTour: row.autoTour,
         autoSuggest: row.autoSuggest,
@@ -21,13 +21,13 @@ export const personSettingsFromRow = (
       });
 
 /**
- * A person's own automation switches (`PersonSettings`): what their sessions get in place of their
- * organization's defaults, switch by switch. Only the person writes their own.
+ * A person's own automation switches (`PersonSettings`): what their sessions get, switch by switch.
+ * Only the person writes their own, and nothing else is read in their place.
  */
 export class PersonSettingsRepo extends Context.Service<
   PersonSettingsRepo,
   {
-    /** The person's own values; every one null when they chose nothing. */
+    /** The person's own values; Mend's defaults when they never saved. */
     readonly forUser: (userId: string) => Effect.Effect<PersonSettings>;
     /** Replace the person's own values. */
     readonly set: (userId: string, settings: PersonSettings) => Effect.Effect<PersonSettings>;

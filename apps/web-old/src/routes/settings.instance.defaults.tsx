@@ -1,11 +1,12 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, redirect } from "@tanstack/react-router";
 
-import { InstanceDefaults } from "#/components/settings/instance-defaults";
-import { requireOperator } from "#/lib/settings-guards";
-
+/**
+ * Instance · Defaults held only the instance's automation switches, which nothing reads any more:
+ * each person's own are what count (docs/adr/0025-one-home-per-setting.md). An old link lands on
+ * Instance · Environment.
+ */
 export const Route = createFileRoute("/settings/instance/defaults")({
-  beforeLoad: ({ context }) => requireOperator(context),
-  loader: ({ context: { queryClient, trpc } }) =>
-    queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
-  component: InstanceDefaults,
+  beforeLoad: () => {
+    throw redirect({ to: "/settings/instance/environment", replace: true });
+  },
 });

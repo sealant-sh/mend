@@ -250,8 +250,8 @@ change. The first landing opens the pull request and later ones update it.
 ### When it is on
 
 - A session started from the web or the CLI follows its project's `Land when a turn completes`
-  setting, which is `inherit`, `on`, or `off`. `inherit` follows the default in Settings, which is
-  off unless an operator or organization owner turned it on.
+  setting, which is `inherit`, `on`, or `off`. `inherit` follows the session owner's own
+  `Land when a turn completes` in their Settings, which is off until they turn it on.
 - A session can override the project when it starts. The web composer's menu has
   `Land when a turn completes` with `As the project`, `Land`, and `Do not land`. The CLI has
   `--land` and `--no-land`:

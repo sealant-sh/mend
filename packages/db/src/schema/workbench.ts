@@ -3406,16 +3406,17 @@ export const userSettleSettings = pgTable("user_settle_settings", {
 });
 
 /**
- * A person's own automation switches over their organization's defaults (`PersonSettings`). Each
- * null column follows the organization.
+ * A person's own automation switches (`PersonSettings`): plain values, nothing inherited
+ * (docs/adr/0025-one-home-per-setting.md). No row is a person who never saved, with Mend's defaults;
+ * migration 0229 wrote a row for every account that existed, with what it resolved to then.
  */
 export const userAutomationSettings = pgTable("user_automation_settings", {
   userId: text().primaryKey(),
-  autoTour: boolean(),
-  autoSuggest: boolean(),
-  autoName: boolean(),
-  autoLand: boolean(),
-  backgroundSessions: boolean(),
+  autoTour: boolean().notNull().default(true),
+  autoSuggest: boolean().notNull().default(true),
+  autoName: boolean().notNull().default(true),
+  autoLand: boolean().notNull().default(false),
+  backgroundSessions: boolean().notNull().default(true),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

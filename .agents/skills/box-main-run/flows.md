@@ -920,20 +920,22 @@ flows reuse what earlier ones made:
 ### project-settings.read
 
 - **Map:** project-settings.md `settings-background`, `settings-review-automation`,
-  `settings-landing`, `settings-org-defaults` (all read)
+  `settings-landing`, `settings-own-automation`, `settings-org-defaults` (all read)
 - **Needs:** no session; no turn; web; `<p>`
 - **Do:** Read `<p>`'s Settings → Landing sub-tab (`Sessions`, `Landing`) and Review sub-tab
-  (`Review automation`), and Settings → Organization → Defaults. Choose nothing.
-- **See:** the groups `Run sessions in the background`, `Land when a turn completes`,
+  (`Review automation`), your own Settings → Sessions, Review and Landing, and Settings →
+  Organization → Defaults. Choose nothing.
+- **See:** on `<p>`, the groups `Run sessions in the background`, `Land when a turn completes`,
   `Compose the description and tour`, `Suggest fixes` and `Name the session`, each with one of
-  `Inherit · on|off`, `On`, `Off` pressed; under `Defaults · Default`, six groups
-  (`Run sessions in the background`, `Compose the description & tour`, `Suggest fixes`,
-  `Name the session`, `Land when a turn completes`, `Where new sessions run`), each with one of
-  `Inherit · …`, `On`/`Off` (or `Docker`/`Boat`) pressed.
+  `Inherit · on|off`, `On`, `Off` pressed, an `Inherit` tip reading `From your own settings`; your
+  own pages show the same five as switches with no Inherit, each `Inherit · <value>` on `<p>`
+  matching your switch; under `Defaults · Default`, only `Where new sessions run`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web-old/src/components/project/settings/`,
-  `apps/web-old/src/routes/settings.organization.defaults.tsx`, `apps/api/src/`
+  `apps/web-old/src/components/settings/`, `apps/web-old/src/lib/person-settings.ts`,
+  `apps/web-old/src/routes/settings.organization.defaults.tsx`, `apps/api/src/`,
+  `packages/db/src/repos/person-settings.ts`
 
 ### references-folders.folder-cli
 

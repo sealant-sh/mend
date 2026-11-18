@@ -111,12 +111,9 @@ const FALLBACK: Record<string, unknown> = {
 
 let root: Root;
 let answers: Record<string, unknown>;
-let refuse: ReadonlySet<string>;
 let calls: Array<string>;
 /** What each mutation sent, decoded. */
 let sent: Array<{ readonly path: string; readonly input: unknown }>;
-/** Lets a refused call answer only when the test says so, to look at the screen before it does. */
-let release: () => void = () => undefined;
 
 const render = async (node: ReactNode) => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -130,21 +127,6 @@ const render = async (node: ReactNode) => {
           calls.push(path);
           if (typeof init?.body === "string")
             sent.push({ path, input: JSON.parse(init.body).json });
-          if (refuse.has(path)) {
-            await new Promise<void>((resolve) => {
-              release = resolve;
-            });
-            return Response.json(
-              {
-                error: serialize({
-                  message: "Only owners change defaults.",
-                  code: -32603,
-                  data: { code: "FORBIDDEN", httpStatus: 403 },
-                }),
-              },
-              { status: 403 },
-            );
-          }
           return Response.json({
             result: { data: serialize(answers[path] ?? FALLBACK[path] ?? null) },
           });
@@ -191,7 +173,6 @@ const option = (label: string, text: string) => {
 
 beforeEach(() => {
   Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true);
-  refuse = new Set();
   calls = [];
   sent = [];
   const host = document.createElement("div");
@@ -206,49 +187,29 @@ afterEach(() => {
 });
 
 describe("Organization · Defaults", () => {
-  it("gives an owner Inherit, On and Off, with Inherit showing the instance's value", async () => {
-    answers = {
-      "organization.current": viewer("owner"),
-      "organization.settings": settingsView(true),
-    };
-    await render(<DefaultsTab />);
-    expect(document.body.textContent).toContain("Defaults · Acme");
-    expect(pressed("Compose the description & tour")).toContain("Inherit · on");
-    // Land when a turn completes is Acme's own.
-    expect(pressed("Land when a turn completes")).toBe("On");
-  });
-
-  it("shows an owner's pick at once and puts it back when the server refuses", async () => {
-    answers = {
-      "organization.current": viewer("owner"),
-      "organization.settings": settingsView(true),
-    };
-    refuse = new Set(["organization.setSettings"]);
-    await render(<DefaultsTab />);
-
-    await act(async () => option("Suggest fixes", "Off").click());
-    await settle();
-    expect(pressed("Suggest fixes")).toBe("Off");
-    release();
-    await settle();
-
-    expect(calls).toContain("organization.setSettings");
-    expect(pressed("Suggest fixes")).toContain("Inherit");
-    expect(document.querySelector('[role="alert"]')?.textContent).toBe(
-      "Only owners change defaults.",
-    );
-  });
-
-  it("shows a member each value and where it comes from, with nothing to press", async () => {
-    answers = {
-      "organization.current": viewer("member"),
-      "organization.settings": settingsView(false),
-    };
-    await render(<DefaultsTab />);
-    expect(document.querySelectorAll("button")).toHaveLength(0);
-    expect(document.body.textContent).toContain("on · from acme's defaults");
-    expect(document.body.textContent).toContain("on · from the instance default");
-  });
+  // Acme's own "land when a turn completes" is still stored, but nothing reads it any more.
+  it.each([
+    ["an owner", "owner", true],
+    ["a member", "member", false],
+  ] as const)(
+    "shows %s no automation switches, which each person now sets for themselves",
+    async (_who, role, editable) => {
+      answers = {
+        "organization.current": viewer(role),
+        "organization.settings": settingsView(editable),
+      };
+      await render(<DefaultsTab />);
+      expect(document.body.textContent).toContain("Defaults · Acme");
+      expect(document.body.textContent).toContain("Where new sessions run");
+      for (const label of [
+        "Compose the description & tour",
+        "Suggest fixes",
+        "Land when a turn completes",
+        "Run sessions in the background",
+      ])
+        expect(document.body.textContent).not.toContain(label);
+    },
+  );
 });
 
 /** One project the switch compares: visible and inheriting unless stated. */

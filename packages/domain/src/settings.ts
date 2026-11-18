@@ -299,11 +299,10 @@ export class MendSettings extends Schema.Class<MendSettings>("MendSettings")({
   /** How many issues mend at once — the dispatcher fills free slots from the top of queued. */
   concurrency: Schema.Int,
   /**
-   * Review automation defaults — the machine-side prep that runs when a
-   * session settles, so review opens ready. Each switch is overridable per
-   * organization and per project: the cascade is instance → organization →
-   * project (`organizationDefaults`, then `resolveAutomation`), resolved per
-   * session at settle.
+   * The automation switches below are what a session reads (`personDefaults` fills them from the
+   * session owner's own `PersonSettings`, then a project's own choice sits on top through
+   * `resolveAutomation`). The instance's settings document still stores its own values for the old
+   * web app's Instance page, but no session reads them (docs/adr/0025-one-home-per-setting.md).
    */
   /** Compose the tour when a session settles — description and walkthrough ready before review opens. */
   autoTour: onByDefault,
@@ -356,8 +355,9 @@ export const builtInSettingsFor = (runtime: SessionRuntime | null): MendSettings
 /**
  * An organization's own defaults (docs/adr/0003-organizations-and-tenancy.md, "Resources that were
  * instance-global"). The instance's settings document is the operator's; an organization's owners
- * set these instead, and every project in the organization inherits them unless it overrides a
- * value itself. Null follows the instance. The queue-era `prMode` and `concurrency` stay
+ * set these instead. Null follows the instance. The automation switches are still stored and
+ * answered for the old web app, but no session reads them: each person's own are what count
+ * (docs/adr/0025-one-home-per-setting.md). The queue-era `prMode` and `concurrency` stay
  * instance-wide.
  */
 export class OrganizationSettings extends Schema.Class<OrganizationSettings>(
@@ -433,29 +433,30 @@ export const organizationDefaultSources = (
 });
 
 /**
- * A person's own stance on the automation switches (You · Sessions, Review and Landing): each one
- * null follows their organization's default, which follows the instance's. A project's own choice
- * still sits on top: the cascade is project → person → organization → instance, and the person is
- * the one whose session it is (its owner).
+ * A person's own automation switches (You · Your automation): plain values, stored once, read by
+ * nothing else (docs/adr/0025-one-home-per-setting.md). Their sessions take them as they are; only
+ * a project's own Inherit · On · Off choice still sits above them, and a session records what its
+ * composer picked for landing. "Name the session" and "Background sessions" stay until their own
+ * removal (ADR 0025, decision 2), because CLIs already installed read them.
  */
 export class PersonSettings extends Schema.Class<PersonSettings>("PersonSettings")({
-  autoTour: Schema.NullOr(Schema.Boolean),
-  autoSuggest: Schema.NullOr(Schema.Boolean),
-  autoName: Schema.NullOr(Schema.Boolean),
-  autoLand: Schema.NullOr(Schema.Boolean),
-  backgroundSessions: Schema.NullOr(Schema.Boolean),
+  autoTour: Schema.Boolean,
+  autoSuggest: Schema.Boolean,
+  autoName: Schema.Boolean,
+  autoLand: Schema.Boolean,
+  backgroundSessions: Schema.Boolean,
 }) {}
 
-/** A person who chose nothing: every switch follows their organization. */
-export const inheritedPersonSettings = new PersonSettings({
-  autoTour: null,
-  autoSuggest: null,
-  autoName: null,
-  autoLand: null,
-  backgroundSessions: null,
+/** A person who never saved their own: Mend's defaults, the same for every new account. */
+export const defaultPersonSettings = new PersonSettings({
+  autoTour: defaultSettings.autoTour,
+  autoSuggest: defaultSettings.autoSuggest,
+  autoName: defaultSettings.autoName,
+  autoLand: defaultSettings.autoLand,
+  backgroundSessions: defaultSettings.backgroundSessions,
 });
 
-/** The switches a person may set for their own sessions. */
+/** The switches a person sets for their own sessions. */
 export const PERSON_SETTING_KEYS = [
   "autoTour",
   "autoSuggest",
@@ -466,21 +467,18 @@ export const PERSON_SETTING_KEYS = [
 export type PersonSettingKey = (typeof PERSON_SETTING_KEYS)[number];
 
 /**
- * What one person's sessions inherit: their own value wherever they set one, else `inherited`,
- * which is their organization's defaults (`organizationDefaults`). A session with no owner passes
- * null and gets the organization's.
+ * What one person's sessions get: `base` (their organization's environment, `organizationDefaults`)
+ * with every automation switch taken from the person, and nothing from the organization's or the
+ * instance's automation. A session with no owner passes null and gets Mend's defaults.
  */
-export const personDefaults = (
-  inherited: MendSettings,
-  person: PersonSettings | null,
-): MendSettings =>
-  person === null
-    ? inherited
-    : new MendSettings({
-        ...inherited,
-        autoTour: person.autoTour ?? inherited.autoTour,
-        autoSuggest: person.autoSuggest ?? inherited.autoSuggest,
-        autoName: person.autoName ?? inherited.autoName,
-        autoLand: person.autoLand ?? inherited.autoLand,
-        backgroundSessions: person.backgroundSessions ?? inherited.backgroundSessions,
-      });
+export const personDefaults = (base: MendSettings, person: PersonSettings | null): MendSettings => {
+  const own = person ?? defaultPersonSettings;
+  return new MendSettings({
+    ...base,
+    autoTour: own.autoTour,
+    autoSuggest: own.autoSuggest,
+    autoName: own.autoName,
+    autoLand: own.autoLand,
+    backgroundSessions: own.backgroundSessions,
+  });
+};

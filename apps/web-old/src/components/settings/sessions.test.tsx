@@ -12,7 +12,8 @@ afterEach(() => {
   document.body.replaceChildren();
 });
 
-const INSTANCE = {
+/** The person's own switches as they stand before the test changes any. */
+const OWN = {
   backgroundSessions: true,
   autoTour: true,
   autoSuggest: false,
@@ -20,35 +21,8 @@ const INSTANCE = {
   autoLand: false,
 };
 
-const NOTHING_OWN = {
-  backgroundSessions: null,
-  autoTour: null,
-  autoSuggest: null,
-  autoName: null,
-  autoLand: null,
-};
-
-const FROM_INSTANCE = {
-  backgroundSessions: "instance",
-  autoTour: "instance",
-  autoSuggest: "instance",
-  autoName: "instance",
-  autoLand: "instance",
-};
-
-/** The person's switches as the server answers them, with `own` over the instance's. */
-const automation = (own: Record<keyof typeof INSTANCE, boolean | null>) => ({
-  own,
-  inherited: INSTANCE,
-  inheritedFrom: FROM_INSTANCE,
-  effective: {
-    backgroundSessions: own.backgroundSessions ?? INSTANCE.backgroundSessions,
-    autoTour: own.autoTour ?? INSTANCE.autoTour,
-    autoSuggest: own.autoSuggest ?? INSTANCE.autoSuggest,
-    autoName: own.autoName ?? INSTANCE.autoName,
-    autoLand: own.autoLand ?? INSTANCE.autoLand,
-  },
-});
+/** The person's switches as the server answers them: their own, and the same as effective. */
+const automation = (own: typeof OWN) => ({ own, effective: own });
 
 /**
  * An account in no organization, on an instance whose saves go through or are refused. `saved`
@@ -56,7 +30,7 @@ const automation = (own: Record<keyof typeof INSTANCE, boolean | null>) => ({
  */
 const server = (refuseSave: boolean, saved: Array<[string, unknown]> = []) => {
   let stored = { sendSteersRunningTurn: true };
-  let own = { ...NOTHING_OWN };
+  let own = { ...OWN };
   let defaults: unknown = { harness: null, byHarness: {} };
   return (path: string, input: unknown): Answer => {
     switch (path) {
@@ -96,8 +70,17 @@ const server = (refuseSave: boolean, saved: Array<[string, unknown]> = []) => {
   };
 };
 
-const steers = () => byText('[role="switch"]', /.*/);
-const background = () => byText('[role="group"]', "Run sessions in the background");
+/** The switch a row labels with `label`. */
+const switchNamed = (label: string): HTMLElement => {
+  const found = [...document.querySelectorAll<HTMLElement>('[role="switch"]')].find(
+    (element) =>
+      document.getElementById(element.getAttribute("aria-labelledby") ?? "")?.textContent === label,
+  );
+  if (found === undefined) throw new Error(`no switch named ${label}`);
+  return found;
+};
+const steers = () => switchNamed("Send steers the running turn");
+const background = () => switchNamed("Run sessions in the background");
 const pressed = (group: HTMLElement) =>
   [...group.querySelectorAll<HTMLElement>("button")]
     .find((button) => button.getAttribute("aria-pressed") === "true")
@@ -111,25 +94,24 @@ const option = (group: HTMLElement, text: string) => {
 };
 
 describe("Settings · Sessions", () => {
-  it("starts background sessions on Inherit, saying what it resolves to", async () => {
+  it("shows the person's own background switch, with no Inherit", async () => {
     root = await renderWithTrpc(<SessionsSettings />, server(false));
-    expect(pressed(background())).toMatch(/^Inherit\s*· on$/);
+    expect(background().getAttribute("aria-checked")).toBe("true");
+    expect(document.body.textContent).not.toContain("Inherit");
   });
 
   it("saves the person's own Off and keeps it showing", async () => {
     const saved: Array<[string, unknown]> = [];
     root = await renderWithTrpc(<SessionsSettings />, server(false, saved));
-    await click(option(background(), "Off"));
-    expect(pressed(background())).toBe("Off");
-    expect(saved).toEqual([
-      ["platform.setAutomation", { ...NOTHING_OWN, backgroundSessions: false }],
-    ]);
+    await click(background());
+    expect(background().getAttribute("aria-checked")).toBe("false");
+    expect(saved).toEqual([["platform.setAutomation", { ...OWN, backgroundSessions: false }]]);
   });
 
-  it("puts the choice back on Inherit and says why when the server refuses it", async () => {
+  it("puts the background switch back and says why when the server refuses it", async () => {
     root = await renderWithTrpc(<SessionsSettings />, server(true));
-    await click(option(background(), "Off"));
-    expect(pressed(background())).toMatch(/^Inherit/);
+    await click(background());
+    expect(background().getAttribute("aria-checked")).toBe("true");
     expect(document.querySelector('[role="alert"]')?.textContent).toContain(
       "the store is read-only",
     );

@@ -11,7 +11,7 @@ export interface AutoLandInputs {
   readonly origin: SessionOrigin;
   /** The project's "Land when a turn completes". */
   readonly project: AutomationChoice;
-  /** The Settings default a project's `inherit` follows. */
+  /** The session owner's own "Land when a turn completes", which a project's `inherit` follows. */
   readonly settings: boolean;
   /**
    * The session's own override: the composer's or `mend`'s `--land` / `--no-land`, or the
@@ -25,7 +25,7 @@ export interface AutoLandInputs {
 /**
  * Whether automatic landing is on for a session. A project set to `off` wins over everything,
  * Slack included. A Slack session follows its request's `autopr=`, then the Slack app's setting.
- * Any other session follows its own override, then the project, then Settings.
+ * Any other session follows its own override, then the project, then its owner's own setting.
  */
 export const resolveAutoLand = (inputs: AutoLandInputs): boolean => {
   if (inputs.project === "off") return false;

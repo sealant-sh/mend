@@ -12,10 +12,9 @@ import { ProjectVisibility } from "./organization.ts";
 export * from "./project-rules.ts";
 
 /**
- * A project's stance on one automation switch: follow the default it inherits,
- * or override it either way. The default is its organization's own value over
- * the instance's (`organizationDefaults`); a session takes whatever its project
- * resolves to at settle.
+ * A project's stance on one automation switch: follow the session owner's own
+ * value (`PersonSettings`), or override it either way. A session takes whatever
+ * its project resolves to at settle.
  */
 export const AutomationChoice = Schema.Literals(["inherit", "on", "off"]);
 export type AutomationChoice = typeof AutomationChoice.Type;

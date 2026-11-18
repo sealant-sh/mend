@@ -17,10 +17,10 @@ const unsupported = (error: unknown): boolean =>
   error instanceof MendRequestError && error.kind === "http" && error.status === 404;
 
 /**
- * Cascade for the launch lifecycle: per-launch flag → project stance → the person's own setting →
- * the organization's default → the instance's. The server resolves the last three
- * (`/me/automation`). Only a server that does not know that route (404) is asked the older
- * questions: the organization's defaults, else the instance's. Any other failure (a blip) stays
+ * Cascade for the launch lifecycle: per-launch flag → project stance → the person's own setting,
+ * which the server answers (`/me/automation`, `effective`). Only a server that does not know that
+ * route (404), from before people had their own, is asked the older questions: the organization's
+ * defaults, else the instance's. Any other failure (a blip) stays
  * background, and `say` tells the person their own setting was not read: a network hiccup must
  * never flip launch semantics to foreground.
  */

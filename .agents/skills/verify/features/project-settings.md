@@ -4,10 +4,10 @@ A project's Setup tab holds its policy switches: whether its sessions run in the
 review automation Mend runs when a session settles (`Description & tour`, `Suggest fixes`,
 `Name the session`), and whether a session lands after a completed turn
 (`Land when a turn completes`). Each reads `Inherit · <value>`, `On` or `Off`; `Inherit` follows the
-organization's default, which follows the instance's. Owners also set the project's visibility
-(`private` or `shared`) and remove it. The defaults live in Settings: the organization's
-`Defaults · <organization>` panel for its owners, and the instance's `Sessions`, `Review automation`
-and `Landing` panels for the operator only.
+session owner's own switch (SLNT-1155: nothing comes from the organization or the instance any
+more). Owners also set the project's visibility (`private` or `shared`) and remove it. Each person
+sets their own switches in Settings (`Sessions`, `Review`, `Landing`), as plain `On`/`Off` with no
+Inherit. The organization's `Defaults · <organization>` panel holds only `Where new sessions run`.
 
 ## Sub-features
 
@@ -18,17 +18,21 @@ and `Landing` panels for the operator only.
 - `settings-visibility` makes a project `private` or `shared` (owners only).
 - `settings-remove` removes the project from listed projects while retaining its files and history.
 - `settings-retention` restores a removed project or purges it with name confirmation.
-- `settings-org-defaults` lets owners pick `Instance · <on|off>`, `On` or `Off` per switch for the
-  organization; members read the value and its source.
-- `settings-instance-defaults` lets the operator set the instance's `On`/`Off` for each switch.
+- `settings-own-automation` lets each person turn their own switches `On` or `Off` (Settings →
+  Sessions, Review, Landing); `GET /api/me/automation` answers `{ own, effective }`, the same plain
+  values, and a `PUT` with a `null` is refused with 400 `AutomationInheritRemoved`.
+- `settings-org-defaults` lets owners pick where the organization's new sessions run; it no longer
+  shows automation switches (the organization's are stored but not read).
+- `settings-instance-defaults` is gone: `/settings/instance/defaults` redirects to Instance ·
+  Environment.
 
 ## How to get to it (user POV)
 
 - Web: a project's Setup tab, sections `Visibility` (owners, anchor `#visibility`), `Sessions`
   (`#sessions`), `Review automation` (`#review`), `Landing` (`#landing`), and the `Remove project…`
   button at the bottom (`#remove`; owners, or the creator of a private project).
-- Web: `/settings`, panel `Defaults · <organization>` (anchor `#organization-defaults`), and under
-  `instance · operator` the panels `Sessions`, `Review automation` and `Landing`.
+- Web: `/settings/sessions`, `/settings/review` and `/settings/landing` for your own switches;
+  `/settings`, panel `Defaults · <organization>` (anchor `#organization-defaults`).
 - CLI: no command sets these. Launches read them: `mend codex|claude … --land|--no-land`,
   `--foreground`, `--detach`; `mend adopt --private|--shared` picks visibility at adoption only.
 - Desktop: the launcher's landing choice per session (see [Land a change](./land-change.md)). TUI,
@@ -41,9 +45,8 @@ Preconditions:
 
 - Mend is healthy at `<web>`, signed in as the instance's first account (operator and organization
   owner), and `<project>` was adopted by that account.
-- Every project switch follows (its `Inherit · on`/`Inherit · off` is pressed) and the organization
-  follows the instance for every switch (`Inherit · …` is pressed in each group of
-  `Defaults · <organization>`).
+- Every project switch follows (its `Inherit · on`/`Inherit · off` is pressed): it then shows the
+  signed-in person's own value.
 - The CLI steps need `mend connect claude`.
 - `const section = (name) => page.locator("section").filter({ has: page.getByRole("heading", { name, exact: true }) })`
   and, for one row inside a section,
@@ -76,24 +79,20 @@ Preconditions:
   settled: the launching `mend` exited, so it stopped. Choose that group's `On` and repeat with
   `--name verify-bg`: after `tmux kill-session` the session stays live. Stop it with
   `mend stop <id8>` and choose `Inherit · …` again. A positive case using `Inherit` instead requires
-  the inherited organization or instance background value to be on.
+  the person's own background switch to be on.
 - **Review automation.** Run
   `await page.getByRole("group", { name: "Name the session" }).getByRole("button", { name: "Off", exact: true }).click()`.
   `Off` reports `aria-pressed="true"` (see Gotchas). Choose `Inherit · …` again.
+- **Your own switches.** Go to `<web>/settings/landing`. `Land when a turn completes` is one switch
+  (`role="switch"`, `aria-checked`), with no Inherit. Flip it; reload: it stays. On a project whose
+  `Landing` is `Inherit`, the choice now reads `Inherit · <your value>` and its tip says
+  `From your own settings`. Flip it back. `/settings/review` holds
+  `Compose the description and tour`, `Suggest fixes` and `Name the session`; `/settings/sessions`
+  holds `Run sessions in the background`.
 - **Organization default.** Go to `<web>/settings/organization/defaults`. Under the heading
-  `Defaults · <organization>` and the line
-  `Inherit follows the instance default, set by its operator. A project can still set its own.`, six
-  groups: `Run sessions in the background`, `Compose the description & tour`, `Suggest fixes`,
-  `Name the session` and `Land when a turn completes`, each with `Inherit · on|off`, `On`, `Off`,
-  and `Where new sessions run` with `Inherit · <runtime>`, `Docker`, `Boat` (all with
-  `aria-pressed`), each followed by a `Where this comes from` button. Run
-  `await page.getByRole("group", { name: "Land when a turn completes" }).getByRole("button", { name: "Off", exact: true }).click()`.
-  `Off` reports `aria-pressed="true"` in that group. Choose that group's `Inherit · …` again to
-  restore it.
-- **Instance default.** Under `instance · operator`, `section("Landing")` shows
-  `Land when a turn completes` with `On` and `Off` (both with `aria-pressed`); `section("Sessions")`
-  and `section("Review automation")` show `On`/`Off` per row. Read them; change them only on a
-  disposable instance, and restore them.
+  `Defaults · <organization>` one group: `Where new sessions run` with `Inherit · <runtime>`,
+  `Docker`, `Boat`. No automation switch is shown. `/settings/instance/defaults` lands on Instance ·
+  Environment.
 - **Visibility.** On the project's Setup tab, run
   `await page.getByRole("group", { name: "Visibility" }).getByRole("button", { name: "shared" }).click()`.
   `shared` reports `aria-pressed="true"`. Choose `private` to restore it.
@@ -118,9 +117,8 @@ Preconditions:
 
 - The project's switches are on the Settings tab's `Landing` and `Review` sub-tabs, each a `group`
   named by its label with `Inherit · <value>`, `On` and `Off` (box ARIA snapshots, 17 Nov). The
-  project names its row `Compose the description and tour`; the organization's Defaults names the
-  same setting `Compose the description & tour` (`apps/web-old/src/lib/organization-defaults.ts`).
-  The steps that click `Off`/`On` and reload were not driven on the box.
+  project and your own Settings name the row `Compose the description and tour`. The steps that
+  click `Off`/`On` and reload were not driven on the box.
 - Every project and organization choice reported `aria-pressed` on the box (17 Nov). `On` and `Off`
   repeat in every group: scope to the group by its name and pass `exact: true`. The `section` and
   `row` helpers above are no longer needed for these choices.
@@ -131,8 +129,6 @@ Preconditions:
   `Remove project…`. Members who do not manage the project see neither the switches nor the
   sections; they read
   `How sessions here launch is set by the project's creator or an organization owner. You can start sessions and review changes as it stands.`
-- The instance panels render only for the operator; anyone else sees no editors there, not refusing
-  ones.
 - `Run sessions in the background` applies to CLI launches only: a browser tab closing cannot
   promise a stop. `--detach` and `--foreground` on a launch override it.
 - `Land when a turn completes` lands only after turns Mend runs itself, and terminal sessions never

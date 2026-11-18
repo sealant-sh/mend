@@ -2,7 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import {
   defaultSettings,
   inheritedOrganizationSettings,
-  inheritedPersonSettings,
+  defaultPersonSettings,
   MendSettings,
   OrganizationId,
   OrganizationSettings,
@@ -87,51 +87,38 @@ describe.skipIf(postgres.skip)("a person's own settings, in Postgres", () => {
     );
   });
 
-  it("resolves each switch person → organization → instance, for that person only", async () => {
+  it("gives each person's sessions their own switches, never the organization's or the instance's", async () => {
     await run(
       Effect.gen(function* () {
         const settings = yield* SettingsRepo;
         const people = yield* PersonSettingsRepo;
-        // The instance: tour on, suggestions on, landing off, background on.
+        // The instance turns landing on and the tour off; Acme turns suggestions off. Both are
+        // still stored for the old web app, and neither may reach anyone's sessions.
         yield* settings.modify(
-          () =>
-            new MendSettings({
-              ...defaultSettings,
-              autoTour: true,
-              autoSuggest: true,
-              autoLand: false,
-              backgroundSessions: true,
-            }),
+          () => new MendSettings({ ...defaultSettings, autoTour: false, autoLand: true }),
         );
-        // Acme turns suggestions off for everyone in it.
         yield* (yield* OrganizationSettingsRepo).set(
           ACME,
           new OrganizationSettings({ ...inheritedOrganizationSettings, autoSuggest: false }),
         );
-        expect(yield* people.forUser("anna")).toEqual(inheritedPersonSettings);
-        // Anna turns landing on and suggestions back on for herself; Ben sets nothing.
-        yield* people.set(
-          "anna",
-          new PersonSettings({ ...inheritedPersonSettings, autoLand: true, autoSuggest: true }),
-        );
+        expect(yield* people.forUser("anna")).toEqual(defaultPersonSettings);
+        // Anna saves her own; Ben never saved.
+        const annas = new PersonSettings({
+          ...defaultPersonSettings,
+          autoTour: false,
+          autoLand: true,
+        });
+        expect(yield* people.set("anna", annas)).toEqual(annas);
 
         const anna = yield* settings.forPerson(ACME, "anna");
-        expect(anna.autoLand).toBe(true); // her own, over the instance's off
-        expect(anna.autoSuggest).toBe(true); // her own, over Acme's off
-        expect(anna.autoTour).toBe(true); // nobody's but the instance's
+        expect([anna.autoTour, anna.autoSuggest, anna.autoLand]).toEqual([false, true, true]);
 
         const ben = yield* settings.forPerson(ACME, "ben");
-        expect(ben.autoLand).toBe(false); // the instance's
-        expect(ben.autoSuggest).toBe(false); // Acme's
+        expect([ben.autoTour, ben.autoSuggest, ben.autoLand]).toEqual([true, true, false]);
 
-        // No owner reads the organization's.
-        expect(yield* settings.forPerson(ACME, null)).toEqual(
-          yield* settings.forOrganization(ACME),
-        );
-
-        // Back on Inherit: Anna follows Acme again.
-        yield* people.set("anna", inheritedPersonSettings);
-        expect((yield* settings.forPerson(ACME, "anna")).autoSuggest).toBe(false);
+        // A session with no owner gets Mend's defaults too.
+        const nobody = yield* settings.forPerson(ACME, null);
+        expect([nobody.autoTour, nobody.autoSuggest, nobody.autoLand]).toEqual([true, true, false]);
       }),
     );
   });
@@ -169,7 +156,7 @@ describe.skipIf(postgres.skip)("a person's own settings, in Postgres", () => {
         const sql = yield* SqlClient.SqlClient;
         yield* (yield* PersonSettingsRepo).set(
           "ben",
-          new PersonSettings({ ...inheritedPersonSettings, autoName: false }),
+          new PersonSettings({ ...defaultPersonSettings, autoName: false }),
         );
         yield* (yield* SessionDefaultsRepo).set(
           "ben",
