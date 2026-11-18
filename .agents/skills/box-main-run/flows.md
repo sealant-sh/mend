@@ -253,10 +253,11 @@ flows reuse what earlier ones made:
 - **Needs:** Boat; real turn (codex); web; `start-session.composer` (its session)
 - **Do:** On `/sessions/<id>` for the session `start-session.composer` started, open the composer's
   model menu, tick `Ask before acting`, and send
-  `Create a file named approval-check.txt holding the word ok by running the shell command printf ok > approval-check.txt, then reply with the single word created.`
-  When the composer card asks (`Codex wants to run a command` or `Codex wants to edit a file`),
-  choose `Approve`. Then send
-  `Delete approval-check.txt by running the shell command rm approval-check.txt, then reply with the single word deleted, or kept if you couldn't.`
+  `Create a file named approval-check.txt holding the word ok by running the shell command printf ok > approval-check.txt. Run it with escalated permissions (sandbox_permissions require_escalated, with a one-line justification), so I am asked to approve it first. Then reply with the single word created.`
+  (Codex runs with full access in the workspace, so it asks only when it asks for escalation.) When
+  the composer card asks (`Codex wants to run a command` or `Codex wants to edit a file`), choose
+  `Approve`. Then send
+  `Delete approval-check.txt by running the shell command rm approval-check.txt. Run it with escalated permissions (sandbox_permissions require_escalated, with a one-line justification), so I am asked to approve it first. Then reply with the single word deleted, or kept if you couldn't.`
   and choose `Deny` when it asks.
 - **See:** while Codex waits, the card shows the command (or the edit's diff) with `Approve once`,
   `Always allow …`, `Deny` and `Approve`, the conversation reads

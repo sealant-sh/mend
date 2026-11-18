@@ -15,6 +15,12 @@ const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const TURN_MS = 600_000;
 const ASK_MS = 240_000;
+/**
+ * Codex runs in the workspace with full access, so "Ask before acting" (approval on request) asks
+ * only when Codex itself asks for escalated permissions: each prompt tells it to.
+ */
+const ESCALATE =
+  " Run it with escalated permissions (sandbox_permissions require_escalated, with a one-line justification), so I am asked to approve it first.";
 
 /** The one of a locator's matches a person sees: the desktop and phone layouts are both in the page. */
 const visible = (locator) => locator.filter({ visible: true }).first();
@@ -74,7 +80,7 @@ export default async ({ page, web, capture, note }) => {
   if ((await ask.getAttribute("aria-checked")) !== "true") await ask.click();
   await page.keyboard.press("Escape").catch(() => undefined);
   await visible(page.getByRole("textbox", { name: "Task" })).fill(
-    "Create a file named approval-check.txt holding the word ok by running the shell command `printf ok > approval-check.txt`. Then reply with the single word created.",
+    `Create a file named approval-check.txt holding the word ok by running the shell command \`printf ok > approval-check.txt\`.${ESCALATE} Then reply with the single word created.`,
   );
   await visible(page.getByRole("button", { name: "Start session" })).click();
   await page.waitForURL(/\/sessions\/[0-9a-f-]+$/, { timeout: 120_000 });
@@ -103,7 +109,7 @@ export default async ({ page, web, capture, note }) => {
 
   // A second approval, refused: Codex carries on without running it.
   await send(
-    "Delete approval-check.txt by running the shell command `rm approval-check.txt`. If you couldn't run it, reply with the single word kept; otherwise reply with the single word deleted.",
+    `Delete approval-check.txt by running the shell command \`rm approval-check.txt\`.${ESCALATE} If you couldn't run it, reply with the single word kept; otherwise reply with the single word deleted.`,
   );
   await approvalCard(page).waitFor({ timeout: TURN_MS });
   await visible(page.getByRole("button", { name: "Deny", exact: true })).click();
@@ -158,7 +164,7 @@ export default async ({ page, web, capture, note }) => {
   // Answered first on another device: a second browser, signed in as the same person, approves
   // while this one shows the card.
   await send(
-    "Create a file named second-check.txt holding the word ok by running the shell command `printf ok > second-check.txt`. Then reply with the single word created.",
+    `Create a file named second-check.txt holding the word ok by running the shell command \`printf ok > second-check.txt\`.${ESCALATE} Then reply with the single word created.`,
   );
   await approvalCard(page).waitFor({ timeout: TURN_MS });
   const other = await page
