@@ -43,6 +43,9 @@ describe("sessionControlView", () => {
   });
 });
 
+const asked = (view: ReturnType<typeof sharedControlView>) =>
+  view.asked.map((person) => person.userId);
+
 /** Who asks and who holds shared control, as each viewer reads it (docs/adr/0026). */
 describe("sharedControlView", () => {
   const alice = { userId: "alice", role: "member" as const };
@@ -79,8 +82,6 @@ describe("sharedControlView", () => {
       grantedByUserId: "alice",
     },
   ];
-  const asked = (view: ReturnType<typeof sharedControlView>) =>
-    view.asked.map((person) => person.userId);
 
   it("the owner reads every ask and decides; an asker reads only their own and withdraws", () => {
     const owner = sharedControlView(session, alice, people, true);

@@ -11,28 +11,28 @@
 // session and leaves nobody holding or asking for shared control at its end.
 const SESSION_PREFIX = "share-";
 
+/** One person's API, from their signed-in page: what the web app's data layer calls. */
+const apiOf = (on) => (method, url, body) =>
+  on.evaluate(
+    async ({ verb, address, payload }) => {
+      const response = await fetch(address, {
+        method: verb,
+        headers: { "content-type": "application/json" },
+        ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
+      });
+      const text = await response.text();
+      return { status: response.status, body: text === "" ? null : JSON.parse(text) };
+    },
+    { verb: method, address: url, payload: body },
+  );
+const expect = (what, ok, seen) => {
+  if (!ok) throw new Error(`${what}: saw ${JSON.stringify(seen).slice(0, 400)}`);
+};
+const names = (people) => (people ?? []).map((person) => person.userId);
+
 export default async ({ page, web, capture, note, typeSecret, registerSecret, account }) => {
   if (account === null) throw new Error("this recipe signs the owner in: run it with --account");
-
-  /** One person's API, from their signed-in page: what the web app's data layer calls. */
-  const apiOf = (on) => (method, url, body) =>
-    on.evaluate(
-      async ({ verb, address, payload }) => {
-        const response = await fetch(address, {
-          method: verb,
-          headers: { "content-type": "application/json" },
-          ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
-        });
-        const text = await response.text();
-        return { status: response.status, body: text === "" ? null : JSON.parse(text) };
-      },
-      { verb: method, address: url, payload: body },
-    );
   const owner = apiOf(page);
-  const expect = (what, ok, seen) => {
-    if (!ok) throw new Error(`${what}: saw ${JSON.stringify(seen).slice(0, 400)}`);
-  };
-  const names = (people) => (people ?? []).map((person) => person.userId);
 
   await page.goto(`${web}/`);
   const me = await owner("GET", "/api/organization");
