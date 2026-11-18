@@ -80,7 +80,7 @@ function SessionRoute() {
           {...(view === undefined ? {} : { view })}
           full={full}
           onLeaveFull={() =>
-            void navigate({ to: ".", search: {}, hash: (hash) => hash ?? "", replace: true })
+            void navigate({ search: {}, hash: (hash) => hash ?? "", replace: true })
           }
         />
       </Suspense>
