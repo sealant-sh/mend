@@ -86,6 +86,13 @@ describe("mend land", spawning, () => {
     (
       answer: (body: unknown) => { readonly status: number; readonly body: unknown },
       sent: Array<unknown>,
+      landings: {
+        readonly rows?: ReadonlyArray<unknown>;
+        readonly nextBranch?: string;
+        /** What a fetch of origin finds (`?probe=true`); each fetch is counted in `probes`. */
+        readonly remote?: unknown;
+        readonly probes?: Array<string>;
+      } = {},
     ): HttpHandler =>
     (request, response) => {
       const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
@@ -99,12 +106,15 @@ describe("mend land", spawning, () => {
           response.writeHead(reply.status, { "content-type": "application/json" });
           response.end(JSON.stringify(reply.body));
         });
-      } else if (route === `GET /api/sessions/${session.id}/landings`) {
+      } else if (route.startsWith(`GET /api/sessions/${session.id}/landings`)) {
+        const probe = route.endsWith("?probe=true");
+        if (probe) landings.probes?.push(route);
         json(response, {
           changeId: "change-1",
           sessionId: session.id,
           land: true,
-          landings: [landed],
+          landings: landings.rows ?? [landed],
+          ...(landings.nextBranch === undefined ? {} : { nextBranch: landings.nextBranch }),
           facts: [
             { _tag: "pushed", branch: "mend/fix-login", sha: PUSHED },
             {
@@ -114,7 +124,7 @@ describe("mend land", spawning, () => {
               observedAt: new Date().toISOString(),
             },
           ],
-          remote: null,
+          remote: probe ? (landings.remote ?? null) : null,
           remoteFailure: null,
           pullRequest: { available: true, reason: null },
         });
@@ -144,10 +154,83 @@ describe("mend land", spawning, () => {
         { branch: null, pullRequest: true, title: "Fix the login", body: null },
       ]);
       const out = cli.stdout();
+      expect(out).toContain(
+        "  landing mend/session/session-1234 to origin as mend/fix-login · fixture · session session- · checkpoint · commit · push · pull request",
+      );
+      expect(out).not.toContain("origin no longer has");
       expect(out).toContain("✓ pushed · mend/fix-login · 3f2a1c0 · pull request #412 · opened");
       expect(out).toContain("pull request https://github.com/acme/api/pull/412");
       expect(out).toContain("    pushed · mend/fix-login · 3f2a1c0 · observed");
       expect(out).toMatch(/pull request #412 · open · observed \d+ s ago/);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("names the landing branch after a push-only landing, and says origin no longer has it", async () => {
+    const sent: Array<unknown> = [];
+    const probes: Array<string> = [];
+    const pushOnly = {
+      ...landed,
+      id: "landing-2",
+      remoteBranch: "side/push-only",
+      pushedSha: "5e1de00".padEnd(40, "0"),
+      oneOff: true,
+      pullRequest: null,
+      outcome: "pushed",
+    };
+    const fake = await startFakeMend(
+      landingRoutes(
+        () => ({
+          status: 200,
+          body: {
+            landing: landed,
+            pullRequest: { _tag: "updated", pullRequest: landed.pullRequest },
+          },
+        }),
+        sent,
+        {
+          rows: [pushOnly, landed],
+          nextBranch: "mend/fix-login",
+          remote: { remoteBranch: "mend/fix-login", remoteSha: null },
+          probes,
+        },
+      ),
+    );
+    const cli = startCli(fake.url, ["land", "session-12"]);
+
+    try {
+      expect((await cli.exited).code, cli.stderr()).toBe(0);
+      expect(probes).toHaveLength(1);
+      const out = cli.stdout().split("\n");
+      const [plan, warning] = out;
+      expect(plan).toContain("  landing mend/session/session-1234 to origin as mend/fix-login · ");
+      expect(warning).toBe("  origin no longer has mend/fix-login · this landing creates it again");
+      expect(out.some((line) => line.startsWith("✓ pushed · mend/fix-login"))).toBe(true);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
+  it("asks origin nothing for a branch the owner names", async () => {
+    const probes: Array<string> = [];
+    const fake = await startFakeMend(
+      landingRoutes(
+        () => ({ status: 200, body: { landing: landed, pullRequest: { _tag: "off" } } }),
+        [],
+        { probes },
+      ),
+    );
+    const cli = startCli(fake.url, ["land", "session-12", "--no-pr", "--branch", "mend/fix-login"]);
+
+    try {
+      expect((await cli.exited).code, cli.stderr()).toBe(0);
+      expect(probes).toEqual([]);
+      expect(cli.stdout()).toContain(
+        "  landing mend/session/session-1234 to origin as mend/fix-login · fixture · session session- · checkpoint · commit · push\n",
+      );
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();

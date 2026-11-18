@@ -874,5 +874,29 @@ describe("landing routes", () => {
       const response = await api.request("alice", "GET", `/api/changes/${sharedA.change}/landings`);
       expect(await response.json()).toMatchObject({ nextBranch: "wip" });
     });
+
+    it("keeps the landing branch after a push-only landing, and checks origin there", async () => {
+      const sideSha = Sha.make("5e1de00000000000000000000000000000000000");
+      state.landings = [
+        landingRow({
+          id: ChangeLandingId.make("landing-2"),
+          remoteBranch: "side/push-only",
+          pushedSha: sideSha,
+          oneOff: true,
+          outcome: "pushed",
+          pullRequest: null,
+        }),
+        landingRow(),
+      ];
+      const response = await api.request(
+        "alice",
+        "GET",
+        `/api/sessions/${sharedA.session}/landings?probe=true`,
+      );
+      expect(await response.json()).toMatchObject({
+        nextBranch: "mend/shared-a",
+        remote: { remoteBranch: "mend/shared-a", remoteSha: PUSHED },
+      });
+    });
   });
 });

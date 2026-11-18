@@ -205,6 +205,7 @@ export const landingFixture = (patch: Partial<ChangeLandingDto> = {}): ChangeLan
   commitSha: "b".repeat(40),
   remoteBranch: "mend/fix-login",
   pushedSha: `3f2a1c0${"c".repeat(33)}`,
+  oneOff: false,
   trigger: "manual",
   pullRequest: {
     number: 412,

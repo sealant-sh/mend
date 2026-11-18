@@ -99,15 +99,19 @@ export class ChangeLandingsView extends Schema.Class<ChangeLandingsView>("Change
   landings: Schema.Array(ChangeLanding),
   /** What Mend observed, in reading order; `landingFactLine` renders each. */
   facts: Schema.Array(LandingFact),
-  /** Origin's branch, when the request asked for a fetch (`probe=true`) and one ran. */
+  /**
+   * Origin's copy of the branch the next landing pushes (`nextBranch`), when the request asked for
+   * a fetch (`probe=true`) and one ran.
+   */
   remote: Schema.NullOr(RemoteBranchObservation),
   /** Why the fetch could not run, in git's or the remote's words. */
   remoteFailure: Schema.NullOr(Schema.String),
   pullRequest: PullRequestAvailabilityView,
   /**
    * The branch the next landing pushes when the owner names none (`nextLandingBranch`): the last
-   * landing's, the agent's own push, an adopted pull request's head on origin, else the
-   * worktree's. Null for a change with no worktree yet, and from older servers.
+   * ordinary landing's (never a `--no-pr` or named `--branch` one's), the agent's own push, the
+   * change's pull request's head on origin, else the worktree's. Null for a change with no
+   * worktree yet, and from older servers.
    */
   nextBranch: Schema.NullOr(Schema.String).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),

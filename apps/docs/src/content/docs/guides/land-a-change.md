@@ -63,18 +63,24 @@ A landing asked while the session is stopping waits for the Stop to finish, up t
 lands what the Stop saved. A Stop that takes longer lands nothing, and the landing says
 `the session is stopping · nothing landed · land after it settles`.
 
-When nothing is new since the last landing, Mend pushes nothing, records nothing, and says
-`landing not started · nothing new since the last landing`. A landing whose pull request step
-failed, or one given a new title or description, still goes ahead.
+When nothing is new since the last landing to the same branch, Mend pushes nothing, records nothing,
+and says `landing not started · nothing new since the last landing`. A landing whose pull request
+step failed, or one given a new title or description, still goes ahead.
 
 ### The branch on origin
 
 Unless you name a branch, the landing pushes to the first of these that applies:
 
-1. the branch the change's last landing pushed;
+1. the branch the change's last landing pushed, leaving out landings made with `--no-pr` or
+   `--branch`;
 2. the branch the agent last pushed itself;
-3. the head branch of a pull request [opened outside Mend](#pull-requests-opened-outside-mend);
+3. the head branch of the change's pull request, whether Mend opened it or someone
+   [opened it outside Mend](#pull-requests-opened-outside-mend);
 4. the worktree's own branch, `mend/<worktree>`.
+
+A landing made with `--no-pr` or `--branch` is a one-off: it pushes where you asked, and the next
+landing without `--branch` goes back to the branch above, usually the one carrying the pull request.
+To keep pushing to another branch, name it with `--branch` each time.
 
 The branch is never the project's default branch or the pull request's base. Naming one of those is
 refused with `landing not started · <branch> is the project's default branch · name another branch`.
@@ -131,8 +137,8 @@ Everyone else sees `only the change's owner lands it`.
 
 The panel also has:
 
-- `Check origin`, which fetches origin's branch with your git access and compares it with the landed
-  commit;
+- `Check origin`, which fetches the branch the next landing pushes with your git access and compares
+  it with what Mend last pushed there;
 - `Check GitHub`, for the owner, which looks for a pull request opened outside Mend;
 - `Refresh pull request`, for the owner, which asks GitHub for the pull request's state now;
 - `Open #412 on GitHub ↗`.
@@ -175,9 +181,13 @@ mend land 3f2a --no-pr --branch wip/login
 mend land fix-login --title "Retry the login request once on a 502"
 ```
 
-The command prints the landing, what it wrote, and every fact Mend observed:
+The command first says which branch it pushes to, in the Land panel's words. When Mend pushed that
+branch before and origin no longer has it, it prints
+`origin no longer has <branch> · this landing creates it again` before the push. Then it prints the
+landing, what it wrote, and every fact Mend observed:
 
 ```text
+  landing mend/fix-login to origin · web · session 3f2a1c0b · checkpoint · commit · push · pull request
 ✓ pushed · mend/fix-login · 3f2a1c0 · pull request #412 · opened
   checkpoint 91bd2e4
   commit 3f2a1c0 · Mend's, for the work left uncommitted

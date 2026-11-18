@@ -18,6 +18,7 @@ import {
   landingFacts,
   gitRemoteLocation,
   latestDecidedTurn as latestDecidedTurnOf,
+  lastPushTo,
   nextLandingBranch,
   type Project,
   type Worktree,
@@ -215,25 +216,6 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
   const conversations = yield* AgentConversationRepo;
   const turns = yield* Effect.forEach(sessions, (session) => conversations.listTurns(session.id));
 
-  let remote: ObservedRemote | null = null;
-  let remoteFailure: string | null = null;
-  if (input.probeAs !== null && lastPush !== undefined && lastPush.pushedSha !== null) {
-    const sha = lastPush.pushedSha;
-    const git = yield* LandingGit;
-    const env = yield* remoteEnvFor(project, input.probeAs, "probe");
-    const probed = yield* env.pipe(
-      Effect.flatMap((remoteEnv) =>
-        git.probe({ project, worktree }, { sha, remoteBranch: lastPush.remoteBranch, remoteEnv }),
-      ),
-      Effect.result,
-    );
-    if (Result.isSuccess(probed)) {
-      remote = { ...probed.success, observedAt: new Date(yield* Clock.currentTimeMillis) };
-    } else {
-      remoteFailure = probed.failure.message;
-    }
-  }
-
   // Newest push first, as the branch choice reads them; a push that failed moved nothing.
   const pushes = ops
     .flat()
@@ -250,12 +232,35 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
     ],
   });
 
+  // "Check origin" reads the branch the next landing pushes, against what Mend last pushed there;
+  // before any push to it, against the newest push, which a landing there would build on.
+  let remote: ObservedRemote | null = null;
+  let remoteFailure: string | null = null;
+  const probed = lastPushTo(landings, nextBranch) ?? lastPush;
+  if (input.probeAs !== null && probed !== undefined && probed.pushedSha !== null) {
+    const sha = probed.pushedSha;
+    const git = yield* LandingGit;
+    const env = yield* remoteEnvFor(project, input.probeAs, "probe");
+    const result = yield* env.pipe(
+      Effect.flatMap((remoteEnv) =>
+        git.probe({ project, worktree }, { sha, remoteBranch: nextBranch, remoteEnv }),
+      ),
+      Effect.result,
+    );
+    if (Result.isSuccess(result)) {
+      remote = { ...result.success, observedAt: new Date(yield* Clock.currentTimeMillis) };
+    } else {
+      remoteFailure = result.failure.message;
+    }
+  }
+
   return {
     landings,
     nextBranch,
     facts: landingFacts({
       landings,
       originCommitsUnseen: remote?.unseen ?? null,
+      originBranch: remote?.remoteBranch ?? null,
       filesChangedSinceLanding: since,
       agentRefUpdates: agentRefUpdates(ops.flat()),
       latestTurn: latestDecidedTurn(turns.flat()),

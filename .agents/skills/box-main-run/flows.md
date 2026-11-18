@@ -320,15 +320,18 @@ flows reuse what earlier ones made:
   box, `git --git-dir <git dir>/land.git log --oneline -2` for both branches. Restore: on the box,
   `git --git-dir <git dir>/land.git branch -D main-run/push-only-<sha8>`, so only Mend's landing
   branch is left.
-- **See:** the first `land` prints `  landing <branch> · <land> · session <id8> · …`, exit `1`, and
-  `mend: landing not started · nothing new since the last landing`; the second prints
-  `✓ pushed · <remote branch> · <sha>` with no pull request, `  checkpoint <sha>` and an
-  `  observed` block, exit `0` (record the pull request line it prints, if any); the third's first
-  `✓` line reads `pushed · main-run/push-only-<sha8> · <sha>`, exit `0`; the box's logs carry those
-  shas; after the restore only `<remote branch>` holds this run's commits.
+- **See:** the first `land` prints `  landing <branch> to origin · <land> · session <id8> · …`, exit
+  `1`, and `mend: landing not started · nothing new since the last landing`; the second prints the
+  same `  landing <branch> to origin · …` line, then `✓ pushed · <remote branch> · <sha>` with no
+  pull request, `  checkpoint <sha>` and an `  observed` block, exit `0` (record the pull request
+  line it prints, if any); the third prints
+  `  landing <branch> to origin as main-run/push-only-<sha8> · …` and its first `✓` line reads
+  `pushed · main-run/push-only-<sha8> · <sha>`, exit `0`; the box's logs carry those shas; after the
+  restore only `<remote branch>` holds this run's commits.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
+- **Areas:** `apps/cli/src/landing.ts`, `apps/api/src/landing-state.ts`, `packages/landing/`,
+  `packages/domain/src/workbench/landing-rules.ts`
 
 ### land-change.refused
 
@@ -340,19 +343,26 @@ flows reuse what earlier ones made:
   On the box, in a `mktemp -d` directory, clone `<git dir>/land.git` at `<remote branch>`, commit a
   file `OUTSIDE.md`, push it back, and record origin's head with
   `git --git-dir <git dir>/land.git rev-parse <remote branch>`. Run
-  `M land main-run-land-<sha8> --project <land>`; read `rev-parse` again; on the review page's
-  `Land` region choose `Check origin`. Restore: on the box, set the branch back to the sha Mend last
-  pushed
+  `M land main-run-land-<sha8> --project <land>` with no `--branch`; read `rev-parse` again and
+  `git --git-dir <git dir>/land.git branch --list 'main-run/push-only-*'`; on the review page read
+  the `Land` region's first line, then choose `Check origin`. Restore: on the box, set the branch
+  back to the sha Mend last pushed
   (`git --git-dir <git dir>/land.git update-ref refs/heads/<remote branch> <mend sha> <outside sha>`)
   and remove the clone.
-- **See:** `· push refused · <remote branch> · <remote's words>`, exit `1`; origin's head is the
-  outside commit before and after the `land`; the panel shows the refused landing and, after
-  `Check origin`, a line stating what origin held; after the restore `rev-parse` prints Mend's last
-  sha.
+- **See:** the `land` prints `  landing <branch> to origin · <land> · session <id8> · …`, naming
+  Mend's landing branch and not `main-run/push-only-<sha8>`, with no `origin no longer has …` line,
+  then `· push refused · <remote branch> · <remote's words>`, exit `1`; origin's head is the outside
+  commit before and after the `land`, and `branch --list` prints nothing (the push-only branch was
+  not created again); the region reads `push <branch> to origin`, with no
+  `as main-run/push-only-<sha8>`, and shows the refused landing; after `Check origin` it reads
+  `origin <remote branch> at <outside sha7> · holds the landed commit · checked <n> s ago` and
+  `origin has moved · <remote branch> has 1 commit Mend has not seen`; after the restore `rev-parse`
+  prints Mend's last sha.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/workspace-landing.ts`, `packages/landing/src/git-words.ts`,
-  `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/`
+  `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/landing.ts`,
+  `packages/domain/src/workbench/landing-rules.ts`
 
 ### services.cli-run
 
