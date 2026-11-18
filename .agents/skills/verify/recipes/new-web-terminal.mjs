@@ -341,54 +341,98 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const shell = processes.find((each) => each.kind === "shell" && each.exitedAt === null);
   if (shell === undefined) throw new Error("no live shell after New shell");
 
+  /**
+   * The session's reads answered as a fixture: owned by another member (`shared`: with control
+   * shared), stopped, its processes none or failing. Reads go again from an empty cache.
+   */
+  const fixture = async ({ owner = null, shared = false, status = null, processes = null }) => {
+    await page.route("**/trpc/**", async (route) => {
+      const url = new URL(route.request().url());
+      const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
+      const inputs = JSON.parse(route.request().postData() ?? "{}");
+      const touched = [
+        "sessions.inbox",
+        "sessions.detail",
+        "organization.members",
+        "sessions.processes",
+      ];
+      if (!paths.some((path) => touched.includes(path))) return route.continue();
+      const response = await route.fetch();
+      const answers = await response.json();
+      const now = new Date().toISOString();
+      const patch = (session, values, prefix) => {
+        if (owner !== null) session.ownerUserId = owner;
+        if (shared) {
+          session.sharedControlEnabledAt = now;
+          values[`${prefix}session.sharedControlEnabledAt`] = ["Date"];
+        } else if (owner !== null) session.sharedControlEnabledAt = null;
+        if (status !== null) session.status = status;
+      };
+      paths.forEach((path, index) => {
+        const id = inputs[String(index)]?.json?.id;
+        if (path === "sessions.processes" && id === A && processes === "fail") {
+          answers[index] = {
+            error: {
+              json: {
+                message: "The verify recipe failed this read on purpose.",
+                code: -32603,
+                data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path },
+              },
+            },
+          };
+          return;
+        }
+        const data = answers[index]?.result?.data;
+        if (data === undefined) return;
+        data.meta = data.meta ?? { values: {}, v: 1 };
+        data.meta.values = data.meta.values ?? {};
+        if (path === "sessions.processes" && id === A && processes === "none") {
+          answers[index] = { result: { data: { json: [] } } };
+          return;
+        }
+        if (path === "sessions.inbox")
+          data.json.forEach((row, at) => {
+            if (row.session.id === A) patch(row.session, data.meta.values, `${at}.`);
+          });
+        if (path === "sessions.detail" && data.json.session.id === A)
+          patch(data.json.session, data.meta.values, "");
+        if (path === "organization.members" && owner !== null && data.json.length > 0) {
+          const at = data.json.length;
+          data.json.push({
+            ...data.json[0],
+            userId: owner,
+            name: OWNER_NAME,
+            email: "grace@example.com",
+          });
+          for (const [key, kind] of Object.entries(data.meta.values))
+            if (key.startsWith("0.")) data.meta.values[`${at}${key.slice(1)}`] = kind;
+        }
+      });
+      await route.fulfill({ response, json: answers });
+    });
+    await go("/projects");
+    await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
+    await go(`/sessions/${A}/terminal`);
+  };
+  const leaveFixture = async () => {
+    await page.unroute("**/trpc/**");
+    await go("/projects");
+    await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
+    await go(`/sessions/${A}/terminal`);
+  };
+  /** Light and dark, desktop and 390px. */
+  const everywhere = async (name) => {
+    await both(`${name}-desktop`);
+    await page.setViewportSize(PHONE);
+    await settled();
+    await both(`${name}-phone`);
+    await page.setViewportSize(DESKTOP);
+    await settled();
+  };
+
   // A watcher: the session answered as another member's, with control shared. They see the shells
   // and the terminal, can't type, and have no New shell or Close shell.
-  await page.route("**/trpc/**", async (route) => {
-    const url = new URL(route.request().url());
-    const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
-    if (
-      !paths.some((path) =>
-        ["sessions.inbox", "sessions.detail", "organization.members"].includes(path),
-      )
-    )
-      return route.continue();
-    const response = await route.fetch();
-    const answers = await response.json();
-    const now = new Date().toISOString();
-    paths.forEach((path, index) => {
-      const data = answers[index]?.result?.data;
-      if (data === undefined) return;
-      data.meta = data.meta ?? { values: {}, v: 1 };
-      data.meta.values = data.meta.values ?? {};
-      if (path === "sessions.inbox")
-        data.json.forEach((row, at) => {
-          if (row.session.id !== A) return;
-          row.session.ownerUserId = WATCHED_BY;
-          row.session.sharedControlEnabledAt = now;
-          data.meta.values[`${at}.session.sharedControlEnabledAt`] = ["Date"];
-        });
-      if (path === "sessions.detail" && data.json.session.id === A) {
-        data.json.session.ownerUserId = WATCHED_BY;
-        data.json.session.sharedControlEnabledAt = now;
-        data.meta.values["session.sharedControlEnabledAt"] = ["Date"];
-      }
-      if (path === "organization.members" && Array.isArray(data.json) && data.json.length > 0) {
-        const at = data.json.length;
-        data.json.push({
-          ...data.json[0],
-          userId: WATCHED_BY,
-          name: OWNER_NAME,
-          email: "grace@example.com",
-        });
-        for (const [key, kind] of Object.entries(data.meta.values))
-          if (key.startsWith("0.")) data.meta.values[`${at}${key.slice(1)}`] = kind;
-      }
-    });
-    await route.fulfill({ response, json: answers });
-  });
-  await go("/projects");
-  await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
-  await go(`/sessions/${A}/terminal`);
+  await fixture({ owner: WATCHED_BY, shared: true });
   await body
     .getByText(`Only ${OWNER_NAME} types here. You're watching.`)
     .waitFor({ timeout: 20_000 });
@@ -401,10 +445,38 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     `fixture-watcher: "Only ${OWNER_NAME} types here. You're watching."; no New shell, no Close shell; the terminal is read-only`,
   );
   await both("fixture-terminal-watcher");
-  await page.unroute("**/trpc/**");
-  await go("/projects");
-  await page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
-  await go(`/sessions/${A}/terminal`);
+  await leaveFixture();
+
+  // Someone the owner doesn't share control with: no shells to see, and who can.
+  await fixture({ owner: WATCHED_BY });
+  await body
+    .getByText(
+      `Only ${OWNER_NAME} and the people they share control with see this workspace's shells.`,
+    )
+    .waitFor({ timeout: 20_000 });
+  note(
+    "fixture-not-shared: the view says only the owner and the people they share control with see the shells",
+  );
+  await everywhere("fixture-terminal-not-shared");
+  await leaveFixture();
+
+  // A stopped workspace with no shell to show: the line, and Resume and open a shell.
+  await fixture({ status: "stopped", processes: "none" });
+  await body
+    .getByText("This workspace isn't running.", { exact: false })
+    .first()
+    .waitFor({ timeout: 20_000 });
+  await body.getByRole("button", { name: "Resume and open a shell" }).waitFor();
+  note("fixture-stopped: no shells, the workspace isn't running, Resume and open a shell");
+  await everywhere("fixture-terminal-stopped-empty");
+  await leaveFixture();
+
+  // The processes can't be read: what went wrong, and Try again.
+  await fixture({ processes: "fail" });
+  await body.getByRole("button", { name: "Try again" }).waitFor({ timeout: 20_000 });
+  note("fixture-failed: the shells' read failed; the view says so with Try again");
+  await everywhere("fixture-terminal-failed");
+  await leaveFixture();
   await live();
 
   // The phone: the picker over the terminal.
@@ -444,7 +516,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   let ws = null;
   embed.on("websocket", (socket) => {
     ws = socket;
-    socket.on("framereceived", (frame) => received.push(frame.payload));
+    socket.on("framereceived", (frame) => {
+      if (typeof frame.payload !== "string") received.push(frame.payload);
+    });
   });
   await embed.goto(
     `${web}/tty-embed?session=${encodeURIComponent(A)}&process=${encodeURIComponent(shell.id)}&ticket=${encodeURIComponent(ticket)}`,
@@ -459,7 +533,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   if (exchange.status() !== 200) throw new Error(`the ticket trade answered ${exchange.status()}`);
   if (embedded === 0) throw new Error("/tty-embed shows no terminal");
   note(
-    `/tty-embed (no cookie, ?session&process&ticket): the trade answered 200, the socket ${new URL(ws.url()).pathname} opened with a ticket and received output (${typeof frame.payload === "string" ? "text" : `${frame.payload.length} bytes`})`,
+    `/tty-embed (no cookie, ?session&process&ticket): the trade answered 200, the socket ${new URL(ws.url()).pathname} opened with a ticket and received output (${frame.payload.length} bytes in its first binary frame)`,
   );
 
   // Stopped: the last running session stops, and with it the workspace and its shells.
