@@ -16,8 +16,9 @@
 // the workspace "…" and `/changes/<id>#land` open the same dialog.
 //
 // Fixtures, laid over the real reads in the browser (a stack has no GitHub origin, and nothing here
-// pushes to GitHub or opens a pull request): a GitHub origin with the pull request title, your
-// description and its Preview; the view after landing ("Checkpoint N is in pull request #412.");
+// pushes to GitHub or opens a pull request): a push that goes through, with its toast and lines; a
+// GitHub origin with the pull request title, your description and its Preview, and Push and open
+// pull request answered with #412; the view after landing ("Checkpoint N is in pull request #412.");
 // after more work (Land again… and "Update pull request #412"); GitHub refusing the push; the
 // conversation's "landed as pull request #412" line; the phone's sheet; and a read that fails.
 import { history, item, patchDetail, superjson, turn } from "./new-web-session-fixtures.lib.mjs";
@@ -290,7 +291,20 @@ export default async ({ page, web, capture, note }) => {
     outcome: "refused",
     message: `remote: error: GH006: Protected branch update failed for refs/heads/${branch}.\nremote: error: You're not authorized to push to this branch.`,
   };
+  const UNAVAILABLE = "pull request unavailable · origin is on verify-stack-fixture, not GitHub";
+  const pushedOnly = {
+    ...landed(newest, { id: "fixture-landing-3" }),
+    pullRequest: null,
+    outcome: "pushed",
+  };
   const STATES = {
+    // The stack's own origin, with a push that went through.
+    origin: { landings: [], facts: [], github: false },
+    pushed: {
+      landings: [pushedOnly],
+      facts: [{ _tag: "pushed", branch, sha: SHA }],
+      github: false,
+    },
     github: { landings: [], facts: [] },
     landed: { landings: [landed(newest)], facts: pushedFacts },
     moved: {
@@ -308,7 +322,7 @@ export default async ({ page, web, capture, note }) => {
       ...(each.pullRequest === null ? [] : [`${prefix}${index}.pullRequest.observedAt`]),
     ]);
   const forChange = (kind) => {
-    const { landings, facts } = STATES[kind];
+    const { landings, facts, github = true } = STATES[kind];
     return superjson(
       {
         changeId,
@@ -318,7 +332,9 @@ export default async ({ page, web, capture, note }) => {
         facts,
         remote: null,
         remoteFailure: null,
-        pullRequest: { available: true, reason: null },
+        pullRequest: github
+          ? { available: true, reason: null }
+          : { available: false, reason: UNAVAILABLE },
         nextBranch: branch,
       },
       [
@@ -347,7 +363,26 @@ export default async ({ page, web, capture, note }) => {
       }),
     ],
   });
+  // What Land answers while a fixture lays a landing over the page: nothing is pushed.
+  const report = (kind) => {
+    const landing = kind === "pushed" ? pushedOnly : landed(newest, { id: "fixture-landing-4" });
+    return superjson(
+      {
+        landing,
+        pullRequest:
+          kind === "pushed"
+            ? { _tag: "unavailable", reason: UNAVAILABLE }
+            : { _tag: "opened", pullRequest: pullRequest() },
+      },
+      [
+        "landing.createdAt",
+        ...(landing.pullRequest === null ? [] : ["landing.pullRequest.observedAt"]),
+        ...(kind === "pushed" ? [] : ["pullRequest.pullRequest.observedAt"]),
+      ],
+    );
+  };
   let state = null;
+  let landAnswer = null;
   let failLandings = false;
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
@@ -357,6 +392,7 @@ export default async ({ page, web, capture, note }) => {
     const mine = paths.map((path, index) => {
       const input = inputs[String(index)]?.json;
       if (path === "landings.forChange" && failLandings) return "fail";
+      if (path === "landings.land" && landAnswer !== null) return "land";
       if (state === null) return null;
       if (path === "landings.forChange" && input?.id === changeId && input?.probe !== true)
         return "landings";
@@ -366,6 +402,15 @@ export default async ({ page, web, capture, note }) => {
       return null;
     });
     if (mine.every((each) => each === null)) return route.continue();
+    // A fixture's landing never reaches the server.
+    if (mine.every((each) => each === "land")) {
+      const answer = { result: { data: report(landAnswer) } };
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(url.searchParams.has("batch") ? paths.map(() => answer) : answer),
+      });
+    }
     const response = await route.fetch();
     const body = await response.json();
     const answers = Array.isArray(body) ? body : [body];
@@ -383,7 +428,11 @@ export default async ({ page, web, capture, note }) => {
         };
       else if (kind === "landings") answers[index] = { result: { data: forChange(state) } };
       else if (kind === "history") answers[index] = { result: { data: conversation[path] } };
-      else if (kind === "project" && answers[index]?.result?.data !== undefined) {
+      else if (
+        kind === "project" &&
+        STATES[state].github !== false &&
+        answers[index]?.result?.data !== undefined
+      ) {
         const data = structuredClone(answers[index].result.data);
         data.json.project.originUrl = "https://github.com/northwind/checkout-api.git";
         answers[index] = { result: { data } };
@@ -412,6 +461,31 @@ export default async ({ page, web, capture, note }) => {
     await reread();
     await settled();
   };
+
+  const toast = (text) =>
+    page.getByRole("region", { name: "Notifications" }).getByText(text).first();
+
+  // A push that goes through, to an origin that isn't GitHub: the toast, the toolbar's line, and
+  // the conversation's. The land answer is recorded: the stack's origin takes no push.
+  await fixture("origin");
+  await open(`/sessions/${owner.id}/change#land`);
+  await dialog().getByRole("button", { name: "Push to origin" }).waitFor({ timeout: 60_000 });
+  landAnswer = "pushed";
+  state = "pushed";
+  await dialog().getByRole("button", { name: "Push to origin" }).click();
+  await toast(`Pushed ${branch} to origin.`).waitFor({ timeout: 30_000 });
+  await dialog().waitFor({ state: "hidden" });
+  const onOrigin = visible(page.getByText(`is on origin as ${branch}.`));
+  await onOrigin.waitFor({ timeout: 30_000 });
+  note(
+    `a push that went through: the toast "Pushed ${branch} to origin.", the dialog closed, and "${await onOrigin.innerText()}"`,
+  );
+  await shoot("pushed-origin-desktop");
+  landAnswer = null;
+  await go(`/sessions/${owner.id}`);
+  const pushedMark = visible(page.getByText(`pushed to origin as ${branch}`));
+  await pushedMark.waitFor({ timeout: 30_000 });
+  note(`the conversation: "${await pushedMark.innerText()}"`);
 
   // A GitHub origin: the title, your description, and the Preview of the whole description.
   await fixture("github");
@@ -459,7 +533,15 @@ export default async ({ page, web, capture, note }) => {
       .innerText()}`,
   );
   note("closing and opening the dialog keeps the title and description");
-  await closeDialog();
+
+  // Land: the recorded answer opens pull request #412, and the dialog closes with a toast.
+  landAnswer = "opened";
+  state = "landed";
+  await dialog().getByRole("button", { name: "Push and open pull request" }).click();
+  await toast(`Pushed ${branch} and opened pull request #412.`).waitFor({ timeout: 30_000 });
+  await dialog().waitFor({ state: "hidden" });
+  note(`Push and open pull request: the toast "Pushed ${branch} and opened pull request #412."`);
+  landAnswer = null;
 
   // After landing: the toolbar names the pull request, and nothing is left to land.
   await fixture("landed");
