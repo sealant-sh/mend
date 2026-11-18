@@ -23,6 +23,8 @@ const visible = (locator) => locator.filter({ visible: true }).first();
 
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
+  // A capture is withheld when the page changes during it: let live reads land first.
+  const quiet = () => page.waitForTimeout(2_500);
   const setTheme = async (theme) => {
     await page.evaluate(
       (on) => document.documentElement.classList.toggle("dark", on),
@@ -30,20 +32,58 @@ export default async ({ page, web, capture, note }) => {
     );
     await settled();
   };
+  /**
+   * The driver withholds a picture when the page changes while it is taken (the sidebar's live
+   * inbox, a toast leaving): wait until nothing has changed for a second, for at most ten.
+   */
+  const still = () =>
+    page.evaluate(
+      () =>
+        new Promise((resolve) => {
+          let timer = setTimeout(done, 1_000);
+          const giveUp = setTimeout(done, 10_000);
+          const observer = new MutationObserver(() => {
+            clearTimeout(timer);
+            timer = setTimeout(done, 1_000);
+          });
+          function done() {
+            observer.disconnect();
+            clearTimeout(timer);
+            clearTimeout(giveUp);
+            resolve(undefined);
+          }
+          observer.observe(document.body, { childList: true, subtree: true });
+        }),
+    );
   const both = async (name) => {
+    // The desktop sidebar's wrapper is 2px taller than the window, so a full-page capture resizes
+    // the window, and the driver then withholds every later picture ("screenshot inspection
+    // unavailable"). Clip it to the window for the capture.
+    await page.addStyleTag({
+      content: "[data-slot=sidebar-wrapper]{max-height:100dvh;overflow:hidden}",
+    });
+    // Hovering what was last clicked changes the page under the driver's check: park the mouse.
+    await page.mouse.move(1, 1);
     for (const theme of ["light", "dark"]) {
       await setTheme(theme);
+      await still();
       await capture(`${name}-${theme}`);
     }
     await setTheme("light");
   };
   /** React has taken the page over, so clicks, typing and the router reach it. */
+  // The dev server's first bundle of the app can take longer than a click's timeout.
   const hydrated = async () => {
-    await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
-    await page.waitForFunction(() =>
-      [...document.querySelectorAll("a[href], button")].some((element) =>
-        Object.keys(element).some((key) => key.startsWith("__reactProps")),
-      ),
+    await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined, null, {
+      timeout: 90_000,
+    });
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll("a[href], button")].some((element) =>
+          Object.keys(element).some((key) => key.startsWith("__reactProps")),
+        ),
+      null,
+      { timeout: 90_000 },
     );
   };
   const open = async (path) => {
@@ -85,7 +125,9 @@ export default async ({ page, web, capture, note }) => {
       .getByRole("row")
       .filter({ has: page.getByText(name, { exact: true }) });
   const menuOf = async (name) => {
-    await tableRow(name).getByRole("button", { name: `Actions for ${name}` }).click();
+    await tableRow(name)
+      .getByRole("button", { name: `Actions for ${name}` })
+      .click();
     await menuitem("Remove worktree…").waitFor();
   };
   const closeDialog = async (name) => {
@@ -114,10 +156,17 @@ export default async ({ page, web, capture, note }) => {
       await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
         () => undefined,
       );
-  const worktreeOf = async (name) =>
-    (await call("projects.detail", { id: fixture.id })).worktrees.find((w) => w.name === name);
-  if ((await worktreeOf("wt-unlanded")) === undefined)
-    throw new Error("run new-web-worktrees-setup.json first: wt-unlanded is missing");
+  // The CLI batch names its worktrees with the time (a removed worktree's branch keeps its name),
+  // so each run reads the newest of each.
+  const newest = (worktrees, prefix) =>
+    worktrees
+      .filter((w) => w.name.startsWith(`${prefix}-`))
+      .toSorted((a, b) => b.name.localeCompare(a.name))[0]?.name;
+  const seeded = (await call("projects.detail", { id: fixture.id })).worktrees;
+  const unlanded = newest(seeded, "wt-unlanded");
+  const clean = newest(seeded, "wt-clean");
+  if (unlanded === undefined || clean === undefined)
+    throw new Error("run new-web-worktrees-setup.json first: its worktrees are missing");
 
   // worktrees-tab: the tab's link, the region, its count, each worktree with its sessions.
   await go(`/projects/${fixture.id}`);
@@ -128,10 +177,10 @@ export default async ({ page, web, capture, note }) => {
     throw new Error("Worktrees isn't the open tab");
   const region = visible(page.getByRole("region", { name: "Worktrees" }));
   await region.getByRole("heading", { name: "Worktrees in verify-fixture" }).waitFor();
-  await tableRow("wt-unlanded").waitFor();
+  await tableRow(unlanded).waitFor();
   await both("worktrees-desktop");
   note(
-    `worktrees-tab: ${tab} opens from the tab "${(await nav.getByRole("link", { name: /^Worktrees/ }).innerText()).replace(/\s+/g, " ")}"; wt-unlanded's row reads "${(await tableRow("wt-unlanded").innerText()).replace(/\s+/g, " ")}"`,
+    `worktrees-tab: ${tab} opens from the tab "${(await nav.getByRole("link", { name: /^Worktrees/ }).innerText()).replace(/\s+/g, " ")}"; ${unlanded}'s row reads "${(await tableRow(unlanded).innerText()).replace(/\s+/g, " ")}"`,
   );
   const hidden = (await call("projects.detail", { id: fixture.id })).hiddenEndedSessions;
   note(
@@ -143,15 +192,21 @@ export default async ({ page, web, capture, note }) => {
   await dialog().getByRole("heading", { name: "New worktree" }).waitFor();
   await dialog().getByRole("textbox", { name: /^Name/ }).fill(fresh);
   await dialog().getByText(`mend/${fresh}`).waitFor();
-  await dialog().getByRole("combobox", { name: "Start from" }).click();
+  // Start from suggests the project's branches as you type, and takes any ref typed whole.
+  await dialog().getByRole("combobox", { name: "Start from" }).fill("ma");
+  await visible(page.getByRole("option", { name: "main" })).waitFor();
   await settled();
   await both("new-desktop");
-  await page.keyboard.press("Escape");
+  await visible(page.getByRole("option", { name: "main" })).click();
+  if ((await dialog().getByRole("combobox", { name: "Start from" }).inputValue()) !== "main")
+    throw new Error("picking main didn't fill Start from");
   await dialog().getByRole("button", { name: "Create worktree" }).click();
   await toast(`Created ${fresh} on mend/${fresh}.`).waitFor({ timeout: 60_000 });
   await tableRow(fresh).waitFor();
   await both("created-desktop");
-  note(`worktrees-new: New worktree… → ${fresh} → "Created ${fresh} on mend/${fresh}." and its row`);
+  note(
+    `worktrees-new: New worktree… → ${fresh} → "Created ${fresh} on mend/${fresh}." and its row`,
+  );
 
   // worktrees-menu: the "…", then a shell started in the new worktree.
   await menuOf(fresh);
@@ -173,7 +228,9 @@ export default async ({ page, web, capture, note }) => {
   // worktrees-remove while the shell runs: asked first, then refused in words with no override.
   await menuOf(fresh);
   await menuitem("Remove worktree…").click();
-  await dialog().getByRole("heading", { name: `Remove ${fresh}?` }).waitFor();
+  await dialog()
+    .getByRole("heading", { name: `Remove ${fresh}?` })
+    .waitFor();
   await dialog().getByText("Its checkpoints").waitFor();
   await settled();
   await both("remove-desktop");
@@ -227,7 +284,7 @@ export default async ({ page, web, capture, note }) => {
   note(`worktrees-remove: once the shell stopped, Remove worktree took ${fresh} and its session`);
 
   // worktrees-remove, never landed: the files not on origin, and Remove anyway offered.
-  await menuOf("wt-unlanded");
+  await menuOf(unlanded);
   await menuitem("Remove worktree…").click();
   await dialog().getByRole("button", { name: "Remove worktree" }).click();
   await dialog().getByRole("heading", { name: "Not removed" }).waitFor();
@@ -240,16 +297,16 @@ export default async ({ page, web, capture, note }) => {
   // worktrees-clear-settled: the finished worktrees, then what went and what stayed.
   await button("Clear finished…").click();
   await dialog().getByRole("heading", { name: "Clear finished worktrees?" }).waitFor();
-  await dialog().getByText("wt-unlanded", { exact: true }).waitFor();
+  await dialog().getByText(unlanded, { exact: true }).waitFor();
   await both("clear-desktop");
   const listed = await dialog().getByRole("list", { name: "Finished worktrees" }).innerText();
   await dialog().getByRole("button", { name: "Clear finished worktrees" }).click();
   const cleared = toast(/^(Removed \d+ worktrees?\.|Kept )/);
   await cleared.waitFor({ timeout: 120_000 });
   const clearedWords = await cleared.innerText();
-  if (!clearedWords.includes("wt-unlanded")) throw new Error(`the toast read ${clearedWords}`);
-  await tableRow("wt-clean").waitFor({ state: "detached" });
-  await tableRow("wt-unlanded").waitFor();
+  if (!clearedWords.includes(unlanded)) throw new Error(`the toast read ${clearedWords}`);
+  await tableRow(clean).waitFor({ state: "detached" });
+  await tableRow(unlanded).waitFor();
   await both("cleared-desktop");
   note(
     `worktrees-clear-settled: listed ${listed.replace(/\s+/g, " ")}; the toast read "${clearedWords}"`,
@@ -259,10 +316,11 @@ export default async ({ page, web, capture, note }) => {
   await page.setViewportSize(PHONE);
   await go(tab);
   await settled();
-  const phoneRow = visible(page.getByRole("listitem", { name: "Worktree wt-unlanded" }));
+  const phoneRow = visible(page.getByRole("listitem", { name: `Worktree ${unlanded}` }));
   await phoneRow.waitFor();
+  await quiet();
   await both("worktrees-phone");
-  await phoneRow.getByRole("button", { name: "Actions for wt-unlanded" }).click();
+  await phoneRow.getByRole("button", { name: `Actions for ${unlanded}` }).click();
   await visible(page.getByRole("menuitem", { name: "Remove worktree…" })).waitFor();
   await both("menu-phone");
   await page.keyboard.press("Escape");
@@ -275,20 +333,22 @@ export default async ({ page, web, capture, note }) => {
   await both("new-phone");
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "detached" });
-  await phoneRow.getByRole("button", { name: "Actions for wt-unlanded" }).click();
+  await phoneRow.getByRole("button", { name: `Actions for ${unlanded}` }).click();
   await visible(page.getByRole("menuitem", { name: "Remove worktree…" })).click();
-  await dialog().getByRole("heading", { name: "Remove wt-unlanded?" }).waitFor();
+  await dialog()
+    .getByRole("heading", { name: `Remove ${unlanded}?` })
+    .waitFor();
   await settled();
   await both("remove-phone");
   await dialog().getByRole("button", { name: "Remove worktree" }).click();
   await dialog().getByRole("heading", { name: "Not removed" }).waitFor();
   await both("cant-unlanded-phone");
   await dialog().getByRole("button", { name: "Remove anyway" }).click();
-  await toast("Removed wt-unlanded and its session. Its change was discarded.").waitFor({
+  await toast(`Removed ${unlanded} and its session. Its change was discarded.`).waitFor({
     timeout: 60_000,
   });
   await both("removed-phone");
-  note("worktrees-remove, phone: Remove anyway discarded wt-unlanded's change and said so");
+  note(`worktrees-remove, phone: Remove anyway discarded ${unlanded}'s change and said so`);
   await page.setViewportSize(DESKTOP);
 
   // No worktrees yet, on a project made for it.
@@ -328,7 +388,12 @@ export default async ({ page, web, capture, note }) => {
   await both("error-desktop");
   await page.unroute("**/trpc/**");
   await button("Try again").click();
-  await visible(page.getByRole("region", { name: "Worktrees" })).waitFor();
+  // Clear finished and Remove anyway may have left the project with no worktrees.
+  await visible(
+    page
+      .getByRole("region", { name: "Worktrees" })
+      .or(page.getByRole("heading", { name: "No worktrees yet" })),
+  ).waitFor();
   note("a project that fails to load shows the error screen; Try again reads it again");
 
   // Put back what this drive changed.

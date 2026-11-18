@@ -172,11 +172,11 @@ export function WorktreesTab({ detail }: { readonly detail: ProjectDetailDto }) 
         </Button>
       </div>
       <div className="flex min-h-14 items-center gap-3 border-b pl-4 lg:hidden">
-        <p className="min-w-0 flex-1 truncate text-prose text-muted-foreground">
+        <p className="min-w-0 flex-1 py-2 text-prose text-muted-foreground">
           Each worktree is a branch of its own
         </p>
         {finished.length === 0 ? null : (
-          <Button variant="ghost" size="touch" onClick={() => setClearing(true)}>
+          <Button variant="ghost" size="touch" className="px-3" onClick={() => setClearing(true)}>
             Clear finished…
           </Button>
         )}

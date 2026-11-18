@@ -137,6 +137,36 @@ describe("explainRefusal", () => {
     });
   });
 
+  it("names an untitled session by its short id, saying session once", () => {
+    const refusal = removalRefusalOf(live);
+    if (refusal === null) throw new Error("expected a refusal");
+    const untitled = { ...context, sessionTitle: () => "shell session 22222222" };
+    expect(explainRefusal(refusal, untitled).reasons[0]?.body).toBe(
+      "Grace Hopper's session 22222222 is working in this worktree. Ask Grace to stop it, then remove the worktree.",
+    );
+  });
+
+  it("doesn't add a workspace still ending beside the running session that holds it", () => {
+    const both = removalRefusalOf(
+      refusedRemoval("x", {
+        scope: "worktree",
+        forceWouldLift: false,
+        blockers: [
+          liveBlocker,
+          { _tag: "Saving", ...ref, holds: [{ sessionId: null, kind: "executor", via: "own" }] },
+        ],
+      }),
+    );
+    if (both === null) throw new Error("expected a refusal");
+    const words = explainRefusal(both, context);
+    expect(words.lead).toBe(
+      "fix-login is still here. Mend can't remove a worktree while a session in it is running.",
+    );
+    expect(words.reasons.map((reason) => reason.title)).toEqual([
+      "A session is still running in it.",
+    ]);
+  });
+
   it("tells the viewer to stop their own session", () => {
     const own = removalRefusalOf(
       refusedRemoval("x", {

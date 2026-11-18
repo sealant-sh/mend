@@ -141,14 +141,24 @@ const sessionWords = (
   },
   context: RefusalContext,
 ): string => {
-  const title = context.sessionTitle(blocker.sessionId);
   const whose =
     blocker.owner === null
       ? "A session"
       : blocker.owner.userId === context.viewerId
         ? "Your session"
         : `${blocker.owner.name}'s session`;
-  return title === null ? whose : `${whose} ${title}`;
+  return `${whose} ${titleOf(blocker.sessionId, context)}`;
+};
+
+/**
+ * A session as the words name it: its title, or its short id when it has none. A title Mend made
+ * up ("session dd1bb60d", "shell session dd1bb60d") is only the id, so the words don't say
+ * "session" twice.
+ */
+const titleOf = (sessionId: string, context: RefusalContext): string => {
+  const title = context.sessionTitle(sessionId);
+  if (title === null) return sessionId.slice(0, 8);
+  return /(?:^|\s)session ([0-9a-f]{8})$/.exec(title)?.[1] ?? title;
 };
 
 const LIVE_TITLES: Readonly<Record<Blocker<"SessionLive">["activity"], string>> = {
@@ -195,14 +205,12 @@ const liveReason = (blocker: Blocker<"SessionLive">, context: RefusalContext): R
 const savingReason = (blocker: Blocker<"Saving">, context: RefusalContext): RefusalReason => {
   const kinds = new Set(blocker.holds.map((hold) => hold.kind));
   const viaHolder = blocker.holds.some((hold) => hold.via === "holder");
-  const titled = blocker.holds
-    .map((hold) => (hold.sessionId === null ? null : context.sessionTitle(hold.sessionId)))
-    .find((title): title is string => title !== null);
+  const titled = blocker.holds.find((hold) => hold.sessionId !== null)?.sessionId;
   const whose = viaHolder
     ? "A session that holds this worktree as a repository"
-    : titled === undefined
+    : titled === undefined || titled === null
       ? "Its session"
-      : `The session ${titled}`;
+      : `The session ${titleOf(titled, context)}`;
   if (kinds.has("saving"))
     return {
       tone: "info",
@@ -373,12 +381,26 @@ export const keptBecause = (
   }
 };
 
+/**
+ * The blockers worth a reason of their own. A workspace that hasn't ended (an executor or its lease
+ * still held, nothing left to save) beside a running session is that session's workspace:
+ * stopping the session ends it, so it would only repeat the first reason.
+ */
+const shownBlockers = (blockers: ReadonlyArray<RemovalBlocker>): ReadonlyArray<RemovalBlocker> =>
+  blockers.some((blocker) => blocker._tag === "SessionLive")
+    ? blockers.filter(
+        (blocker) =>
+          blocker._tag !== "Saving" ||
+          blocker.holds.some((hold) => hold.kind === "saving" || hold.kind === "not-saved"),
+      )
+    : blockers;
+
 /** The second sentence of the dialog's lead: the one reason, or a pointer to several. */
 const leadReason = (refusal: WorktreeRemovalRefusal, context: RefusalContext): string => {
   const because = keptBecause(refusal, context);
   if (because === null) return "Mend didn't remove it.";
   if (refusal.forbidden) return `${because.charAt(0).toUpperCase()}${because.slice(1)}.`;
-  const kinds = new Set(refusal.blockers.map((blocker) => blocker._tag));
+  const kinds = new Set(shownBlockers(refusal.blockers).map((blocker) => blocker._tag));
   if (kinds.size > 1) return "Mend didn't remove it, for the reasons below.";
   const first = refusal.blockers[0];
   if (first?._tag === "Saving")
@@ -402,7 +424,7 @@ export const explainRefusal = (
     ? []
     : refusal.blockers.length === 0
       ? [{ tone: "info" as const, title: "", body: refusal.words }]
-      : refusal.blockers.map((blocker) => reasonOf(blocker, context, refusal));
+      : shownBlockers(refusal.blockers).map((blocker) => reasonOf(blocker, context, refusal));
   return { lead, reasons };
 };
 

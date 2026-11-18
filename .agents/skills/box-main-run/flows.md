@@ -957,6 +957,32 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web-old/src/components/project/tabs/worktrees.tsx`, `apps/api/src/`,
   `packages/store/`
 
+### worktrees.new-web-worktrees
+
+- **Map:** worktrees.md `worktrees-tab`, `worktrees-new`, `worktrees-menu`, `worktrees-remove`,
+  `worktrees-clear-settled`, `worktrees-hidden-ended`; capture-and-save.md `capture-removal-hold`;
+  repositories-in-session.md `repo-removal-hold` (their words, from `lib/worktree-removal.ts`)
+- **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box)
+- **Do:** Drive the recipe `new-web-worktrees` (after its CLI batch `new-web-worktrees-setup.json`):
+  the Worktrees tab; New worktree… makes one; its "…" menu, and a shell started from it; Remove
+  worktree… while the shell runs, then again once it is stopped; the never-landed refusal with its
+  files and Remove anyway; Clear finished…; the phone sheets; a project with no worktrees; a project
+  that fails to load.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: "Not removed" says a
+  session is still running with no Remove anyway; after the stop, `Removed <name> and its session.`;
+  Clear finished's toast names `wt-unlanded-<time>` as kept because its change was never landed;
+  Remove anyway's toast says the change was discarded.
+- **Mode:** `scripted` (recipes/new-web-worktrees.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/project/worktrees-tab.tsx`,
+  `apps/web/src/components/project/worktree-actions.tsx`,
+  `apps/web/src/components/project/new-worktree.tsx`,
+  `apps/web/src/components/project/remove-worktree.tsx`,
+  `apps/web/src/components/project/clear-finished.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.worktrees.tsx`,
+  `apps/web/src/lib/project-worktrees.ts`, `apps/web/src/lib/worktree-removal.ts`
+
 ### pull-change.boat-run
 
 - **Map:** pull-change.md `pull-fetch`, `pull-again`, `pull-not-a-clone`
