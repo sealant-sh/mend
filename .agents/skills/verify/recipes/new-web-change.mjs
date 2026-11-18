@@ -35,6 +35,9 @@ const TITLES = {
   empty: "Look at the retry wrapper",
 };
 
+/** The first of `locator`'s matches a person can see: under 1024px every tab is in the page twice. */
+const visible = (locator) => locator.filter({ visible: true }).first();
+
 /** Where an element is on screen; the recipe can't go on without it. */
 const boxOf = async (locator) => {
   const box = await locator.boundingBox();
@@ -45,7 +48,6 @@ const boxOf = async (locator) => {
 export default async ({ page, web, capture: captureOnce, note }) => {
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
   const settled = () => page.waitForTimeout(500);
-  const visible = (locator) => locator.filter({ visible: true }).first();
   const setTheme = async (theme) => {
     await page.evaluate(
       (on) => document.documentElement.classList.toggle("dark", on),
