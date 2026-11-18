@@ -840,11 +840,14 @@ jobs:
       - run: pnpm install --frozen-lockfile
       # Firefox needs system packages the runner image lacks, so apt and the downloads both run,
       # each bounded and retried (scripts/ci-bounded.sh): on 16 Nov apt-get update in
-      # `install --with-deps` sat for two hours with nothing to stop it (SLNT-1076).
+      # `install --with-deps` sat for two hours with nothing to stop it (SLNT-1076). The apt
+      # wrapper runs as root so its timeout can stop apt-get: as the runner user it could not
+      # signal sudo's root apt-get, which kept the dpkg lock and failed every retry (SLNT-1094).
       - name: Install Chromium's and Firefox's system packages for the preview browsers
         run:
-          scripts/ci-bounded.sh "Chromium's and Firefox's system packages (apt-get)" 4 3 -- pnpm
-          --filter @mend/api-server exec playwright-core install-deps chromium firefox
+          sudo scripts/ci-bounded.sh "Chromium's and Firefox's system packages (apt-get)" 4 3 --
+          "$(command -v node)" apps/api/node_modules/playwright-core/cli.js install-deps chromium
+          firefox
       - name: Install Chromium and Firefox for the preview browsers
         run:
           scripts/ci-bounded.sh "The Chromium and Firefox download" 4 3 -- pnpm --filter
