@@ -55,15 +55,21 @@ function Failure({ failure }: { readonly failure: AuthFailure }) {
 export function SignInForm({
   onSignedIn,
   note = NO_ACCOUNT,
+  secondary,
+  initialEmail = "",
   children,
 }: {
   readonly onSignedIn: () => void;
   /** The line beside the button: by default, how to get an account. */
   readonly note?: ReactNode;
+  /** A button beside Sign in that leaves the form (a way back); it takes the note's place. */
+  readonly secondary?: ReactNode;
+  /** The email to start with, when the page that asked already knows it. */
+  readonly initialEmail?: string;
   /** Above the fields: the page's own lead or notice. */
   readonly children?: ReactNode;
 }) {
-  const [email, setEmail] = useState("");
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState("");
   const [shown, setShown] = useState(false);
   const [pending, setPending] = useState(false);
@@ -112,7 +118,7 @@ export function SignInForm({
           <Failure failure={failure} />
         </div>
       )}
-      <SetupActions note={note}>
+      <SetupActions note={secondary === undefined ? note : undefined} secondary={secondary}>
         <Button type="submit" disabled={pending} className={TOUCH}>
           {pending ? "Signing in…" : failure?.kind === "unreachable" ? "Try again" : "Sign in"}
         </Button>

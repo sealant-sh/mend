@@ -23,6 +23,7 @@ const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([
   SIGN_IN_PATH.slice(1),
   "reset",
   "authorize",
+  "join",
 ]);
 
 export const opensSignedOut = (pathname: string): boolean =>
