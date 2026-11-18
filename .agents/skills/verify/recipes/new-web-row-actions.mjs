@@ -260,6 +260,7 @@ export default async ({ page, web, capture, note }) => {
   await menuItem("Mark done").click();
   await row("Done", REVIEW).waitFor();
   await (await moreButton("Done", REVIEW)).click();
+  await menuItem("Open session").waitFor();
   const doneNames = await menuNames();
   if (doneNames.some((each) => each.startsWith("Mark done") || each.startsWith("Snooze")))
     throw new Error(`a Done row's menu reads ${doneNames.join(" | ")}`);
@@ -298,6 +299,8 @@ export default async ({ page, web, capture, note }) => {
     copy.session.ownerUserId = "someone-else";
     copy.session.label = THEIRS;
     copy.title = THEIRS;
+    // Its own change: the inbox lists one To review row per change.
+    if (copy.annotation !== null) copy.annotation.changeId = "00000000-0000-4000-a000-000000000122";
     json.push(copy);
     for (const [key, value] of Object.entries(meta?.values ?? {}))
       if (key.startsWith(`${index}.`))
@@ -314,6 +317,7 @@ export default async ({ page, web, capture, note }) => {
   });
   await row("To review", THEIRS).waitFor();
   await (await moreButton("To review", THEIRS)).click();
+  await menuItem("Open session").waitFor();
   const theirNames = await menuNames();
   if (theirNames.some((each) => each.startsWith("Rename")))
     throw new Error(`someone else's row offers Rename: ${theirNames.join(" | ")}`);
