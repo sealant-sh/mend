@@ -344,6 +344,7 @@ export default async ({ page, web, capture, note, account }) => {
     if (!drawn[0].includes("JetBrains Mono") || drawn[1] !== "15px")
       throw new Error(`the Terminal draws in ${drawn[0]} at ${drawn[1]}`);
     note(`the session's Terminal draws in ${drawn[0]} at ${drawn[1]}`);
+    await open("/settings/appearance");
   }
   // The account menu reads the same choice.
   await settingsNav.getByRole("link", { name: "Back to app" }).click();
