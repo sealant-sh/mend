@@ -42,7 +42,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     }
   };
   const settled = () => page.waitForTimeout(500);
+  // A theme switch opens the terminal again (ghostty-web reads its colours as it opens): after one,
+  // wait for it to connect, and mark the new one if the old one was marked.
   const both = async (name) => {
+    const marked = (await page.locator('canvas[data-recipe-mark="kept"]').count()) > 0;
     for (const theme of ["light", "dark"]) {
       await page.evaluate(
         (on) => document.documentElement.classList.toggle("dark", on),
@@ -53,6 +56,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     }
     await page.evaluate(() => document.documentElement.classList.remove("dark"));
     await settled();
+    if ((await body.getByRole("textbox", { name: "Terminal input" }).count()) > 0) await live();
+    if (marked) await markTerminal();
   };
   const hydrated = async () => {
     await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
@@ -239,12 +244,16 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const link = `${web}/terminal-link-check`;
   await typeLine(`clear; echo ${link}`);
   const canvas = await boxOf(body.locator("canvas").first());
-  const cell = await page.evaluate(() => {
-    const context = document.createElement("canvas").getContext("2d");
-    const family = getComputedStyle(document.documentElement).getPropertyValue("--font-mono");
-    context.font = `13px ${family}`;
-    return context.measureText("M").width;
-  });
+  // A cell's width, in the face and size the terminal's box is styled with.
+  const cell = await body
+    .locator("canvas")
+    .first()
+    .evaluate((element) => {
+      const style = getComputedStyle(element.parentElement);
+      const context = document.createElement("canvas").getContext("2d");
+      context.font = `${style.fontSize} ${style.fontFamily}`;
+      return context.measureText("M").width;
+    });
   const opened = page.context().waitForEvent("page", { timeout: 10_000 });
   await page.keyboard.down("Control");
   await page.mouse.click(canvas.x + cell * 6.5, canvas.y + 7);

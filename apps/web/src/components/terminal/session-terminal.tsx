@@ -1,7 +1,14 @@
 import { type AgentStartingFacts, agentStartingLine } from "@mend/domain/workbench";
 import { cn } from "@mend/ui/lib/utils";
 import { FitAddon, init as initGhostty, type ITheme, LinkDetector, Terminal } from "ghostty-web";
-import { type Ref, useEffect, useImperativeHandle, useRef, useState } from "react";
+import {
+  type Ref,
+  useEffect,
+  useImperativeHandle,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { EmbedTicketRefused, makeEmbedExchange, notifyEmbedExpired } from "#/lib/embed-exchange";
 import { OWN_SHORTCUTS } from "#/lib/search-keys";
@@ -126,16 +133,32 @@ const themeOf = (element: Element): ITheme => {
 };
 
 /**
- * The terminal's font: the kit's mono face (Geist Mono) at the control size, waited for, so the
- * canvas measures the face it draws with. "This device"'s terminal font setting (route PR 37) will
- * be read here.
+ * The terminal's font: the face and size the box is styled with (the kit's mono face, Geist Mono,
+ * at the control size), waited for, so the canvas measures the face it draws with. "This
+ * device"'s terminal font setting (route PR 37) will style the box.
  */
 const fontOf = async (element: Element) => {
-  const family = tokenOf(element, "--font-mono") ?? "monospace";
-  const size = Number.parseFloat(tokenOf(element, "--text-control") ?? "") || 13;
-  await document.fonts.load(`${size}px ${family}`).catch(() => undefined);
+  const style = getComputedStyle(element);
+  const family = style.fontFamily === "" ? "monospace" : style.fontFamily;
+  const size = Number.parseFloat(style.fontSize) || 13;
+  const face = family.split(",")[0]?.trim() ?? family;
+  await document.fonts.load(`${size}px ${face}`).catch(() => undefined);
   return { family, size };
 };
+
+const subscribeToTheme = (onChange: () => void) => {
+  const watch = new MutationObserver(onChange);
+  watch.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => watch.disconnect();
+};
+const pageIsDark = () => document.documentElement.classList.contains("dark");
+
+/**
+ * Whether the page is drawn dark now: the `dark` class on <html>, which every theme change sets.
+ * ghostty-web can't recolour an open terminal, so a change opens it again (its socket replays the
+ * record, so nothing is lost).
+ */
+const usePageDark = () => useSyncExternalStore(subscribeToTheme, pageIsDark, () => false);
 
 /** A line under the terminal: connecting, the agent starting, an image on its way. */
 const LINE = "border-t px-3 py-1.5 font-mono text-2xs text-muted-foreground";
@@ -211,6 +234,7 @@ export function SessionTerminal({
   const [waitingSince, setWaitingSince] = useState<number | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const [image, setImage] = useState<ImageState>(null);
+  const dark = usePageDark();
   // The effect reads the latest paste without opening a new terminal when it changes.
   const pasteRef = useRef(pasteImage);
   pasteRef.current = pasteImage;
@@ -520,7 +544,8 @@ export function SessionTerminal({
       cancelled = true;
       teardown?.();
     };
-  }, [sessionId, processId, embedTicket, token, readOnly, autoFocus, announceStart]);
+    // `dark`: the colours are read as the terminal opens (`themeOf`).
+  }, [sessionId, processId, embedTicket, token, readOnly, autoFocus, announceStart, dark]);
 
   const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
   const startingLine =
@@ -550,7 +575,7 @@ export function SessionTerminal({
       <div
         ref={containerRef}
         {...{ [OWN_SHORTCUTS]: "" }}
-        className="min-h-0 w-full flex-1 overflow-hidden"
+        className="min-h-0 w-full flex-1 overflow-hidden font-mono text-control"
       />
       <div role="status" className="empty:hidden">
         {startingLine === null ? null : <p className={LINE}>{startingLine}</p>}

@@ -24,7 +24,6 @@ import { copyTextChecked } from "#/lib/clipboard";
 import { age } from "#/lib/inbox";
 import { failureWords } from "#/lib/refusal";
 import { sessionDetailQuery } from "#/lib/session-queries";
-import { useResolvedDark } from "#/lib/theme";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
 import {
@@ -100,7 +99,6 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
   const access = shellAccess(sessions, place.sessionId, facts.viewerId);
   const runs = workspaceRuns(sessions);
   const now = useMinute();
-  const dark = useResolvedDark();
   const { box, ref } = useBoxSize();
   const layout = layoutOf(box);
   const terminal = useRef<TerminalControls | null>(null);
@@ -297,9 +295,8 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
             )}
           >
             <SessionTerminal
-              // A new terminal for another shell, and for a theme switch: ghostty-web reads its
-              // colours as it opens. Its socket replays the record, so nothing is lost.
-              key={`${current.key}:${dark ? "dark" : "light"}`}
+              // A new terminal for another shell; its socket replays the record from the start.
+              key={current.key}
               sessionId={current.sessionId}
               {...(current.processId === null ? {} : { processId: current.processId })}
               startingLabel={current.program}
@@ -320,7 +317,7 @@ function TerminalBody({ place }: { readonly place: ViewPlace }) {
                 ).path
               }
               controls={terminal}
-              className={layout === "alone" ? "" : "px-3 py-2"}
+              className="px-3 py-2"
             />
           </div>
         )}
