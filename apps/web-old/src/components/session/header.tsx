@@ -79,10 +79,10 @@ export function SessionTitle({
         : session.sharedControlUserIds.length > 0
           ? "its owner and the people they gave it to · shared control on"
           : control.own
-          ? "only you"
-          : facts.ownerName === null
-            ? "its owner"
-            : `only ${facts.ownerName}`;
+            ? "only you"
+            : facts.ownerName === null
+              ? "its owner"
+              : `only ${facts.ownerName}`;
   return (
     <h1 className="flex min-w-0 items-center">
       <InfoPopover
@@ -159,11 +159,7 @@ function ShareButton({ facts }: { readonly facts: SessionFacts }) {
       className="w-[380px]"
       trigger={
         // A phone has no room for it on the header line: More holds it there.
-        <Button
-          size="sm"
-          aria-pressed={sharesControl(session)}
-          className="max-md:hidden"
-        >
+        <Button size="sm" aria-pressed={sharesControl(session)} className="max-md:hidden">
           Share
         </Button>
       }

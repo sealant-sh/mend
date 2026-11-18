@@ -1,6 +1,5 @@
-import { describe, expect, it } from "vitest";
-
 import { SessionId } from "@mend/domain";
+import { describe, expect, it } from "vitest";
 
 import { sessionControlView, sharedControlView } from "./session-steering.ts";
 
@@ -58,9 +57,27 @@ describe("sharedControlView", () => {
     harness: "claude" as const,
   };
   const people = [
-    { userId: "carol", state: "asked" as const, askedAt: at, grantedAt: null, grantedByUserId: null },
-    { userId: "dave", state: "asked" as const, askedAt: at, grantedAt: null, grantedByUserId: null },
-    { userId: "erin", state: "granted" as const, askedAt: at, grantedAt: at, grantedByUserId: "alice" },
+    {
+      userId: "carol",
+      state: "asked" as const,
+      askedAt: at,
+      grantedAt: null,
+      grantedByUserId: null,
+    },
+    {
+      userId: "dave",
+      state: "asked" as const,
+      askedAt: at,
+      grantedAt: null,
+      grantedByUserId: null,
+    },
+    {
+      userId: "erin",
+      state: "granted" as const,
+      askedAt: at,
+      grantedAt: at,
+      grantedByUserId: "alice",
+    },
   ];
   const asked = (view: ReturnType<typeof sharedControlView>) =>
     view.asked.map((person) => person.userId);
@@ -92,9 +109,9 @@ describe("sharedControlView", () => {
       asked: [],
       acts: { ask: true, decide: false, takeBack: true },
     });
-    expect(
-      sharedControlView({ ...session, settledAt: at }, frank, people, true).acts.ask,
-    ).toBe(false);
+    expect(sharedControlView({ ...session, settledAt: at }, frank, people, true).acts.ask).toBe(
+      false,
+    );
   });
 
   it("an organization owner may turn off a session shared with one person only", () => {

@@ -13,7 +13,10 @@ import type { LandingReport } from "./landing.ts";
 
 /** Why `mend land` does not land for this session, or null when the change's owner is asking. */
 export const workspaceLandRefusal = (input: {
-  readonly session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds">;
+  readonly session: Pick<
+    Session,
+    "ownerUserId" | "sharedControlEnabledAt" | "sharedControlUserIds"
+  >;
   /** The change's owner (`Worktree.changeOwnerUserId`). */
   readonly changeOwnerUserId: string | null;
   /** The session's turns; the one running is the request the agent is answering. */

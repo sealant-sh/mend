@@ -2,12 +2,16 @@
 
 By default only a session's owner steers it: sends turns, answers approvals, interrupts, and sends
 review comments back. Everyone else who can see the project reads the record and reviews the change.
-The owner can turn on shared control for one session from the session page, the desktop terminal
-pane or `mend session share`. Turning it on asks first, in words true to whose login a steered turn
-spends: the sender's own in a per-person workspace, the owner's in a workspace that shares one home.
-While it is on, the others see `runs as <owner> · shared control on`, and every act is recorded with
-who did it. The terminal stays the owner's: others read it and their keys are dropped. The owner, or
-an organization owner, turns it off.
+Shared control goes to the person who asked for it (docs/adr/0026, decision 7): someone who can see
+another person's session asks; the owner grants or declines; the owner, or an organization owner,
+takes it back from that person. Older clients still have the switch for everyone: the owner can turn
+on shared control for everyone who can see the project from the session page, the desktop terminal
+pane or `mend session share`, and turning it off ends every grant too. Turning it on asks first, in
+words true to whose login a steered turn spends: the sender's own in a per-person workspace, the
+owner's in a workspace that shares one home. While it is on, the others see
+`runs as <owner> · shared control on`, and every act is recorded with who did it. The terminal stays
+the owner's: others read it and their keys are dropped. The owner, or an organization owner, turns
+it off.
 
 ## Sub-features
 
@@ -23,7 +27,25 @@ an organization owner, turns it off.
 - `terminal-owner-only` keeps typing, shells and commands with the owner: a steerer's terminal is
   read-only, with the owner's name.
 - `who-pays` says whose login a steered turn spends, beside the switch and in the dialog.
-- `audit` records `shared control of session <id>` and `turned off shared control of session <id>`.
+- `audit` records `shared control of session <id>` and `turned off shared control of session <id>`,
+  and `gave <user> shared control of session <id>` and
+  `took shared control of session <id> back from <user>` for one person.
+- `ask` lets someone who sees another person's session, cannot steer it and has not asked, ask for
+  shared control (`POST /api/sessions/<id>/shared-control/ask`); asking again changes nothing. The
+  owner's inbox row carries the open asks (`sharedControlAsks`) and the session is announced live.
+  Refused `opencode`, `owner`, `steers` or `ended` (409 `SharedControlRefused`).
+- `withdraw` lets the asker withdraw their open ask; `decline` lets the owner decline it.
+- `grant` lets the owner alone grant an open ask: from then on that one person steers, and nobody
+  else who only sees the session. A grant of an ask withdrawn or declined meanwhile is refused
+  `not-asked`.
+- `take-back` lets the owner or an organization owner take one person's grant back: their queued
+  turns are not sent, their steering connections close, a turn of theirs already running finishes.
+- `switch-ends-grants`: `off` on the switch for everyone (`PUT …/shared-control`, the CLI, the old
+  web app, desktop) ends every grant; open asks stay.
+- `ask-ends-with-session`: settling the session ends its open asks.
+- `sender-login`: a message from a steerer whose own login is missing, expired or unchosen is
+  refused before it is queued (403 `SessionNotSteerable`), in words that say "Your Claude login…"
+  and how to connect it, with `login: { provider, state }` beside them.
 
 ## How to get to it (user POV)
 
@@ -41,6 +63,27 @@ an organization owner, turns it off.
 - Slack: an `@mend` follow-up in a thread from someone other than the owner is a steered turn,
   refused unless shared control is on (`not drivable yet`: no Slack workspace in the verify stack).
 - VS Code and the TUI offer no switch.
+
+## Shared control for one person, through the API
+
+No screen asks or grants yet (route PR 34 builds it in the new web app), so drive the steps through
+the HTTP API with each account's access key (`mend access-keys create`, as `<owner>` and as
+`<member>`; delete both at the end), `curl -sS -H "authorization: Bearer <key>"` against
+`<api>/api/sessions/<id>/shared-control…`. `<member>` owns the session, as below; `<owner>` asks.
+
+- `GET …/shared-control` as either: `everyoneSince: null`, `granted: []`, `asked: []`; `acts.ask` is
+  true for `<owner>`, `acts.decide` for `<member>`.
+- `POST …/shared-control/ask` as `<owner>`: 200, `asked` holds `<owner>`. `<member>`'s
+  `GET /api/sessions/inbox` row for the session has `sharedControlAsks` naming `<owner>`.
+- `POST …/shared-control/people/<owner-id>/grant` as `<owner>`: 403. As `<member>`: 200, `granted`
+  holds `<owner>`, and the session reads `sharedControlUserIds: ["<owner-id>"]` with
+  `sharedControlEnabledAt: null`. `<owner>`'s session detail now says `control.steer: true`.
+- `POST …/people/<owner-id>/grant` again: 409, `reason: "not-asked"`.
+- `POST …/people/<owner-id>/take-back` as `<owner>` (an organization owner): 200, `granted: []`.
+- Ask again, grant, then `mend session share <id8> off` as `<member>`: the grant is gone.
+- The control log (`GET /api/sessions/<id>/control-events`) lists `shared-control-ask`,
+  `shared-control-grant`, `shared-control-take-back` with `refId` naming `<owner>`; the audit log
+  names the grant and the take-back.
 
 ## Driving it with verify
 

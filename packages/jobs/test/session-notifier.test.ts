@@ -289,7 +289,11 @@ describe("pushTargets", () => {
       "carol",
       new NotificationSettings({ ...DEFAULT_NOTIFICATION_SETTINGS, turnFinished: false }),
     );
-    const session = { ownerUserId: "alice", sharedControlEnabledAt: new Date(), sharedControlUserIds: [] };
+    const session = {
+      ownerUserId: "alice",
+      sharedControlEnabledAt: new Date(),
+      sharedControlUserIds: [],
+    };
     const mendFinished = await Effect.runPromise(
       pushTargets(devices, settings, session, "carol", finished),
     );

@@ -11,12 +11,12 @@ import { cancelOpenTurnRows } from "./agent-conversation.ts";
 import { disableOwnerSharedControl } from "./agent-sessions.ts";
 import { DevicesRepo } from "./devices.ts";
 import { deleteImportedConversationsOf } from "./imported-conversations.ts";
-import { endSharedControlOfMember } from "./session-shared-control.ts";
 import {
   deleteMembership,
   type LastOwnerError,
   type MemberNotFoundError,
 } from "./organizations.ts";
+import { endSharedControlOfMember } from "./session-shared-control.ts";
 import { SlackLinksRepo } from "./slack-links.ts";
 import { UsersRepo } from "./users.ts";
 

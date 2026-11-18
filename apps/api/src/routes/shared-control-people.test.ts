@@ -1,6 +1,6 @@
+import { SharedControlStepRefused } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { Session } from "@mend/domain/workbench";
-import { SharedControlStepRefused } from "@mend/db";
 import { Effect } from "effect";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
@@ -40,8 +40,7 @@ describe("shared control for one person", () => {
 
   const stepCalls = () =>
     api.world.calls.filter(
-      (call) =>
-        call.startsWith("sharedControl.") && call !== "sharedControl.people",
+      (call) => call.startsWith("sharedControl.") && call !== "sharedControl.people",
     );
 
   it("someone who sees the session asks; someone who cannot see it is not told it exists", async () => {

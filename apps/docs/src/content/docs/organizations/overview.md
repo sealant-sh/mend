@@ -287,6 +287,14 @@ While shared control is on, everyone who can see the project steers the session.
 reads `runs as <owner> · shared control on` for everyone else. Every turn, approval, interrupt,
 terminal attach and stop is recorded with the account that did it.
 
+Shared control can also go to one person. Someone who can see the session asks for it, and the owner
+grants or declines the ask. Only the people the owner granted it to steer; everyone else reads. The
+owner, or an organization owner, can take it back from a person at any time: their waiting messages
+are not sent, and a turn of theirs already running finishes. An ask ends when the session ends.
+Turning shared control off with the switch or `mend session share <session> off` ends every grant
+too. The new web app shows asks and grants on its session screens; until those ship, they go through
+the HTTP API under `/api/sessions/<id>/shared-control`.
+
 Whose login a steered turn spends depends on the workspace:
 
 - **In a [per-person workspace](/operate/per-person-workspaces/)**, the default, each turn runs on

@@ -1938,7 +1938,10 @@ export const agentSessions = pgTable(
     // The people holding shared control one by one (0228, docs/adr/0026 decision 7): a mirror of
     // `session_shared_control`'s granted rows, written in the same transaction, so every rule
     // that reads a session reads who may steer it.
-    sharedControlUserIds: text().array().notNull().default(sql`'{}'::text[]`),
+    sharedControlUserIds: text()
+      .array()
+      .notNull()
+      .default(sql`'{}'::text[]`),
     // Null until settle classifies it (0050); false = a dead end the dashboard hides.
     hasTranscript: boolean(),
     // The idle stop's claim (0072): set when Mend stops an idle protocol agent, null on reopen.

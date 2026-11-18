@@ -238,7 +238,11 @@ export const SessionSharedControlRepoLive: Layer.Layer<
           case "missing":
             return yield* new SharedControlSessionMissing({ sessionId });
           case "refused":
-            return yield* new SharedControlStepRefused({ sessionId, userId, reason: outcome.reason });
+            return yield* new SharedControlStepRefused({
+              sessionId,
+              userId,
+              reason: outcome.reason,
+            });
           case "done":
             if (outcome.changed) {
               yield* notifyEvent(pg, { type: "session", sessionId, projectId: outcome.projectId });
@@ -307,7 +311,11 @@ export const SessionSharedControlRepoLive: Layer.Layer<
             .values({ sessionId, userId, state: "asked", askedAt: yield* DateTime.nowAsDate })
             .onConflictDoNothing()
             .returning({ userId: sessionSharedControl.userId });
-          return { kind: "done", projectId: session.projectId, changed: inserted.length > 0 } as const;
+          return {
+            kind: "done",
+            projectId: session.projectId,
+            changed: inserted.length > 0,
+          } as const;
         }),
       ),
     );

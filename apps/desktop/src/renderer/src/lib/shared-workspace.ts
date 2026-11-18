@@ -75,7 +75,10 @@ export const readsWaiting = (
     | null
     | undefined,
 ): boolean =>
-  session !== null && session !== undefined && session.livePeople.length > 0 && sharedControlOn(session);
+  session !== null &&
+  session !== undefined &&
+  session.livePeople.length > 0 &&
+  sharedControlOn(session);
 
 /**
  * Whether anyone besides the owner may steer: shared with everyone, or with one person the owner

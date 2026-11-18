@@ -120,9 +120,9 @@ flows reuse what earlier ones made:
 9. `land-change.web-push`, `land-change.cli-again`, `land-change.refused`,
    `organization.visibility-who-sees`, `repositories-in-session.add-second`,
    `references-folders.select-link`, `organization.roles-roundtrip`, `organization.join-refused`,
-   `operator.owner-grant-restore`, `shared-control.two-people`, `per-person-homes.two-people`, in
-   that order and one at a time: several change `<land>`, `<second>` or a role, and each runs only
-   after the one before it has put that back.
+   `operator.owner-grant-restore`, `shared-control.two-people`, `shared-control.ask-and-grant`,
+   `per-person-homes.two-people`, in that order and one at a time: several change `<land>`,
+   `<second>` or a role, and each runs only after the one before it has put that back.
 
 ## The core loop
 
@@ -1294,6 +1294,30 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/web-old/src/components/shared-control-dialog.tsx`, `apps/web-old/src/`,
   `apps/api/src/`, `apps/cli/src/`
+
+### shared-control.ask-and-grant
+
+- **Map:** shared-control.md `ask`, `withdraw`, `grant`, `take-back`, `switch-ends-grants`,
+  `sender-login`, `audit`
+- **Needs:** Boat; one codex turn; CLI (`M` and `M2`) and two browsers once the new web app asks and
+  grants (route PR 34); until then the API with each account's access key, as the feature file says
+- **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`.
+  `M2 codex "Say hello and change nothing." --project <second> --name main-run-ask-<sha8> --detach`;
+  record `<id>` and `<id8>`. As the owner, ask for shared control; as `<second>`, see the ask in the
+  inbox and grant it. As the owner, send one message (`Say hello again and change nothing.`) and see
+  it run on the owner's own codex login. As the owner, also try to grant: refused. Take it back as
+  `<second>`; ask, grant, then `M2 session share <id8> off`. Restore: `M2 stop <id8>`,
+  `M2 worktrees rm main-run-ask-<sha8> --project <second>`, `<second>` back to `private`, and delete
+  any access key the flow made.
+- **See:** the ask in `<second>`'s inbox and on the session; the grant read back as one person
+  holding it while `everyoneSince` stays null; the owner's message's turn names the owner and their
+  login; the second grant refused `not-asked`; after the take-back and after `share off`, nobody but
+  `<second>` holds it; the control log and audit log name each step and the person.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `packages/db/src/repos/session-shared-control.ts`,
+  `apps/web/src/server/routers/sessions.ts`, `apps/web/src/server/api/errors.ts`
 
 ### per-person-homes.two-people
 

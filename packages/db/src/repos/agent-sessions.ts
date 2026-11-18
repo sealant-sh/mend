@@ -1568,18 +1568,19 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
               return yield* tx
                 .update(agentSessions)
                 .set({
-            sharedControlEnabledByUserId: enabledByUserId,
-            sharedControlEnabledAt: enabledByUserId === null ? null : yield* DateTime.nowAsDate,
-            // Once shared, always so for this session: turning it off keeps when it was first on.
-            ...(enabledByUserId === null
-              ? {}
-              : {
-                  sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
-                }),
-            updatedAt: yield* DateTime.nowAsDate,
-          })
-          .where(eq(agentSessions.id, id))
-          .returning();
+                  sharedControlEnabledByUserId: enabledByUserId,
+                  sharedControlEnabledAt:
+                    enabledByUserId === null ? null : yield* DateTime.nowAsDate,
+                  // Once shared, always so for this session: turning it off keeps when it was first on.
+                  ...(enabledByUserId === null
+                    ? {}
+                    : {
+                        sharedControlEverAt: sql`COALESCE(${agentSessions.sharedControlEverAt}, now())`,
+                      }),
+                  updatedAt: yield* DateTime.nowAsDate,
+                })
+                .where(eq(agentSessions.id, id))
+                .returning();
             }),
           )
           .pipe(Effect.orDie);

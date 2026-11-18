@@ -363,7 +363,11 @@ export const sessionNotifier = (events: Stream.Stream<string, SqlError>) =>
           const targets = yield* pushTargets(
             devices,
             notificationSettings,
-            { ownerUserId: call.approverId, sharedControlEnabledAt: null, sharedControlUserIds: [] },
+            {
+              ownerUserId: call.approverId,
+              sharedControlEnabledAt: null,
+              sharedControlUserIds: [],
+            },
             null,
             {
               kind: "needs-input",

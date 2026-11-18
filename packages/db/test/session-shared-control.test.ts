@@ -101,9 +101,9 @@ describe.skipIf(postgres.skip)("shared control for one person, in Postgres", () 
 
         yield* control.ask(id, "ada");
         yield* control.ask(id, "ada");
-        expect((yield* control.people(id)).map((person) => [person.userId, person.state])).toEqual(
-          [["ada", "asked"]],
-        );
+        expect((yield* control.people(id)).map((person) => [person.userId, person.state])).toEqual([
+          ["ada", "asked"],
+        ]);
         expect(canSteerSession(yield* sessions.byId(id), "ada")).toBe(false);
 
         yield* control.grant(id, "ada", "grace");
@@ -202,9 +202,9 @@ describe.skipIf(postgres.skip)("shared control for one person, in Postgres", () 
         const off = yield* sessions.setSharedControl(id, null);
         expect(off.sharedControlUserIds).toEqual([]);
         expect(canSteerSession(off, "ada")).toBe(false);
-        expect((yield* control.people(id)).map((person) => [person.userId, person.state])).toEqual(
-          [["linus", "asked"]],
-        );
+        expect((yield* control.people(id)).map((person) => [person.userId, person.state])).toEqual([
+          ["linus", "asked"],
+        ]);
       }),
     );
   });

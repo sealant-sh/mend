@@ -13,8 +13,16 @@ import {
 } from "./session-control.ts";
 
 const owned = { ownerUserId: "alice", sharedControlEnabledAt: null, sharedControlUserIds: [] };
-const shared = { ownerUserId: "alice", sharedControlEnabledAt: new Date(), sharedControlUserIds: [] };
-const ownerless = { ownerUserId: null, sharedControlEnabledAt: new Date(), sharedControlUserIds: [] };
+const shared = {
+  ownerUserId: "alice",
+  sharedControlEnabledAt: new Date(),
+  sharedControlUserIds: [],
+};
+const ownerless = {
+  ownerUserId: null,
+  sharedControlEnabledAt: new Date(),
+  sharedControlUserIds: [],
+};
 const grantedToCarol = { ...owned, sharedControlUserIds: ["carol"] };
 
 describe("steering a visible session (docs/adr/0003)", () => {
