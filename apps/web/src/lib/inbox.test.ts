@@ -7,14 +7,16 @@ import {
   age,
   askDetail,
   DEFAULT_INBOX_FILTERS,
+  DEFAULT_INBOX_FOLDS,
   groupRows,
   inboxRows,
   type InboxMark,
   matchesFilters,
+  railRows,
   rowStatus,
   sharedWith,
 } from "./inbox.ts";
-import { parseInboxFilters, parseInboxFolds } from "./ui-prefs.ts";
+import { parseInboxFilters, parseInboxFolds, parseSidebarExpanded } from "./ui-prefs.ts";
 
 const now = new Date("2026-11-18T14:00:00");
 const minutesAgo = (minutes: number) => new Date(now.getTime() - minutes * 60_000);
@@ -347,5 +349,53 @@ describe("what this browser keeps", () => {
       snoozed: false,
       done: false,
     });
+  });
+});
+
+describe("the collapsed sidebar", () => {
+  const ids = (rows: ReadonlyArray<{ readonly session: { readonly id: string } }>) =>
+    rows.map((each) => each.session.id);
+  const grouped = (rows: ReadonlyArray<SessionInboxRowDto>) =>
+    groupRows(inboxRows({ rows, marks: [], now }));
+
+  it("shows the sessions of the open groups, Waiting on you first, and none from a folded group", () => {
+    const groups = grouped([
+      row("works", "running"),
+      row("ended", "completed", { change: { id: "c-ended", files: 2 } }),
+      row("asks", "waiting"),
+    ]);
+    expect(ids(railRows(groups, DEFAULT_INBOX_FOLDS, undefined))).toEqual(["asks", "ended"]);
+    expect(
+      ids(railRows(groups, { ...DEFAULT_INBOX_FOLDS, running: true, review: false }, undefined)),
+    ).toEqual(["asks", "works"]);
+  });
+
+  it("lists a group's first five, as the full sidebar does, and the open session past them", () => {
+    const waiting = Array.from({ length: 7 }, (_, index) =>
+      row(`w${index}`, "waiting", { updated: minutesAgo(index + 1) }),
+    );
+    const groups = grouped(waiting);
+    expect(ids(railRows(groups, DEFAULT_INBOX_FOLDS, undefined))).toEqual([
+      "w0",
+      "w1",
+      "w2",
+      "w3",
+      "w4",
+    ]);
+    expect(ids(railRows(groups, DEFAULT_INBOX_FOLDS, "w6"))).toEqual([
+      "w0",
+      "w1",
+      "w2",
+      "w3",
+      "w4",
+      "w6",
+    ]);
+  });
+
+  it("opens in full unless this browser folded it", () => {
+    expect(parseSidebarExpanded(false)).toBe(false);
+    expect(parseSidebarExpanded(true)).toBe(true);
+    expect(parseSidebarExpanded("false")).toBe(true);
+    expect(parseSidebarExpanded(undefined)).toBe(true);
   });
 });

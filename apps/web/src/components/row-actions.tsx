@@ -32,7 +32,6 @@ import {
   CalendarIcon,
   CheckCheckIcon,
   ChevronLeftIcon,
-  ChevronRightIcon,
   EllipsisIcon,
   LinkIcon,
   PencilIcon,
@@ -44,6 +43,8 @@ import { whenAhead, type InboxRow } from "#/lib/inbox";
 import { type RowActions, snoozeChoices } from "#/lib/row-actions";
 import { sessionLink } from "#/lib/session-sheet";
 import type { RowActionHandlers } from "#/lib/use-row-actions";
+
+import { SheetHandle, SheetItem } from "./sheet-item.tsx";
 
 /**
  * A session row's actions (Doop "Sidebar · session menu", "Phone · Inbox · row actions"): the
@@ -255,37 +256,6 @@ const focusOnMount = (input: HTMLInputElement | null) => {
 
 type Page = "actions" | "snooze" | "time" | "rename";
 
-/** One 52px row of the phone's action sheet (Doop "Action sheet item"). */
-function SheetItem({
-  icon,
-  value,
-  chevron = false,
-  onClick,
-  children,
-}: {
-  readonly icon?: ReactNode;
-  readonly value?: string;
-  readonly chevron?: boolean;
-  readonly onClick: () => void;
-  readonly children: ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      role="menuitem"
-      onClick={onClick}
-      className="flex h-13 w-full items-center gap-3.5 pr-4 pl-5 text-left text-lead text-foreground outline-none focus-visible:bg-muted active:bg-accent [&_svg]:size-4.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
-    >
-      {icon}
-      <span className="min-w-0 flex-1 truncate">{children}</span>
-      {value === undefined ? null : (
-        <span className="shrink-0 text-sm text-muted-foreground tabular-nums">{value}</span>
-      )}
-      {chevron ? <ChevronRightIcon aria-hidden className="size-4" /> : null}
-    </button>
-  );
-}
-
 const pad = (n: number) => String(n).padStart(2, "0");
 
 /** A local date and time as a `datetime-local` box takes it: "2026-11-18T16:00". */
@@ -360,10 +330,7 @@ export function PhoneRowActions({ row, actions, handlers }: Omit<RowMenuProps, "
           showCloseButton={false}
           className="max-h-[85dvh] gap-0 rounded-t-pop-touch pb-[env(safe-area-inset-bottom)]"
         >
-          <span
-            aria-hidden
-            className="mx-auto mt-1.5 mb-0.5 block h-1.25 w-9 rounded-full bg-muted-foreground/35"
-          />
+          <SheetHandle />
           {page === "actions" ? (
             <>
               {header(row.title)}

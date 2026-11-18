@@ -16,12 +16,18 @@ function PopoverContent({
   alignOffset = 0,
   side = "bottom",
   sideOffset = 4,
+  anchor,
   ...props
 }: PopoverPrimitive.Popup.Props &
-  Pick<PopoverPrimitive.Positioner.Props, "align" | "alignOffset" | "side" | "sideOffset">) {
+  Pick<
+    PopoverPrimitive.Positioner.Props,
+    "align" | "alignOffset" | "side" | "sideOffset" | "anchor"
+  >) {
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Positioner
+        // What the popup lines up with, when not its trigger: a panel beside a whole rail.
+        anchor={anchor}
         align={align}
         alignOffset={alignOffset}
         side={side}

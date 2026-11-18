@@ -36,6 +36,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
 
+import { SidebarToggle } from "#/components/app-sidebar";
 import { WorkspacesRefusedBanner } from "#/components/host-user-namespaces";
 import { laterPage } from "#/lib/later-pages";
 import { loginBlock } from "#/lib/new-session";
@@ -311,7 +312,9 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
     setOpen(next ? picker : null);
   return (
     <div className="flex min-h-0 flex-1 flex-col max-lg:hidden">
-      <header className="flex h-14 shrink-0 items-center border-b border-border px-5">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border pr-5 pl-3">
+        <SidebarToggle />
+        <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
         <h1 className="text-lead font-semibold">New session</h1>
       </header>
       <WorkspacesRefusedBanner layout="inline" />

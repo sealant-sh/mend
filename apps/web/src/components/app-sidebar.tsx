@@ -1,4 +1,5 @@
 import { Banner } from "@mend/ui/components/banner";
+import { Lump } from "@mend/ui/components/lump";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Collapsible,
@@ -6,6 +7,13 @@ import {
   CollapsibleTrigger,
 } from "@mend/ui/components/ui/collapsible";
 import { ContextMenu, ContextMenuTrigger } from "@mend/ui/components/ui/context-menu";
+import { Kbd } from "@mend/ui/components/ui/kbd";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTitle,
+  PopoverTrigger,
+} from "@mend/ui/components/ui/popover";
 import {
   Sidebar,
   SidebarContent,
@@ -16,44 +24,65 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarRail,
+  useSidebar,
 } from "@mend/ui/components/ui/sidebar";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@mend/ui/components/ui/tooltip";
 import { cn } from "@mend/ui/lib/utils";
 import { Link, useLocation } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
   FolderIcon,
+  InboxIcon,
+  PanelLeftIcon,
   SearchIcon,
   SettingsIcon,
   SparklesIcon,
   SquarePenIcon,
   WifiOffIcon,
 } from "lucide-react";
-import { Fragment, memo, type ReactNode, type Ref, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  type ReactElement,
+  type ReactNode,
+  type Ref,
+  useRef,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 
 import {
   activity,
   age,
   EMPTY_GROUP,
-  GROUP_ROWS,
   INBOX_GROUPS,
   type InboxGroup,
   type InboxRow,
   type QueuedRow,
+  railRows,
   readAt,
   rowStatus,
   sharedWith,
+  shownRows,
 } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import { rowActions } from "#/lib/row-actions";
-import { sessionLink } from "#/lib/session-sheet";
+import { lumpStatusOf, sessionLink } from "#/lib/session-sheet";
 import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
 import { useRowActions } from "#/lib/use-row-actions";
 
+import { type Account, AccountMenu } from "./account-menu.tsx";
 import { InboxFilterMenu } from "./inbox-filters.tsx";
+import { OrganizationMenu } from "./organization-menu.tsx";
 import { QueuedSidebarRow } from "./queued-session-row.tsx";
 import { RenameField, RowContextMenuContent, RowMenuButton } from "./row-actions.tsx";
 
@@ -63,12 +92,15 @@ import { RenameField, RowContextMenuContent, RowMenuButton } from "./row-actions
  * groups, then Settings and the account. It is the only inbox: every list of a person's sessions
  * lives here, grouped by what they need.
  *
- * Seams for the PRs after this one: the organization row and the account row take the switcher
- * and the account menu (PR 9). A session row's menu is `row-actions.tsx`.
+ * It folds to a 48px rail and opens again (`SidebarToggle` in a sheet's header, ⌘B, or the edge
+ * of the sidebar); the choice is kept per browser (`sidebarExpanded`). The organization row opens
+ * the switcher (`organization-menu.tsx`), the account row the account menu (`account-menu.tsx`),
+ * and a session row's menu is `row-actions.tsx`.
  */
 
-/** The sidebar's width on the desk, as the canvas draws it. */
+/** The sidebar's width on the desk, and its rail's, as the canvas draws them. */
 export const SIDEBAR_WIDTH = "264px";
+export const SIDEBAR_RAIL_WIDTH = "48px";
 
 /** Which item of the sidebar's navigation the open page is, from its path. */
 export type SidebarArea = "inbox" | "projects" | "skills" | "settings";
@@ -84,15 +116,6 @@ export const areaOf = (pathname: string): SidebarArea => {
 export const openSessionOf = (pathname: string): string | undefined =>
   /^\/sessions\/([^/]+)/.exec(pathname)?.[1];
 
-/** "AL" for Ada Lovelace; the first letter of an email when there is no name. */
-export const initialsOf = (name: string): string =>
-  name
-    .split(/\s+/)
-    .filter((part) => part !== "")
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() ?? "")
-    .join("");
-
 /** On the desk, a control's own ground: the background showing through. */
 const RAISED = "bg-background/72";
 /** What pointing at an item on the desk shows. */
@@ -106,40 +129,66 @@ const navClass = cn(
 
 export function AppSidebar({
   organizationName,
-  accountName,
+  account,
   inbox,
   online,
-  className,
 }: {
   readonly organizationName: string;
-  readonly accountName: string;
+  readonly account: Account;
   /** The inbox's reads; the sidebar draws their loading, failure and empty states. */
   readonly inbox: InboxState;
   readonly online: boolean;
-  readonly className?: string;
 }) {
   const pathname = useLocation({ select: (location) => location.pathname });
+  const { state } = useSidebar();
   const area = areaOf(pathname);
-  const host = useServerHost();
+  const openId = openSessionOf(pathname);
   return (
     <Sidebar
-      collapsible="none"
+      collapsible="icon"
       aria-label="Sidebar"
-      className={cn(
-        "sticky top-0 h-dvh shrink-0 bg-sidebar pt-3 pr-2 pb-2.5 pl-3 text-sidebar-foreground tabular-nums",
-        className,
-      )}
+      className="border-r-0 bg-sidebar pt-3 pr-2 pb-2.5 pl-3 text-sidebar-foreground tabular-nums group-data-[collapsible=icon]:p-2"
     >
+      {state === "expanded" ? (
+        <ExpandedSidebar
+          organizationName={organizationName}
+          account={account}
+          inbox={inbox}
+          online={online}
+          area={area}
+          openId={openId}
+        />
+      ) : (
+        <SidebarRailNav
+          organizationName={organizationName}
+          account={account}
+          inbox={inbox}
+          online={online}
+          area={area}
+          openId={openId}
+        />
+      )}
+      <SidebarRail className="z-30" />
+    </Sidebar>
+  );
+}
+
+interface SidebarParts {
+  readonly organizationName: string;
+  readonly account: Account;
+  readonly inbox: InboxState;
+  readonly online: boolean;
+  readonly area: SidebarArea;
+  readonly openId: string | undefined;
+}
+
+/** The sidebar open in full: the organization, search, the pages, the inbox, then you. */
+function ExpandedSidebar({ organizationName, account, inbox, online, area, openId }: SidebarParts) {
+  const host = useServerHost();
+  return (
+    <>
       <SidebarHeader className="gap-0 p-0">
-        <div className="flex h-9 items-center gap-2 px-2 text-prose font-semibold">
-          <span
-            aria-hidden
-            className="grid size-5.5 shrink-0 place-items-center rounded-md bg-foreground text-xs font-bold text-background"
-          >
-            {initialsOf(organizationName).slice(0, 1)}
-          </span>
-          <span className="min-w-0 truncate">{organizationName}</span>
-        </div>
+        <OrganizationMenu organizationName={organizationName} place="sidebar" />
         <div className="my-2.5 flex gap-1.5">
           {/* Search arrives with the command palette; until then the field is drawn, not offered. */}
           <div
@@ -175,7 +224,7 @@ export function AppSidebar({
         </SidebarMenu>
       </SidebarHeader>
       <SidebarContent className="mt-2 gap-0">
-        <SidebarInbox inbox={inbox} online={online} openId={openSessionOf(pathname)} host={host} />
+        <SidebarInbox inbox={inbox} online={online} openId={openId} host={host} />
       </SidebarContent>
       <SidebarFooter className="gap-0.5 border-t border-sidebar-border p-0 pt-2">
         <SidebarMenu>
@@ -183,20 +232,244 @@ export function AppSidebar({
             Settings
           </NavItem>
         </SidebarMenu>
-        <div className="flex items-center gap-2.5 p-2">
-          <span
-            aria-hidden
-            className="grid size-7.5 shrink-0 place-items-center rounded-full bg-sidebar-accent text-2xs font-semibold"
-          >
-            {initialsOf(accountName)}
-          </span>
-          <span className="grid min-w-0 flex-1 leading-tight">
-            <span className="truncate text-row font-semibold">{accountName}</span>
-            <span className="truncate text-meta text-muted-foreground">{host}</span>
-          </span>
-        </div>
+        <AccountMenu account={account} place="sidebar" />
       </SidebarFooter>
-    </Sidebar>
+    </>
+  );
+}
+
+/**
+ * The sidebar folded to its 48px rail (Doop "App sidebar", state=collapsed): the organization's
+ * mark, New session, the inbox as a flyout with the count waiting on you, Projects and Skills,
+ * then one glyph per session the full sidebar lists in its open groups, Settings and you. Each
+ * control names itself in a tooltip.
+ */
+function SidebarRailNav({ organizationName, account, inbox, online, area, openId }: SidebarParts) {
+  const folds = inboxFolds.use();
+  const view = inbox.status === "success" ? inbox.view : undefined;
+  const sessions = view === undefined ? [] : railRows(view.groups, folds, openId);
+  const waiting = view?.groups.waiting.length ?? 0;
+  return (
+    <TooltipProvider>
+      <nav aria-label="Sidebar rail" className="flex min-h-0 flex-1 flex-col items-center">
+        <OrganizationMenu organizationName={organizationName} place="rail" />
+        <SidebarMenu className="mt-2 w-auto gap-0.5">
+          {/* Search arrives with the command palette; until then it is drawn, not offered. */}
+          <li aria-hidden className="grid size-8 place-items-center text-muted-foreground">
+            <SearchIcon className="size-4" />
+          </li>
+          <RailItem label="New session" active={false} className={RAISED} render={<Link to="/" />}>
+            <SquarePenIcon />
+          </RailItem>
+        </SidebarMenu>
+        <SidebarMenu className="mt-2.5 w-auto gap-0.5">
+          <InboxFlyout inbox={inbox} online={online} openId={openId} waiting={waiting} />
+          <RailItem label="Projects" active={area === "projects"} render={<Link to="/projects" />}>
+            <FolderIcon />
+          </RailItem>
+          <RailItem
+            label="Skills"
+            active={area === "skills"}
+            render={<Link {...laterPage("skills")} />}
+          >
+            <SparklesIcon />
+          </RailItem>
+        </SidebarMenu>
+        <span aria-hidden className="my-3.5 h-px w-4 shrink-0 bg-sidebar-border" />
+        <SidebarMenu
+          aria-label="Sessions"
+          className="min-h-0 w-auto flex-1 content-start gap-0.5 overflow-y-auto"
+        >
+          {sessions.map((row) => (
+            <RailSession
+              key={row.session.id}
+              row={row}
+              now={view?.now ?? new Date()}
+              active={row.session.id === openId}
+            />
+          ))}
+        </SidebarMenu>
+        <div className="grid w-8 shrink-0 justify-items-center gap-1 border-t border-sidebar-border pt-2">
+          <SidebarMenu className="w-auto">
+            <RailItem
+              label="Settings"
+              active={area === "settings"}
+              render={<Link to="/settings" />}
+            >
+              <SettingsIcon />
+            </RailItem>
+          </SidebarMenu>
+          <AccountMenu account={account} place="rail" />
+        </div>
+      </nav>
+    </TooltipProvider>
+  );
+}
+
+const railButton = cn(
+  "grid size-8 place-items-center rounded-lg p-0 text-foreground",
+  HOVER,
+  "data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground [&_svg]:size-4",
+);
+
+/** One control on the rail: a 32px button with its name in a tooltip. */
+function RailItem({
+  label,
+  active,
+  render,
+  className,
+  children,
+}: {
+  readonly label: string;
+  readonly active: boolean;
+  readonly render: ReactElement;
+  readonly className?: string;
+  readonly children: ReactNode;
+}) {
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        isActive={active}
+        tooltip={label}
+        aria-label={label}
+        aria-current={active ? "page" : undefined}
+        className={cn(railButton, className)}
+        render={render}
+      >
+        {children}
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+/** One session on the rail (Doop "Sidebar rail session"): its glyph, its title in a tooltip. */
+function RailSession({
+  row,
+  now,
+  active,
+}: {
+  readonly row: InboxRow;
+  readonly now: Date;
+  readonly active: boolean;
+}) {
+  const status = rowStatus(row, now);
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton
+        isActive={active}
+        tooltip={row.title}
+        aria-label={`${row.title}, ${status.word}`}
+        className={cn(railButton, "text-muted-foreground")}
+        render={
+          <Link
+            {...sessionLink(row.session.id)}
+            data-session-id={row.session.id}
+            aria-current={active ? "page" : undefined}
+          />
+        }
+      >
+        {/* The inbox doesn't carry a session's pull request, so the glyph has its shape only. */}
+        <Lump status={lumpStatusOf(row.session.status)} className="size-4" />
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+/**
+ * The inbox from the rail (Doop "Collapsed sidebar · inbox flyout"): the same filters and groups
+ * as the full sidebar, in a panel the height of the window beside the rail. Opening a session
+ * closes it.
+ */
+function InboxFlyout({
+  inbox,
+  online,
+  openId,
+  waiting,
+}: {
+  readonly inbox: InboxState;
+  readonly online: boolean;
+  readonly openId: string | undefined;
+  readonly waiting: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const host = useServerHost();
+  const rail = useRef<HTMLElement | null>(null);
+  const label = waiting === 0 ? "Inbox" : `Inbox, ${waiting} waiting on you`;
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <SidebarMenuItem
+        ref={(item) => {
+          // The panel lines up with the rail, not with the button that opens it.
+          rail.current = item?.closest<HTMLElement>("[data-slot=sidebar-container]") ?? null;
+        }}
+      >
+        <SidebarMenuButton
+          isActive={open}
+          tooltip="Inbox"
+          aria-label={label}
+          className={railButton}
+          render={<PopoverTrigger />}
+        >
+          <InboxIcon />
+          {waiting === 0 ? null : (
+            <span
+              aria-hidden
+              className="absolute -top-0.5 -right-1 grid h-4 min-w-4 place-items-center rounded-full bg-foreground px-1 text-2xs leading-none font-semibold text-background shadow-[0_0_0_2px_var(--color-sidebar)]"
+            >
+              {waiting}
+            </span>
+          )}
+        </SidebarMenuButton>
+      </SidebarMenuItem>
+      <PopoverContent
+        anchor={rail}
+        side="right"
+        align="start"
+        sideOffset={2}
+        alignOffset={8}
+        aria-label="Inbox"
+        onClick={(event) => {
+          if (event.target instanceof Element && event.target.closest("a") !== null) setOpen(false);
+        }}
+        className="h-[calc(100dvh-1rem)] w-79 gap-0 overflow-hidden p-0 tabular-nums"
+      >
+        <div className="flex items-center gap-2 border-b border-border py-2.5 pr-2 pl-4">
+          <PopoverTitle className="text-lead font-semibold">Inbox</PopoverTitle>
+          {inbox.status === "success" ? <InboxFilterMenu filters={inbox.view.filters} /> : null}
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col px-2 pt-1.5">
+          <SidebarInbox inbox={inbox} online={online} openId={openId} host={host} filters={false} />
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+/** The button in a sheet's header that folds the sidebar to its rail, or opens it again (⌘B). */
+export function SidebarToggle() {
+  const { state, toggleSidebar } = useSidebar();
+  const label = state === "expanded" ? "Collapse sidebar" : "Expand sidebar";
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            aria-label={label}
+            aria-expanded={state === "expanded"}
+            onClick={toggleSidebar}
+            className="text-muted-foreground"
+          />
+        }
+      >
+        <PanelLeftIcon aria-hidden />
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {label} <Kbd>⌘B</Kbd>
+      </TooltipContent>
+    </Tooltip>
   );
 }
 
@@ -217,10 +490,11 @@ function NavItem({
         isActive={active}
         className={navClass}
         render={
-          <Link
-            {...(to === "projects" ? { to: "/projects" } : laterPage(to))}
-            aria-current={active ? "page" : undefined}
-          />
+          to === "skills" ? (
+            <Link {...laterPage(to)} aria-current={active ? "page" : undefined} />
+          ) : (
+            <Link to={`/${to}`} aria-current={active ? "page" : undefined} />
+          )
         }
       >
         {icon}
@@ -236,11 +510,14 @@ function SidebarInbox({
   online,
   openId,
   host,
+  filters = true,
 }: {
   readonly inbox: InboxState;
   readonly online: boolean;
   readonly openId: string | undefined;
   readonly host: string;
+  /** The filter line above the groups; the rail's flyout has it in its header instead. */
+  readonly filters?: boolean;
 }) {
   switch (inbox.status) {
     case "pending":
@@ -268,7 +545,7 @@ function SidebarInbox({
         </div>
       );
     case "success":
-      return <InboxGroups view={inbox.view} online={online} openId={openId} />;
+      return <InboxGroups view={inbox.view} online={online} openId={openId} filters={filters} />;
   }
 }
 
@@ -307,17 +584,21 @@ function InboxGroups({
   view,
   online,
   openId,
+  filters,
 }: {
   readonly view: InboxView;
   readonly online: boolean;
   readonly openId: string | undefined;
+  readonly filters: boolean;
 }) {
   const folds = inboxFolds.use();
   return (
     <>
-      <div className="mb-1.5 px-0.5">
-        <InboxFilterMenu filters={view.filters} />
-      </div>
+      {filters ? (
+        <div className="mb-1.5 px-0.5">
+          <InboxFilterMenu filters={view.filters} />
+        </div>
+      ) : null}
       {online ? null : <OfflineBand view={view} layout="stacked" onRetry={view.refresh} />}
       <nav aria-label="Inbox" className="min-h-0 flex-1 overflow-y-auto pt-1.5 pb-2">
         {view.empty ? (
@@ -376,11 +657,7 @@ function SidebarInboxGroup({
 }) {
   const [showAll, setShowAll] = useState(false);
   // The open session stays listed, wherever it falls in its group.
-  const openIndex = rows.findIndex((row) => row.session.id === openId);
-  const shown =
-    showAll || rows.length <= GROUP_ROWS
-      ? rows
-      : rows.filter((_, index) => index < GROUP_ROWS || index === openIndex);
+  const shown = shownRows(rows, openId, showAll);
   const more = rows.length - shown.length;
   const wait = group === "waiting" && rows.length > 0;
   return (

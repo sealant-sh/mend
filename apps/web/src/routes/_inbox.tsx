@@ -1,17 +1,17 @@
 import { SidebarInset, SidebarProvider } from "@mend/ui/components/ui/sidebar";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
 
-import { AppSidebar, SIDEBAR_WIDTH } from "#/components/app-sidebar";
+import { AppSidebar, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH } from "#/components/app-sidebar";
+import { SwitchedToast } from "#/components/organization-menu";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
 import { Toaster } from "#/components/toaster";
 import { inboxQuery } from "#/lib/inbox-live";
 import { useOnline } from "#/lib/online";
-import { signedInOptions } from "#/lib/sign-in";
-import { useTRPC } from "#/lib/trpc";
+import { sidebarExpanded } from "#/lib/ui-prefs";
 import { inboxMarksQuery, useInbox } from "#/lib/use-inbox";
+import { useViewer } from "#/lib/use-viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 /**
@@ -20,7 +20,8 @@ import { useWorkbenchEvents } from "#/lib/workbench-events";
  * remounts it; only the sheet changes.
  *
  * Under 1024px there is no sidebar: home is the inbox as its own screen, with the tab bar, and
- * every other page takes the whole width. The New session composer, home's sheet on a wide
+ * every other page takes the whole width. The organization switcher and the account menu are at
+ * the top of the Settings tab there (`/settings`). The New session composer, home's sheet on a wide
  * screen, is `/new` there.
  */
 export const Route = createFileRoute("/_inbox")({
@@ -42,30 +43,30 @@ export const Route = createFileRoute("/_inbox")({
 });
 
 function InboxLayout() {
-  const trpc = useTRPC();
   // One event stream for the tab, joined here so every signed-in page is live.
   useWorkbenchEvents();
   const inbox = useInbox();
   const online = useOnline();
   const home = useLocation({ select: (location) => location.pathname === "/" });
-  // The root route read who is signed in before this rendered; the roster names them. Until the
-  // roster answers, or if it can't, the account row shows the server's address alone.
-  const viewer = useSuspenseQuery(signedInOptions(trpc));
-  const members = useQuery(trpc.organization.members.queryOptions());
-  const organizationName = viewer.data.organization.name;
-  // A roster that failed to read again keeps the names it had.
-  const roster =
-    members.isPending || (members.isError && members.data === undefined) ? [] : members.data;
-  const accountName = roster?.find((member) => member.userId === viewer.data.userId)?.name ?? "";
+  const { organizationName, account } = useViewer();
+  // Open in full or folded to its rail, as this browser left it; the server renders it that way.
+  const expanded = sidebarExpanded.use();
   return (
-    <SidebarProvider style={{ "--sidebar-width": SIDEBAR_WIDTH }} className="bg-canvas">
-      <AppSidebar
-        organizationName={organizationName}
-        accountName={accountName}
-        inbox={inbox}
-        online={online}
-        className="max-lg:hidden"
-      />
+    <SidebarProvider
+      open={expanded}
+      onOpenChange={sidebarExpanded.set}
+      style={{ "--sidebar-width": SIDEBAR_WIDTH, "--sidebar-width-icon": SIDEBAR_RAIL_WIDTH }}
+      className="bg-canvas"
+    >
+      {/* Under 1024px there is no sidebar: home is the inbox, and Settings holds the switchers. */}
+      <div className="contents max-lg:hidden">
+        <AppSidebar
+          organizationName={organizationName}
+          account={account}
+          inbox={inbox}
+          online={online}
+        />
+      </div>
       <SidebarInset className="min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
         {home ? (
           <PhoneInbox
@@ -82,6 +83,7 @@ function InboxLayout() {
         </div>
       </SidebarInset>
       <Toaster />
+      <SwitchedToast />
     </SidebarProvider>
   );
 }
