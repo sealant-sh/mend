@@ -60,9 +60,14 @@ line appear.
 account popover drew its machine and exposure lines a moment after it opened). Before you capture a
 state or call a part of the See line missing, wait for that part to appear, up to 20 seconds.
 
-**Restore what a flow changed, even when it failed.** When a flow's Do line restores something
-(removes what it made, sets a setting back), do that part before you move on, whatever the flow's
-outcome, and record it in `cli.log`.
+**Restore what a flow changed, even when it failed, and read it back.** When a flow's Do line
+restores something (removes what it made, sets a setting back), do that part before you move on,
+whatever the flow's outcome. Then read the thing back the way a person would (the CLI listing, or a
+fresh load of the page) and record it in `result.txt` as
+`restored · <what> · read back: <what the listing or page showed>`, or
+`not restored · <what> · read back: <what is still there>`. A restore you did not read back is not
+recorded as done: on 18 Nov a subagent reported a link and a reference removed while its own last
+snapshot showed both.
 
 **Never:**
 

@@ -87,7 +87,9 @@ export const CREDENTIAL_PATTERNS = [
   {
     kind: "credential field",
     pattern:
-      /(["']?[A-Za-z_]*(?:token|password|secret|api_?key|authorization|cookie)[A-Za-z_]*["']?\s*[:=]\s*["']?)(?!<|Bearer\b)[^"'\s,}]{6,}/gi,
+      // A value already blanked is not a credential: `<redacted>`-style placeholders, and the
+      // `[redacted]` mend doctor --bundle writes (apps/cli/src/doctor-bundle.ts).
+      /(["']?[A-Za-z_]*(?:token|password|secret|api_?key|authorization|cookie)[A-Za-z_]*["']?\s*[:=]\s*["']?)(?!<|\[redacted\]|Bearer\b)[^"'\s,}]{6,}/gi,
     replace: "$1<redacted>",
   },
 ];

@@ -60,6 +60,10 @@ you hold the box (`verify box prepare`).
 
 - **The project** `<p>`: adopted by the owner account from its network origin. `M projects` lists
   it. To recreate: `M adopt <origin> --name boat-check-ubuntu` (adopt-project.md `adopt-cli`).
+- **The second GitHub project** `boat-check-arch`: adopted by the owner account from
+  `https://github.com/octocat/Spoon-Knife.git` (branch `main`), for the flow that clones a second
+  repository inside a Boat workspace. To recreate:
+  `M adopt https://github.com/octocat/Spoon-Knife.git --name boat-check-arch`.
 - **The Docker worktree** `main-run-docker` in `<p>`. To make it: on the web as the owner, Settings
   · Organization · Defaults, `Where new sessions run`: note the current choice (it read
   `Inherit · Boat` on 16 Nov), switch to Docker without moving anything; run
@@ -643,8 +647,9 @@ flows reuse what earlier ones made:
   set the folder's access back to `off`, `remove` the reference and the link,
   `M folder rm main-run-sel-<sha8>`, and `M worktrees rm main-run-extras-<sha8> --project <land>`.
 - **See:** the folder row with `read` pressed; the reference row with its short head sha and
-  `fetched <date>` (or the refusal of a `git://` URL in its own words: record which); the link row
-  `main-run-link read-write` with `<second> · worktree <worktree>`;
+  `fetched <date>` (or the refusal of a `git://` URL in its own words: record which); the
+  `Linked projects` row reads `main-run-second`, its worktree (`main`), and
+  `/workspace/repos/main-run-link`, with the button `Unlink main-run-link`;
   `mend: A project mounts this folder. Deselect it there first.`, exit `1`; `EXTRAS.txt` lists
   `a.txt` under `main-run-sel-<sha8>`, the reference's top level, and `main-run-link` under
   `/workspace/repos` or a missing directory (record which: the map says linked projects are not
@@ -685,12 +690,17 @@ flows reuse what earlier ones made:
 
 - **Map:** now-and-sessions.md `inbox-snooze-settle`, `inbox-folds`, `inbox-filters`,
   `home-composer` (read), `rail`
-- **Needs:** either; no turn; web; `start-session.boat-run`
-- **Do:** On `/`, settle the run session's `Ready to review` row, open `Settled`, and use
+- **Needs:** either; no turn; CLI and web; a session of its own: `Ready to review` holds only a
+  completed change nobody has commented on, and `review-change.web-comments` comments on the run
+  session's change before this flow runs
+- **Do:**
+  `M run --project <p> --name main-run-settle-<sha8> -- sh -c 'printf "settle\n" > SETTLE.md'`. On
+  `/`, wait for its row under `Ready to review`, settle it, open `Settled`, and use
   `Back to the inbox` on it, so the flow ends where it began; narrow the inbox by `<p>` and clear
-  it. Type no prompt.
-- **See:** the row leaves `Ready to review` and reads `settled just now` under `Settled`, then is
-  back; the project filter shows only `<p>`'s rows; the heading `What should an agent work on?`.
+  it. Type no prompt. Restore: `M worktrees rm main-run-settle-<sha8> --force --project <p>`.
+- **See:** the `main-run-settle-<sha8>` row under `Ready to review` leaves it and reads
+  `settled just now` under `Settled`, then is back; the project filter shows only `<p>`'s rows; the
+  heading `What should an agent work on?`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
 - **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/api/src/`
@@ -769,30 +779,33 @@ flows reuse what earlier ones made:
 - **Map:** repositories-in-session.md `repo-projects`, `repo-add`, `repo-list`, `repo-refusals` (own
   project, unknown project, name taken), `repo-session-card`, `repo-review-line`,
   `repo-removal-hold`
-- **Needs:** Boat; no turn; CLI in tmux and web (the owner's browser); `<land>` and `<second>`, both
-  `private`
-- **Do:** In tmux, `M run --project <land> --name main-run-repo-<sha8> -- sleep 1800`; record
-  `<id8>`. `M shell <id8>` in a second tmux session and, as the map's steps, run `mend repo list`,
-  `mend repo projects`, `mend repo add main-run-land`, `mend repo add no-such-project`,
-  `mend repo add main-run-second` (wait for the row),
-  `git -C /workspace/repos/main-run-second status -sb`, `mend repo add main-run-second` again,
+- **Needs:** Boat; no turn; CLI in tmux and web (the owner's browser); `<p>` and `boat-check-arch`
+  (`https://github.com/octocat/Spoon-Knife.git`, branch `main`), both on GitHub. A Boat workspace
+  clones the added repository itself, and reaches GitHub but not the box's own git service
+  (SLNT-1102); the clone also goes to the main project's origin host, so both projects are on
+  GitHub.
+- **Do:** In tmux, `M run --project <p> --name main-run-repo-<sha8> -- sleep 1800`; record `<id8>`.
+  `M shell <id8>` in a second tmux session and, as the map's steps, run `mend repo list`,
+  `mend repo projects`, `mend repo add boat-check-ubuntu`, `mend repo add no-such-project`,
+  `mend repo add boat-check-arch` (wait for the row),
+  `git -C /workspace/repos/boat-check-arch status -sb`, `mend repo add boat-check-arch` again,
   `mend repo list`, then write `/workspace/repo/VERIFY.md`. Read the session page's `Repositories`
   card; choose `Mark checkpoint` and open the review. `exit` the shell, `M stop <id8>`, wait in
-  `M sessions --project <land> --all --json` until it is settled and its capture done, then
-  `M worktrees rm main-run-repo-<sha8> --project <land>`. Restore:
-  `M worktrees rm main-run-repo-<sha8> --project <land> --force`, then
-  `M worktrees rm main-run-repo-<sha8> --project <second>`, so neither project keeps this run's
-  worktree.
+  `M sessions --project <p> --all --json` until it is settled and its capture done, then
+  `M worktrees rm main-run-repo-<sha8> --project <p>`. Restore:
+  `M worktrees rm main-run-repo-<sha8> --project <p> --force`, then
+  `M worktrees rm main-run-repo-<sha8> --project boat-check-arch`, so neither project keeps this
+  run's worktree.
 - **See:** `no repositories beside /workspace/repo · …`; `mend repo projects` names
-  `main-run-second` with `main` and `<git>/second.git`, and not `main-run-land`; the own-project and
-  unknown-project refusals, each `exit=1`;
-  `adding main-run-second · /workspace/repos/main-run-second · branch mend/main-run-repo-<sha8> · cloning`,
+  `boat-check-arch` with `main` and `https://github.com/octocat/Spoon-Knife.git`, and not
+  `boat-check-ubuntu`; the own-project and unknown-project refusals, each `exit=1`;
+  `adding boat-check-arch · /workspace/repos/boat-check-arch · branch mend/main-run-repo-<sha8> · cloning`,
   then the row ending `ready · saved with the main repository`, `exit=0`;
-  `## mend/main-run-repo-<sha8>`; `this session already has a repository named main-run-second`,
+  `## mend/main-run-repo-<sha8>`; `this session already has a repository named boat-check-arch`,
   `exit=1`; the card's `ready` row (and `adding`, or "not observed"); the review line
-  `repositories · /workspace/repos/main-run-second ready · nothing of its own to review yet`; the
+  `repositories · /workspace/repos/boat-check-arch ready · nothing of its own to review yet`; the
   removal refusal naming 1 repository added with `mend repo add`, exit `1`; after the restore,
-  `M worktrees --project <land>` and `M worktrees --project <second>` list no
+  `M worktrees --project <p>` and `M worktrees --project boat-check-arch` list no
   `main-run-repo-<sha8>`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
@@ -878,9 +891,10 @@ flows reuse what earlier ones made:
   more.
 - **See:** `M2 members` has `Default · 2 members` with the `▸` row the second account's, `member`;
   before, neither `M2 projects` nor the second browser's `main` lists `<land>` or `<second>`; after
-  `shared`, the owner's header line ends `· shared` and both list `<land>`; the session page link
-  reads `Landing →` (not `Land →`) and the region reads `only the change's owner lands it` with no
-  `Push to origin`; after `private`, `<land>` is gone from `M2 projects`.
+  `shared`, the owner's header line reads `… · shared with Default` and both list `<land>`; the
+  session page link reads `Landing →` (not `Land →`) and the region reads
+  `only the change's owner lands it` with no `Push to origin`; after `private`, `<land>` is gone
+  from `M2 projects`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web-old/src/components/project/settings/general.tsx`, `apps/api/src/`,
@@ -918,11 +932,13 @@ flows reuse what earlier ones made:
   `member` link bound to `main-run-other@example.invalid` (link B), `Done`. In the second browser,
   open `/join#not-a-token`, link A, then link B. In the owner's browser revoke links A and B, which
   restores the open list in the same flow. In the signed-out context open link A.
-- **See:** link A's two lines (`works once · member · expires <day>`); the box
-  `Copy it now. The link is not shown again. …` for B; `This link is not an invitation`;
+- **See:** link A's two lines (`works once · member · expires <day>`); for B, the dialog's
+  `Copy it now: Mend shows it only this once.` and the link's line
+  `works once · expires <day> · not shown again`; `This link is not an invitation`;
   `You are already a member of Default.` with `Open Mend` for A; B refused with its reason (record
-  the words); both rows leave the open list and the `<n> spent` summary afterwards (record its count
-  before and after); A in the signed-out context reads it cannot be used (record the words).
+  the words); both rows leave the open list, and `Used and closed <n> links` goes up by two (record
+  the count before and after); A in the signed-out context reads it cannot be used (record the
+  words).
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web-old/src/routes/join.$token.tsx`, `apps/web-old/src/routes/join.index.tsx`,
@@ -943,12 +959,11 @@ flows reuse what earlier ones made:
   `M2 stop <id8>`, wait until it settles,
   `M2 worktrees rm main-run-share-<sha8> --project <second>`, and set `<second>` back to `private`.
 - **See:** the owner's page reads
-  `Only <second> steers this session. You can read the record and review the change.` and its header
-  ends `· runs as <second>`; the owner's `share` exits `1` with
-  `mend: only the session owner can share control of this session`; in the second browser `Off`
-  pressed, the who-pays line (record which layout's words), the dialog `Turn on shared control?`,
-  `Off` still pressed after `Keep it off`, then `On` pressed; the owner's page reads
-  `· shared control on`, a read-only terminal line naming `<second>`, and
+  `Only <second> steers this session. You can read the record and review the change.`; the owner's
+  `share` exits `1` with `mend: only the session owner can share control of this session`; in the
+  second browser `Off` pressed, the who-pays line (record which layout's words), the dialog
+  `Turn on shared control?`, `Off` still pressed after `Keep it off`, then `On` pressed; the owner's
+  page shows a read-only terminal line naming `<second>`, and
   `<second> shares control of this session.` with `Turn off`, then the viewer line again;
   `✓ shared control on · <harness> <id8>` and `✓ shared control off · …`, exit `0`;
   `shared control stays off`; the audit log names both turn-ons and both turn-offs with their
