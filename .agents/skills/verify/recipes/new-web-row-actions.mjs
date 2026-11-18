@@ -131,6 +131,11 @@ export default async ({ page, web, capture, note }) => {
   const menu = () => page.getByRole("menu").filter({ visible: true }).first();
   const menuItem = (name) =>
     page.getByRole("menuitem", { name: new RegExp(`^${name}`) }).filter({ visible: true });
+  /** Closes the open menu and waits until it is gone. */
+  const closeMenu = async () => {
+    await page.keyboard.press("Escape");
+    await page.getByRole("menu").filter({ visible: true }).first().waitFor({ state: "hidden" });
+  };
   const menuNames = () =>
     menu()
       .getByRole("menuitem")
@@ -274,7 +279,7 @@ export default async ({ page, web, capture, note }) => {
   await (await moreButton("Done", REVIEW)).click();
   await menuItem("Open session").waitFor();
   const doneNames = await menuNames();
-  await page.keyboard.press("Escape");
+  await closeMenu();
   // A row in Done because its session ended, not marked by hand, has no mark to take back.
   const endedRow = group("Done")
     .locator("a[data-session-id]")
@@ -287,7 +292,7 @@ export default async ({ page, web, capture, note }) => {
   if (endedNames.some((each) => each.startsWith("Mark not done")))
     throw new Error(`a row done by its status offers Mark not done: ${endedNames.join(" | ")}`);
   note(`a row in Done because it ended (${endedTitle}) reads ${endedNames.join(" | ")}`);
-  await page.keyboard.press("Escape");
+  await closeMenu();
   await (await moreButton("Done", REVIEW)).click();
   await menuItem("Open session").waitFor();
   if (doneNames.some((each) => each.startsWith("Mark done") || each.startsWith("Snooze")))
