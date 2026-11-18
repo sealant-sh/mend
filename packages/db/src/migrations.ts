@@ -5664,4 +5664,30 @@ export const migrations = {
     yield* sql`ALTER TABLE agent_turns ADD CONSTRAINT agent_turns_imported_process_check
       CHECK (imported = (process_id IS NULL))`;
   }),
+  // A session started while its project still clones (SLNT-1099): kept until the clone ends and
+  // the session starts, or the person cancels it.
+  "0225_queued_sessions": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS queued_sessions (
+      id text PRIMARY KEY,
+      owner_user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+      adoption_id text NOT NULL,
+      project_name text NOT NULL,
+      project_id text NOT NULL,
+      request jsonb NOT NULL,
+      state text NOT NULL CHECK (state IN ('waiting', 'starting', 'started', 'failed')),
+      failure_step text CHECK (failure_step IN ('clone', 'start')),
+      failure text,
+      session_id text REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT queued_sessions_started_check CHECK ((state = 'started') = (session_id IS NOT NULL)),
+      CONSTRAINT queued_sessions_failed_check
+        CHECK ((state = 'failed') = (failure IS NOT NULL AND failure_step IS NOT NULL))
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS queued_sessions_owner_idx
+      ON queued_sessions (owner_user_id, organization_id)`;
+    yield* sql`CREATE INDEX IF NOT EXISTS queued_sessions_state_idx ON queued_sessions (state)`;
+  }),
 };

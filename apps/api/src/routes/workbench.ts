@@ -704,6 +704,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const caller = yield* CurrentUser;
         // Git's own words when the clone fails, beside the sentence Mend makes of them.
         let gitSaid: string | null = null;
+        // New stores are laid out by project id: names are unique only within an organization.
+        // Chosen before the clone, so a session queued while it clones knows its project.
+        const id = ProjectId.make(crypto.randomUUID());
         const adopt = (report: AdoptionReporter) =>
           Effect.gen(function* () {
             const projects = yield* ProjectsRepo;
@@ -740,8 +743,6 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             const gitAccess = yield* UserGitAccessRepo;
             const mode = requestedMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
             const remoteEnv = yield* remoteEnvFor(mode, caller.user.id, source);
-            // New stores are laid out by project id: names are unique only within an organization.
-            const id = ProjectId.make(crypto.randomUUID());
             const adopted = yield* withSignerContext(
               mode,
               caller.user.id,
@@ -787,6 +788,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             ownerUserId: caller.user.id,
             name: payload.name,
             source: redactRepositoryUrl(payload.source),
+            projectId: id,
           },
           adopt,
           (failure) => ({ failure: failure.message, gitSaid }),

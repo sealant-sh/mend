@@ -61,6 +61,7 @@ import {
   ProjectsRepoLive,
   NotificationSettingsRepoLive,
   SessionInboxMarksRepoLive,
+  QueuedSessionsRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
   SettleSettingsRepoLive,
@@ -325,6 +326,7 @@ import { ProjectCreationLive, UnsettledRepositorySweepLive } from "./project-cre
 import { ProjectPreviewsLive } from "./project-previews.ts";
 import { ProjectPullRequestsLive } from "./project-pull-requests.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
+import { QueuedSessionsLive } from "./queued-sessions.ts";
 import { RedactingConsoleLive } from "./redacting-console.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { RemoteCredentialCheckLive } from "./remote-credential-check.ts";
@@ -439,6 +441,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   RemovalFencesRepoLive,
   NotificationSettingsRepoLive,
   SessionInboxMarksRepoLive,
+  QueuedSessionsRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
   SettleSettingsRepoLive,
@@ -664,6 +667,9 @@ const ServerLive = Layer.unwrap(
       Layer.provide(McpAppRequestsLayer),
       Layer.provide(ProjectCreationLive),
       Layer.provide(PullRequestWorkspacesLive),
+      // Sessions started while their project still clones wait on this process's adoptions, and
+      // start through the same SessionStart as every other session.
+      Layer.provide(QueuedSessionsLive.pipe(Layer.provide(SessionStartLive))),
       // The adoptions this process runs, read while they clone (GET /adoptions/:id).
       Layer.provide(AdoptionsLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.

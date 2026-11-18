@@ -39,6 +39,15 @@ export type ProjectId = typeof ProjectId.Type;
 export const SessionId = Schema.String.pipe(Schema.brand("SessionId"));
 export type SessionId = typeof SessionId.Type;
 
+/**
+ * A session started while its project still clones, before it has a session row: the client
+ * chooses it, so a request sent twice queues the session once.
+ */
+export const QueuedSessionId = Schema.String.check(Schema.isUUID()).pipe(
+  Schema.brand("QueuedSessionId"),
+);
+export type QueuedSessionId = typeof QueuedSessionId.Type;
+
 export const AgentTurnSteerId = Schema.String.check(Schema.isUUID()).pipe(
   Schema.brand("AgentTurnSteerId"),
 );

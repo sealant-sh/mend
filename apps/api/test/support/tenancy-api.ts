@@ -209,6 +209,7 @@ import { PreviewIdentity } from "../../src/preview-identity.ts";
 import { ProjectCreationLive } from "../../src/project-creation.ts";
 import { ProjectPreviews } from "../../src/project-previews.ts";
 import { ProjectPullRequests } from "../../src/project-pull-requests.ts";
+import { QueuedSessions } from "../../src/queued-sessions.ts";
 import { RemovalLive } from "../../src/removal.ts";
 import { apiResponseHeaders } from "../../src/response-headers.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
@@ -1222,6 +1223,8 @@ export const createTenancyApi = async (
     ProjectCreationLive,
     ProjectLocalWorktreesLive,
     AdoptionsLive,
+    // Their routes only forward to the service, which queued-sessions.test.ts runs on Postgres.
+    Layer.mock(QueuedSessions, {}),
     RemovalLive,
     options.terminalProjects === undefined
       ? TerminalProjectsLive
