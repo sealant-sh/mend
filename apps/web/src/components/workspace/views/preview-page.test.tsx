@@ -42,8 +42,7 @@ const submitPath = (page: HTMLElement, path: string) => {
   const input = page.querySelector<HTMLInputElement>('input[aria-label="Path on web"]');
   if (input === null) throw new Error("no path field");
   act(() => {
-    const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
-    set?.call(input, path);
+    Reflect.set(HTMLInputElement.prototype, "value", path, input);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   act(() => input.form?.requestSubmit());

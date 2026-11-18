@@ -246,10 +246,14 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
       : previewShowing(base, workspace.previewsRead.data?.frameSite ?? null, page);
   const startingRecipe = startRecipe.isPending ? startRecipe.variables.name : null;
 
-  const recipeFailure = (recipe: ServiceRecipeDto) =>
-    startRecipe.isError && startRecipe.variables.name === recipe.name
-      ? failureWords(startRecipe.error, `Mend couldn't start ${recipe.name}. Try again.`)
-      : null;
+  // Said under the list rather than on the recipe's row: a start that failed lists the Service
+  // that ended, and its recipe row goes.
+  const startFailure = startRecipe.isError ? (
+    <p role="alert" className="text-meta text-destructive">
+      {startRecipe.variables.name} didn't start.{" "}
+      {failureWords(startRecipe.error, "Mend didn't say why. Try again.")}
+    </p>
+  ) : null;
   const fileTrouble = recipes.isError ? (
     <InlineAlert
       size={touch === "touch" ? "touch" : "default"}
@@ -381,10 +385,10 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
               starts={starts}
               starting={startingRecipe}
               onStart={(recipe) => startRecipe.mutate(recipe)}
-              failure={recipeFailure}
             />
           ) : null}
           <div className="flex flex-col items-start gap-2 px-4 pt-3">
+            {startFailure}
             {fileTrouble}
             {whoStarts}
             {runCommandButton}
@@ -409,11 +413,7 @@ function PreviewBody({ place }: { readonly place: ViewPlace }) {
             onRestart={steers && current !== null ? () => setRestarting(current) : null}
             onStop={steers && current !== null ? () => stop.mutate(current) : null}
           />
-          {startRecipe.isError ? (
-            <p role="alert" className="text-meta text-destructive">
-              {failureWords(startRecipe.error, "Mend couldn't start the service. Try again.")}
-            </p>
-          ) : null}
+          {startFailure}
           {fileTrouble}
           {whoStarts}
           <p className="text-meta text-muted-foreground">
@@ -549,13 +549,11 @@ function RecipeRows({
   starts,
   starting,
   onStart,
-  failure,
 }: {
   readonly recipes: ReadonlyArray<ServiceRecipeDto>;
   readonly starts: boolean;
   readonly starting: string | null;
   readonly onStart: (recipe: ServiceRecipeDto) => void;
-  readonly failure: (recipe: ServiceRecipeDto) => string | null;
 }) {
   return (
     <section aria-label="Declared in .mend/mend.toml" className="flex flex-col pt-3">
@@ -564,9 +562,8 @@ function RecipeRows({
       </h3>
       <ul className="flex flex-col gap-0.5 px-2">
         {recipes.map((recipe) => {
-          const failed = failure(recipe);
           return (
-            <li key={recipe.name} className="flex flex-col gap-1 px-2 py-2">
+            <li key={recipe.name} className="px-2 py-2">
               <div className="flex items-start gap-2.5">
                 {serviceIcon({ web: recipe.browserScheme !== null })}
                 <span className="flex min-w-0 flex-1 flex-col">
@@ -593,11 +590,6 @@ function RecipeRows({
                   </Button>
                 ) : null}
               </div>
-              {failed === null ? null : (
-                <p role="alert" className="pl-6.5 text-meta text-destructive">
-                  {failed}
-                </p>
-              )}
             </li>
           );
         })}

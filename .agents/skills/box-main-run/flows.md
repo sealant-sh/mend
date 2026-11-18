@@ -309,6 +309,35 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/session/session-notices.tsx`,
   `apps/web/src/lib/shared-workspace.ts`
 
+### session-page.new-web-preview
+
+- **Map:** services.md `service-run-web`, `service-recipe`, `service-add`, `service-observe`,
+  `service-logs`, `service-restart-stop`; mend-toml.md `toml-recipes-card`, `toml-parse-error`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-preview-sessions.json` (a `sleep` session in the worktree
+  `preview-ws` whose `.mend/mend.toml` declares `web` and `broken`), then drive the recipe
+  `new-web-preview`: open `/sessions/<id>/preview`, Start web, open its page in a new tab, type a
+  path, open the log, Restart service…, Run a command…, adopt a port, Start broken, Stop web and Run
+  again, look at 390px with the picker open, a Mend preview on another site and a file that doesn't
+  parse (fixtures), the view's failed read, and Stop session.
+- **See:** each step's note in the recipe's `steps.log`: the file's recipes with Start, `web`
+  Running with `:8000` on the Preview tab, the Service's own page (HTTP 200, "Directory listing"),
+  the path in the page's link, `Serving HTTP on` in the log and a `GET /` line on the Logs bar, the
+  Restart dialog naming who else uses it, `docs` started from a command, `broken` named as not
+  started with its exit, `web` Stopped then Running, the picker's services and actions, "Previews
+  are on a different site…" with Open in a new tab, the file's error with Read it again, Try again,
+  and "This workspace isn't running…" after Stop session.
+- **Mode:** `scripted` (recipes/new-web-preview.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/views/preview-view.tsx`,
+  `apps/web/src/components/workspace/views/preview-page.tsx`,
+  `apps/web/src/components/workspace/views/service-log.tsx`,
+  `apps/web/src/components/workspace/views/run-command-dialog.tsx`,
+  `apps/web/src/components/workspace/views/use-workspace-services.ts`,
+  `apps/web/src/lib/workspace-services.ts`, `apps/web/src/lib/previews.ts`,
+  `apps/web/src/server/routers/services.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

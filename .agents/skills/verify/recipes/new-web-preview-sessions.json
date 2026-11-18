@@ -1,0 +1,19 @@
+[
+  {
+    "name": "01-session",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "preview-ws",
+      "--detach",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "mkdir -p .mend && cat > .mend/mend.toml <<'TOML'\n[service.web]\ncommand = \"python3 -m http.server 8000\"\nport = 8000\nbrowserScheme = \"http\"\n\n[service.broken]\ncommand = \"echo broken starts and gives up; exit 3\"\nport = 8001\nbrowserScheme = \"http\"\nTOML\nexec sleep 7204"
+    ]
+  }
+]
