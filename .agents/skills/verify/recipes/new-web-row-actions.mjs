@@ -51,7 +51,9 @@ export default async ({ page, web, capture, note }) => {
     if ((await more.count()) > 0) await more.click();
   };
   const row = (label, title) => group(label).getByRole("link", { name: new RegExp(`^${title}`) });
-  const toast = (text) => page.getByText(text, { exact: true }).filter({ visible: true });
+  /** A toast, in the toasts' own region (Base UI also reads it out in a live region). */
+  const toasts = () => page.getByRole("region", { name: "Notifications" });
+  const toast = (text) => toasts().getByText(text, { exact: true });
   const hydrated = async () => {
     await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
     await page.waitForFunction(() => {
@@ -235,7 +237,7 @@ export default async ({ page, web, capture, note }) => {
   await row("Done", REVIEW).getByText("Marked done", { exact: true }).waitFor();
   await toast(`Moved "${REVIEW}" to Done.`).waitFor();
   await both("marked-done-desktop");
-  await page.getByRole("button", { name: "Undo" }).filter({ visible: true }).click();
+  await toasts().getByRole("button", { name: "Undo" }).click();
   await showAll("To review");
   await row("To review", REVIEW).waitFor();
   await open();
