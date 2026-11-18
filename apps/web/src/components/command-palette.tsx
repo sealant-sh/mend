@@ -12,7 +12,6 @@ import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { createContext, type ReactNode, use, useMemo, useState } from "react";
 
-import { laterPage } from "#/lib/later-pages";
 import { usePhone } from "#/lib/phone";
 import { repositoryWords } from "#/lib/projects";
 import {
@@ -183,7 +182,7 @@ function useSearchModel(inbox: InboxState, phone: boolean, close: () => void): S
       case "session":
         return void navigate(sessionLink(hit.row.session.id));
       case "project":
-        return void navigate(laterPage(`projects/${hit.project.id}`));
+        return void navigate({ to: "/projects/$projectId", params: { projectId: hit.project.id } });
       case "skill":
         return void navigate({ to: "/skills/$skillId", params: { skillId: hit.skill.id } });
     }

@@ -243,7 +243,7 @@ export default async ({ page, web, capture, note }) => {
   await visible(page.getByRole("heading", { name: names.otherSkill })).waitFor();
   note(`keyboard: typed "release", ↓ ↑, Enter opened /skills/${releaseSkill.id}`);
 
-  // From the Skills page: a project (its page is a later route: the address is its own).
+  // From the Skills page: a project, which opens its page.
   await page.keyboard.press("Escape");
   await go("/skills");
   await visible(page.getByRole("heading", { name: "Skills", exact: true })).waitFor();
@@ -251,6 +251,7 @@ export default async ({ page, web, capture, note }) => {
   await typeQuery(names.landingProject);
   await option(names.landingProject).click();
   await expectPath(`/projects/${landingProject.id}`, "the project");
+  await visible(page.getByRole("heading", { name: names.landingProject })).waitFor();
   note(`Ctrl K from /skills; the project opened /projects/${landingProject.id}`);
 
   // A session, then the shortcut from the session page.
