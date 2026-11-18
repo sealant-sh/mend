@@ -390,6 +390,31 @@ flows reuse what earlier ones made:
 - **Sample:** yes
 - **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
 
+### review-change.new-web-change
+
+- **Map:** review-change.md `review-open`, `review-diff`, `review-files`, `review-pinned`;
+  repositories-in-session.md `repo-review-line`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-change-sessions.json` (worktrees `change-small`, written by two
+  sessions, `change-big` and `change-empty`, each by `mend run`), then drive the recipe
+  `new-web-change`; when its `steps.log` reads "waiting for the worktree to change", run the batch
+  `new-web-change-moves.json`. It opens `/sessions/<id>/change` and `/changes/<id>#land`, picks a
+  file, switches to Split and reloads, marks a file viewed and reloads, shows the new version after
+  the files change, reads the big change and filters it, splits the Change tab beside the
+  conversation, and looks at 390px.
+- **See:** each step's note in the recipe's `steps.log`: the Change tab focused with its +/− counts,
+  "This workspace's change, from 2 sessions.", Split and the viewed mark kept over a reload, the
+  banner "Files changed since you opened this." and the changed file unviewed after Show the new
+  version, the lock file folded as generated, fewer drawn lines than the 3,000-line file holds,
+  `/changes/<id>#land` arriving at `/sessions/<id>/change#land`, and the narrow tile's file picker.
+- **Mode:** `scripted` (recipes/new-web-change.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/change/`,
+  `apps/web/src/components/workspace/views/change-view.tsx`,
+  `apps/web/src/routes/_inbox.changes.$changeId.tsx`, `apps/web/src/lib/change-files.ts`,
+  `apps/web/src/lib/review-open.ts`, `apps/web/src/lib/viewed-files.ts`
+
 ### review-change.web-comments
 
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,
