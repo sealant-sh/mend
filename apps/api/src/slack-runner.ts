@@ -1197,7 +1197,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       userId: string,
       { thread, session }: SwitchedSession,
     ) {
-      const stoppedByEngine = yield* engine.stop(session.id).pipe(Effect.exit);
+      const stoppedByEngine = yield* engine
+        .stopSession(session.id, { kind: "person", userId })
+        .pipe(Effect.exit);
       if (stoppedByEngine._tag === "Failure") {
         yield* Effect.logWarning("slack runner: the switched session was not stopped").pipe(
           Effect.annotateLogs({ sessionId: session.id, cause: String(stoppedByEngine.cause) }),

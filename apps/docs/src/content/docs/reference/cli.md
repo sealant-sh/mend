@@ -582,9 +582,11 @@ A `mend run` session has no agent to resume: `mend resume` on its own harness is
 `This run session has no agent to resume. Resume it as a shell, or start another session in its worktree.`
 In a session someone else owns, `mend shell` is refused: a shell is the owner's alone.
 
-Services keep running after `mend stop`, and a running Service keeps the workspace up. The stop then
-says so, for example `agent stopped · 3 services keep the workspace up`. `mend stop --services`
-stops them; once nothing is live, the workspace closes.
+`mend stop` saves the session's work. When no other session is running in the workspace, the
+workspace stops too, with its Services and shells. When another session is running there, only this
+session stops: the stop prints `the workspace keeps running for <session>`, and the Services keep
+running, for example `agent stopped · 3 services keep the workspace up`. `mend stop --services`
+stops this session's Services; once nothing is live, the workspace closes.
 
 `mend sessions --json` returns the v1 command envelope with a flat list in `data.sessions`. Unknown
 projects and request failures use the same structured errors. `mend sessions --json=v2` and

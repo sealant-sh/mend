@@ -28,7 +28,14 @@
 # in a forked fiber and keeps the count on the change row. It makes no hot-pool, claim, retire,
 # drain or session-process call, so no action models it. Full TLC run at 225d463a4c, the same
 # engine.ts before a rebase: every row as expected.
-sync 7a2f304a3742c60f1236b522109ec43cc7ebfc93
+# 646dea54b8 is the SLNT-1130 branch on main at 494c29441c. SLNT-1130 changed engine.ts only
+# outside the covered functions: a person's Stop session (`stopSession`) runs `stop` unchanged,
+# then, when no other session in the workspace is running (`stopSessionReachOf`, a read), stops the
+# workspace's Services and shells and asks `stopWorkspaceIfUnleased` again. Each of those is a path
+# Stop followed by Stop services already took; it makes no hot-pool, claim, retire or discard call,
+# so no action models it. Full tlx run at 646dea54b8: every row as expected (`code` 129,386,795
+# states, 351 s on four workers).
+sync 646dea54b8142766684b538b47542693fe0d2566
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

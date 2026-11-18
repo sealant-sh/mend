@@ -132,10 +132,19 @@ export const sessionsRouter = router({
         }),
       ),
     ),
+  // Stop session (docs/adr/0026, decision 7): when no other session in the workspace is
+  // running, the workspace and its Services stop with it. `stopPreview` says which, first.
   stop: procedure
     .input(byId)
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.stop({ params: { id: i.id } })),
+    ),
+  // What Stop session would do now, for its dialog: `workspace` is `stops`, `keeps-running`
+  // (with the `runningSessions` that keep it up) or `none`, beside the workspace's live Services.
+  stopPreview: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.stopPreview({ params: { id: i.id } })),
     ),
   // The owner's "discard unsaved and stop" (docs/adr/0002): the page arms it with a second click.
   discardUnsaved: procedure.input(byId).mutation(({ ctx, input: i }) =>

@@ -69,6 +69,9 @@ import {
   SessionDetail,
   SessionRepositoryView,
   SessionServicesStopped,
+  SessionStopPreview,
+  StopSessionRunning,
+  StopSessionService,
   SessionNotSteerable,
   TurnSteerForbidden,
   InvalidTurnSteer,
@@ -125,6 +128,7 @@ import {
   type HistoryCursor,
   SettingsRepo,
   UserDotfilesRepo,
+  UsersRepo,
   UserEvents,
   UserGitAccessRepo,
   UserGitAuthorRepo,
@@ -3874,11 +3878,65 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         yield* steering.stop(params.id);
         const engine = yield* SessionEngine;
         const sessions = yield* SessionsRepo;
-        yield* engine.stop(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const caller = yield* CurrentUser;
+        yield* engine
+          .stopSession(params.id, { kind: "person", userId: caller.user.id })
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* recordControl(params.id, "stop", null);
         return yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("stopPreview", ({ params }) =>
+      Effect.gen(function* () {
+        const session = yield* (yield* ProjectAccess).session(params.id);
+        const reach = yield* (yield* SessionEngine)
+          .stopSessionReach(session.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const [members, worktree] = yield* Effect.all(
+          [
+            (yield* SessionsRepo).listForWorktree(session.worktreeId),
+            (yield* WorktreesRepo)
+              .byId(session.worktreeId)
+              .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(undefined))),
+          ],
+          { concurrency: "unbounded" },
+        );
+        const users = yield* UsersRepo;
+        const runningSessions: Array<StopSessionRunning> = [];
+        for (const id of reach.runningSessions) {
+          const member = members.find((row) => row.id === id);
+          if (member === undefined) continue;
+          runningSessions.push(
+            new StopSessionRunning({
+              sessionId: member.id,
+              title: sessionTitle(member, worktree, members),
+              harness: member.harness,
+              status: member.status,
+              ownerUserId: member.ownerUserId,
+              ownerName:
+                member.ownerUserId === null
+                  ? null
+                  : ((yield* users.byId(member.ownerUserId))?.name ?? null),
+            }),
+          );
+        }
+        return new SessionStopPreview({
+          sessionId: session.id,
+          workspace: reach.workspace,
+          runningSessions,
+          services: reach.services.map(
+            (service) =>
+              new StopSessionService({
+                serviceId: service.id,
+                sessionId: service.sessionId,
+                name: service.name,
+                port: service.workspacePort,
+              }),
+          ),
+          observedAt: new Date(yield* Clock.currentTimeMillis),
+        });
       }),
     )
     .handle("stopServiceStarts", ({ params, payload }) =>

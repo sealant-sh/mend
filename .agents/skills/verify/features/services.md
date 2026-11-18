@@ -4,9 +4,10 @@ A Service is a server running in a session's workspace that Mend supervises and 
 output is recorded, its port is observed, and a user brings it to their own machine's loopback
 through the Mend server, signed in as themselves. A user starts one from the session page's Services
 card or with `mend service run`, adopts a port the agent already listens on, connects it with
-`mend service connect`, and restarts or stops it. Services keep a workspace up after the agent
-stops, and the session says so. The dashboard shows a session's Services and stops a held set; the
-desktop has a Services sheet with the same verbs as the web card.
+`mend service connect`, and restarts or stops it. Stop session on the last running session in a
+workspace stops its Services with it (docs/adr/0026); while another session runs there, they keep
+the workspace up after the agent stops, and the session says so. The dashboard shows a session's
+Services and stops a held set; the desktop has a Services sheet with the same verbs as the web card.
 
 ## Sub-features
 
@@ -22,8 +23,9 @@ desktop has a Services sheet with the same verbs as the web card.
 - `service-connect` tunnels live Services to this machine's loopback with `mend service connect`.
 - `service-logs` replays and follows a Service's recorded output.
 - `service-restart-stop` restarts a Service on the same port, or stops it and closes its tunnel.
-- `service-hold` keeps the workspace up after the agent stops, and `Stop services` /
-  `mend stop --services` ends that.
+- `service-hold` keeps the workspace up after the agent stops while another session runs in the
+  workspace, and `Stop services` / `mend stop --services` ends that. Stop session on the last
+  running session stops them itself.
 - `service-tui` shows the selected session's Services in the dashboard, tunnels its browser Services
   while it is selected, and stops a held set with `Shift+K`.
 - `service-desktop` runs, adopts, opens, logs, restarts and stops Services from the desktop's
@@ -134,9 +136,11 @@ Preconditions:
   to `Process running`; `Stop` reads `Stop…`, then the row offers `Run again` (or `Remove forward`
   while its forward is still bound). `Close` closes the sheet. `Recipes` lists the worktree's
   `mend.toml` Services with `Run`, or `No recipes declared in mend.toml.`
-- **Hold after the agent stops.** Run `mend stop <id8>`. Stdout reads
-  `✓ stopped · <harness> · <id8> · <branch>`, then one line naming what keeps the workspace up,
-  ending `· mend stop --services <id8>`, then `  review · <web>/sessions/<id>`. The session page
+- **Hold after the agent stops.** First start another session running in the worktree
+  (`mend run --project <project> --name <worktree> --detach -- sleep 1800`, stopped by id at the
+  end). Run `mend stop <id8>`. Stdout reads `✓ stopped · <harness> · <id8> · <branch>`, then
+  `  the workspace keeps running for <keeper title>`, then one line naming what keeps the workspace
+  up, ending `· mend stop --services <id8>`, then `  review · <web>/sessions/<id>`. The session page
   shows a hold word in place of the status, and `web` stays `reachable`. The desktop tab's header
   shows the hold line and `stop services`.
 - **Stop the Services.** Run `mend stop --services <id8>`. Stdout reads

@@ -237,7 +237,9 @@ const checkStopAsks = async (browser, label, origin) => {
 
     await askToStop();
     await dialog
-      .getByText("The agent ends, and Mend saves the session's work before its machine stops.")
+      .getByText(
+        "The agent ends, and Mend saves the session's work. If no other session is running in its workspace, the workspace and its Services stop too.",
+      )
       .waitFor();
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
     await dialog.waitFor({ state: "detached", timeout: 10_000 });

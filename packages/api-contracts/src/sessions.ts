@@ -255,6 +255,53 @@ export class NothingUnsaved extends Schema.TaggedError<NothingUnsaved>()(
   { httpApiStatus: 409 },
 ) {}
 
+/** Another session running in the workspace, which keeps it up past a Stop session. */
+export class StopSessionRunning extends Schema.Class<StopSessionRunning>("StopSessionRunning")({
+  sessionId: SessionId,
+  /** What the session is called wherever it is listed: the inbox row's title. */
+  title: Schema.String,
+  harness: Session.fields.harness,
+  status: Session.fields.status,
+  ownerUserId: Session.fields.ownerUserId,
+  /** The owner's name; null for a session with no owner, or an account since removed. */
+  ownerName: Schema.NullOr(Schema.String),
+}) {}
+
+/** A live Service in the workspace: it stops when the workspace stops, and only then. */
+export class StopSessionService extends Schema.Class<StopSessionService>("StopSessionService")({
+  serviceId: ServiceId,
+  /** The session that declared it. */
+  sessionId: SessionId,
+  name: Schema.String,
+  /** The port it answers on inside the workspace. */
+  port: Schema.Int,
+}) {}
+
+/**
+ * What Stop session would do now (docs/adr/0026, decision 7): the read the Stop dialog is built
+ * from. The stop decides again when it runs, after the session's own agent has ended.
+ *
+ * - `workspace: "stops"`: no other session in the workspace is running, so the workspace and its
+ *   Services stop too, once the session's work is saved.
+ * - `workspace: "keeps-running"`: `runningSessions` are running there, so only this session stops;
+ *   the workspace, its Services and its change stay, and the inactivity rules stop it later.
+ * - `workspace: "none"`: nothing in the session's workspace is live; only the session stops.
+ *
+ * Another session is **running** when it has a live agent in the workspace (a turn running, a
+ * conversation between turns, an agent waiting on a person's answer, a terminal agent, a shell
+ * session's or `mend run`'s own command) or its start is under way. A session whose agent has
+ * ended, with only a shell, a Service or a screen left, is not: those stop with the workspace.
+ */
+export class SessionStopPreview extends Schema.Class<SessionStopPreview>("SessionStopPreview")({
+  sessionId: SessionId,
+  workspace: Schema.Literals(["stops", "keeps-running", "none"]),
+  /** Oldest first; empty unless `keeps-running`. */
+  runningSessions: Schema.Array(StopSessionRunning),
+  /** The workspace's live Services, every session's. Empty for `none`. */
+  services: Schema.Array(StopSessionService),
+  observedAt: Timestamp,
+}) {}
+
 /** The owner's confirmation, in the request itself: what is not saved is gone once this lands. */
 export class DiscardUnsavedRequest extends Schema.Class<DiscardUnsavedRequest>(
   "DiscardUnsavedRequest",
@@ -909,10 +956,23 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
+    // Stop session (docs/adr/0026, decision 7): the session's agent stops and its work is saved.
+    // When no other session in its workspace is running (`stopPreview`), the workspace's
+    // Services and shells stop too and the workspace ends once saved; when another is running,
+    // only the session stops. The session answers as it reads after.
     HttpApiEndpoint.post("stop", "/sessions/:id/stop", {
       params: { id: SessionId },
       success: Session,
       error: [NotFound, SessionNotSteerable, RemovalInProgress],
+    }),
+  )
+  .add(
+    // What Stop session would do now: whether the workspace stops with it, or which running
+    // sessions keep it up, and its live Services. Anyone who can see the session reads it.
+    HttpApiEndpoint.get("stopPreview", "/sessions/:id/stop-preview", {
+      params: { id: SessionId },
+      success: SessionStopPreview,
+      error: NotFound,
     }),
   )
   .add(
@@ -926,8 +986,9 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // A stop leaves Services running; this stops every live one of the session, and the
-    // workspace ends once nothing is live (docs/SESSION-SERVICES.md).
+    // Services outlive a stop that leaves the workspace running (another session runs there),
+    // and the idle stop; this stops every live one of the session, and the workspace ends once
+    // nothing is live (docs/SESSION-SERVICES.md). With none live it stops nothing: `stopped: 0`.
     HttpApiEndpoint.post("stopServices", "/sessions/:id/services/stop", {
       params: { id: SessionId },
       success: SessionServicesStopped,

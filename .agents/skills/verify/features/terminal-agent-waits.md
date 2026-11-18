@@ -114,8 +114,10 @@ every state must be read within it. Each step is one line of `steps.jsonl` with 
 - **One key.** `\r` in the agent's terminal (the real claude sits at its sign-in screen, so nothing
   of value is at stake): the session reads `running` with `waiting` null, and both pointer frames
   arrive. Then one more `PermissionRequest` re-arms the wait, so the stop below ends a live one.
-- **Stop.** `POST /api/sessions/<id>/stop` ends the agent; the shell keeps the workspace up. The
-  session reads `idle`, and no process row carries a wait.
+- **Stop.** With a second session running in the worktree (the recipe starts a `mend run` there, and
+  `GET /api/sessions/<id>/stop-preview` reads `keeps-running` naming it),
+  `POST /api/sessions/<id>/stop` ends the agent; the shell keeps the workspace up. The session reads
+  `idle`, and no process row carries a wait.
 - **Late report.** A `PermissionRequest` under the agent's id, replayed from the shell after the
   stop: the hook exits 0, and for 6 s every read stays `idle` with no wait.
 - **Settle.** A second stop closes the shell; the session settles (`stopped`, `completed` or

@@ -38,6 +38,8 @@ const startApi = async (
     message: "Nothing is waiting to be saved.",
   },
   signedIn = alice,
+  /** Paths answered 200 with these bodies instead of the refusal. */
+  answers: Record<string, unknown> = {},
 ) => {
   const requests: Array<{ readonly path: string | undefined; readonly body: string }> = [];
   const server = createServer((request, response) => {
@@ -50,6 +52,12 @@ const startApi = async (
       if (request.url === "/api/organization") {
         response.writeHead(200, { "content-type": "application/json" });
         response.end(JSON.stringify(organizationOf(signedIn)));
+        return;
+      }
+      const answer = request.url === undefined ? undefined : answers[request.url];
+      if (answer !== undefined) {
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(answer));
         return;
       }
       response.writeHead(409, { "content-type": "application/json" });
@@ -107,6 +115,56 @@ describe("sessions router", () => {
     // The API's refusal crosses as its own status and words, not as an internal error.
     expect(response.status).toBe(409);
     expect(await response.text()).toContain("Nothing is waiting to be saved.");
+  });
+
+  it("reads what Stop session would do, naming the session that keeps the workspace running", async () => {
+    const other = "4f2e9d1c-3b7a-4c5e-8d6f-1a2b3c4d5e6f";
+    const preview = {
+      sessionId,
+      workspace: "keeps-running",
+      runningSessions: [
+        {
+          sessionId: other,
+          title: "Write tests for retry",
+          harness: "codex",
+          status: "running",
+          ownerUserId: "user-ada",
+          ownerName: "Ada Lovelace",
+        },
+      ],
+      services: [
+        { serviceId: "c1d2e3f4-a5b6-4c7d-8e9f-0a1b2c3d4e5f", sessionId, name: "api", port: 8080 },
+      ],
+      observedAt: "2026-11-18T10:00:00.000Z",
+    };
+    await api.close();
+    api = await startApi(undefined, alice, {
+      [`/api/sessions/${sessionId}/stop-preview`]: preview,
+    });
+    const handle = createTrpcHandler({ network, apiUrl: api.apiUrl });
+    const input = encodeURIComponent(JSON.stringify({ json: { id: sessionId } }));
+    const response = await handle(
+      new Request(`http://internal-web.invalid/trpc/sessions.stopPreview?input=${input}`, {
+        headers: { origin, cookie: "test-cookie=credential" },
+      }),
+    );
+
+    expect(api.requests).toEqual([{ path: `/api/sessions/${sessionId}/stop-preview`, body: "" }]);
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({
+      result: {
+        data: {
+          json: {
+            workspace: "keeps-running",
+            runningSessions: [
+              { sessionId: other, title: "Write tests for retry", ownerName: "Ada Lovelace" },
+            ],
+            services: [{ name: "api", port: 8080 }],
+          },
+        },
+      },
+    });
   });
 
   it("forwards a message's words and key, and its refusal reaches the browser in words", async () => {

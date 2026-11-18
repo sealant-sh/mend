@@ -368,10 +368,14 @@ the session when it exits, best-effort on signals.
 ### Stop
 
 Stop ends the agent processes; shells and Services keep their own lifecycle ("The model" above). A
-stop keeps Services running, and a running Service keeps the workspace up, so the stop has to show
-it. `liveServices` (on `SessionDetail` and the list annotation) counts the session's Services with a
-live attempt or an open forward, and every surface reads it next to the agent's outcome:
-`agent stopped · 3 services keep the workspace up`. The **Stop services** action
+person's **Stop session** (`POST /api/sessions/:id/stop`, docs/adr/0026 decision 7) then looks at
+the workspace: when no other session is running there (`GET /api/sessions/:id/stop-preview` says
+which, and what "running" means), every live Service and shell in it stops and the workspace ends
+once saved. When another session is running, the workspace, its Services and its shells stay. The
+idle stops end only the session. A Service that outlives a stop keeps the workspace up, so the stop
+has to show it. `liveServices` (on `SessionDetail` and the list annotation) counts the session's
+Services with a live attempt or an open forward, and every surface reads it next to the agent's
+outcome: `agent stopped · 3 services keep the workspace up`. The **Stop services** action
 (`POST /api/sessions/:id/services/stop`, `mend stop --services`) stops all of them. Once nothing is
 live, the workspace ends as it would after any last lease. Review prep does not wait for the
 workspace: an agent that stopped or exited has settled for review even while Services run on.

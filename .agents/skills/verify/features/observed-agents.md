@@ -50,12 +50,14 @@ Preconditions:
 - A live session whose own agent is not running, held by a shell. Start
   `mend claude "Reply with one word and change nothing." --name verify-observed --project <project> --detach`
   and note `<id>` and `<id8>`. Open a shell in its workspace in tmux:
-  `tmux new-session -d -s obs -x 200 -y 50 'mend shell <id8>'`. Then stop Mend's own agent:
-  `mend stop <id8>`. The shell keeps the workspace up, and `mend sessions --project <project>` still
-  lists the session (`idle` is the fold for a workspace a shell holds), not `running`. Read the
-  latest Mend-launched agent's `exitedAt` from the processes endpoint, and start the hand-run agent
-  more than two seconds after it. If the session settled, also wait more than two seconds after its
-  settle time.
+  `tmux new-session -d -s obs -x 200 -y 50 'mend shell <id8>'`. Start another session running in the
+  worktree (`mend run --project <project> --name verify-observed --detach -- sleep 1800`, stopped by
+  id at the end): without it, Stop session stops the workspace and the shell with it. Then stop
+  Mend's own agent: `mend stop <id8>`. The shell keeps the workspace up, and
+  `mend sessions --project <project>` still lists the session (`idle` is the fold for a workspace a
+  shell holds), not `running`. Read the latest Mend-launched agent's `exitedAt` from the processes
+  endpoint, and start the hand-run agent more than two seconds after it. If the session settled,
+  also wait more than two seconds after its settle time.
 - `<token>` is `MEND_TOKEN` when set; otherwise use the CLI token from
   `$XDG_CONFIG_HOME/mend/cli.json`, default `~/.config/mend/cli.json`. When the preferred Mend
   directory is absent and `~/.mend` exists, legacy `~/.mend/cli.json` stays authoritative. Use that

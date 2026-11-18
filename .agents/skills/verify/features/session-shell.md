@@ -3,16 +3,18 @@
 A shell is a terminal into the same workspace the agent works in: the same `/workspace/repo`, the
 same dependencies, the same network. A user opens one beside a live session with `mend shell`, or a
 new shell tab on the desktop, to run the tests or read a file; it holds the workspace up while it
-lives, even after the agent stops. Separately, a user can start a session whose harness is the shell
-itself (`shell`), in a new worktree, from the project page's `Open a shell`, a project's context
-menu, the dashboard's harness list or the desktop launcher: a recorded terminal session with no
-agent.
+lives, even after the agent stops, as long as another session is running in the workspace: Stop
+session on the last running session stops the workspace, its shells included (docs/adr/0026).
+Separately, a user can start a session whose harness is the shell itself (`shell`), in a new
+worktree, from the project page's `Open a shell`, a project's context menu, the dashboard's harness
+list or the desktop launcher: a recorded terminal session with no agent.
 
 ## Sub-features
 
 - `shell-cli` opens a shell in a live session's workspace with `mend shell [prefix]`, and leaves it
   with `exit` or detaches with `Ctrl+]`.
-- `shell-holds` keeps the workspace up while a shell lives, after the agent stops.
+- `shell-holds` keeps the workspace up while a shell lives, after the agent stops while another
+  session runs in the workspace.
 - `shell-session-web` starts a shell-harness session in a new worktree from the project page's
   `Open a shell` or the project menu's `Start shell session`.
 - `shell-session-tui` starts one from the dashboard's harness list (`n`, `w`), or resumes a settled
@@ -60,7 +62,10 @@ Preconditions:
   `tmux send-keys -t sh 'printf "from the shell\n" > /workspace/repo/SHELL.md' Enter`.
 - **Detach.** Run `tmux send-keys -t sh C-]`. The pane shows
   `detached — the shell keeps running and holds the workspace open`, and the command exits `0`.
-- **Holds the workspace.** Stop the agent: `mend stop <id8>`. Run
+- **Holds the workspace.** First start another session running in the worktree
+  (`mend run --project <project> --name <worktree> --detach -- sleep 1800`, stopped by id at the
+  end); a Stop of the last running session would stop the workspace and the shell with it. Stop the
+  agent: `mend stop <id8>`; it prints `the workspace keeps running for <keeper>`. Run
   `mend sessions --project <project>`. The session is still listed, not settled (`idle` is the fold
   for a workspace a shell holds): the shell holds its workspace.
 - **Rejoin.** In the dashboard (`tmux new-session -d -s shui -x 200 -y 50 'mend ui'`), select the
@@ -68,8 +73,8 @@ Preconditions:
   `no live terminal · rejoining the open shell`, then the shell's prompt. Run
   `cat /workspace/repo/SHELL.md` there; it prints `from the shell`. Run `exit`; the dashboard
   returns with the status line `terminal ended · <id8> · refreshing session status`.
-- **End.** With no shell left, the session settles; `mend sessions --project <project> --all --json`
-  shows it no longer live.
+- **End.** With no shell left, the session settles (stop the keeper session afterwards);
+  `mend sessions --project <project> --all --json` shows it no longer live.
 - **Shell session from the web.** Go to `<web>/projects/<projectId>` and run
   `await page.getByRole("button", { name: "Open a shell" }).click()`. The button reads `Starting…`,
   then the browser lands on a new `/sessions/<id>` whose heading starts with `shell`, and the

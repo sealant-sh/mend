@@ -2839,6 +2839,31 @@ export interface BoatAccountStandbys {
   readonly drain: (boatAccountId: string, within: Duration.Duration) => Effect.Effect<StandbyDrain>;
 }
 
+/**
+ * What a person's Stop session does to the session's workspace (docs/adr/0026, decision 7).
+ *
+ * - `stops`: no other session in the workspace is running, so the workspace and every live
+ *   Service and shell in it stop with the session, after its work is saved.
+ * - `keeps-running`: `runningSessions` are running there, so only the session stops; the
+ *   workspace, its Services and its change stay, and the inactivity rules stop it later.
+ * - `none`: nothing in the workspace is live (or the session never had one): there is no
+ *   workspace to stop.
+ *
+ * Another session is **running** in the workspace when it has a live agent process there (a turn
+ * running, a conversation between turns, an agent waiting on a person, a terminal agent, or a
+ * shell session's or `mend run`'s own command), or when its launch is under way (starting). A
+ * session whose agent has ended, with only a supporting shell, a Service or a screen left, is not
+ * running: those end with the workspace. Stopping the workspace would stop a session with a live
+ * agent too, and a person's Stop never stops someone else's session.
+ */
+export interface StopSessionReach {
+  readonly workspace: "stops" | "keeps-running" | "none";
+  /** The other sessions running in the workspace, oldest first; empty unless `keeps-running`. */
+  readonly runningSessions: ReadonlyArray<SessionId>;
+  /** The workspace's live Services, every session's: they stop only when the workspace does. */
+  readonly services: ReadonlyArray<Service>;
+}
+
 /** A standby Mend is ending without saving: it holds no worktree, so nothing of a session's. */
 const STANDBY_ENDING = "draining · a standby Mend is ending · nothing of a session's is on it";
 
@@ -3258,18 +3283,35 @@ export class SessionEngine extends Context.Service<
       why: string,
     ) => Effect.Effect<CaptureFlushObservation, SessionNotFoundError>;
     /**
-     * The user's stop: end every live agent process (close its PTY, settle its run). Shells
+     * End every live agent process of the session (close its PTY, settle its run). Shells
      * survive a stop that ended a live agent — you may be sitting in one — and the session
      * reads `idle` while they hold the workspace; a stop with NO live agent left is aimed at
      * the session itself and closes the shells too, so an orphan shell can never hold a
      * stopped session open. Services keep their own lifecycle; `stopServices` is their verb.
      * `summary` is what the settled session reads instead of the harness's own; the idle stop
-     * passes `idle · stopped after 15 min · reply to resume`.
+     * passes `idle · stopped after 15 min · reply to resume`. A person's Stop session is
+     * `stopSession`, which runs this first.
      */
     readonly stop: (
       sessionId: SessionId,
       summary?: string | null,
     ) => Effect.Effect<void, SessionNotFoundError>;
+    /**
+     * A person's Stop session (docs/adr/0026, decision 7): `stop`, so the session's work is
+     * captured and saved as every stop saves it; then, when no other session in its workspace is
+     * running (`stopSessionReach`), every live Service and shell in that workspace stops, and the
+     * workspace ends as after its last lease, saved first. When another session is running there,
+     * only the session stops. The look comes after the session's own agent has ended, so two
+     * Stops at once in one workspace cannot both leave it running. Answers what it found then.
+     */
+    readonly stopSession: (
+      sessionId: SessionId,
+      cause: ServiceStopCause,
+    ) => Effect.Effect<StopSessionReach, SessionNotFoundError>;
+    /** What a Stop session of this session would do now: the read the Stop dialog is built from. */
+    readonly stopSessionReach: (
+      sessionId: SessionId,
+    ) => Effect.Effect<StopSessionReach, SessionNotFoundError>;
     /**
      * The second pane (docs/SESSION-SERVICES.md): a shell PTY in the
      * session's live workspace, beside the agent — same repo, same
@@ -24893,6 +24935,133 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * What a Stop session of `session` would do to its workspace now (`StopSessionReach`).
+       * Running, for another session: a live agent process in the workspace, a launch under way
+       * for any session of the worktree (a capture-mode launch joins the executor that holds the
+       * worktree, this one), or a turn being queued for a session the workspace holds (a stopped
+       * conversation's next message relaunches it there). A launch waiting for the worktree's
+       * executor to end is not: keeping the workspace up for it would keep it waiting.
+       */
+      const stopSessionReachOf = Effect.fn("SessionEngine.stopSessionReachOf")(function* (
+        session: Session,
+      ) {
+        const workspaceId = session.sealantWorkspaceId;
+        if (workspaceId === null) {
+          return {
+            workspace: "none",
+            runningSessions: [],
+            services: [],
+          } satisfies StopSessionReach;
+        }
+        const live = yield* processes.listLiveForWorkspace(workspaceId);
+        const running = new Set<SessionId>();
+        for (const process of live) {
+          if (process.sessionId !== session.id && isLiveAgentProcess(process)) {
+            running.add(process.sessionId);
+          }
+        }
+        const members = yield* sessions.listForWorktree(session.worktreeId);
+        for (const member of members) {
+          if (member.id === session.id || waitingLaunches.has(member.id)) continue;
+          if (
+            launchGate.underWay(member.id) ||
+            creatingExecutors.has(member.id) ||
+            (member.sealantWorkspaceId === workspaceId &&
+              (turnsBeingQueued.get(member.id) ?? 0) > 0)
+          ) {
+            running.add(member.id);
+          }
+        }
+        // Every Service in the workspace, whichever session declared it: each session the
+        // workspace holds, by its row or a live process, live by its attempt or its forward
+        // (`serviceIsLive`). An adopted Service has no process, only its forward.
+        const liveServices: Array<Service> = [];
+        const inWorkspace = new Set([
+          session.id,
+          ...members
+            .filter((member) => member.sealantWorkspaceId === workspaceId)
+            .map((member) => member.id),
+          ...live.map((row) => row.sessionId),
+        ]);
+        for (const memberId of inWorkspace) {
+          for (const service of yield* services.listForSession(memberId)) {
+            if (yield* serviceIsLive(service)) liveServices.push(service);
+          }
+        }
+        const forwards = (yield* serviceForwards.listOpen()).filter(
+          (forward) => forward.sealantWorkspaceId === workspaceId,
+        );
+        const holds = live.some((process) => holdsWorkspace(process.kind) && !isWakeShell(process));
+        const runningSessions = live
+          .map((process) => process.sessionId)
+          .filter((id, index, ids) => running.has(id) && ids.indexOf(id) === index);
+        // Launches under way have no row in the workspace yet: after the ones that do.
+        for (const id of running) if (!runningSessions.includes(id)) runningSessions.push(id);
+        if (runningSessions.length > 0) {
+          return {
+            workspace: "keeps-running",
+            runningSessions,
+            services: liveServices,
+          } satisfies StopSessionReach;
+        }
+        if (!holds && forwards.length === 0 && liveServices.length === 0) {
+          return {
+            workspace: "none",
+            runningSessions: [],
+            services: [],
+          } satisfies StopSessionReach;
+        }
+        return {
+          workspace: "stops",
+          runningSessions: [],
+          services: liveServices,
+        } satisfies StopSessionReach;
+      });
+
+      /**
+       * The rest of a person's Stop session once its own `stop` has run: when nothing else in the
+       * workspace is running, every live Service there stops (each session's, as `stopServices`
+       * stops them), then every live supporting shell, and the workspace ends as after its last
+       * lease (`stopWorkspaceIfUnleased`: in capture mode a drain, saved before it terminates).
+       * A session whose agent this stop could not close still runs: nothing more stops.
+       */
+      const stopSession = Effect.fn("SessionEngine.stopSession")(function* (
+        sessionId: SessionId,
+        cause: ServiceStopCause,
+      ) {
+        yield* stop(sessionId, null);
+        const session = yield* sessions.byId(sessionId);
+        const reach = yield* stopSessionReachOf(session);
+        if (reach.workspace !== "stops" || session.sealantWorkspaceId === null) return reach;
+        if ((yield* processes.listForSession(sessionId)).some(isLiveAgentProcess)) return reach;
+        const workspaceId = session.sealantWorkspaceId;
+        const members = new Set([
+          sessionId,
+          ...(yield* processes.listLiveForWorkspace(workspaceId)).map((row) => row.sessionId),
+          ...reach.services.map((service) => service.sessionId),
+        ]);
+        for (const memberId of members) {
+          yield* owned(memberId)(stopServices(memberId, cause)).pipe(
+            Effect.catchTag("SessionNotFoundError", () => Effect.succeed(0)),
+          );
+        }
+        for (const shell of yield* processes.listLiveForWorkspace(workspaceId)) {
+          if (shell.kind !== "shell" || isWakeShell(shell)) continue;
+          yield* owned(shell.sessionId)(stopShell(shell.id)).pipe(
+            Effect.catchTag("ShellProcessNotFoundError", () => Effect.void),
+          );
+        }
+        // Each end above asked for the workspace's end already; asked once more for an end that
+        // raced them (a Service whose forward closed under its own stop). It ends only what nothing
+        // holds, and a drain already under way is the one that ends it.
+        yield* stopWorkspaceIfUnleased(sessionId);
+        yield* Effect.logInfo("session engine: stop session · the workspace stops with it").pipe(
+          Effect.annotateLogs({ sessionId, workspaceId, services: reach.services.length }),
+        );
+        return reach;
+      });
+
+      /**
        * Whether nothing was ever launched for the session: it never settled, nothing opened a
        * workspace, a run or a PTY for it or asked for an executor, and it has no process.
        */
@@ -29075,8 +29244,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
+        // The agent's own `mend stop` is a Stop session too. The Services it stops are stopped by
+        // the workspace itself (WORKSPACE_STOP), so no person holds their previews stopped.
         stopSession: () =>
-          stop(sessionId).pipe(
+          stopSession(sessionId, WORKSPACE_STOP).pipe(
+            Effect.asVoid,
             Effect.mapError((error) => new Error(error.message)),
             Effect.orDie,
           ),
@@ -31962,6 +32134,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.andThen(stop(sessionId, summary ?? null)),
             ),
           ).pipe(withInteractiveSealant),
+        stopSession: (sessionId, cause) =>
+          owned(sessionId)(
+            Effect.sync(() => launchGate.cancelWaiting(sessionId)).pipe(
+              Effect.andThen(stopSession(sessionId, cause)),
+            ),
+          ).pipe(withInteractiveSealant),
+        stopSessionReach: (sessionId) =>
+          sessions.byId(sessionId).pipe(Effect.flatMap(stopSessionReachOf)),
         changeWorktreeBranch: editWorktreeBranch,
         commitWorktree: commitWorktreeAsOwner,
         pullWorktree: pullWorktreeAsOwner,

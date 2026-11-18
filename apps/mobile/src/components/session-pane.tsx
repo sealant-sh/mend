@@ -328,7 +328,7 @@ export function SessionPane({
       onPress: () =>
         ask(
           "Stop this session?",
-          "The agent ends, and Mend saves the session's work before its machine stops.",
+          "The agent ends, and Mend saves the session's work. If no other session is running in its workspace, the workspace and its Services stop too.",
           [
             { text: "Cancel", style: "cancel" },
             {

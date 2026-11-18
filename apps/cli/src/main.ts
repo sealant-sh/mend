@@ -1901,8 +1901,9 @@ const attachPicked = async (
 };
 
 /**
- * Explicit stop — the one intent detaching never carries. Ends the agent; the
- * workspace harvests and closes; the record and review remain.
+ * Explicit stop — the one intent detaching never carries. Ends the agent; when no other session
+ * runs in its workspace, the workspace and its Services stop too, once saved; the record and
+ * review remain.
  */
 const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (args.includes("--services")) {
@@ -1967,10 +1968,18 @@ const stopSessions = async (
     say(
       `${green("✓")} stopped · ${session.harness} · ${dim(session.id.slice(0, 8))} · ${session.branch}`,
     );
-    // A stop ends the agent and leaves Services running; say so, with their own stop.
-    const after = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`).catch(
-      () => null,
-    );
+    // The workspace stops with the last session running in it; another session running there
+    // keeps it up, and its Services with it: say which session, and what still holds it. Both
+    // reads say nothing when they fail (`request` throws where `api` would exit): a server from
+    // before the preview answers it 404, and the stop has already happened.
+    const [after, preview] = await Promise.all([
+      request<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`).catch(() => null),
+      request<StopPreviewDto>(config, "GET", `/sessions/${session.id}/stop-preview`).catch(
+        () => null,
+      ),
+    ]);
+    const keptBy = preview === null ? null : keptRunningLineOf(preview);
+    if (keptBy !== null) say(amber("  " + keptBy));
     const hold =
       after === null
         ? null
@@ -1988,6 +1997,24 @@ const stopSessions = async (
   if (summarise) {
     say(`${green("✓")} stopped ${targets.length} session${targets.length === 1 ? "" : "s"}`);
   }
+};
+
+/** What Stop session would do, as `GET /sessions/:id/stop-preview` answers; absent on older servers. */
+interface StopPreviewDto {
+  readonly workspace: "stops" | "keeps-running" | "none";
+  readonly runningSessions: ReadonlyArray<{
+    readonly title: string;
+    readonly ownerName: string | null;
+  }>;
+}
+
+/** `the workspace keeps running for <title> (<owner>)` while other sessions run there; else null. */
+const keptRunningLineOf = (preview: StopPreviewDto): string | null => {
+  if (preview.workspace !== "keeps-running" || preview.runningSessions.length === 0) return null;
+  const names = preview.runningSessions.map((running) =>
+    running.ownerName === null ? running.title : `${running.title} (${running.ownerName})`,
+  );
+  return `the workspace keeps running for ${names.join(", ")}`;
 };
 
 /** Stop every live Service of the session; the workspace ends once nothing is live. */

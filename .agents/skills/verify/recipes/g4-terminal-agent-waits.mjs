@@ -326,6 +326,11 @@ export default async (h) => {
 
   let shell = null;
   let agentTerminal = null;
+  // The worktree the session runs in, and a second session there that keeps the workspace
+  // running through the first Stop: Stop session stops the workspace, its shells included, when no
+  // other session runs there (docs/adr/0026, decision 7).
+  const worktreeName = `st-g4-${Date.now().toString(36)}`;
+  let keeper = null;
   try {
     await step(
       "the account's Claude login reads active: the skill's fake setup token, connected now if it reads anything else",
@@ -368,7 +373,7 @@ export default async (h) => {
             harness: "claude",
             label: "g4 terminal agent waits",
             base: null,
-            name: `st-g4-${Date.now().toString(36)}`,
+            name: worktreeName,
           }),
         });
         await api(`/sessions/${created.id}/launch`, {
@@ -802,7 +807,47 @@ export default async (h) => {
     );
 
     await step(
-      "Stop ends the agent and its wait; the shell keeps the workspace up",
+      "a second session in the worktree keeps the workspace running through the Stop",
+      async () => {
+        const ran = await world.cli(
+          [
+            "run",
+            "--project",
+            project.name,
+            "--name",
+            worktreeName,
+            "--detach",
+            "--json",
+            "--",
+            "sleep",
+            "1800",
+          ],
+          cliEnv,
+          { allowFailure: true },
+        );
+        if (ran.status !== 0)
+          fail(
+            `mend run --detach exited ${ran.status}: ${scrub(ran.stderr).trim().split("\n").slice(-3).join(" / ")}`,
+          );
+        const answer = JSON.parse(ran.stdout);
+        keeper = answer.data?.sessionId ?? answer.sessionId ?? null;
+        if (typeof keeper !== "string") fail(`mend run --json named no session: ${ran.stdout}`);
+        const preview = await api(`/sessions/${session.id}/stop-preview`);
+        if (
+          preview.workspace !== "keeps-running" ||
+          !preview.runningSessions.some((row) => row.sessionId === keeper)
+        )
+          fail(`stop-preview does not name the second session: ${JSON.stringify(preview)}`);
+        return {
+          observed: `session ${keeper.slice(0, 8)} runs sleep in ${worktreeName} · stop-preview keeps-running`,
+          keeper,
+        };
+      },
+      { via: "cli" },
+    );
+
+    await step(
+      "Stop ends the agent and its wait; another session keeps the workspace running, and the shell with it",
       async () => {
         const stopAt = Date.now();
         await api(`/sessions/${session.id}/stop`, {
@@ -911,6 +956,9 @@ export default async (h) => {
       { via: "cli" },
     );
   } finally {
+    if (keeper !== null) {
+      await api(`/sessions/${keeper}/stop`, { method: "POST", body: "{}" }).catch(() => undefined);
+    }
     if (agentTerminal !== null) {
       keep("agent-terminal.txt", agentTerminal.text);
       if (agentTerminal.closed === null) agentTerminal.socket.close();

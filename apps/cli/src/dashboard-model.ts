@@ -817,11 +817,12 @@ export const createLaunchGate = (): LaunchGate => {
 export const markSessionStopped = (data: Workbench, sessionId: string): Workbench => {
   const processesBySession = new Map(data.processesBySession);
   processesBySession.delete(sessionId);
-  // A stop ends the agent and leaves Services running: their rows stay until their own stop.
+  // Services outlive the stop only while another session runs in the workspace (docs/adr/0026):
+  // their rows stay until the server's refetch says whether they stopped with it.
   return {
     ...mapWorkbenchSessions(data, (session) =>
-      // Asked, not observed (story S28): `stopping` until the server says how it ended. A stop
-      // leaves Services running, so a session with Services reads as stopped with what holds it.
+      // Asked, not observed (story S28): `stopping` until the server says how it ended. A session
+      // with Services reads as stopped with what holds it until then.
       session.id === sessionId
         ? {
             ...session,

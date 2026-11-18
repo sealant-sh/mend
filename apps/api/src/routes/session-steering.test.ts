@@ -50,9 +50,10 @@ describe("legacy sessions without an owner", () => {
         implement: {
           engine: {
             launchUnderWay: () => false,
-            stop: (sessionId) =>
+            stopSession: (sessionId) =>
               Effect.sync(() => {
                 stopped.push(sessionId);
+                return { workspace: "none", runningSessions: [], services: [] } as const;
               }),
           },
         },
@@ -161,7 +162,15 @@ describe("raw steering routes", () => {
   it("an owner who lost project visibility may still Stop their own session, and only their own", async () => {
     const stopping = await createTenancyApi(
       {},
-      { implement: { engine: { launchUnderWay: () => false, stop: () => Effect.void } } },
+      {
+        implement: {
+          engine: {
+            launchUnderWay: () => false,
+            stopSession: () =>
+              Effect.succeed({ workspace: "none", runningSessions: [], services: [] } as const),
+          },
+        },
+      },
     );
     try {
       stopping.world.setVisibility("shared-a", "private");
@@ -171,7 +180,7 @@ describe("raw steering routes", () => {
         `/api/sessions/${CAROL_SESSION_IN_SHARED_A}/stop`,
       );
       expect(own.status).toBeLessThan(300);
-      expect(stopping.world.calls).toContain("engine.stop");
+      expect(stopping.world.calls).toContain("engine.stopSession");
       stopping.world.calls.length = 0;
       const other = await stopping.request(
         "carol",
@@ -179,7 +188,7 @@ describe("raw steering routes", () => {
         `/api/sessions/${sharedA.session}/stop`,
       );
       expect(other.status).toBe(404);
-      expect(stopping.world.calls).not.toContain("engine.stop");
+      expect(stopping.world.calls).not.toContain("engine.stopSession");
     } finally {
       await stopping.dispose();
     }
