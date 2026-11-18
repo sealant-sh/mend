@@ -193,6 +193,31 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/welcome.first-project.tsx`, `apps/web/src/lib/use-clone.ts`,
   `apps/web/src/lib/setup.ts`
 
+### adopt-project.new-web-project-page
+
+- **Map:** adopt-project.md `project-page`; session-shell.md `shell-session-web`; start-session.md
+  `start-in-worktree`; handoff.md `handoff-row`; models.md `model-shown`; per-person-homes.md
+  `join-line`
+- **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box) with a live `mend run`
+  session in it
+- **Do:** Drive the recipe `new-web-project` (after its CLI batch `new-web-project-setup.json`): a
+  project's page with its header, facts and tabs; the Sessions tab's search, Filter, Mine or
+  Everyone and Open or Stopped, kept in the address across a reload; a row's "…" starts a shell and
+  another session in its worktree; Open shell starts one in a new worktree; the "…" opens Set up
+  this project, which starts a setup session; an empty project; a clone's page while it runs; the
+  old setup page's address; a project that fails to load.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; every session the recipe
+  started is stopped, and every project it made is purged, at its end.
+- **Mode:** `scripted` (recipes/new-web-project.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/project/`,
+  `apps/web/src/routes/_inbox.projects.$projectId.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.index.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.setup-session.tsx`,
+  `apps/web/src/lib/project-sessions.ts`, `apps/web/src/lib/project-starts.ts`,
+  `apps/web/src/lib/shared-workspace.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

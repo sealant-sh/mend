@@ -163,15 +163,19 @@ export function useComposer(): Composer {
       ? null
       : { id: attempt.id, name: attempt.name, percent: clonePercent(progress) };
   const [cloneFor, setCloneFor] = useState<string | null>(null);
-  // The clone is picked when chosen, or when it is the only project there is (the first run).
-  const onClone = clone !== null && (cloneFor === clone.id || projects.length === 0);
-  // Once the picked clone's project is listed, the composer moves onto it.
   const lastId = lastProject.use();
+  // The clone is picked when chosen here, when it is the only project there is (the first run),
+  // or when the page that opened the composer named it (the cloning project's page).
+  const cloneChosen = cloneFor ?? (lastId === attempt?.id ? lastId : null);
+  const onClone = clone !== null && (cloneChosen === clone.id || projects.length === 0);
+  // Once the picked clone's project is listed, the composer moves onto it.
   const project = onClone
     ? undefined
     : startingProject(
         projects,
-        cloneFor !== null && cloneFor === attempt?.id && adoptedId !== null ? adoptedId : lastId,
+        cloneChosen !== null && cloneChosen === attempt?.id && adoptedId !== null
+          ? adoptedId
+          : lastId,
       );
   const agent = startingAgent(defaults);
   const picker = pickerFor(catalogs, defaults, agent);
