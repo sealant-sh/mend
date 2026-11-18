@@ -3,10 +3,15 @@ import { describe, expect, it } from "vitest";
 import { fuzzyFilter, fuzzyMatch } from "#/lib/fuzzy";
 
 describe("fuzzyMatch", () => {
-  it("matches the query's characters in order, ignoring case", () => {
-    expect(fuzzyMatch("stab", "settings-tabs")?.indices).toEqual([0, 2, 10, 11]);
+  it("matches the query's characters in order at word starts, ignoring case", () => {
+    expect(fuzzyMatch("stab", "settings-tabs")?.indices).toEqual([0, 9, 10, 11]);
+    expect(fuzzyMatch("fcr", "Fix checkout retry")?.indices).toEqual([0, 4, 13]);
     expect(fuzzyMatch("MEND", "mend")).not.toBeNull();
     expect(fuzzyMatch("bats", "settings-tabs")).toBeNull();
+  });
+
+  it("doesn't match letters scattered inside words", () => {
+    expect(fuzzyMatch("land", "release-notes-xyhd")).toBeNull();
   });
 
   it("matches everything with an empty query", () => {

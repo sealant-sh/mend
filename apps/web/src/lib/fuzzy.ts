@@ -21,6 +21,17 @@ const scoreOf = (text: string, indices: ReadonlyArray<number>): number => {
   return score - (indices[0] ?? 0) * 0.01;
 };
 
+/** The first word starting with `character` at or after `from`; -1 if none. */
+const nextWordStart = (text: string, haystack: string, character: string, from: number): number => {
+  for (
+    let at = haystack.indexOf(character, from);
+    at !== -1;
+    at = haystack.indexOf(character, at + 1)
+  )
+    if (isBoundary(text, at)) return at;
+  return -1;
+};
+
 /** The best place the query appears whole in the text, a word start first; null if nowhere. */
 const runMatch = (needle: string, text: string, haystack: string): FuzzyMatch | null => {
   let best: FuzzyMatch | null = null;
@@ -33,10 +44,11 @@ const runMatch = (needle: string, text: string, haystack: string): FuzzyMatch | 
 };
 
 /**
- * The query's characters in order inside the text, case-insensitive, like `mend` in the
- * terminal: `stab` matches `settings-tabs`. Where the query appears whole, that run is the match,
- * so `land` in "Fix landing" marks "land" rather than a scattered l, a, n, d. Null when it does
- * not match.
+ * The query inside the text, case-insensitive. Where it appears whole, that run is the match, so
+ * `land` in "Fix landing" marks "land". Otherwise its characters in order, each one either right
+ * after the one before or at the start of a word: `stab` matches `settings-tabs` and `fcr`
+ * matches "Fix checkout retry", but `land` doesn't match "release-notes-xyhd", whose l, a, n
+ * and d are scattered inside words. Null when it does not match.
  */
 export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
   const needle = query.trim().toLowerCase();
@@ -45,12 +57,15 @@ export function fuzzyMatch(query: string, text: string): FuzzyMatch | null {
   const run = runMatch(needle, text, haystack);
   if (run !== null) return run;
   const indices: Array<number> = [];
-  let from = 0;
   for (const character of needle) {
-    const found = haystack.indexOf(character, from);
+    const previous = indices.at(-1);
+    if (previous !== undefined && haystack.charAt(previous + 1) === character) {
+      indices.push(previous + 1);
+      continue;
+    }
+    const found = nextWordStart(text, haystack, character, (previous ?? -1) + 1);
     if (found === -1) return null;
     indices.push(found);
-    from = found + 1;
   }
   return { score: scoreOf(text, indices), indices };
 }
