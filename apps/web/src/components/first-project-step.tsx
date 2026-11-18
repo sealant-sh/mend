@@ -566,13 +566,10 @@ function RepositoryRow({
             {repository.nameWithOwner}
           </span>
           <span className="shrink-0 text-2xs text-muted-foreground">{visibility}</span>
-          <span className="w-32 shrink-0 text-right text-row text-muted-foreground">{when}</span>
+          <span className="shrink-0 text-right text-row text-muted-foreground">{when}</span>
         </>
       )}
-      <CheckIcon
-        aria-hidden
-        className={cn("size-4 shrink-0 text-primary", selected ? "visible" : "invisible")}
-      />
+      {selected ? <CheckIcon aria-hidden className="size-4 shrink-0 text-primary" /> : null}
     </label>
   );
 }
@@ -606,8 +603,8 @@ function VisibleTo({
           <TabsTrigger value="private" disabled={disabled}>
             Only you
           </TabsTrigger>
-          <TabsTrigger value="shared" disabled={disabled} className="min-w-0">
-            <span className="truncate">Everyone in {organizationName}</span>
+          <TabsTrigger value="shared" disabled={disabled} className="max-lg:min-w-0">
+            <span className="max-lg:truncate">Everyone in {organizationName}</span>
           </TabsTrigger>
         </TabsList>
       </Tabs>

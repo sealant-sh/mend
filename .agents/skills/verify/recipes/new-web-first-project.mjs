@@ -142,8 +142,8 @@ export default async ({ page, web, capture, note }) => {
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
     const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
-    if (route.request().method() !== "GET" || !paths.some((path) => path in answers))
-      return route.continue();
+    // Every call is a POST (the app's `methodOverride`); only reads are named in `answers`.
+    if (!paths.some((path) => path in answers)) return route.continue();
     const response = await route.fetch();
     const body = await response.json();
     const entries = Array.isArray(body) ? body : [body];
@@ -181,6 +181,18 @@ export default async ({ page, web, capture, note }) => {
     await call("projects.purge", { id: project.id, confirm: project.name }, "mutate").catch(
       () => undefined,
     );
+
+  // The step comes after Git access: without it, the step sends the person back to /welcome. A
+  // stack's account has none until it opens /welcome, which makes the Mend key; so does this.
+  const access = await call("git.access");
+  if (access.mode === "mend-key" && !access.key.exists) {
+    await go("/welcome/first-project");
+    await page.waitForURL((url) => url.pathname === "/welcome", { timeout: 15_000 });
+    note("with no Git access, /welcome/first-project went back to /welcome (Git access)");
+    await call("git.initKey", undefined, "mutate");
+    note("made the account's Mend key, as opening /welcome does");
+    await go("/");
+  }
 
   // Someone who can see a project is sent on to Mend.
   const seen = (await call("projects.list")).length;
@@ -254,7 +266,7 @@ export default async ({ page, web, capture, note }) => {
     }),
   );
   const steps = page.getByRole("list", { name: "Setup steps" });
-  await steps.getByText("Skipped").waitFor();
+  await steps.getByText("Skipped", { exact: true }).waitFor();
   await button("Skip for now").waitFor();
   await both("fixture-agent-skipped-desktop");
   await button("Skip for now").click();
@@ -362,9 +374,10 @@ export default async ({ page, web, capture, note }) => {
   await name.fill(big);
   await button("Add project").click();
   await text(`Cloning ${big}`).waitFor();
-  await text(
-    /Receiving objects|Counting objects|Waiting for the Git host|Starting|Getting Git/,
-  ).waitFor();
+  // Git's own progress, for the picture; the clone may still be starting after 30 seconds.
+  await text(/Receiving objects/)
+    .waitFor({ timeout: 30_000 })
+    .catch(() => undefined);
   await all("cloning");
   await open("/welcome/first-project");
   await text(`Cloning ${big}`).waitFor();
@@ -408,8 +421,6 @@ export default async ({ page, web, capture, note }) => {
   note(`with ${big} in sight, the step goes on to / again`);
 
   // The step failing to load: the route's error screen, and Try again.
-  const bigProject = (await call("projects.list")).find((entry) => entry.name === big);
-  await call("projects.remove", { id: bigProject.id }, "mutate");
   await forgetClone(me.userId);
   await page.unroute("**/trpc/**");
   await page.route("**/trpc/**", (route) => {
@@ -440,8 +451,18 @@ export default async ({ page, web, capture, note }) => {
   // Put back what this drive changed: the projects it made are purged, the defaults as before.
   await open("/");
   await forgetClone(me.userId);
+  // The session the composer started holds its project until it has stopped.
+  await call("sessions.stop", { id: started }, "mutate").catch(() => undefined);
   for (const project of (await call("projects.list")).filter((entry) => made(entry.name)))
-    await call("projects.remove", { id: project.id }, "mutate").catch(() => undefined);
+    await waitFor(
+      `${project.name} removed`,
+      () =>
+        call("projects.remove", { id: project.id }, "mutate").then(
+          () => true,
+          () => null,
+        ),
+      120,
+    );
   for (const project of (await call("projects.removed")).filter((entry) => made(entry.name)))
     await call("projects.purge", { id: project.id, confirm: project.name }, "mutate").catch(
       () => undefined,
