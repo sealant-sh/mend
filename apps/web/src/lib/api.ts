@@ -545,6 +545,37 @@ export const removeWorktree = (id: string, force?: boolean) =>
     browserTrpcClient().worktrees.remove.mutate(force === true ? { id, force: true } : { id }),
   );
 
+/** A session started while its project still clones (SLNT-1099), as `queuedSessions.list` reads it. */
+export type QueuedSessionDto = Outputs["queuedSessions"]["list"][number];
+
+/**
+ * Start a session in a project the caller's adoption (`adoptionId`) is still cloning: it waits and
+ * starts by itself, as `createSession` and `launchSessionStart` would start it, once the clone
+ * finishes. `id` is the client's: the same request again queues it once.
+ */
+export const queueSession = (request: {
+  readonly id: string;
+  readonly adoptionId: string;
+  readonly harness: string;
+  readonly autoLand: boolean | null;
+  readonly launch: LaunchStartDto;
+}) =>
+  orLogin(
+    browserTrpcClient().queuedSessions.queue.mutate({
+      id: request.id,
+      adoptionId: request.adoptionId,
+      session: {
+        harness: request.harness,
+        ...startMode(request.harness),
+        label: null,
+        name: null,
+        base: null,
+        ...(request.autoLand === null ? {} : { autoLand: request.autoLand }),
+      },
+      launch: { ...request.launch, ...startMode(request.harness) },
+    }),
+  );
+
 /** `autoLand` is this session's own "Land when a turn completes"; null follows the project. */
 export const createSessionInWorktree = (
   id: string,

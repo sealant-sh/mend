@@ -1,5 +1,5 @@
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 
 import { inboxQuery } from "./inbox-live.ts";
 import {
@@ -9,6 +9,8 @@ import {
   type InboxFilters,
   type InboxGroup,
   type InboxRow,
+  type QueuedRow,
+  queuedRows,
 } from "./inbox.ts";
 import { signedInOptions } from "./sign-in.ts";
 import { useTRPC } from "./trpc.ts";
@@ -31,10 +33,27 @@ export const useMinute = (): Date => {
 export const inboxMarksQuery = (trpc: ReturnType<typeof useTRPC>) =>
   trpc.sessions.inboxMarks.queryOptions(undefined, { staleTime: 60_000 });
 
+/** How often queued sessions are read while one waits: no event says when one moves. */
+const QUEUED_MS = 2_000;
+
+/** The caller's queued sessions, read again every two seconds while one waits or starts. */
+export const queuedSessionsQuery = (trpc: ReturnType<typeof useTRPC>) =>
+  trpc.queuedSessions.list.queryOptions(undefined, {
+    refetchInterval: (query) =>
+      query.state.data?.some((row) => row.state === "waiting" || row.state === "starting") === true
+        ? QUEUED_MS
+        : false,
+  });
+
 /** The inbox as the sidebar and the phone screen show it, once its reads are in. */
 export interface InboxView {
   /** Every row the filters let through, in its group. */
   readonly groups: Readonly<Record<InboxGroup, ReadonlyArray<InboxRow>>>;
+  /**
+   * Sessions started while their project clones, not sessions yet, by the group they wait in.
+   * Listed only with every project shown: they carry no project id until they start.
+   */
+  readonly queued: Readonly<Record<"running" | "review", ReadonlyArray<QueuedRow>>>;
   /** Every row the person can see, filters aside: the shared-workspace count reads these. */
   readonly all: ReadonlyArray<InboxRow>;
   /**
@@ -72,6 +91,27 @@ export const useInbox = (): InboxState => {
   const marks = useQuery(inboxMarksQuery(trpc));
   // The root route read who is signed in before any signed-in page renders.
   const viewer = useSuspenseQuery(signedInOptions(trpc));
+  const queuedRead = useQuery(queuedSessionsQuery(trpc));
+  // A queued session that left the list started (or was cancelled): the inbox reads its session.
+  const queuedIds = (queuedRead.data ?? []).map((row) => row.id).join(",");
+  const lastQueued = useRef(queuedIds);
+  const refetchInbox = inbox.refetch;
+  // Following the server: the list moved, so the inbox is read again. An effect, since nothing
+  // but this read says a queued session became a session.
+  useEffect(() => {
+    const before = lastQueued.current.split(",").filter((id) => id !== "");
+    lastQueued.current = queuedIds;
+    if (before.some((id) => !queuedIds.split(",").includes(id))) void refetchInbox();
+  }, [queuedIds, refetchInbox]);
+  // A failed read of queued sessions leaves them out; the sessions themselves still list.
+  const queuedList = queuedRead.isPending || queuedRead.isError ? undefined : queuedRead.data;
+  const queued = useMemo(() => {
+    const rows = filters.projectId === null ? queuedRows(queuedList ?? []) : [];
+    return {
+      running: rows.filter((row) => row.group === "running"),
+      review: rows.filter((row) => row.group === "review"),
+    };
+  }, [queuedList, filters.projectId]);
   const me = viewer.data.userId;
   const all = useMemo(
     () => inboxRows({ rows: inbox.data ?? [], marks: marks.data ?? [], now }),
@@ -101,8 +141,12 @@ export const useInbox = (): InboxState => {
     status: "success",
     view: {
       groups,
+      queued,
       all,
-      empty: filters.projectId === null && Object.values(groups).every((rows) => rows.length === 0),
+      empty:
+        filters.projectId === null &&
+        Object.values(groups).every((rows) => rows.length === 0) &&
+        queued.running.length + queued.review.length === 0,
       readAt: new Date(inbox.dataUpdatedAt),
       filters,
       now,

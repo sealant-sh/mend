@@ -1,3 +1,4 @@
+import { Banner } from "@mend/ui/components/banner";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import {
   Collapsible,
@@ -13,7 +14,7 @@ import {
   EmptyTitle,
 } from "@mend/ui/components/ui/empty";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import {
   ChevronDownIcon,
@@ -27,6 +28,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
+import { adoptionProgressOptions, clonePercent, useAdoptionAttempt } from "#/lib/adoptions";
 import {
   activity,
   activityDetail,
@@ -37,17 +39,20 @@ import {
   INBOX_GROUPS,
   type InboxGroup,
   type InboxRow,
+  type QueuedRow,
   rowStatus,
 } from "#/lib/inbox";
 import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import { useSeenAfterIdle } from "#/lib/seen";
+import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFolds } from "#/lib/ui-prefs";
 import type { InboxState, InboxView } from "#/lib/use-inbox";
 
-import { OfflineBand } from "./app-sidebar.tsx";
+import { OfflineBand, queuedIn } from "./app-sidebar.tsx";
 import { filterWords, InboxFilterSheet } from "./inbox-filters.tsx";
+import { QueuedPhoneRow } from "./queued-session-row.tsx";
 import { SessionRow } from "./session-row.tsx";
 
 /**
@@ -106,9 +111,37 @@ export function PhoneInbox({
       <div ref={filterRow}>
         {view === undefined ? null : <InboxFilterSheet filters={view.filters} />}
       </div>
+      <CloneBand />
       <PhoneInboxBody inbox={inbox} host={host} organizationName={organizationName} />
       <PhoneTabBar active="inbox" badge={waiting} />
     </div>
+  );
+}
+
+/**
+ * While a clone this browser started runs (frame "Phone · First run · clone still running"): a
+ * session can be started in its project now, and waits for it. Nothing while the clone's progress
+ * is read, once it ended, or when the read failed.
+ */
+function CloneBand() {
+  const trpc = useTRPC();
+  const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
+  const attempt = useAdoptionAttempt(viewer.userId);
+  const progress = useQuery({
+    ...adoptionProgressOptions(trpc, attempt?.id ?? ""),
+    enabled: attempt !== null,
+  });
+  if (attempt === null || progress.isPending || progress.isError) return null;
+  if (progress.data === null || progress.data.state !== "running") return null;
+  const percent = clonePercent(progress.data);
+  return (
+    <Banner
+      tone="info"
+      layout="stacked"
+      title={`${attempt.name} is still cloning${percent === null ? "" : ` (${percent}%)`}.`}
+    >
+      You can start a session now. It starts when the clone finishes.
+    </Banner>
   );
 }
 
@@ -208,6 +241,7 @@ function PhoneGroups({ view }: { readonly view: InboxView }) {
           group={group}
           label={label}
           rows={view.groups[group]}
+          queued={queuedIn(view, group)}
           open={folds[group]}
           onOpenChange={(open) => inboxFolds.set({ ...folds, [group]: open })}
           now={view.now}
@@ -222,6 +256,7 @@ function PhoneGroup({
   group,
   label,
   rows,
+  queued,
   open,
   onOpenChange,
   now,
@@ -229,6 +264,7 @@ function PhoneGroup({
   readonly group: InboxGroup;
   readonly label: string;
   readonly rows: ReadonlyArray<InboxRow>;
+  readonly queued: ReadonlyArray<QueuedRow>;
   readonly open: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly now: Date;
@@ -257,17 +293,24 @@ function PhoneGroup({
             wait ? "text-warning" : "text-muted-foreground",
           )}
         >
-          {rows.length}
+          {rows.length + queued.length}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
-        {rows.length === 0 ? (
+        {queued.length === 0 ? null : (
+          <ul>
+            {queued.map((row) => (
+              <QueuedPhoneRow key={row.id} row={row} now={now} />
+            ))}
+          </ul>
+        )}
+        {rows.length === 0 && queued.length === 0 ? (
           <p className="border-b border-border px-4 pt-2.5 pb-3 text-sm text-muted-foreground">
             {group === "waiting"
               ? "Nothing is waiting on you. When an agent asks a question or wants approval, the session shows here."
               : EMPTY_GROUP[group]}
           </p>
-        ) : (
+        ) : rows.length === 0 ? null : (
           <ul>
             {shown.map((row) => (
               <PhoneRow key={row.session.id} row={row} now={now} />

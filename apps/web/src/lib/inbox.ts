@@ -2,6 +2,7 @@ import { REVIEW_WAIT_MS } from "@mend/domain/workbench";
 
 import type {
   AgentActivityDto,
+  QueuedSessionDto,
   SessionAskDto,
   SessionInboxMarkDto,
   SessionInboxRowDto,
@@ -359,3 +360,54 @@ export const whenAhead = (date: Date, now: Date): string => {
 /** The clock time an offline inbox was read at: "9:38". */
 export const readAt = (date: Date): string =>
   date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+
+/**
+ * A session started while its project clones, before it is a session (`queuedSessions.list`).
+ * It waits under Running ("Waiting for the clone", then "Starting"), and once it is a session the
+ * inbox lists that session in its place. One that failed waits under To review, in red, with why,
+ * until it is started again or cancelled.
+ */
+export interface QueuedRow {
+  readonly id: QueuedSessionDto["id"];
+  /** The task's first line, as the person wrote it. */
+  readonly title: string;
+  readonly projectName: string;
+  readonly group: "running" | "review";
+  readonly status: RowStatus;
+  readonly failure: { readonly step: "clone" | "start"; readonly message: string } | null;
+  /** When it last moved. */
+  readonly at: Date;
+}
+
+const TITLE_LENGTH = 80;
+
+/** The queued sessions not started yet, newest first, each in its group. */
+export const queuedRows = (queued: ReadonlyArray<QueuedSessionDto>): ReadonlyArray<QueuedRow> =>
+  queued
+    .filter((row) => row.state !== "started")
+    .toSorted((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
+    .map((row): QueuedRow => {
+      const firstLine = (row.launch.prompt ?? "").trim().split("\n")[0] ?? "";
+      const base = {
+        id: row.id,
+        title: firstLine === "" ? "New session" : firstLine.slice(0, TITLE_LENGTH),
+        projectName: row.projectName,
+        at: row.updatedAt,
+      };
+      if (row.state === "failed")
+        return {
+          ...base,
+          group: "review",
+          status: { word: "Failed", failed: true },
+          failure:
+            row.failure === null
+              ? { step: "start", message: "This session did not start." }
+              : { step: row.failure.step, message: row.failure.message },
+        };
+      return {
+        ...base,
+        group: "running",
+        status: plain(row.state === "waiting" ? "Waiting for the clone" : "Starting"),
+        failure: null,
+      };
+    });
