@@ -1,5 +1,5 @@
 import { Banner, InlineAlert } from "@mend/ui/components/banner";
-import { useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { UserX } from "lucide-react";
 import { useState } from "react";
@@ -8,6 +8,7 @@ import { FirstAccountForm } from "#/components/first-account-form";
 import { SetupFrame } from "#/components/setup-frame";
 import { SignInForm } from "#/components/sign-in-form";
 import { continuationOf } from "#/lib/onboarding";
+import { afterSignIn, readSetup, SETUP_PATHS, signInEntry } from "#/lib/setup";
 import type { TrpcProxy } from "#/lib/trpc";
 
 /** Why a page sent the person here, when it says: removed from their organization, or a new password. */
@@ -36,6 +37,9 @@ export const Route = createFileRoute("/login")({
   component: LoginPage,
 });
 
+/** The first account goes on to setup's next step, whatever page sent it here. */
+const setUp = () => window.location.assign(SETUP_PATHS.gitAccess);
+
 /**
  * Sign-in, or on a server with no account yet, the first account (docs/adr/0003). After the first
  * account the server takes no new ones here: people join from an invitation link.
@@ -46,10 +50,17 @@ function LoginPage() {
   const { reason } = Route.useSearch();
   // `?next=` from the API's /preview-auth, `#next=` from the app's own walk; read once.
   const [next] = useState(() => continuationOf(window.location));
-  // A full load, so whatever loads there reads with the new session.
-  const enter = () => window.location.assign(next);
+  const queryClient = useQueryClient();
+  // A full load, so whatever loads there reads with the new session. With no page to return to,
+  // setup decides: the person's next step, or Mend itself once setup is done.
+  const enter = async () => {
+    const page = await afterSignIn(next, async () =>
+      signInEntry(await readSetup({ queryClient, trpc })),
+    );
+    window.location.assign(page);
+  };
 
-  if (instance.data.users === "none") return <FirstAccountForm onCreated={enter} />;
+  if (instance.data.users === "none") return <FirstAccountForm onCreated={setUp} />;
   return (
     <SetupFrame
       title="Sign in"
@@ -62,7 +73,7 @@ function LoginPage() {
         ) : undefined
       }
     >
-      <SignInForm onSignedIn={enter}>
+      <SignInForm onSignedIn={() => void enter()}>
         <Lead reason={reason} next={next} />
       </SignInForm>
     </SetupFrame>

@@ -316,10 +316,12 @@ const inspect = async (page) => {
       const fields = [...document.querySelectorAll("textarea, input")];
       return {
         typed: fields.some((field) => field.hasAttribute(mark) && field.value !== ""),
-        // A filled password field, or a filled field named, labelled or hinted as a credential.
+        // A filled password field, or a filled field named, labelled or hinted as a credential. A
+        // radio button or checkbox holds the choice it stands for, never something typed.
         filled: fields.some(
           (field) =>
             field.value !== "" &&
+            !["radio", "checkbox"].includes(field.getAttribute("type") ?? "") &&
             ((field.getAttribute("type") ?? "") === "password" ||
               credential.test(
                 [
