@@ -724,6 +724,15 @@ test("PRs have exact history; pushes to main, manual and nightly events retain t
       `${name} must restore generated routes before typechecking`,
     );
   }
+  // astro build and astro check both sync content through the same fixed-name temp files, so in
+  // one Turbo run they must not overlap (SLNT-545).
+  const docs = JSON.parse(
+    readFileSync(new URL("../apps/docs/turbo.json", import.meta.url), "utf8"),
+  );
+  assert.ok(
+    docs.tasks.typecheck.dependsOn.includes("build"),
+    "docs must finish astro build before astro check syncs the same content store",
+  );
 });
 
 test("a newer pull request or dispatched head cancels its stale run; main pushes and nightly runs never do", () => {
