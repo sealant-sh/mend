@@ -10,11 +10,17 @@
 // this browser, a name and a password changed through Better Auth's own endpoints.
 //
 // The recipe puts back what it changes (the account's name, its password, this browser's choices),
-// so it can run again. Sign out is its last step.
+// so it can run again. Sign out is its last step. For the Terminal check, run the Terminal view's
+// CLI batch first (a `sleep` session in the worktree `term-ws`), and stop that session after:
+//
+//   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-terminal-sessions.json
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
 const visible = (locator) => locator.filter({ visible: true }).first();
+/** Whether a choice of a segmented control is the one picked. */
+const pressed = (group, name) =>
+  group.getByRole("button", { name, exact: true }).getAttribute("aria-pressed");
 
 export default async ({ page, web, capture, note, account }) => {
   const settled = () => page.waitForTimeout(500);
@@ -201,6 +207,35 @@ export default async ({ page, web, capture, note, account }) => {
   await page.getByRole("button", { name: "Change password", exact: true }).click();
   await dialog().waitFor({ state: "hidden" });
   note("password changed with the right current password; the dialog closes");
+  // Signing in afresh, with no cookie kept: the old password is refused, the new one accepted.
+  // The old password goes from the account straight into a field and from it to the request, so
+  // it never reaches this file.
+  const signInWith = async (fill) => {
+    await page.evaluate(() => {
+      const field = document.createElement("input");
+      field.type = "password";
+      field.id = "verify-sign-in-check";
+      document.body.append(field);
+    });
+    await fill(page.locator("#verify-sign-in-check"));
+    return page.evaluate(async (address) => {
+      const field = document.getElementById("verify-sign-in-check");
+      const password = field.value;
+      field.remove();
+      const response = await fetch("/api/auth/sign-in/email", {
+        method: "POST",
+        credentials: "omit",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ email: address, password }),
+      });
+      return response.status;
+    }, account.email);
+  };
+  const withOld = await signInWith((field) => account.typePassword(field));
+  const withNew = await signInWith((field) => field.fill("verify-temporary-password"));
+  if (withOld === 200) throw new Error("the old password still signs in");
+  if (withNew !== 200) throw new Error(`the new password answered ${withNew}`);
+  note(`signing in afresh: the old password answers ${withOld}, the new one ${withNew}`);
   await page.reload();
   await hydrated();
   await heading("Profile");
@@ -222,8 +257,6 @@ export default async ({ page, web, capture, note, account }) => {
   if (path() !== "/settings/appearance") throw new Error(`Appearance opened ${path()}`);
   await page.getByText("Only this browser", { exact: true }).first().waitFor();
   const themeGroup = page.getByRole("group", { name: "Theme" });
-  const pressed = (group, name) =>
-    group.getByRole("button", { name, exact: true }).getAttribute("aria-pressed");
   if ((await pressed(themeGroup, "System")) !== "true") throw new Error("System isn't picked");
   await shot("appearance-desktop-light");
   // theme-system: System follows the OS, live.
@@ -274,6 +307,39 @@ export default async ({ page, web, capture, note, account }) => {
     ]);
   note(`terminal font kept: the preview draws in ${preview[0]} at ${preview[1]}`);
   await shot("appearance-dark-large-desktop");
+  // A session's Terminal draws in the chosen face and size: the batch session in `term-ws` (run
+  // new-web-terminal-sessions.json first). The terminal is a canvas, so this is read, not pictured.
+  const terminalSession = await page.evaluate(async () => {
+    const queryClient = window["__TSR_ROUTER__"].options.context.queryClient;
+    await queryClient.refetchQueries({ queryKey: [["sessions", "inbox"]] });
+    const rows = queryClient.getQueryCache().findAll({ queryKey: [["sessions", "inbox"]] })[0]
+      ?.state.data;
+    if (!Array.isArray(rows)) return null;
+    const live = rows.find(
+      (row) =>
+        row.worktreeName === "term-ws" &&
+        !["completed", "stopped", "failed"].includes(row.session.status),
+    );
+    return live?.session.id ?? null;
+  });
+  const terminalFont = async () => {
+    const box = page.locator("[data-own-shortcuts]").filter({ visible: true }).first();
+    await box.waitFor({ timeout: 30_000 });
+    await box.locator("canvas").first().waitFor({ timeout: 30_000 });
+    return box.evaluate((element) => [
+      getComputedStyle(element).fontFamily,
+      getComputedStyle(element).fontSize,
+    ]);
+  };
+  if (terminalSession === null) {
+    note("no running session in term-ws: the Terminal check was skipped (run the CLI batch)");
+  } else {
+    await open(`/sessions/${terminalSession}/terminal`);
+    const drawn = await terminalFont();
+    if (!drawn[0].includes("JetBrains Mono") || drawn[1] !== "15px")
+      throw new Error(`the Terminal draws in ${drawn[0]} at ${drawn[1]}`);
+    note(`the session's Terminal draws in ${drawn[0]} at ${drawn[1]}`);
+  }
   // The account menu reads the same choice.
   await settingsNav.getByRole("link", { name: "Back to app" }).click();
   await page.waitForURL((url) => url.pathname === "/");
@@ -293,6 +359,14 @@ export default async ({ page, web, capture, note, account }) => {
   await page.getByLabel("Terminal font size").selectOption({ label: "13 px" });
   if ((await page.evaluate(() => document.documentElement.dataset.textSize)) !== undefined)
     throw new Error("Default left a text size on the page");
+  if (terminalSession !== null) {
+    await open(`/sessions/${terminalSession}/terminal`);
+    const drawn = await terminalFont();
+    if (!drawn[0].startsWith('"Geist Mono') || drawn[1] !== "13px")
+      throw new Error(`after Geist Mono 13 px the Terminal draws in ${drawn[0]} at ${drawn[1]}`);
+    note(`back to the default: the Terminal draws in ${drawn[0]} at ${drawn[1]}`);
+    await open("/settings/appearance");
+  }
 
   // --- Who sees what ---------------------------------------------------------------------------
   const as = { role: null, operator: null };
