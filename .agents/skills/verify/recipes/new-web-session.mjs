@@ -103,7 +103,7 @@ export default async ({ page, web, capture, note }) => {
   const vscode = await page.getByRole("link", { name: "Open in VS Code" }).getAttribute("href");
   if (vscode !== `vscode://sealant-sh.mend/open?session=${ids["session-record"]}`)
     throw new Error(`Open in VS Code goes to ${vscode}`);
-  const tabName = await tab().innerText();
+  const tabName = (await tab().getAttribute("aria-label")) ?? "";
   const selected = await tab().getAttribute("aria-selected");
   if (selected !== "true") throw new Error("the conversation tab is not the active one");
   note(
@@ -124,7 +124,7 @@ export default async ({ page, web, capture, note }) => {
 
   // observe-running: a session whose agent runs reads Running on its tab.
   await open(`/sessions/${ids["session-running"]}`);
-  const running = await tab().innerText();
+  const running = (await tab().getAttribute("aria-label")) ?? "";
   if (!/Running/.test(running)) throw new Error(`the running session's tab reads "${running}"`);
   note(`observe-running: the running session's tab reads "${running.replace(/\s+/g, " ")}"`);
   await everywhere("running");

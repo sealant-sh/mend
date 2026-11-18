@@ -56,7 +56,8 @@ export function TileTab({
         "after:inset-x-2.5! after:bottom-[-1px]! after:h-0.5 after:rounded-full after:bg-[var(--tile-accent,var(--color-ring))] data-active:after:opacity-100",
         "focus-visible:ring-inset",
         tab.kind === "session" && "min-w-30 shrink",
-        size === "touch" && "h-11 text-lead",
+        // The phone strip scrolls sideways and clips what hangs below it: the underline sits inside.
+        size === "touch" && "h-11 text-lead after:bottom-0!",
         className,
       )}
     >
