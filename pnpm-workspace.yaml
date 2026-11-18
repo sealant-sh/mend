@@ -128,6 +128,10 @@ overrides:
   # Werift's x509 v1 must share its ASN.1 schema registry with the 2.11 model packages.
   "@peculiar/x509@1>@peculiar/asn1-schema": 2.11.1
   "@effect/platform-node@4.0.5>@effect/platform-node-shared": 4.0.5
+  # SLNT-1036: Pagefind before 1.6.0 answers writeFiles before its writes reach disk, and Starlight
+  # then kills it, so the docs build can ship empty search files. 1.6.0 flushes each file first.
+  "@astrojs/starlight>pagefind": ^1.6.0
+  "@astrojs/starlight>@pagefind/default-ui": ^1.6.0
 
 # These declare a typescript peer but never load it: bun-ffi-structs has no runtime use, and tsconfck
 # loads it only for parseNative, which vite-tsconfig-paths leaves off.
