@@ -72,8 +72,8 @@ Preconditions:
   `page.getByRole("listitem", { name: "Worktree verify-wt" })`, reading `verify-wt`,
   `base <base>@<sha7>` (`base master@7fd1a60` on the box), `0 sessions` and `not landed`, a disabled
   `Review`, `New session in verify-wt`, and the line `No visible sessions` under it. A worktree
-  `mend handoff` made reads `base <base>@<sha7> · handed off from <machine>`, and each of its
-  session lines ends `· handed off from <machine>` (see [Hand off local work](./handoff.md));
+  `mend handoff` made reads `base <base>@<sha7> · handed off from <machine>`; its session lines read
+  `<name> · <harness>` and do not carry it (see [Hand off local work](./handoff.md));
   `mend worktrees` prints no such fact.
 - **CLI view.** Run `mend worktrees --project <project>`. A line starts `verify-wt` and reads
   `<project>  mend/verify-wt · base <base>  0 sessions`. Run
