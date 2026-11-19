@@ -1,6 +1,7 @@
 import type { ComponentType, ReactNode } from "react";
 
 import { CHANGE_VIEW } from "./views/change-view.tsx";
+import { CHECKS_VIEW } from "./views/checks-view.tsx";
 import { detailsView } from "./views/details-view.tsx";
 import { PREVIEW_VIEW } from "./views/preview-view.tsx";
 import { TERMINAL_VIEW } from "./views/terminal-view.tsx";
@@ -42,6 +43,7 @@ export interface WorkspaceView {
 /** The views built so far, in the "+" menu's order: Change, Checks, Preview, Terminal, … */
 export const WORKSPACE_VIEWS: ReadonlyArray<WorkspaceView> = [
   CHANGE_VIEW,
+  CHECKS_VIEW,
   PREVIEW_VIEW,
   TERMINAL_VIEW,
   // Details links to the views registered beside it; asked when it draws, not here.

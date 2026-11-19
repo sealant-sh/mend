@@ -23,8 +23,10 @@ const names = (id: string) => (id === "ada" ? "Ada Lovelace" : null);
 
 const check = (result: ObservedCheck["result"], exitCode: number | null): ObservedCheck => ({
   command: "pnpm test",
+  kind: "tests",
   result,
   exitCode,
+  durationMs: null,
   at: "2026-11-18T11:56:00Z",
 });
 

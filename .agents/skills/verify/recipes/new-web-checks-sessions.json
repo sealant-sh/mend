@@ -1,0 +1,18 @@
+[
+  {
+    "name": "01-checks",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "checks-ws",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7231"
+    ]
+  }
+]
