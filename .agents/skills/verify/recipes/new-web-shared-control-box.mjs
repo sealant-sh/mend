@@ -69,6 +69,20 @@ export default async ({ page, web, capture, note, account }) => {
         Object.keys(button).some((key) => key.startsWith("__reactProps")),
       ),
     );
+  /** The Details view's line for this session: who holds shared control, and its steps. */
+  const details = async (id, name) => {
+    await page.goto(`${web}/sessions/${id}/details`);
+    await hydrated();
+    const sessions = page
+      .getByRole("region", { name: "Sessions in this workspace", exact: true })
+      .filter({ visible: true })
+      .first();
+    await sessions.waitFor({ timeout: 60_000 });
+    const words = (await sessions.innerText()).replace(/\s+/g, " ").trim();
+    note(`${name}: the Details view's sessions read "${words}"`);
+    await capture(`${name}-desktop-light`);
+    return sessions;
+  };
   const band = (key) => page.locator(`[data-band="${key}"]`).filter({ visible: true }).first();
   const field = () => visible(page.getByRole("textbox", { name: "Message Codex" }));
   /** Write in the composer once it holds the words: it keeps them per account, once that is read. */
@@ -196,6 +210,9 @@ export default async ({ page, web, capture, note, account }) => {
       `step 3: turned on for the asker; granted names them, everyoneSince ${after.everyoneSince}; the row ${left === 0 ? "left" : "is still under"} Waiting on you`,
     );
     await both("box-owner-shared-on");
+    const row = await details(id, "box-owner-details");
+    await row.getByText(/has shared control\.$/).waitFor();
+    await row.getByRole("button", { name: "Turn off shared control" }).waitFor();
     return;
   }
 
@@ -215,6 +232,8 @@ export default async ({ page, web, capture, note, account }) => {
     );
     await field().fill("");
     await both("box-second-login-refused");
+    const row = await details(id, "box-second-details");
+    await row.getByText(/shares control of this session with you\.$/).waitFor();
     return;
   }
 
