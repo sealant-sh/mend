@@ -527,6 +527,37 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/welcome.first-project.tsx`, `apps/web/src/lib/use-clone.ts`,
   `apps/web/src/lib/setup.ts`
 
+### sign-in.new-web-setup-order
+
+- **Map:** sign-in.md `first-account`, `cli-login`; git-access.md `mend-key`, `bridge-share`;
+  provider-accounts.md `accounts-list`; adopt-project.md `adopt-web`
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-setup-order`: setup in the owner's order (SLNT-1191). Command
+  line, step 2 of 6, waits with the install and sign-in commands; Skip for now reaches Git access
+  with "Skipped" under the step and the full block once; a device the server announces with the
+  `user` event turns the open page into "Mend's command line is signed in on <computer>." with no
+  reload. Git access shows one ticked line and the GitHub account section, waiting then connected.
+  Agent login shows Mend's command line once above the tabs, and each tab holds only its own
+  command. Organization, step 5 of 6, reports a failed save, renames, and goes on to First project,
+  which shows how to connect GitHub with no login, then the person's repositories with an owner
+  choice: their own account, then each organization; an organization lists its repositories, search
+  looks within it, and one with none says it may need to approve GitHub CLI. Tab on the
+  first-account form goes Name, Email, Password, Confirm password, the button. A person who joins
+  lands on Command line, step 2 of 5, with no Organization step. The recipe also times a first
+  `/api/github/owners` and `/api/github/repos` as the caller with a fake GitHub login.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the organization's name
+  is put back, the minted device revoked and the fake GitHub login removed at the end.
+- **Mode:** `scripted` (recipes/new-web-setup-order.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/command-line-step.tsx`,
+  `apps/web/src/components/command-line-block.tsx`, `apps/web/src/components/organization-step.tsx`,
+  `apps/web/src/components/github-connect.tsx`, `apps/web/src/components/setup-frame.tsx`,
+  `apps/web/src/routes/welcome.command-line.tsx`, `apps/web/src/routes/welcome.organization.tsx`,
+  `apps/web/src/lib/command-line.ts`, `apps/web/src/lib/setup-skips.ts`,
+  `apps/web/src/lib/onboarding.ts`, `apps/api/src/github-identity.ts`,
+  `apps/api/src/routes/github.ts`
+
 ### adopt-project.new-web-project-page
 
 - **Map:** adopt-project.md `project-page`; session-shell.md `shell-session-web`; start-session.md

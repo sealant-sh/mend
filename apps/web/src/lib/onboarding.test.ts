@@ -10,6 +10,8 @@ import {
   MIN_PASSWORD_LENGTH,
   passwordProblem,
   safeNextPath,
+  setupSteps,
+  stepLine,
 } from "./onboarding.ts";
 import { signInPath } from "./sign-in.ts";
 
@@ -204,5 +206,20 @@ describe("where sign-in returns to", () => {
     expect(continuationOf({ search: "", hash: "#next=https%3A%2F%2Fevil.example%2F" })).toBe("/");
     expect(continuationOf({ search: "?next=%2F%2Fevil.example", hash: "" })).toBe("/");
     expect(signInPath("/")).toBe("/login");
+  });
+});
+
+describe("the setup steps a person has", () => {
+  it("gives the first account six, naming its organization just before its first project", () => {
+    const steps = setupSteps(true);
+    expect(steps).toEqual(["account", "cli", "git", "agent", "organization", "project"]);
+    expect(stepLine(steps, "cli")).toBe("Step 2 of 6");
+    expect(stepLine(steps, "organization")).toBe("Step 5 of 6");
+  });
+
+  it("gives someone who joins five, with no Organization", () => {
+    const steps = setupSteps(false);
+    expect(steps).not.toContain("organization");
+    expect(stepLine(steps, "project")).toBe("Step 5 of 5");
   });
 });

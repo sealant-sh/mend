@@ -100,8 +100,8 @@ export function TextField({
 }
 
 /**
- * A password input with its own Show button. The two fields of a new password share one `shown`,
- * so showing one shows the pair being compared.
+ * A password input with its own Show button, which Tab skips. The two fields of a new password
+ * share one `shown`, so showing one shows the pair being compared.
  */
 export function PasswordField({
   id,
@@ -134,8 +134,11 @@ export function PasswordField({
           className="max-lg:text-base"
         />
         <InputGroupAddon align="inline-end">
+          {/* Out of the Tab order (Yiannis, 19 Nov 2026): Tab goes from one field to the next.
+              A click or a tap still shows the password, and the button keeps its name. */}
           <InputGroupButton
             size="icon-sm"
+            tabIndex={-1}
             onClick={onToggle}
             aria-label={shown ? "Hide password" : "Show password"}
             aria-pressed={shown}

@@ -16,11 +16,29 @@ export class GithubRepositoryView extends Schema.Class<GithubRepositoryView>(
   cloneUrl: Schema.String,
 }) {}
 
+/** One account whose repositories the picker can list: the person's own, or an organization. */
+export class GhOwnerView extends Schema.Class<GhOwnerView>("GhOwnerView")({
+  login: Schema.String,
+  kind: Schema.Literals(["user", "organization"]),
+}) {}
+
+/**
+ * Whose repositories the GitHub login can list: the login's own account first, then each GitHub
+ * organization it belongs to, by name.
+ */
+export class GhOwnersView extends Schema.Class<GhOwnersView>("GhOwnersView")({
+  login: Schema.String,
+  owners: Schema.Array(GhOwnerView),
+}) {}
+
 export const githubGroup = HttpApiGroup.make("github")
   .add(HttpApiEndpoint.get("status", "/github/status", { success: GhStatusView }))
+  .add(HttpApiEndpoint.get("owners", "/github/owners", { success: GhOwnersView, error: GhFailure }))
   .add(
     HttpApiEndpoint.get("repos", "/github/repos", {
-      query: { query: Schema.optional(Schema.String) },
+      // `owner`: one account's repositories, most recently pushed first (the login's own when
+      // left out); with `query`, the search looks within it.
+      query: { query: Schema.optional(Schema.String), owner: Schema.optional(Schema.String) },
       success: Schema.Array(GhRepoView),
       error: GhFailure,
     }),

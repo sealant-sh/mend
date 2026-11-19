@@ -106,7 +106,7 @@ const READING = (
 );
 
 /** A full load, so whatever opens next reads with the new session and organization. */
-const openPage = (path: "/" | "/welcome") => window.location.assign(path);
+const openPage = (path: "/" | "/welcome/command-line") => window.location.assign(path);
 
 function Invitation({ token }: { readonly token: string }) {
   const trpc = useTRPC();
@@ -181,7 +181,7 @@ function Decide({
           invitation={invitation}
           token={token}
           reread={reread}
-          onCreated={() => openPage("/welcome")}
+          onCreated={() => openPage("/welcome/command-line")}
         />
       );
     case "join":

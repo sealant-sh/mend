@@ -167,7 +167,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     "a-layouts-verify-password",
   );
   await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-  await memberPage.waitForURL((url) => url.pathname === "/welcome");
+  await memberPage.waitForURL((url) => url.pathname === "/welcome/command-line");
   const member = record("member", callsOf(memberPage));
   const theirs = await member("GET", "/api/me/layouts");
   expect(

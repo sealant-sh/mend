@@ -7,8 +7,32 @@
 /** Better Auth's own floor; checking it here names the problem before a round trip. */
 export const MIN_PASSWORD_LENGTH = 8;
 
-/** The four setup steps a new person goes through before the app opens (the Setup steps). */
-export const SETUP_STEPS = ["Account", "Git access", "Agent login", "First project"] as const;
+/** One of the setup steps a new person goes through before the app opens (the Setup steps). */
+export type SetupStepKey = "account" | "cli" | "git" | "agent" | "organization" | "project";
+
+/** Each step's name beside the sheet. */
+export const SETUP_STEP_NAMES: Readonly<Record<SetupStepKey, string>> = {
+  account: "Account",
+  cli: "Command line",
+  git: "Git access",
+  agent: "Agent login",
+  organization: "Organization",
+  project: "First project",
+};
+
+/**
+ * The steps a person has, in order (the owner's order, 19 Nov 2026). The first account, which
+ * owns the server's first organization, names it just before its first project: six steps.
+ * Someone who joins from an invitation joins an organization that already has a name: five.
+ */
+export const setupSteps = (namesOrganization: boolean): ReadonlyArray<SetupStepKey> =>
+  namesOrganization
+    ? ["account", "cli", "git", "agent", "organization", "project"]
+    : ["account", "cli", "git", "agent", "project"];
+
+/** "Step 2 of 6": where a step sits among the person's steps. */
+export const stepLine = (steps: ReadonlyArray<SetupStepKey>, step: SetupStepKey): string =>
+  `Step ${steps.indexOf(step) + 1} of ${steps.length}`;
 
 /**
  * Where to walk after signing in. Keep a same-origin root-relative path unchanged;

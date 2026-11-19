@@ -150,7 +150,7 @@ function CreateAccount({
   };
 
   return (
-    <SetupFrame title={`Join ${org}`} step={1}>
+    <SetupFrame title={`Join ${org}`} step="account">
       <p className="text-prose text-pretty text-muted-foreground">
         You're invited to join {org} on Mend as {article(invitation.role)}. Create an account to
         accept. The invitation only works once, and it expires on {dayOf(invitation.expiresAt)}.

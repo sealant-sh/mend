@@ -206,17 +206,20 @@ export default async ({ page, web, capture, note }) => {
   await refresh();
   await go("/welcome/first-project");
   await heading().waitFor();
-  await text("Step 4 of 4").waitFor();
-  // The stack's server has no GitHub login: the step asks for an address.
-  await text(/has no GitHub login/).waitFor();
+  await text("Step 6 of 6").waitFor();
+  // Neither the account nor the stack's server has a GitHub login: the step shows how to connect
+  // one (SLNT-1191), above the repository address.
+  await text(/Waiting for GitHub to connect/).waitFor();
   await all("no-github");
-  note("the stack's server has no GitHub login: the step opens on the repository address");
+  note("no GitHub login: in place of the list, the step shows how to connect one");
 
   // Fixture: the GitHub list, as a server with a GitHub login answers it.
   const github = { available: true, authenticated: true, login: "linus-p", detail: null };
   answers = {
     ...answers,
     "github.status": () => github,
+    // The login's own account only: new-web-setup-order drives the owner choice.
+    "github.owners": () => ({ login: "linus-p", owners: [{ login: "linus-p", kind: "user" }] }),
     "github.repos": () => REPOSITORIES,
   };
   await page.evaluate(() =>
@@ -288,10 +291,10 @@ export default async ({ page, web, capture, note }) => {
   await page.evaluate(() =>
     window["__TSR_ROUTER__"].options.context.queryClient.resetQueries({ queryKey: [["github"]] }),
   );
-  await page.getByRole("heading", { name: "No repositories found" }).waitFor();
+  await page.getByRole("heading", { name: "linus-p owns no repositories." }).waitFor();
   await button("Check again").waitFor();
   await all("fixture-no-repositories");
-  note("fixture, no repositories: says who Mend reached GitHub as, with Check again");
+  note("fixture, no repositories: 'linus-p owns no repositories.', with Check again");
 
   // The real path: From a Git URL. A refused address first, then a clone that fails.
   await button("Paste a Git URL instead").click();

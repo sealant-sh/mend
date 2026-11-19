@@ -255,6 +255,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "gitKeys.clearAuthor",
   "pullRequests.identity",
   "github.status",
+  "github.owners",
   "github.repos",
   // The caller's own connected GitHub login only: project-operations.test.ts.
   "github.repository",

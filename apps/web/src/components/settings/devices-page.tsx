@@ -39,12 +39,12 @@ import {
   shownKeyLine,
 } from "#/lib/devices";
 import { requestFailure } from "#/lib/git-access";
+import { useOrigin } from "#/lib/origin";
 import { pairingQrUrl } from "#/lib/pairing-qr";
 import { usePhone } from "#/lib/phone";
 import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
 
-import { useOrigin } from "../agent-login-panels.tsx";
 import { Overlay } from "../projects/overlay.tsx";
 import { SettingSection } from "./setting-row.tsx";
 import { SettingsPage } from "./settings-page.tsx";

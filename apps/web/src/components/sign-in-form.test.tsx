@@ -117,7 +117,39 @@ describe("SignInForm", () => {
   });
 });
 
+/**
+ * What Tab visits in the page, in order, by each control's name: the browser's own order when no
+ * control sets a positive tabindex, as none here does.
+ */
+const tabOrder = (): ReadonlyArray<string> =>
+  [...document.querySelectorAll<HTMLElement>("input, button, a[href], select, textarea")]
+    .filter((element) => element.tabIndex >= 0 && !element.hasAttribute("disabled"))
+    .map(
+      (element) =>
+        (element instanceof HTMLInputElement ? element.labels?.[0]?.textContent : null) ??
+        element.getAttribute("aria-label") ??
+        element.textContent ??
+        "",
+    )
+    .map((name) => name.trim());
+
 describe("FirstAccountForm", () => {
+  it("tabs from one field to the next, past the Show password buttons, which keep their names", async () => {
+    await render(<FirstAccountForm onCreated={vi.fn()} />);
+    expect(tabOrder()).toEqual([
+      "Name",
+      "Email",
+      "Password",
+      "Confirm password",
+      "Create account and continue",
+    ]);
+    expect(
+      [...document.querySelectorAll("button")].filter(
+        (control) => control.getAttribute("aria-label") === "Show password",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("names each field to fix under it, sends nothing, and clears a problem once it's fixed", async () => {
     const created = vi.fn();
     await render(<FirstAccountForm onCreated={created} />);

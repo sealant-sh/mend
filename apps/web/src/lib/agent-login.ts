@@ -228,6 +228,12 @@ export const loginLine = (
   }
 };
 
+/** The ticked line once the person's GitHub login is connected: "GitHub connected as linus-p." */
+export const githubConnectedLine = (account: ConnectedAccount): string => {
+  const owner = ownerOf(account);
+  return owner === null ? "GitHub connected." : `GitHub connected as ${owner}.`;
+};
+
 /** The toast once a login arrives while its dialog waits. */
 export const arrivedToast = (
   provider: ConnectedAccount["provider"],

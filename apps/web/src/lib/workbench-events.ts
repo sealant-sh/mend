@@ -240,6 +240,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           // terminal land on the page without a reload.
           if (event.facet === "accounts") {
             void queryClient.invalidateQueries(trpc.platform.sealantIdentity.pathFilter());
+            // `mend connect github`: the repositories Mend lists come from that login.
+            void queryClient.invalidateQueries(trpc.github.pathFilter());
             // `mend agent-logins` in a terminal lands on the page too.
             void queryClient.invalidateQueries(trpc.platform.agentLogins.pathFilter());
             void queryClient.invalidateQueries(trpc.platform.messageSettings.pathFilter());
