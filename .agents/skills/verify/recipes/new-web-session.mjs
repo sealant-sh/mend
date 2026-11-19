@@ -154,12 +154,11 @@ export default async ({ page, web, capture, note }) => {
   await open(`/sessions/${ids["session-record"]}?full=1`);
   await tile().waitFor();
   await open(`/sessions/${ids["session-record"]}#checkpoint-1`);
-  await tile().waitFor();
-  if (!page.url().endsWith("#checkpoint-1")) throw new Error(`#checkpoint-1 became ${page.url()}`);
+  await page.waitForURL(`**/sessions/${ids["session-record"]}/record#checkpoint-1`);
   await open("/starting/a-draft-from-before");
   if (pathname() !== "/") throw new Error(`/starting/<draft> went to ${page.url()}`);
   note(
-    "old links: ?view=desktop lands on the session without it, ?full=1 and #checkpoint-1 open the session, /starting/<draft> goes home",
+    "old links: ?view=desktop lands on the session without it, ?full=1 opens the session, #checkpoint-1 opens its Record, /starting/<draft> goes home",
   );
 
   // Fixtures: what an agent's turn makes, laid over the real sessions' reads in the browser.

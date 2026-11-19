@@ -10,6 +10,7 @@ import { Suspense, useEffect } from "react";
 import { RouteErrorScreen } from "#/components/route-screens";
 import { SessionPage, SessionPending } from "#/components/session/session-sheet";
 import { conversationQuery } from "#/lib/conversation";
+import { checkpointOfHash } from "#/lib/record-rows";
 import { sessionDetailQuery } from "#/lib/session-queries";
 
 interface SessionSearch {
@@ -24,7 +25,7 @@ interface SessionSearch {
  * (ADR 0026). Other programs open this address (the CLI, VS Code, Slack, pull request
  * descriptions), so its old forms keep working: `?view=desktop` (the old Desktop panel) lands
  * here until the Screen view exists (PR 19), and `#checkpoint-N` (a landed pull request's link)
- * scrolls to that checkpoint's marker in the conversation until the Record view takes it (PR 20).
+ * opens the Record view with that checkpoint in view and marked.
  */
 export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
   validateSearch: (search: Record<string, unknown>): SessionSearch => ({
@@ -35,6 +36,15 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
     ...(search["view"] === "desktop" ? { view: "desktop" } : null),
   }),
   beforeLoad: ({ search, location, params }) => {
+    const atSession = location.pathname.replace(/\/$/, "") === `/sessions/${params.sessionId}`;
+    if (atSession && checkpointOfHash(location.hash) !== null) {
+      throw redirect({
+        to: "/sessions/$sessionId/$view",
+        params: { sessionId: params.sessionId, view: "record" },
+        hash: location.hash,
+        replace: true,
+      });
+    }
     if (search.view === "desktop") {
       throw redirect({
         to: "/sessions/$sessionId",
@@ -70,7 +80,7 @@ function SessionRoute() {
   // A view's own address (`/sessions/<id>/terminal`, the child route) names the tab to show.
   const view = useParams({ strict: false, select: (params) => params.view });
   const navigate = Route.useNavigate();
-  useCheckpointHash(sessionId);
+  useCheckpointLink(sessionId, view);
   return (
     <CatchBoundary getResetKey={() => sessionId} errorComponent={RouteErrorScreen}>
       <Suspense key={sessionId} fallback={<SessionPending sessionId={sessionId} />}>
@@ -89,29 +99,20 @@ function SessionRoute() {
 }
 
 /**
- * `#checkpoint-N` scrolls to that checkpoint's marker once the conversation shows it. The marker
- * arrives with the conversation's first read, after the browser's own jump to the hash was tried.
+ * `#checkpoint-N` on the session's own address opens the Record view at that checkpoint. The
+ * server never sees a hash, so a page loaded with one moves here once it runs in the browser; a
+ * move inside the app is redirected before it loads.
  */
-const useCheckpointHash = (sessionId: string) => {
+const useCheckpointLink = (sessionId: string, view: string | undefined) => {
   const hash = useLocation({ select: (location) => location.hash });
-  // Scrolling to an element is the browser's, after it is laid out: an effect that watches for it.
+  const navigate = Route.useNavigate();
   useEffect(() => {
-    if (!/^checkpoint-\d+$/.test(hash)) return;
-    const reach = () => {
-      const marker = document.getElementById(hash);
-      if (marker === null) return false;
-      marker.scrollIntoView({ block: "center" });
-      return true;
-    };
-    if (reach()) return;
-    const watch = new MutationObserver(() => {
-      if (reach()) watch.disconnect();
+    if (view !== undefined || checkpointOfHash(hash) === null) return;
+    void navigate({
+      to: "/sessions/$sessionId/$view",
+      params: { sessionId, view: "record" },
+      hash,
+      replace: true,
     });
-    watch.observe(document.body, { childList: true, subtree: true });
-    const stop = window.setTimeout(() => watch.disconnect(), 10_000);
-    return () => {
-      watch.disconnect();
-      window.clearTimeout(stop);
-    };
-  }, [hash, sessionId]);
+  }, [hash, navigate, sessionId, view]);
 };

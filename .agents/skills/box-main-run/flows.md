@@ -697,6 +697,31 @@ flows reuse what earlier ones made:
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/checks-view.tsx`, `apps/web/src/lib/checks.ts`
 
+### session-page.new-web-record
+
+- **Map:** review-change.md `review-checkpoint-mark`
+- **Needs:** either; one Codex turn; web; `<p>`
+- **Do:** Drive the recipe `new-web-record-box` (`pnpm verify drive new-web --box`): it starts a
+  Codex session on `verify-fixture` that writes a file, runs `ls` and a command that exits 1, and
+  edits the file again; it opens `/sessions/<id>/record`, filters by Commands and Checkpoints, opens
+  the failing command's row, loads `/sessions/<id>#checkpoint-N` from scratch and clears the mark,
+  marks a checkpoint by hand, and looks at 390px; then it lays fixtures over the session's record
+  reads (earlier history unread, the record being read, a failed read with Try again into an empty
+  record) and stops the session.
+- **See:** each step's note in the recipe's `steps.log`: the session's messages, commands, edits and
+  checkpoints newest first, each with its time, kind and checkpoint; Commands and Checkpoints
+  showing only their kind; the failing command's row open with its output and "It exited with code 1
+  after …"; `#checkpoint-N` moving to `/sessions/<id>/record#checkpoint-N` with "You opened
+  checkpoint N from a link." and that row marked and in view; Clear the mark dropping the hash; a
+  "marked by hand" checkpoint after Mark a checkpoint; no sideways scroll at 390px; "This is the
+  record so far…" with Read earlier history, "Reading the record…", "This didn't load." with Try
+  again, and "Nothing in the record yet…".
+- **Mode:** `scripted` (recipes/new-web-record-box.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/views/record-view.tsx`,
+  `apps/web/src/lib/record-rows.ts`, `apps/web/src/lib/screen-log.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`
