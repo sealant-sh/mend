@@ -223,7 +223,6 @@ const onTailnet = async (
           return sql`SELECT pg_notify(${MEND_EVENTS_CHANNEL}, ${event})`.pipe(Effect.orDie);
         }),
       );
-      await new Promise((resolve) => setTimeout(resolve, 1_000));
     },
     starts: () => gateway.starts.length,
     quietDayPasses: () =>
@@ -347,11 +346,15 @@ describe.each<BrowserKind>(["chromium", "firefox"])(
               if (events.length < 3) return;
               source.close();
               const socket = new WebSocket(`${location.origin.replace(/^https/, "wss")}/socket`);
+              Reflect.set(
+                globalThis,
+                "socketClosed",
+                new Promise<void>((closed) => socket.addEventListener("close", () => closed())),
+              );
               socket.addEventListener("open", () => socket.send("over the tailnet"));
-              socket.addEventListener("message", (message) => {
-                socket.close();
-                resolve({ events: events.length, echoed: String(message.data) });
-              });
+              socket.addEventListener("message", (message) =>
+                resolve({ events: events.length, echoed: String(message.data) }),
+              );
               socket.addEventListener("error", () => reject(new Error("the socket failed")));
             });
             source.addEventListener("error", () => {
@@ -361,8 +364,13 @@ describe.each<BrowserKind>(["chromium", "firefox"])(
       );
       expect(streamed).toEqual({ events: 3, echoed: "over the tailnet" });
 
-      await at.stopWeb();
+      // The gateway relays to the attempt it last read until a refresh drops it, and dropping it
+      // closes that attempt's sockets. So the attempt exits while its app still runs, and the
+      // upload waits for the socket to close: it then meets a stopped preview, never the gateway's
+      // stale view of a running one.
       await at.exitWeb();
+      await at.page.evaluate(() => Reflect.get(globalThis, "socketClosed"));
+      await at.stopWeb();
       const held = await at.page.evaluate(async () => {
         const body = new Uint8Array(8 * 1024 * 1024);
         for (let i = 0; i < body.length; i += 1) body[i] = (i * 31) % 251;
