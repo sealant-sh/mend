@@ -16,6 +16,7 @@ import {
   relate,
   schemaProblems,
 } from "./box.mjs";
+import { boxFlows, loadFlows } from "./flows.mjs";
 import { exitCode, validateResult } from "./result.mjs";
 import { parseArgs, runVerb } from "./verify.mjs";
 
@@ -33,10 +34,12 @@ const boxSays = ({
   revision = "a".repeat(40),
   applied = migrations,
   free = 40 * 1024 ** 3,
+  webapp,
 } = {}) =>
   [
     "version=0.37.0-next.1.preview.1",
     `revision=${revision}`,
+    ...(webapp === undefined ? [] : [`webapp=${webapp}`]),
     "started=2026-11-14T20:00:00Z",
     `live=${live}`,
     `free=${free}`,
@@ -106,6 +109,39 @@ test("the box's state is read with unknowns kept unknown", () => {
   assert.equal(state.revision, "a".repeat(40));
   assert.deepEqual(state.migrations, migrations);
   assert.equal(parseState("version=\nrevision=not-a-sha").revision, null);
+});
+
+test("a preview of today's app leaves the after-cut-over flows; a preview of the new app runs them", async () => {
+  // Images from before the label, and every release, serve today's app.
+  for (const webapp of [undefined, "", "web-old", "something-else"])
+    assert.equal(parseState(boxSays({ webapp })).webApp, "web-old", String(webapp));
+  assert.equal(parseState(boxSays({ webapp: "web" })).webApp, "web");
+
+  const { flows } = loadFlows(root);
+  const later = flows.filter((flow) => flow.afterCutOver);
+  assert.ok(later.length > 0 && later.length < flows.length, "flows.md marks some flows, not all");
+  assert.deepEqual(boxFlows(flows, "web-old"), {
+    run: flows.filter((flow) => !flow.afterCutOver),
+    afterCutOver: later,
+  });
+  assert.deepEqual(boxFlows(flows, "web"), { run: flows, afterCutOver: [] });
+
+  const today = await box("plan", { sshRunner: fakeBox(boxSays()).ssh });
+  const todayFlows = today.steps.find((step) => step.id === "flows");
+  assert.equal(todayFlows.status, "passed");
+  assert.equal(
+    todayFlows.detail,
+    `it serves apps/web-old: ${flows.length - later.length} flows run, and the ${later.length} marked after cut-over are reported as not run · after cut-over`,
+  );
+  const next = await box("plan", { sshRunner: fakeBox(boxSays({ webapp: "web" })).ssh });
+  assert.equal(
+    next.steps.find((step) => step.id === "flows").detail,
+    `it serves apps/web (a preview built with web_app=web): all ${flows.length} flows run, the ${later.length} marked after cut-over included`,
+  );
+  // Nothing else in the plan depends on which app the box serves.
+  const without = (result) => result.steps.filter((step) => step.id !== "flows");
+  assert.deepEqual(without(next), without(today));
+  assert.equal(next.status, today.status);
 });
 
 test("a box schema this head cannot take is named, both ways", () => {
