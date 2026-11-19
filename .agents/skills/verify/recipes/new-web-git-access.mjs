@@ -150,7 +150,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await page.waitForURL((url) => url.pathname === "/welcome/command-line");
   await heading("Mend's command line");
   await button("Skip for now").click();
-  await page.waitForURL((url) => url.pathname === "/welcome");
+  await page.waitForURL((url) => url.pathname === "/welcome/git-access");
   await heading("Git access");
 
   // mend-key and key-card: the key made before the page opened, with Copy key and GitHub's page.

@@ -151,6 +151,21 @@ export const gitAccessWorks = (
     ? access.bridge.connected
     : check.kind === "answered" && check.answer.state === "accepted";
 
+/**
+ * Whether Git access's Continue opens. The first time through, it waits until the access works
+ * (`gitAccessWorks`). Someone who comes back to the step after going past it (`wentPast`) goes on
+ * with the Mend key they already have, unless they check it again on this visit and GitHub
+ * doesn't accept it: the check's answer isn't kept, so asking for it again on every visit would
+ * hold them on a step they finished.
+ */
+export const gitAccessContinues = (
+  access: Pick<GitAccessView, "mode" | "bridge" | "key">,
+  check: KeyCheckState,
+  wentPast: boolean,
+): boolean =>
+  gitAccessWorks(access, check) ||
+  (wentPast && access.mode === "mend-key" && access.key.exists && check.kind === "idle");
+
 /** The note beside Continue: what Continue waits for, or what to keep in mind once it doesn't. */
 export const continueNote = (
   access: Pick<GitAccessView, "mode" | "bridge">,

@@ -180,6 +180,10 @@ const WORDS: Record<
   },
 };
 
+/** The account in a sentence: its name, or its email when it has no name. */
+const accountWords = (account: Account): string =>
+  account.name.trim() === "" ? account.email : account.name;
+
 /** What the person sees after approving or denying: the result, and nothing left to do here. */
 function Decided({
   decision,
@@ -198,7 +202,8 @@ function Decided({
     <SetupFrame title={words.authorized}>
       <p className="text-lead text-pretty text-foreground">{words.goBack}</p>
       <p className="mt-3 text-row text-pretty text-muted-foreground">
-        {machine} is signed in as {account.name}. You can revoke it any time in Settings, Devices.
+        {machine} is signed in as {accountWords(account)}. You can revoke it any time in Settings,
+        Devices.
       </p>
     </SetupFrame>
   ) : (
@@ -281,15 +286,23 @@ function Decide({
         </div>
         <div className="grid grid-cols-[7rem_1fr] gap-x-4 border-b py-3 lg:grid-cols-[8.5rem_1fr]">
           <dt className="text-muted-foreground">Approving as</dt>
-          <dd className="flex min-w-0 flex-col text-foreground lg:flex-row lg:items-baseline lg:gap-1">
-            <span>{account.name}</span>
-            <span className="break-all text-muted-foreground lg:text-foreground">
-              <span className="max-lg:hidden" aria-hidden>
-                ·{" "}
+          {/* The name, and the email under it, at every width: no separator to start a line or
+              sit beside an empty name. An account with no name shows only its email. */}
+          <dd className="flex min-w-0 flex-col text-foreground lg:flex-row lg:items-baseline lg:gap-4">
+            <span className="grid min-w-0 gap-0.5">
+              {account.name.trim() === "" ? null : (
+                <span className="wrap-anywhere">{account.name}</span>
+              )}
+              <span
+                className={cn(
+                  "wrap-anywhere",
+                  account.name.trim() === "" ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                {account.email}
               </span>
-              {account.email}
             </span>
-            <span className="lg:ml-auto">
+            <span className="shrink-0 lg:ml-auto">
               <Button
                 type="button"
                 variant="link"

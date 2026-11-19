@@ -9,12 +9,11 @@ import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useId, useState } from "react";
 
 import { agentLoginState } from "#/lib/agent-login";
-import { accountNameOptions } from "#/lib/auth-client";
 import {
   continueNote,
   gitAccessOptions,
   GITHUB_SSH_KEYS_URL,
-  gitAccessWorks,
+  gitAccessContinues,
   type KeyCheckState,
   keyCheckView,
   MODE_NAMES,
@@ -25,6 +24,7 @@ import {
   whenSince,
 } from "#/lib/git-access";
 import { usePhone } from "#/lib/phone";
+import { STEP_PAGES } from "#/lib/setup";
 import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
@@ -36,7 +36,6 @@ import {
   SetupActions,
   SetupFrame,
   TOUCH,
-  skippedSteps,
   useSetupProgress,
   WorksLine,
 } from "./setup-frame.tsx";
@@ -67,7 +66,6 @@ export function GitAccessStep() {
   const phone = usePhone();
   const now = useSecond();
   const access = useSuspenseQuery(gitAccessOptions(trpc)).data;
-  const accountName = useSuspenseQuery(accountNameOptions()).data;
   const progress = useSetupProgress();
   const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
   // Until the logins answer, or if they can't, the note about GitHub isn't shown.
@@ -100,7 +98,9 @@ export function GitAccessStep() {
       : checkKey.isSuccess
         ? { kind: "answered", answer: checkKey.data }
         : { kind: "idle" };
-  const works = gitAccessWorks(access, check);
+  // Back on this step after going past it: the Mend key they have still lets them go on.
+  const reached = progress.reached === null ? -1 : progress.steps.indexOf(progress.reached);
+  const works = gitAccessContinues(access, check, reached > progress.steps.indexOf("git"));
   // While a choice saves, the radio shows it; a failed save goes back to the saved one.
   const mode = setAccess.isPending ? setAccess.variables.mode : access.mode;
 
@@ -109,9 +109,9 @@ export function GitAccessStep() {
       title="Git access"
       step="git"
       steps={progress.steps}
-      saved={{ account: accountName, ...progress.saved }}
-      skipped={skippedSteps(progress.skippedCli)}
-      back={{ to: "/welcome/command-line", label: "Back to Command line" }}
+      saved={progress.saved}
+      skipped={progress.skipped}
+      reached={progress.reached}
     >
       <div className="flex flex-col">
         <p className="text-prose text-pretty text-foreground max-lg:text-sm">
@@ -167,13 +167,15 @@ export function GitAccessStep() {
         status={
           works && githubConnected === false
             ? "Without GitHub, you paste a repository's address in the last step."
-            : continueNote(access, check)
+            : works && access.mode === "mend-key"
+              ? "Mend saves your choice as soon as you pick it."
+              : continueNote(access, check)
         }
       >
         <Button
           size={phone ? "touch" : "default"}
           disabled={!works || setAccess.isPending}
-          onClick={() => void navigate({ to: "/welcome/agent-login" })}
+          onClick={() => void navigate({ to: STEP_PAGES.agent })}
         >
           Continue
         </Button>

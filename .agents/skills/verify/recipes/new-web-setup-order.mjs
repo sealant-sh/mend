@@ -262,7 +262,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
 
     // ---- Skip: Git access shows "Skipped" and the full block once.
     await button("Skip for now").click();
-    await page.waitForURL((url) => url.pathname === "/welcome");
+    await page.waitForURL((url) => url.pathname === "/welcome/git-access");
     await heading("Git access");
     await stepsList().getByText("Skipped", { exact: true }).waitFor({ state: "attached" });
     const skipped = await commands();
@@ -274,7 +274,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await text("GitHub account").waitFor();
     await text(/Waiting for GitHub to connect · \d+s/).waitFor();
     note(
-      `Skip for now went to /welcome: Command line reads 'Skipped' under the steps; Git access shows Mend's command line once (${skipped.join(", ")}) and the GitHub account section waiting`,
+      `Skip for now went to /welcome/git-access: Command line reads 'Skipped' under the steps; Git access shows Mend's command line once (${skipped.join(", ")}) and the GitHub account section waiting`,
     );
     await all("git-cli-skipped");
 
@@ -296,7 +296,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     );
     await all("cli-signed-in");
     await button("Continue").click();
-    await page.waitForURL((url) => url.pathname === "/welcome");
+    await page.waitForURL((url) => url.pathname === "/welcome/git-access");
 
     // ---- Git access: one ticked line, GitHub waiting then connected. The key "works" from an
     // answer made in the browser (no key is added to GitHub), as in new-web-git-access.

@@ -558,6 +558,45 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/onboarding.ts`, `apps/api/src/github-identity.ts`,
   `apps/api/src/routes/github.ts`
 
+### sign-in.new-web-setup-revisit
+
+- **Map:** sign-in.md `first-account`, `cli-login`; git-access.md `mend-key`; provider-accounts.md
+  `accounts-list`
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-setup-revisit` (SLNT-1193). A real `mend login` signs a computer
+  in. The first account goes forward from Command line to First project, then back to each earlier
+  step by its link beside the sheet ("Git access, done"): each page shows what was saved and the
+  later steps stay links, First project as "not finished". It renames the organization on
+  Organization and Continue goes forward to First project again. Tab reaches each link by name; at
+  390px the header's back arrow goes to the step before, down to Command line, which has none. A
+  person who joins skips Command line and Agent login, goes back to each by its link, goes forward
+  again, and signing in again lands on `/welcome`.
+- **See:** each step's note in the recipe's `steps.log`; only past steps are links, never Account,
+  the current step or one not reached; no Continue sends the person back. The organization's name is
+  put back and the computer's device revoked at the end.
+- **Mode:** `scripted` (recipes/new-web-setup-revisit.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/lib/setup.ts`, `apps/web/src/routes/welcome.git-access.tsx`,
+  `apps/web/src/routes/welcome.index.tsx`, `apps/web/src/lib/git-access-step.ts`,
+  `apps/web/src/components/git-access-step.tsx`, `apps/web/src/components/agent-login-step.tsx`
+
+### sign-in.new-web-authorize-account
+
+- **Map:** sign-in.md `authorize-page`, `cli-login`
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-authorize-account` (SLNT-1193). The page a real `mend login`
+  opens, then a request answered in the browser for three accounts: a short name and email, a long
+  name and long email, and no name. Each at 1280px and 390px, then authorized, denied and signed
+  out.
+- **See:** the "Approving as" row reads the name, the email under it, and "Not you? Sign out", with
+  no "·" in it; an account with no name shows only its email, and "signed in as <email>" once
+  authorized.
+- **Mode:** `scripted` (recipes/new-web-authorize-account.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/routes/authorize.tsx`
+
 ### adopt-project.new-web-project-page
 
 - **Map:** adopt-project.md `project-page`; session-shell.md `shell-session-web`; start-session.md

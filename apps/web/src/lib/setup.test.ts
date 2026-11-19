@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 
+import { setupSteps } from "./onboarding.ts";
 import {
   afterSignIn,
   firstProjectEntry,
   firstProjectSkippable,
   hasAgentLogin,
   namesOrganization,
+  nextStepPage,
+  previousStep,
+  railSteps,
   signInEntry,
+  STEP_PAGES,
   welcomeEntry,
 } from "./setup.ts";
 
@@ -248,5 +253,113 @@ describe("after signing in", () => {
 
   it("opens Mend when setup can't be read", async () => {
     expect(await afterSignIn("/", notAsked)).toBe("/");
+  });
+});
+
+const FIRST = setupSteps(true);
+const JOINER = setupSteps(false);
+
+/** Each step's state and whether it links, as `key:state` with a `→` for a link. */
+const rail = (...args: Parameters<typeof railSteps>) =>
+  railSteps(...args).map(({ key, state, page }) => `${key}:${state}${page === null ? "" : "→"}`);
+
+describe("which steps beside the sheet lead back", () => {
+  it("links every step the first account is past, but never Account, the current step or one not reached", () => {
+    expect(
+      rail({ steps: FIRST, step: "organization", reached: "organization", skipped: [] }),
+    ).toEqual([
+      "account:done",
+      "cli:done→",
+      "git:done→",
+      "agent:done→",
+      "organization:current",
+      "project:later",
+    ]);
+  });
+
+  it("links a skipped step, so the person can do it now", () => {
+    expect(
+      rail({ steps: JOINER, step: "project", reached: "project", skipped: ["cli", "agent"] }),
+    ).toEqual(["account:done", "cli:skipped→", "git:done→", "agent:skipped→", "project:current"]);
+  });
+
+  it("keeps the steps after the current one as links once the person went back from them", () => {
+    expect(rail({ steps: FIRST, step: "cli", reached: "project", skipped: ["agent"] })).toEqual([
+      "account:done",
+      "cli:current",
+      "git:done→",
+      "agent:skipped→",
+      "organization:done→",
+      "project:left→",
+    ]);
+  });
+
+  it("treats a step remembered from the other list (the first account's Organization, for a joiner) as nothing reached", () => {
+    expect(rail({ steps: JOINER, step: "git", reached: "organization", skipped: [] })).toEqual([
+      "account:done",
+      "cli:done→",
+      "git:current",
+      "agent:later",
+      "project:later",
+    ]);
+  });
+
+  it("links each step to its own page, which sends nobody on", () => {
+    const pages = railSteps({ steps: FIRST, step: "project", reached: "project", skipped: [] }).map(
+      ({ page }) => page,
+    );
+    expect(pages).toEqual([
+      null,
+      "/welcome/command-line",
+      "/welcome/git-access",
+      "/welcome/agent-login",
+      "/welcome/organization",
+      null,
+    ]);
+    // Not `/welcome`, which sends someone past Git access on.
+    expect(Object.values(STEP_PAGES)).not.toContain("/welcome");
+  });
+});
+
+describe("where each step's Continue goes, the first time and on a visit back", () => {
+  it("walks the first account's steps one by one to First project, then out of setup", () => {
+    expect(FIRST.map((step) => nextStepPage(FIRST, step))).toEqual([
+      "/welcome/command-line",
+      "/welcome/git-access",
+      "/welcome/agent-login",
+      "/welcome/organization",
+      "/welcome/first-project",
+      null,
+    ]);
+  });
+
+  it("skips Organization for someone who joined", () => {
+    expect(nextStepPage(JOINER, "agent")).toBe("/welcome/first-project");
+  });
+
+  it("never goes back: each Continue opens a later step than the page it is on", () => {
+    for (const steps of [FIRST, JOINER]) {
+      const order = steps.map((step) => nextStepPage(steps, step));
+      steps.forEach((step, index) => {
+        const next = order[index];
+        if (next === null || next === undefined) return;
+        const target = steps.find((key) => key !== "account" && STEP_PAGES[key] === next);
+        expect(target === undefined ? -1 : steps.indexOf(target)).toBeGreaterThan(index);
+      });
+    }
+  });
+});
+
+describe("the phone's back arrow", () => {
+  it("goes to the step before, for every step after Command line", () => {
+    expect(previousStep(FIRST, "account")).toBeNull();
+    expect(previousStep(FIRST, "cli")).toBeNull();
+    expect(previousStep(FIRST, "git")).toEqual({ key: "cli", page: "/welcome/command-line" });
+    expect(previousStep(FIRST, "agent")).toEqual({ key: "git", page: "/welcome/git-access" });
+    expect(previousStep(FIRST, "project")).toEqual({
+      key: "organization",
+      page: "/welcome/organization",
+    });
+    expect(previousStep(JOINER, "project")).toEqual({ key: "agent", page: "/welcome/agent-login" });
   });
 });
