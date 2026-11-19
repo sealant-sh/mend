@@ -37,6 +37,8 @@ const stackWeb = () =>
   JSON.parse(readFileSync(resolve(".verify/stack/current.json"), "utf8")).web.replace(/\/$/, "");
 const COLOUR = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
 
+const visible = (locator) => locator.filter({ visible: true }).first();
+
 const expect = (what, ok, seen) => {
   if (!ok) throw new Error(`${what}: ${JSON.stringify(seen)}`);
 };
@@ -62,7 +64,6 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await hydrated();
   };
   const at = (path) => page.waitForURL((url) => url.pathname === path, { timeout: 30_000 });
-  const visible = (locator) => locator.filter({ visible: true }).first();
   const button = (name) => visible(page.getByRole("button", { name, exact: true }));
   const heading = (name) =>
     page.getByRole("heading", { name, level: 1 }).filter({ visible: true }).first().waitFor();
