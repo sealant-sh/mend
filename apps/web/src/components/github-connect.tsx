@@ -27,8 +27,11 @@ export const CONNECT_GITHUB_COMMAND = "mend connect github";
 export function GithubConnect({
   phone,
   commandLine,
+  heading = true,
 }: {
   readonly phone: boolean;
+  /** Whether to say what connecting GitHub is for: First project's list says it already. */
+  readonly heading?: boolean;
   /** Whether to show Mend's command line block here: false when the page already shows it. */
   readonly commandLine: boolean;
 }) {
@@ -45,64 +48,63 @@ export function GithubConnect({
 
   return (
     <div className="grid gap-4">
-      <p className="text-prose text-pretty text-foreground max-lg:text-sm">
-        Connect GitHub and Mend lists your repositories and opens pull requests as you. It uses the
-        login of GitHub's command line, <code className="font-mono text-meta">gh</code>, on your
-        computer.
-      </p>
-      {login?.kind === "connected" ? null : (
-        <>
-          {commandLine ? <CommandLineBlock phone={phone} /> : null}
-          <div className="grid gap-2">
-            <p className="text-row text-pretty text-muted-foreground max-lg:text-sm">
-              No <code className="font-mono text-meta">gh</code> yet? Install it from{" "}
-              <a
-                href={GH_URL}
-                target="_blank"
-                rel="noreferrer"
-                className="text-info underline-offset-4 hover:underline"
-              >
-                cli.github.com
-              </a>{" "}
-              and run <code className="font-mono text-meta">gh auth login</code>.
-            </p>
-            <CopyField
-              value={CONNECT_GITHUB_COMMAND}
-              label="Copy command"
-              size={phone ? "touch" : "default"}
-            />
-          </div>
-        </>
-      )}
-      <div className="border-t pt-5 lg:pt-6">
-        {identity.isError ? (
-          <InlineAlert
-            tone="warning"
-            title="Mend couldn't read your logins."
-            size={phone ? "touch" : "default"}
-          >
-            The page shows your GitHub login once Mend can read it again.
-          </InlineAlert>
-        ) : login?.kind === "connected" ? (
-          <WorksLine
-            line={githubConnectedLine(login.account)}
-            detail={`Connected ${whenSince(login.account.connectedAt, now)}`}
-          />
-        ) : login?.kind === "refused" ? (
-          <InlineAlert
-            tone="warning"
-            title="GitHub refused your login."
-            size={phone ? "touch" : "default"}
-          >
-            Run <code>gh auth login</code> on your computer, then <code>mend connect github</code>{" "}
-            again.
-          </InlineAlert>
-        ) : (
-          <p role="status" className="text-row text-muted-foreground max-lg:text-sm">
-            Waiting for GitHub to connect · {waitedFor(waitingSince, now)}
+      {heading ? (
+        <p className="text-prose text-pretty text-foreground max-lg:text-sm">
+          Connect GitHub and Mend lists your repositories and opens pull requests as you. It uses
+          the login of GitHub's command line, <code className="font-mono text-meta">gh</code>, on
+          your computer.
+        </p>
+      ) : null}
+      {commandLine ? <CommandLineBlock phone={phone} className="border-y py-4" /> : null}
+      {identity.isError ? (
+        <InlineAlert
+          tone="warning"
+          title="Mend couldn't read your logins."
+          size={phone ? "touch" : "default"}
+        >
+          The page shows your GitHub login once Mend can read it again.
+        </InlineAlert>
+      ) : login?.kind === "connected" ? (
+        <WorksLine
+          line={githubConnectedLine(login.account)}
+          detail={`Connected ${whenSince(login.account.connectedAt, now)}`}
+        />
+      ) : (
+        <div className="grid gap-2">
+          <p className="text-row text-pretty text-foreground max-lg:text-sm">
+            No <code className="font-mono text-meta">gh</code> yet? Install it from{" "}
+            <a
+              href={GH_URL}
+              target="_blank"
+              rel="noreferrer"
+              className="text-info underline-offset-4 hover:underline"
+            >
+              cli.github.com
+            </a>{" "}
+            and run <code className="font-mono text-meta">gh auth login</code>.
           </p>
-        )}
-      </div>
+          <CopyField
+            value={CONNECT_GITHUB_COMMAND}
+            label="Copy command"
+            size={phone ? "touch" : "default"}
+          />
+          {login?.kind === "refused" ? (
+            <InlineAlert
+              tone="warning"
+              title="GitHub refused your login."
+              size={phone ? "touch" : "default"}
+              className="mt-2"
+            >
+              Run <code>gh auth login</code> on your computer, then <code>mend connect github</code>{" "}
+              again.
+            </InlineAlert>
+          ) : (
+            <p role="status" className="text-row text-muted-foreground max-lg:text-sm">
+              Waiting for GitHub to connect · {waitedFor(waitingSince, now)}
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

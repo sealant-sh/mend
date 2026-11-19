@@ -169,7 +169,7 @@ export function OrganizationStep() {
       back={{ to: "/welcome/agent-login", label: "Back to Agent login" }}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
-        An organization is the people who share this Mend server's projects. You are its owner, and
+        An organization is the people who share this Mend server's projects. You're its owner, and
         you can invite people once setup is done.
       </p>
       <form

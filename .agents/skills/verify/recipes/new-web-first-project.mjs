@@ -211,7 +211,7 @@ export default async ({ page, web, capture, note }) => {
   // one (SLNT-1191), above the repository address.
   await text(/Waiting for GitHub to connect/).waitFor();
   await all("no-github");
-  note("no GitHub login: the step shows how to connect one, and opens on the repository address");
+  note("no GitHub login: in place of the list, the step shows how to connect one");
 
   // Fixture: the GitHub list, as a server with a GitHub login answers it.
   const github = { available: true, authenticated: true, login: "linus-p", detail: null };

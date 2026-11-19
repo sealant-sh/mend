@@ -59,9 +59,8 @@ export function CommandLineBlock({
       </p>
       {page ? (
         <p className="text-prose text-pretty text-foreground max-lg:text-sm">
-          The commands on the next steps run on your own computer: they share your SSH key, connect
-          your agent and GitHub logins, and start sessions from a terminal. Install Mend's command
-          line there and sign it in to this server once.
+          The commands on the next steps run on your own computer. Install Mend's command line there
+          and sign it in to this server once.
         </p>
       ) : (
         <p className="text-row text-pretty text-muted-foreground max-lg:text-sm">

@@ -195,7 +195,9 @@ function ChooseRepository({
   const signedIn = github.isSuccess && github.data.authenticated;
   const [chosen, setChosen] = useState<Source | null>(initial === null ? null : "url");
   // From GitHub when the server can list repositories, else an address.
-  const source: Source = chosen ?? (github.isPending || signedIn ? "github" : "url");
+  // From GitHub unless the person chose an address: with no GitHub login, that is where the page
+  // shows how to connect one, and the list takes its place once it connects.
+  const source: Source = chosen ?? "github";
   const [picked, setPicked] = useState<GithubRepository | null>(null);
   const [address, setAddress] = useState(initial?.source ?? "");
   const [typedName, setTypedName] = useState<string | null>(initial?.name ?? null);
@@ -270,6 +272,8 @@ function ChooseRepository({
               {failureWords(github.error, "The Mend server didn't answer.")} You can paste the
               repository's address instead.
             </InlineAlert>
+          ) : !signedIn ? (
+            <GithubConnect phone={phone} commandLine />
           ) : (
             <GithubRepositories
               login={github.data.login ?? "the GitHub account"}
@@ -297,15 +301,6 @@ function ChooseRepository({
         </section>
       ) : (
         <section className="flex min-w-0 flex-col gap-2">
-          {github.isSuccess && !signedIn ? (
-            <div className="mb-4 grid gap-1">
-              <p className="text-sm font-medium text-foreground">GitHub account</p>
-              <GithubConnect phone={phone} commandLine />
-              <p className="mt-2 text-row text-pretty text-muted-foreground">
-                Or paste the repository's address.
-              </p>
-            </div>
-          ) : null}
           <RepositoryAddressField
             value={address}
             onChange={setAddress}
@@ -315,18 +310,16 @@ function ChooseRepository({
             touch={phone}
             autoFocus={chosen === "url" && initial === null}
           />
-          {signedIn ? (
-            <Button
-              variant="link"
-              className="self-start px-0 text-row"
-              onClick={() => {
-                setChosen("github");
-                setTouched(false);
-              }}
-            >
-              Choose from GitHub instead
-            </Button>
-          ) : null}
+          <Button
+            variant="link"
+            className="self-start px-0 text-row"
+            onClick={() => {
+              setChosen("github");
+              setTouched(false);
+            }}
+          >
+            {signedIn ? "Choose from GitHub instead" : "Connect GitHub instead"}
+          </Button>
         </section>
       )}
       {cloneSource === "" && typedName === null ? null : (

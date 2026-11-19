@@ -197,6 +197,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       );
   // No agent login and no GitHub login: setup as a new person has it.
   answers["platform.sealantIdentity"] = (identity) => ({ ...identity, accounts: [] });
+  // A Mend key, as the frames draw Git access.
+  answers["git.access"] = (access) => ({ ...access, mode: "mend-key" });
   await page.evaluate(
     (id) => localStorage.removeItem(`mend-setup-skipped-command-line:${id}`),
     me.userId,
@@ -260,8 +262,38 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await button("Continue").click();
     await page.waitForURL((url) => url.pathname === "/welcome");
 
-    // ---- Git access: one ticked line, GitHub waiting then connected.
+    // ---- Git access: one ticked line, GitHub waiting then connected. The key "works" from an
+    // answer made in the browser (no key is added to GitHub), as in new-web-git-access.
     await heading("Git access");
+    await page.route("**/trpc/git.checkKey**", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            result: {
+              data: {
+                json: {
+                  state: "accepted",
+                  githubLogin: "linus-p",
+                  deployKeyRepository: null,
+                  observed:
+                    "Hi linus-p! You've successfully authenticated, but GitHub does not provide shell access.",
+                  checkedAt: new Date().toISOString(),
+                },
+                meta: { values: { checkedAt: ["Date"] } },
+              },
+            },
+          },
+        ]),
+      }),
+    );
+    await page
+      .getByRole("button", { name: /^(Check access|Check again|Try again)$/ })
+      .first()
+      .click();
+    await text("Mend reached GitHub as linus-p.").waitFor();
+    await page.unroute("**/trpc/git.checkKey**");
     await stepsList().getByText(computer).waitFor({ state: "attached" });
     const signedInCommands = await commands();
     expect(
@@ -417,9 +449,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await text("Step 6 of 6").waitFor({ state: "attached" });
     await stepsList().getByText(newName).waitFor({ state: "attached" });
     await text(/Waiting for GitHub to connect · \d+s/).waitFor();
-    await text("Or paste the repository's address.").waitFor();
+    await button("Paste a Git URL instead").waitFor();
     note(
-      `First project with no GitHub login: the GitHub account section and the address field; '${newName}' under Organization`,
+      `First project with no GitHub login: the GitHub account section in place of the list, above 'Paste a Git URL instead'; '${newName}' under Organization`,
     );
     await all("project-no-github");
 

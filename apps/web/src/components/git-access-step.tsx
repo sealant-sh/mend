@@ -164,12 +164,11 @@ export function GitAccessStep() {
       {/* What Continue waits for changes as the page does, so it is announced, and on a phone it
           sits over the button in the pinned bar. */}
       <SetupActions
-        note={
-          githubConnected !== false
-            ? undefined
-            : "Without GitHub, you paste a repository's address in the last step."
+        status={
+          works && githubConnected === false
+            ? "Without GitHub, you paste a repository's address in the last step."
+            : continueNote(access, check)
         }
-        status={continueNote(access, check)}
       >
         <Button
           size={phone ? "touch" : "default"}
