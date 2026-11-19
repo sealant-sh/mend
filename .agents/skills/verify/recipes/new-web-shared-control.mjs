@@ -104,7 +104,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   /** Load the app, then move to the session through the router, so its reads meet the fixtures. */
   const openSession = async () => {
     await page.goto(`${web}/no-such-page`);
-    await hydrated();
+    // Vite can reload a page while it compiles, before React takes it over: load it once more.
+    await hydrated().catch(async () => {
+      note("the page didn't hydrate; loading it again");
+      await page.goto(`${web}/no-such-page`);
+      await hydrated();
+    });
     await go(`/sessions/${id}`);
     await visible(page.getByText(/^Webhook deliveries that fail 5 times are dropped\./)).waitFor();
   };
@@ -118,8 +123,16 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   registerSecret("invitation-token", invitation.body.token);
   const second = await page.context().browser().newContext();
   const memberPage = await second.newPage();
+  // A second browser's first load can be reloaded by Vite as it compiles: load again if so.
+  const joinHeading = memberPage.getByRole("heading", { name: /^Join / });
   await memberPage.goto(`${web}/join#${invitation.body.token}`);
-  await memberPage.getByRole("heading", { name: /^Join / }).waitFor();
+  try {
+    await joinHeading.waitFor({ timeout: 45_000 });
+  } catch {
+    note(`the join page didn't show its heading (${memberPage.url()}); loading it again`);
+    await memberPage.goto(`${web}/join#${invitation.body.token}`);
+    await joinHeading.waitFor({ timeout: 60_000 });
+  }
   const email = `verify-share-${Date.now()}@example.invalid`;
   await memberPage.getByRole("textbox", { name: "Name" }).fill("Ada Verify");
   await memberPage.getByRole("textbox", { name: "Email" }).fill(email);
@@ -407,9 +420,13 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
     await as("owner");
     await openSession();
     await visible(page.getByText(/Ada Verify · \d/)).waitFor();
-    await visible(page.getByText(/turn 2 · Ada Verify's login$/)).waitFor();
+    // Whose login the member's turn ran on: theirs where each person runs as themselves, else the
+    // owner's own, which the owner's header leaves unnamed.
+    const onSenders = (await api("GET", `/api/sessions/${id}`)).body?.control?.turnsOnSendersLogin;
+    const header = onSenders === true ? "Codex · turn 2 · Ada Verify's login" : "Codex · turn 2";
+    await visible(page.getByText(header, { exact: true })).waitFor();
     note(
-      "owner: the member's message carries their initials and name, its turn reads Codex · turn 2 · Ada Verify's login",
+      `owner: the member's message carries their initials and name; its turn reads "${header}" (turnsOnSendersLogin ${onSenders})`,
     );
     await shoot("fixture-owner-sees-the-message", true);
 
