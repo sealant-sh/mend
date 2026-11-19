@@ -54,7 +54,10 @@ export function CommandLineBlock({
 
   return (
     <section aria-labelledby={heading} className={cn("grid gap-2", className)}>
-      <p id={heading} className={page ? "sr-only" : "font-semibold text-foreground max-lg:text-sm"}>
+      <p
+        id={heading}
+        className={page ? "sr-only" : "text-lead font-semibold text-foreground max-lg:text-base"}
+      >
         Mend's command line
       </p>
       {page ? (
@@ -63,7 +66,7 @@ export function CommandLineBlock({
           and sign it in to this server once.
         </p>
       ) : (
-        <p className="text-row text-pretty text-muted-foreground max-lg:text-sm">
+        <p className="text-prose text-pretty text-foreground max-lg:text-sm">
           These commands run on your own computer. Install Mend's command line there and sign it in
           to this server once.
         </p>

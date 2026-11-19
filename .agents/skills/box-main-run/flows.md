@@ -539,9 +539,12 @@ flows reuse what earlier ones made:
   reload. Git access shows one ticked line and the GitHub account section, waiting then connected.
   Agent login shows Mend's command line once above the tabs, and each tab holds only its own
   command. Organization, step 5 of 6, reports a failed save, renames, and goes on to First project,
-  which shows how to connect GitHub with no login, then the person's repositories. A person who
-  joins lands on Command line, step 2 of 5, with no Organization step. The recipe also times a first
-  `/api/github/repos` as the caller with a fake GitHub login.
+  which shows how to connect GitHub with no login, then the person's repositories with an owner
+  choice: their own account, then each organization; an organization lists its repositories, search
+  looks within it, and one with none says it may need to approve GitHub CLI. Tab on the
+  first-account form goes Name, Email, Password, Confirm password, the button. A person who joins
+  lands on Command line, step 2 of 5, with no Organization step. The recipe also times a first
+  `/api/github/owners` and `/api/github/repos` as the caller with a fake GitHub login.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the organization's name
   is put back, the minted device revoked and the fake GitHub login removed at the end.
 - **Mode:** `scripted` (recipes/new-web-setup-order.mjs)

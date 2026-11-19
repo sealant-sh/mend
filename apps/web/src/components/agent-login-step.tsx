@@ -89,7 +89,9 @@ export function AgentLoginStep() {
         Settings.
       </p>
       {/* Mend's command line, once for both agents: each tab holds only its own command. */}
-      {mode === "command" ? <CommandLineBlock phone={phone} className="mt-6" /> : null}
+      {mode === "command" ? (
+        <CommandLineBlock phone={phone} className="mt-6 border-t pt-6" />
+      ) : null}
       <Tabs
         value={agent}
         onValueChange={(value) => {

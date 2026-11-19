@@ -17,6 +17,9 @@
 // - First project: no GitHub login, with the connect section; the wait for the list; the list of
 //   the person's own login.
 // - Joining from an invitation: Command line, step 2 of 5, and five steps with no Organization.
+// - The owner choice: the login's own account, then each organization; an organization's
+//   repositories, a search within it, and one that shows none.
+// - Tab on the first-account form: Name, Email, Password, Confirm password, the button.
 // - How long a first list as the caller takes on this stack (a fake GitHub login, so it ends in
 //   gh's refusal once the workspace has started).
 //
@@ -44,6 +47,12 @@ const repository = (name, visibility, hours) => ({
   pushedAt: new Date(Date.now() - hours * HOUR).toISOString(),
   url: `https://github.com/linus-p/${name}`,
 });
+const NORTHWIND = [
+  { ...repository("checkout-api", "private", 2), nameWithOwner: "northwind/checkout-api" },
+  { ...repository("web", "private", 0.4), nameWithOwner: "northwind/web" },
+  { ...repository("infra", "private", 30), nameWithOwner: "northwind/infra" },
+  { ...repository("checkout-web", "private", 72), nameWithOwner: "northwind/checkout-web" },
+];
 const REPOSITORIES = [
   repository("checkout-api", "private", 2),
   repository("web", "private", 0.4),
@@ -161,11 +170,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     const response = await route.fetch();
     const body = await response.json();
     const entries = Array.isArray(body) ? body : [body];
+    // A batch's inputs, by position: `{ "0": { json: … } }` (one call sends its input bare).
+    const sentBody = route.request().postDataJSON() ?? {};
+    const inputAt = (at) =>
+      Array.isArray(body) ? sentBody?.[String(at)]?.json : (sentBody?.json ?? sentBody?.[0]?.json);
     paths.forEach((path, at) => {
       const answer = answers[path];
       if (answer === undefined) return;
       const real = entries[at]?.result?.data;
-      const json = answer(real?.json);
+      const json = answer(real?.json, inputAt(at));
       entries[at] = { result: { data: json === real?.json ? real : { json } } };
     });
     return route.fulfill({
@@ -456,14 +469,28 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await all("project-no-github");
 
     const gate = Promise.withResolvers();
-    held = { path: "github.repos", until: gate.promise };
+    held = { path: "github.owners", until: gate.promise };
     answers["github.status"] = () => ({
       available: true,
       authenticated: true,
       login: "linus-p",
       detail: null,
     });
-    answers["github.repos"] = () => REPOSITORIES;
+    answers["github.owners"] = () => ({
+      login: "linus-p",
+      owners: [
+        { login: "linus-p", kind: "user" },
+        { login: "acme", kind: "organization" },
+        { login: "northwind", kind: "organization" },
+      ],
+    });
+    // Each owner's repositories: linus-p owns two, northwind holds the frame's, acme shows none.
+    answers["github.repos"] = (_real, sent) =>
+      sent?.owner === "northwind"
+        ? NORTHWIND
+        : sent?.owner === "acme"
+          ? []
+          : REPOSITORIES.slice(0, 2);
     answers["platform.sealantIdentity"] = (identity) => ({
       ...identity,
       accounts: [
@@ -483,18 +510,47 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     });
     await readAgain([["platform", "sealantIdentity"]]);
     await readAgain([["github"]]);
-    await text(/Asking GitHub for the repositories linus-p can reach · \d+s/).waitFor();
+    await text(/Asking GitHub which organizations linus-p belongs to · \d+s/).waitFor();
+    await text(/short-lived workspace that holds your GitHub login/).waitFor();
     await page.waitForTimeout(3_000);
     note(
-      "fixture, a GitHub login connected: the page waits, 'Asking GitHub for the repositories linus-p can reach · Ns', and says Mend asks from a short-lived workspace",
+      "fixture, a GitHub login connected: the page waits, 'Asking GitHub which organizations linus-p belongs to · Ns', and says Mend asks from a short-lived workspace",
     );
     await capture("project-list-waiting-desktop-light");
     gate.resolve();
     held = null;
-    await text("Repositories").waitFor();
-    await text("checkout-api").waitFor({ state: "attached" });
-    note("the list arrived without a reload: 'Repositories linus-p can reach on GitHub'");
-    await all("project-list");
+    await text("Repositories linus-p owns").waitFor();
+    await text("linus-p/checkout-api").waitFor({ state: "attached" });
+    note(
+      "the list arrived without a reload: the owner choice on linus-p, 'Repositories linus-p owns'",
+    );
+    await all("project-list-own");
+    const owner = visible(page.getByRole("combobox", { name: "Whose repositories" }));
+    await owner.click();
+    const offered = (await page.getByRole("option").allTextContents()).map((one) => one.trim());
+    expect(
+      "the login's own account first, then its organizations",
+      offered.length === 3 && offered[0].startsWith("linus-p"),
+      offered,
+    );
+    await capture("project-owner-menu-desktop-light");
+    await page.getByRole("option", { name: /^northwind/ }).click();
+    await text("Repositories in northwind").waitFor();
+    await text("northwind/infra").waitFor({ state: "attached" });
+    note(
+      `the owner choice offers ${offered.join(", ")}; northwind lists its repositories, 'Repositories in northwind'`,
+    );
+    await all("project-list-northwind");
+    await visible(page.getByRole("searchbox", { name: "Search repositories" })).fill("checkout");
+    await text("northwind/checkout-web").waitFor({ state: "attached" });
+    note("a search for 'checkout' looks within northwind");
+    await owner.click();
+    await page.getByRole("option", { name: /^acme/ }).click();
+    await text("No repositories in acme for linus-p.").waitFor();
+    note(
+      "acme shows no repositories: 'No repositories in acme for linus-p.' and that acme may need to approve GitHub CLI",
+    );
+    await all("project-list-acme-empty");
   } finally {
     delete answers["github.repos"];
     held = null;
@@ -518,6 +574,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       note(
         `with a GitHub login connected, /api/github/status answered ${JSON.stringify(status.body)}`,
       );
+      const askedOwners = Date.now();
+      const owners = await api("GET", "/api/github/owners");
+      note(
+        `a first /api/github/owners as the caller took ${((Date.now() - askedOwners) / 1000).toFixed(1)} s and answered ${owners.status}: ${JSON.stringify(owners.body).slice(0, 300)}`,
+      );
       const started = Date.now();
       const listed = await api("GET", "/api/github/repos");
       note(
@@ -540,6 +601,52 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   registerSecret("setup-order-invitation", invitation.body.token);
   const owner = await page.context().cookies();
   await page.context().clearCookies();
+
+  // ---- The first-account form: Tab goes from one field to the next, past the Show password
+  // buttons. A server with no accounts is answered in the browser (`platform.instance`).
+  await page.route("**/trpc/platform.instance**", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify([
+        { result: { data: { json: { users: "none", registration: "open" } } } },
+      ]),
+    }),
+  );
+  await open("/login");
+  await heading("Create the first account");
+  await text("Step 1 of 6").waitFor({ state: "attached" });
+  await text("You name the organization later in setup.").waitFor();
+  await page.getByRole("textbox", { name: "Name" }).focus();
+  const focused = () =>
+    page.evaluate(() => {
+      const element = document.activeElement;
+      if (element === null) return "nothing";
+      const label = element instanceof HTMLInputElement ? element.labels?.[0]?.textContent : null;
+      return (label ?? element.getAttribute("aria-label") ?? element.textContent ?? "").trim();
+    });
+  const landed = [await focused()];
+  for (const _ of [1, 2, 3, 4]) {
+    await page.keyboard.press("Tab");
+    landed.push(await focused());
+  }
+  expect(
+    "Tab from field to field",
+    landed.join(" → ") ===
+      "Name → Email → Password → Confirm password → Create account and continue",
+    landed,
+  );
+  expect(
+    "the Show password buttons are still there, with their names",
+    (await page.getByRole("button", { name: "Show password" }).count()) === 2,
+    "missing",
+  );
+  note(
+    `the first-account form, Tab from Name: ${landed.join(" → ")}; the Show password buttons are skipped and keep their names`,
+  );
+  await all("first-account");
+  await page.unroute("**/trpc/platform.instance**");
+
   await open(`/join#${invitation.body.token}`);
   await page.getByRole("textbox", { name: "Name" }).fill("Mae Verify");
   await page.getByRole("textbox", { name: "Email" }).fill(`mae-${suffix}@example.invalid`);

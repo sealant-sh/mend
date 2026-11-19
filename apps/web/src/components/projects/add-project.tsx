@@ -25,9 +25,11 @@ import { usePhone } from "#/lib/phone";
 import {
   alreadyAdded,
   cloneUrlOf,
+  emptyOwnerWords,
   type GithubRepository,
   inferName,
   nameIssue,
+  ownerListLine,
   repositoryName,
   sourceIssue,
 } from "#/lib/projects";
@@ -35,6 +37,7 @@ import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 import { type Clone, type CloneRequest, retryOf } from "#/lib/use-clone";
 
+import { GithubOwnerChoice } from "./github-owner-choice.tsx";
 import { MendKeyHelp } from "./mend-key-help.tsx";
 import { Overlay } from "./overlay.tsx";
 import { RepositoryAddressField } from "./repository-address.tsx";
@@ -168,9 +171,21 @@ function AddProjectForm({
     const timer = setTimeout(() => setSearched(search), SEARCH_REST_MS);
     return () => clearTimeout(timer);
   }, [search]);
-  const repositories = useQuery({
-    ...trpc.github.repos.queryOptions({ query: searched }, { staleTime: 30_000 }),
+  // Whose repositories: the login's own account, or one of its organizations (`github.owners`).
+  const owners = useQuery({
+    ...trpc.github.owners.queryOptions(undefined, { staleTime: 60_000 }),
     enabled: signedIn && source === "github",
+  });
+  const [chosenOwner, setChosenOwner] = useState<string | null>(null);
+  const self = owners.isPending || owners.isError ? null : owners.data.login;
+  const owner = chosenOwner ?? self;
+  const repositories = useQuery({
+    ...trpc.github.repos.queryOptions(
+      { query: searched, ...(owner === null ? {} : { owner }) },
+      { staleTime: 30_000 },
+    ),
+    // Without the owners (still asking, or GitHub didn't list them) the list is the login's own.
+    enabled: signedIn && source === "github" && !owners.isPending,
     placeholderData: keepPreviousData,
   });
   const [picked, setPicked] = useState<GithubRepository | null>(null);
@@ -303,6 +318,24 @@ function AddProjectForm({
             </InlineAlert>
           ) : (
             <>
+              {owners.isPending ? (
+                <p role="status" className="text-row text-muted-foreground">
+                  Asking GitHub which organizations{" "}
+                  <span className="font-mono text-meta">{github.data.login ?? "you"}</span> belongs
+                  to…
+                </p>
+              ) : owner === null || owners.isError ? null : (
+                <GithubOwnerChoice
+                  owners={owners.data.owners}
+                  value={owner}
+                  onChange={(next) => {
+                    setChosenOwner(next);
+                    setSearch("");
+                    setPicked(null);
+                  }}
+                  phone={phone}
+                />
+              )}
               <InputGroup className={cn(phone && "h-11")}>
                 <InputGroupAddon>
                   <SearchIcon aria-hidden className="size-4" />
@@ -317,13 +350,15 @@ function AddProjectForm({
                 />
               </InputGroup>
               <p id={`${ids}-reach`} className="text-row text-muted-foreground">
-                Repositories the{" "}
-                <span className="font-mono text-meta">{github.data.login ?? "Mend"}</span> GitHub
-                account can reach.
+                {owner === null || self === null
+                  ? `Repositories ${github.data.login ?? "the GitHub account"} owns`
+                  : ownerListLine(owner, self)}
+                {owners.isError ? ". GitHub didn't list your organizations." : null}
               </p>
               <RepositoryList
                 query={repositories}
                 searched={searched}
+                empty={emptyOwnerWords(owner ?? self ?? "", self ?? owner ?? "")}
                 projects={projects}
                 organizationName={organizationName}
                 picked={picked}
@@ -439,6 +474,7 @@ function AddProjectForm({
 function RepositoryList({
   query,
   searched,
+  empty,
   projects,
   organizationName,
   picked,
@@ -447,6 +483,8 @@ function RepositoryList({
 }: {
   readonly query: UseQueryResult<ReadonlyArray<GithubRepository>, unknown>;
   readonly searched: string;
+  /** What an owner with no repositories to show says. */
+  readonly empty: { readonly title: string; readonly advice: string };
   readonly projects: ReadonlyArray<ProjectDto>;
   readonly organizationName: string;
   readonly picked: GithubRepository | null;
@@ -476,9 +514,9 @@ function RepositoryList({
     );
   if (query.data.length === 0)
     return (
-      <p role="status" className="py-2 text-row text-muted-foreground">
+      <p role="status" className="py-2 text-row text-pretty text-muted-foreground">
         {searched.trim() === ""
-          ? "The GitHub account can't reach any repositories."
+          ? `${empty.title} ${empty.advice}`
           : `No repositories match ${searched.trim()}.`}
       </p>
     );

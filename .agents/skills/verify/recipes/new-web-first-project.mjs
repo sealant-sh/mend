@@ -218,6 +218,8 @@ export default async ({ page, web, capture, note }) => {
   answers = {
     ...answers,
     "github.status": () => github,
+    // The login's own account only: new-web-setup-order drives the owner choice.
+    "github.owners": () => ({ login: "linus-p", owners: [{ login: "linus-p", kind: "user" }] }),
     "github.repos": () => REPOSITORIES,
   };
   await page.evaluate(() =>
@@ -289,10 +291,10 @@ export default async ({ page, web, capture, note }) => {
   await page.evaluate(() =>
     window["__TSR_ROUTER__"].options.context.queryClient.resetQueries({ queryKey: [["github"]] }),
   );
-  await page.getByRole("heading", { name: "No repositories found" }).waitFor();
+  await page.getByRole("heading", { name: "linus-p owns no repositories." }).waitFor();
   await button("Check again").waitFor();
   await all("fixture-no-repositories");
-  note("fixture, no repositories: says who Mend reached GitHub as, with Check again");
+  note("fixture, no repositories: 'linus-p owns no repositories.', with Check again");
 
   // The real path: From a Git URL. A refused address first, then a clone that fails.
   await button("Paste a Git URL instead").click();

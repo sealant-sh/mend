@@ -186,3 +186,28 @@ export const pushedAgo = (pushedAt: string | null, now: Date): string => {
   const years = Math.floor(days / 365);
   return `Pushed ${years} ${years === 1 ? "year" : "years"} ago`;
 };
+
+/**
+ * The line over the repository list, for the owner chosen: "Repositories linus-p owns" for the
+ * login's own account, "Repositories in northwind" for an organization.
+ */
+export const ownerListLine = (owner: string, login: string): string =>
+  owner === login ? `Repositories ${login} owns` : `Repositories in ${owner}`;
+
+/**
+ * What an owner with no repositories to show says, in place of an empty box. An organization that
+ * limits which apps may read it shows a login nothing until it approves that login's app.
+ */
+export const emptyOwnerWords = (
+  owner: string,
+  login: string,
+): { readonly title: string; readonly advice: string } =>
+  owner === login
+    ? {
+        title: `${login} owns no repositories.`,
+        advice: "Choose one of your organizations above, or paste a repository's address.",
+      }
+    : {
+        title: `No repositories in ${owner} for ${login}.`,
+        advice: `${owner} may need to approve GitHub CLI before Mend can read its repositories with your login. An owner of ${owner} can approve it in the organization's settings on GitHub, under third-party access. You can also paste a repository's address.`,
+      };

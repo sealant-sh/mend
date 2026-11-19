@@ -29,9 +29,11 @@ import { usePhone } from "#/lib/phone";
 import {
   alreadyAdded,
   cloneUrlOf,
+  emptyOwnerWords,
   type GithubRepository,
   inferName,
   nameIssue,
+  ownerListLine,
   pushedAgo,
   repositoriesMatching,
   repositoryName,
@@ -48,6 +50,7 @@ import { useSecond } from "#/lib/use-second";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 import { GithubConnect } from "./github-connect.tsx";
+import { GithubOwnerChoice } from "./projects/github-owner-choice.tsx";
 import { MendKeyHelp } from "./projects/mend-key-help.tsx";
 import { RepositoryAddressField } from "./projects/repository-address.tsx";
 import { SetupActions, SetupFrame, skippedSteps, useSetupProgress } from "./setup-frame.tsx";
@@ -242,13 +245,6 @@ function ChooseRepository({
             <span id={`${ids}-repository`} className="text-sm font-medium text-foreground">
               Repository
             </span>
-            {signedIn ? (
-              <span className="text-row text-muted-foreground">
-                Repositories{" "}
-                <span className="font-mono text-meta">{github.data.login ?? "Mend"}</span> can reach
-                on GitHub
-              </span>
-            ) : null}
           </p>
           {github.isPending ? (
             <p role="status" className="py-2 text-row text-muted-foreground">
@@ -365,11 +361,72 @@ function ChooseRepository({
 }
 
 /**
+ * The repositories the person's GitHub login can reach, by owner: their own account first, then
+ * each GitHub organization they belong to (`github.owners`). Choosing an owner lists its
+ * repositories; search looks within it.
+ */
+function GithubRepositories(props: {
+  readonly login: string;
+  /** The person's own connected GitHub login answers, from a workspace of theirs. */
+  readonly ownLogin: boolean;
+  readonly projects: ReadonlyArray<ProjectDto>;
+  readonly organizationName: string;
+  readonly picked: GithubRepository | null;
+  readonly onPick: (repository: GithubRepository) => void;
+  readonly phone: boolean;
+}) {
+  const trpc = useTRPC();
+  const now = useSecond();
+  const owners = useQuery(trpc.github.owners.queryOptions(undefined, { staleTime: 60_000 }));
+  const [askedAt] = useState(() => new Date());
+  const [chosen, setChosen] = useState<string | null>(null);
+  if (owners.isPending)
+    return (
+      <div role="status" className="grid gap-1 py-2 text-row text-muted-foreground">
+        <p>
+          Asking GitHub which organizations {props.login} belongs to · {waitedFor(askedAt, now)}
+        </p>
+        {props.ownLogin ? (
+          <p className="text-pretty">
+            Mend asks from a short-lived workspace that holds your GitHub login. Starting it can
+            take a minute the first time.
+          </p>
+        ) : null}
+      </div>
+    );
+  // Without the owners, the list is the login's own repositories, as before there was a choice.
+  if (owners.isError)
+    return (
+      <div className="grid gap-2">
+        <InlineAlert tone="warning" title="GitHub didn't list your organizations." size="default">
+          {failureWords(owners.error, "The Mend server didn't answer.")} Your own repositories are
+          below.
+        </InlineAlert>
+        <OwnerRepositories {...props} owner={undefined} />
+      </div>
+    );
+  const self = owners.data.login;
+  const owner = chosen ?? self;
+  return (
+    <div className="grid min-w-0 gap-2">
+      <GithubOwnerChoice
+        owners={owners.data.owners}
+        value={owner}
+        onChange={setChosen}
+        phone={props.phone}
+      />
+      <p className="text-row text-muted-foreground">{ownerListLine(owner, self)}</p>
+      <OwnerRepositories key={owner} {...props} login={self} owner={owner} />
+    </div>
+  );
+}
+
+/**
  * The repositories the Mend server's GitHub login can reach, to pick one from (a radio group
  * under the hood). The server lists up to 30; while it lists fewer, that is all of them and the
  * search filters them here. A full list may be cut short, so a search goes to GitHub.
  */
-function GithubRepositories({
+function OwnerRepositories({
   login,
   projects,
   organizationName,
@@ -377,10 +434,13 @@ function GithubRepositories({
   onPick,
   phone,
   ownLogin,
+  owner,
 }: {
   readonly login: string;
   /** The person's own connected GitHub login answers, from a workspace of theirs. */
   readonly ownLogin: boolean;
+  /** Whose repositories: an organization, or the login's own; none lists the login's own. */
+  readonly owner: string | undefined;
   readonly projects: ReadonlyArray<ProjectDto>;
   readonly organizationName: string;
   readonly picked: GithubRepository | null;
@@ -396,13 +456,16 @@ function GithubRepositories({
     const timer = setTimeout(() => setSearched(search), SEARCH_REST_MS);
     return () => clearTimeout(timer);
   }, [search]);
-  const listed = useQuery(trpc.github.repos.queryOptions({ query: "" }, { staleTime: 30_000 }));
+  const ofOwner = owner === undefined ? {} : { owner };
+  const listed = useQuery(
+    trpc.github.repos.queryOptions({ query: "", ...ofOwner }, { staleTime: 30_000 }),
+  );
   // How long the list has been asked for: from when the list first showed.
   const [askedAt] = useState(() => new Date());
   const onPage = listed.isSuccess && searchesOnPage(listed.data.length);
   const words = search.trim();
   const found = useQuery({
-    ...trpc.github.repos.queryOptions({ query: searched }, { staleTime: 30_000 }),
+    ...trpc.github.repos.queryOptions({ query: searched, ...ofOwner }, { staleTime: 30_000 }),
     enabled: listed.isSuccess && !onPage && searched.trim() !== "",
     placeholderData: keepPreviousData,
   });
@@ -411,7 +474,7 @@ function GithubRepositories({
     return (
       <div role="status" className="grid gap-1 py-2 text-row text-muted-foreground">
         <p>
-          Asking GitHub for the repositories {login} can reach · {waitedFor(askedAt, now)}
+          Asking GitHub for the repositories in {owner ?? login} · {waitedFor(askedAt, now)}
         </p>
         {ownLogin ? (
           <p className="text-pretty">
@@ -448,12 +511,9 @@ function GithubRepositories({
             <FolderSearchIcon aria-hidden />
           </EmptyMedia>
           <EmptyTitle>
-            <h2>No repositories found</h2>
+            <h2>{emptyOwnerWords(owner ?? login, login).title}</h2>
           </EmptyTitle>
-          <EmptyDescription>
-            Mend reached GitHub as {login}, but {login} can't see any repositories yet. Give {login}{" "}
-            access to a repository on GitHub, then check again.
-          </EmptyDescription>
+          <EmptyDescription>{emptyOwnerWords(owner ?? login, login).advice}</EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
           <Button

@@ -3,6 +3,8 @@ import { execFile } from "node:child_process";
 import {
   CurrentUser,
   GhFailure,
+  GhOwnersView,
+  GhOwnerView,
   GhRepoView,
   GhStatusView,
   MendApi,
@@ -152,16 +154,57 @@ export const classifyGhError = (error: GhError): GhUnavailable => {
   return "error";
 };
 
+/** What one gh call printed and how it exited, wherever it ran. */
+export interface GhOutput {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
 /**
- * gh's arguments for a repository list: the account's own repositories, most recently pushed
- * first, for an empty query; a GitHub-wide search otherwise. `--` keeps a query positional, never
- * parsed as a flag.
+ * Runs gh with these arguments as some GitHub login: the host's own `gh`, or the caller's `gh` in
+ * a short-lived workspace of theirs. A gh that exits nonzero answers with its exit code; `E` is
+ * only the failure to run it at all.
  */
-const repoArgs = (query: string): ReadonlyArray<string> => {
+export type GhRun<E> = (args: ReadonlyArray<string>) => Effect.Effect<GhOutput, E>;
+
+/** A GitHub account or organization name: what gh is given as an owner, never a flag. */
+const GITHUB_LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/;
+
+/** gh's own words for a failed call, or what was asked when it gave none. */
+const ghWords = (output: GhOutput, asked: string): string => output.stderr.trim() || asked;
+
+const ownedBy = (owner: string | undefined): ReadonlyArray<string> =>
+  owner === undefined ? [] : [owner];
+
+/**
+ * gh's arguments for one owner's repositories (the login's own when there is no owner), most
+ * recently pushed first, or a search within that owner. `--` keeps a query positional, never
+ * parsed as a flag; an owner is checked against GitHub's name rules before it gets here.
+ */
+const repoArgs = (owner: string | undefined, query: string): ReadonlyArray<string> => {
   const trimmed = query.trim();
-  return trimmed === ""
-    ? ["repo", "list", "--limit", String(REPO_LIMIT), "--json", LIST_FIELDS]
-    : ["search", "repos", "--limit", String(REPO_LIMIT), "--json", SEARCH_FIELDS, "--", trimmed];
+  if (trimmed === "")
+    return [
+      "repo",
+      "list",
+      ...ownedBy(owner),
+      "--limit",
+      String(REPO_LIMIT),
+      "--json",
+      LIST_FIELDS,
+    ];
+  return [
+    "search",
+    "repos",
+    "--limit",
+    String(REPO_LIMIT),
+    "--json",
+    SEARCH_FIELDS,
+    ...(owner === undefined ? [] : ["--owner", owner]),
+    "--",
+    trimmed,
+  ];
 };
 
 /** What `repoArgs`' gh printed, in one shape whichever of the two commands ran. */
@@ -206,34 +249,104 @@ const parseRepos = (
       );
 
 /**
- * The repositories the caller's own connected GitHub login reaches: gh runs in a short-lived
- * workspace of theirs that carries the login (`PullRequestWorkspaces.within`, as pull request
- * reads do), so the token stays with the platform and never reaches Mend.
+ * One owner's repositories, or a search within them, as the login `run` runs as. An owner that
+ * isn't a GitHub name is refused before gh runs.
  */
-const callerRepos = Effect.fn("Github.callerRepos")(function* (query: string) {
-  const caller = yield* CurrentUser;
-  const args = repoArgs(query);
-  return yield* (yield* PullRequestWorkspaces)
-    .within({ ownerUserId: caller.user.id, sessionId: null }, (workspace) =>
-      Effect.gen(function* () {
-        const output = yield* workspace.exec(ghIn(args));
-        if (output.exitCode !== 0)
-          return yield* new GhFailure({
-            message:
-              output.stderr.trim() ||
-              "GitHub didn't list repositories for your login. Connect it again with mend connect github.",
-          });
-        return yield* parseRepos(args, output.stdout).pipe(
-          Effect.mapError(() => new GhFailure({ message: "GitHub returned an unreadable list." })),
-        );
-      }),
-    )
-    .pipe(
-      Effect.catchTag("PullRequestStepError", (error) =>
-        Effect.fail(new GhFailure({ message: error.message })),
-      ),
+export const listRepos = <E>(
+  run: GhRun<E>,
+  owner: string | undefined,
+  query: string,
+): Effect.Effect<ReadonlyArray<GhRepoView>, GhFailure | E> =>
+  Effect.gen(function* () {
+    if (owner !== undefined && !GITHUB_LOGIN.test(owner))
+      return yield* new GhFailure({ message: `${owner} isn't a GitHub account or organization.` });
+    const args = repoArgs(owner, query);
+    const output = yield* run(args);
+    if (output.exitCode !== 0)
+      return yield* new GhFailure({
+        message: ghWords(output, "GitHub didn't list the repositories for this login."),
+      });
+    return yield* parseRepos(args, output.stdout).pipe(
+      Effect.mapError(() => new GhFailure({ message: "GitHub returned an unreadable list." })),
     );
-});
+  });
+
+/**
+ * Whose repositories the login can list: its own account, then each organization it belongs to
+ * (`user/orgs`, every page), by name. An organization that limits which apps may read it still
+ * appears; its list may come back empty until it approves the login.
+ */
+export const listOwners = <E>(run: GhRun<E>): Effect.Effect<GhOwnersView, GhFailure | E> =>
+  Effect.gen(function* () {
+    const user = yield* run(["api", "user", "--jq", ".login"]);
+    const login = user.stdout.trim();
+    if (user.exitCode !== 0 || !GITHUB_LOGIN.test(login))
+      return yield* new GhFailure({
+        message: ghWords(user, "GitHub didn't say whose login this is."),
+      });
+    const orgs = yield* run(["api", "user/orgs", "--paginate", "--jq", ".[].login"]);
+    if (orgs.exitCode !== 0)
+      return yield* new GhFailure({
+        message: ghWords(orgs, "GitHub didn't list the organizations for this login."),
+      });
+    const organizations = orgs.stdout
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((name) => GITHUB_LOGIN.test(name))
+      .toSorted((a, b) => a.localeCompare(b, "en", { sensitivity: "base" }));
+    return new GhOwnersView({
+      login,
+      owners: [
+        new GhOwnerView({ login, kind: "user" }),
+        ...organizations.map((name) => new GhOwnerView({ login: name, kind: "organization" })),
+      ],
+    });
+  });
+
+/** The host's own gh, as a `GhRun`: a gh that can't start answers as gh's own failure would. */
+const hostRun: GhRun<never> = (args) =>
+  gh(args).pipe(
+    Effect.map(({ stdout, stderr }) => ({ exitCode: 0, stdout, stderr })),
+    Effect.catch((error) =>
+      Effect.succeed({ exitCode: error.exitCode ?? 1, stdout: "", stderr: error.stderr }),
+    ),
+  );
+
+/**
+ * Runs `use` with the caller's own gh: in a short-lived workspace of theirs that carries their
+ * connected GitHub login (`PullRequestWorkspaces.within`, as pull request reads do), so the token
+ * stays with the platform and never reaches Mend.
+ */
+const asCaller = <A>(use: (run: GhRun<never>) => Effect.Effect<A, GhFailure>) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    return yield* (yield* PullRequestWorkspaces)
+      .within({ ownerUserId: caller.user.id, sessionId: null }, (workspace) =>
+        use((args) =>
+          workspace
+            .exec(ghIn(args))
+            .pipe(
+              Effect.catch((error) =>
+                Effect.succeed({ exitCode: 1, stdout: "", stderr: error.message }),
+              ),
+            ),
+        ),
+      )
+      .pipe(
+        Effect.catchTag("PullRequestStepError", (error) =>
+          Effect.fail(new GhFailure({ message: error.message })),
+        ),
+      );
+  });
+
+/** Whose gh answers the caller (`GithubIdentity`), as a runner of `use`, or why none does. */
+const withCallersGh = <A>(use: (run: GhRun<never>) => Effect.Effect<A, GhFailure>) =>
+  Effect.gen(function* () {
+    const authority = yield* (yield* GithubIdentity).forCaller();
+    if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
+    if (authority.kind === "caller") return yield* asCaller(use);
+    return yield* use(hostRun);
+  });
 
 /** `gh pr list --json` items. */
 const PullRequestItems = Schema.Array(
@@ -267,8 +380,6 @@ export class Gh extends Context.Service<
   {
     /** What the host's gh reports — absence and sign-out are content, not errors. */
     readonly status: () => Effect.Effect<GhStatusView>;
-    /** Empty query: the account's repos, most recently pushed first. Otherwise a GitHub-wide search. */
-    readonly repos: (query: string) => Effect.Effect<ReadonlyArray<GhRepoView>, GhError>;
     /** Open, closed, and merged pull requests of one `owner/name`, most recently updated first. */
     readonly pullRequests: (repo: string) => Effect.Effect<ReadonlyArray<PullRequestView>, GhError>;
   }
@@ -318,10 +429,6 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
         ),
       ),
     ),
-  repos: (query: string) => {
-    const args = repoArgs(query);
-    return gh(args).pipe(Effect.flatMap(({ stdout }) => parseRepos(args, stdout)));
-  },
   pullRequests: (repo: string) => {
     const args = [
       "pr",
@@ -389,20 +496,8 @@ export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers
         return yield* cli.status();
       }),
     )
+    .handle("owners", () => withCallersGh((run) => listOwners(run)))
     .handle("repos", ({ query }) =>
-      Effect.gen(function* () {
-        const authority = yield* (yield* GithubIdentity).forCaller();
-        if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
-        if (authority.kind === "caller") return yield* callerRepos(query.query ?? "");
-        const cli = yield* Gh;
-        return yield* cli
-          .repos(query.query ?? "")
-          .pipe(
-            Effect.mapError(
-              (error) =>
-                new GhFailure({ message: error.stderr === "" ? String(error) : error.stderr }),
-            ),
-          );
-      }),
+      withCallersGh((run) => listRepos(run, query.owner, query.query ?? "")),
     ),
 );
