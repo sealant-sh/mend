@@ -309,6 +309,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await shot("audit-member-refused-desktop-light");
     await page.context().clearCookies();
     await page.context().addCookies(ownerCookies);
+    // Back as the owner before the member goes: removing them walks their open page to sign-in.
+    await open("/settings/profile");
   } finally {
     if (memberId !== null) await owner("DELETE", `/api/organization/members/${memberId}`);
     await second.close();
