@@ -121,8 +121,9 @@ flows reuse what earlier ones made:
    `organization.visibility-who-sees`, `repositories-in-session.add-second`,
    `references-folders.select-link`, `organization.roles-roundtrip`, `organization.join-refused`,
    `operator.owner-grant-restore`, `shared-control.two-people`, `shared-control.ask-and-grant`,
-   `per-person-homes.two-people`, in that order and one at a time: several change `<land>`,
-   `<second>` or a role, and each runs only after the one before it has put that back.
+   `shared-control.new-web-ask-and-grant`, `per-person-homes.two-people`, in that order and one at a
+   time: several change `<land>`, `<second>` or a role, and each runs only after the one before it
+   has put that back.
 
 ## The core loop
 
@@ -1498,6 +1499,39 @@ flows reuse what earlier ones made:
 - **Box:** after cut-over
 - **Areas:** `packages/db/src/repos/session-shared-control.ts`,
   `apps/web/src/server/routers/sessions.ts`, `apps/web/src/server/api/errors.ts`
+
+### shared-control.new-web-ask-and-grant
+
+- **Map:** shared-control.md `ask`, `withdraw`, `grant`, `take-back`, `switch-ends-grants`,
+  `viewer-lines`, `who-pays`, `sender-login`
+- **Needs:** Boat; one codex turn; web as two people (the owner's browser and `<second>`'s, side by
+  side); CLI (`M2`); `<second>` without a Codex login, then with one
+- **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`.
+  `M2 codex "Say hello and change nothing." --project <second> --name main-run-ask-web-<sha8> --detach`;
+  record `<id>`. In the owner's browser open `/sessions/<id>` and choose `Ask for shared control`.
+  In `<second>`'s browser find the session under `Waiting on you`, open it, choose
+  `Turn on shared control…`, read the dialog and choose `Turn on shared control`. In the owner's
+  browser send `Say hello again and change nothing.` and wait for the turn. In `<second>`'s browser
+  open the tile's `…` and choose `Turn off shared control`. Ask again as the owner, choose
+  `Dismiss request` as `<second>`; ask again and `Cancel request`. Restore: `M2 stop <id8>`,
+  `M2 worktrees rm main-run-ask-web-<sha8> --project <second>`, `<second>` back to `private`.
+- **See:** the owner's band `This is <second>'s session.` and the composer line
+  `Only <second> can send messages in this session.`; after asking,
+  `You asked <second> for shared control at …` with `Cancel request`; `<second>`'s sidebar row reads
+  `<owner> asked for shared control`, the session's band names the owner with
+  `Turn on shared control…` and `Dismiss request`; once on, `Shared control is on.` with
+  `Turn off shared control`, and the owner's band
+  `<second> turned on shared control, so you can send messages.`; the owner's message in
+  `<second>`'s browser carries the owner's name, and its turn reads
+  `Codex · turn 2 · <owner>'s login`; each step leaves a line in both conversations (`asked`,
+  `turned on`, `turned off`, `dismissed`, `cancelled`). If the owner's Codex login is refused, the
+  band reads `Your Codex login has expired, so your message wasn't sent.` with `Connect again…`, and
+  the message sends by itself once `mend connect codex` finishes.
+- **Mode:** `agent`
+- **Box:** after cut-over
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `apps/web/src/components/session/shared-control.tsx`,
+  `apps/web/src/lib/shared-control.ts`
 
 ### per-person-homes.two-people
 
