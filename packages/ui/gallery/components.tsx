@@ -609,6 +609,31 @@ function PromptInputDemo() {
           notice="Only Grace Hopper can message this session. You can still read it and review the change."
         />
       </Row>
+      <Row label="state locked, with what the viewer can do instead">
+        <PromptInput
+          className="w-full max-w-conversation"
+          state="locked"
+          notice="Only Grace Hopper can message this session."
+          noticeAction={
+            <Button type="button" variant="outline" size="sm">
+              Start your own session in this workspace
+            </Button>
+          }
+        />
+      </Row>
+      <Row label="state locked, with an action, touch">
+        <PromptInput
+          className="w-[358px]"
+          size="touch"
+          state="locked"
+          notice="Only Grace Hopper can message this session. You can read it and review the change."
+          noticeAction={
+            <Button type="button" variant="outline" size="touch">
+              Start your own session in this workspace
+            </Button>
+          }
+        />
+      </Row>
       <Row label="in narrow tiles: 420px hides the context count, 360px the harness too">
         <PromptInput
           className="w-105"

@@ -9,6 +9,7 @@ import { Suspense } from "react";
 
 import { agentOf } from "#/lib/new-session";
 
+import { JoinLine } from "../new-session/join-line.tsx";
 import { Hint, sendBlocked } from "../new-session/new-session-page.tsx";
 import { AgentMenuItems, agentPickWords } from "../new-session/pickers.tsx";
 import { type ComposerPlace, useComposer } from "../new-session/use-composer.ts";
@@ -91,6 +92,8 @@ export function NewSessionTab({
         </div>
         {/* The agents, their logins and the person's last picks are read as the tab opens. */}
         <Suspense fallback={<Skeleton className="h-28 w-full rounded-xl" />}>
+          {/* Someone else's session here: the workspace is shared, and this one runs as you. */}
+          <JoinLine projectId={place.projectId} worktreeId={place.worktree.id} />
           <Composer place={place} tabId={tabId} />
         </Suspense>
       </div>

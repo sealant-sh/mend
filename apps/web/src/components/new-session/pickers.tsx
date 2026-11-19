@@ -17,12 +17,20 @@ import {
 } from "@mend/ui/components/ui/dropdown-menu";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
-import { BotIcon, CheckIcon, FolderGit2Icon, GitBranchIcon, GitBranchPlusIcon } from "lucide-react";
+import {
+  BotIcon,
+  CheckIcon,
+  FolderGit2Icon,
+  GitBranchIcon,
+  GitBranchPlusIcon,
+  LayersIcon,
+} from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { ProjectDto } from "#/lib/api";
 import { age } from "#/lib/inbox";
 import { type Agent, agentLoginWord, agentOf, type WorktreeTarget } from "#/lib/new-session";
+import { runningWorkspaces, sessionCount } from "#/lib/shared-workspace";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 
@@ -99,8 +107,10 @@ export function ProjectChoices({
 }
 
 /**
- * The worktree picker: a new worktree from the project's default branch, or one of the project's
- * worktrees, found by branch, with whose change it is and when it last changed.
+ * The worktree picker: a new worktree from the project's default branch, one of the viewer's
+ * running workspaces with how many sessions run in each (Doop "picks a running workspace"), or any
+ * other of the project's worktrees, found by branch, with whose change it is and when it last
+ * changed.
  */
 export function WorktreeChoices({
   project,
@@ -120,6 +130,15 @@ export function WorktreeChoices({
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
   const members = useQuery(trpc.organization.members.queryOptions());
   const roster = members.isPending || members.isError ? [] : members.data;
+  const running =
+    worktrees.isPending || worktrees.isError
+      ? []
+      : runningWorkspaces(worktrees.data, viewer.userId);
+  const runningIds = new Set(running.map((each) => each.id));
+  const others =
+    worktrees.isPending || worktrees.isError
+      ? []
+      : worktrees.data.worktrees.filter((worktree) => !runningIds.has(worktree.id));
   const whose = (userId: string | null): string | null => {
     if (userId === null) return null;
     if (userId === viewer.userId) return "You";
@@ -146,6 +165,48 @@ export function WorktreeChoices({
         <CheckIcon aria-hidden className={cn(target._tag !== "new" && "invisible")} />
       </button>
       <div className="my-1 h-px bg-border" />
+      {running.length === 0 ? null : (
+        <div role="group" aria-labelledby={`running-${project.id}`} className="flex flex-col">
+          <p
+            id={`running-${project.id}`}
+            className={cn(
+              "pt-1.5 pb-1 text-muted-foreground",
+              size === "touch" ? "px-5 text-sm" : "px-3 text-meta font-medium",
+            )}
+          >
+            Your running workspaces in {project.name}
+          </p>
+          {running.map((workspace) => {
+            const picked = target._tag === "existing" && target.id === workspace.id;
+            return (
+              <button
+                key={workspace.id}
+                type="button"
+                role="menuitemradio"
+                aria-checked={picked}
+                onClick={() =>
+                  onPick({ _tag: "existing", id: workspace.id, branch: workspace.branch })
+                }
+                className={cn(
+                  "flex w-auto items-center gap-2.5 rounded-sm text-left outline-none hover:bg-muted focus-visible:bg-muted [&_svg]:size-4 [&_svg]:shrink-0",
+                  size === "touch"
+                    ? "h-13 px-5 text-lead [&_svg]:size-5"
+                    : "mx-1 px-2 py-1.5 text-row",
+                  picked && size === "default" && "bg-muted",
+                )}
+              >
+                <LayersIcon aria-hidden className="text-muted-foreground" />
+                <span className="min-w-0 flex-1 truncate">{workspace.name}</span>
+                <span className="shrink-0 text-meta text-muted-foreground">
+                  {sessionCount(workspace.sessions)}
+                </span>
+                <CheckIcon aria-hidden className={cn(!picked && "invisible")} />
+              </button>
+            );
+          })}
+          <div className="my-1 h-px bg-border" />
+        </div>
+      )}
       <p
         className={cn(
           "pt-1.5 pb-1 text-muted-foreground",
@@ -172,15 +233,17 @@ export function WorktreeChoices({
                 {worktrees.isRefetching ? "Trying again…" : "Try again"}
               </button>
             </div>
-          ) : worktrees.data.worktrees.length === 0 ? (
+          ) : others.length === 0 ? (
             <p className="px-2 py-1.5 text-row text-muted-foreground">
-              No worktrees in {project.name} yet.
+              {running.length === 0
+                ? `No worktrees in ${project.name} yet.`
+                : `No other worktrees in ${project.name}.`}
             </p>
           ) : (
             <>
               <CommandEmpty>No worktree is on that branch.</CommandEmpty>
               <CommandGroup>
-                {worktrees.data.worktrees
+                {others
                   .toSorted((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
                   .map((worktree) => {
                     const owner = whose(worktree.changeOwnerUserId);

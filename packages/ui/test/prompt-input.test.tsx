@@ -59,6 +59,31 @@ describe("PromptInput", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("offers what the viewer can do instead while locked", () => {
+    const onAction = vi.fn();
+    const onSubmit = vi.fn();
+    const { host } = render(
+      <PromptInput
+        state="locked"
+        notice="Only Grace Hopper can message this session."
+        noticeAction={
+          <button type="button" onClick={onAction}>
+            Start your own session in this workspace
+          </button>
+        }
+        onSubmit={onSubmit}
+      />,
+    );
+
+    const action = host.querySelector<HTMLButtonElement>(
+      '[data-slot="prompt-input-notice-action"] button',
+    );
+    expect(action?.textContent).toBe("Start your own session in this workspace");
+    action?.click();
+    expect(onAction).toHaveBeenCalledOnce();
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
   it("steers on Enter while running, and stops the turn", () => {
     const onSubmit = vi.fn();
     const onSteer = vi.fn();

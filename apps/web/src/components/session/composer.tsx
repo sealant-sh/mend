@@ -1,5 +1,6 @@
 import { modelPickerFor, type TurnSelection } from "@mend/domain/workbench";
 import { ComposerCard, PromptInput, PromptInputModel } from "@mend/ui/components/prompt-input";
+import { Button } from "@mend/ui/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuCheckboxItem,
@@ -119,10 +120,17 @@ const lockedWords = (mode: ComposerMode, facts: SessionFacts): string => {
 export function SessionComposer({
   facts,
   conversation,
+  onStartOwn,
 }: {
   readonly facts: SessionFacts;
   /** The conversation as the tile holds it; undefined while it is read. */
   readonly conversation: ConversationView | undefined;
+  /**
+   * Opens a New session tab in this workspace. Where the viewer can't message another person's
+   * session, the composer offers it instead: joining needs nobody's leave, and the joiner's session
+   * is their own, on their own logins (ADR 0026, decision 7).
+   */
+  readonly onStartOwn?: (() => void) | undefined;
 }) {
   const size: Size = usePhone() ? "touch" : "default";
   const { session, detail } = facts;
@@ -167,6 +175,19 @@ export function SessionComposer({
             state="locked"
             size={size}
             notice={waiting === undefined ? lockedWords(mode, facts) : answerLockedWords(facts)}
+            noticeAction={
+              mode._tag === "no-control" && onStartOwn !== undefined ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size={size === "touch" ? "touch" : "sm"}
+                  className="bg-card"
+                  onClick={onStartOwn}
+                >
+                  Start your own session in this workspace
+                </Button>
+              ) : undefined
+            }
           />
         </ComposerCard>
       );

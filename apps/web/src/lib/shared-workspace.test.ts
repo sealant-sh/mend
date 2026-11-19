@@ -6,7 +6,12 @@ import {
 import { describe, expect, it } from "vitest";
 
 import { refusedWith } from "./refusal-fixture.ts";
-import { replaceRefusalWords, retirementView } from "./shared-workspace.ts";
+import {
+  replaceRefusalWords,
+  retirementView,
+  runningWorkspaces,
+  sessionCount,
+} from "./shared-workspace.ts";
 
 const names = (id: string) => (id === "alice" ? "Alice" : null);
 const checkedAt = new Date("2026-10-08T12:05:00Z");
@@ -83,5 +88,53 @@ describe("a refused replacement", () => {
       "What would stop has changed since you looked. Nothing was stopped; look at the list again and replace it from there.";
     expect(replaceRefusalWords(refusedWith("WorkspaceReplaceRefused", words))).toBe(words);
     expect(replaceRefusalWords(new Error(""))).toBe("The workspace was not replaced.");
+  });
+});
+
+describe("the viewer's running workspaces", () => {
+  const at = (minutes: number) => new Date(checkedAt.getTime() - minutes * 60_000);
+  const worktree = (id: string, owner: string | null, minutes: number) => ({
+    id,
+    name: id,
+    branch: `mend/${id}`,
+    changeOwnerUserId: owner,
+    updatedAt: at(minutes),
+  });
+
+  it("lists the viewer's worktrees with a live session, newest first, with how many run", () => {
+    const listing = {
+      worktrees: [
+        worktree("idempotent-refunds", "ada", 30),
+        worktree("fix-checkout-retry", "ada", 5),
+        worktree("webhook-dlq", "grace", 1),
+        worktree("old-spike", "ada", 2),
+      ],
+      annotations: [
+        { worktreeId: "idempotent-refunds", liveSessions: 1 },
+        { worktreeId: "fix-checkout-retry", liveSessions: 2 },
+        { worktreeId: "webhook-dlq", liveSessions: 1 },
+        { worktreeId: "old-spike", liveSessions: 0 },
+      ],
+    };
+    expect(runningWorkspaces(listing, "ada")).toEqual([
+      {
+        id: "fix-checkout-retry",
+        name: "fix-checkout-retry",
+        branch: "mend/fix-checkout-retry",
+        sessions: 2,
+      },
+      {
+        id: "idempotent-refunds",
+        name: "idempotent-refunds",
+        branch: "mend/idempotent-refunds",
+        sessions: 1,
+      },
+    ]);
+    expect(runningWorkspaces(listing, "linus")).toEqual([]);
+  });
+
+  it("counts sessions in words", () => {
+    expect(sessionCount(1)).toBe("1 session");
+    expect(sessionCount(3)).toBe("3 sessions");
   });
 });

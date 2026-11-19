@@ -326,41 +326,70 @@ export interface StillEditing {
   readonly body: string;
 }
 
+/** A session in the workspace as the Land dialog reads it, from the inbox. */
+interface WorkspaceRow {
+  readonly session: {
+    readonly id: string;
+    readonly status: string;
+    readonly ownerUserId: string | null;
+  };
+  readonly title: string;
+  readonly activity?: { readonly kind: string; readonly subject: string | null } | null;
+}
+
+/** The workspace's other sessions that are running or starting, so may still edit its files. */
+const othersRunning = <Row extends WorkspaceRow>(
+  rows: ReadonlyArray<Row>,
+  sessionId: string,
+): ReadonlyArray<Row> =>
+  rows.filter(
+    (row) =>
+      row.session.id !== sessionId &&
+      (row.session.status === "running" || row.session.status === "starting"),
+  );
+
 /**
  * The other sessions still running in the workspace (Doop "Session · Land while … edits"): landing
  * isn't blocked, so the dialog names each and says what happens to what it writes next.
  */
 export const stillEditing = (
-  rows: ReadonlyArray<{
-    readonly session: {
-      readonly id: string;
-      readonly status: string;
-      readonly ownerUserId: string | null;
-    };
-    readonly title: string;
-    readonly activity?: { readonly kind: string; readonly subject: string | null } | null;
-  }>,
+  rows: ReadonlyArray<WorkspaceRow>,
   sessionId: string,
   viewerId: string | null,
 ): ReadonlyArray<StillEditing> =>
-  rows
-    .filter(
-      (row) =>
-        row.session.id !== sessionId &&
-        (row.session.status === "running" || row.session.status === "starting"),
-    )
-    .map((row) => {
-      const whose =
-        viewerId !== null && row.session.ownerUserId === viewerId
-          ? "It's your other session in this workspace"
-          : "It's another session in this workspace";
-      const doing = row.activity == null ? "" : `, and it's ${activityNow(row.activity)} now`;
-      return {
-        sessionId: row.session.id,
-        heading: `${row.title} is still editing`,
-        body: `${whose}${doing}. Mend pushes the files as they are now. Edits it makes after that stay in the workspace until you land again.`,
-      };
-    });
+  othersRunning(rows, sessionId).map((row) => {
+    const whose =
+      viewerId !== null && row.session.ownerUserId === viewerId
+        ? "It's your other session in this workspace"
+        : "It's another session in this workspace";
+    const doing = row.activity == null ? "" : `, and it's ${activityNow(row.activity)} now`;
+    return {
+      sessionId: row.session.id,
+      heading: `${row.title} is still editing`,
+      body: `${whose}${doing}. Mend pushes the files as they are now. Edits it makes after that stay in the workspace until you land again.`,
+    };
+  });
+
+/**
+ * The landing's toast, with who still runs in the workspace (Doop "landed, Write tests for retry
+ * still running"): "Pushed mend/fix and opened pull request #414. Write tests for retry is still
+ * running." Null when the landing didn't go through.
+ */
+export const landedToast = (
+  report: LandingReportDto,
+  rows: ReadonlyArray<WorkspaceRow>,
+  sessionId: string,
+): string | null => {
+  const done = landedSentence(report);
+  if (done === null) return null;
+  const titles = othersRunning(rows, sessionId).map((row) => row.title);
+  if (titles.length === 0) return done;
+  const names =
+    titles.length === 1
+      ? titles[0]
+      : `${titles.slice(0, -1).join(", ")} and ${titles[titles.length - 1]}`;
+  return `${done} ${names} ${titles.length === 1 ? "is" : "are"} still running.`;
+};
 
 const activityNow = (doing: { readonly kind: string; readonly subject: string | null }): string => {
   const subject = doing.subject === null ? null : doing.subject;

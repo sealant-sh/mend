@@ -41,6 +41,7 @@ import { WorkspacesRefusedBanner } from "#/components/host-user-namespaces";
 import { loginBlock } from "#/lib/new-session";
 
 import { ComposerResources } from "./composer-resources.tsx";
+import { JoinLine } from "./join-line.tsx";
 import {
   AgentMenuItems,
   AgentSheetBody,
@@ -422,6 +423,13 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
                 }
               />
             </ComposerCard>
+            {composer.target._tag === "existing" && project !== undefined ? (
+              <JoinLine
+                projectId={project.id}
+                worktreeId={composer.target.id}
+                className="px-0.5 pt-1"
+              />
+            ) : null}
             <div className="px-0.5">
               <Hint composer={composer} />
             </div>
@@ -601,6 +609,13 @@ function PhoneComposer({ composer }: { readonly composer: Composer }) {
               onOpen={() => setOpen("worktree")}
             />
           </div>
+          {composer.target._tag === "existing" && project !== undefined ? (
+            <JoinLine
+              projectId={project.id}
+              worktreeId={composer.target.id}
+              className="px-4 pt-3 text-sm"
+            />
+          ) : null}
           <div className="p-4">
             <Button
               type="submit"

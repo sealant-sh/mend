@@ -16,6 +16,8 @@ type PromptInputState = "default" | "running" | "locked";
  * - `running`: the agent is working. Enter steers it (`onSteer`), and Stop turn (`onStop`) sits
  *   beside Steer. `stopping` keeps Stop turn off and says so while the stop is on its way.
  * - `locked`: the viewer can't message the session. Only `notice` shows, and nothing sends.
+ *   `noticeAction` (a button) sits beside it, or under it at `size="touch"`: what the viewer can
+ *   do instead.
  *
  * In a narrow tile the context count hides first, then the harness name. `size="touch"` gives
  * 44px targets and hides the context count; while running it also hides the harness name, so Steer
@@ -31,6 +33,7 @@ function PromptInput({
   placeholder,
   label,
   notice,
+  noticeAction,
   harness,
   model,
   usage,
@@ -55,6 +58,8 @@ function PromptInput({
   /** The field's name for screen readers; the placeholder when not given. */
   label?: string;
   notice?: React.ReactNode;
+  /** While `locked`: what the viewer can do instead, a button beside the notice. */
+  noticeAction?: React.ReactNode;
   harness?: string;
   model?: React.ReactNode;
   usage?: string;
@@ -111,7 +116,7 @@ function PromptInput({
         className,
       )}
     >
-      {state === "locked" ? (
+      {state === "locked" && noticeAction === undefined ? (
         <p
           data-slot="prompt-input-notice"
           className="flex items-center gap-2 px-4 py-3.5 text-muted-foreground"
@@ -119,6 +124,29 @@ function PromptInput({
           <LockIcon aria-hidden="true" className="size-4 shrink-0" />
           <span>{notice}</span>
         </p>
+      ) : state === "locked" ? (
+        <div
+          className={cn(
+            "flex",
+            size === "touch"
+              ? "flex-col gap-3 px-4 py-3.5"
+              : "flex-wrap items-center gap-3 py-2.5 pr-2.5 pl-4",
+          )}
+        >
+          <p
+            data-slot="prompt-input-notice"
+            className="flex min-w-0 flex-1 items-start gap-2 text-muted-foreground"
+          >
+            <LockIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <span>{notice}</span>
+          </p>
+          <div
+            data-slot="prompt-input-notice-action"
+            className={size === "touch" ? "flex flex-col" : "shrink-0"}
+          >
+            {noticeAction}
+          </div>
+        </div>
       ) : (
         <>
           <textarea

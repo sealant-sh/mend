@@ -403,7 +403,13 @@ function SessionSheet({
     />
   );
   const bodyOf = (tab: string) => (
-    <WorkspaceTabBody tab={tab} facts={facts} place={place} newSession={newSessionBody} />
+    <WorkspaceTabBody
+      tab={tab}
+      facts={facts}
+      place={place}
+      newSession={newSessionBody}
+      onStartOwn={() => openNewSession(tileOfTab(shown, tab)?.id ?? shown.focus)}
+    />
   );
 
   const maximisedTile = maximised === null ? undefined : tileById(shown, maximised);

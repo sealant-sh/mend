@@ -38,7 +38,7 @@ import {
   forkNote,
   heldBack,
   landButtonLabel,
-  landedSentence,
+  landedToast,
   landingBase,
   landingProblem,
   landRequestOf,
@@ -371,7 +371,7 @@ function LandForm({
   const land = useMutation(
     trpc.landings.land.mutationOptions({
       onSuccess: (report) => {
-        const done = landedSentence(report);
+        const done = landedToast(report, place.sessions, place.detail.session.id);
         if (done === null) return;
         clear();
         toast.add({ description: done, priority: "low" });
