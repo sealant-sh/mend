@@ -310,8 +310,16 @@ const startStep = (step: string) => {
   return { exited, printed, marked, stop };
 };
 
+/**
+ * How long a test of the Stop may take. The Stop walks every process on the machine three times,
+ * forking twice for each, then waits 2 s (`setupStopArgv`). In a workspace that is a few dozen
+ * processes; on a developer machine running other checkouts' tests it is thousands, and one walk
+ * took 3.2 s at a load of 27. These tests wait for that real shell to end the step.
+ */
+const STOP_TEST_TIMEOUT_MS = 90_000;
+
 describe("a setup step and its Stop, in a real shell", () => {
-  it("ends the step and every process it started", { timeout: 15_000 }, async () => {
+  it("ends the step and every process it started", { timeout: STOP_TEST_TIMEOUT_MS }, async () => {
     // A process in the middle of an exec reads an empty environ in /proc, so a child the step has
     // just started can't be counted yet. Each child says it is up once its exec is done, and stays
     // a shell from then on: the `exit 0` stops `sh` from exec'ing `sleep` in its place.
@@ -329,9 +337,7 @@ describe("a setup step and its Stop, in a real shell", () => {
 
   it(
     "runs none of the step's commands once a process it waits on is ended",
-    {
-      timeout: 15_000,
-    },
+    { timeout: STOP_TEST_TIMEOUT_MS },
     async () => {
       // The reader comes after the sleep in the Stop's walk, so it sees the sleep end first.
       const after = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "mend-setup-stop-")), "after");

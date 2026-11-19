@@ -123,24 +123,33 @@ export const useScreenScript = (includeConfined = false) => {
     image = fixtureImage("screen");
   }, 660_000);
 
+  // On a loaded machine the daemon has taken over 30 s to create and start a container, so the
+  // start waits up to 90 s for it. Every test in a file uses the file's one name, and a start that
+  // ran out of time can still leave its container behind once the daemon gets to it: each start
+  // first removes whatever is under the name, so the next test doesn't fail with "already in use".
   beforeEach(() => {
     const containers = [
       [container, ["--security-opt", "seccomp=unconfined"]],
       ...(includeConfined ? [[confined, []] as const] : []),
     ] as const;
     for (const [name, privileges] of containers) {
-      docker(
-        "run",
-        "-d",
-        "--init",
-        "--network",
-        "none",
-        ...privileges,
-        "--name",
-        name,
-        image,
-        "sleep",
-        "infinity",
+      execFileSync("docker", ["rm", "-f", name], { stdio: "ignore", timeout: 60_000 });
+      execFileSync(
+        "docker",
+        [
+          "run",
+          "-d",
+          "--init",
+          "--network",
+          "none",
+          ...privileges,
+          "--name",
+          name,
+          image,
+          "sleep",
+          "infinity",
+        ],
+        { encoding: "utf8", timeout: 90_000 },
       );
       stageHelper(FULL, VIEW_ONLY, name);
       execFileSync(
@@ -156,7 +165,7 @@ export const useScreenScript = (includeConfined = false) => {
         { input: CHROMIUM_WRAPPER_SCRIPT, timeout: 30_000 },
       );
     }
-  }, 60_000);
+  }, 300_000);
 
   // Removing both containers has taken longer than vitest's default 10 s hook timeout.
   afterEach(
