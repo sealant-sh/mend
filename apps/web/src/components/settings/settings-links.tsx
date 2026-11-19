@@ -41,6 +41,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/mcp-servers" };
     case "a-notifications":
       return { to: "/settings/notifications" };
+    case "a-automation":
+      return { to: "/settings/automation" };
     case "a-apps":
       return { to: "/settings/connected-apps" };
     case "a-devices":
