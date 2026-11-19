@@ -159,12 +159,15 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     // --- env-secrets: add, replace; the value never comes back --------------------------------------
     await button("Add secret…").click();
     const add = dialog("Add secret");
-    await add.getByLabel("Name", { exact: true }).fill("VERIFY_API_TOKEN");
+    // The driver withholds a picture of a dialog whose fields look like a credential: take it empty.
+    await add.getByLabel("Name", { exact: true }).waitFor();
     await shot("project-secrets-add-secret-desktop-light");
+    await add.getByLabel("Name", { exact: true }).fill("VERIFY_API_TOKEN");
     await typeSecret(add.getByLabel("Value", { exact: true }), "project-secret", FAKES.github);
     await add.getByRole("button", { name: "Add secret", exact: true }).click();
-    await toastSays("Added VERIFY_API_TOKEN.");
     await closed("Add secret");
+    note("Add secret closed after saving");
+    await toastSays("Added VERIFY_API_TOKEN.");
     await secrets().getByText("VERIFY_API_TOKEN", { exact: true }).waitFor();
     const listed = await call("environment.secrets", { projectId: project.id });
     expect(
