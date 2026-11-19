@@ -9,15 +9,20 @@ import { guardSettingsPage } from "#/lib/settings-guards";
  */
 export const Route = createFileRoute("/_inbox/projects/$projectId_/settings/secrets")({
   beforeLoad: guardSettingsPage("p-secrets"),
-  loader: ({ context: { queryClient, trpc }, params }) =>
-    Promise.all([
+  loader: ({ context: { queryClient, trpc }, params }) => {
+    // Cluster bindings show only on some servers, under the rest: read them, don't wait.
+    void queryClient.prefetchQuery(
+      trpc.environment.clusterBindings.queryOptions({ projectId: params.projectId }),
+    );
+    return Promise.all([
       queryClient.ensureQueryData(
         trpc.environment.environment.queryOptions({ projectId: params.projectId }),
       ),
       queryClient.ensureQueryData(
         trpc.environment.secrets.queryOptions({ projectId: params.projectId }),
       ),
-    ]),
+    ]);
+  },
   component: SecretsRoute,
 });
 

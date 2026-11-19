@@ -1700,6 +1700,25 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.secrets.tsx`,
   `apps/web/src/lib/project-environment.ts`, `apps/web/src/lib/env-composer.ts`
 
+### project-settings.new-web-cluster-bindings
+
+- **Map:** cluster-bindings.md `cluster-bind-web`, `cluster-remove`, `cluster-service-account`,
+  `cluster-local-runner` (the new web app's Variables and secrets page)
+- **Needs:** no session; no turn; web; on the box, whatever runtime it runs
+- **Do:** Drive the recipe `new-web-project-cluster-bindings`: verify-fixture's Variables and
+  secrets page as the server has it, then with the bindings read rewritten as a Kubernetes server
+  answers it (bind, a duplicate, the service account, remove) and as a server without Kubernetes
+  that still has a binding.
+- **See:** on a local runner with nothing bound, no Cluster bindings section; on Kubernetes,
+  `Bound Secret <name>.`, `Secret app-env is already bound to this project.`,
+  `Workspaces run as <account>.`, `Removed ConfigMap <name>.`; a stranded binding's "These bindings
+  can't resolve here." with Remove only, and the section gone once it is removed.
+- **Mode:** `scripted` (recipes/new-web-project-cluster-bindings.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/cluster-bindings-section.tsx`,
+  `apps/web/src/lib/cluster-bindings.ts`
+
 ### references-folders.folder-cli
 
 - **Map:** references-folders.md `folder-cli`, `folder-web` (read)
