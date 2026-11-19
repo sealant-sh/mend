@@ -264,9 +264,10 @@ describe("controlMarkers", () => {
   });
 });
 
+const at = (entry: { readonly at: string }) => entry.at;
+
 describe("withMarkers", () => {
   const entries = [{ at: "2026-11-19T10:00:00.000Z" }, { at: "2026-11-19T11:00:00.000Z" }];
-  const at = (entry: { readonly at: string }) => entry.at;
 
   it("lays each marker before the first entry after it", () => {
     const placed = withMarkers(
