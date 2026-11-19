@@ -389,6 +389,22 @@ test("clients-b loads the built web app in Chromium after its tests", () => {
   assert.equal(step.env.MEND_VERIFY_PLAYWRIGHT, "${{ github.workspace }}/apps/mobile");
 });
 
+test("clients-b loads the built new web app in Chromium beside the old one", () => {
+  const run = commands("test-clients-b");
+  const old = run.findIndex((command) =>
+    command.includes("pnpm --filter @mend/web-old check:browser"),
+  );
+  const browser = run.findIndex((command) =>
+    command.includes("pnpm --filter @mend/web check:browser"),
+  );
+  assert.ok(old >= 0 && browser > old, "the new app's check runs after the old app's");
+  assert.match(run[browser], /turbo run build --filter=@mend\/web\n/);
+  const step = jobs["test-clients-b"].steps.find((candidate) =>
+    candidate.run?.includes("pnpm --filter @mend/web check:browser"),
+  );
+  assert.equal(step.env.MEND_VERIFY_PLAYWRIGHT, "${{ github.workspace }}/apps/mobile");
+});
+
 test("store-image-git runs the store's handoff tests under the runtime stage's own git", () => {
   assert.deepEqual(commands("store-image-git"), [
     'node scripts/ci-images.mjs pull "$(bash scripts/store-image-git.sh --image)"',
