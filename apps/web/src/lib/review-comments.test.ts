@@ -1,12 +1,15 @@
+import { ChangeId, ReviewCommentId, SessionId } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
-import type { ChangePassDto, FollowUpDto, ReviewCommentDto, ReviewDiffFileDto } from "./api.ts";
+import type { FollowUpDto, ReviewCommentDto } from "./api.ts";
 import {
+  type AnchorFile,
   anchorFor,
   assembleInstruction,
   commentGroups,
   deliveryOf,
   parseAnchor,
+  type PassFacts,
   passWords,
   placeLongWords,
   placeWords,
@@ -16,20 +19,22 @@ import {
   toolbarNoteWords,
 } from "./review-comments.ts";
 
+const SESSION = SessionId.make("session-1");
+
 let made = 0;
 const comment = (over: Partial<ReviewCommentDto> = {}): ReviewCommentDto => {
   made += 1;
   return {
-    id: `comment-${made}`,
-    changeId: "change-1",
+    id: ReviewCommentId.make(`comment-${made}`),
+    changeId: ChangeId.make("change-1"),
     file: "src/payments/retry.ts",
     line: 31,
     endLine: null,
     anchor: null,
-    authorKind: "human",
+    authorKind: "reviewer",
     authorName: "Ada Lovelace",
     body: "Should we back off on a 409 too?",
-    kind: "comment",
+    kind: "note",
     suggestion: null,
     state: "open",
     evidence: [],
@@ -37,30 +42,38 @@ const comment = (over: Partial<ReviewCommentDto> = {}): ReviewCommentDto => {
     createdAt: new Date(Date.UTC(2026, 10, 19, 11, made)),
     updatedAt: new Date(Date.UTC(2026, 10, 19, 11, made)),
     ...over,
-  } as ReviewCommentDto;
+  };
 };
 
-const followUp = (over: Partial<FollowUpDto> = {}): FollowUpDto =>
-  ({
-    id: "follow-up-1",
-    sessionId: "session-1",
-    changeId: "change-1",
-    reviewSliceId: "slice-1",
-    checkpointAId: "checkpoint-a",
-    checkpointBId: "checkpoint-b",
-    diffDigest: "digest",
-    commentIds: ["comment-1"],
-    idempotencyKey: "key-1",
-    instruction: "Address these.",
-    status: "pending",
-    deliveryProcessId: null,
-    deliverySealantRunId: null,
-    deliveryError: null,
-    deliveryStartedAt: null,
-    createdAt: new Date(),
-    deliveredAt: null,
-    ...over,
-  }) as FollowUpDto;
+/** What `deliveryOf` reads of a follow-up. */
+const followUp = (
+  over: Partial<Pick<FollowUpDto, "changeId" | "status" | "deliveryError">> = {},
+): Pick<FollowUpDto, "changeId" | "status" | "deliveryError"> => ({
+  changeId: ChangeId.make("change-1"),
+  status: "pending",
+  deliveryError: null,
+  ...over,
+});
+
+const detail = (over: {
+  readonly steer?: boolean;
+  readonly terminalInput?: boolean;
+  readonly harness?: string;
+  readonly agentKind?: string | null;
+}): Parameters<typeof sendRuleOf>[0] => ({
+  control: { steer: over.steer ?? true, terminalInput: over.terminalInput ?? true },
+  currentAgent: over.agentKind === null ? null : { kind: over.agentKind ?? "agent-protocol" },
+  session: { harness: over.harness ?? "claude" },
+});
+
+const pass = (over: Partial<PassFacts>): PassFacts => ({
+  status: "completed",
+  detail: null,
+  findings: 0,
+  startedAt: new Date(Date.UTC(2026, 10, 19, 11, 55)),
+  finishedAt: new Date(Date.UTC(2026, 10, 19, 11, 57)),
+  ...over,
+});
 
 describe("where a comment sits", () => {
   it("names the file and its lines, or the whole change", () => {
@@ -87,7 +100,7 @@ describe("the column's lists", () => {
 
   it("sends only open comments that weren't sent", () => {
     const groups = commentGroups([
-      comment({ sentToSessionId: "session-1" }),
+      comment({ sentToSessionId: SESSION }),
       comment({ state: "addressed" }),
       comment({ state: "dismissed" }),
     ]);
@@ -95,16 +108,17 @@ describe("the column's lists", () => {
   });
 });
 
+const labels = (each: ReviewCommentDto) => stateActions(each).map((action) => action.label);
+
 describe("what a comment says and offers", () => {
   it("words each state as what was observed", () => {
     expect(stateWords(comment())).toBe("Not sent");
-    expect(stateWords(comment({ sentToSessionId: "session-1" }))).toBe("Sent");
+    expect(stateWords(comment({ sentToSessionId: SESSION }))).toBe("Sent");
     expect(stateWords(comment({ state: "addressed" }))).toBe("Resolved");
     expect(stateWords(comment({ state: "dismissed" }))).toBe("Dismissed");
   });
 
   it("adds or dismisses a draft, resolves or dismisses an open comment, and reopens the rest", () => {
-    const labels = (each: ReviewCommentDto) => stateActions(each).map((action) => action.label);
     expect(labels(comment({ authorKind: "mend", state: "draft" }))).toEqual([
       "Add to comments",
       "Dismiss",
@@ -112,7 +126,7 @@ describe("what a comment says and offers", () => {
     expect(stateActions(comment({ authorKind: "mend", state: "draft" }))[0]?.state).toBe("open");
     expect(labels(comment())).toEqual(["Resolve", "Dismiss"]);
     expect(labels(comment({ authorKind: "mend" }))).toEqual(["Resolve", "Remove"]);
-    expect(labels(comment({ sentToSessionId: "session-1" }))).toEqual(["Resolve"]);
+    expect(labels(comment({ sentToSessionId: SESSION }))).toEqual(["Resolve"]);
     expect(labels(comment({ state: "addressed" }))).toEqual(["Reopen"]);
     expect(labels(comment({ state: "dismissed" }))).toEqual(["Reopen"]);
   });
@@ -121,7 +135,13 @@ describe("what a comment says and offers", () => {
 describe("the message the agent receives", () => {
   it("lists each comment with its place and a suggestion's lines, in order", () => {
     const text = assembleInstruction("mend/fix-retry", [
-      comment({ line: 37, endLine: 40, suggestion: "a\nb", kind: "suggestion", body: "Take random." }),
+      comment({
+        line: 37,
+        endLine: 40,
+        suggestion: "a\nb",
+        kind: "suggestion",
+        body: "Take random.",
+      }),
       comment({ file: null, line: null, body: "Keep the signature." }),
     ]);
     expect(text).toContain("The branch mend/fix-retry is already checked out");
@@ -132,7 +152,7 @@ describe("the message the agent receives", () => {
 });
 
 describe("where a new line comment anchors", () => {
-  const files = [
+  const files: ReadonlyArray<AnchorFile> = [
     {
       oldPath: "src/a.ts",
       newPath: "src/a.ts",
@@ -141,7 +161,7 @@ describe("where a new line comment anchors", () => {
         { newStart: 40, newLines: 0, contextHash: "h2" },
       ],
     },
-  ] as unknown as ReadonlyArray<ReviewDiffFileDto>;
+  ];
 
   it("pins lines inside one changed part to that part", () => {
     expect(anchorFor(files, "src/a.ts", 11, 14)).toEqual({
@@ -171,18 +191,6 @@ describe("where a new line comment anchors", () => {
 });
 
 describe("who sends", () => {
-  const detail = (over: {
-    readonly steer?: boolean;
-    readonly terminalInput?: boolean;
-    readonly harness?: string;
-    readonly agentKind?: string | null;
-  }) =>
-    ({
-      control: { steer: over.steer ?? true, terminalInput: over.terminalInput ?? true, own: true },
-      currentAgent: over.agentKind === null ? null : { kind: over.agentKind ?? "agent-protocol" },
-      session: { harness: over.harness ?? "claude" },
-    }) as unknown as Parameters<typeof sendRuleOf>[0];
-
   it("lets anyone who steers send to an agent", () => {
     expect(sendRuleOf(detail({}), "Ada Lovelace")).toEqual({ can: true });
   });
@@ -209,9 +217,11 @@ describe("who sends", () => {
 describe("where a send stands", () => {
   it("is nothing without a follow-up of this change", () => {
     expect(deliveryOf(null, "change-1", null)).toEqual({ kind: "none" });
-    expect(deliveryOf(followUp({ changeId: "change-2" }), "change-1", null)).toEqual({
-      kind: "none",
-    });
+    expect(deliveryOf(followUp({ changeId: ChangeId.make("change-2") }), "change-1", null)).toEqual(
+      {
+        kind: "none",
+      },
+    );
     expect(deliveryOf(followUp({ status: "delivered" }), "change-1", null)).toEqual({
       kind: "none",
     });
@@ -223,7 +233,11 @@ describe("where a send stands", () => {
       "delivering",
     );
     expect(
-      deliveryOf(followUp({ status: "delivery_failed", deliveryError: "No answer." }), "change-1", null),
+      deliveryOf(
+        followUp({ status: "delivery_failed", deliveryError: "No answer." }),
+        "change-1",
+        null,
+      ),
     ).toMatchObject({ kind: "failed", reason: "No answer." });
   });
 
@@ -255,8 +269,8 @@ describe("the toolbar's note", () => {
 
   it("counts resolved and open once comments were sent", () => {
     const groups = commentGroups([
-      comment({ sentToSessionId: "session-1", state: "addressed" }),
-      comment({ sentToSessionId: "session-1" }),
+      comment({ sentToSessionId: SESSION, state: "addressed" }),
+      comment({ sentToSessionId: SESSION }),
     ]);
     expect(toolbarNoteWords("Codex", groups, true)).toBe("1 comment resolved, 1 open.");
   });
@@ -264,18 +278,6 @@ describe("the toolbar's note", () => {
 
 describe("what Mend's passes did", () => {
   const now = new Date(Date.UTC(2026, 10, 19, 12, 0));
-  const pass = (over: Partial<ChangePassDto>): ChangePassDto =>
-    ({
-      changeId: "change-1",
-      kind: "read",
-      status: "completed",
-      detail: null,
-      findings: 0,
-      startedAt: new Date(Date.UTC(2026, 10, 19, 11, 55)),
-      finishedAt: new Date(Date.UTC(2026, 10, 19, 11, 57)),
-      ...over,
-    }) as ChangePassDto;
-
   it("never words a pass that found nothing like one that never ran", () => {
     expect(passWords(null, null, now)).toEqual([]);
     expect(passWords(pass({}), null, now)).toEqual([
@@ -287,7 +289,7 @@ describe("what Mend's passes did", () => {
     expect(passWords(pass({ findings: 2 }), null, now)[0]?.text).toBe(
       "Mend read the change 3 min ago and drafted 2 comments.",
     );
-    expect(passWords(null, pass({ kind: "suggest", findings: 1 }), now)[0]?.text).toBe(
+    expect(passWords(null, pass({ findings: 1 }), now)[0]?.text).toBe(
       "Mend looked for fixes 3 min ago and drafted 1 fix.",
     );
     expect(passWords(pass({ status: "queued" }), null, now)[0]?.text).toBe(

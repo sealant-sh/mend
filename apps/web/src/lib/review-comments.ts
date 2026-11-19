@@ -173,8 +173,15 @@ export interface LineAnchor {
  * The anchor for lines `line` to `endLine` (null for one line) of `file`, or null when they are
  * not inside one changed part of it: the server pins a comment to its hunk.
  */
+/** What anchoring reads of a review's file: its paths and where its changed parts are. */
+export type AnchorFile = Pick<ReviewDiffFileDto, "oldPath" | "newPath"> & {
+  readonly hunks: ReadonlyArray<
+    Pick<ReviewDiffFileDto["hunks"][number], "newStart" | "newLines" | "contextHash">
+  >;
+};
+
 export const anchorFor = (
-  files: ReadonlyArray<ReviewDiffFileDto>,
+  files: ReadonlyArray<AnchorFile>,
   file: string,
   line: number,
   endLine: number | null,
@@ -236,7 +243,11 @@ export type SendRule = { readonly can: true } | { readonly can: false; readonly 
  * alone, even while control is shared (docs/adr/0013).
  */
 export const sendRuleOf = (
-  detail: Pick<SessionDetailDto, "control" | "currentAgent" | "session">,
+  detail: {
+    readonly control: Pick<SessionDetailDto["control"], "steer" | "terminalInput">;
+    readonly currentAgent: { readonly kind: string } | null;
+    readonly session: Pick<SessionDetailDto["session"], "harness">;
+  },
   ownerName: string | null,
 ): SendRule => {
   if (!detail.control.steer)
@@ -261,26 +272,24 @@ export const sendRuleOf = (
  * Where a send stands, for the band under the toolbar: nothing; saved and waiting for a terminal
  * agent to stop; delivery under way; or not sent, with the reason when Mend has one.
  */
-export type Delivery =
+export type Delivery<F = FollowUpDto> =
   | { readonly kind: "none" }
-  | { readonly kind: "pending"; readonly followUp: FollowUpDto }
-  | { readonly kind: "delivering"; readonly followUp: FollowUpDto }
-  | {
-      readonly kind: "failed";
-      readonly followUp: FollowUpDto | null;
-      readonly reason: string | null;
-    };
+  | { readonly kind: "pending"; readonly followUp: F }
+  | { readonly kind: "delivering"; readonly followUp: F }
+  | { readonly kind: "failed"; readonly followUp: F | null; readonly reason: string | null };
 
 /**
  * The send's state from the server's active follow-up for the session and, when the last attempt
  * from this page failed before the server answered, that failure. A follow-up of another change is
  * not this view's.
  */
-export const deliveryOf = (
-  active: FollowUpDto | null,
+export const deliveryOf = <
+  F extends Pick<FollowUpDto, "changeId" | "status" | "deliveryError"> = FollowUpDto,
+>(
+  active: F | null,
   changeId: string,
   failure: string | null,
-): Delivery => {
+): Delivery<F> => {
   const own = active !== null && active.changeId === changeId ? active : null;
   if (failure !== null) return { kind: "failed", followUp: own, reason: failure };
   if (own === null) return { kind: "none" };
@@ -329,10 +338,16 @@ export const toolbarNoteWords = (
 };
 
 /** The newest pass of one kind, or null when none ran. */
-export const passOf = (
-  passes: ReadonlyArray<ChangePassDto>,
+export const passOf = <P extends Pick<ChangePassDto, "kind">>(
+  passes: ReadonlyArray<P>,
   kind: ChangePassDto["kind"],
-): ChangePassDto | null => passes.find((pass) => pass.kind === kind) ?? null;
+): P | null => passes.find((pass) => pass.kind === kind) ?? null;
+
+/** What the pass lines read of a pass. */
+export type PassFacts = Pick<
+  ChangePassDto,
+  "status" | "detail" | "findings" | "startedAt" | "finishedAt"
+>;
 
 /** "just now", "4 min ago", "3 h ago", "2 d ago". */
 export const agoWords = (at: Date, now: Date): string => {
@@ -346,7 +361,7 @@ export const agoWords = (at: Date, now: Date): string => {
 const RUNNING = new Set(["queued", "running"]);
 
 /** Whether a pass is queued or running now. */
-export const passBusy = (pass: ChangePassDto | null): boolean =>
+export const passBusy = (pass: PassFacts | null): boolean =>
   pass !== null && RUNNING.has(pass.status);
 
 /**
@@ -355,12 +370,12 @@ export const passBusy = (pass: ChangePassDto | null): boolean =>
  * neither ran.
  */
 export const passWords = (
-  read: ChangePassDto | null,
-  suggest: ChangePassDto | null,
+  read: PassFacts | null,
+  suggest: PassFacts | null,
   now: Date,
 ): ReadonlyArray<{ readonly text: string; readonly failed: boolean }> => {
   const line = (
-    pass: ChangePassDto | null,
+    pass: PassFacts | null,
     doing: string,
     running: string,
     done: string,

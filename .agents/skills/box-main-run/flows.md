@@ -565,6 +565,37 @@ flows reuse what earlier ones made:
   `apps/web/src/components/change/change-tour.tsx`, `apps/web/src/components/change/tour-stop.tsx`,
   `apps/web/src/lib/tour.ts`
 
+### review-change.new-web-comments
+
+- **Map:** review-change.md `review-inline-comment`, `review-change-comment`,
+  `review-comment-state`, `review-machine-pass` (Read this change, Suggest fixes);
+  send-review-back.md `send-open`, `send-select`, `send-edit`, `send-deliver`, `send-pending`,
+  `send-sent-state`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe
+  `new-web-comments`. On `change-small` it comments on one line (a click on its number), on a range
+  (a drag across numbers), on lines typed from a file's "…", and on the whole change; resolves,
+  reopens and dismisses; asks Mend to read the change and suggest fixes; lays Mend's drafts over the
+  comments and adds one, then removes it; marks every file viewed; chooses and edits before sending;
+  sends (the `mend run` session refuses it); then shows a failed, a pending and a delivered send
+  from the server's answers, the sent state with a second look, and 390px.
+- **See:** each step's note in the recipe's `steps.log`: the box "Comment on <file>, line 20" and
+  "lines 12–15"; each comment under its last line as "Not sent · line N"; "On the whole change" over
+  the diffs; "Send 4 comments to Claude Code" with "Claude Code has finished, so it starts on your
+  comments as soon as you send them."; "Resolved" and "Dismissed" folding a comment, Send counting
+  down; Mend's real pass lines; "Draft from Mend" with its suggested replacement, Add to comments
+  and Dismiss, then "from Mend's draft" and Remove; "Your review" listing what goes; "Comments to
+  send · 2 of 3" and the message written again when one is unchecked; "Mend couldn't send your
+  comments." with Try again; "Your comments are saved, not sent yet."; the conversation tab after a
+  delivered send; "Sent" and "1 comment resolved, 2 open."; the phone's "Send N comments" and
+  Comments sheet.
+- **Mode:** `scripted` (recipes/new-web-comments.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/change/change-comments.tsx`,
+  `apps/web/src/components/change/review-comment.tsx`,
+  `apps/web/src/components/change/send-dialog.tsx`, `apps/web/src/lib/review-comments.ts`
+
 ### review-change.web-comments
 
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,

@@ -796,9 +796,9 @@ export function useChangeComments({
   const note =
     delivery.kind === "failed"
       ? `${countWords(toSend.length, "comment", "comments")} not sent`
-      : !rule.can && groups.unsent.length > 0
-        ? rule.why
-        : toolbarNoteWords(agent, groups, finished);
+      : rule.can
+        ? toolbarNoteWords(agent, groups, finished)
+        : rule.why;
 
   const live = agentIsLive(detail.session, detail.currentAgent);
   const bandLayout = narrow ? "stacked" : "inline";
