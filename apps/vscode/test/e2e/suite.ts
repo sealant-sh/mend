@@ -11,7 +11,7 @@
  * 2 to get) and MEND_E2E_SEED_UI (a local extension no workspace may get). Each step's evidence is
  * written as it passes, so a failure leaves what did pass on disk.
  */
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -43,6 +43,8 @@ const editorMode = process.env["MEND_E2E_EDITOR"] === "off" ? "off" : "on";
 const pickedExtension = env("MEND_E2E_PICK");
 const seededUiExtension = process.env["MEND_E2E_SEED_UI"] ?? "";
 const priorSession = process.env["MEND_E2E_PRIOR_SESSION"] ?? "";
+const vscodeServer = env("MEND_E2E_VSCODE_SERVER");
+const vscodeCommit = env("MEND_E2E_VSCODE_COMMIT");
 
 const evidence: Record<string, unknown> = { serverUrl, home: os.homedir() };
 const record = (step: string, value: unknown): void => {
@@ -215,25 +217,23 @@ const install = (): void => {
 
 // ── the steps ──────────────────────────────────────────────────────────────
 
+const sshArgs = (alias: string, user: string, script: string) => [
+  "-F",
+  path.join(os.homedir(), ".ssh", "config"),
+  "-o",
+  `UserKnownHostsFile=${path.join(os.homedir(), ".ssh", "known_hosts")}`,
+  "-o",
+  "BatchMode=yes",
+  "-o",
+  "ConnectTimeout=20",
+  "-l",
+  user,
+  alias,
+  script,
+];
+
 const sshIn = (alias: string, user: string, script: string, timeoutMs = 60_000) =>
-  spawnSync(
-    "ssh",
-    [
-      "-F",
-      path.join(os.homedir(), ".ssh", "config"),
-      "-o",
-      `UserKnownHostsFile=${path.join(os.homedir(), ".ssh", "known_hosts")}`,
-      "-o",
-      "BatchMode=yes",
-      "-o",
-      "ConnectTimeout=20",
-      "-l",
-      user,
-      alias,
-      script,
-    ],
-    { encoding: "utf8", timeout: timeoutMs },
-  );
+  spawnSync("ssh", sshArgs(alias, user, script), { encoding: "utf8", timeout: timeoutMs });
 
 /** Session 1's window lives the owner's story and installs an extension; session 2's only reports. */
 type RemoteRole = "first" | "second";
@@ -410,16 +410,57 @@ const assertPersonAndLocal = (listed: ReturnType<typeof workspaceExtensions>): v
 
 const windowRoles: Record<string, RemoteRole> = {};
 
+const aliasOf = (folder: vscode.Uri): string => /@([^@]+)$/.exec(folder.authority)?.[1] ?? "";
+
+/**
+ * VS Code's server for this editor's commit, put in the window's home before the window opens, as
+ * the person, where VS Code's CLI keeps it (`~/.vscode-server/cli/servers/Stable-<commit>`; the CLI
+ * takes the directory as installed once it exists). Otherwise every fresh workspace downloads the
+ * 217 MB server from Microsoft's CDN, and a CDN that slows to 200 KB/s held a window past its
+ * wait (SLNT-1168). The setup fetched the archive once; Remote-SSH, its exec server and the server
+ * itself still run for real. Asynchronous: the extension host keeps serving Mend's requests.
+ */
+const seedVscodeServer = async (folder: vscode.Uri): Promise<number> => {
+  const started = Date.now();
+  const dir = `~/.vscode-server/cli/servers/Stable-${vscodeCommit}`;
+  const script = [
+    "set -e",
+    `[ -d ${dir} ] && exit 0`,
+    `staging=${dir}.seed-$$`,
+    'mkdir -p "$staging/server"',
+    'tar -xzf - --strip-components=1 -C "$staging/server"',
+    `mv "$staging" ${dir}`,
+  ].join("\n");
+  const child = spawn("ssh", sshArgs(aliasOf(folder), sshUserOf(folder), script), {
+    stdio: ["pipe", "ignore", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk: Buffer) => {
+    stderr += chunk.toString();
+  });
+  fs.createReadStream(vscodeServer).pipe(child.stdin);
+  const timer = setTimeout(() => child.kill("SIGTERM"), 180_000);
+  const status = await new Promise<number | null>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("close", resolve);
+  }).finally(() => clearTimeout(timer));
+  if (status !== 0) {
+    throw new Error(
+      `seeding VS Code's server in ${folder.authority} exited ${String(status)}: ${stderr.trim()}`,
+    );
+  }
+  return Date.now() - started;
+};
+
 /**
  * What a workspace holds of VS Code's server while its window never reported (SLNT-1168), read over
  * plain SSH beside Remote-SSH: what was installed, the exec server's and the server's own logs, and
  * the processes still running. An SSH that hangs or fails here says as much about the connection.
  */
 const unreportedWindowState = (folder: vscode.Uri): void => {
-  const alias = /@([^@]+)$/.exec(folder.authority)?.[1] ?? "";
   const started = Date.now();
   const read = sshIn(
-    alias,
+    aliasOf(folder),
     sshUserOf(folder),
     [
       "set +e",
@@ -443,6 +484,10 @@ const unreportedWindowState = (folder: vscode.Uri): void => {
 const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<unknown> => {
   windowRoles[sshUserOf(folder)] = role;
   fs.writeFileSync(rolesFile, JSON.stringify(windowRoles));
+  const seededMs = await seedVscodeServer(folder);
+  console.log(
+    `[mend-e2e] info: VS Code's server seeded in the ${role} window's home (${seededMs} ms)`,
+  );
   await original.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
   const report: unknown = await until(
     `the ${role} Remote-SSH window to report`,
@@ -702,7 +747,8 @@ export async function run(): Promise<void> {
     throw new Error("the review page is not served at the server's URL");
   }
 
-  // 9. Remote-SSH for real: a new window over the managed alias installs VS Code's server there.
+  // 9. Remote-SSH for real: a new window over the managed alias starts VS Code's server there, as the
+  // person, from the copy the setup seeded into their home.
   if (process.env["MEND_E2E_REMOTE_SSH"] === "1") {
     await vscode.workspace
       .getConfiguration("remote.SSH")

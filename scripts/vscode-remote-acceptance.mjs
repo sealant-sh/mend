@@ -55,6 +55,7 @@ import {
   buildExtension,
   captureServerState,
   editorEnv,
+  fetchVscodeServer,
   installExtension,
   installServer,
   lines,
@@ -196,6 +197,7 @@ const main = async () => {
     throw new Error(`${seedUi} is no longer the declarative fixture`);
   }
   log(`seeded ${seeded} locally; no workspace may get it`);
+  const vscodeServer = await fetchVscodeServer(code, { env: vscodeEnv, log });
 
   const resultFile = path.join(scratch, "result.json");
   const testEnv = {
@@ -210,6 +212,8 @@ const main = async () => {
     MEND_E2E_PICK: picked,
     MEND_E2E_SEED_UI: seedUi,
     MEND_E2E_PRIOR_SESSION: freshWorktreeSession,
+    MEND_E2E_VSCODE_SERVER: vscodeServer.archive,
+    MEND_E2E_VSCODE_COMMIT: vscodeServer.commit,
   };
   log(
     `VS Code ${lines((await run(code, ["--version"], { env: vscodeEnv })).stdout)[0]} on ${display}`,
