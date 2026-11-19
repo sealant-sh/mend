@@ -7,7 +7,7 @@
 // first, once per stack: a fake Codex login, two sessions in `layouts-one`, one in `layouts-two`.
 //
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-layouts-sessions.json
-//   pnpm verify drive new-web --recipe new-web-layouts --account <account.json>
+//   pnpm verify drive new-web --recipe new-web-layouts   (the drive passes the stack's account)
 //
 // Every save, rename and removal is real, against the stack. The loading, couldn't-load and
 // couldn't-save-for-the-network states are recorded tRPC answers in the browser (captures named
@@ -41,17 +41,26 @@ const hydrated = async (on) => {
 export default async ({ page, web, capture: captureOnce, note, account }) => {
   if (account === null)
     throw new Error("this recipe signs in a second browser: run it with --account");
-  // The driver withholds a picture while the page inserts a subtree as it looks: look again.
+  // The driver withholds a picture while the page inserts a subtree as it looks (look again), and
+  // any picture with a canvas on screen: the Terminal view's. The picture then is taken with the
+  // terminal's canvas out of the page (its tile shows empty), and says so; its ARIA snapshot is
+  // taken either way.
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
   const capture = async (name) => {
     for (let attempt = 0; attempt < 4; attempt += 1) {
+      if (attempt === 2) {
+        const removed = await page.evaluate(() => {
+          const canvases = [...document.querySelectorAll("canvas")];
+          for (const canvas of canvases) canvas.remove();
+          return canvases.length;
+        });
+        if (removed > 0) note(`${name}: the terminal's canvas taken out for the picture`);
+      }
       await captureOnce(name);
       if (existsSync(join(out, `${name}.png`))) return;
       await page.waitForTimeout(400);
     }
-    note(
-      `${name}: the driver kept no picture (a terminal's canvas is on screen); its ARIA snapshot stands`,
-    );
+    note(`${name}: the driver kept no picture; its ARIA snapshot stands`);
   };
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
@@ -189,7 +198,7 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
 
   // T18's start: one tile holding both sessions. The button sits before Open in VS Code.
   await open(`/sessions/${A}`);
-  await page.locator(`[data-tab="${tabB}"]`).first().waitFor();
+  await page.locator(`[data-tab="${tabB}"]`).filter({ visible: true }).first().waitFor();
   const header = page.locator('[data-slot="workspace-header"]');
   const order = await header
     .locator("a, button")
@@ -200,6 +209,8 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
     throw new Error(`the header's controls read ${order.join(", ")}`);
   note(`header: ${order.filter(Boolean).join(" · ")}`);
   await openMenu();
+  // Opened at once, the menu may still be reading the list: wait for the read.
+  await menu().getByText("Loading your layouts…").waitFor({ state: "hidden" });
   const builtIns = await menu().getByRole("menuitem").allInnerTexts();
   note(`menu, nothing saved yet: ${builtIns.map((text) => text.replace(/\n/g, " ")).join(" | ")}`);
   if ((await menu().getByText("Your layouts").count()) !== 0)
@@ -228,7 +239,9 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
   await both("menu-change-over-terminal");
   await closeMenu();
 
-  // ⌥2 by the keyboard: Conversation beside change; the Terminal tab stays, in the left tile.
+  // ⌥2 by the keyboard: Conversation beside change; the Terminal tab stays, in the left tile. The
+  // new Terminal tile has the focus, and a terminal keeps its keys: the person is on a conversation.
+  await page.locator(`[data-tab="${tabA}"]`).filter({ visible: true }).getByRole("tab").click();
   await page.keyboard.press("Alt+Digit2");
   await page.waitForFunction(
     () =>
@@ -239,6 +252,7 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
   if (JSON.stringify(beside) !== JSON.stringify([[tabA, tabB, "view:terminal"], ["view:change"]]))
     throw new Error(`⌥2 laid out ${JSON.stringify(beside)}`);
   note(`⌥2: two tiles, ${JSON.stringify(beside)}: the Terminal tab kept, not lost`);
+  await page.locator(`[data-tab="${tabA}"]`).filter({ visible: true }).getByRole("tab").click();
   await page.keyboard.press("Alt+Digit3");
   await page.waitForFunction(
     () =>
@@ -299,7 +313,7 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
 
   // Another workspace: its own arrangement, and the saved layout to pick.
   await go(`/sessions/${C}`);
-  await page.locator(`[data-tab="${tabC}"]`).first().waitFor();
+  await page.locator(`[data-tab="${tabC}"]`).filter({ visible: true }).first().waitFor();
   await page.waitForFunction(
     () =>
       [...document.querySelectorAll("[data-tile]")].filter((t) => t.getClientRects().length)
@@ -319,7 +333,7 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
   await both("other-workspace-applied");
   // The first workspace kept its own arrangement: a layout is applied, it doesn't follow.
   await go(`/sessions/${A}`);
-  await page.locator(`[data-tab="${tabB}"]`).first().waitFor();
+  await page.locator(`[data-tab="${tabB}"]`).filter({ visible: true }).first().waitFor();
   const firstAgain = await tabsByTile();
   if (JSON.stringify(firstAgain) !== JSON.stringify(changeOverTerminal))
     throw new Error(`layouts-one now reads ${JSON.stringify(firstAgain)}`);
@@ -347,9 +361,12 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
   // The menu's own states, as recorded answers: loading, then couldn't load and Try again.
   const held = Promise.withResolvers();
   stubs.set("layouts.list", { hold: held.promise });
-  await page.evaluate(() =>
-    window["__TSR_ROUTER__"].options.context.queryClient.resetQueries({ queryKey: [["layouts"]] }),
-  );
+  // Not awaited: the read waits on the recipe's hold until the menu shows it loading.
+  await page.evaluate(() => {
+    void window["__TSR_ROUTER__"].options.context.queryClient.resetQueries({
+      queryKey: [["layouts"]],
+    });
+  });
   await openMenu();
   await menu().getByText("Loading your layouts…").waitFor();
   note("while the list loads: Loading your layouts… under Your layouts");

@@ -469,10 +469,9 @@ function YourLayoutRow({ layout }: { readonly layout: SavedLayout }) {
           </Button>
           <Button
             type="button"
-            variant="ghost"
+            variant="destructive"
             size="sm"
             aria-label={`Remove ${layout.name}`}
-            className="text-destructive"
             disabled={remove.isPending}
             onClick={() => {
               setShown(null);

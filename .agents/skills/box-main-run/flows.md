@@ -488,12 +488,12 @@ flows reuse what earlier ones made:
   SLNT-1175)
 - **Needs:** either; no turn; web and CLI; `<p>`; the owner's sign-in typed in a second browser
 - **Do:** Run the CLI batch `new-web-layouts-sessions.json` (two sessions in the worktree
-  `layouts-one`, one in `layouts-two`, each a `sleep`), then drive the recipe `new-web-layouts` with
-  `--account`: open the layout button in the Workspace header, pick Change over terminal and press
-  ⌥2 and ⌥3, save the sheet as "Review with terminal", be refused the same name in lower case, pick
-  it in `layouts-two`, see it from a second browser signed in as the same person, rename and remove
-  it, and look under 1024px. Then drive `new-web-layouts-server` for the API's refusals, limits and
-  a second person.
+  `layouts-one`, one in `layouts-two`, each a `sleep`), then drive the recipe `new-web-layouts` (the
+  drive passes the account's sign-in): open the layout button in the Workspace header, pick Change
+  over terminal and press ⌥2 and ⌥3, save the sheet as "Review with terminal", be refused the same
+  name in lower case, pick it in `layouts-two`, see it from a second browser signed in as the same
+  person, rename and remove it, and look under 1024px. Then drive `new-web-layouts-server` for the
+  API's refusals, limits and a second person.
 - **See:** each step's note in the recipes' `steps.log`: the check on the layout the sheet shows,
   both sessions kept in one tile under Change over terminal and the Terminal tab kept under ⌥2, the
   saved toast and the menu again with the saved layout at ⌥5, the name-taken sentence in the dialog,
