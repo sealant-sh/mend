@@ -2,6 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { SkillEditorPage } from "#/components/skills/skill-editor";
 import { SkillPanel } from "#/components/skills/skill-panel";
+import { YOU } from "#/lib/project-skills";
 import { skillSearch } from "#/lib/skills";
 
 /**
@@ -23,8 +24,8 @@ function SkillRoute() {
   const { skillId } = Route.useParams();
   const { edit, file } = Route.useSearch();
   return edit === 1 ? (
-    <SkillEditorPage skillId={skillId} file={file} />
+    <SkillEditorPage skillId={skillId} file={file} owner={YOU} />
   ) : (
-    <SkillPanel skillId={skillId} file={file} />
+    <SkillPanel skillId={skillId} file={file} owner={YOU} />
   );
 }

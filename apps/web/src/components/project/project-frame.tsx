@@ -7,7 +7,6 @@ import { GitBranchIcon, GitForkIcon, LockIcon, UsersIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import type { ProjectDetailDto, ProjectDto } from "#/lib/api";
-import { laterPage } from "#/lib/later-pages";
 import { lastProject } from "#/lib/new-session";
 import { usePhone } from "#/lib/phone";
 import { repositoryWords, visibleToWords } from "#/lib/projects";
@@ -35,13 +34,13 @@ export interface ProjectTab {
   readonly link: LinkProps;
   /** The path it owns, to say which tab is open. */
   readonly path: string;
+  /** Whether the paths under it are this tab too (an open skill is on the Skills tab). */
+  readonly nested?: boolean;
   readonly count: number | undefined;
 }
 
 /**
- * The project's tabs. Sessions is this route's; Worktrees, Resources and Skills are their own
- * PRs' (29, 30 and 32): each adds its route under the project and switches its `link` here from
- * `laterPage` to the route, and may give its `count`.
+ * The project's tabs, each its own route under the project, with its count once read.
  */
 export const projectTabs = (
   detail: ProjectDetailDto,
@@ -69,8 +68,9 @@ export const projectTabs = (
     },
     {
       label: "Skills",
-      link: laterPage(`projects/${id}/skills`),
+      link: { to: "/projects/$projectId/skills", params: { projectId: id } },
       path: `/projects/${id}/skills`,
+      nested: true,
       count: counts.skills,
     },
   ];
@@ -152,7 +152,8 @@ function TabLine({
   return (
     <nav aria-label={`${name} project`} className={cn("flex gap-6 overflow-x-auto", className)}>
       {tabs.map((tab) => {
-        const current = pathname === tab.path;
+        const current =
+          pathname === tab.path || (tab.nested === true && pathname.startsWith(`${tab.path}/`));
         return (
           <Link
             key={tab.label}
@@ -192,9 +193,12 @@ export function ProjectFrame({
   detail,
   setupOpen,
   onSetupOpenChange,
+  phoneHeader = true,
   children,
 }: {
   readonly detail: ProjectDetailDto;
+  /** Off while a tab shows a screen with its own phone header (an open skill). */
+  readonly phoneHeader?: boolean;
   readonly setupOpen: boolean;
   readonly onSetupOpenChange: (open: boolean) => void;
   readonly children: ReactNode;
@@ -256,7 +260,12 @@ export function ProjectFrame({
         extra={addedWords(project, now)}
         className="shrink-0 border-b px-5 py-3 max-lg:hidden"
       />
-      <div className="sticky top-0 z-10 shrink-0 bg-background lg:hidden">
+      <div
+        className={cn(
+          "sticky top-0 z-10 shrink-0 bg-background lg:hidden",
+          !phoneHeader && "hidden",
+        )}
+      >
         <PhoneHeader
           title={project.name}
           sub={visibleToWords(project.visibility, organizationName)}

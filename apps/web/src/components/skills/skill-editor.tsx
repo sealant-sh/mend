@@ -14,6 +14,7 @@ import { type ReactNode, useId, useRef, useState } from "react";
 
 import type { SkillDetailDto } from "#/lib/api";
 import { usePhone } from "#/lib/phone";
+import { doneWords, editorIntro, skillAt, type SkillOwner, skillsHome } from "#/lib/project-skills";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import {
   bundleIssue,
@@ -44,14 +45,17 @@ import { FieldNote } from "./new-skill.tsx";
  * elsewhere first", "leave with unsaved changes"). It replaces the reading view: the description,
  * the files with what changed in each, and Save skill, which makes the next revision. Save sends
  * the revision the draft started from, so a revision saved elsewhere first refuses it and the page
- * says so; a newer revision that arrives before saving is said too, and the draft stays.
+ * says so; a newer revision that arrives before saving is said too, and the draft stays. A
+ * project's skill (Doop "Project · Skills tab · editing") is the same editor, under the project.
  */
 export function SkillEditorPage({
   skillId,
   file,
+  owner,
 }: {
   readonly skillId: string;
   readonly file: string | undefined;
+  readonly owner: SkillOwner;
 }) {
   const trpc = useTRPC();
   const detail = useQuery(trpc.skills.detail.queryOptions({ skillId }));
@@ -90,8 +94,13 @@ export function SkillEditorPage({
                 >
                   {detail.isFetching ? "Trying again…" : "Try again"}
                 </Button>
-                <Link to="/skills" className={buttonVariants({ variant: "outline", size: "sm" })}>
-                  Back to your skills
+                <Link
+                  {...skillsHome(owner)}
+                  className={buttonVariants({ variant: "outline", size: "sm" })}
+                >
+                  {owner.kind === "you"
+                    ? "Back to your skills"
+                    : `Back to ${owner.projectName}'s skills`}
                 </Link>
               </div>
             </AlertDescription>
@@ -99,7 +108,7 @@ export function SkillEditorPage({
         </div>
       );
     case "success":
-      return <SkillEditor key={skillId} detail={detail.data} file={file} />;
+      return <SkillEditor key={skillId} detail={detail.data} file={file} owner={owner} />;
   }
 }
 
@@ -113,9 +122,11 @@ interface HeldDraft {
 function SkillEditor({
   detail,
   file,
+  owner,
 }: {
   readonly detail: SkillDetailDto;
   readonly file: string | undefined;
+  readonly owner: SkillOwner;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -166,20 +177,12 @@ function SkillEditor({
     bundle: bundleIssue(draft),
   };
 
+  const push = owner.kind === "you" ? "mend skills push" : "mend skills push --project";
   const select = (path: string) =>
-    void navigate({
-      to: "/skills/$skillId",
-      params: { skillId: skill.id },
-      search: fileSearch(path, true),
-      replace: true,
-    });
+    void navigate({ ...skillAt(owner, skill.id, fileSearch(path, true)), replace: true });
   const toReading = async () => {
     leaving.current = true;
-    await navigate({
-      to: "/skills/$skillId",
-      params: { skillId: skill.id },
-      search: fileSearch(current?.path, false),
-    });
+    await navigate(skillAt(owner, skill.id, fileSearch(current?.path, false)));
     leaving.current = false;
   };
 
@@ -197,9 +200,10 @@ function SkillEditor({
       onSuccess: async (updated) => {
         queryClient.setQueryData(trpc.skills.detail.queryKey({ skillId: skill.id }), updated);
         void queryClient.invalidateQueries(trpc.skills.list.queryFilter());
+        void queryClient.invalidateQueries(trpc.skills.forProject.pathFilter());
         setHeld(null);
         await toReading();
-        toast.add({ description: `Saved ${updated.skill.name}` });
+        toast.add({ description: doneWords(owner, "Saved", updated.skill.name) });
       },
       onError: (error) => {
         // Read the revision that won, so the page can name it and load it.
@@ -257,18 +261,39 @@ function SkillEditor({
         className="sticky top-0 z-10 lg:hidden"
         title={skill.name}
         sub={status}
-        back={{
-          link: { to: "/skills/$skillId", params: { skillId: skill.id }, search: {} },
-          label: `Back to ${skill.name}`,
-        }}
+        back={{ link: skillAt(owner, skill.id), label: `Back to ${skill.name}` }}
       />
       <header className="flex h-header shrink-0 items-center gap-3 border-b bg-background pr-2.5 pl-3 max-lg:hidden">
         <SidebarToggle />
         <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
         <nav aria-label="Breadcrumb" className="min-w-0 flex-1">
           <ol className="flex min-w-0 items-baseline gap-2 text-prose">
+            {owner.kind === "you" ? null : (
+              <>
+                <li>
+                  <Link to="/projects" className="text-muted-foreground hover:text-foreground">
+                    Projects
+                  </Link>
+                </li>
+                <li aria-hidden className="text-faint">
+                  /
+                </li>
+                <li className="min-w-0 truncate">
+                  <Link
+                    to="/projects/$projectId"
+                    params={{ projectId: owner.projectId }}
+                    className="text-muted-foreground hover:text-foreground"
+                  >
+                    {owner.projectName}
+                  </Link>
+                </li>
+                <li aria-hidden className="text-faint">
+                  /
+                </li>
+              </>
+            )}
             <li>
-              <Link to="/skills" className="text-muted-foreground hover:text-foreground">
+              <Link {...skillsHome(owner)} className="text-muted-foreground hover:text-foreground">
                 Skills
               </Link>
             </li>
@@ -288,25 +313,24 @@ function SkillEditor({
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto px-8 pt-5 pb-10 max-lg:px-0 max-lg:pt-0">
         <p className="mb-4 text-row text-muted-foreground max-lg:hidden">
-          Your skill, revision {skill.revision}. Saving makes revision {skill.revision + 1}.
-          Sessions that already started keep the version they loaded.
+          {editorIntro(owner, skill.revision)}
         </p>
         <div className="flex max-w-190 flex-col gap-3 empty:hidden max-lg:px-4 max-lg:pt-4">
           {stale ? (
             <Notice tone="error" lead="Not saved.">
-              You saved {newer === null ? "a newer revision" : `revision ${newer}`} of {skill.name}{" "}
-              somewhere else, from another browser or with{" "}
-              <code className="font-mono text-meta">mend skills push</code>, while you were editing
-              here. Your changes are still on this page. Copy what you want to keep, then load{" "}
-              {newer === null ? "it" : `revision ${newer}`}.
+              {owner.kind === "you" ? "You saved" : "Someone saved"}{" "}
+              {newer === null ? "a newer revision" : `revision ${newer}`} of {skill.name} somewhere
+              else, from another browser or with <code className="font-mono text-meta">{push}</code>
+              , while you were editing here. Your changes are still on this page. Copy what you want
+              to keep, then load {newer === null ? "it" : `revision ${newer}`}.
               {newer === null ? null : <LoadButton revision={newer} onLoad={loadNewer} />}
             </Notice>
           ) : newer === null ? null : (
             <Notice tone="info" lead={`Revision ${newer} was saved somewhere else.`}>
               It came from another browser or from{" "}
-              <code className="font-mono text-meta">mend skills push</code> while you were editing
-              here, so saving this draft will be refused. Copy what you want to keep, then load
-              revision {newer}.
+              <code className="font-mono text-meta">{push}</code> while you were editing here, so
+              saving this draft will be refused. Copy what you want to keep, then load revision{" "}
+              {newer}.
               <LoadButton revision={newer} onLoad={loadNewer} />
             </Notice>
           )}

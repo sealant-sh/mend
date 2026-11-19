@@ -135,13 +135,19 @@ const bytesOf = (value: string) => new TextEncoder().encode(value).length;
 
 /**
  * Why a name can't be used, or null. The domain's rule decides (`validateSkillName`); these are its
- * words for a person, and the one rule the server checks only on save: a name already in the list.
+ * words for a person, and the one rule the server checks only on save: a name already in the list,
+ * yours or, given its name, a project's.
  */
-export const nameIssue = (name: string, taken: ReadonlyArray<string>): string | null => {
+export const nameIssue = (
+  name: string,
+  taken: ReadonlyArray<string>,
+  projectName: string | null = null,
+): string | null => {
   if (validateSkillName(name) === null) {
-    return taken.includes(name)
+    if (!taken.includes(name)) return null;
+    return projectName === null
       ? `You already have a skill named ${name}. Pick another name.`
-      : null;
+      : `${projectName} already has a skill named ${name}. Pick another name.`;
   }
   if (name === "") return "Give the skill a name.";
   if (name.length > SKILL_MAX_NAME_LENGTH) {

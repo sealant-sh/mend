@@ -1,5 +1,10 @@
 import { useSuspenseQuery } from "@tanstack/react-query";
-import { createFileRoute, type ErrorComponentProps, Outlet } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  type ErrorComponentProps,
+  Outlet,
+  useMatch,
+} from "@tanstack/react-router";
 import { TRPCClientError } from "@trpc/client";
 
 import { ProjectOrClone } from "#/components/project/project-cloning";
@@ -40,9 +45,17 @@ function ProjectLayout() {
   const navigate = Route.useNavigate();
   const trpc = useTRPC();
   const detail = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
+  const skill = useMatch({
+    from: "/_inbox/projects/$projectId/skills/$skillId",
+    shouldThrow: false,
+  });
+  // Editing a project's skill replaces the whole page, frame and all (Doop "Project · Skills tab ·
+  // editing"); only someone who may change it gets the editor.
+  if (skill?.search.edit === 1 && detail.capabilities.manage) return <Outlet />;
   return (
     <ProjectFrame
       detail={detail}
+      phoneHeader={skill === undefined}
       setupOpen={setup === true}
       onSetupOpenChange={(open) =>
         void navigate({
