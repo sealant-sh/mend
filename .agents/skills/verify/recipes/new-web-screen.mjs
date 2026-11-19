@@ -173,7 +173,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     `the Screen tab is selected (${await tab.getAttribute("aria-selected")}) and reads ${JSON.stringify(await textOf(tab))}`,
   );
   const body = visible(page.locator(`[data-tab-body="${VIEW}"]`));
-  await body.getByText(/Reading the screen/).waitFor({ state: "hidden", timeout: 30_000 });
+  await body
+    .getByText(/Reading the screen/)
+    .first()
+    .waitFor({ state: "hidden", timeout: 30_000 });
   // A screen starts with its session: wait up to four minutes for it to go live.
   let real = null;
   for (let tries = 0; tries < 48; tries += 1) {
