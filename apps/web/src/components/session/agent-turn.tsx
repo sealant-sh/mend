@@ -38,7 +38,6 @@ import {
   turnEnd,
   turnLasted,
 } from "#/lib/conversation-rows";
-import { laterPage } from "#/lib/later-pages";
 import { messageTime } from "#/lib/session-sheet";
 import { useTRPC } from "#/lib/trpc";
 
@@ -49,7 +48,7 @@ import type { SessionFacts } from "./session-facts";
 type AgentRow = Extract<ConversationRow, { readonly kind: "agent" }>;
 
 /** Where a person connects or changes the logins their agents run on. */
-const AGENT_LOGINS = laterPage("settings/agent-logins");
+const AGENT_LOGINS = { to: "/settings/agent-logins" } as const;
 
 const STEP_ICONS: Readonly<Record<string, LucideIcon>> = {
   "command-execution": SquareTerminalIcon,

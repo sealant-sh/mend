@@ -69,17 +69,27 @@ export function SettingRow({
   );
 }
 
-/** A heading over a run of rows ("Profile", "Sign out", "Display"), with the hairline under it. */
+/**
+ * A heading over a run of rows ("Profile", "Sign out", "Display"), with the hairline under it.
+ * `description` is one muted line under the heading, above the hairline.
+ */
 export function SettingSection({
   title,
+  description,
   children,
 }: {
   readonly title: string;
+  readonly description?: ReactNode;
   readonly children: ReactNode;
 }) {
   return (
     <section aria-label={title} className="mt-7 first:mt-0">
-      <h2 className="border-b border-border pb-2.5 text-lead font-semibold max-lg:px-4">{title}</h2>
+      <div className="border-b border-border pb-2.5 max-lg:px-4">
+        <h2 className="text-lead font-semibold">{title}</h2>
+        {description === undefined ? null : (
+          <p className="mt-0.5 text-row text-pretty text-muted-foreground">{description}</p>
+        )}
+      </div>
       {children}
     </section>
   );

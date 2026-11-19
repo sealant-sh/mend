@@ -76,7 +76,7 @@ const isKey = (account: ConnectedAccount): boolean => account.login?.kind === "a
  */
 export const agentLoginState = (
   accounts: ReadonlyArray<ConnectedAccount>,
-  agent: Agent,
+  agent: ConnectedAccount["provider"],
 ): AgentLoginState => {
   const choice = loginChoiceOf(accounts, agent);
   if (choice._tag === "none") return { kind: "none" };
@@ -155,7 +155,12 @@ export const keyProblem = (
       advice: "An API key has none. Copy it again from the start.",
     };
   }
-  if (!key.startsWith(facts.keyPrefix)) {
+  // OpenAI's `sk-` prefix also starts every Anthropic key.
+  const otherIssuers = AGENTS.filter(
+    (other) => other !== agent && AGENT_FACTS[other].keyPrefix.startsWith(facts.keyPrefix),
+  );
+  const theirs = otherIssuers.some((other) => key.startsWith(AGENT_FACTS[other].keyPrefix));
+  if (!key.startsWith(facts.keyPrefix) || theirs) {
     return {
       title: `That isn't an ${facts.issuer} API key.`,
       advice: `${facts.issuer} keys start with ${facts.keyPrefix}. Paste another key here, or create a new one in ${facts.console.words} ${facts.console.link}.`,
@@ -187,3 +192,67 @@ export const savedAgentLine = (accounts: ReadonlyArray<ConnectedAccount>): strin
   AGENTS.filter((agent) => agentLoginState(accounts, agent).kind === "connected")
     .map((agent) => AGENT_FACTS[agent].name)
     .join(" and ");
+
+/**
+ * The line under a login's name in Settings → Agent logins and Git: whose login and what kind,
+ * and when it arrived, or that there is none, or that the provider refused it. Never any part of
+ * a key (Yiannis, 17 Nov 2026).
+ */
+export const loginLine = (
+  provider: ConnectedAccount["provider"],
+  login: AgentLoginState,
+  since: (date: Date) => string,
+): string => {
+  if (provider === "github") {
+    switch (login.kind) {
+      case "none":
+        return "Your sessions run gh without a GitHub login.";
+      case "connected": {
+        const owner = ownerOf(login.account);
+        return `${owner === null ? "Connected" : `Connected as ${owner}`} ${since(login.account.connectedAt)}. Your sessions' gh uses it.`;
+      }
+      case "refused":
+        return "GitHub refused this login, so gh in your sessions runs without one. Run the command again.";
+    }
+  }
+  const facts = AGENT_FACTS[provider];
+  switch (login.kind) {
+    case "none":
+      return `Not connected. ${facts.name} sessions can't start until you connect a login.`;
+    case "connected":
+      return login.key
+        ? `${facts.issuer} API key. Saved ${since(login.account.connectedAt)}.`
+        : `${accountFacts(login.account)}. Connected ${since(login.account.connectedAt)}.`;
+    case "refused":
+      return `${refusedWords(provider, login.key).title} ${refusedWords(provider, login.key).advice}`;
+  }
+};
+
+/** The toast once a login arrives while its dialog waits. */
+export const arrivedToast = (
+  provider: ConnectedAccount["provider"],
+  account: ConnectedAccount,
+): string => {
+  const owner = ownerOf(account);
+  if (provider === "github") {
+    return owner === null ? "GitHub is connected." : `GitHub is connected as ${owner}.`;
+  }
+  const facts = AGENT_FACTS[provider];
+  if (isKey(account)) return `${facts.name} is connected with an ${facts.issuer} API key.`;
+  return owner === null ? `${facts.name} is connected.` : `${facts.name} is connected as ${owner}.`;
+};
+
+/**
+ * Whether the login a dialog waits for has arrived: the provider now has a working login and it
+ * isn't the one the dialog opened with, or that one was written again since. A reconnect can
+ * reuse the account, so its `connectedAt` may be older than the dialog.
+ */
+export const loginArrived = (
+  login: AgentLoginState,
+  opened: { readonly login: AgentLoginState; readonly at: Date },
+): boolean => {
+  if (login.kind !== "connected") return false;
+  const before = opened.login;
+  if (before.kind !== "connected" || before.account.id !== login.account.id) return true;
+  return login.account.updatedAt.getTime() > before.account.updatedAt.getTime();
+};

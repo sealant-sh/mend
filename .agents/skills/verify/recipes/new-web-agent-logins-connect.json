@@ -1,0 +1,22 @@
+[
+  {
+    "name": "01-claude-login",
+    "run": [
+      "sh",
+      "-c",
+      "printf %s 'sk-ant-oat01-mendVerifyFake-claude-setup-token-000000000000' | mend connect claude --from-stdin"
+    ]
+  },
+  {
+    "name": "02-codex-login",
+    "run": [
+      "sh",
+      "-c",
+      "printf %s '{\"auth_mode\":\"chatgpt\",\"OPENAI_API_KEY\":null,\"tokens\":{\"id_token\":\"mendVerifyFake-codex-id-token-000000000000\",\"access_token\":\"mendVerifyFake-codex-access-token-000000000000\",\"refresh_token\":\"mendVerifyFake-codex-refresh-token-000000000000\",\"account_id\":\"mend-verify-fake-account\"},\"last_refresh\":\"2026-01-01T00:00:00Z\"}' | mend connect codex --from-stdin"
+    ]
+  },
+  {
+    "name": "03-accounts",
+    "run": ["mend", "accounts"]
+  }
+]

@@ -196,6 +196,29 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/settings-pages.ts`, `apps/web/src/lib/settings-guards.ts`,
   `apps/web/src/lib/appearance.ts`, `apps/web/src/lib/account.ts`
 
+### settings.new-web-agent-logins
+
+- **Map:** provider-accounts.md `accounts-list`, `connect-web` (an API key only), `disconnect`,
+  `reconnect-state`, `agent-logins`; git-access.md `mode-choice`, `mend-key`, `key-card`,
+  `key-check`, `bridge-share`; git-author.md `git-author-set-web`, `git-author-refused`,
+  `git-author-clear`
+- **Needs:** no session; no turn; web and the CLI
+- **Do:** Drive the recipe `new-web-agent-logins`, and while it waits run its CLI batch
+  `new-web-agent-logins-connect.json`: `/settings/git-access` opens Agent logins and Git; Connect
+  Claude Code shows `mend login --url` and `mend connect claude` and closes by itself when the
+  batch's login lands; Codex's login is replaced with an API key, a wrong key refused first; a
+  refused login reads Reconnect; Disconnect removes one; "Selected agent's login only" saves and
+  reports a failed save; the Git author is refused, saved and returned to the account's; the Mend
+  key is checked against GitHub; the Git access mode switches to your computer's key and back.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no part of any key on a
+  page; the account's author, mode and switch are what they were before the run.
+- **Mode:** `scripted` (recipes/new-web-agent-logins.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/agent-logins-page.tsx`,
+  `apps/web/src/components/agent-login-panels.tsx`,
+  `apps/web/src/routes/_inbox.settings.agent-logins.tsx`, `apps/web/src/lib/agent-login.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
