@@ -77,11 +77,14 @@ export function SettingRow({
  */
 export function SettingSection({
   title,
+  count,
   description,
   action,
   children,
 }: {
   readonly title: string;
+  /** Beside the title, muted: how many rows ("Members 4", "Invitations 1 open"). */
+  readonly count?: number | string | undefined;
   readonly description?: ReactNode;
   readonly action?: ReactNode;
   readonly children: ReactNode;
@@ -90,7 +93,12 @@ export function SettingSection({
     <section aria-label={title} className="mt-7 first:mt-0">
       <div className="flex items-start gap-6 border-b border-border pb-2.5 max-lg:px-4">
         <div className="min-w-0 flex-1">
-          <h2 className="text-lead font-semibold">{title}</h2>
+          <h2 className="text-lead font-semibold">
+            {title}
+            {count === undefined ? null : (
+              <span className="ml-1.5 text-row font-normal text-muted-foreground">{count}</span>
+            )}
+          </h2>
           {description === undefined ? null : (
             <p className="mt-0.5 text-row text-pretty text-muted-foreground">{description}</p>
           )}
