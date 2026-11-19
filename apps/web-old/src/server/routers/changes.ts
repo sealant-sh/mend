@@ -45,7 +45,7 @@ export const changesRouter = router({
   comments: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessionChanges.comments({ params: { id: i.id } })),
+      run(ctx, (api) => api.sessionChanges.comments({ params: { id: i.id }, query: {} })),
     ),
   postSliceComment: procedure
     .input(

@@ -279,7 +279,11 @@ export const WorktreeChangesRepoLive: Layer.Layer<
           total: count().as("total_comments"),
         })
         .from(reviewComments)
-        .where(inArray(reviewComments.changeId, scopedChanges))
+        // Comments only: a reply is part of its comment's thread (0232), and clients that predate
+        // replies count what they list.
+        .where(
+          and(inArray(reviewComments.changeId, scopedChanges), isNull(reviewComments.parentId)),
+        )
         .groupBy(reviewComments.changeId)
         .as("comment_counts");
       const sessionsWithPendingFollowUps = db

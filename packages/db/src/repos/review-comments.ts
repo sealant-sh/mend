@@ -3,11 +3,12 @@ import { type ChangeId, ReviewCommentId, type SessionId } from "@mend/domain";
 import { RecordLink, ReviewCommentAnchor } from "@mend/domain/workbench";
 import {
   ReviewComment,
+  ReviewReply,
   type CommentAuthor,
   type CommentKind,
   type CommentState,
 } from "@mend/domain/workbench";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -23,6 +24,7 @@ export class ReviewCommentNotFoundError extends Schema.TaggedError<ReviewComment
 ) {}
 
 const decodeComment = Schema.decodeUnknownEffect(Schema.Struct(ReviewComment.fields));
+const decodeReply = Schema.decodeUnknownEffect(Schema.Struct(ReviewReply.fields));
 
 export interface NewReviewComment {
   readonly changeId: ChangeId;
@@ -54,7 +56,18 @@ export class ReviewCommentsRepo extends Context.Service<
     readonly byId: (
       id: ReviewCommentId,
     ) => Effect.Effect<ReviewComment, ReviewCommentNotFoundError>;
+    /** The change's comments, oldest first: never its replies. */
     readonly listForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ReviewComment>>;
+    /** Every reply on the change, oldest first. */
+    readonly listReplies: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<ReviewReply>>;
+    /**
+     * A person's reply under `parent`, at its place: born `open` and unsent. The caller has
+     * checked that `parent` is a comment (not a reply) a reply may hang under.
+     */
+    readonly createReply: (
+      parent: ReviewComment,
+      reply: { readonly authorName: string; readonly body: string },
+    ) => Effect.Effect<ReviewReply>;
     readonly setState: (id: ReviewCommentId, state: CommentState) => Effect.Effect<void>;
     /** Records which session a bundled follow-up carrying this comment went to. */
     readonly markSent: (id: ReviewCommentId, sessionId: SessionId) => Effect.Effect<void>;
@@ -150,10 +163,56 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       const rows = yield* db
         .select()
         .from(reviewComments)
-        .where(eq(reviewComments.changeId, changeId))
+        .where(and(eq(reviewComments.changeId, changeId), isNull(reviewComments.parentId)))
         .orderBy(asc(reviewComments.createdAt))
         .pipe(Effect.orDie);
       return yield* Effect.forEach(rows, decodeRow);
+    });
+
+    const decodeReplyRow = (row: unknown) =>
+      decodeReply(row).pipe(
+        Effect.map((decoded) => new ReviewReply(decoded)),
+        Effect.orDie,
+      );
+
+    const listReplies = Effect.fn("ReviewCommentsRepo.listReplies")(function* (changeId: ChangeId) {
+      const rows = yield* db
+        .select()
+        .from(reviewComments)
+        .where(and(eq(reviewComments.changeId, changeId), isNotNull(reviewComments.parentId)))
+        .orderBy(asc(reviewComments.createdAt))
+        .pipe(Effect.orDie);
+      return yield* Effect.forEach(rows, decodeReplyRow);
+    });
+
+    const createReply = Effect.fn("ReviewCommentsRepo.createReply")(function* (
+      parent: ReviewComment,
+      reply: { readonly authorName: string; readonly body: string },
+    ) {
+      const anchor =
+        parent.anchor === null ? null : yield* encodeAnchor(parent.anchor).pipe(Effect.orDie);
+      const [row] = yield* db
+        .insert(reviewComments)
+        .values({
+          id: ReviewCommentId.make(crypto.randomUUID()),
+          changeId: parent.changeId,
+          parentId: parent.id,
+          file: parent.file,
+          line: parent.line,
+          endLine: parent.endLine,
+          anchor,
+          authorKind: "reviewer",
+          authorName: reply.authorName,
+          body: reply.body,
+          kind: "note",
+          state: "open",
+        })
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* Effect.die("review reply insert returned no row");
+      const created = yield* decodeReplyRow(row);
+      yield* notify(created.id, parent.changeId);
+      return created;
     });
 
     const setState = Effect.fn("ReviewCommentsRepo.setState")(function* (
@@ -195,6 +254,15 @@ export const ReviewCommentsRepoLive: Layer.Layer<
       return rows.length;
     });
 
-    return { create, byId, listForChange, setState, markSent, markSelectedSent };
+    return {
+      create,
+      byId,
+      listForChange,
+      listReplies,
+      createReply,
+      setState,
+      markSent,
+      markSelectedSent,
+    };
   }),
 );

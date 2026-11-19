@@ -1,4 +1,5 @@
 import {
+  type AgentTurnId,
   FollowUpId,
   type ChangeId,
   type CheckpointId,
@@ -8,13 +9,13 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import { type DiffDigest, FollowUp } from "@mend/domain/workbench";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { type AgentTurnStatus, type DiffDigest, FollowUp } from "@mend/domain/workbench";
+import { and, asc, desc, eq, inArray, isNotNull, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { followUps } from "../schema/workbench.ts";
+import { agentItems, agentSessions, agentTurns, followUps } from "../schema/workbench.ts";
 
 export class FollowUpNotFoundError extends Schema.TaggedError<FollowUpNotFoundError>()(
   "FollowUpNotFoundError",
@@ -33,6 +34,29 @@ export interface NewFollowUpBundle {
   readonly commentIds: ReadonlyArray<ReviewCommentId>;
   readonly instruction: string;
   readonly idempotencyKey: string;
+  /** Who sent the comments: the person whose last review this becomes. */
+  readonly requestedBy?: string | null;
+}
+
+/** Where a person last sent comments on a change: their last review. */
+export interface LastSent {
+  readonly followUpId: FollowUpId;
+  readonly checkpointBId: CheckpointId;
+  readonly sentAt: Date;
+}
+
+/** A conversation turn a follow-up started, and what the agent last wrote in it. */
+export interface FollowUpTurn {
+  readonly followUp: FollowUp;
+  readonly harness: string;
+  readonly turnId: AgentTurnId;
+  readonly ordinal: number;
+  readonly status: AgentTurnStatus;
+  readonly startedAt: Date | null;
+  readonly endedAt: Date | null;
+  readonly createdAt: Date;
+  /** The turn's last assistant message; null until it has written one. */
+  readonly lastMessage: string | null;
 }
 
 /** Internal launch ownership; the public FollowUp exposes state, not the server lease token. */
@@ -94,6 +118,14 @@ export class FollowUpsRepo extends Context.Service<
         | { readonly status: "pending" }
         | { readonly status: "delivery_failed"; readonly message: string },
     ) => Effect.Effect<FollowUp | null>;
+    /** The newest follow-up `userId` sent on the change that names a checkpoint; null if none. */
+    readonly lastSentBy: (changeId: ChangeId, userId: string) => Effect.Effect<LastSent | null>;
+    /**
+     * Every follow-up on the change that started a conversation turn, with that turn: the record
+     * of the agent's answer to the comments it carried. A terminal agent's follow-ups start no
+     * turn row and are not listed.
+     */
+    readonly turnsForChange: (changeId: ChangeId) => Effect.Effect<ReadonlyArray<FollowUpTurn>>;
     /** Process correlation is stronger evidence than an intermediate delivery status. */
     readonly reconcileDelivered: (
       id: FollowUpId,
@@ -348,7 +380,97 @@ export const FollowUpsRepoLive: Layer.Layer<FollowUpsRepo, never, MendDB> = Laye
       });
     });
 
+    const lastSentBy = Effect.fn("FollowUpsRepo.lastSentBy")(function* (
+      changeId: ChangeId,
+      userId: string,
+    ) {
+      const [row] = yield* db
+        .select({
+          id: followUps.id,
+          checkpointBId: followUps.checkpointBId,
+          createdAt: followUps.createdAt,
+        })
+        .from(followUps)
+        .where(
+          and(
+            eq(followUps.changeId, changeId),
+            eq(followUps.requestedBy, userId),
+            isNotNull(followUps.checkpointBId),
+          ),
+        )
+        .orderBy(desc(followUps.createdAt))
+        .limit(1)
+        .pipe(Effect.orDie);
+      if (row === undefined || row.checkpointBId === null) return null;
+      return { followUpId: row.id, checkpointBId: row.checkpointBId, sentAt: row.createdAt };
+    });
+
+    const turnsForChange = Effect.fn("FollowUpsRepo.turnsForChange")(function* (
+      changeId: ChangeId,
+    ) {
+      // A follow-up's turn carries `follow-up:<id>` as its launch correlation (FollowUpDelivery).
+      const rows = yield* db
+        .select({
+          followUp: followUps,
+          harness: agentSessions.harness,
+          turnId: agentTurns.id,
+          ordinal: agentTurns.ordinal,
+          status: agentTurns.status,
+          startedAt: agentTurns.startedAt,
+          endedAt: agentTurns.endedAt,
+          createdAt: agentTurns.createdAt,
+        })
+        .from(followUps)
+        .innerJoin(
+          agentTurns,
+          and(
+            eq(agentTurns.sessionId, followUps.sessionId),
+            eq(agentTurns.launchCorrelationId, sql`'follow-up:' || ${followUps.id}`),
+          ),
+        )
+        .innerJoin(agentSessions, eq(agentSessions.id, followUps.sessionId))
+        .where(eq(followUps.changeId, changeId))
+        .orderBy(asc(agentTurns.createdAt))
+        .pipe(Effect.orDie);
+      if (rows.length === 0) return [];
+      const messages = yield* db
+        .select({ turnId: agentItems.turnId, text: agentItems.text })
+        .from(agentItems)
+        .where(
+          and(
+            inArray(
+              agentItems.turnId,
+              rows.map((row) => row.turnId),
+            ),
+            eq(agentItems.kind, "assistant-message"),
+          ),
+        )
+        .orderBy(asc(agentItems.seq))
+        .pipe(Effect.orDie);
+      const last = new Map<string, string>();
+      for (const message of messages) {
+        if (message.text !== null && message.text.trim() !== "") {
+          last.set(message.turnId, message.text);
+        }
+      }
+      return rows.map(
+        (row): FollowUpTurn => ({
+          followUp: toFollowUp(row.followUp),
+          harness: row.harness,
+          turnId: row.turnId,
+          ordinal: row.ordinal,
+          status: row.status,
+          startedAt: row.startedAt,
+          endedAt: row.endedAt,
+          createdAt: row.createdAt,
+          lastMessage: last.get(row.turnId) ?? null,
+        }),
+      );
+    });
+
     return {
+      lastSentBy,
+      turnsForChange,
       createOrGet,
       withSessionLock,
       byId,

@@ -1,6 +1,7 @@
 import {
   AgentRequestId,
   AgentTurnId,
+  CheckpointId,
   ProjectId,
   ServiceId,
   SessionId,
@@ -1346,9 +1347,38 @@ export class ChangeStats extends Schema.Class<ChangeStats>("ChangeStats")({
   observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
+/**
+ * Which checkpoints a Review covers. `from`: `base` (the worktree's first checkpoint, the whole
+ * change), `last-review` (the asker's last review, else the base), or a checkpoint of the change's
+ * worktree. `to`: a checkpoint no earlier than `from`; left out, the change as it stands now.
+ */
+export class ReviewRange extends Schema.Class<ReviewRange>("ReviewRange")({
+  from: Schema.Union([Schema.Literals(["base", "last-review"]), CheckpointId]),
+  to: Schema.optionalKey(CheckpointId),
+}) {}
+
 export class OpenReviewRequest extends Schema.Class<OpenReviewRequest>("OpenReviewRequest")({
   idempotencyKey: Schema.String,
+  /** Left out: the whole change as it stands now, as before ranges. */
+  range: Schema.optionalKey(ReviewRange),
 }) {}
+
+/**
+ * Where the asker last reviewed this change: the "to" checkpoint of the newest follow-up they sent
+ * on it, and when they sent it.
+ */
+export class LastReview extends Schema.Class<LastReview>("LastReview")({
+  checkpointId: CheckpointId,
+  ordinal: Schema.Int,
+  at: Timestamp,
+}) {}
+
+/**
+ * `whole` starts at the worktree's first checkpoint; `since-last-review` at the asker's last
+ * review; `custom` anywhere else.
+ */
+export const ReviewRangeKind = Schema.Literals(["whole", "since-last-review", "custom"]);
+export type ReviewRangeKind = typeof ReviewRangeKind.Type;
 
 export class OpenReviewResult extends Schema.Class<OpenReviewResult>("OpenReviewResult")({
   slice: ReviewSlice,
@@ -1356,7 +1386,40 @@ export class OpenReviewResult extends Schema.Class<OpenReviewResult>("OpenReview
   checkpointB: Checkpoint,
   /** True when no new review-open checkpoint was needed. */
   reused: Schema.Boolean,
+  /** Absent from servers before ranges, which always opened the whole change. */
+  range: Schema.optionalKey(Schema.Struct({ kind: ReviewRangeKind })),
+  /** Absent from servers before ranges; null when the asker has sent no comments on this change. */
+  lastReview: Schema.optionalKey(Schema.NullOr(LastReview)),
 }) {}
+
+/** A Review range Mend can't open: a checkpoint not in this change, or `from` after `to`. */
+export class ReviewRangeRefused extends Schema.TaggedError<ReviewRangeRefused>()(
+  "ReviewRangeRefused",
+  {
+    reason: Schema.Literals(["unknown-checkpoint", "reversed"]),
+    message: Schema.String,
+  },
+  { httpApiStatus: 422 },
+) {}
+
+export class NewReviewReplyRequest extends Schema.Class<NewReviewReplyRequest>(
+  "NewReviewReplyRequest",
+)({
+  body: Schema.String,
+}) {}
+
+/**
+ * A reply Mend won't keep: to a reply (replies are one level deep), to one of Mend's drafts (add
+ * it to your comments first), or with no words.
+ */
+export class ReviewReplyRefused extends Schema.TaggedError<ReviewReplyRefused>()(
+  "ReviewReplyRefused",
+  {
+    reason: Schema.Literals(["reply-to-reply", "draft", "empty"]),
+    message: Schema.String,
+  },
+  { httpApiStatus: 422 },
+) {}
 
 export class ReviewDiffHunkView extends Schema.Class<ReviewDiffHunkView>("ReviewDiffHunkView")({
   header: Schema.String,
@@ -1407,6 +1470,11 @@ export class ReviewDiffView extends Schema.Class<ReviewDiffView>("ReviewDiffView
    * (this one included). Absent or null when none.
    */
   outsideGit: Schema.optionalKey(Schema.NullOr(PathsOutsideGit)),
+  /**
+   * Files the whole change (base to this slice's end) touches that this slice doesn't: changed
+   * only before its range. Absent on a slice that starts at the base.
+   */
+  unchangedInRange: Schema.optionalKey(Schema.Array(Schema.String)),
 }) {}
 
 /** Null paths = change target; paths plus null side/lines = file target. */

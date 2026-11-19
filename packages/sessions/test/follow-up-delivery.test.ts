@@ -252,6 +252,8 @@ const testLayer = (world: TestWorld) => {
   });
 
   const followUpsLayer = Layer.succeed(FollowUpsRepo, {
+    lastSentBy: () => Effect.die("not in test"),
+    turnsForChange: () => Effect.die("not in test"),
     createOrGet: (input) =>
       Effect.sync(() => {
         if (world.followUp !== null) return world.followUp;
@@ -377,6 +379,8 @@ const testLayer = (world: TestWorld) => {
     create: () => Effect.die("not in test"),
     byId: () => Effect.succeed(world.comment),
     listForChange: () => Effect.succeed([world.comment]),
+    listReplies: () => Effect.succeed([]),
+    createReply: () => Effect.die("not in test"),
     setState: () => Effect.die("not in test"),
     markSent: () => Effect.die("not in test"),
     markSelectedSent: (ids, sessionId) =>

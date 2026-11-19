@@ -391,6 +391,8 @@ export const createTenancyApi = async (
       readonly observations?: Layer.PartialEffectful<ServiceObservationsRepo["Service"]>;
       readonly storeRefs?: Layer.PartialEffectful<StoreRefsRepo["Service"]>;
       readonly slices?: Layer.PartialEffectful<ReviewSlicesRepo["Service"]>;
+      readonly comments?: Layer.PartialEffectful<ReviewCommentsRepo["Service"]>;
+      readonly followUps?: Layer.PartialEffectful<FollowUpsRepo["Service"]>;
       readonly workspaceCaller?: Partial<WorkspaceCaller["Service"]>;
       readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
       readonly mounts?: Layer.PartialEffectful<ProjectMountsRepo["Service"]>;
@@ -745,7 +747,7 @@ export const createTenancyApi = async (
       recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
       recording(DevicesRepo, "devices", options.implement?.devices ?? {}, calls),
       recording(AccessKeysRepo, "accessKeys", {}, calls),
-      recording(FollowUpsRepo, "followUps", {}, calls),
+      recording(FollowUpsRepo, "followUps", options.implement?.followUps ?? {}, calls),
       recording(HotWorkspacesRepo, "hotWorkspaces", options.implement?.hotWorkspaces ?? {}, calls),
       recording(IssuesRepo, "issues", {}, calls),
       recording(
@@ -832,7 +834,7 @@ export const createTenancyApi = async (
         },
         calls,
       ),
-      recording(ReviewCommentsRepo, "comments", {}, calls),
+      recording(ReviewCommentsRepo, "comments", options.implement?.comments ?? {}, calls),
       recording(UserDotfilesRepo, "userDotfiles", userDotfiles, calls),
       recording(NotificationSettingsRepo, "notificationSettings", {}, calls),
       recording(SessionInboxMarksRepo, "inboxMarks", {}, calls),

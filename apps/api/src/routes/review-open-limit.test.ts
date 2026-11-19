@@ -22,6 +22,8 @@ describe("POST /changes/:id/reviews/open under its request limit", () => {
               effectClock: clock,
               checkpointRequestLimit: Duration.seconds(1),
               implement: {
+                // The asker has sent no comments on this change: no last review to start from.
+                followUps: { lastSentBy: () => Effect.succeed(null) },
                 slices: {
                   // Another request holds the lock: this one waits on it until released.
                   withChangeLock: () =>
