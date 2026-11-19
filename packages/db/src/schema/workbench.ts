@@ -63,6 +63,7 @@ import type {
   SealantRunId,
   SealantWorkspaceId,
   SecretFileId,
+  SavedLayoutId,
   McpServerId,
   ServiceForwardId,
   ServiceId,
@@ -106,6 +107,7 @@ import type {
 } from "@mend/domain/workbench";
 import {
   McpStoredTransport,
+  TileLayout,
   ProofSource,
   ProofCapture,
   ArchivedResourceVolume,
@@ -1216,6 +1218,26 @@ export const userSecretFiles = pgTable(
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("user_secret_files_user_id_path_key").on(table.userId, table.path)],
+);
+
+/**
+ * Each person's saved layouts of a workspace's tiles (ADR 0026, "Layouts"; migration 0231): the
+ * account's, shown in every workspace of every organization. `layout` is a `TileLayout`, version
+ * inside; a name is unique for the person ignoring case.
+ */
+export const userSavedLayouts = pgTable(
+  "user_saved_layouts",
+  {
+    id: text().$type<SavedLayoutId>().primaryKey(),
+    userId: text().notNull(),
+    name: text().notNull(),
+    layout: jsonbOf(TileLayout).notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("user_saved_layouts_user_name_key").on(table.userId, sql`lower(${table.name})`),
+  ],
 );
 
 /**

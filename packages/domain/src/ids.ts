@@ -181,6 +181,10 @@ export type SecretFileId = typeof SecretFileId.Type;
 export const McpServerId = Schema.String.pipe(Schema.brand("McpServerId"));
 export type McpServerId = typeof McpServerId.Type;
 
+/** One of a person's saved layouts of a workspace's tiles (ADR 0026, "Layouts"). */
+export const SavedLayoutId = Schema.String.pipe(Schema.brand("SavedLayoutId"));
+export type SavedLayoutId = typeof SavedLayoutId.Type;
+
 // ── Organizations (docs/adr/0003-organizations-and-tenancy.md) ───────────────
 
 export const OrganizationId = Schema.String.pipe(Schema.brand("OrganizationId"));

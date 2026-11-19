@@ -5809,4 +5809,22 @@ export const migrations = {
   }),
   // A project's workspace image becomes its own copy, and an organization's its own (SLNT-1155).
   "0230_workspace_image_own": workspaceImageOwnMigration,
+  // Each person's saved layouts of a workspace's tiles (ADR 0026, "Layouts"; SLNT-1175): the
+  // account's own, shown in every workspace, removed with the account. A name is unique for the
+  // person ignoring case; the layout is a versioned value the API checked before storing it.
+  "0231_saved_layouts": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      CREATE TABLE user_saved_layouts (
+        id text PRIMARY KEY,
+        user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+        name text NOT NULL,
+        layout jsonb NOT NULL CHECK (jsonb_typeof(layout) = 'object'),
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`;
+    yield* sql`
+      CREATE UNIQUE INDEX user_saved_layouts_user_name_key
+        ON user_saved_layouts (user_id, lower(name))`;
+  }),
 };

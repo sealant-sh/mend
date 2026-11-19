@@ -228,6 +228,11 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "secretFiles.list",
   "secretFiles.save",
   "secretFiles.remove",
+  // The caller's own saved layouts: every read and write is keyed by the signed-in account.
+  "savedLayouts.list",
+  "savedLayouts.save",
+  "savedLayouts.rename",
+  "savedLayouts.remove",
   "mcpServers.list",
   "mcpServers.save",
   "mcpServers.remove",

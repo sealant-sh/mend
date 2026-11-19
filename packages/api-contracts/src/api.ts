@@ -43,6 +43,7 @@ import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { queuedSessionsGroup } from "./queued-sessions.ts";
 import { resourcesGroup } from "./resources.ts";
 import { screensGroup } from "./screens.ts";
+import { savedLayoutsGroup } from "./saved-layouts.ts";
 import { secretFilesGroup } from "./secret-files.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
@@ -82,6 +83,7 @@ export const MendApi = HttpApi.make("mend")
   .add(piProfileGroup)
   .add(agentMemoryGroup)
   .add(secretFilesGroup)
+  .add(savedLayoutsGroup)
   .add(mcpServersGroup)
   .add(dopplerGroup)
   .add(executorGroup)

@@ -98,6 +98,7 @@ import { PullRequestsGroupLive } from "./pull-requests.ts";
 import { QueuedSessionsGroupLive } from "./queued-sessions.ts";
 import { ResourcesGroupLive } from "./resources.ts";
 import { ScreensGroupLive } from "./screens.ts";
+import { SavedLayoutsGroupLive } from "./saved-layouts.ts";
 import { SecretFilesGroupLive } from "./secret-files.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import { SlackGroupLive } from "./slack.ts";
@@ -810,6 +811,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       PiProfileGroupLive,
       AgentMemoryGroupLive,
       SecretFilesGroupLive,
+      SavedLayoutsGroupLive,
       McpServersGroupLive,
       DopplerGroupLive,
       ExecutorGroupLive,

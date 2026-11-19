@@ -33,6 +33,7 @@ import {
   OrganizationSettingsRepo,
   PiProfilesRepo,
   AgentMemoryRepo,
+  SavedLayoutsRepo,
   SecretFilesRepo,
   McpServersRepo,
   HarnessModelsRepo,
@@ -434,6 +435,7 @@ export const createTenancyApi = async (
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
+      readonly savedLayouts?: Layer.PartialEffectful<SavedLayoutsRepo["Service"]>;
       readonly mcpServers?: Layer.PartialEffectful<McpServersRepo["Service"]>;
       readonly cipher?: Layer.PartialEffectful<SecretCipher["Service"]>;
       readonly environment?: Layer.PartialEffectful<ProjectEnvironmentRepo["Service"]>;
@@ -1087,6 +1089,7 @@ export const createTenancyApi = async (
       recording(DopplerRepo, "doppler", options.implement?.doppler ?? {}, calls),
       recording(DopplerApi, "dopplerApi", options.implement?.dopplerApi ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
+      recording(SavedLayoutsRepo, "savedLayouts", options.implement?.savedLayouts ?? {}, calls),
       recording(McpServersRepo, "mcpServers", options.implement?.mcpServers ?? {}, calls),
       recording(SshKeyRevoker, "sshKeyRevoker", {}, calls),
       recording(MemberRevocationsRepo, "memberRevocations", {}, calls),
