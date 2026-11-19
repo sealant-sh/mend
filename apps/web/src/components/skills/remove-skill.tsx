@@ -4,7 +4,7 @@ import { toast } from "@mend/ui/components/ui/toast";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { CircleAlertIcon } from "lucide-react";
-import type { ReactNode } from "react";
+import { Fragment, type ReactNode } from "react";
 
 import type { SkillDetailDto } from "#/lib/api";
 import { usePhone } from "#/lib/phone";
@@ -124,10 +124,10 @@ export function RemoveSkill({
       ) : (
         <dl className="grid grid-cols-[auto_1fr] border-t text-row [&>*]:border-b [&>*]:py-3">
           {rows.map(([term, value]) => (
-            <div key={term} className="contents">
+            <Fragment key={term}>
               <dt className="pr-6">{term}</dt>
               <dd className="text-right text-muted-foreground">{value}</dd>
-            </div>
+            </Fragment>
           ))}
         </dl>
       )}

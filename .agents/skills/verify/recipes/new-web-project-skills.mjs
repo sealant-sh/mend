@@ -93,7 +93,7 @@ export default async ({ page, web, capture, note }) => {
     page.evaluate(
       (root) =>
         window["__TSR_ROUTER__"].options.context.queryClient.removeQueries({
-          queryKey: [root],
+          queryKey: [[root]],
         }),
       key,
     );
@@ -413,8 +413,7 @@ export default async ({ page, web, capture, note }) => {
         }
       : [...json, { ...json[0], userId: "fixture-grace", name: "Grace Hopper", role: "member" }],
   );
-  await forget("projects");
-  await forget("organization");
+  // The server rendered both into the page: past their stale time, a re-read takes the fixture.
   await page.waitForTimeout(5_500);
   await page.evaluate(() => window.dispatchEvent(new Event("visibilitychange")));
   await refresh();
@@ -437,8 +436,6 @@ export default async ({ page, web, capture, note }) => {
   await both("fixture-read-only-phone");
   await page.setViewportSize(DESKTOP);
   await page.unroute("**/trpc/**");
-  await forget("projects");
-  await forget("organization");
   await refresh();
   note(
     "fixture: someone who may not change it reads, the page names who can, and ?edit=1 reads too",

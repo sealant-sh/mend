@@ -247,7 +247,7 @@ function NewSkillForm({
             <Segmented
               aria-label="Start from"
               size={size}
-              className={cn(phone && "w-full")}
+              className={phone ? "w-full" : "self-start"}
               value={from}
               disabled={create.isPending}
               onValueChange={setFrom}
