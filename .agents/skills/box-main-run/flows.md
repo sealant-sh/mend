@@ -1634,6 +1634,29 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/settings/audit-log-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.audit-log.tsx`, `apps/web/src/lib/audit-log.ts`
 
+### organization.new-web-general
+
+- **Map:** organization.md `org-leave` (from the General page); an owner renames the organization
+  (`PUT /organization/name`, new with route PR 45)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-org-general`: `/settings/organization` as its owner (old
+  `/settings/organization/` and `/settings/organization/defaults` land there, and so does the
+  switcher's settings item); rename it (Unsaved changes, an empty name refused beside the field,
+  Save, Enter, Escape) and put the name back; a second person joins through an invitation and reads
+  the page as a member; made an owner and back; then, with a second organization written into the
+  page's list, the Leave dialog for an owner beside another owner and for the only owner; a read
+  that fails and Try again.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: `Renamed to <name>.`, the
+  breadcrumb and audience line reading the new name, an `organization.renamed` audit entry; the
+  member's read-only name with `Only an owner can rename it: <owner>.`; the server's 404 to the
+  member's rename. The name is what it was before the run, and the second person is removed.
+- **Mode:** `scripted` (recipes/new-web-org-general.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/organization-general-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.index.tsx`,
+  `apps/web/src/lib/organization-general.ts`
+
 ### shared-control.two-people
 
 - **Map:** shared-control.md `share-on-web`, `share-off-web`, `share-cli`, `share-refused` (a
