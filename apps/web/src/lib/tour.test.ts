@@ -1,8 +1,4 @@
-import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 
 import { ReviewDiffFileView, ReviewDiffHunkView } from "@mend/api-contracts";
 import { ChangeId, SessionId } from "@mend/domain";
@@ -255,45 +251,35 @@ describe("narration and summary text", () => {
 });
 
 const sha = (text: string) => createHash("sha256").update(text).digest("hex");
-const git = (dir: string, ...args: ReadonlyArray<string>) =>
-  execFileSync("git", ["-c", "user.email=t@t", "-c", "user.name=t", ...args], {
-    cwd: dir,
-    env: { PATH: process.env["PATH"] ?? "", HOME: dir, GIT_CONFIG_NOSYSTEM: "1" },
-    encoding: "utf8",
-  }).replace(/\n$/, "");
-// `git diff --no-index` exits 1 when the files differ, which is the diff.
-const noIndex = (dir: string, path: string) => {
-  try {
-    return git(dir, "diff", "--no-index", "--", "/dev/null", path);
-  } catch (error) {
-    const out: unknown =
-      typeof error === "object" && error !== null && "stdout" in error ? error.stdout : "";
-    return typeof out === "string" ? out.replace(/\n$/, "") : "";
-  }
-};
+
+// git's own words, taken from a worktree with `z.ts` edited and `a.ts` new and never added.
+const EDITED = [
+  "diff --git a/z.ts b/z.ts",
+  "index 5626abf..814f4a4 100644",
+  "--- a/z.ts",
+  "+++ b/z.ts",
+  "@@ -1 +1,2 @@",
+  " one",
+  "+two",
+].join("\n");
+const ADDED = [
+  "diff --git a/a.ts b/a.ts",
+  "new file mode 100644",
+  "index 0000000..3e75765",
+  "--- /dev/null",
+  "+++ b/a.ts",
+  "@@ -0,0 +1 @@",
+  "+new",
+].join("\n");
 
 describe("whether the tour was written from this change", () => {
   it("matches the tour's digest for a change whose new files sort before its edits", () => {
-    const dir = mkdtempSync(join(tmpdir(), "mend-tour-digest-"));
-    try {
-      git(dir, "init", "-q");
-      writeFileSync(join(dir, "z.ts"), "one\n");
-      git(dir, "add", "z.ts");
-      git(dir, "commit", "-qm", "base");
-      const base = git(dir, "rev-parse", "HEAD");
-      writeFileSync(join(dir, "z.ts"), "one\ntwo\n");
-      writeFileSync(join(dir, "a.ts"), "new\n");
-      // The tour's digest: the worktree's diff as the tour composer reads it.
-      const worktree = [git(dir, "diff", base), noIndex(dir, "a.ts")].join("\n");
-      // The review's patch: the snapshot against the base.
-      git(dir, "add", "-A");
-      git(dir, "commit", "-qm", "snapshot");
-      const patch = git(dir, "diff", "--find-renames", base, "HEAD");
-      expect(sha(patch)).not.toBe(sha(worktree));
-      expect(tourDigestTexts(patch).map(sha)).toContain(sha(worktree));
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    // The tour composer: `git diff <base>`, then `git diff --no-index /dev/null a.ts`.
+    const worktree = [EDITED, ADDED].join("\n");
+    // The review: `git diff --find-renames <base> <snapshot>`, sorted by path.
+    const patch = [ADDED, EDITED].join("\n");
+    expect(sha(patch)).not.toBe(sha(worktree));
+    expect(tourDigestTexts(patch).map(sha)).toContain(sha(worktree));
   });
 
   it("has one text when the order is the same", () => {
