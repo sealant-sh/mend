@@ -675,6 +675,23 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     `a person who joined landed on /welcome/command-line: step 2 of 5, steps ${joined.join(" · ")}`,
   );
   await all("join-cli-waiting");
+  // The member has no GitHub login and doesn't run the server: the list says to connect one, and
+  // never shows the server's own gh account's repositories.
+  const memberRepos = await api("GET", "/api/github/repos");
+  expect(
+    "a member with no GitHub login is told to connect one",
+    memberRepos.status === 422 && JSON.stringify(memberRepos.body).includes("mend connect github"),
+    memberRepos,
+  );
+  const memberStatus = await api("GET", "/api/github/status");
+  expect(
+    "no GitHub login for the member",
+    memberStatus.body?.authenticated === false,
+    memberStatus,
+  );
+  note(
+    `as the member, /api/github/repos answered ${memberRepos.status}: ${JSON.stringify(memberRepos.body)}; /api/github/status reads authenticated false`,
+  );
   await page.context().clearCookies();
   await page.context().addCookies(owner);
 };
