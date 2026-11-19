@@ -554,6 +554,51 @@ export const startXvfb = async (
   throw new Error(`displays :${candidates[0]} to :${candidates.at(-1)} are all taken`);
 };
 
+/**
+ * VS Code's server for the editor's own commit, fetched once onto this machine (kept under
+ * ~/.cache/mend-vscode-server) so the suite can put it in each workspace home before Remote-SSH
+ * opens it. A fresh home otherwise downloads its 217 MB from Microsoft's CDN inside the workspace,
+ * and one that slowed to 200 KB/s held a window past its wait (SLNT-1168). A transfer that falls
+ * under 1 MB/s for 30 s is dropped and tried again on a new connection.
+ */
+export const fetchVscodeServer = async (code, { env, log }) => {
+  const [, commit = ""] = lines((await run(code, ["--version"], { env })).stdout);
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`${code} --version names no commit`);
+  const platform = { x64: "linux-x64", arm64: "linux-arm64" }[process.arch];
+  if (platform === undefined) throw new Error(`no VS Code server for ${process.arch} workspaces`);
+  const dir = path.join(os.homedir(), ".cache", "mend-vscode-server");
+  const archive = path.join(dir, `${commit}-server-${platform}.tar.gz`);
+  if (!fs.existsSync(archive)) {
+    fs.mkdirSync(dir, { recursive: true });
+    const partial = `${archive}.${process.pid}.partial`;
+    const url = `https://update.code.visualstudio.com/commit:${commit}/server-${platform}/stable`;
+    const started = Date.now();
+    await run(
+      "curl",
+      [
+        "-fsSL",
+        "--retry",
+        "4",
+        "--retry-all-errors",
+        "--speed-limit",
+        "1000000",
+        "--speed-time",
+        "30",
+        "-o",
+        partial,
+        url,
+      ],
+      { timeout: 900_000 },
+    ).catch((cause) => {
+      fs.rmSync(partial, { force: true });
+      throw cause;
+    });
+    fs.renameSync(partial, archive);
+    log(`VS Code's server ${commit} fetched in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  }
+  return { commit, archive };
+};
+
 /** `code --install-extension` into the run's own extensions directory. */
 export const installExtension = async (code, { userData, extensions, id, env }) => {
   const installed = await run(
