@@ -329,6 +329,27 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/settings/automation-page.tsx`,
   `apps/web/src/routes/_inbox.settings.automation.tsx`, `apps/web/src/lib/automation.ts`
 
+### settings.new-web-boat
+
+- **Map:** none in a feature file (route PR 48: the organization's Boat key, docs/adr/0025)
+- **Needs:** no session; no turn; web; for a connected key for real, an owner and a Boat key
+- **Do:** Drive the recipe `new-web-settings-boat`: Boat under "Everyone in <organization>" says
+  whether there is a key; an owner connects one through a dialog with the create-key command, a
+  value that isn't a key is refused and the field empties; a connected key shows who added it and
+  when it expires, a banner two weeks before expiry with Replace key…, the wallet when the key's
+  account can bill several, Last check with Check again, Full check with its steps and a dialog to
+  run one, and what Boat reported; replace and remove confirm in dialogs and say a refusal there; a
+  member reads only whether there is a key; a failed read shows Try again. On the box, connect and
+  check a real key.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no part of the key in any
+  picture, log or note.
+- **Mode:** `scripted` (recipes/new-web-settings-boat.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/boat-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.boat.tsx`, `apps/web/src/lib/boat-key.ts`,
+  `apps/web/src/server/routers/boat-key.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
