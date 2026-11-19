@@ -10,10 +10,11 @@
 //   pnpm verify drive new-web --recipe new-web-github-list
 const DESKTOP = { width: 1280, height: 900 };
 
+const expect = (what, ok, seen) => {
+  if (!ok) throw new Error(`${what}: saw ${JSON.stringify(seen).slice(0, 400)}`);
+};
+
 export default async ({ page, web, capture, note }) => {
-  const expect = (what, ok, seen) => {
-    if (!ok) throw new Error(`${what}: saw ${JSON.stringify(seen).slice(0, 400)}`);
-  };
   const hydrated = () =>
     page.waitForFunction(
       () =>
