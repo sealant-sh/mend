@@ -724,7 +724,7 @@ function Invitations({
   const invitations = useSuspenseQuery(trpc.organization.invitations.queryOptions()).data;
   const [creating, setCreating] = useState(false);
   const [showClosed, setShowClosed] = useState(false);
-  const [revokedFor, setRevokedFor] = useState<string | null>(null);
+  const [revoked, setRevoked] = useState<{ readonly email: string | null } | null>(null);
   const [refusal, setRefusal] = useState<{ readonly id: string; readonly words: string } | null>(
     null,
   );
@@ -766,7 +766,7 @@ function Invitations({
       </div>
       {open.length === 0 ? (
         <p className="border-b border-border px-5 py-3.5 text-row text-muted-foreground max-lg:px-4">
-          {noOpenInvitations(revokedFor)}
+          {noOpenInvitations(revoked)}
         </p>
       ) : (
         <div role="table" aria-label="Open invitations" className="text-row">
@@ -824,7 +824,7 @@ function Invitations({
                           setRefusal(null);
                           try {
                             await revoke.mutateAsync({ id: invitation.id });
-                            setRevokedFor(invitation.email ?? "anyone with the link");
+                            setRevoked({ email: invitation.email });
                             toast.add({
                               description: `Revoked the invitation for ${invitation.email ?? "anyone with the link"}.`,
                             });
@@ -884,7 +884,7 @@ function Invitations({
         onOpenChange={setCreating}
         organization={organization}
         finalFocus={createButton}
-        onCreated={() => setRevokedFor(null)}
+        onCreated={() => setRevoked(null)}
       />
     </SettingSection>
   );

@@ -252,10 +252,13 @@ export const closedFold = (count: number): string =>
     : `Show ${count} used, expired or revoked links`;
 
 /** The empty line under Invitations: after a revoke it says which link stopped working. */
-export const noOpenInvitations = (revokedFor: string | null): string =>
-  revokedFor === null
-    ? "No open invitations. Links you create show here until someone uses them or they expire."
-    : `No open invitations. The link you sent to ${revokedFor} no longer works.`;
+export const noOpenInvitations = (revoked: { readonly email: string | null } | null): string => {
+  if (revoked === null)
+    return "No open invitations. Links you create show here until someone uses them or they expire.";
+  return revoked.email === null
+    ? "No open invitations. The link you revoked no longer works."
+    : `No open invitations. The link you sent to ${revoked.email} no longer works.`;
+};
 
 /** The choices for how long a link lasts, up to the server's maximum. */
 export const EXPIRY_DAYS: ReadonlyArray<number> = [

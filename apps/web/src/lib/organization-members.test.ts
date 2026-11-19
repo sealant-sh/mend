@@ -188,8 +188,11 @@ describe("invitations", () => {
     expect(noOpenInvitations(null)).toBe(
       "No open invitations. Links you create show here until someone uses them or they expire.",
     );
-    expect(noOpenInvitations("linus@northwind.dev")).toBe(
+    expect(noOpenInvitations({ email: "linus@northwind.dev" })).toBe(
       "No open invitations. The link you sent to linus@northwind.dev no longer works.",
+    );
+    expect(noOpenInvitations({ email: null })).toBe(
+      "No open invitations. The link you revoked no longer works.",
     );
   });
 
