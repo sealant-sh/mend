@@ -12,6 +12,7 @@ import { harnessesRouter } from "./harnesses.ts";
 import { landingsRouter } from "./landings.ts";
 import { layoutsRouter } from "./layouts.ts";
 import { mcpServersRouter } from "./mcp-servers.ts";
+import { memoryRouter } from "./memory.ts";
 import { operatorRouter } from "./operator.ts";
 import { organizationRouter } from "./organization.ts";
 import { organizationsRouter } from "./organizations.ts";
@@ -57,6 +58,7 @@ export const appRouter = router({
   landings: landingsRouter,
   layouts: layoutsRouter,
   mcpServers: mcpServersRouter,
+  memory: memoryRouter,
   operator: operatorRouter,
   organization: organizationRouter,
   organizations: organizationsRouter,

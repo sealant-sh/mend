@@ -75,6 +75,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return projectPage("/projects/$projectId/settings/general", id, projectId);
     case "p-folders":
       return projectPage("/projects/$projectId/settings/folders", id, projectId);
+    case "p-only-you":
+      return projectPage("/projects/$projectId/settings/only-you", id, projectId);
     default:
       return laterPage(settingsPathOf(settingsPage(id), projectId).slice(1));
   }
