@@ -1,7 +1,7 @@
 import { queryOptions } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
-import { openReview } from "./api.ts";
+import { openReview, type ReviewRangeRequest } from "./api.ts";
 import { draftKeys, readDraft } from "./drafts.ts";
 import { uuidV4 } from "./uuid.ts";
 
@@ -11,10 +11,14 @@ import { uuidV4 } from "./uuid.ts";
  * opening a new one. Every view of the change reads the same key, so the diff and the review panel
  * always show one slice.
  */
-export const openReviewQuery = (changeId: string, key: string = reviewOpenKey(changeId)) =>
+export const openReviewQuery = (
+  changeId: string,
+  key: string = reviewOpenKey(changeId),
+  range: ReviewRangeRequest | null = null,
+) =>
   queryOptions({
-    queryKey: ["change", changeId, "review-open", key],
-    queryFn: () => openReview(changeId, key),
+    queryKey: ["change", changeId, "review-open", key, range],
+    queryFn: () => openReview(changeId, key, range ?? undefined),
     staleTime: Number.POSITIVE_INFINITY,
   });
 
@@ -43,6 +47,47 @@ export const useReviewOpenKey = (changeId: string): string =>
     () => reviewOpenKey(changeId),
     () => "",
   );
+
+const rangeKey = (changeId: string) => `mend.review.${changeId}.range`;
+
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === "object" && value !== null;
+
+/** A stored range, read back; anything not shaped like one is the whole change (null). */
+export const parseRange = (stored: string | null): ReviewRangeRequest | null => {
+  if (stored === null || stored === "") return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(stored);
+  } catch {
+    return null;
+  }
+  if (!isRecord(value) || typeof value["from"] !== "string") return null;
+  const from = value["from"];
+  const to = value["to"];
+  return typeof to === "string" && from !== "last-review" ? { from, to } : { from };
+};
+
+/**
+ * The range this browser tab reviews the change over (Second look), kept for the tab's life like
+ * its key; null is the whole change. Read as it changes: every view of the change follows.
+ */
+export const useReviewRange = (changeId: string): ReviewRangeRequest | null => {
+  const stored = useSyncExternalStore(
+    subscribe,
+    () => sessionStorage.getItem(rangeKey(changeId)),
+    () => null,
+  );
+  return parseRange(stored);
+};
+
+/** Review the change over `range` (null: the whole change) from now on in this tab. */
+export const setReviewRange = (changeId: string, range: ReviewRangeRequest | null): void => {
+  if (range === null || (range.from === "base" && range.to === undefined))
+    sessionStorage.removeItem(rangeKey(changeId));
+  else sessionStorage.setItem(rangeKey(changeId), JSON.stringify(range));
+  renewReviewOpenKey(changeId);
+};
 
 /** A fresh key, so every view opens the change as it is now rather than the pinned slice. */
 export const renewReviewOpenKey = (changeId: string): void => {

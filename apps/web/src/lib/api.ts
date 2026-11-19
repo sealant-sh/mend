@@ -640,8 +640,23 @@ export const stopService = (id: string) =>
 
 // ─── Changes · review ───────────────────────────────────────────────────────
 
-export const openReview = (id: string, idempotencyKey: string) =>
-  orLogin(browserTrpcClient().changes.openReview.mutate({ id, request: { idempotencyKey } }));
+/**
+ * Which checkpoints a review covers, as the open request takes it: from the base, from your last
+ * review, or from one checkpoint to another (`to` left out: the change as it stands now).
+ */
+export interface ReviewRangeRequest {
+  /** `base`, `last-review`, or a checkpoint id. */
+  readonly from: string;
+  readonly to?: string;
+}
+
+export const openReview = (id: string, idempotencyKey: string, range?: ReviewRangeRequest) =>
+  orLogin(
+    browserTrpcClient().changes.openReview.mutate({
+      id,
+      request: range === undefined ? { idempotencyKey } : { idempotencyKey, range },
+    }),
+  );
 
 export interface SliceCommentTargetDto {
   readonly oldPath: string | null;

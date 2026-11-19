@@ -2,7 +2,12 @@ import { Button } from "@mend/ui/components/ui/button";
 import { Textarea } from "@mend/ui/components/ui/textarea";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ScanSearchIcon } from "lucide-react";
+import {
+  AsteriskIcon,
+  CircleMinusIcon,
+  GitCommitHorizontalIcon,
+  ScanSearchIcon,
+} from "lucide-react";
 import { type ReactNode, useCallback, useState } from "react";
 
 import { RichText } from "#/components/session/rich-text";
@@ -11,6 +16,8 @@ import { clearSentDraft, useDraft } from "#/lib/drafts";
 import { focusWhenShown } from "#/lib/focus-when-shown";
 import { failureWords } from "#/lib/refusal";
 import { linesWords, plainLine, stateActions, stateWords } from "#/lib/review-comments";
+import { answerEnded, latestAnswer, outcomeWords, sentWords, threadOf } from "#/lib/review-range";
+import { harnessName } from "#/lib/session-view";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** "AL" for Ada Lovelace. */
@@ -38,12 +45,19 @@ function Mark({ comment }: { readonly comment: ReviewCommentDto }) {
   );
 }
 
-/** "Not sent · line 31", "lines 37–40", "Not sent · lines 37–40 · from Mend's draft". */
+/**
+ * "Not sent · line 31", "lines 37–40", "Not sent · lines 37–40 · from Mend's draft", "Sent in turn
+ * 4 · was line 31".
+ */
 const metaWords = (comment: ReviewCommentDto, withPlace: boolean): string => {
-  const lines = withPlace ? linesWords(comment.line, comment.endLine) : null;
+  const sent = sentWords(comment);
+  const lines =
+    withPlace && !sent.some((part) => part.startsWith("was "))
+      ? linesWords(comment.line, comment.endLine)
+      : null;
   if (comment.state === "draft") return lines ?? "";
   return [
-    stateWords(comment),
+    ...(comment.state === "open" && sent.length > 0 ? sent : [stateWords(comment)]),
     lines,
     comment.authorKind === "mend" ? "from Mend's draft" : null,
     comment.kind === "suggestion" && comment.authorKind !== "mend" ? "suggestion" : null,
@@ -108,7 +122,12 @@ function Evidence({ comment }: { readonly comment: ReviewCommentDto }) {
  * for one added from a draft) on an open one, Reopen on one resolved or dismissed. Each says it
  * is working on itself, and a failure is said under the comment.
  */
-export function useCommentActions(comment: ReviewCommentDto, touch: boolean) {
+export function useCommentActions(
+  comment: ReviewCommentDto,
+  touch: boolean,
+  /** A reply offers only Remove while unsent, and nothing once sent. */
+  mode: "comment" | "reply" | "none" = "comment",
+) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
@@ -126,7 +145,13 @@ export function useCommentActions(comment: ReviewCommentDto, touch: boolean) {
     onSettled: () =>
       queryClient.invalidateQueries(trpc.changes.comments.queryFilter({ id: comment.changeId })),
   });
-  const buttons = stateActions(comment).map((action, index) => (
+  const actions =
+    mode === "comment"
+      ? stateActions(comment)
+      : mode === "reply"
+        ? [{ state: "dismissed" as const, label: "Remove" }]
+        : [];
+  const buttons = actions.map((action, index) => (
     <Button
       key={action.state}
       variant={comment.state === "draft" && index === 0 ? "outline" : "ghost"}
@@ -150,6 +175,109 @@ export function useCommentActions(comment: ReviewCommentDto, touch: boolean) {
   return { buttons, said };
 }
 
+type Answer = NonNullable<ReviewCommentDto["answers"]>[number];
+type Reply = NonNullable<ReviewCommentDto["replies"]>[number];
+
+/** The agent's mark before its name in a thread. */
+function AgentMark() {
+  return (
+    <span
+      aria-hidden
+      className="grid size-[22px] flex-none place-items-center rounded-full bg-warning/15 text-warning"
+    >
+      <AsteriskIcon className="size-3.5" />
+    </span>
+  );
+}
+
+/**
+ * The agent's answer under a comment, read from the turn the comment was sent in: its last
+ * message, then what happened to the code the comment points at, with "Show the edit".
+ */
+function AnswerEntry({
+  answer,
+  onShowEdit,
+}: {
+  readonly answer: Answer;
+  readonly onShowEdit?: (checkpointId: string) => void;
+}) {
+  const agent = harnessName(answer.harness);
+  const outcome = outcomeWords(answer);
+  const changedAt = answer.changedAt;
+  return (
+    <div className="mt-3 border-t pt-3" data-answer={answer.followUpId}>
+      <p className="flex flex-wrap items-center gap-x-2 text-control">
+        <AgentMark />
+        <b className="font-semibold">{agent}</b>
+        <span className="text-meta text-muted-foreground">Turn {answer.turnOrdinal}</span>
+      </p>
+      {!answerEnded(answer) ? (
+        <p role="status" className="mt-1.5 text-prose text-muted-foreground">
+          Working on your comments…
+        </p>
+      ) : answer.body === null ? (
+        <p className="mt-1.5 text-prose text-muted-foreground">
+          {answer.turnStatus === "completed"
+            ? `${agent} wrote nothing back in this turn.`
+            : `The turn stopped before ${agent} answered.`}
+        </p>
+      ) : (
+        <RichText text={answer.body} className="mt-1.5 text-prose" />
+      )}
+      {outcome === null ? null : (
+        <p className="mt-2 flex flex-wrap items-center gap-x-2 text-meta text-muted-foreground">
+          {answer.outcome === "changed-code" ? (
+            <GitCommitHorizontalIcon aria-hidden className="size-4" />
+          ) : (
+            <CircleMinusIcon aria-hidden className="size-4" />
+          )}
+          {outcome}
+          {changedAt === null || onShowEdit === undefined ? null : (
+            <Button
+              variant="link"
+              className="h-auto p-0 text-meta text-info"
+              onClick={() => onShowEdit(changedAt.checkpointId)}
+            >
+              Show the edit
+            </Button>
+          )}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** A person's reply under a comment: who, whether it went, its words; Remove while unsent. */
+function ReplyEntry({ reply, touch }: { readonly reply: Reply; readonly touch: boolean }) {
+  const { buttons, said } = useCommentActions(
+    { ...reply, parentId: reply.parentId },
+    touch,
+    reply.state === "open" && reply.sentToSessionId === null ? "reply" : "none",
+  );
+  if (reply.state === "dismissed") return null;
+  return (
+    <div className="mt-3 border-t pt-3" data-reply={reply.id}>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-control">
+        <Mark comment={reply} />
+        <b className="font-semibold">{reply.authorName}</b>
+        <span className="text-meta text-muted-foreground">
+          {reply.sentToSessionId === null ? "Not sent" : "Sent"}
+        </span>
+        <span className="ml-auto flex items-center gap-1">{buttons}</span>
+      </div>
+      <RichText text={reply.body} className="mt-1.5 text-prose" />
+      {said}
+    </div>
+  );
+}
+
+/** Writing a reply under a comment: what goes with the next send, and to whom. */
+export interface ReplyBox {
+  readonly draftKey: string;
+  readonly agent: string;
+  readonly onSave: (body: string) => Promise<unknown>;
+}
+
 /**
  * One comment (Doop "Review comment"): on a line, between the diff's rows on the band and indented
  * past the line numbers; or in a list. The mark, the author in bold, a muted line saying where it
@@ -161,15 +289,42 @@ export function ReviewComment({
   place,
   touch = false,
   narrow = false,
+  reply,
+  onShowEdit,
 }: {
   readonly comment: ReviewCommentDto;
   readonly place: "line" | "change";
   readonly touch?: boolean;
   /** A phone or a narrow tile: a suggestion's long lines wrap. */
   readonly narrow?: boolean;
+  /** Where a reply is written and saved; absent, the comment offers no Reply. */
+  readonly reply?: ReplyBox;
+  /** Review the edit the agent made at a checkpoint. */
+  readonly onShowEdit?: (checkpointId: string) => void;
 }) {
   const { buttons, said } = useCommentActions(comment, touch);
+  const [replying, setReplying] = useState(false);
+  // With no reply box, a key nothing writes: the hook runs either way.
+  const [replyDraft] = useDraft(reply?.draftKey ?? "review.no-reply");
+  const writing = reply !== undefined && (replying || replyDraft !== "");
   const folded = comment.state === "addressed" || comment.state === "dismissed";
+  const thread = threadOf(comment);
+  const answer = latestAnswer(comment);
+  const answerOutcome = answer === null ? null : outcomeWords(answer);
+  // A sent comment that has been answered or that is open takes a reply; drafts don't.
+  const canReply =
+    reply !== undefined && comment.state === "open" && comment.authorKind === "reviewer";
+  const replyButton =
+    canReply && !writing ? (
+      <Button
+        key="reply"
+        variant="ghost"
+        size={touch ? "touch" : "sm"}
+        onClick={() => setReplying(true)}
+      >
+        Reply
+      </Button>
+    ) : null;
   const author =
     comment.state === "draft"
       ? "Draft from Mend"
@@ -196,16 +351,53 @@ export function ReviewComment({
         {folded ? (
           <span className="min-w-0 flex-1 truncate text-meta text-muted-foreground">
             {plainLine(comment.body)}
+            {answer === null || answerOutcome === null
+              ? ""
+              : ` · ${harnessName(answer.harness)} ${answerOutcome.charAt(0).toLowerCase()}${answerOutcome.slice(1)}`}
           </span>
         ) : null}
-        {draft && touch ? null : <span className="ml-auto flex items-center gap-1">{buttons}</span>}
+        {(draft || canReply) && touch ? null : (
+          <span className="ml-auto flex items-center gap-1">
+            {replyButton}
+            {buttons}
+          </span>
+        )}
       </div>
       {folded ? null : (
         <>
           <RichText text={comment.body} className="mt-1.5 text-prose" />
           <Suggestion comment={comment} wrap={narrow} />
           <Evidence comment={comment} />
-          {draft && touch ? <div className="mt-3 flex gap-2 *:flex-1">{buttons}</div> : null}
+          {thread.map((entry) =>
+            entry.kind === "answer" ? (
+              <AnswerEntry
+                key={`answer:${entry.answer.followUpId}`}
+                answer={entry.answer}
+                {...(onShowEdit === undefined ? {} : { onShowEdit })}
+              />
+            ) : (
+              <ReplyEntry key={entry.reply.id} reply={entry.reply} touch={touch} />
+            ),
+          )}
+          {writing && reply !== undefined ? (
+            <div className="mt-3">
+              <CommentComposer
+                label={`Reply to ${comment.authorName}'s comment`}
+                draftKey={reply.draftKey}
+                agent={reply.agent}
+                onSave={reply.onSave}
+                onClose={() => setReplying(false)}
+                touch={touch}
+                kind="reply"
+              />
+            </div>
+          ) : null}
+          {(draft || canReply) && touch ? (
+            <div className="mt-3 flex gap-2 *:flex-1">
+              {replyButton}
+              {buttons}
+            </div>
+          ) : null}
         </>
       )}
       {said}
@@ -227,6 +419,7 @@ export function CommentComposer({
   onClose,
   compact = false,
   touch = false,
+  kind = "comment",
 }: {
   /** The box's name for screen readers: "Comment on retry.ts, line 31". */
   readonly label: string;
@@ -239,6 +432,8 @@ export function CommentComposer({
   /** In the file column: a short box, its note under it. */
   readonly compact?: boolean;
   readonly touch?: boolean;
+  /** A reply says where it goes, and its button reads Add reply. */
+  readonly kind?: "comment" | "reply";
 }) {
   const [body, setBody] = useDraft(draftKey);
   const [failure, setFailure] = useState<string | null>(null);
@@ -251,7 +446,7 @@ export function CommentComposer({
     },
     onError: (cause) =>
       setFailure(
-        `Mend didn't save the comment. ${failureWords(cause, "Your words are still here; try again.")}`,
+        `Mend didn't save the ${kind}. ${failureWords(cause, "Your words are still here; try again.")}`,
       ),
   });
   // The diff slots this box into its rows after React's commit, where `autoFocus` finds nothing
@@ -289,7 +484,9 @@ export function CommentComposer({
         <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-2.5">
           {compact ? null : (
             <p className="mr-auto min-w-0 flex-1 basis-56 text-meta text-muted-foreground">
-              You can use Markdown. {agent} gets this when you send your comments.
+              {kind === "reply"
+                ? `Your reply goes to ${agent} with your next comments.`
+                : `You can use Markdown. ${agent} gets this when you send your comments.`}
             </p>
           )}
           <Button
@@ -309,7 +506,7 @@ export function CommentComposer({
             disabled={save.isPending || body.trim() === ""}
             onClick={submit}
           >
-            {save.isPending ? "Adding…" : "Add comment"}
+            {save.isPending ? "Adding…" : kind === "reply" ? "Add reply" : "Add comment"}
           </Button>
         </div>
       </div>
