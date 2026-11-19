@@ -154,8 +154,14 @@ export default async ({ page, web, capture, note }) => {
 
   // Worktrees and a project an earlier run left go first.
   const detail0 = await call("projects.detail", { id: fixture.id });
-  for (const left of detail0.worktrees.filter((w) => /^svc-[ab]-[a-z0-9]{4}$/.test(w.name)))
+  const leftovers = detail0.worktrees.filter((w) => /^svc-[ab]-[a-z0-9]{4}$/.test(w.name));
+  for (const left of leftovers)
     await call("worktrees.remove", { id: left.id, force: true }, "mutate").catch(() => undefined);
+  for (let waited = 0; waited < 60 && leftovers.length > 0; waited += 2) {
+    const now = await call("projects.detail", { id: fixture.id });
+    if (!now.worktrees.some((w) => leftovers.some((left) => left.id === w.id))) break;
+    await page.waitForTimeout(2_000);
+  }
   for (const left of projects.filter((p) => /^services-[a-z0-9]{4}$/.test(p.name)))
     await call("projects.remove", { id: left.id }, "mutate").catch(() => undefined);
 
@@ -295,7 +301,8 @@ export default async ({ page, web, capture, note }) => {
     note(
       `Change worktree… lists ${rows} choices, the current one marked, Default branch last; the button waits for another pick`,
     );
-    await dialog.getByText("Add idempotency keys to refunds", { exact: true }).click();
+    // By the worktree's own id: an earlier run's worktrees may still be on their way out.
+    await dialog.locator(`[id$="-${second.id}"]`).first().click();
     await shot("project-services-change-desktop-light");
     await submit.click();
     await dialog.getByText("The preview didn't move.", { exact: false }).waitFor();
