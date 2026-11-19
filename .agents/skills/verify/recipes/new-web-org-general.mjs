@@ -249,7 +249,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       "a-general-verify-password",
     );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    await memberPage.waitForURL((url) => url.pathname === "/welcome/command-line");
     const memberMe = await apiOf(memberPage)("GET", "/api/organization");
     expect("the member joined", memberMe.body?.role === "member", memberMe);
     memberId = memberMe.body.userId;

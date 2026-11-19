@@ -7,10 +7,11 @@
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-agent-login-connect.json
 //
 // - The stack's account starts with no Claude Code or Codex login (the recipe removes them). The
-//   step shows `mend login --url <server>` and `mend connect claude`, each with Copy command, and
-//   "Waiting for Claude Code to connect". Copy command puts the command on the clipboard. The
-//   Agent segment switches to Codex's commands. Skip for now goes to /welcome/first-project (not
-//   found until that step's route lands), and Continue is off.
+//   step shows Mend's command line once above the tabs (the stack's CLI is signed in, so one ticked
+//   line) and `mend connect claude` with Copy command, and "Waiting for Claude Code to connect".
+//   Copy command puts the command on the clipboard. The Agent segment switches to Codex's command.
+//   Skip for now goes to /welcome/organization (the stack's account is the first account), and
+//   Continue is off.
 // - A login connected from the stack's CLI (`mend connect codex|claude --from-stdin`, the CLI the
 //   stack built from this commit) lands on the open page by itself, through the `user` event: no
 //   reload. Codex reads connected, Continue opens and Skip goes; Claude Code reads connected too.
@@ -170,7 +171,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   // accounts-list, none connected: the commands and the wait.
   await open("/welcome/agent-login");
   await heading("Agent login");
-  await page.getByText("Step 3 of 4").first().waitFor({ state: "attached" });
+  // The stack's account is the first account: six steps, Agent login the fourth (SLNT-1191).
+  await page.getByText("Step 4 of 6").first().waitFor({ state: "attached" });
   const steps = page.getByRole("list", { name: "Setup steps" });
   const current = await steps.locator('[aria-current="step"]').textContent();
   if (!current?.includes("Agent login")) throw new Error(`the current step is ${current}`);
@@ -180,9 +182,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   const origin = new URL(web).origin;
   const commands = async () =>
     (await page.locator('[data-slot="copy-field-value"]').allTextContents()).filter(Boolean);
+  // Mend's command line is introduced once above the tabs (SLNT-1191): the stack's CLI is signed
+  // in, so it is one ticked line, and the tab holds only its own command.
   const claudeCommands = await commands();
-  if (claudeCommands.join(" | ") !== `mend login --url ${origin} | mend connect claude`)
+  if (claudeCommands.join(" | ") !== "mend connect claude")
     throw new Error(`the commands read ${JSON.stringify(claudeCommands)}`);
+  await visibleText(/Mend's command line is signed in on /)
+    .first()
+    .waitFor();
   await visibleText(/Waiting for Claude Code to connect · \d+s/)
     .first()
     .waitFor();
@@ -193,7 +200,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
       throw new Error(`the step says "${banned}"`);
   }
   note(
-    `/welcome/agent-login with no agent login: 'Agent login', step 3 of 4, Claude Code chosen, 'mend login --url ${origin}' and 'mend connect claude' with Copy command, 'Waiting for Claude Code to connect · Ns', Continue disabled, Skip for now; no sign-in button, setup token, credentials file or auth.json`,
+    `/welcome/agent-login with no agent login: 'Agent login', step 4 of 6, Claude Code chosen, 'Mend's command line is signed in on …' once above the tabs and 'mend connect claude' with Copy command, 'Waiting for Claude Code to connect · Ns', Continue disabled, Skip for now; no sign-in button, setup token, credentials file or auth.json`,
   );
 
   // The command on the clipboard.
@@ -211,7 +218,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   // The Claude Code panel leaves once the switch has finished.
   await page.getByText("mend connect claude", { exact: true }).waitFor({ state: "detached" });
   const codexCommands = await commands();
-  if (codexCommands.join(" | ") !== `mend login --url ${origin} | mend connect codex`)
+  if (codexCommands.join(" | ") !== "mend connect codex")
     throw new Error(`the Codex commands read ${JSON.stringify(codexCommands)}`);
   await visibleText(/Waiting for Codex to connect · \d+s/)
     .first()
@@ -219,13 +226,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   note("the Codex segment shows 'Connect Codex' with 'mend connect codex'");
   await captureAll("agent-login-codex-waiting");
 
-  // Skip for now: on to First project, whose route a later PR adds.
+  // Skip for now: on to Organization, the first account's next step (SLNT-1191).
   await button("Skip for now").click();
-  await page.waitForURL((url) => url.pathname === "/welcome/first-project");
-  await heading("Page not found");
-  note(
-    "Skip for now went to /welcome/first-project (not found until the First project step lands)",
-  );
+  await page.waitForURL((url) => url.pathname === "/welcome/organization");
+  await heading("Your organization");
+  note("Skip for now went to /welcome/organization, the first account's Organization step");
   await page.goBack();
   await heading("Agent login");
 
@@ -369,10 +374,10 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
     await captureAll("agent-login-key-saved");
   }
 
-  // Continue: on to First project.
+  // Continue: on to Organization, the first account's next step.
   await button("Continue").click();
-  await page.waitForURL((url) => url.pathname === "/welcome/first-project");
-  note("Continue went to /welcome/first-project");
+  await page.waitForURL((url) => url.pathname === "/welcome/organization");
+  note("Continue went to /welcome/organization");
 
   // Without Git access the step sends the person back to it. The account has its Mend key, so the
   // Git access read says it has none, made in the browser; making a key is refused too, so the

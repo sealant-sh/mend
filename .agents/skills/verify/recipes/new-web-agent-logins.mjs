@@ -11,7 +11,8 @@
 // `git-author-set-web`, `git-author-refused`, `git-author-clear`.
 //
 // - `/settings/git-access` lands on `/settings/agent-logins`, "Only you" under the title.
-// - With no agent login, Connect Claude Code opens a dialog with `mend login --url <server>` and
+// - With no agent login, Connect Claude Code opens a dialog with Mend's command line (one ticked
+//   line: the stack's CLI is signed in) and
 //   `mend connect claude` and waits. The CLI batch's login lands on the open page through the
 //   `user` event: the dialog closes by itself with a toast, no reload.
 // - Codex's Replace login: the API key field refuses an Anthropic key before anything is sent.
@@ -282,11 +283,12 @@ export default async ({ page, web, capture, note, registerSecret }) => {
   await page.getByRole("button", { name: "Connect Claude Code" }).click();
   await heading("Connect Claude Code");
   const claudeCommands = await commands("Connect Claude Code");
-  if (claudeCommands.join(" | ") !== `mend login --url ${origin} | mend connect claude`)
+  // The stack's CLI is signed in: Mend's command line is one ticked line, then the command.
+  if (claudeCommands.join(" | ") !== "mend connect claude")
     throw new Error(`the commands read ${JSON.stringify(claudeCommands)}`);
   await text(/Waiting for Claude Code to connect · \d+s/).waitFor();
   note(
-    `Connect… on Claude Code: 'Connect Claude Code' with 'mend login --url ${origin}', 'mend connect claude', each with Copy command, and 'Waiting for Claude Code to connect · Ns'`,
+    `Connect… on Claude Code: 'Connect Claude Code' with 'Mend's command line is signed in on …' and 'mend connect claude' with Copy command, and 'Waiting for Claude Code to connect · Ns'`,
   );
   await shot("connect-claude-dialog-desktop-light");
   await page.setViewportSize(PHONE);
@@ -406,7 +408,7 @@ export default async ({ page, web, capture, note, registerSecret }) => {
   await page.getByRole("button", { name: "Add a GitHub login for gh" }).click();
   await heading("Connect GitHub");
   const githubCommands = await commands("Connect GitHub");
-  if (githubCommands.join(" | ") !== `mend login --url ${origin} | mend connect github`)
+  if (githubCommands.join(" | ") !== "mend connect github")
     throw new Error(`GitHub's commands read ${JSON.stringify(githubCommands)}`);
   if ((await dialog("Connect GitHub").getByRole("textbox").count()) > 0)
     throw new Error("GitHub's dialog has a field");
@@ -524,7 +526,7 @@ export default async ({ page, web, capture, note, registerSecret }) => {
   await page.getByText("mend keys share", { exact: true }).waitFor();
   if ((await api("GET", "/api/me/git-access")).body.mode !== "bridge")
     throw new Error("the mode wasn't saved");
-  note("Your computer's key: saved; the page shows 'mend login --url' and 'mend keys share'");
+  note("Your computer's key: saved; the page shows Mend's command line, then 'mend keys share'");
   await shot("mode-computer-desktop-light", "Git access");
   await open("/settings/agent-logins");
   await text("No computer is connected").waitFor();

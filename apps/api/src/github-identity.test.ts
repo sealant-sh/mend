@@ -31,7 +31,10 @@ describe("GitHub API identity (docs/adr/0003)", () => {
       kind: "none",
       detail: NO_GITHUB_IDENTITY,
     });
-    expect(githubAuthority("multi", true, [])).toEqual({ kind: "none", detail: NO_GITHUB_IDENTITY });
+    expect(githubAuthority("multi", true, [])).toEqual({
+      kind: "none",
+      detail: NO_GITHUB_IDENTITY,
+    });
   });
 
   it("answers with the caller's own connected GitHub login before the host's", () => {

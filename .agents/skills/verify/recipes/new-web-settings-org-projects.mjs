@@ -234,7 +234,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         "a-projects-verify-password",
       );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome", { timeout: 90_000 });
+    await memberPage.waitForURL((url) => url.pathname === "/welcome/command-line", {
+      timeout: 90_000,
+    });
     const member = apiOf(memberPage);
     memberId = (await member("GET", "/api/organization")).body?.userId ?? null;
     const made = await member("POST", "/api/projects/new", { name });

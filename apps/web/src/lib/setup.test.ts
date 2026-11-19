@@ -30,31 +30,67 @@ const notLoggedIn = () => Promise.resolve(false);
 
 describe("where /welcome sends a person", () => {
   it("shows Git access to anyone without it, project or not", async () => {
-    expect(await welcomeEntry({ access: noKey, namesOrganization: false, commandLineOwed: false, hasProject: false, hasAgentLogin: notAsked })).toBe(
-      "git-access",
-    );
-    expect(await welcomeEntry({ access: noKey, namesOrganization: false, commandLineOwed: false, hasProject: true, hasAgentLogin: notAsked })).toBe(
-      "git-access",
-    );
+    expect(
+      await welcomeEntry({
+        access: noKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: false,
+        hasAgentLogin: notAsked,
+      }),
+    ).toBe("git-access");
+    expect(
+      await welcomeEntry({
+        access: noKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: true,
+        hasAgentLogin: notAsked,
+      }),
+    ).toBe("git-access");
   });
 
   it("keeps a new member in an organization with projects on Git access until they log an agent in", async () => {
     // Their key exists from their first visit: a reload must not send them out of setup.
     expect(
-      await welcomeEntry({ access: withKey, namesOrganization: false, commandLineOwed: false, hasProject: true, hasAgentLogin: notLoggedIn }),
+      await welcomeEntry({
+        access: withKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: true,
+        hasAgentLogin: notLoggedIn,
+      }),
     ).toBe("git-access");
     expect(
-      await welcomeEntry({ access: withKey, namesOrganization: false, commandLineOwed: false, hasProject: false, hasAgentLogin: notLoggedIn }),
+      await welcomeEntry({
+        access: withKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: false,
+        hasAgentLogin: notLoggedIn,
+      }),
     ).toBe("git-access");
   });
 
   it("sends someone with an agent login on to First project, or Mend once they have a project", async () => {
-    expect(await welcomeEntry({ access: bridge, namesOrganization: false, commandLineOwed: false, hasProject: false, hasAgentLogin: loggedIn })).toBe(
-      "first-project",
-    );
-    expect(await welcomeEntry({ access: withKey, namesOrganization: false, commandLineOwed: false, hasProject: true, hasAgentLogin: loggedIn })).toBe(
-      "home",
-    );
+    expect(
+      await welcomeEntry({
+        access: bridge,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: false,
+        hasAgentLogin: loggedIn,
+      }),
+    ).toBe("first-project");
+    expect(
+      await welcomeEntry({
+        access: withKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: true,
+        hasAgentLogin: loggedIn,
+      }),
+    ).toBe("home");
   });
 });
 
@@ -110,15 +146,27 @@ describe("who may skip First project", () => {
 
 describe("where signing in with no page to return to goes", () => {
   it("opens setup for someone without Git access", async () => {
-    expect(await signInEntry({ access: noKey, namesOrganization: false, commandLineOwed: false, hasProject: true, hasAgentLogin: notAsked })).toBe(
-      "git-access",
-    );
+    expect(
+      await signInEntry({
+        access: noKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: true,
+        hasAgentLogin: notAsked,
+      }),
+    ).toBe("git-access");
   });
 
   it("opens Mend for someone with Git access and a project, agent login or not", async () => {
-    expect(await signInEntry({ access: withKey, namesOrganization: false, commandLineOwed: false, hasProject: true, hasAgentLogin: notAsked })).toBe(
-      "home",
-    );
+    expect(
+      await signInEntry({
+        access: withKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: true,
+        hasAgentLogin: notAsked,
+      }),
+    ).toBe("home");
   });
 
   it("starts again at Command line for someone who left before Git access, unless they skipped it", async () => {
@@ -142,11 +190,23 @@ describe("where signing in with no page to return to goes", () => {
   });
 
   it("with no project, opens the step left", async () => {
-    expect(await signInEntry({ access: bridge, namesOrganization: false, commandLineOwed: false, hasProject: false, hasAgentLogin: loggedIn })).toBe(
-      "first-project",
-    );
     expect(
-      await signInEntry({ access: withKey, namesOrganization: false, commandLineOwed: false, hasProject: false, hasAgentLogin: notLoggedIn }),
+      await signInEntry({
+        access: bridge,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: false,
+        hasAgentLogin: loggedIn,
+      }),
+    ).toBe("first-project");
+    expect(
+      await signInEntry({
+        access: withKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: false,
+        hasAgentLogin: notLoggedIn,
+      }),
     ).toBe("git-access");
   });
 });

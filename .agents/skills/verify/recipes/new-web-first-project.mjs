@@ -206,11 +206,12 @@ export default async ({ page, web, capture, note }) => {
   await refresh();
   await go("/welcome/first-project");
   await heading().waitFor();
-  await text("Step 4 of 4").waitFor();
-  // The stack's server has no GitHub login: the step asks for an address.
-  await text(/has no GitHub login/).waitFor();
+  await text("Step 6 of 6").waitFor();
+  // Neither the account nor the stack's server has a GitHub login: the step shows how to connect
+  // one (SLNT-1191), above the repository address.
+  await text(/Waiting for GitHub to connect/).waitFor();
   await all("no-github");
-  note("the stack's server has no GitHub login: the step opens on the repository address");
+  note("no GitHub login: the step shows how to connect one, and opens on the repository address");
 
   // Fixture: the GitHub list, as a server with a GitHub login answers it.
   const github = { available: true, authenticated: true, login: "linus-p", detail: null };
