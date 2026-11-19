@@ -649,8 +649,7 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/details-view.tsx`,
-  `apps/web/src/components/session/shared-control.tsx`,
-  `apps/web/src/components/workspace/views/details-view.tsx`, `apps/web/src/lib/session-details.ts`
+  `apps/web/src/components/session/shared-control.tsx`, `apps/web/src/lib/session-details.ts`
 
 ### session-page.new-web-shared-workspace
 
@@ -972,8 +971,7 @@ flows reuse what earlier ones made:
 - **Mode:** `scripted` (recipes/new-web-change.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
-- **Areas:** `apps/web/src/components/change/`,
-  `apps/web/src/components/workspace/views/change-view.tsx`,
+- **Areas:** `apps/web/src/components/change/`, `apps/web/src/components/workspace/view-facts.ts`,
   `apps/web/src/routes/_inbox.changes.$changeId.tsx`, `apps/web/src/lib/change-files.ts`,
   `apps/web/src/lib/review-open.ts`, `apps/web/src/lib/viewed-files.ts`
 

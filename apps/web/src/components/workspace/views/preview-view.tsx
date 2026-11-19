@@ -17,7 +17,7 @@ import { Spinner } from "@mend/ui/components/ui/spinner";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { AppWindowIcon, ChevronDownIcon, GlobeIcon, PlayIcon, ServerIcon } from "lucide-react";
+import { ChevronDownIcon, GlobeIcon, PlayIcon, ServerIcon } from "lucide-react";
 import { type ReactNode, useCallback, useState } from "react";
 
 import { Overlay } from "#/components/projects/overlay";
@@ -33,7 +33,6 @@ import { useSecond } from "#/lib/use-second";
 import {
   latestSupervisedAttempt,
   portText,
-  previewFact,
   previewLines,
   serviceOpen,
   type ServiceOpen,
@@ -41,7 +40,7 @@ import {
 } from "#/lib/workspace-services";
 import { shellAccess } from "#/lib/workspace-shells";
 
-import type { ViewFacts, ViewPlace, WorkspaceView } from "../views.tsx";
+import type { ViewPlace } from "../views.tsx";
 import { type Layout, Page } from "./preview-page.tsx";
 import { type CommandStart, RunCommandDialog } from "./run-command-dialog.tsx";
 import { LogBar } from "./service-log.tsx";
@@ -83,13 +82,6 @@ const useBoxSize = () => {
   return { box, ref };
 };
 
-/** The Preview tab's and its "+" item's fact: the port of the Service it shows, while it runs. */
-const usePreviewFacts = (place: ViewPlace): ViewFacts => {
-  const { services } = useWorkspaceServices(place);
-  const fact = previewFact(useShownService(place, services));
-  return fact === undefined ? {} : { fact };
-};
-
 /** "Both sessions in fix-retry use these services. If you restart one, it restarts for both." */
 const sharedNote = (sessions: number, worktree: ReactNode): ReactNode =>
   sessions <= 1 ? (
@@ -105,7 +97,7 @@ const sharedNote = (sessions: number, worktree: ReactNode): ReactNode =>
   );
 
 /** What a person typed into Run a command, as the server takes it. */
-function PreviewBody({ place }: { readonly place: ViewPlace }) {
+export function PreviewBody({ place }: { readonly place: ViewPlace }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
@@ -943,11 +935,3 @@ function ActionButton({
     </span>
   );
 }
-
-export const PREVIEW_VIEW: WorkspaceView = {
-  id: "preview",
-  name: "Preview",
-  icon: <AppWindowIcon />,
-  useFacts: usePreviewFacts,
-  Body: PreviewBody,
-};

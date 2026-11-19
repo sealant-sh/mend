@@ -1,47 +1,22 @@
 import { Button } from "@mend/ui/components/ui/button";
 import { Spinner } from "@mend/ui/components/ui/spinner";
 import { cn } from "@mend/ui/lib/utils";
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { ListChecksIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
 import { QueryError } from "#/components/route-screens";
 import { useSessionFacts } from "#/components/session/session-facts";
 import {
   checkpointBefore,
-  checksFact,
   checkTitle,
   editsSinceChecks,
   type ObservedCheck,
   observedChecks,
   tookWords,
 } from "#/lib/checks";
-import { conversationQuery, heldConversation } from "#/lib/conversation";
 import { clockTime } from "#/lib/session-view";
-import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
-import type { ViewFacts, ViewPlace, WorkspaceView } from "../views.tsx";
-
-/**
- * The session's conversation as far as it is read, the same cached read its conversation tile
- * makes, so the Checks tab costs no request of its own.
- */
-const useHeldConversation = (sessionId: string) => {
-  const trpc = useTRPC();
-  const client = useTRPCClient();
-  return useInfiniteQuery({
-    ...conversationQuery(trpc, client, sessionId),
-    select: (data) => heldConversation(data.pages),
-  });
-};
-
-/** The Checks tab's and its "+" item's fact: "2 passed", "1 failed". Nothing while it is read. */
-const useChecksFacts = (place: ViewPlace): ViewFacts => {
-  const conversation = useHeldConversation(place.sessionId);
-  if (conversation.isPending || conversation.isError) return {};
-  const fact = checksFact(observedChecks(conversation.data.items));
-  return fact === undefined ? {} : { fact };
-};
+import { useHeldConversation } from "../view-facts.ts";
+import type { ViewPlace } from "../views.tsx";
 
 /** "the last edit", "the last 2 edits". */
 const editsWord = (count: number): string =>
@@ -53,7 +28,7 @@ const editsWord = (count: number): string =>
  * and the checkpoint it ran after. Then whether edits came after the last of them. What ran, never
  * a verdict: a run whose outcome the record does not hold says so.
  */
-function ChecksBody({ place }: { readonly place: ViewPlace }) {
+export function ChecksBody({ place }: { readonly place: ViewPlace }) {
   const facts = useSessionFacts(place.sessionId);
   const conversation = useHeldConversation(place.sessionId);
 
@@ -212,12 +187,3 @@ function Note({
     </div>
   );
 }
-
-/** The Checks view: the checks the agent ran and how each ended (route PR 21). */
-export const CHECKS_VIEW: WorkspaceView = {
-  id: "checks",
-  name: "Checks",
-  icon: <ListChecksIcon />,
-  useFacts: useChecksFacts,
-  Body: ChecksBody,
-};

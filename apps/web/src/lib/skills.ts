@@ -10,6 +10,8 @@ import {
   validateSkillName,
 } from "@mend/domain/workbench";
 
+import type { SkillSearch } from "./skill-search.ts";
+
 /**
  * The rules and words of the Skills pages (`/skills`, `/skills/<id>`), kept apart from the
  * components so each can be tested alone. Copied from the old app's `components/skills/model.ts`
@@ -471,22 +473,6 @@ export const previewBlocks = (source: string): ReadonlyArray<PreviewBlock> => {
 };
 
 // ─── The URL ────────────────────────────────────────────────────────────────
-
-/**
- * What a skill's URL says: which file is open, and whether it is being edited (`?edit=1`). The
- * route parses it before anything renders.
- */
-export interface SkillSearch {
-  readonly file?: string;
-  readonly edit?: 1;
-}
-
-export const skillSearch = (search: Record<string, unknown>): SkillSearch => {
-  const file = typeof search["file"] === "string" ? search["file"] : undefined;
-  const raw = search["edit"];
-  const edit = raw === 1 || raw === "1" || raw === true || raw === "true" ? 1 : undefined;
-  return { ...(file === undefined ? {} : { file }), ...(edit === undefined ? {} : { edit }) };
-};
 
 /** The search for a file of a skill: SKILL.md needs none. */
 export const fileSearch = (file: string | undefined, edit: boolean): SkillSearch => ({

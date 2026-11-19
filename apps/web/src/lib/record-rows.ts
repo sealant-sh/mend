@@ -307,12 +307,6 @@ export const checkpointAt = (
   return found?.ordinal ?? null;
 };
 
-/** The checkpoint a link names: `#checkpoint-6` is 6; anything else is null. */
-export const checkpointOfHash = (hash: string): number | null => {
-  const match = /^#?checkpoint-(\d+)$/.exec(hash);
-  return match === null ? null : Number(match[1]);
-};
-
 /** "It exited with code 0 after 41 seconds.": what a finished command's record says of its end. */
 export const commandEndWords = (
   detail: Extract<RecordDetail, { readonly kind: "command" }>,

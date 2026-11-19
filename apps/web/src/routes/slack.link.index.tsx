@@ -1,4 +1,4 @@
-import { fragmentSecret } from "@mend/network";
+import { fragmentSecret } from "@mend/network/handed-links";
 import { InlineAlert } from "@mend/ui/components/banner";
 import { Button } from "@mend/ui/components/ui/button";
 import { queryOptions, useMutation, useSuspenseQuery } from "@tanstack/react-query";

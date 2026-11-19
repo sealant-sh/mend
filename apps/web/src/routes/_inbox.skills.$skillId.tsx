@@ -3,7 +3,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { SkillEditorPage } from "#/components/skills/skill-editor";
 import { SkillPanel } from "#/components/skills/skill-panel";
 import { YOU } from "#/lib/project-skills";
-import { skillSearch } from "#/lib/skills";
+import { skillSearch } from "#/lib/skill-search";
 
 /**
  * A skill of the person's own: read beside the list, or edited in its place with `?edit=1`.

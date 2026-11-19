@@ -36,6 +36,8 @@ export interface TileTabHandlers {
   readonly keyShortcuts?: string;
   /** The tab's right-click menu (`ContextMenuContent`): a session tab's own actions. */
   readonly contextMenu?: ReactNode;
+  /** A pointer rests on the tab or focus reaches it: a view's tab starts fetching its body. */
+  readonly onIntent?: () => void;
 }
 
 /**
@@ -58,6 +60,7 @@ export function TileTab({
   onKeyDown,
   keyShortcuts,
   contextMenu,
+  onIntent,
   className,
   ...tab
 }: TileTabKind &
@@ -91,6 +94,8 @@ export function TileTab({
         aria-keyshortcuts={keyShortcuts}
         onPointerDown={onPointerDown}
         onKeyDown={onKeyDown}
+        onPointerEnter={onIntent}
+        onFocus={onIntent}
         className={cn(
           // The kit's trigger, reset to the canvas's tab: no pill, a 2px underline inset 10px.
           "h-full min-w-0 flex-1 touch-none gap-1.75 rounded-none border-0 px-2.5 py-0 text-control font-medium text-muted-foreground tabular-nums",
