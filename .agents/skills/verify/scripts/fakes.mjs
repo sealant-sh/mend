@@ -22,6 +22,10 @@ export const FAKES = Object.freeze({
   anthropicKey: "sk-ant-api03-mendVerifyFake-anthropic-api-key-000000000000",
   // Mend takes a Boat key by its shape (16 or more letters, digits and . _ ~ -); Boat refuses this one.
   boatKey: "boat_mendVerifyFake00000000000000000000",
+  // Slack's token prefixes, which Mend checks before it asks Slack, without the digit groups of a
+  // real token (GitHub's push protection refuses those): Slack refuses both.
+  slackAppToken: "xapp-mendVerifyFake-not-a-real-app-level-token",
+  slackBotToken: "xoxb-mendVerifyFake-not-a-real-bot-token",
   // sealant takes a Codex auth.json with tokens.refresh_token; account_id is what Mend shows.
   codexAuth: JSON.stringify(
     {
