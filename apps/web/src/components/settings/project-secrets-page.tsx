@@ -5,6 +5,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@mend/ui/components/ui/dropdown-menu";
+import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { EllipsisIcon } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
@@ -294,6 +295,7 @@ function EntryList({
     readonly actions: ReadonlyArray<EntryAction>;
   }>;
 }) {
+  const hasActions = rows.some((row) => row.actions.length > 0);
   if (rows.length === 0) {
     return (
       <p className="border-b border-border py-3.5 text-row text-muted-foreground max-lg:px-4">
@@ -303,15 +305,20 @@ function EntryList({
   }
   return (
     <ul aria-label={label}>
+      {/* The headings sit in the same boxes as the rows' cells, actions included, so they line up. */}
       <li
         aria-hidden
-        className="flex gap-6 border-b border-border py-2.5 text-row text-muted-foreground max-lg:hidden"
+        className="flex items-center gap-6 border-b border-border py-2.5 text-row text-muted-foreground max-lg:hidden"
       >
-        {columns.map((column, index) => (
-          <span key={column} className={index === 0 ? "w-1/3 flex-none" : "min-w-0 flex-1"}>
-            {column}
+        <div className="flex min-w-0 flex-1 items-center gap-6">
+          <span className="w-1/3 flex-none">{columns[0]}</span>
+          <span className="flex min-w-0 flex-1 items-center gap-6 [&>*]:min-w-0 [&>*]:flex-1">
+            {columns.slice(1).map((column) => (
+              <span key={column}>{column}</span>
+            ))}
           </span>
-        ))}
+        </div>
+        {hasActions ? <span className={ACTIONS} /> : null}
       </li>
       {rows.map((row) => (
         <li
@@ -328,7 +335,7 @@ function EntryList({
           </div>
           {row.actions.length === 0 ? null : (
             <>
-              <div className="flex flex-none gap-1 max-lg:hidden">
+              <div className={cn(ACTIONS, "max-lg:hidden")}>
                 {row.actions.map((action) => (
                   <Button
                     key={action.label}
@@ -349,6 +356,9 @@ function EntryList({
     </ul>
   );
 }
+
+/** The desk's actions column: as wide as Replace… and Remove…, so every row's cells line up. */
+const ACTIONS = "flex w-44 flex-none justify-end gap-1";
 
 /** A row's "…" on a phone, holding the same actions as the desk's buttons. */
 function RowMenu({
