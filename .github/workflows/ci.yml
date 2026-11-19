@@ -504,6 +504,15 @@ jobs:
         run: |
           pnpm exec turbo run build --filter=@mend/web-old
           pnpm --filter @mend/web-old check:browser
+      # The new web app (apps/web, ADR 0027) is held to the same until it replaces the old one. Its
+      # sign-in page needs the server to answer, so its check puts a fake API behind the front
+      # (apps/web/scripts/check-browser.mjs).
+      - name: The built new web app renders its sign-in page in Chromium
+        env:
+          MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
+        run: |
+          pnpm exec turbo run build --filter=@mend/web
+          pnpm --filter @mend/web check:browser
 
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}
