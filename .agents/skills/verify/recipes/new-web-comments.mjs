@@ -203,7 +203,16 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       });
       await page.waitForTimeout(150);
     }
-    await lineNumber(file, line).scrollIntoViewIfNeeded();
+    // The renderer redraws rows as the view settles: try again when one is replaced.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const done = await lineNumber(file, line)
+        .scrollIntoViewIfNeeded({ timeout: 5_000 })
+        .then(() => true)
+        .catch(() => false);
+      if (done) break;
+      await page.waitForTimeout(300);
+    }
+    await page.waitForTimeout(400);
   };
   /** A line's number cell on the new side, inside the renderer's shadow root. */
   const lineNumber = (file, line) =>
