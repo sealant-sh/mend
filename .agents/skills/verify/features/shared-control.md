@@ -127,14 +127,17 @@ Preconditions:
   `await memberPage.getByRole("button", { name: "Turn on", exact: true }).click()`. The button reads
   `Turning on…`, the dialog closes, and `On` reports `aria-pressed="true"`.
 - **Steerer's view.** Reload `page`. The header line ends `· runs as <member> · shared control on`,
-  the `Only <member> steers …` line is gone, and the left pane is `Terminal`, headed
-  `run <run> · live · read-only`, above the line
+  and the `Only <member> steers …` line is gone. The session page opens on its `Conversation` tab,
+  which reads only `This session runs in a terminal. Type to it in the Terminal tab.`: open the
+  `Terminal` tab (`await page.goto("<web>/sessions/<id>/terminal")`, or the `Terminal` link in the
+  tab row). It is headed `run <run> · live · read-only`, above the line
   `This session runs in a terminal. Only <member> types here; they can continue it as a conversation.`
   Keys typed into it reach nothing.
-- **Organization owner turns it off.** On `page`, the text
-  `<member> shares control of this session.` is visible. Run
-  `await page.getByRole("button", { name: "Turn off" }).click()`. It reads `Turning off…`, then the
-  line returns to `Only <member> steers this session. …`.
+- **Organization owner turns it off.** On `page`, choose `Share` in the header
+  (`page.getByRole("button", { name: "Share", exact: true })`). Its popover holds the text
+  `<member> shares control of this session.` and the button `Turn off`. Run
+  `await page.getByRole("dialog").getByRole("button", { name: "Turn off" }).click()`. It reads
+  `Turning off…`, then the page's line returns to `Only <member> steers this session. …`.
 - **CLI on and off.** Run `XDG_CONFIG_HOME=/tmp/verify-member mend session share <id8> on --yes`.
   Stdout `✓ shared control on · claude <id8>` and the who-pays line. Exit code `0`. Run
   `XDG_CONFIG_HOME=/tmp/verify-member mend session share <id8> off`. Stdout

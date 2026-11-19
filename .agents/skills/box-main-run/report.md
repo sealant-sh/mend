@@ -41,9 +41,8 @@ Box:
 | …              | scripted | Sol       | 2   | failed · SLNT-n | <the line that differed from "See">            |
 | …              | agent    | Sol, Opus |     | seen            | <Opus re-saw it>                               |
 
-- Who drove the flows: <n> by Sol subagents, <n> of them re-done by Opus; <n> by Opus. Model calls:
-  Opus <n>, Sol <n> (from each thread's transcript or T3's task record; `not shown` when neither
-  says).
+- Who drove the flows: <n> by Sol subagents (<n> subagent runs), <n> of them re-done by Opus, each
+  named with why; <n> by Opus.
 - Not on the box by design: flows.md, "Not on the box".
 
 <screenshots, one per web flow, the state a person saw>
