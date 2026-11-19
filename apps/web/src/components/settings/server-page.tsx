@@ -613,7 +613,7 @@ function ImageSection() {
   return (
     <SettingSection
       title="Starting workspace image"
-      description="A new organization starts from this image, and its owners change their own copy on its Workspace image page. There is no editor for it here."
+      description="Each new organization gets a copy of this image, and its owners change their copy on its Workspace image page. Nothing follows this image: changing it never touches an organization that exists."
     >
       <SectionRead
         query={settings}
