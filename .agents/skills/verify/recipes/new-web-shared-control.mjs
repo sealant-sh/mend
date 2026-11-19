@@ -131,7 +131,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   } catch {
     note(`the join page didn't show its heading (${memberPage.url()}); loading it again`);
     await memberPage.goto(`${web}/join#${invitation.body.token}`);
-    await joinHeading.waitFor({ timeout: 60_000 });
+    await joinHeading.waitFor({ timeout: 60_000 }).catch(async (cause) => {
+      const shown = (await memberPage.locator("body").innerText()).replace(/\s+/g, " ");
+      note(`the join page shows: ${shown.slice(0, 300)}`);
+      throw cause;
+    });
   }
   const email = `verify-share-${Date.now()}@example.invalid`;
   await memberPage.getByRole("textbox", { name: "Name" }).fill("Ada Verify");

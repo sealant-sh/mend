@@ -389,7 +389,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // for everyone that older clients turn on (here through the API) is turned off from the row.
   const sessions = group("Sessions in this workspace");
   note(`who-pays beside the row: ${await sessions.getByText(/^Each turn runs on/).innerText()}`);
-  await sessions.getByText("Shared control is off.").waitFor();
+  await sessions.getByText("Shared control is off.").first().waitFor();
   if ((await sessions.getByRole("button", { name: /^Turn on/ }).count()) > 0)
     throw new Error("the row offers to turn shared control on for everyone");
   await client(
@@ -402,8 +402,16 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   note(`on for everyone (from an older client): ${await textOf("Sessions in this workspace")}`);
   await shoot("shared-on", ["light"]);
   await turnOff.click();
-  await turnOff.waitFor({ state: "hidden" });
-  const off = await client(async (trpc, id) => trpc.sessions.detail.query({ id }), A.id);
+  // The button reads Turning off… while it runs: wait for the server, not for its name to change.
+  let off = null;
+  for (let tries = 0; tries < 30; tries += 1) {
+    off = await client(async (trpc, id) => trpc.sessions.detail.query({ id }), A.id);
+    if (off.session.sharedControlEnabledAt === null) break;
+    await page.waitForTimeout(500);
+  }
+  if (off?.session.sharedControlEnabledAt !== null)
+    throw new Error("Turn off shared control left the switch for everyone on");
+  await turnOff.waitFor({ state: "detached" });
   note(
     `after Turn off shared control: sharedControlEnabledAt=${off.session.sharedControlEnabledAt}`,
   );
