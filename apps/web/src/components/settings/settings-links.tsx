@@ -57,6 +57,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/dotfiles" };
     case "d-appearance":
       return { to: "/settings/appearance" };
+    case "o-image":
+      return { to: "/settings/organization/workspace-image" };
     case "o-runtime":
       return { to: "/settings/organization/runtime" };
     case "o-boat":

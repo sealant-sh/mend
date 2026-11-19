@@ -238,3 +238,31 @@ export const readyWords = (status: HotStatus): string => {
  */
 export const rebuilding = (status: HotStatus): boolean =>
   status.hotSessions > 0 && status.warming > 0;
+
+/*
+ * The organization's starting image (Settings → the organization → Workspace image, route PR 47):
+ * the image Mend copies into each new project when the project is created. Saving it changes no
+ * existing project and starts no build.
+ */
+
+/** Each package a save refused, with why, for the rows under Packages. */
+export const rejectedPackages = (
+  resolutions: ReadonlyArray<
+    Parameters<typeof resolutionIssue>[0] & { readonly requested: string }
+  >,
+  os: WorkspaceImageOs,
+): ReadonlyArray<{ readonly name: string; readonly issue: string }> =>
+  resolutions.flatMap((resolution) => {
+    const issue = resolutionIssue(resolution, os);
+    return issue === null ? [] : [{ name: resolution.requested, issue }];
+  });
+
+/** The line over a refused save of the starting image. */
+export const rejectionLine = (count: number, os: WorkspaceImageOs): string =>
+  count === 1
+    ? `Not saved. Sealant couldn't find 1 package for ${OS_LABELS[os]}. Remove it or change its name, then save again.`
+    : `Not saved. Sealant couldn't find ${count} packages for ${OS_LABELS[os]}. Remove them or change their names, then save again.`;
+
+/** The toast after the starting image is saved. */
+export const startingImageSaved = (organization: string): string =>
+  `Saved. New projects in ${organization} start from this image.`;

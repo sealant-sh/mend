@@ -485,6 +485,29 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.organization.integrations.tsx`,
   `apps/web/src/routes/_inbox.executor.service-callback.tsx`, `apps/web/src/lib/integrations.ts`
 
+### settings.new-web-workspace-image
+
+- **Map:** workspace-images.md `image-organization-default`, `image-packages`,
+  `image-setup-commands`, `image-rejections` (route PR 47)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-settings-workspace-image`: Workspace image under "Everyone in
+  <organization>" says Mend copies it into each new project when the project is created and that
+  changing it changes no existing project. An owner adds packages with Add package; a package
+  Sealant can't find refuses the save and is named beside why; the save goes through once it is
+  removed, with a toast, and the server answers the new image back. A project made afterwards starts
+  from it, and an existing project keeps its own. A custom image with no base image keeps Save off;
+  with a base image and setup commands it saves, and they read back. The image is put back and the
+  project removed. A member reads the image as rows and who can change it; a failed read shows Try
+  again; on a phone the Unsaved changes bar has 44px buttons.
+- **See:** each step's note in the recipe's `steps.log` (the images the server answered), and its
+  captures.
+- **Mode:** `scripted` (recipes/new-web-settings-workspace-image.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/workspace-image-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.workspace-image.tsx`,
+  `apps/web/src/lib/workspace-image.ts`, `apps/web/src/lib/runtime-support.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
