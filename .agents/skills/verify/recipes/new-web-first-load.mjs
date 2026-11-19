@@ -78,7 +78,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       },
       { path, input, kind },
     );
-  const go = (to) => page.evaluate((path) => window["__TSR_ROUTER__"].navigate({ to: path }), to);
   const tabOf = (key) => visible(page.locator(`[data-tab="${key}"]`).getByRole("tab"));
   const plus = () => visible(page.getByRole("button", { name: "Open a view" }));
   const menuItem = (name) => visible(page.getByRole("menuitem", { name: new RegExp(`^${name}`) }));
@@ -127,11 +126,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await shoot("session-page-no-view-code");
 
   // 2. Resting the pointer on Terminal in the tile's "+" fetches its code; opening it shows the
-  //    tile's loading line while it arrives (held back 2 s here), then the terminal.
+  //    tile's loading line while it arrives (held back here until captured), then the terminal.
   const gate = Promise.withResolvers();
   await page.route(/\/workspace\/views\/terminal-view\.tsx/, async (route) => {
     await gate.promise;
-    await route.continue();
+    await route.continue().catch(() => undefined);
   });
   fetched = [];
   await plus().click();
@@ -143,10 +142,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await menuItem("Terminal").click();
   await visible(page.getByText("Opening Terminal…")).waitFor({ timeout: 10_000 });
   note("Terminal's tile says Opening Terminal… while its code is held back");
+  await page.waitForTimeout(400);
   await capture("terminal-opening-light");
   gate.resolve();
-  await page.unroute(/\/workspace\/views\/terminal-view\.tsx/);
   await page.getByText("Opening Terminal…").first().waitFor({ state: "detached", timeout: 30_000 });
+  await page.unroute(/\/workspace\/views\/terminal-view\.tsx/);
   const terminalWords = (
     await visible(page.locator("[data-tile]").filter({ has: tabOf("view:terminal") })).innerText()
   )
@@ -173,7 +173,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   if (flashed.length > 0) throw new Error("a view already loaded showed its loading line again");
 
   // 4. A view whose code doesn't arrive: the tile's error with Try again, which fetches it again.
+  //    The terminal's canvas would keep the driver from taking pictures, so its tab closes first
+  //    (an earlier run's Record tab may show then, with its code held back already).
   await page.route(/\/workspace\/views\/record-view\.tsx/, (route) => route.abort("failed"));
+  await visible(page.getByRole("button", { name: "Close Terminal" })).click();
+  await settled();
   await plus().click();
   await menuItem("Record").click();
   await visible(page.getByText("This didn't load.")).waitFor({ timeout: 20_000 });
@@ -207,11 +211,15 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await settled();
   await capture("details-direct-address-phone-light");
   await page.setViewportSize(DESKTOP);
+  // A name that is no view adds no tab. (The view route's not-found doesn't draw: the session
+  // route renders no outlet for it, on main as here, so the session shows.)
   await page.goto(`${web}/sessions/${session.id}/nope`);
   await hydrated();
-  await visible(page.getByText("Page not found")).waitFor({ timeout: 20_000 });
-  note("/sessions/<id>/nope says Page not found");
-  await capture("view-not-found-light");
+  await settled();
+  const tabs = await page.getByRole("tab").allInnerTexts();
+  note(`/sessions/<id>/nope: tabs ${JSON.stringify(tabs)}`);
+  if (tabs.some((tab) => /nope/i.test(tab))) throw new Error("an unknown view name opened a tab");
+  await capture("view-unknown-name-light");
 
   // 6. The addresses whose helpers moved out of the route tree read as before.
   await page.goto(`${web}/sessions/${session.id}#checkpoint-1`);
@@ -231,8 +239,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
   await capture("project-sessions-search-light");
 
+  // A skill of the viewer's own with a second file, removed again at the end (and any an earlier
+  // run left).
+  for (const left of (await call("skills.list")).filter((entry) =>
+    entry.name.startsWith("first-load-"),
+  ))
+    await call("skills.remove", { skillId: left.id }, "mutate").catch(() => undefined);
   const name = `first-load-${Date.now().toString(36)}`;
-  const skill = await call(
+  const { skill } = await call(
     "skills.create",
     {
       scope: "user",
@@ -271,5 +285,4 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     );
     await capture(`${what === "invitation" ? "join" : "slack-link"}-handed-secret-light`);
   }
-  await go("/");
 };
