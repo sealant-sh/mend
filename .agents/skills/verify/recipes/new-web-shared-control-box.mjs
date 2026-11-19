@@ -71,6 +71,15 @@ export default async ({ page, web, capture, note, account }) => {
     );
   const band = (key) => page.locator(`[data-band="${key}"]`).filter({ visible: true }).first();
   const field = () => visible(page.getByRole("textbox", { name: "Message Codex" }));
+  /** Write in the composer once it holds the words: it keeps them per account, once that is read. */
+  const write = async (words) => {
+    for (let tries = 0; tries < 20; tries += 1) {
+      await field().fill(words);
+      if ((await field().inputValue()) === words) return;
+      await page.waitForTimeout(500);
+    }
+    throw new Error("the composer never kept the words");
+  };
   const reply = (word) =>
     visible(page.getByText(new RegExp(`^${word}\\.?$`, "i"))).waitFor({ timeout: TURN_MS });
 
@@ -93,7 +102,8 @@ export default async ({ page, web, capture, note, account }) => {
       (row) =>
         row.harness === "codex" &&
         (fixture === undefined || row.projectId === fixture.id) &&
-        !["completed", "stopped", "failed"].includes(row.status) &&
+        // Stopped too: a step 5 that failed after its stop runs again, and sending resumes it.
+        !["completed", "failed"].includes(row.status) &&
         Date.now() - new Date(row.createdAt).getTime() < 3 * 3_600_000,
     )
     .toSorted((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
@@ -194,9 +204,9 @@ export default async ({ page, web, capture, note, account }) => {
     await open(id);
     await band("steering").waitFor();
     note(`step 4: the band reads "${(await band("steering").innerText()).replace(/\s+/g, " ")}"`);
-    await field().fill(SECOND);
+    await write(SECOND);
     await page.keyboard.press("Enter");
-    const refused = visible(page.getByText(/so your message wasn't sent\.$/));
+    const refused = visible(page.getByText(/so your message wasn't sent\./));
     await refused.waitFor({ timeout: 60_000 });
     const kept = await field().inputValue();
     expect("the words back in the box", kept === SECOND, kept);
@@ -212,7 +222,7 @@ export default async ({ page, web, capture, note, account }) => {
     // ─── 5. The checker writes, then turns it off and tidies ───
     try {
       await open(id);
-      await field().fill(THIRD);
+      await write(THIRD);
       await page.keyboard.press("Enter");
       await reply("again");
       await visible(page.getByText(/^You · /)).waitFor();
