@@ -10,6 +10,7 @@ import { gitRouter } from "./git.ts";
 import { githubRouter } from "./github.ts";
 import { harnessesRouter } from "./harnesses.ts";
 import { landingsRouter } from "./landings.ts";
+import { layoutsRouter } from "./layouts.ts";
 import { mcpServersRouter } from "./mcp-servers.ts";
 import { operatorRouter } from "./operator.ts";
 import { organizationRouter } from "./organization.ts";
@@ -54,6 +55,7 @@ export const appRouter = router({
   github: githubRouter,
   harnesses: harnessesRouter,
   landings: landingsRouter,
+  layouts: layoutsRouter,
   mcpServers: mcpServersRouter,
   operator: operatorRouter,
   organization: organizationRouter,

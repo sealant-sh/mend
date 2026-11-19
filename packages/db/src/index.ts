@@ -58,6 +58,7 @@ export * from "./repos/person-settings.ts";
 export * from "./repos/session-defaults.ts";
 export * from "./repos/pi-profiles.ts";
 export * from "./repos/agent-memory.ts";
+export * from "./repos/saved-layouts.ts";
 export * from "./repos/secret-files.ts";
 export * from "./repos/mcp-servers.ts";
 export * from "./repos/ssh-key-revocations.ts";

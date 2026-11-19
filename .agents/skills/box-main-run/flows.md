@@ -482,6 +482,25 @@ flows reuse what earlier ones made:
   `apps/web/src/components/session/workspace-tabs.tsx`,
   `apps/web/src/components/session/new-session-tab.tsx`, `apps/web/src/lib/tiles.ts`
 
+### session-page.new-web-layouts
+
+- **Map:** no feature file yet (ADR 0026, "Layouts": a person's saved layouts, SLNT-1175)
+- **Needs:** no session; no turn; web; a second account
+- **Do:** Drive the recipe `new-web-layouts-server`: as the owner, list your saved layouts (none),
+  save one, read it back through the API and the web app's `layouts` procedures, rename it; be
+  refused a name you already use in another case, a layout that names a session, a layout of a
+  version the server doesn't know, nine tiles, and a 21st layout; a second person who joins sees
+  none of yours and can neither rename nor remove one. The recipe removes every layout it saved.
+  Route PR 16 adds the layout menu to this flow.
+- **See:** each step's note in the recipe's `steps.log` and its `transcript` capture: the server's
+  answer to each call, with each refusal's status and sentence; the owner's list ends as it began.
+- **Mode:** `scripted` (recipes/new-web-layouts-server.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `packages/domain/src/workbench/saved-layout.ts`,
+  `packages/db/src/repos/saved-layouts.ts`, `packages/api-contracts/src/saved-layouts.ts`,
+  `apps/api/src/routes/saved-layouts.ts`, `apps/web/src/server/routers/layouts.ts`
+
 ### session-page.new-web-terminal
 
 - **Map:** session-shell.md `shell-holds`; mobile.md `mobile-terminal-embed`; shared-control.md
