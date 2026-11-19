@@ -1,3 +1,4 @@
+import { sharedControlLine } from "@mend/domain/workbench";
 import { Banner } from "@mend/ui/components/banner";
 import { ConversationItem } from "@mend/ui/components/conversation";
 import { ConversationMarker } from "@mend/ui/components/conversation-marker";
@@ -24,6 +25,7 @@ import { readDraft, subscribeDrafts } from "#/lib/drafts";
 import { draftItems, type MessageScope, useMessageOwner } from "#/lib/outbox";
 import { usePhone } from "#/lib/phone";
 import { failureWords } from "#/lib/refusal";
+import { controlRow, sharedControlWords } from "#/lib/session-details";
 import { messageTime } from "#/lib/session-sheet";
 import { harnessName } from "#/lib/session-view";
 import {
@@ -41,6 +43,7 @@ import {
   stepRefusalWords,
   type TurnOffStep,
   turnOffItems,
+  turnOffSteps,
   waitingLineQuery,
 } from "#/lib/shared-control";
 import { type TrpcClient, useTRPC, useTRPCClient } from "#/lib/trpc";
@@ -211,11 +214,12 @@ function SharedBand({
 }
 
 /**
- * The bands over a session's conversation about its shared control, each only when there is
- * something to say. Until the read answers, or if it fails, nothing: the composer still says who
- * may write.
+ * Shared control's steps for one session, as the bands and the Details view's row offer them: the
+ * read, the bands it draws for the viewer, one step at a time, the refusal said where its step was
+ * offered, and the Turn on dialog for the person who asked. `bands` is null until the read
+ * answers, or if it fails: the composer still says who may write.
  */
-export function SharedControlBands({ facts }: { readonly facts: SessionFacts }) {
+const useSharedControlSteps = (facts: SessionFacts) => {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
@@ -238,14 +242,7 @@ export function SharedControlBands({ facts }: { readonly facts: SessionFacts }) 
           return client.sessions.declineSharedControl.mutate({ id, userId: act.userId });
         case "turn-off": {
           const view = read.data;
-          if (view !== undefined)
-            await runTurnOff(
-              client,
-              id,
-              view.everyoneSince !== null
-                ? [{ kind: "everyone-off" }]
-                : view.granted.map((person) => ({ kind: "take-back", userId: person.userId })),
-            );
+          if (view !== undefined) await runTurnOff(client, id, turnOffSteps(view));
           return null;
         }
       }
@@ -270,42 +267,127 @@ export function SharedControlBands({ facts }: { readonly facts: SessionFacts }) 
       }),
     onSettled: () => afterStep(queryClient, trpc),
   });
-  if (read.isPending || read.isError) return null;
-  const view: SharedControlView = read.data;
-  const bands = sharedControlBands(view, {
-    viewerId: facts.viewerId,
-    nameOf: facts.nameOf,
-    agent: facts.agent,
-    projectName: facts.projectName,
-    ownerUserId: facts.session.ownerUserId,
-    timeOf: (at) => messageTime(at, new Date()),
-  });
-  const pendingKind = step.isPending ? step.variables.act.kind : null;
+  const view = read.isPending || read.isError ? null : read.data;
+  const bands =
+    view === null
+      ? null
+      : sharedControlBands(view, {
+          viewerId: facts.viewerId,
+          nameOf: facts.nameOf,
+          agent: facts.agent,
+          projectName: facts.projectName,
+          ownerUserId: facts.session.ownerUserId,
+          timeOf: (at) => messageTime(at, new Date()),
+        });
+  return {
+    bands,
+    /** The step a band's button is running, if any. */
+    pending: (band: string): BandAct["kind"] | null =>
+      step.isPending && step.variables.band === band ? step.variables.act.kind : null,
+    failure: (band: string): string | null => (failure?.band === band ? failure.words : null),
+    /** Turn on opens its dialog first; every other step runs at once. */
+    act: (act: BandAct, band: string) => {
+      if (act.kind === "grant") setGranting(act.userId);
+      else step.mutate({ act, band });
+    },
+    overlay:
+      view === null ? null : (
+        <GrantOverlay
+          facts={facts}
+          view={view}
+          askerId={granting}
+          pending={step.isPending && step.variables.act.kind === "grant"}
+          failure={
+            granting === null ? null : failure?.band === `ask:${granting}` ? failure.words : null
+          }
+          onCancel={() => {
+            if (!step.isPending) setGranting(null);
+          }}
+          onGrant={(userId) =>
+            step.mutate({ act: { kind: "grant", userId }, band: `ask:${userId}` })
+          }
+        />
+      ),
+  };
+};
+
+/**
+ * The bands over a session's conversation about its shared control, each only when there is
+ * something to say.
+ */
+export function SharedControlBands({ facts }: { readonly facts: SessionFacts }) {
+  const steps = useSharedControlSteps(facts);
+  if (steps.bands === null) return null;
   return (
     <>
-      {bands.map((band) => (
+      {steps.bands.map((band) => (
         <SharedBand
           key={band.key}
           band={band}
-          pending={step.isPending && step.variables.band === band.key ? pendingKind : null}
-          failure={failure?.band === band.key ? failure.words : null}
-          onAct={(act) => {
-            if (act.kind === "grant") setGranting(act.userId);
-            else step.mutate({ act, band: band.key });
-          }}
+          pending={steps.pending(band.key)}
+          failure={steps.failure(band.key)}
+          onAct={(act) => steps.act(act, band.key)}
         />
       ))}
-      <GrantOverlay
-        facts={facts}
-        view={view}
-        askerId={granting}
-        pending={step.isPending && step.variables.act.kind === "grant"}
-        failure={granting !== null && failure?.band === `ask:${granting}` ? failure.words : null}
-        onCancel={() => {
-          if (!step.isPending) setGranting(null);
-        }}
-        onGrant={(userId) => step.mutate({ act: { kind: "grant", userId }, band: `ask:${userId}` })}
-      />
+      {steps.overlay}
+    </>
+  );
+}
+
+/**
+ * Shared control in the Details view's line for the session (docs/adr/0026, decision 5): who
+ * holds it, and the same steps the bands over the conversation offer. Shared control goes to the
+ * person who asked, so the switch for everyone is only ever turned off here.
+ */
+export function SharedControlRow({ facts }: { readonly facts: SessionFacts }) {
+  const steps = useSharedControlSteps(facts);
+  const phone = usePhone();
+  const { session, detail } = facts;
+  const owner = session.ownerUserId === facts.viewerId;
+  const line = controlRow(session, detail.control, { id: facts.viewerId, nameOf: facts.nameOf });
+  return (
+    <>
+      <p className="text-meta text-muted-foreground">
+        {line.kind === "owner"
+          ? sharedControlWords(session, facts.viewerId, facts.nameOf)
+          : line.line}
+      </p>
+      {(steps.bands ?? [])
+        .filter((band) => band.buttons.length > 0)
+        .map((band) => (
+          <div key={band.key} className="flex flex-col gap-0.5" data-row-band={band.key}>
+            <p className="flex flex-wrap items-baseline gap-x-3 text-meta text-muted-foreground">
+              {band.key.startsWith("ask:") || band.key === "asked" ? (
+                <span>{band.title}</span>
+              ) : null}
+              {band.buttons.map((button) => (
+                <Button
+                  key={button.act.kind}
+                  type="button"
+                  variant="link"
+                  size={phone ? "touch" : "sm"}
+                  className="font-medium"
+                  disabled={steps.pending(band.key) !== null}
+                  onClick={() => steps.act(button.act, band.key)}
+                >
+                  {steps.pending(band.key) === button.act.kind ? button.pendingLabel : button.label}
+                </Button>
+              ))}
+            </p>
+            {steps.failure(band.key) === null ? null : (
+              <p role="alert" className="text-meta text-destructive">
+                {steps.failure(band.key)}
+              </p>
+            )}
+          </div>
+        ))}
+      {/* Whose login a steered turn spends (`who-pays`). */}
+      {owner ? (
+        <p className="text-meta text-muted-foreground">
+          {sharedControlLine(detail.control.turnsOnSendersLogin)}
+        </p>
+      ) : null}
+      {steps.overlay}
     </>
   );
 }

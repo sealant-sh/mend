@@ -27,7 +27,7 @@ import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
 
 import { type SessionFacts, useSessionFacts } from "../session/session-facts.ts";
-import { SharedControlRow } from "./shared-control-row.tsx";
+import { SharedControlRow } from "../session/shared-control.tsx";
 
 /** Where the view lives: the session whose sheet it is in, and its workspace. */
 interface DetailsPlace {

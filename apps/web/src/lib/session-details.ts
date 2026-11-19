@@ -179,11 +179,12 @@ export const sharedControlWords = (
 
 /**
  * What the page's own session says of its control, for the person reading it (`viewer-lines`,
- * `share-on-web`, `share-off-web`, `org-owner-off`):
- * - `owner`: the session is theirs; they turn shared control on for everyone (asked first) or off;
- * - `can-turn-off`: an organization owner while it's on for everyone: they may turn it off;
- * - `line`: everyone else reads who steers, and nothing to press.
- * Asking for shared control, and granting or taking back one person's, are route PR 34's.
+ * `org-owner-off`):
+ * - `owner`: the session is theirs (the line is `sharedControlWords`);
+ * - `can-turn-off`: an organization owner while it's on for everyone;
+ * - `line`: everyone else reads who steers.
+ * What each may do about it (ask, turn it on for the person who asked, turn it off) comes from the
+ * server's `acts`, in the Details row (`SharedControlRow`, components/session/shared-control.tsx).
  */
 export type ControlRow =
   | { readonly kind: "owner"; readonly on: boolean }
