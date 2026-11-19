@@ -1,0 +1,34 @@
+[
+  {
+    "name": "01-change",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "land-retry",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "set -e\nmkdir -p src/payments\ncat > src/payments/retry.ts <<'TS'\nimport { sendCharge, type ChargeRequest } from \"./charge\";\n\n/** One key per order, so the provider drops a repeated charge. */\nexport function idempotencyKey(orderId: string): string {\n  return `order_${orderId}_charge`;\n}\n\nexport async function chargeWithRetry(req: ChargeRequest) {\n  const key = idempotencyKey(req.orderId);\n  return sendCharge({ ...req, idempotencyKey: key });\n}\nTS\ncat > src/payments/charge.ts <<'TS'\nexport interface ChargeRequest {\n  readonly orderId: string;\n  readonly amount: number;\n  readonly idempotencyKey?: string;\n}\n\nexport async function sendCharge(req: ChargeRequest) {\n  return { id: `ch_${req.orderId}`, amount: req.amount };\n}\nTS\n"
+    ]
+  },
+  {
+    "name": "02-still-editing",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "land-retry",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "1800"
+    ]
+  }
+]
