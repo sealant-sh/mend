@@ -219,6 +219,30 @@ flows reuse what earlier ones made:
   `apps/web/src/components/agent-login-panels.tsx`,
   `apps/web/src/routes/_inbox.settings.agent-logins.tsx`, `apps/web/src/lib/agent-login.ts`
 
+### settings.new-web-mcp-servers
+
+- **Map:** none in a feature file (route PR 41: a person's own MCP servers, docs/adr/0024)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-settings-mcp`: MCP servers lists the account's own servers under
+  "Only you"; add an HTTP server with a header (the row names the header, never its value), a stdio
+  server and an SSE one; a taken name is refused before sending; turn one off and it stays off; a
+  failed switch goes back with Try again; edit a URL and keep the saved header; a kept sign-in shows
+  Signed in and Forget sign-in… confirms; remove one; the Executor services section (recorded
+  answers) points to Connected apps without a link, lists services with one, and a service sign-in
+  comes back through `/executor/service-callback`, or says why it was refused; a failed read shows
+  Try again; the phone width uses 44px targets and an action sheet. The recipe removes the servers
+  it added.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no header value in any
+  picture, log or note.
+- **Mode:** `scripted` (recipes/new-web-settings-mcp.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/mcp-servers-page.tsx`,
+  `apps/web/src/components/settings/mcp-server-dialog.tsx`,
+  `apps/web/src/components/settings/executor-services.tsx`,
+  `apps/web/src/routes/_inbox.settings.mcp-servers.tsx`,
+  `apps/web/src/routes/_inbox.executor.service-callback.tsx`, `apps/web/src/lib/mcp-servers.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
