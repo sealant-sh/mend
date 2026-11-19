@@ -10,17 +10,47 @@
 // What is real and what is rewritten:
 // - Real: verify-fixture's page as its owner, its `.mend/mend.toml` as the default branch holds it
 //   (or the empty state when it has none), the banner, the preview line for a project whose file
-//   names no fixed preview; a project the recipe makes with no repository (the empty state); two
-//   worktrees the recipe makes in verify-fixture, each with a named session, which the dialog lists;
-//   the phone layout; a read that fails, and Try again.
-// - Rewritten in the page: the fixed preview read (a stack's fixture declares no `[preview]
-//   fixed = true` and has no preview site), so the address, the worktree it shows and Change
-//   worktree… can be seen; the move itself (`previews.use`) answers as the server would.
+//   names no fixed preview (no button); a project the recipe makes with no repository (the empty
+//   state); two worktrees the recipe makes in verify-fixture, each with a named session, which the
+//   dialog lists; the phone layout; a read that fails, and Try again.
+// - Rewritten in the page: the file, when the fixture has none (a sample with Services and a
+//   fixed preview); the fixed preview read (a stack's fixture declares no `[preview] fixed = true`
+//   and has no preview site), so the address, the worktree it shows and Change worktree… can be
+//   seen; the move (`previews.use`), refused once in the server's shape, then answered as the
+//   server would; the read with `canManage` false, for someone who can't move it.
 //
 // The recipe removes the worktrees and the project it made, so it can run again.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const HOST = "verify-fixture.preview.verify.invalid";
+/** A default branch's mend.toml, for a stack whose fixture has none. */
+const SAMPLE = {
+  path: ".mend/mend.toml",
+  at: null,
+  contents: [
+    "[service.web]",
+    'command = "pnpm dev"',
+    "port = 3000",
+    'browserScheme = "http"',
+    "",
+    "[service.worker]",
+    'command = "pnpm --filter worker start"',
+    "",
+    "[preview]",
+    'service = "web"',
+    "fixed = true",
+    "",
+  ].join("\n"),
+  size: 160,
+  truncated: false,
+  binary: false,
+};
+/** How the server refuses a move it can't make (ProjectPreviewRefused, 409). */
+const REFUSAL = {
+  message: "That worktree has no web Service to show. Start a session in it first.",
+  code: -32009,
+  data: { code: "CONFLICT", httpStatus: 409, path: "previews.use", tag: "ProjectPreviewRefused" },
+};
 
 const visible = (locator) => locator.filter({ visible: true }).first();
 const expect = (what, ok, seen) => {
@@ -94,11 +124,16 @@ export default async ({ page, web, capture, note }) => {
         const body = await response.json();
         fetched = Array.isArray(body) ? body : [body];
       }
-      const body = paths.map((path, index) =>
-        path in answers ? { result: { data: { json: answers[path]() } } } : fetched[index],
-      );
+      let refused = false;
+      const body = paths.map((path, index) => {
+        if (!(path in answers)) return fetched[index];
+        const answer = answers[path]();
+        if (answer?.refused === undefined) return { result: { data: { json: answer } } };
+        refused = true;
+        return { error: { json: answer.refused } };
+      });
       await route.fulfill({
-        status: 200,
+        status: refused ? (body.length === 1 ? 409 : 207) : 200,
         contentType: "application/json",
         body: JSON.stringify(route.request().url().includes("batch=1") ? body : body[0]),
       });
@@ -127,12 +162,16 @@ export default async ({ page, web, capture, note }) => {
   const made = [];
   let empty = null;
   try {
-    // --- The page as verify-fixture's owner: the file, the banner, the preview line ----------
+    // --- The page as verify-fixture's owner, as the stack has it ----------------------------------
     await open(servicesPage);
     await heading("Services");
     await text(`Everyone who can open ${fixture.name}`).waitFor();
     await visible(page.getByText("Read-only here.")).waitFor();
     const file = await call("projects.mendToml", { id: fixture.id });
+    const preview = await call("previews.project", { id: fixture.id });
+    note(
+      `the real reads: ${fixture.name}'s mend.toml ${file === null ? "absent" : `${file.path}, ${file.size} bytes`}; preview configured ${preview.configured}, url ${preview.url}, canManage ${preview.canManage}`,
+    );
     if (file === null) {
       await visible(
         page.getByText("A branch without .mend/mend.toml starts no services."),
@@ -145,18 +184,18 @@ export default async ({ page, web, capture, note }) => {
         shown.includes(file.contents.split("\n")[0]),
         shown,
       );
-      note(
-        `${fixture.name}: ${file.path} on ${fixture.defaultBranch} shown read-only (${file.size} bytes)`,
-      );
+      note(`${fixture.name}: ${file.path} on ${fixture.defaultBranch} shown read-only`);
     }
-    const preview = await call("previews.project", { id: fixture.id });
-    note(
-      `the real preview read: configured ${preview.configured}, url ${preview.url}, canManage ${preview.canManage}`,
-    );
-    await shot("project-services-desktop-light");
-    await paint("dark");
-    await shot("project-services-desktop-dark");
-    await paint("light");
+    if (!preview.configured) {
+      await visible(page.getByText(/^The project has no fixed preview address\./)).waitFor();
+      expect(
+        "no Change worktree… without a fixed preview",
+        (await page.getByRole("button", { name: "Change worktree…" }).count()) === 0,
+        "",
+      );
+      note("no fixed preview declared: the row says how to declare one, with no button");
+    }
+    await shot("project-services-real-desktop-light");
 
     // --- A project with no repository: no file --------------------------------------------------
     empty = await call("projects.createNew", { name: `services-${suffix}` }, "mutate");
@@ -188,8 +227,10 @@ export default async ({ page, web, capture, note }) => {
       `made worktrees ${made.map((w) => w.name).join(", ")} in ${fixture.name}, each with a named session`,
     );
 
-    // --- The fixed preview (rewritten): shows the first worktree; move it to the second --------
+    // --- The file and the fixed preview, rewritten: what a project with both shows ---------------
     let target = first;
+    let manage = true;
+    let refuseNext = true;
     const fixed = () => ({
       configured: true,
       fixed: {
@@ -208,40 +249,61 @@ export default async ({ page, web, capture, note }) => {
       target: { id: target.id, name: target.name, branch: target.branch },
       status: [],
       open: null,
-      canManage: true,
+      canManage: manage,
     });
     await rewrite({
+      ...(file === null ? { "projects.mendToml": () => SAMPLE } : {}),
       "previews.project": fixed,
       "previews.use": () => {
+        if (refuseNext) {
+          refuseNext = false;
+          return { refused: REFUSAL };
+        }
         target = second;
         return fixed();
       },
     });
-    await clearCache();
-    await navigate("/settings/profile");
-    await heading("Profile");
-    await navigate(servicesPage);
-    await heading("Services");
+    const reread = async () => {
+      await clearCache();
+      await navigate("/settings/profile");
+      await heading("Profile");
+      await navigate(servicesPage);
+      await heading("Services");
+    };
+    await reread();
+    await visible(page.getByLabel(".mend/mend.toml", { exact: true })).waitFor();
     await visible(
       page.getByText(`${HOST} always shows web from the worktree of "Fix flaky checkout retry".`, {
         exact: false,
       }),
     ).waitFor();
     note(
-      `fixed preview (rewritten read): "${HOST} always shows web from the worktree of "Fix flaky checkout retry"."`,
+      `rewritten reads: the file shown with line numbers; "${HOST} always shows web from the worktree of "Fix flaky checkout retry"."`,
     );
+    await shot("project-services-desktop-light");
+    await paint("dark");
+    await shot("project-services-desktop-dark");
+    await paint("light");
     await button("Change worktree…").click();
     const dialog = visible(page.getByRole("dialog", { name: "Change preview worktree" }));
     await dialog.getByText("Current", { exact: false }).waitFor();
     const rows = await dialog.getByRole("radio").count();
     expect("the dialog lists the worktrees and the default branch", rows >= 3, rows);
     await dialog.getByText("Default branch", { exact: true }).waitFor();
+    const submit = dialog.getByRole("button", { name: "Change worktree", exact: true });
+    expect("Change worktree waits for another pick", await submit.isDisabled(), "enabled");
     note(
-      `Change worktree… lists ${rows} choices: the project's worktrees, the current one marked, and Default branch`,
+      `Change worktree… lists ${rows} choices, the current one marked, Default branch last; the button waits for another pick`,
     );
-    await shot("project-services-change-desktop-light");
     await dialog.getByText("Add idempotency keys to refunds", { exact: true }).click();
-    await dialog.getByRole("button", { name: "Change worktree", exact: true }).click();
+    await shot("project-services-change-desktop-light");
+    await submit.click();
+    await dialog.getByText("The preview didn't move.", { exact: false }).waitFor();
+    note(
+      'a move the server refuses (rewritten answer) keeps the dialog open: "The preview didn\'t move." with its words',
+    );
+    await shot("project-services-change-refused-desktop-light");
+    await submit.click();
     await toastSays('The preview address now shows "Add idempotency keys to refunds".');
     await visible(
       page.getByText(`from the worktree of "Add idempotency keys to refunds".`, { exact: false }),
@@ -249,10 +311,27 @@ export default async ({ page, web, capture, note }) => {
     note("Change worktree moves it: the toast, and the line names the new worktree");
     await shot("project-services-changed-desktop-light");
 
+    // --- Someone who can't manage it (a rewritten read: canManage false) --------------------------
+    manage = false;
+    await reread();
+    await visible(page.getByText(/can change these settings\. You can read them\.$/)).waitFor();
+    expect(
+      "no Change worktree… for someone who can't manage it",
+      (await page.getByRole("button", { name: "Change worktree…" }).count()) === 0,
+      "",
+    );
+    note("with canManage false: no button, and the line names who can change it");
+    await shot("project-services-read-only-desktop-light");
+    manage = true;
+
     // --- The phone ------------------------------------------------------------------------------
+    // The server renders a full load with the real reads: move in through the router instead.
     await page.setViewportSize(PHONE);
-    await open(servicesPage);
+    await open("/settings/profile");
+    await clearCache();
+    await navigate(servicesPage);
     await visible(page.getByRole("heading", { name: "Services" })).waitFor();
+    await visible(page.getByLabel(".mend/mend.toml", { exact: true })).waitFor();
     for (const theme of ["light", "dark"]) {
       await paint(theme);
       await shot(`project-services-phone-${theme}`);
