@@ -34,7 +34,6 @@ import { type ReactNode, useState } from "react";
 
 import { authClient } from "#/lib/auth-client";
 import { exposureDetail, exposureLine } from "#/lib/exposure";
-import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import { setThemePreference, type ThemePreference, useThemePreference } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
@@ -200,7 +199,7 @@ export function AccountMenu({
           <CircleUserRoundIcon aria-hidden className="text-muted-foreground" />
           Profile
         </DropdownMenuItem>
-        <DropdownMenuItem render={<Link {...laterPage("settings/devices")} />}>
+        <DropdownMenuItem render={<Link to="/settings/devices" />}>
           <SmartphoneIcon aria-hidden className="text-muted-foreground" />
           Pair a phone…
         </DropdownMenuItem>

@@ -196,6 +196,25 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/settings-pages.ts`, `apps/web/src/lib/settings-guards.ts`,
   `apps/web/src/lib/appearance.ts`, `apps/web/src/lib/account.ts`
 
+### settings.new-web-devices
+
+- **Map:** pairing-devices.md `pair-web`, `mint-by-hand`, `device-list`, `revoke`; workspace-ssh.md
+  `ssh-keys`, `no-gateway`; access keys (ADR 0023)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-devices`: `/settings/access-keys` opens Devices and access keys;
+  Show a code makes a pairing code with its QR; a token made by hand is shown once, then its device
+  is listed and revoked by name; an access key is created, shown once, listed by name and revoked;
+  the workspace SSH keys list, Add SSH key… with `mend ssh setup`, and Remove… with its result; on
+  the box, the keys this account registered with `mend ssh setup`.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no device or key the run
+  made is left behind, and no code, token or key appears in any picture.
+- **Mode:** `scripted` (recipes/new-web-devices.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/devices-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.devices.tsx`, `apps/web/src/lib/devices.ts`,
+  `apps/web/src/lib/pairing-qr.ts`
+
 ### settings.new-web-agent-logins
 
 - **Map:** provider-accounts.md `accounts-list`, `connect-web` (an API key only), `disconnect`,
