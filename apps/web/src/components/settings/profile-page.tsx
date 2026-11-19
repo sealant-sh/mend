@@ -15,7 +15,6 @@ import {
   passwordRefusal,
 } from "#/lib/account";
 import { accountNameOptions, authClient } from "#/lib/auth-client";
-import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
@@ -325,7 +324,7 @@ function SignOutRow() {
           You're signed in to {where}. Your phone and the mend CLI stay signed in. You can sign them
           out in{" "}
           <Link
-            {...laterPage("settings/devices")}
+            to="/settings/devices"
             className="text-foreground underline-offset-2 hover:underline"
           >
             Devices and access keys
