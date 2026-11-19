@@ -154,9 +154,19 @@ export default async ({ page, web, capture, note }) => {
 
   // Worktrees and a project an earlier run left go first.
   const detail0 = await call("projects.detail", { id: fixture.id });
+  /** A worktree the recipe made goes with its never-launched session: stopped, removed, then it. */
+  const clear = async (worktreeId) => {
+    const detail = await call("projects.detail", { id: fixture.id });
+    for (const session of detail.sessions.filter((each) => each.worktreeId === worktreeId)) {
+      await call("sessions.stop", { id: session.id }, "mutate").catch(() => undefined);
+      await call("sessions.remove", { id: session.id }, "mutate").catch(() => undefined);
+    }
+    await call("worktrees.remove", { id: worktreeId, force: true }, "mutate").catch(
+      () => undefined,
+    );
+  };
   const leftovers = detail0.worktrees.filter((w) => /^svc-[ab]-[a-z0-9]{4}$/.test(w.name));
-  for (const left of leftovers)
-    await call("worktrees.remove", { id: left.id, force: true }, "mutate").catch(() => undefined);
+  for (const left of leftovers) await clear(left.id);
   for (let waited = 0; waited < 60 && leftovers.length > 0; waited += 2) {
     const now = await call("projects.detail", { id: fixture.id });
     if (!now.worktrees.some((w) => leftovers.some((left) => left.id === w.id))) break;
@@ -301,8 +311,8 @@ export default async ({ page, web, capture, note }) => {
     note(
       `Change worktree… lists ${rows} choices, the current one marked, Default branch last; the button waits for another pick`,
     );
-    // By the worktree's own id: an earlier run's worktrees may still be on their way out.
-    await dialog.locator(`[id$="-${second.id}"]`).first().click();
+    // By the worktree's own branch: an earlier run's worktrees can carry the same session names.
+    await dialog.getByRole("radio", { name: new RegExp(` ${second.branch} `) }).click();
     await shot("project-services-change-desktop-light");
     await submit.click();
     await dialog.getByText("The preview didn't move.", { exact: false }).waitFor();
@@ -387,10 +397,7 @@ export default async ({ page, web, capture, note }) => {
     note("Try again reads again and Services draws");
   } finally {
     await page.unroute("**/trpc/**").catch(() => undefined);
-    for (const worktree of made)
-      await call("worktrees.remove", { id: worktree.id, force: true }, "mutate").catch(
-        () => undefined,
-      );
+    for (const worktree of made) await clear(worktree.id);
     if (empty !== null)
       await call("projects.remove", { id: empty.id }, "mutate").catch(() => undefined);
     note("removed the worktrees and the project the recipe made");
