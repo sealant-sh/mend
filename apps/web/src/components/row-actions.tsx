@@ -298,9 +298,12 @@ export function PhoneRowActions({
   actions,
   handlers,
   triggerClassName = "mt-1.5 mr-1",
+  first,
   more,
 }: Omit<RowMenuProps, "onRename"> & {
   readonly triggerClassName?: string;
+  /** Rows before Rename… (a session's Turn off shared control); pressing one closes the sheet. */
+  readonly first?: ReactNode;
   /** Rows after Copy link (a session tab's own, its workspace's); pressing one closes the sheet. */
   readonly more?: ReactNode;
 }) {
@@ -370,6 +373,21 @@ export function PhoneRowActions({
             <>
               {header(row.title)}
               <div role="menu" aria-label={`Actions for ${row.title}`} className="py-1">
+                {first === undefined ? null : (
+                  // A press on any of its rows closes the sheet, as the rows below do.
+                  <div
+                    className="contents"
+                    onClickCapture={(event) => {
+                      if (
+                        event.target instanceof Element &&
+                        event.target.closest("[role=menuitem]")
+                      )
+                        setOpen(false);
+                    }}
+                  >
+                    {first}
+                  </div>
+                )}
                 {actions.rename ? (
                   <SheetItem icon={<PencilIcon aria-hidden />} onClick={() => setPage("rename")}>
                     Rename…

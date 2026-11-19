@@ -366,6 +366,14 @@ function TurnEnd({ row, facts }: { readonly row: AgentRow; readonly facts: Sessi
   );
 }
 
+/** Whose login another person's turn ran on, by name; null for the viewer's own or unknown. */
+const turnLogin = (facts: SessionFacts, author: string | null): string | null => {
+  if (author === null || author === facts.viewerId) return null;
+  const owner = facts.session.ownerUserId;
+  const spent = facts.detail.control.turnsOnSendersLogin || owner === null ? author : owner;
+  return spent === facts.viewerId ? null : facts.nameOf(spent);
+};
+
 /**
  * The agent's reply to one message (Doop "The turn completes"): a muted header naming the agent
  * and the turn, then what it did, folded, and what it wrote; or, while the turn runs, its steps as
@@ -382,8 +390,17 @@ export function AgentTurn({
   readonly renderRequest: (request: RequestView) => ReactNode;
   readonly pages: PagesById;
 }) {
-  // A session's turns are numbered from 0; people count them from 1.
-  const header = row.turn === null ? facts.agent : `${facts.agent} · turn ${row.turn.ordinal + 1}`;
+  // A session's turns are numbered from 0; people count them from 1. Another person's turn says
+  // whose login it ran on (Doop "Shared control · Grace sees Ada's message"): its sender's, where
+  // each person runs as themselves, else the owner's.
+  const login = turnLogin(facts, row.turn?.author ?? null);
+  const header = [
+    facts.agent,
+    row.turn === null ? null : `turn ${row.turn.ordinal + 1}`,
+    login === null ? null : `${login}'s login`,
+  ]
+    .filter((part) => part !== null)
+    .join(" · ");
   return (
     <Message>
       <MessageContent className="gap-3">

@@ -435,9 +435,19 @@ try {
     );
     await page.getByRole("button", { name: "Sign in" }).click();
     await page.waitForURL((url) => url.pathname !== "/login");
-    // An account's first sign-in may ask how it reaches its repositories first.
-    if (new URL(page.url()).pathname === "/welcome")
-      await page.getByRole("button", { name: "Continue to Mend" }).click();
+    // An account's first sign-in may ask how it reaches its repositories first. The old app's
+    // welcome has Continue to Mend; the new app's /welcome is its Git access step, which an
+    // account with no Git access stays on: the recipe goes where it needs from there.
+    if (new URL(page.url()).pathname === "/welcome") {
+      const onward = page.getByRole("button", { name: "Continue to Mend" });
+      if (
+        await onward.waitFor({ timeout: 5_000 }).then(
+          () => true,
+          () => false,
+        )
+      )
+        await onward.click();
+    }
     note(`signed in as the stack's first account (${account.email})`);
   }
   const run = (await import(pathToFileURL(resolve(recipe)).href)).default;

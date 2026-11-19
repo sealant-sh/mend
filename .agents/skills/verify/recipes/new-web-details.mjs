@@ -9,9 +9,10 @@
 //
 // Real: the Workspace group with "Shared with 1 other session" (which moves focus to the sessions),
 // the branch and base, "None yet" for the pull request, the Checks group's empty line, the
-// running `web` Service, the two sessions with their owner, agent and status, and shared control
-// turned on (asked first, with whose login a steered turn spends) and off (`share-on-web`,
-// `share-off-web`, `who-pays`). Then Details opened from another session's tile "+".
+// running `web` Service, the two sessions with their owner, agent and status, and shared control:
+// who holds it, whose login a steered turn spends (`who-pays`), and the switch for everyone an
+// older client turned on, turned off from the row. Then Details opened from another session's
+// tile "+".
 //
 // A local stack has no pull request, handoff, second repository, agent model, checks, per-person
 // workspace or second member: those lines are drawn from fixture answers to the session's reads
@@ -383,31 +384,36 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const focused = await page.evaluate(() => document.activeElement?.textContent ?? "");
   note(`Shared with 1 other session: focus is on "${focused}"`);
 
-  // Shared control: Turn on… asks first and says whose login a steered turn spends; Off at once.
+  // Shared control (route PR 34): the owner's row says who holds it and whose login a steered turn
+  // spends. It goes to the person who asked, so the row never turns it on for everyone; the switch
+  // for everyone that older clients turn on (here through the API) is turned off from the row.
   const sessions = group("Sessions in this workspace");
-  note(`who-pays beside the switch: ${await sessions.getByText(/^Each turn runs on/).innerText()}`);
-  await sessions.getByRole("button", { name: "Turn on…" }).click();
-  const ask = page.getByRole("dialog", { name: "Turn on shared control?" });
-  await ask.waitFor();
-  note(`dialog: ${(await ask.innerText()).replace(/\s+/g, " ")}`);
-  await shoot("share-dialog", ["light"]);
-  await page.setViewportSize(PHONE);
-  await settled();
-  await shoot("phone-share-sheet", ["light"]);
-  await page.setViewportSize(DESKTOP);
-  await settled();
-  await ask.getByRole("button", { name: "Turn on" }).click();
-  await ask.waitFor({ state: "hidden" });
-  await sessions.getByRole("button", { name: "Turn off" }).waitFor();
-  const on = await client(async (trpc, id) => trpc.sessions.detail.query({ id }), A.id);
-  note(`after Turn on: sharedControlEnabledAt=${on.session.sharedControlEnabledAt}`);
-  note(`Sessions in this workspace: ${await textOf("Sessions in this workspace")}`);
+  note(`who-pays beside the row: ${await sessions.getByText(/^Each turn runs on/).innerText()}`);
+  await sessions.getByText("Shared control is off.").first().waitFor();
+  if ((await sessions.getByRole("button", { name: /^Turn on/ }).count()) > 0)
+    throw new Error("the row offers to turn shared control on for everyone");
+  await client(
+    async (trpc, id) => trpc.sessions.setSharedControl.mutate({ id, enabled: true }),
+    A.id,
+  );
+  await reread();
+  const turnOff = sessions.getByRole("button", { name: "Turn off shared control" });
+  await turnOff.waitFor({ timeout: 30_000 });
+  note(`on for everyone (from an older client): ${await textOf("Sessions in this workspace")}`);
   await shoot("shared-on", ["light"]);
-  await sessions.getByRole("button", { name: "Turn off" }).click();
-  await sessions.getByRole("button", { name: "Turn on…" }).waitFor();
-  const off = await client(async (trpc, id) => trpc.sessions.detail.query({ id }), A.id);
+  await turnOff.click();
+  // The button reads Turning off… while it runs: wait for the server, not for its name to change.
+  let off = null;
+  for (let tries = 0; tries < 30; tries += 1) {
+    off = await client(async (trpc, id) => trpc.sessions.detail.query({ id }), A.id);
+    if (off.session.sharedControlEnabledAt === null) break;
+    await page.waitForTimeout(500);
+  }
+  if (off?.session.sharedControlEnabledAt !== null)
+    throw new Error("Turn off shared control left the switch for everyone on");
+  await turnOff.waitFor({ state: "detached" });
   note(
-    `after Turn off, nothing asked: sharedControlEnabledAt=${off.session.sharedControlEnabledAt}`,
+    `after Turn off shared control: sharedControlEnabledAt=${off.session.sharedControlEnabledAt}`,
   );
 
   // Preview, beside a running Service, opens the Preview view's tab.

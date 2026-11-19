@@ -120,10 +120,18 @@ export const useInbox = (): InboxState => {
   // their way laid over them (a row's actions, `lib/row-actions.ts`).
   const visibleRows = labelsWriter.useVisible(inbox.data);
   const visibleMarks = marksWriter.useVisible(marks.data);
-  const all = useMemo(
-    () => inboxRows({ rows: visibleRows ?? [], marks: visibleMarks ?? [], now }),
-    [visibleRows, visibleMarks, now],
-  );
+  // Who asks for shared control is named from the roster; until it is read, the row says someone.
+  const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
+  const roster = members.isPending || members.isError ? undefined : members.data;
+  const all = useMemo(() => {
+    const names = new Map((roster ?? []).map((member) => [member.userId, member.name]));
+    return inboxRows({
+      rows: visibleRows ?? [],
+      marks: visibleMarks ?? [],
+      now,
+      nameOf: (userId) => names.get(userId) ?? null,
+    });
+  }, [visibleRows, visibleMarks, now, roster]);
   const groups = useMemo(
     () => groupRows(all.filter((row) => matchesFilters(row, filters, me))),
     [all, filters, me],

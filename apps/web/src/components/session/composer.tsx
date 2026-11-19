@@ -14,7 +14,14 @@ import {
 } from "@mend/ui/components/ui/dropdown-menu";
 import { cn } from "@mend/ui/lib/utils";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useRef, useState, useSyncExternalStore } from "react";
+import {
+  type ReactNode,
+  useEffect,
+  useEffectEvent,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import { ASK_LABEL } from "#/components/new-session/pickers";
 import { askOf, isPending, waitingRequest } from "#/lib/agent-requests";
@@ -31,6 +38,7 @@ import {
   draftItems,
   type MessageScope,
   mintMessageKey,
+  releaseLoginHold,
   sendMessage,
   useMessageOwner,
   useOutbox,
@@ -57,6 +65,7 @@ import {
   RequestPreview,
 } from "./request-card";
 import type { SessionFacts } from "./session-facts";
+import { useLoginHold, useLoginWorks } from "./shared-control";
 
 type Size = "default" | "touch";
 
@@ -90,9 +99,10 @@ const lockedWords = (mode: ComposerMode, facts: SessionFacts): string => {
   switch (mode._tag) {
     case "no-control": {
       const owner = session.ownerUserId === null ? null : facts.nameOf(session.ownerUserId);
+      // Doop "Someone else's session · reading": whose session it is, the band above says the rest.
       return owner === null
-        ? `Only the session's owner can message ${agent} here.`
-        : `Only ${owner} can message ${agent} in this session.`;
+        ? `Only the session's owner can send messages in this session.`
+        : `Only ${owner} can send messages in this session.`;
     }
     case "terminal":
       return `${agent} runs in a terminal in this session. Type to it there.`;
@@ -445,6 +455,8 @@ function MessageComposer({
       return;
     }
     interrupt.reset();
+    // Sent again by hand: a refusal for the sender's login is answered anew.
+    releaseLoginHold(scope);
     // The message first, then the empty field: the words are never in neither place.
     void sendMessage(outbox.courier, scope, words, clientMessageId, {
       resuming: resumes,
@@ -452,6 +464,21 @@ function MessageComposer({
     });
     draft.write({ text: "", key: null });
   };
+
+  // A message refused for the sender's own login waits in the box (`holdForLogin`). Once the
+  // person's logins, read again after the refusal, say it works, Mend sends it (Doop "Shared
+  // control · Ada connects again"). An effect, since the login lands from outside the page: a
+  // `user` event when `mend connect` finishes on the person's computer.
+  const hold = useLoginHold(scope);
+  const loginWorks = useLoginWorks(hold);
+  const sendHeld = useEffectEvent(() => {
+    if (scope === null) return;
+    if (draft.text.trim() === "") releaseLoginHold(scope);
+    else send(draft.text);
+  });
+  useEffect(() => {
+    if (loginWorks) sendHeld();
+  }, [loginWorks]);
 
   // What the agent waits on the viewer for: its own question or approval first, then an Executor
   // call. The card shows the one that waited longest.

@@ -7,6 +7,7 @@ import type {
   SessionInboxMarkDto,
   SessionInboxRowDto,
 } from "./api.ts";
+import { askersWords } from "./shared-control.ts";
 
 /**
  * The sidebar inbox: every session a person can see, placed in one of five groups. The server
@@ -54,6 +55,11 @@ export interface InboxRow {
   readonly failure: string | null;
   /** What a running agent is doing, when the server knows. */
   readonly activity: AgentActivityDto | null;
+  /**
+   * The people asking the viewer for shared control of their session, oldest first, by name
+   * (null where the roster doesn't know them). Only the owner's row carries them.
+   */
+  readonly askers: ReadonlyArray<string | null>;
   readonly group: InboxGroup;
   /** When a snooze ends, for Snoozed rows. */
   readonly snoozedUntil: Date | null;
@@ -104,10 +110,13 @@ export function inboxRows({
   rows,
   marks,
   now,
+  nameOf = () => null,
 }: {
   readonly rows: ReadonlyArray<SessionInboxRowDto>;
   readonly marks: ReadonlyArray<InboxMark>;
   readonly now: Date;
+  /** Names the people who ask for shared control; null until the roster is read. */
+  readonly nameOf?: (userId: string) => string | null;
 }): ReadonlyArray<InboxRow> {
   const markOf = new Map(marks.map((mark) => [mark.sessionId, mark]));
   const reviewedChanges = new Set<string>();
@@ -125,6 +134,8 @@ export function inboxRows({
         worktreeName: row.worktreeName ?? null,
         failure: row.failure ?? null,
         activity: row.activity ?? null,
+        // Absent from a server before SLNT-1149: nobody asks.
+        askers: (row.sharedControlAsks ?? []).map((ask) => nameOf(ask.userId)),
         snoozedUntil: null,
         doneAt: null,
         markedDone: false,
@@ -135,6 +146,9 @@ export function inboxRows({
       if (mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now)
         return { ...base, group: "snoozed", snoozedUntil: mark.snoozedUntil };
       if (session.status === "waiting") return { ...base, group: "waiting" };
+      // Someone asks the owner for shared control: it waits on them to answer (SLNT-1158).
+      if (base.askers.length > 0 && !ENDED.has(session.status))
+        return { ...base, group: "waiting" };
       if (session.status === "idle") {
         const files = changedFiles(row);
         if (files === null) return { ...base, group: "running" };
@@ -255,6 +269,8 @@ export const rowStatus = (row: InboxRow, now: Date): RowStatus => {
   if (row.group === "snoozed") return plain(`Back ${backAt(row.snoozedUntil ?? now, now)}`);
   if (row.markedDone) return plain("Marked done");
   if (session.importedConversationWaiting) return plain("Waiting for a first message");
+  if (row.group === "waiting" && session.status !== "waiting" && row.askers.length > 0)
+    return plain(askersWords(row.askers));
   if (row.group === "waiting") return plain(askWords(row.ask));
   if (row.group === "review" && row.annotation?.pendingFollowUp === true)
     return plain("Follow-up not sent");

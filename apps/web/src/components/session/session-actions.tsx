@@ -27,6 +27,7 @@ import {
   SquareIcon,
   SquarePenIcon,
   Trash2Icon,
+  UserXIcon,
   XIcon,
 } from "lucide-react";
 import { Fragment, useState } from "react";
@@ -64,6 +65,7 @@ import {
   PhoneRowActions,
 } from "../row-actions.tsx";
 import { SheetItem } from "../sheet-item.tsx";
+import { useTurnOffItems } from "./shared-control.tsx";
 
 /**
  * A session's own actions and its workspace's (docs/adr/0026, decision 4; Doop "T25 · Session tab
@@ -207,6 +209,7 @@ function SessionMenuItems({
   const handlers = useRowActions();
   const facts = useMenuFacts(sessionId, context);
   const { row, actions, stop, remove } = facts;
+  const turnOff = useTurnOffItems(sessionId);
   const tiles = [
     where === "tab" && layout.onSplit !== undefined
       ? [
@@ -260,6 +263,19 @@ function SessionMenuItems({
         <>
           <Separator />
           <Group>{tiles}</Group>
+        </>
+      )}
+      {turnOff.length === 0 ? null : (
+        <>
+          <Separator />
+          <Group>
+            {turnOff.map((item) => (
+              <Item key={item.label} onClick={item.onSelect}>
+                <UserXIcon aria-hidden />
+                {item.label}
+              </Item>
+            ))}
+          </Group>
         </>
       )}
       {stop === null ? null : (
@@ -440,6 +456,7 @@ export function PhoneSessionActions({
   const handlers = useRowActions();
   const facts = useMenuFacts(sessionId, context);
   const { stop, remove } = facts;
+  const turnOff = useTurnOffItems(sessionId);
   // A session the inbox doesn't list has no row to act on; its workspace's actions are on the
   // desktop's header until it does.
   if (facts.row === null || facts.actions === null) return null;
@@ -449,6 +466,11 @@ export function PhoneSessionActions({
       actions={facts.actions}
       handlers={handlers}
       triggerClassName=""
+      first={turnOff.map((item) => (
+        <SheetItem key={item.label} icon={<UserXIcon aria-hidden />} onClick={item.onSelect}>
+          {item.label}
+        </SheetItem>
+      ))}
       more={
         <>
           {layout.onClose === undefined ? null : (
