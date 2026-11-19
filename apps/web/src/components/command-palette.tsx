@@ -244,7 +244,12 @@ function DeskPalette({
 function hitTrailing(hit: SearchHit): ReactNode {
   if (hit.kind === "session") {
     const status = sessionStatus(hit.row);
-    return <Status tone={status.tone}>{status.word}</Status>;
+    // A waiting session names what it waits on, which can be long: it gives way to the title.
+    return (
+      <Status tone={status.tone} className="max-w-56 min-w-0" title={status.word}>
+        <span className="truncate">{status.word}</span>
+      </Status>
+    );
   }
   if (hit.kind === "action" && hit.action.keys !== undefined) return <Kbd>{hit.action.keys}</Kbd>;
   return undefined;

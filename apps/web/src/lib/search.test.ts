@@ -137,4 +137,21 @@ describe("words", () => {
       tone: "bad",
     });
   });
+
+  it("names what a waiting session waits on, as its inbox row does", () => {
+    const [asking] = inboxRows({
+      rows: [
+        {
+          ...session("s6", "Rotate staging database credentials", "waiting", 2),
+          ask: { kind: "command", subject: "terraform apply" },
+        },
+      ],
+      marks: [],
+      now,
+    });
+    expect(asking === undefined ? null : sessionStatus(asking)).toEqual({
+      word: "Wants to run terraform apply",
+      tone: "wait",
+    });
+  });
 });

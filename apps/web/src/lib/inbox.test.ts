@@ -6,6 +6,7 @@ import {
   activityDetail,
   age,
   askDetail,
+  askLine,
   DEFAULT_INBOX_FILTERS,
   DEFAULT_INBOX_FOLDS,
   groupRows,
@@ -315,19 +316,30 @@ describe("the two filters", () => {
 });
 
 describe("a row's words", () => {
-  it("says why a waiting session waits, naming what the agent named on a phone", () => {
+  it("says why a waiting session waits, naming the command, file or tool the agent named", () => {
     const [waiting] = inboxRows({
       rows: [row("asks", "waiting", { ask: { kind: "command", subject: "terraform apply" } })],
       marks: [],
       now,
     });
     if (waiting === undefined) throw new Error("no row");
-    expect(rowStatus(waiting, now).word).toBe("Wants to run a command");
+    expect(rowStatus(waiting, now).word).toBe("Wants to run terraform apply");
+    expect(askLine({ kind: "edit", subject: "src/checkout.ts" })).toBe(
+      "Wants to edit src/checkout.ts",
+    );
+    expect(askLine({ kind: "tool", subject: "Bash" })).toBe("Wants to use Bash");
     expect(askDetail(waiting.ask)).toBe("Wants to run terraform apply");
     expect(askDetail({ kind: "question", subject: "Back off on a 409?" })).toBe(
       "Asked: Back off on a 409?",
     );
     expect(askDetail({ kind: "edit", subject: null })).toBe("Wants to edit a file");
+  });
+
+  it("keeps today's words when the agent named nothing, and a question's words for its page", () => {
+    expect(askLine({ kind: "tool", subject: null })).toBe("Wants to use a tool");
+    expect(askLine({ kind: "question", subject: "Back off on a 409?" })).toBe("Asked a question");
+    expect(askLine({ kind: "decision", subject: "Pick a plan" })).toBe("Waiting on you");
+    expect(askLine(null)).toBe("Waiting on you");
   });
 
   it("says what a running agent is doing, naming what it named on a phone", () => {
