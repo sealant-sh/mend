@@ -484,22 +484,28 @@ flows reuse what earlier ones made:
 
 ### session-page.new-web-layouts
 
-- **Map:** no feature file yet (ADR 0026, "Layouts": a person's saved layouts, SLNT-1175)
-- **Needs:** no session; no turn; web; a second account
-- **Do:** Drive the recipe `new-web-layouts-server`: as the owner, list your saved layouts (none),
-  save one, read it back through the API and the web app's `layouts` procedures, rename it; be
-  refused a name you already use in another case, a layout that names a session, a layout of a
-  version the server doesn't know, nine tiles, and a 21st layout; a second person who joins sees
-  none of yours and can neither rename nor remove one. The recipe removes every layout it saved.
-  Route PR 16 adds the layout menu to this flow.
-- **See:** each step's note in the recipe's `steps.log` and its `transcript` capture: the server's
-  answer to each call, with each refusal's status and sentence; the owner's list ends as it began.
-- **Mode:** `scripted` (recipes/new-web-layouts-server.mjs)
+- **Map:** no feature file yet (ADR 0026, "Layouts": the layout menu and a person's saved layouts,
+  SLNT-1175)
+- **Needs:** either; no turn; web and CLI; `<p>`; the owner's sign-in typed in a second browser
+- **Do:** Run the CLI batch `new-web-layouts-sessions.json` (two sessions in the worktree
+  `layouts-one`, one in `layouts-two`, each a `sleep`), then drive the recipe `new-web-layouts` with
+  `--account`: open the layout button in the Workspace header, pick Change over terminal and press
+  ⌥2 and ⌥3, save the sheet as "Review with terminal", be refused the same name in lower case, pick
+  it in `layouts-two`, see it from a second browser signed in as the same person, rename and remove
+  it, and look under 1024px. Then drive `new-web-layouts-server` for the API's refusals, limits and
+  a second person.
+- **See:** each step's note in the recipes' `steps.log`: the check on the layout the sheet shows,
+  both sessions kept in one tile under Change over terminal and the Terminal tab kept under ⌥2, the
+  saved toast and the menu again with the saved layout at ⌥5, the name-taken sentence in the dialog,
+  the same three tiles in `layouts-two` while `layouts-one` keeps its own, the layout in the second
+  browser, and no layout button under 1024px. Each recipe leaves nothing it saved.
+- **Mode:** `scripted` (recipes/new-web-layouts.mjs, recipes/new-web-layouts-server.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
-- **Areas:** `packages/domain/src/workbench/saved-layout.ts`,
-  `packages/db/src/repos/saved-layouts.ts`, `packages/api-contracts/src/saved-layouts.ts`,
-  `apps/api/src/routes/saved-layouts.ts`, `apps/web/src/server/routers/layouts.ts`
+- **Areas:** `apps/web/src/lib/layouts.ts`, `apps/web/src/components/workspace/layout-menu.tsx`,
+  `packages/domain/src/workbench/saved-layout.ts`, `packages/db/src/repos/saved-layouts.ts`,
+  `packages/api-contracts/src/saved-layouts.ts`, `apps/api/src/routes/saved-layouts.ts`,
+  `apps/web/src/server/routers/layouts.ts`
 
 ### session-page.new-web-terminal
 

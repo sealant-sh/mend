@@ -1,13 +1,15 @@
+import type { TileLayout } from "@mend/domain/workbench";
 import { Status } from "@mend/ui/components/status";
 import { buttonVariants } from "@mend/ui/components/ui/button";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { type KeyboardEvent, useState, useSyncExternalStore } from "react";
+import { type KeyboardEvent, type ReactNode, useState, useSyncExternalStore } from "react";
 
 import type { InboxRow } from "#/lib/inbox";
 import { inboxQuery } from "#/lib/inbox-live";
+import { type ApplyContext, applyLayout, oneTileOf } from "#/lib/layouts";
 import { rowActions } from "#/lib/row-actions";
 import { lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
 import {
@@ -43,6 +45,7 @@ import { tileArrangements } from "#/lib/ui-prefs";
 import { useInbox } from "#/lib/use-inbox";
 
 import { Kept, KeptSlot, useKeptNodes } from "../workspace/kept.tsx";
+import { LayoutMenu } from "../workspace/layout-menu.tsx";
 import { OpenMenu, PhoneOpenSheet, type ClosedSession } from "../workspace/open-menu.tsx";
 import { PhoneHeader } from "../workspace/phone-header.tsx";
 import { PhoneTabStrip } from "../workspace/phone-tab-strip.tsx";
@@ -162,8 +165,9 @@ const sameLayout = (a: Arrangement, b: Arrangement): boolean =>
  * A session's own actions are on its tab: its right-click menu, the "…" of the tile that shows it,
  * and on a phone the header's "…" (`session-actions.tsx`); the workspace's are in the header's "…".
  *
- * What attaches here later: the views (PRs 17 to 23, `WORKSPACE_VIEWS`) and the layout button in
- * the header (PR 16).
+ * The header's layout button (`LayoutMenu`) picks a built-in or saved layout for this sheet,
+ * saves the sheet as a layout, or puts every tab in one tile. What attaches here later: the views
+ * (PRs 17 to 23, `WORKSPACE_VIEWS`).
  */
 function SessionSheet({
   facts,
@@ -424,12 +428,39 @@ function SessionSheet({
     change((current) => maximise(current, null));
   };
 
+  // Layouts (PR 16): picking one rearranges this workspace's sheet, kept as any change is.
+  const layoutContext: ApplyContext = {
+    own,
+    knownView: (id) => workspaceView(id) !== undefined,
+  };
+  const pickLayout = (layout: TileLayout, name: string) => {
+    if (full) onLeaveFull();
+    change((current) => applyLayout(current, layout, layoutContext));
+    setSaid(`Arranged the tiles as ${name}.`);
+  };
+  const resetToOneTile = () => {
+    if (full) onLeaveFull();
+    change((current) => oneTileOf(current));
+    setSaid("Put every tab in one tile.");
+  };
+
   const dragged = drag.drag === null ? null : faceOf(drag.drag.tab, facts, rows);
 
   return (
     // Exactly the sheet's height, never the content's: the thread scrolls inside its tile.
     <div className="flex h-dvh min-w-0 flex-none flex-col lg:h-auto lg:min-h-0 lg:flex-1">
-      <WorkspaceHeaderRow facts={facts} workspace={workspace} />
+      <WorkspaceHeaderRow
+        facts={facts}
+        workspace={workspace}
+        layouts={
+          <LayoutMenu
+            arrangement={shown}
+            context={layoutContext}
+            onApply={pickLayout}
+            onReset={resetToOneTile}
+          />
+        }
+      />
       <PhoneHeader
         title={facts.worktreeName}
         sub={facts.projectName}
@@ -580,13 +611,15 @@ function SessionSheet({
   );
 }
 
-/** The Workspace header with Open in VS Code and the workspace's "…", from 1024px. */
+/** The Workspace header with the layout button, Open in VS Code and the workspace's "…", from 1024px. */
 function WorkspaceHeaderRow({
   facts,
   workspace,
+  layouts,
 }: {
   readonly facts: SessionFacts;
   readonly workspace: WorkspaceFacts;
+  readonly layouts: ReactNode;
 }) {
   return (
     <WorkspaceHeader
@@ -596,6 +629,7 @@ function WorkspaceHeaderRow({
       className="max-lg:hidden"
       actions={
         <>
+          {layouts}
           <a
             href={vscodeOpenUri(facts.session.id)}
             className={cn(buttonVariants({ variant: "outline", size: "sm" }))}
