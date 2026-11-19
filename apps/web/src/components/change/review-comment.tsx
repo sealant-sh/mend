@@ -10,7 +10,7 @@ import type { ReviewCommentDto } from "#/lib/api";
 import { clearSentDraft, useDraft } from "#/lib/drafts";
 import { focusWhenShown } from "#/lib/focus-when-shown";
 import { failureWords } from "#/lib/refusal";
-import { linesWords, stateActions, stateWords } from "#/lib/review-comments";
+import { linesWords, plainLine, stateActions, stateWords } from "#/lib/review-comments";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** "AL" for Ada Lovelace. */
@@ -177,7 +177,7 @@ export function ReviewComment({
         </span>
         {folded ? (
           <span className="min-w-0 flex-1 truncate text-meta text-muted-foreground">
-            {comment.body}
+            {plainLine(comment.body)}
           </span>
         ) : null}
         {draft && touch ? null : <span className="ml-auto flex items-center gap-1">{buttons}</span>}

@@ -22,6 +22,7 @@ import { EllipsisIcon, MessageSquarePlusIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { Overlay } from "#/components/projects/overlay";
+import { RichText } from "#/components/session/rich-text";
 import {
   agentIsLive,
   type ChangePassDto,
@@ -48,6 +49,7 @@ import {
   passOf,
   passWords,
   placeLongWords,
+  plainLine,
   placeWords,
   sendRuleOf,
   stateWords,
@@ -127,7 +129,7 @@ function ColumnRow({
           )}{" "}
           · {who}
         </span>
-        <span className="truncate text-row">{comment.body}</span>
+        <span className="truncate text-row">{plainLine(comment.body)}</span>
         {note === null ? null : <span className="text-meta text-muted-foreground">{note}</span>}
       </button>
     </li>
@@ -764,8 +766,8 @@ export function useChangeComments({
                   <span className="font-mono text-2xs">{placeLongWords(comment)}</span>
                 )}
               </span>
-              <span className="text-prose">
-                {comment.body}
+              <span className="min-w-0 text-prose">
+                <RichText text={comment.body} className="space-y-1.5" />
                 {failedIds.has(comment.id) ? (
                   <span className="block text-meta text-muted-foreground">Couldn't send</span>
                 ) : null}

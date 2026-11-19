@@ -22,7 +22,6 @@ import { patchDetail, superjson } from "./new-web-session-fixtures.lib.mjs";
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const RETRY = "src/payments/retry.ts";
-const FILES = [RETRY, "src/payments/charge.ts", "src/payments/charge.test.ts"];
 
 /** The first of `locator`'s matches a person can see: under 1024px every tab is in the page twice. */
 const visible = (locator) => locator.filter({ visible: true }).first();
@@ -190,6 +189,22 @@ export default async ({ page, web, capture: captureOnce, note }) => {
         .filter({ hasText: text })
         .filter({ hasText: `(${run})` }),
     );
+  /**
+   * Bring a line into the diffs' drawn range: the renderer draws only the lines near the view, and
+   * comments from earlier runs push a file down.
+   */
+  const reach = async (file, line) => {
+    await section(file).scrollIntoViewIfNeeded();
+    for (let step = 0; step < 40 && (await lineNumber(file, line).count()) === 0; step += 1) {
+      await page.evaluate(() => {
+        const scroller =
+          document.querySelector("section[data-file]")?.parentElement?.parentElement?.parentElement;
+        if (scroller != null) scroller.scrollTop += 250;
+      });
+      await page.waitForTimeout(150);
+    }
+    await lineNumber(file, line).scrollIntoViewIfNeeded();
+  };
   /** A line's number cell on the new side, inside the renderer's shadow root. */
   const lineNumber = (file, line) =>
     page
@@ -340,6 +355,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
 
   // review-inline-comment: a click on line 20's number opens the box there.
+  await reach(RETRY, 20);
   await lineNumber(RETRY, 20).click();
   const lineBox = visible(page.getByRole("textbox", { name: `Comment on ${RETRY}, line 20` }));
   await lineBox.waitFor({ timeout: 15_000 });
@@ -357,6 +373,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
 
   // A range: a drag across line numbers 12 to 15.
+  await reach(RETRY, 12);
   const from = await lineNumber(RETRY, 12).boundingBox();
   const to = await lineNumber(RETRY, 15).boundingBox();
   if (from === null || to === null) throw new Error("line numbers 12 and 15 aren't on screen");
@@ -486,10 +503,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   void draft;
 
   // Your review: every file viewed, what Send sends, after the last file.
-  for (const file of FILES) {
-    const box = visible(page.getByRole("checkbox", { name: `Viewed: ${file}` }));
-    if ((await box.getAttribute("aria-checked")) !== "true") await box.click();
-  }
+  for (const box of await page.getByRole("checkbox", { name: /^Viewed: / }).all())
+    if ((await box.isVisible()) && (await box.getAttribute("aria-checked")) !== "true")
+      await box.click();
   const yourReview = visible(page.getByRole("region", { name: "Your review" }));
   await yourReview.scrollIntoViewIfNeeded();
   note(`all files viewed: "${(await yourReview.innerText()).split("\n").slice(0, 2).join(" ")}"`);

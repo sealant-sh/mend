@@ -7,7 +7,7 @@ import { useId, useState } from "react";
 import { Overlay } from "#/components/projects/overlay";
 import type { ReviewCommentDto } from "#/lib/api";
 import { usePhone } from "#/lib/phone";
-import { assembleInstruction, countWords, placeWords } from "#/lib/review-comments";
+import { assembleInstruction, countWords, placeWords, plainLine } from "#/lib/review-comments";
 
 /** What the dialog hands back to send: the comments picked and the words as edited. */
 export interface ChosenSend {
@@ -115,7 +115,7 @@ function SendBody({
               <span className="font-mono text-2xs text-muted-foreground">
                 {placeWords(comment)}
               </span>
-              <span className="line-clamp-2">{comment.body}</span>
+              <span className="line-clamp-2">{plainLine(comment.body)}</span>
             </span>
           </Label>
         ))}

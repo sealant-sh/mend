@@ -13,6 +13,7 @@ import {
   passWords,
   placeLongWords,
   placeWords,
+  plainLine,
   sendRuleOf,
   stateActions,
   stateWords,
@@ -302,5 +303,11 @@ describe("what Mend's passes did", () => {
       text: "Mend couldn't read the change (3 min ago). Out of time.",
       failed: true,
     });
+  });
+});
+
+describe("a comment's one-line preview", () => {
+  it("drops code marks and line breaks", () => {
+    expect(plainLine("Keep `chargeWithRetry`\nas it is.")).toBe("Keep chargeWithRetry as it is.");
   });
 });

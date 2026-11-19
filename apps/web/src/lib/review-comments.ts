@@ -47,6 +47,10 @@ export const placeLongWords = (comment: ReviewCommentDto): string => {
   return lines === null ? baseName(comment.file) : `${baseName(comment.file)} ${lines}`;
 };
 
+/** A comment's words on one line, for a preview: no code marks, no line breaks. */
+export const plainLine = (body: string): string =>
+  body.replaceAll("`", "").replaceAll(/\s+/g, " ").trim();
+
 /** A draft Mend wrote and nobody has added or dismissed yet. */
 export const isDraft = (comment: ReviewCommentDto): boolean =>
   comment.authorKind === "mend" && comment.state === "draft";
