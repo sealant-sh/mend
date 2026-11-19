@@ -99,6 +99,13 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     await page.goto(`${web}${path}`);
     await hydrated();
   };
+  /** The server renders the first page with the real answer: read the inbox again, rewritten. */
+  const readAgain = () =>
+    page.evaluate(() =>
+      window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
+        queryKey: [["sessions", "inbox"]],
+      }),
+    );
   const call = (path, input, kind = "query") =>
     page.evaluate(
       async ({ path: route, input: value, kind: verb }) => {
@@ -156,11 +163,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     await route.fulfill({ response, json: body });
   });
   await open("/");
-  await page.evaluate(() =>
-    window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
-      queryKey: [["sessions", "inbox"]],
-    }),
-  );
+  await readAgain();
 
   // 1. The sidebar inbox: each row's second line says what it waits on.
   for (const [title, words] of Object.entries(WAITS)) {
@@ -183,6 +186,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const project = (await call("projects.list")).find((each) => each.name === "verify-fixture");
   await page.goto(`${web}/projects/${project.id}?q=waits`);
   await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined);
+  await readAgain();
   for (const [title, words] of Object.entries(WAITS)) {
     const line = visible(page.getByRole("main").getByText(words.desktop, { exact: true }));
     await line.waitFor({ timeout: 20_000 });
@@ -193,6 +197,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // 4. A phone: the row quotes a question, and names the rest the same way.
   await page.setViewportSize(PHONE);
   await open("/");
+  await readAgain();
   for (const [title, words] of Object.entries(WAITS)) {
     await row(title).getByText(words.phone).waitFor({ timeout: 20_000 });
     note(`phone: ${title} reads "${await lines(row(title))}"`);
