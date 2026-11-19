@@ -217,7 +217,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await paint("light");
 
   // --- An older page that fails ----------------------------------------------------------------
-  await rewriteAudit((_, before) => (before === undefined ? null : failure));
+  await rewriteAudit((_, olderThan) => (olderThan === undefined ? null : failure));
   await clearCache();
   await navigate("/settings/profile");
   await heading("Profile");
