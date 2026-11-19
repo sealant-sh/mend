@@ -212,7 +212,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
         [
           "# from a teammate's checkout",
           "FEATURE_FLAGS=checkout,refunds",
-          `GITHUB_TOKEN=${FAKES.github}`,
+          `SENTRY_AUTH_TOKEN=${FAKES.github}`,
           "PATH=/usr/bin",
           "this line is not NAME=value",
           "",
@@ -230,7 +230,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await shot("project-secrets-import-desktop-light");
     await importing.getByRole("button", { name: /^Save \d+ names?$/ }).click();
     const summary = await visible(
-      page.getByRole("region", { name: /Notifications/ }).getByText(/^Saved |^Nothing was saved/),
+      page.getByRole("region", { name: /Notifications/ }).getByText(/^Saved \d|^Nothing was saved/),
     ).innerText();
     note(`env-import: saved in one request; the toast says "${summary}"`);
     await shot("project-secrets-imported-desktop-light");
@@ -239,8 +239,10 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     }
     await closed("Import .env file");
     await variables().getByText("FEATURE_FLAGS", { exact: true }).waitFor();
-    await secrets().getByText("GITHUB_TOKEN", { exact: true }).waitFor();
-    note("env-routing: FEATURE_FLAGS landed in Environment variables, GITHUB_TOKEN in Secrets");
+    await secrets().getByText("SENTRY_AUTH_TOKEN", { exact: true }).waitFor();
+    note(
+      "env-routing: FEATURE_FLAGS landed in Environment variables, SENTRY_AUTH_TOKEN in Secrets",
+    );
 
     // --- Remove --------------------------------------------------------------------------------------
     await button("Remove STRIPE_API_BASE").click();
@@ -248,13 +250,13 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await shot("project-secrets-remove-desktop-light");
     await remove.getByRole("button", { name: "Remove variable", exact: true }).click();
     await toastSays("Removed STRIPE_API_BASE.");
-    await button("Remove GITHUB_TOKEN").click();
-    await dialog("Remove GITHUB_TOKEN?")
+    await button("Remove SENTRY_AUTH_TOKEN").click();
+    await dialog("Remove SENTRY_AUTH_TOKEN?")
       .getByRole("button", { name: "Remove secret", exact: true })
       .click();
-    await toastSays("Removed GITHUB_TOKEN.");
+    await toastSays("Removed SENTRY_AUTH_TOKEN.");
     note(
-      "env-configuration and env-secrets: removed STRIPE_API_BASE and GITHUB_TOKEN after asking",
+      "env-configuration and env-secrets: removed STRIPE_API_BASE and SENTRY_AUTH_TOKEN after asking",
     );
     await shot("project-secrets-desktop-light");
     await paint("dark");
