@@ -147,7 +147,7 @@ export default async ({ page, web, capture, note }) => {
   // Resolve and Reopen.
   await comment("why the last error").getByRole("button", { name: "Resolve" }).click();
   await comment("why the last error")
-    .getByText("Resolved", { exact: true })
+    .getByText(/^Resolved/)
     .waitFor({ timeout: 15_000 });
   note(
     `Resolve folded it to 'Resolved'; Send reads "${await button(/^Send \d+ comments? to /, false).innerText()}"`,

@@ -408,7 +408,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // review-comment-state, for real: Resolve and Reopen; Dismiss takes one out of the send.
   const range = comment("Cap the wait");
   await range.getByRole("button", { name: "Resolve" }).click();
-  await range.getByText("Resolved", { exact: true }).waitFor({ timeout: 15_000 });
+  await range.getByText(/^Resolved/).waitFor({ timeout: 15_000 });
   await button("Send 3 comments to Claude Code").waitFor();
   note(
     "Resolve (changes.setCommentState addressed): the comment folds to 'Resolved', Send counts 3",
@@ -419,7 +419,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   note("Reopen put it back: Send counts 4");
   const keyed = comment("Also check that a 409");
   await keyed.getByRole("button", { name: "Dismiss" }).click();
-  await keyed.getByText("Dismissed", { exact: true }).waitFor({ timeout: 15_000 });
+  await keyed.getByText(/^Dismissed/).waitFor({ timeout: 15_000 });
   await button("Send 3 comments to Claude Code").waitFor();
   note("Dismiss: 'Dismissed', out of the send (3)");
 

@@ -164,8 +164,9 @@ export function ReviewComment({
       aria-label={`${author}: ${comment.body.slice(0, 80)}`}
       data-comment={comment.id}
       className={cn(
-        "bg-band text-prose leading-[1.45] text-foreground",
-        place === "line" ? "py-3 pr-6 pl-4 lg:pl-[112px]" : "px-6 py-3",
+        // Between diff rows it sits in the renderer's monospace: set the comment's own face.
+        "bg-band text-left font-sans text-prose leading-[1.45] tracking-normal whitespace-normal text-foreground",
+        place === "line" ? "border-y py-3 pr-6 pl-4" : "px-6 py-3",
       )}
     >
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-control">

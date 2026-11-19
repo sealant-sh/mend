@@ -471,7 +471,10 @@ export function useChangeComments({
     mark.kind === "comment" ? (
       <ReviewComment comment={mark.comment} place="line" touch={touch} />
     ) : (
-      <div data-composer className="border-y bg-band py-3 pr-6 pl-4 lg:pl-[112px]">
+      <div
+        data-composer
+        className="border-y bg-band py-3 pr-6 pl-4 text-left font-sans tracking-normal whitespace-normal"
+      >
         <CommentComposer
           key={anchorKey(mark.anchor)}
           label={`Comment on ${mark.anchor.file}, ${lineLabel(mark.anchor.line, mark.anchor.endLine) === `${mark.anchor.line}` ? "line" : "lines"} ${lineLabel(mark.anchor.line, mark.anchor.endLine) ?? ""}`}
