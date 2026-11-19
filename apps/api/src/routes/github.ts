@@ -1,6 +1,14 @@
 import { execFile } from "node:child_process";
 
-import { GhFailure, GhRepoView, GhStatusView, MendApi, PullRequestView } from "@mend/api-contracts";
+import {
+  CurrentUser,
+  GhFailure,
+  GhRepoView,
+  GhStatusView,
+  MendApi,
+  PullRequestView,
+} from "@mend/api-contracts";
+import { gh as ghIn, PullRequestWorkspaces } from "@mend/landing";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/http-api";
@@ -144,6 +152,89 @@ export const classifyGhError = (error: GhError): GhUnavailable => {
   return "error";
 };
 
+/**
+ * gh's arguments for a repository list: the account's own repositories, most recently pushed
+ * first, for an empty query; a GitHub-wide search otherwise. `--` keeps a query positional, never
+ * parsed as a flag.
+ */
+const repoArgs = (query: string): ReadonlyArray<string> => {
+  const trimmed = query.trim();
+  return trimmed === ""
+    ? ["repo", "list", "--limit", String(REPO_LIMIT), "--json", LIST_FIELDS]
+    : ["search", "repos", "--limit", String(REPO_LIMIT), "--json", SEARCH_FIELDS, "--", trimmed];
+};
+
+/** What `repoArgs`' gh printed, in one shape whichever of the two commands ran. */
+const parseRepos = (
+  args: ReadonlyArray<string>,
+  stdout: string,
+): Effect.Effect<ReadonlyArray<GhRepoView>, GhError> =>
+  args[0] === "repo"
+    ? parseJson(RepoListItems, stdout, args).pipe(
+        Effect.map((items) =>
+          items.map(
+            (item) =>
+              new GhRepoView({
+                nameWithOwner: item.nameWithOwner,
+                description: item.description === "" ? null : item.description,
+                visibility: item.visibility.toLowerCase(),
+                isFork: item.isFork,
+                language: item.primaryLanguage?.name ?? null,
+                stars: item.stargazerCount,
+                pushedAt: item.pushedAt,
+                url: item.url,
+              }),
+          ),
+        ),
+      )
+    : parseJson(RepoSearchItems, stdout, args).pipe(
+        Effect.map((items) =>
+          items.map(
+            (item) =>
+              new GhRepoView({
+                nameWithOwner: item.fullName,
+                description: item.description === "" ? null : item.description,
+                visibility: item.visibility.toLowerCase(),
+                isFork: item.isFork,
+                language: item.language === "" ? null : item.language,
+                stars: item.stargazersCount,
+                pushedAt: item.pushedAt,
+                url: item.url,
+              }),
+          ),
+        ),
+      );
+
+/**
+ * The repositories the caller's own connected GitHub login reaches: gh runs in a short-lived
+ * workspace of theirs that carries the login (`PullRequestWorkspaces.within`, as pull request
+ * reads do), so the token stays with the platform and never reaches Mend.
+ */
+const callerRepos = Effect.fn("Github.callerRepos")(function* (query: string) {
+  const caller = yield* CurrentUser;
+  const args = repoArgs(query);
+  return yield* (yield* PullRequestWorkspaces)
+    .within({ ownerUserId: caller.user.id, sessionId: null }, (workspace) =>
+      Effect.gen(function* () {
+        const output = yield* workspace.exec(ghIn(args));
+        if (output.exitCode !== 0)
+          return yield* new GhFailure({
+            message:
+              output.stderr.trim() ||
+              "GitHub didn't list repositories for your login. Connect it again with mend connect github.",
+          });
+        return yield* parseRepos(args, output.stdout).pipe(
+          Effect.mapError(() => new GhFailure({ message: "GitHub returned an unreadable list." })),
+        );
+      }),
+    )
+    .pipe(
+      Effect.catchTag("PullRequestStepError", (error) =>
+        Effect.fail(new GhFailure({ message: error.message })),
+      ),
+    );
+});
+
 /** `gh pr list --json` items. */
 const PullRequestItems = Schema.Array(
   Schema.Struct({
@@ -228,57 +319,8 @@ export const GhLive: Layer.Layer<Gh> = Layer.succeed(Gh, {
       ),
     ),
   repos: (query: string) => {
-    const trimmed = query.trim();
-    if (trimmed === "") {
-      const args = ["repo", "list", "--limit", String(REPO_LIMIT), "--json", LIST_FIELDS];
-      return gh(args).pipe(
-        Effect.flatMap(({ stdout }) => parseJson(RepoListItems, stdout, args)),
-        Effect.map((items) =>
-          items.map(
-            (item) =>
-              new GhRepoView({
-                nameWithOwner: item.nameWithOwner,
-                description: item.description === "" ? null : item.description,
-                visibility: item.visibility.toLowerCase(),
-                isFork: item.isFork,
-                language: item.primaryLanguage?.name ?? null,
-                stars: item.stargazerCount,
-                pushedAt: item.pushedAt,
-                url: item.url,
-              }),
-          ),
-        ),
-      );
-    }
-    // `--` so a query is always positional, never parsed as a flag.
-    const args = [
-      "search",
-      "repos",
-      "--limit",
-      String(REPO_LIMIT),
-      "--json",
-      SEARCH_FIELDS,
-      "--",
-      trimmed,
-    ];
-    return gh(args).pipe(
-      Effect.flatMap(({ stdout }) => parseJson(RepoSearchItems, stdout, args)),
-      Effect.map((items) =>
-        items.map(
-          (item) =>
-            new GhRepoView({
-              nameWithOwner: item.fullName,
-              description: item.description === "" ? null : item.description,
-              visibility: item.visibility.toLowerCase(),
-              isFork: item.isFork,
-              language: item.language === "" ? null : item.language,
-              stars: item.stargazersCount,
-              pushedAt: item.pushedAt,
-              url: item.url,
-            }),
-        ),
-      ),
-    );
+    const args = repoArgs(query);
+    return gh(args).pipe(Effect.flatMap(({ stdout }) => parseRepos(args, stdout)));
   },
   pullRequests: (repo: string) => {
     const args = [
@@ -326,6 +368,15 @@ export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers
     .handle("status", () =>
       Effect.gen(function* () {
         const authority = yield* (yield* GithubIdentity).forCaller();
+        // The caller's own login answers from their connected accounts, with no workspace.
+        if (authority.kind === "caller") {
+          return new GhStatusView({
+            available: true,
+            authenticated: true,
+            login: authority.login,
+            detail: null,
+          });
+        }
         if (authority.kind === "none") {
           return new GhStatusView({
             available: false,
@@ -342,6 +393,7 @@ export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers
       Effect.gen(function* () {
         const authority = yield* (yield* GithubIdentity).forCaller();
         if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
+        if (authority.kind === "caller") return yield* callerRepos(query.query ?? "");
         const cli = yield* Gh;
         return yield* cli
           .repos(query.query ?? "")

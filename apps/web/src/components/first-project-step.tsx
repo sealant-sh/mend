@@ -20,7 +20,7 @@ import { CheckIcon, FolderGit2Icon, FolderSearchIcon, GithubIcon, SearchIcon } f
 import { useEffect, useId, useState } from "react";
 
 import type { AdoptionAttempt } from "#/lib/adoptions";
-import { savedAgentLine } from "#/lib/agent-login";
+import { agentLoginState, savedAgentLine } from "#/lib/agent-login";
 import type { AdoptionProgressDto, ProjectDto } from "#/lib/api";
 import { accountNameOptions } from "#/lib/auth-client";
 import { type CloneState, cloneDetail } from "#/lib/clone-state";
@@ -45,10 +45,12 @@ import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { type CloneRequest, retryOf, useClone } from "#/lib/use-clone";
 import { useSecond } from "#/lib/use-second";
+import { useWorkbenchEvents } from "#/lib/workbench-events";
 
+import { GithubConnect } from "./github-connect.tsx";
 import { MendKeyHelp } from "./projects/mend-key-help.tsx";
 import { RepositoryAddressField } from "./projects/repository-address.tsx";
-import { SetupActions, SetupFrame } from "./setup-frame.tsx";
+import { SetupActions, SetupFrame, skippedSteps, useSetupProgress } from "./setup-frame.tsx";
 
 type Visibility = ProjectDto["visibility"];
 type Source = "github" | "url";
@@ -60,9 +62,10 @@ const SEARCH_REST_MS = 250;
 const SHOWN = { desktop: 6, phone: 4 } as const;
 
 /**
- * Step 4 of setup (Doop "First project · …"): pick one of the repositories the Mend server's
- * GitHub login can reach, or paste any Git address, name the project and say who sees it. Adding
- * it starts the clone on this page; the person may go on to Mend while it runs, and a session
+ * Setup's last step (Doop "First project · …"): pick one of the repositories the person's GitHub
+ * login can reach (their own connected login, or for the operator of a single-organization
+ * server without one, the server's `gh`), or paste any Git address, name the project and say who
+ * sees it. Adding it starts the clone on this page; the person may go on to Mend while it runs, and a session
  * started there waits for the clone (`queuedSessions`). The clone is the Projects page's (it is
  * kept in this browser by `useClone`), so a reload, or Projects, shows the same one.
  */
@@ -79,6 +82,10 @@ export function FirstProjectStep() {
   const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
   const members = useQuery(trpc.organization.members.queryOptions());
   const clone = useClone(viewer.userId);
+  const progress = useSetupProgress();
+  // `mend login` and `mend connect github` in a terminal land without a reload: the GitHub
+  // section moves on, and the repositories the new login reaches are listed.
+  useWorkbenchEvents();
   // "Change details" after a failed clone goes back to the form with what was asked.
   const [editing, setEditing] = useState<CloneRequest | null>(null);
   // The repository picked on GitHub, while this page is open: the clone's summary names its
@@ -100,10 +107,20 @@ export function FirstProjectStep() {
   return (
     <SetupFrame
       title="Add a project"
-      step={4}
-      saved={{ account: accountName, git: savedModeLine(access.mode), agent: agentLine }}
-      skipped={skipped ? "agent" : undefined}
-      back={{ to: "/welcome/agent-login", label: "Back to Agent login" }}
+      step="project"
+      steps={progress.steps}
+      saved={{
+        account: accountName,
+        ...progress.saved,
+        git: savedModeLine(access.mode),
+        agent: agentLine,
+      }}
+      skipped={skippedSteps(progress.skippedCli, skipped)}
+      back={
+        progress.steps.includes("organization")
+          ? { to: "/welcome/organization", label: "Back to Organization" }
+          : { to: "/welcome/agent-login", label: "Back to Agent login" }
+      }
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         A project is a git repository you add to Mend. Mend clones it onto this server, and sessions
@@ -169,6 +186,12 @@ function ChooseRepository({
   const trpc = useTRPC();
   const ids = useId();
   const github = useQuery(trpc.github.status.queryOptions(undefined, { staleTime: 60_000 }));
+  // Whether the list comes from the person's own GitHub login (else the server's own gh).
+  const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
+  const ownLogin =
+    identity.isPending || identity.isError
+      ? false
+      : agentLoginState(identity.data.accounts, "github").kind === "connected";
   const signedIn = github.isSuccess && github.data.authenticated;
   const [chosen, setChosen] = useState<Source | null>(initial === null ? null : "url");
   // From GitHub when the server can list repositories, else an address.
@@ -227,7 +250,7 @@ function ChooseRepository({
           </p>
           {github.isPending ? (
             <p role="status" className="py-2 text-row text-muted-foreground">
-              Asking the Mend server for its GitHub login…
+              Asking Mend which GitHub login lists your repositories…
             </p>
           ) : github.isError ? (
             <InlineAlert
@@ -250,6 +273,7 @@ function ChooseRepository({
           ) : (
             <GithubRepositories
               login={github.data.login ?? "the GitHub account"}
+              ownLogin={ownLogin}
               projects={projects}
               organizationName={organizationName}
               picked={picked}
@@ -274,10 +298,13 @@ function ChooseRepository({
       ) : (
         <section className="flex min-w-0 flex-col gap-2">
           {github.isSuccess && !signedIn ? (
-            <p className="text-row text-pretty text-muted-foreground">
-              The Mend server has no GitHub login, so Mend can't list your repositories. Paste the
-              repository's address.
-            </p>
+            <div className="mb-4 grid gap-1">
+              <p className="text-sm font-medium text-foreground">GitHub account</p>
+              <GithubConnect phone={phone} commandLine />
+              <p className="mt-2 text-row text-pretty text-muted-foreground">
+                Or paste the repository's address.
+              </p>
+            </div>
           ) : null}
           <RepositoryAddressField
             value={address}
@@ -356,8 +383,11 @@ function GithubRepositories({
   picked,
   onPick,
   phone,
+  ownLogin,
 }: {
   readonly login: string;
+  /** The person's own connected GitHub login answers, from a workspace of theirs. */
+  readonly ownLogin: boolean;
   readonly projects: ReadonlyArray<ProjectDto>;
   readonly organizationName: string;
   readonly picked: GithubRepository | null;
@@ -374,6 +404,8 @@ function GithubRepositories({
     return () => clearTimeout(timer);
   }, [search]);
   const listed = useQuery(trpc.github.repos.queryOptions({ query: "" }, { staleTime: 30_000 }));
+  // How long the list has been asked for: from when the list first showed.
+  const [askedAt] = useState(() => new Date());
   const onPage = listed.isSuccess && searchesOnPage(listed.data.length);
   const words = search.trim();
   const found = useQuery({
@@ -384,9 +416,17 @@ function GithubRepositories({
 
   if (listed.isPending)
     return (
-      <p role="status" className="py-2 text-row text-muted-foreground">
-        Reading the repositories {login} can reach…
-      </p>
+      <div role="status" className="grid gap-1 py-2 text-row text-muted-foreground">
+        <p>
+          Asking GitHub for the repositories {login} can reach · {waitedFor(askedAt, now)}
+        </p>
+        {ownLogin ? (
+          <p className="text-pretty">
+            Mend asks from a short-lived workspace that holds your GitHub login. Starting it can
+            take a minute the first time.
+          </p>
+        ) : null}
+      </div>
     );
   if (listed.isError)
     return (

@@ -249,7 +249,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess, signInOf } from "../access.ts";
 import { type AdoptionReporter, Adoptions } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
-import { GithubIdentity } from "../github-identity.ts";
+import { GithubIdentity, HOST_GH_RESERVED } from "../github-identity.ts";
 import { LIVE_STATES } from "../live-states.ts";
 import { listProjectBranches } from "../project-branch-reads.ts";
 import { ProjectCreation } from "../project-creation.ts";
@@ -1294,13 +1294,16 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if (project.originUrl === null) return noPullRequests("none", "no-origin");
         const repo = parseGithubRepo(project.originUrl);
         if (repo === null) return noPullRequests("not-github", "not-github");
+        // This read asks the host's gh only, so a caller's own GitHub login doesn't open it.
         const authority = yield* (yield* GithubIdentity).forCaller();
-        if (authority.kind === "none") {
+        const hostGh =
+          authority.kind === "host-gh" || (authority.kind === "caller" && authority.hostGh);
+        if (!hostGh) {
           return new ProjectPullRequests({
             origin: "github",
             repo,
             availability: "no-identity",
-            detail: authority.detail,
+            detail: authority.kind === "none" ? authority.detail : HOST_GH_RESERVED,
             pullRequests: [],
             fetchedAt: null,
           });

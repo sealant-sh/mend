@@ -325,14 +325,13 @@ function LoginDialog({
           <p className="text-prose text-pretty text-foreground">
             {provider === "github" ? (
               <>
-                On a computer where gh is signed in, sign Mend's command line in to this server
-                once, then run the second command. It sends gh's login to Mend.
+                On a computer where gh is signed in, run the command below. It sends gh's login to
+                Mend.
               </>
             ) : (
               <>
-                On your computer, sign Mend's command line in to this server once, then run the
-                second command. It opens {service}'s sign-in in your browser and passes the login to
-                Mend when you finish.
+                On your computer, run the command below. It opens {service}'s sign-in in your
+                browser and passes the login to Mend when you finish.
               </>
             )}
           </p>
@@ -814,7 +813,7 @@ function ComputerRow({
       description={
         bridge.connected
           ? `${bridge.clientName ?? "Your computer"} is connected. Mend signs with its ssh-agent${bridge.since === null ? "" : `, connected ${whenSince(bridge.since, now)}`}.`
-          : "No computer is connected, so sessions can't fetch or push. On the computer that holds your SSH key, sign Mend's command line in to this server once, then share the key and leave that command running."
+          : "No computer is connected, so sessions can't fetch or push. On the computer that holds your SSH key, share the key and leave that command running."
       }
       note={
         bridge.connected ? null : (

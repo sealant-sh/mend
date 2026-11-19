@@ -38,7 +38,7 @@ export const Route = createFileRoute("/login")({
 });
 
 /** The first account goes on to setup's next step, whatever page sent it here. */
-const setUp = () => window.location.assign(SETUP_PATHS.gitAccess);
+const setUp = () => window.location.assign(SETUP_PATHS.commandLine);
 
 /**
  * Sign-in, or on a server with no account yet, the first account (docs/adr/0003). After the first

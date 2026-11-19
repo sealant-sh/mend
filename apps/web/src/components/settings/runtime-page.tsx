@@ -186,7 +186,7 @@ const DESCRIPTIONS: Readonly<Record<SessionRuntime, (organization: string) => Re
 };
 
 /** The runtimes the server offers, one radio each, as the frame draws them. */
-function RuntimeList({
+export function RuntimeList({
   runtimes,
   selected,
   organization,
@@ -346,7 +346,7 @@ function Standing({
  * the server answered, the moves it offers, and switching without them. Nothing is saved until the
  * owner presses one. A dialog on the desk, a sheet on a phone.
  */
-function SwitchDialog({
+export function SwitchDialog({
   ask,
   pending,
   error,

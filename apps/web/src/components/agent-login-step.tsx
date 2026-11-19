@@ -1,5 +1,6 @@
 import type { SealantIdentity } from "@mend/api-contracts";
 import { InlineAlert } from "@mend/ui/components/banner";
+import { CopyField } from "@mend/ui/components/copy-field";
 import { Button } from "@mend/ui/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@mend/ui/components/ui/tabs";
 import { useSuspenseQuery } from "@tanstack/react-query";
@@ -27,20 +28,23 @@ import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
+import { ApiKeyField, KeyConsoleLink, useApiKeySave } from "./agent-login-panels.tsx";
+import { CommandLineBlock } from "./command-line-block.tsx";
 import {
-  ApiKeyField,
-  ConnectCommands,
-  KeyConsoleLink,
-  useApiKeySave,
-} from "./agent-login-panels.tsx";
-import { SectionTitle, SetupActions, SetupFrame, WorksLine } from "./setup-frame.tsx";
+  SectionTitle,
+  SetupActions,
+  SetupFrame,
+  skippedSteps,
+  useSetupProgress,
+  WorksLine,
+} from "./setup-frame.tsx";
 
 type Mode = "command" | "key";
 
 /**
- * Step 3 of setup: a Claude Code or Codex login for the person's sessions. Mend's app takes no
- * part in a provider's sign-in. The page shows the commands to run on the person's computer
- * (`mend login`, then `mend connect claude|codex`) and waits: the `user` event the server sends
+ * Setup's Agent login step: a Claude Code or Codex login for the person's sessions. Mend's app
+ * takes no part in a provider's sign-in. The page introduces Mend's command line once, above the
+ * agents, and each agent's tab shows its own command (`mend connect claude|codex`), then waits: the `user` event the server sends
  * when a login is connected makes the page read the person's logins again, so it lands without a
  * reload. An API key, pasted here, is the second choice. The step can be skipped.
  */
@@ -55,6 +59,7 @@ export function AgentLoginStep() {
   const identity = useSuspenseQuery(trpc.platform.sealantIdentity.queryOptions()).data;
   const access = useSuspenseQuery(trpc.git.access.queryOptions()).data;
   const accountName = useSuspenseQuery(accountNameOptions()).data;
+  const progress = useSetupProgress();
   const [agent, setAgent] = useState<Agent>(() => initialAgent(identity.accounts));
   const [mode, setMode] = useState<Mode>("command");
   // Only "Use an API key instead" moves focus into the key field; switching agents leaves it on
@@ -62,19 +67,29 @@ export function AgentLoginStep() {
   const [focusKey, setFocusKey] = useState(false);
   const connected = anyAgentConnected(identity.accounts);
   const agentLabel = useId();
-  const onward = () => void navigate({ to: "/welcome/first-project" });
+  // The first account names its organization before its first project.
+  const onward = () =>
+    void navigate({
+      to: progress.steps.includes("organization")
+        ? "/welcome/organization"
+        : "/welcome/first-project",
+    });
 
   return (
     <SetupFrame
       title="Agent login"
-      step={3}
-      saved={{ account: accountName, git: savedModeLine(access.mode) }}
+      step="agent"
+      steps={progress.steps}
+      saved={{ account: accountName, ...progress.saved, git: savedModeLine(access.mode) }}
+      skipped={skippedSteps(progress.skippedCli)}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         Sessions run on your own Claude Code or Codex account. Mend doesn't come with one. Each
         message you send to a session uses your login. You can add the other agent later in
         Settings.
       </p>
+      {/* Mend's command line, once for both agents: each tab holds only its own command. */}
+      {mode === "command" ? <CommandLineBlock phone={phone} className="mt-6" /> : null}
       <Tabs
         value={agent}
         onValueChange={(value) => {
@@ -163,12 +178,15 @@ function RunCommand({
     <>
       <SectionTitle>{`Connect ${facts.name}`}</SectionTitle>
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
-        On a computer with {facts.name} installed, sign Mend's command line in to this server once,
-        then run the second command. It opens {facts.service}'s sign-in in that computer's browser
-        and passes the login to Mend when you finish.
+        On a computer with {facts.name} installed, run this command. It opens {facts.service}'s
+        sign-in in that computer's browser and passes the login to Mend when you finish.
       </p>
       <div className="mt-3">
-        <ConnectCommands command={connectCommand(agent)} phone={phone} />
+        <CopyField
+          value={connectCommand(agent)}
+          label="Copy command"
+          size={phone ? "touch" : "default"}
+        />
       </div>
       <div className="mt-6 grid gap-4 border-t pt-5 lg:pt-6">
         {login.kind === "connected" ? (

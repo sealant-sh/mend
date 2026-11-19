@@ -3,10 +3,13 @@ import { Button } from "@mend/ui/components/ui/button";
 import { type FormEvent, useState } from "react";
 
 import { authClient } from "#/lib/auth-client";
-import { type AuthFailure, authFailureOf, fixFieldsNote } from "#/lib/onboarding";
+import { type AuthFailure, authFailureOf, fixFieldsNote, setupSteps } from "#/lib/onboarding";
 
 import { useAccountFields } from "./account-fields.tsx";
 import { SetupActions, SetupFrame, TOUCH } from "./setup-frame.tsx";
+
+/** The first account names the server's first organization later in setup: six steps. */
+const FIRST_ACCOUNT_STEPS = setupSteps(true);
 
 /** Better Auth opens the session as it creates the account, so the next page is signed in. */
 const signUp = async (form: {
@@ -52,11 +55,11 @@ export function FirstAccountForm({ onCreated }: { readonly onCreated: () => void
   };
 
   return (
-    <SetupFrame title="Create the first account" step={1}>
+    <SetupFrame title="Create the first account" step="account" steps={FIRST_ACCOUNT_STEPS}>
       <p className="text-prose text-pretty text-muted-foreground">
         This server has no accounts yet. Yours is the first, so you become this server's operator,
-        the person who runs it, and the owner of its first organization. Once setup is done, you can
-        name the organization and invite people in Settings.
+        the person who runs it, and the owner of its first organization. You name the organization
+        later in setup.
       </p>
       <form
         aria-label="Create the first account"

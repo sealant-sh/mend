@@ -4,10 +4,11 @@ import { CopyField } from "@mend/ui/components/copy-field";
 import { Button } from "@mend/ui/components/ui/button";
 import { RadioGroup, RadioGroupItem } from "@mend/ui/components/ui/radio-group";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { type ReactNode, useId, useState } from "react";
 
+import { agentLoginState } from "#/lib/agent-login";
 import { accountNameOptions } from "#/lib/auth-client";
 import {
   continueNote,
@@ -20,15 +21,25 @@ import {
   modeInSentence,
   requestFailure,
   SHARE_KEY_COMMAND,
-  signInCommand,
   waitedFor,
   whenSince,
 } from "#/lib/git-access";
 import { usePhone } from "#/lib/phone";
 import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
+import { useWorkbenchEvents } from "#/lib/workbench-events";
 
-import { SectionTitle, SetupActions, SetupFrame, TOUCH, WorksLine } from "./setup-frame.tsx";
+import { CommandLineBlock } from "./command-line-block.tsx";
+import { GithubConnect } from "./github-connect.tsx";
+import {
+  SectionTitle,
+  SetupActions,
+  SetupFrame,
+  TOUCH,
+  skippedSteps,
+  useSetupProgress,
+  WorksLine,
+} from "./setup-frame.tsx";
 
 const DESCRIPTIONS: Readonly<Record<GitAccessMode, ReactNode>> = {
   "mend-key":
@@ -42,10 +53,12 @@ const DESCRIPTIONS: Readonly<Record<GitAccessMode, ReactNode>> = {
 };
 
 /**
- * Step 2 of setup: how Mend reaches the person's repositories. They pick a Mend key (made for them
+ * Setup's Git access step: how Mend reaches the person's repositories. They pick a Mend key (made for them
  * before the page opens, shown to copy into GitHub, then checked against GitHub) or their
  * computer's key (shared by `mend keys share` on that computer). The choice is saved as it is
- * picked; Continue waits until GitHub accepts the key or the computer connects.
+ * picked; Continue waits until GitHub accepts the key or the computer connects. Under it, the
+ * person may connect their own GitHub login, which Mend lists their repositories with; it is
+ * optional, and Continue doesn't wait for it.
  */
 export function GitAccessStep() {
   const trpc = useTRPC();
@@ -55,6 +68,15 @@ export function GitAccessStep() {
   const now = useSecond();
   const access = useSuspenseQuery(gitAccessOptions(trpc)).data;
   const accountName = useSuspenseQuery(accountNameOptions()).data;
+  const progress = useSetupProgress();
+  const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
+  // Until the logins answer, or if they can't, the note about GitHub isn't shown.
+  const githubConnected =
+    identity.isPending || identity.isError
+      ? null
+      : agentLoginState(identity.data.accounts, "github").kind === "connected";
+  // `mend login`, `mend keys share` and `mend connect github` in a terminal land without a reload.
+  useWorkbenchEvents();
 
   const setAccess = useMutation(
     trpc.git.setAccess.mutationOptions({
@@ -83,7 +105,14 @@ export function GitAccessStep() {
   const mode = setAccess.isPending ? setAccess.variables.mode : access.mode;
 
   return (
-    <SetupFrame title="Git access" step={2} saved={{ account: accountName }}>
+    <SetupFrame
+      title="Git access"
+      step="git"
+      steps={progress.steps}
+      saved={{ account: accountName, ...progress.saved }}
+      skipped={skippedSteps(progress.skippedCli)}
+      back={{ to: "/welcome/command-line", label: "Back to Command line" }}
+    >
       <div className="flex flex-col">
         <p className="text-prose text-pretty text-foreground max-lg:text-sm">
           Mend signs in to GitHub to clone your repositories and push branches. Choose how. You can
@@ -128,10 +157,20 @@ export function GitAccessStep() {
         ) : (
           <YourComputer access={access} now={now} phone={phone} />
         )}
+        <SectionTitle>GitHub account</SectionTitle>
+        {/* Mend's command line is introduced once: here, unless "Your computer's key" shows it. */}
+        <GithubConnect phone={phone} commandLine={access.mode !== "bridge"} />
       </div>
       {/* What Continue waits for changes as the page does, so it is announced, and on a phone it
           sits over the button in the pinned bar. */}
-      <SetupActions status={continueNote(access, check)}>
+      <SetupActions
+        note={
+          githubConnected !== false
+            ? undefined
+            : "Without GitHub, you paste a repository's address in the last step."
+        }
+        status={continueNote(access, check)}
+      >
         <Button
           size={phone ? "touch" : "default"}
           disabled={!works || setAccess.isPending}
@@ -325,7 +364,6 @@ function YourComputer({
   readonly now: Date;
   readonly phone: boolean;
 }) {
-  const origin = typeof window === "undefined" ? "" : window.location.origin;
   const bridge = access.bridge;
   // How long the page has waited: from when this section opened, whether by choosing it or by
   // coming back to the page with the mode already chosen.
@@ -333,16 +371,11 @@ function YourComputer({
   return (
     <>
       <SectionTitle>Connect your computer</SectionTitle>
-      <p className="text-prose text-pretty text-foreground max-lg:text-sm">
-        On the computer that holds your SSH key, sign Mend's command line in to this server once.
-        Then share the key and leave that command running.
+      <CommandLineBlock phone={phone} />
+      <p className="mt-4 text-prose text-pretty text-foreground max-lg:text-sm">
+        On the computer that holds your SSH key, share the key and leave this command running.
       </p>
-      <div className="mt-3 grid gap-2">
-        <CopyField
-          value={signInCommand(origin)}
-          label="Copy command"
-          size={phone ? "touch" : "default"}
-        />
+      <div className="mt-3">
         <CopyField
           value={SHARE_KEY_COMMAND}
           label="Copy command"

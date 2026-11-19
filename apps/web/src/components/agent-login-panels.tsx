@@ -2,11 +2,13 @@ import { InlineAlert } from "@mend/ui/components/banner";
 import { CopyField } from "@mend/ui/components/copy-field";
 import { Input } from "@mend/ui/components/ui/input";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { type ClipboardEvent, type ReactNode, useId, useState, useSyncExternalStore } from "react";
+import { type ClipboardEvent, type ReactNode, useId, useState } from "react";
 
 import { AGENT_FACTS, type Agent, keyProblem, rejectedAdvice } from "#/lib/agent-login";
-import { requestFailure, signInCommand, waitedFor } from "#/lib/git-access";
+import { requestFailure, waitedFor } from "#/lib/git-access";
 import { useTRPC } from "#/lib/trpc";
+
+import { CommandLineBlock } from "./command-line-block.tsx";
 
 /**
  * The parts of connecting an agent login that the Agent login setup step and Settings → Agent
@@ -14,19 +16,9 @@ import { useTRPC } from "#/lib/trpc";
  * Mend's app takes no part in a provider's sign-in (Yiannis, 17 Nov 2026).
  */
 
-const noChange = () => () => {};
-
-/** This server's address as the browser reached it, for `mend login --url`. */
-export const useOrigin = (): string =>
-  useSyncExternalStore(
-    noChange,
-    () => window.location.origin,
-    () => "",
-  );
-
 /**
- * The commands, each with Copy: sign Mend's command line in to this server, then the command
- * that connects the login (`mend connect claude`, `mend connect github`).
+ * The command that connects a login (`mend connect claude`, `mend connect github`), after Mend's
+ * command line block: how to install it and sign it in, or the computer it is signed in on.
  */
 export function ConnectCommands({
   command,
@@ -35,14 +27,9 @@ export function ConnectCommands({
   readonly command: string;
   readonly phone: boolean;
 }) {
-  const origin = useOrigin();
   return (
-    <div className="grid gap-2">
-      <CopyField
-        value={signInCommand(origin)}
-        label="Copy command"
-        size={phone ? "touch" : "default"}
-      />
+    <div className="grid gap-4">
+      <CommandLineBlock phone={phone} />
       <CopyField value={command} label="Copy command" size={phone ? "touch" : "default"} />
     </div>
   );
