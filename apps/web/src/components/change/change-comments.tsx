@@ -551,6 +551,18 @@ export function useChangeComments({
           }}
         />
       )}
+      {/* A comment on the whole file (Mend drafts these) has no line: it sits under the header. */}
+      {all
+        .filter((comment) => comment.file === file.path && comment.line === null && shown(comment))
+        .map((comment) => (
+          <ReviewComment
+            key={comment.id}
+            comment={comment}
+            place="line"
+            touch={touch}
+            narrow={narrow}
+          />
+        ))}
       {also}
     </>
   );
