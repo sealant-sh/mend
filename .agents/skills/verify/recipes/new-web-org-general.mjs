@@ -15,7 +15,8 @@
 //   by the stack's API; that person's own page as a member (their sign-in is moved into this
 //   page for the picture, then the owner's is put back); the Leave row on a stack whose people
 //   each have one organization (no Leave button, and why); a read that fails, and Try again.
-// - Rewritten in the page: a second organization in the person's list (a stack runs one), which
+// - Rewritten in the page: a taken name (a stack has no other organization to take it), and a
+//   second organization in the person's list (a stack runs one), which
 //   is what offers Leave. The dialog's words, and the server's own refusal when Leave is pressed,
 //   are real.
 //
@@ -165,6 +166,38 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await text("An organization needs a name.").waitFor();
   note("an empty name is refused beside the field, before anything is sent");
   await shot("general-name-empty-desktop-light");
+  // A stack runs one organization, so no name is taken: the server's 409 is written into the
+  // page's answer, as the API sends it (organization.test.ts proves the server's side).
+  const taken = `There's already an organization called ${OTHER.name}. Pick another name.`;
+  await page.route("**/trpc/**", async (route) => {
+    if (!pathsOf(route.request()).includes("organization.rename")) return route.continue();
+    await route.fulfill({
+      status: 409,
+      contentType: "application/json",
+      body: JSON.stringify([
+        {
+          error: {
+            json: {
+              message: taken,
+              code: -32009,
+              data: {
+                code: "CONFLICT",
+                httpStatus: 409,
+                path: "organization.rename",
+                tag: "OrganizationNameTaken",
+              },
+            },
+          },
+        },
+      ]),
+    });
+  });
+  await nameField().fill(OTHER.name);
+  await button("Save").click();
+  await text(taken).waitFor();
+  note("a taken name (rewritten answer) is refused beside the field in the server's words");
+  await shot("general-name-taken-desktop-light");
+  await page.unroute("**/trpc/**");
   await nameField().fill(renamed);
   await button("Save").click();
   await visible(
