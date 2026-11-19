@@ -416,6 +416,27 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.[server].tsx`, `apps/web/src/lib/server-settings.ts`,
   `apps/web/src/server/routers/operator.ts`
 
+### organization.new-web-folders
+
+- **Map:** references-folders.md `folder-web`, `ref-refresh-remove`
+- **Needs:** no session; no turn; web; GitHub reachable from the server, for a reference's clone
+- **Do:** Drive the recipe `new-web-settings-folders`: Folders and references under "Everyone in
+  <organization>" lists the organization's folders with their file count, size and when they were
+  added, and its references with their repository, ref and when they were fetched; an owner makes a
+  folder (a name the server refuses is said under the field), uploads files, shows and deletes one,
+  renames the folder (a name another folder has is refused; the Audit log records it), adds a
+  reference and fetches it again, deletes the folder (a refusal while a project picks it is said in
+  the dialog) and removes the reference; a member reads both lists with no button that changes them;
+  a failed read shows Try again.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the folder and the
+  reference the recipe made are gone afterwards.
+- **Mode:** `scripted` (recipes/new-web-settings-folders.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/folders-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.folders.tsx`,
+  `apps/web/src/lib/organization-folders.ts`, `apps/api/src/routes/folders.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`

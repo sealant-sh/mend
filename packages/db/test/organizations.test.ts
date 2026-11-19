@@ -719,6 +719,19 @@ describe.skipIf(postgres.skip)("organizations", () => {
             createdByUserId: "alice",
           })
           .pipe(Effect.flip);
+        const notes = yield* folders.create({
+          id: FolderId.make("folder-notes"),
+          organizationId: acme,
+          name: "notes",
+          path: "/store/_organizations/acme/folders/folder-notes",
+          createdByUserId: "alice",
+        });
+        const renamed = yield* folders.rename(notes.id, "runbooks");
+        const renameClash = yield* folders.rename(notes.id, "docs").pipe(Effect.flip);
+        const renameMissing = yield* folders
+          .rename(FolderId.make("folder-missing"), "anything")
+          .pipe(Effect.flip);
+        yield* folders.remove(notes.id);
         yield* folders.setForProject(ProjectId.make("p-acme-api"), [
           { folderId: docs.id, name: "docs", readOnly: true },
         ]);
@@ -731,6 +744,9 @@ describe.skipIf(postgres.skip)("organizations", () => {
         const [row] = yield* sql<{ readonly count: number }>`
           SELECT count(*)::int AS count FROM project_folders`;
         return {
+          renamed: [renamed.id, renamed.name, renamed.path],
+          renameClash: renameClash._tag,
+          renameMissing: renameMissing._tag,
           clash: clash._tag,
           selected: selected.map((entry) => [entry.folder.name, entry.selection.readOnly]),
           inUse: inUse._tag === "FolderInUseError" ? inUse.projects : null,
@@ -741,6 +757,9 @@ describe.skipIf(postgres.skip)("organizations", () => {
       }),
     );
     expect(result).toEqual({
+      renamed: ["folder-notes", "runbooks", "/store/_organizations/acme/folders/folder-notes"],
+      renameClash: "FolderNameTakenError",
+      renameMissing: "FolderNotFoundError",
       clash: "FolderNameTakenError",
       selected: [["docs", true]],
       inUse: 1,

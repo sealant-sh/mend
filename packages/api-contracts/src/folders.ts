@@ -25,6 +25,11 @@ export class CreateFolderRequest extends Schema.Class<CreateFolderRequest>("Crea
   name: Schema.String,
 }) {}
 
+/** A folder's new name: the same rules as creating one. */
+export class RenameFolderRequest extends Schema.Class<RenameFolderRequest>("RenameFolderRequest")({
+  name: Schema.String,
+}) {}
+
 export class FolderUploadFile extends Schema.Class<FolderUploadFile>("FolderUploadFile")({
   /** Folder-relative, forward slashes. */
   path: Schema.String,
@@ -68,6 +73,15 @@ export const foldersGroup = HttpApiGroup.make("folders")
   .add(
     HttpApiEndpoint.post("create", "/organization/folders", {
       payload: CreateFolderRequest,
+      success: Folder,
+      error: [NotFound, FolderRejected],
+    }),
+  )
+  .add(
+    // Owners only. The folder's files stay where they are; projects keep the mount names they chose.
+    HttpApiEndpoint.put("rename", "/organization/folders/:id/name", {
+      params: { id: FolderId },
+      payload: RenameFolderRequest,
       success: Folder,
       error: [NotFound, FolderRejected],
     }),

@@ -1,4 +1,9 @@
-import { CreateFolderRequest, FolderUploadFile, FolderUploadRequest } from "@mend/api-contracts";
+import {
+  CreateFolderRequest,
+  FolderUploadFile,
+  FolderUploadRequest,
+  RenameFolderRequest,
+} from "@mend/api-contracts";
 import { FolderId } from "@mend/domain";
 import { Schema } from "effect";
 
@@ -11,6 +16,16 @@ export const foldersRouter = router({
   create: procedure
     .input(input(CreateFolderRequest))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.folders.create({ payload }))),
+  rename: procedure
+    .input(input(Schema.Struct({ id: FolderId, name: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.folders.rename({
+          params: { id: i.id },
+          payload: new RenameFolderRequest({ name: i.name }),
+        }),
+      ),
+    ),
   remove: procedure
     .input(input(Schema.Struct({ id: FolderId })))
     .mutation(({ ctx, input: i }) =>
