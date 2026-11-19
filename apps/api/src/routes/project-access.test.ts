@@ -563,6 +563,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   fixed("owner", "POST", "/api/organization/folders", "folders", { name: "notes" })(
     "folders.create",
   ),
+  fixed("other-owner", "PUT", `/api/organization/folders/${FOLDER_A}/name`, FOLDER_A, {
+    name: "notes",
+  })("folders.rename"),
   fixed(
     "other-owner",
     "DELETE",
@@ -1168,6 +1171,7 @@ const ADMITTED: Readonly<
   "references.forProject": { status: 500, calls: ["references.listForProject"] },
   "references.selectForProject": { status: 500, calls: ["references.setForProject"] },
   "folders.create": { status: 500, calls: ["folderStore.create"] },
+  "folders.rename": { status: 500, calls: ["folders.rename"] },
   "folders.remove": { status: 500, calls: ["folders.remove"] },
   "folders.files": { status: 500, calls: ["folderStore.list"] },
   "folders.upload": { status: 500, calls: ["folderStore.write"] },
@@ -2293,6 +2297,40 @@ describe("folders belong to their organization", () => {
     expect({ status: response.status, id: idOf(response.body), calls: api.world.calls }).toEqual({
       status: 404,
       id: FOLDER_B,
+      calls: [],
+    });
+  });
+});
+
+describe("a folder's new name", () => {
+  it("follows the rules creating one has, before any write", async () => {
+    const response = await send("alice", {
+      method: "PUT",
+      path: `/api/organization/folders/${FOLDER_A}/name`,
+      id: FOLDER_A,
+      body: { name: "Release Notes" },
+    });
+    expect({ status: response.status, body: response.body, calls: api.world.calls }).toEqual({
+      status: 422,
+      body: {
+        _tag: "FolderRejected",
+        message:
+          '"Release Notes" is not a usable folder name (lowercase letters, digits, ".", "_", "-").',
+      },
+      calls: [],
+    });
+  });
+
+  it("is the folder itself when the name is unchanged, with nothing written", async () => {
+    const response = await send("alice", {
+      method: "PUT",
+      path: `/api/organization/folders/${FOLDER_A}/name`,
+      id: FOLDER_A,
+      body: { name: "docs-a" },
+    });
+    expect({ status: response.status, id: idOf(response.body), calls: api.world.calls }).toEqual({
+      status: 200,
+      id: FOLDER_A,
       calls: [],
     });
   });

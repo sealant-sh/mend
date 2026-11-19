@@ -111,6 +111,8 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `took over project ${event.subjectId}`;
     case "folder.created":
       return `created folder ${name ?? event.subjectId}`;
+    case "folder.renamed":
+      return `renamed folder ${text(event.data["from"]) ?? event.subjectId} to ${name ?? event.subjectId}`;
     case "folder.removed":
       return `removed folder ${name ?? event.subjectId}`;
     case "reference.added":

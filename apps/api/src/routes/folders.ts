@@ -112,6 +112,34 @@ export const FoldersGroupLive = HttpApiBuilder.group(MendApi, "folders", (handle
         return created;
       }),
     )
+    .handle("rename", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const folder = yield* reachableFolder(params.id, true);
+        const issue = nameIssue(payload.name, "folder");
+        if (issue !== null) return yield* issue;
+        if (payload.name === folder.name) return folder;
+        const renamed = yield* (yield* FoldersRepo).rename(folder.id, payload.name).pipe(
+          Effect.catchTags({
+            FolderNameTakenError: () =>
+              Effect.fail(
+                new FolderRejected({
+                  message: `A folder named "${payload.name}" already exists.`,
+                }),
+              ),
+            FolderNotFoundError: () => Effect.fail(new NotFound({ id: folder.id })),
+          }),
+        );
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: folder.organizationId,
+          actorUserId: (yield* CurrentUser).user.id,
+          action: "folder.renamed",
+          subjectType: "folder",
+          subjectId: folder.id,
+          data: { name: renamed.name, from: folder.name },
+        });
+        return renamed;
+      }),
+    )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
         const folder = yield* reachableFolder(params.id, true);

@@ -27,6 +27,8 @@ export const AuditAction = Schema.Literals([
   // same step as choosing it (SLNT-796).
   "project.environment_moved",
   "folder.created",
+  // `data.name` is the new name, `data.from` the old one.
+  "folder.renamed",
   "folder.removed",
   "reference.added",
   "reference.removed",

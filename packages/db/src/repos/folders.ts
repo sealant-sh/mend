@@ -50,6 +50,14 @@ export class FoldersRepo extends Context.Service<
     readonly listForOrganization: (
       organizationId: OrganizationId,
     ) => Effect.Effect<ReadonlyArray<Folder>>;
+    /**
+     * Give the folder another name. Its directory is named by its id, so nothing on disk moves, and
+     * a project keeps the mount name it chose.
+     */
+    readonly rename: (
+      id: FolderId,
+      name: string,
+    ) => Effect.Effect<Folder, FolderNameTakenError | FolderNotFoundError>;
     readonly remove: (id: FolderId) => Effect.Effect<void, FolderInUseError>;
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<SelectedFolder>>;
     /** Replace the project's selection wholesale; the caller has checked the folders' organization. */
@@ -110,6 +118,23 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
       return rows.map(toFolder);
     });
 
+    const rename = Effect.fn("FoldersRepo.rename")(function* (id: FolderId, name: string) {
+      const [row] = yield* db
+        .update(folders)
+        .set({ name, updatedAt: new Date() })
+        .where(eq(folders.id, id))
+        .returning()
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", (error) =>
+            isUniqueViolation(error)
+              ? Effect.fail(new FolderNameTakenError({ name }))
+              : Effect.die(error),
+          ),
+        );
+      if (row === undefined) return yield* new FolderNotFoundError({ folderId: id });
+      return toFolder(row);
+    });
+
     const remove = Effect.fn("FoldersRepo.remove")(function* (id: FolderId) {
       const [usage] = yield* db
         .select({ projects: count() })
@@ -165,6 +190,6 @@ export const FoldersRepoLive: Layer.Layer<FoldersRepo, never, MendDB> = Layer.ef
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));
     });
 
-    return { create, byId, listForOrganization, remove, listForProject, setForProject };
+    return { create, byId, listForOrganization, rename, remove, listForProject, setForProject };
   }),
 );

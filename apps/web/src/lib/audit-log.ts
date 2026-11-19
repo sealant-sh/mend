@@ -181,6 +181,8 @@ export const describeAudit = (entry: AuditEntryView, names: AuditNames): string 
       return `Moved ${project} from the image ${text(event.data["from"]) ?? "?"} to ${text(event.data["to"]) ?? "?"}, which ${text(event.data["runtime"]) ?? "its new runtime"} runs`;
     case "folder.created":
       return `Created the folder ${name ?? event.subjectId}`;
+    case "folder.renamed":
+      return `Renamed the folder ${text(event.data["from"]) ?? "?"} to ${name ?? event.subjectId}`;
     case "folder.removed":
       return `Removed the folder ${name ?? event.subjectId}`;
     case "reference.added":

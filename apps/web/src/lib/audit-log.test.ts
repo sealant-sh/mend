@@ -149,6 +149,15 @@ describe("what each event says", () => {
     ).toBe("Set where new sessions run to Boat");
   });
 
+  it("says what happened to a folder", () => {
+    expect(
+      describeAudit(
+        entry("folder.renamed", { name: "runbooks", from: "notes" }, { subjectType: "folder" }),
+        names,
+      ),
+    ).toBe("Renamed the folder notes to runbooks");
+  });
+
   it("still says something for an action a newer server added", () => {
     expect(
       describeAudit(
