@@ -10,9 +10,8 @@ import { SidebarToggle } from "../app-sidebar.tsx";
  * buttons on the right, such as "Open in VS Code". No status word: a session's status is on its
  * tab.
  *
- * It starts with the sidebar's toggle, which folds the sidebar to its rail. Still to come, each in
- * its own PR: the layout button (PR 16, before `actions`) and the workspace's "…" menu (PR 13,
- * after them).
+ * It starts with the sidebar's toggle, which folds the sidebar to its rail. `actions` holds, in
+ * order, the layout button, Open in VS Code and the workspace's "…" menu.
  */
 export function WorkspaceHeader({
   project,

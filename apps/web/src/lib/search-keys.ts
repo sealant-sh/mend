@@ -27,7 +27,7 @@ export const opensSearch = (press: KeyPress, mac: boolean): boolean => {
   return !(target instanceof Element && target.closest(`[${OWN_SHORTCUTS}]`) !== null);
 };
 
-const isMac = (): boolean => /Macintosh|Mac OS X|iPhone|iPad/.test(navigator.userAgent);
+export const isMac = (): boolean => /Macintosh|Mac OS X|iPhone|iPad/.test(navigator.userAgent);
 
 const never = () => () => undefined;
 

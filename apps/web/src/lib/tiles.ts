@@ -124,7 +124,7 @@ const mapTiles = (node: TileNode, change: (tile: TileLeaf) => TileNode | null): 
 };
 
 /** A split whose child splits run its own way takes their children in, sizes scaled. */
-const flatten = (node: TileNode): TileNode => {
+export const flatten = (node: TileNode): TileNode => {
   if (node.kind === "tile") return node;
   const children: Array<TileNode> = [];
   const sizes: Array<number> = [];
