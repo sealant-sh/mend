@@ -355,7 +355,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await onlyOwner.getByText("You can't leave yet.").waitFor();
     note("as the only owner, the row says so and the dialog says to make someone else an owner");
     await shot("general-leave-only-owner-desktop-light");
-    await onlyOwner.getByRole("button", { name: "Close" }).click();
+    await page.keyboard.press("Escape");
+    await onlyOwner.waitFor({ state: "hidden" });
     await page.unroute("**/trpc/**");
   } finally {
     if (memberId !== null) {
