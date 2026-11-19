@@ -39,6 +39,13 @@ const liveScreen = (owner, life) => ({
 });
 
 export default async ({ page, web, capture: captureOnce, note }) => {
+  /** The view drawn after the read it shows, with no spinner left in it. */
+  const settledScreen = () =>
+    page.evaluate(() =>
+      window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
+        queryKey: [["screens"]],
+      }),
+    );
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
   const settled = () => page.waitForTimeout(500);
   const capture = async (name) => {
@@ -132,7 +139,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
   const body = visible(page.locator(`[data-tab-body="${VIEW}"]`));
   await body.getByText(/Reading the screen/).waitFor({ state: "hidden", timeout: 30_000 });
-  const real = await client(async (trpc, session) => trpc.screens.read.query({ id: session }), id);
+  // A screen starts with its session: wait up to four minutes for it to go live.
+  let real = null;
+  for (let tries = 0; tries < 48; tries += 1) {
+    real = await client(async (trpc, session) => trpc.screens.read.query({ id: session }), id);
+    if (real?._tag !== "Screen" || !["NotStarted", "Starting"].includes(real.life._tag)) break;
+    await page.waitForTimeout(5_000);
+  }
+  await settledScreen();
   note(`screens.read answers ${JSON.stringify(real)}`);
   note(`the real Screen view reads ${JSON.stringify(await textOf(body))}`);
   note(`its accessibility tree:\n${await body.ariaSnapshot()}`);
@@ -265,6 +279,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await capture("fixture-screen-did-not-start-light");
   await show("stopped", "The screen stopped with the session.");
   await capture("fixture-screen-stopped-light");
+  // The viewer can't reach the screen: its WebRTC offer fails and its socket closes at once.
+  await page.route("**/api/sessions/*/screen/rtc", (route) => route.fulfill({ status: 503 }));
+  await page.routeWebSocket(/\/api\/screen-socket/, (socket) =>
+    socket.close({ code: 1011, reason: "fixture" }),
+  );
   state = "unreachable";
   await reread();
   await visible(body.getByText("Mend couldn't reach the screen.")).waitFor({ timeout: 60_000 });
