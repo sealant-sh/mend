@@ -16,7 +16,9 @@
 //   only read the page; a read that fails, for the error screen and Try again.
 //
 // Secret values are the published fakes in `scripts/fakes.mjs`, typed with `typeSecret`, and no
-// picture is taken while a password field holds one. The recipe removes the project it made.
+// picture is taken while a password field holds one. The secret kept on the page is SENTRY_DSN (the
+// frame's): the evidence scrubber reads a button named "Replace <…_TOKEN>" as a token and value,
+// and withholds the picture. The recipe removes the project it made.
 import { FAKES } from "../scripts/fakes.mjs";
 
 const DESKTOP = { width: 1280, height: 900 };
@@ -170,12 +172,12 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     // The driver withholds a picture of a dialog whose fields look like a credential: take it empty.
     await add.getByLabel("Name", { exact: true }).waitFor();
     await shot("project-secrets-add-secret-desktop-light");
-    await add.getByLabel("Name", { exact: true }).fill("VERIFY_API_TOKEN");
+    await add.getByLabel("Name", { exact: true }).fill("SENTRY_DSN");
     await typeSecret(add.getByLabel("Value", { exact: true }), "project-secret", FAKES.github);
     await add.getByRole("button", { name: "Add secret", exact: true }).click();
     await closed("Add secret");
-    await toastSays("Added VERIFY_API_TOKEN.");
-    await secrets().getByText("VERIFY_API_TOKEN", { exact: true }).waitFor();
+    await toastSays("Added SENTRY_DSN.");
+    await secrets().getByText("SENTRY_DSN", { exact: true }).waitFor();
     const listed = await call("environment.secrets", { projectId: project.id });
     expect(
       "the secret's value never comes back",
@@ -185,12 +187,12 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     const html = await page.content();
     expect("nor is it in the page", !html.includes(FAKES.github), "");
     note(
-      "env-secrets: added VERIFY_API_TOKEN; the secrets read and the page hold its name, never its value",
+      "env-secrets: added SENTRY_DSN; the secrets read and the page hold its name, never its value",
     );
     await shot("project-secrets-secret-added-desktop-light");
 
-    await button("Replace VERIFY_API_TOKEN").click();
-    const replace = dialog("Replace VERIFY_API_TOKEN");
+    await button("Replace SENTRY_DSN").click();
+    const replace = dialog("Replace SENTRY_DSN");
     await replace.getByText("You won't be able to see it again after you save.").waitFor();
     await shot("project-secrets-replace-desktop-light");
     await typeSecret(
@@ -199,9 +201,9 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       FAKES.boatKey,
     );
     await replace.getByRole("button", { name: "Replace secret", exact: true }).click();
-    await toastSays("Replaced VERIFY_API_TOKEN.");
-    await closed("Replace VERIFY_API_TOKEN");
-    note("env-secrets: Replace VERIFY_API_TOKEN saved a new value");
+    await toastSays("Replaced SENTRY_DSN.");
+    await closed("Replace SENTRY_DSN");
+    note("env-secrets: Replace SENTRY_DSN saved a new value");
 
     // --- env-import, env-composer, env-routing -------------------------------------------------------
     await button("Import .env file…").click();
@@ -307,7 +309,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       await shot(`project-secrets-phone-${theme}`);
     }
     await paint("light");
-    await visible(page.getByRole("button", { name: "VERIFY_API_TOKEN actions" })).click();
+    await visible(page.getByRole("button", { name: "SENTRY_DSN actions" })).click();
     await visible(page.getByRole("menuitem", { name: "Replace…" })).waitFor();
     note('on a phone each row\'s "…" holds its actions');
     await shot("project-secrets-row-menu-phone-light");
