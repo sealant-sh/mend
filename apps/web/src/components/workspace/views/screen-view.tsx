@@ -297,7 +297,7 @@ function LiveScreen({
   return (
     <div
       ref={panel}
-      className="flex min-h-0 flex-1 flex-col bg-background"
+      className="flex shrink-0 flex-col bg-background"
       // Escape leaves full screen even while the screen takes the keys.
       onKeyDownCapture={(event) => {
         if (event.key !== "Escape" || document.fullscreenElement !== event.currentTarget) return;
@@ -361,10 +361,15 @@ function LiveScreen({
       <Stage>
         <div
           className={cn(
-            "relative w-full overflow-hidden rounded-md bg-zinc-800",
+            "relative mx-auto w-full overflow-hidden rounded-md bg-zinc-800",
             held && "ring-2 ring-primary",
           )}
-          style={{ aspectRatio: `${screen.width} / ${screen.height}` }}
+          // As wide as the tile allows, and never taller than the window less the bar: the log
+          // sits under it, and full screen shows all of it.
+          style={{
+            aspectRatio: `${screen.width} / ${screen.height}`,
+            maxWidth: `calc((100dvh - 9rem) * ${screen.width} / ${screen.height})`,
+          }}
         >
           {live && wire._tag !== "Closed" ? (
             <div
