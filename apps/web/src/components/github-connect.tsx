@@ -62,7 +62,9 @@ export function GithubConnect({
         </p>
       ) : null}
       {commandLine ? <CommandLineBlock phone={phone} className="border-y py-4" /> : null}
-      {identity.isError ? (
+      {again !== null ? (
+        <GithubConnectAgain login={again.login} phone={phone} />
+      ) : identity.isError ? (
         <InlineAlert
           tone="warning"
           title="Mend couldn't read your logins."
@@ -70,8 +72,6 @@ export function GithubConnect({
         >
           The page shows your GitHub login once Mend can read it again.
         </InlineAlert>
-      ) : again !== null ? (
-        <GithubConnectAgain login={again.login} phone={phone} />
       ) : login?.kind === "connected" ? (
         <WorksLine
           line={githubConnectedLine(login.account)}

@@ -42,22 +42,24 @@ const dependencies = Layer.mergeAll(
 const runAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(admin), Effect.scoped));
 
+/** A GitHub login as the platform records one on connect. */
+const account = (userId: string, input: ConnectAccountInput) =>
+  new ConnectedAccount({
+    id: `cacc_${userId}_${input.provider}`,
+    provider: input.provider,
+    name: "default",
+    kind: "gh-cli-token",
+    status: "active",
+    metadata: { login: "linus-p" },
+    connectedAt: new Date("2026-11-19T10:00:00.000Z"),
+    updatedAt: new Date("2026-11-19T10:00:00.000Z"),
+    lastUsedAt: null,
+    isDefault: true,
+  });
+
 /** The platform's side: each person's connected accounts, as Sealant would keep them. */
 const platform = () => {
   const accounts = new Map<string, Array<ConnectedAccount>>();
-  const account = (userId: string, input: ConnectAccountInput) =>
-    new ConnectedAccount({
-      id: `cacc_${userId}_${input.provider}`,
-      provider: input.provider,
-      name: "default",
-      kind: "gh-cli-token",
-      status: "active",
-      metadata: { login: "linus-p" },
-      connectedAt: new Date("2026-11-19T10:00:00.000Z"),
-      updatedAt: new Date("2026-11-19T10:00:00.000Z"),
-      lastUsedAt: null,
-      isDefault: true,
-    });
   const connectedAccounts: SealantClients["Service"]["connectedAccounts"] = (userId) => ({
     list: () => Effect.sync(() => accounts.get(userId) ?? []),
     connect: (input) =>
@@ -74,7 +76,7 @@ const platform = () => {
         return Effect.succeed(found);
       }),
   });
-  return { accounts, connectedAccounts, account };
+  return { accounts, connectedAccounts };
 };
 
 describe.skipIf(postgres.skip)(

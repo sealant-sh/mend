@@ -33,24 +33,24 @@ export class GithubApi extends Context.Service<
   {
     /** The account the token belongs to (`GET /user`). */
     readonly user: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
     ) => Effect.Effect<{ readonly login: string }, GithubApiFailure>;
     /** Every organization the login belongs to (`GET /user/orgs`, all pages), by name. */
     readonly organizations: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
     ) => Effect.Effect<ReadonlyArray<string>, GithubApiFailure>;
     /** What the login owns, most recently pushed first. */
     readonly ownRepositories: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
     ) => Effect.Effect<ReadonlyArray<GhRepoView>, GithubApiFailure>;
     /** What the login can see in one organization, most recently pushed first. */
     readonly organizationRepositories: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
       organization: string,
     ) => Effect.Effect<ReadonlyArray<GhRepoView>, GithubApiFailure>;
     /** Repositories matching `words` within one owner. */
     readonly search: (
-      token: Redacted.Redacted<string>,
+      token: Redacted.Redacted,
       owner: SearchOwner,
       words: string,
     ) => Effect.Effect<ReadonlyArray<GhRepoView>, GithubApiFailure>;
@@ -134,7 +134,7 @@ export const makeGithubApi = (baseUrl: URL): GithubApi["Service"] => {
 
   /** One GET as the login: `asked` names the call in every sentence a failure becomes. */
   const get = (
-    token: Redacted.Redacted<string>,
+    token: Redacted.Redacted,
     address: URL,
     asked: string,
   ): Effect.Effect<Answer, GithubApiFailure> =>
@@ -216,7 +216,7 @@ export const makeGithubApi = (baseUrl: URL): GithubApi["Service"] => {
     return address;
   };
 
-  const repositories = (token: Redacted.Redacted<string>, address: URL, asked: string) =>
+  const repositories = (token: Redacted.Redacted, address: URL, asked: string) =>
     get(token, address, asked).pipe(
       Effect.flatMap((answer) => decode(GithubRepositories, answer.body, asked)),
       Effect.map((items) => items.slice(0, REPOSITORY_LIMIT).map(repositoryView)),

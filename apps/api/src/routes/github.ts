@@ -326,7 +326,7 @@ type ListAuthority =
       readonly kind: "own";
       readonly userId: string;
       readonly held: HeldGithubLogin;
-      readonly token: Redacted.Redacted<string>;
+      readonly token: Redacted.Redacted;
     }
   | { readonly kind: "host-gh" }
   | {
