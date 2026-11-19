@@ -233,8 +233,17 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         /^Everyone in .* can see its sessions and start their own\. Making it private/,
       ),
     ).waitFor();
-    const shared = await call("projects.detail", { id: project.id });
-    expect("shared on the server", shared.project.visibility === "shared", shared.project);
+    // The line changes while the save is in flight: wait for the server's answer.
+    let shared = await call("projects.detail", { id: project.id });
+    for (let tries = 0; tries < 20 && shared.project.visibility !== "shared"; tries += 1) {
+      await page.waitForTimeout(500);
+      shared = await call("projects.detail", { id: project.id });
+    }
+    expect(
+      "shared on the server",
+      shared.project.visibility === "shared",
+      shared.project.visibility,
+    );
     note(`settings-visibility: Everyone in ${organization} saved (the server reads shared)`);
     await shot("project-general-shared-desktop-light");
 
