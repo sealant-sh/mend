@@ -54,13 +54,14 @@ import {
   stateWords,
   toolbarNoteWords,
 } from "#/lib/review-comments";
+import { answerNoteWords, placedLines, unsentReplies } from "#/lib/review-range";
 import { harnessName } from "#/lib/session-view";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { uuidV4 } from "#/lib/uuid";
 
 import type { LinePicking } from "./change-diffs.tsx";
-import { CommentComposer, ReviewComment } from "./review-comment.tsx";
+import { CommentComposer, type ReplyBox, ReviewComment } from "./review-comment.tsx";
 import { type ChosenSend, SendDialog } from "./send-dialog.tsx";
 
 /** What a comment puts between a file's lines: a saved comment, or the box writing a new one. */
@@ -282,10 +283,23 @@ export interface ChangeComments {
   readonly unsent: number;
 }
 
-/** How the view lets the comments move it: show a file (and a target under it), or the top. */
+/**
+ * How the view lets the comments move it: show a file (and a target under it), or the top; and
+ * review the edit the agent made at a checkpoint (Second look's "Show the edit").
+ */
 export interface CommentMoves {
   readonly show: (path: string | null, target?: string) => void;
+  readonly showEdit?: (checkpointId: string) => void;
 }
+
+/** "1 reply", "2 comments", "2 comments and 1 reply": what Send sends. */
+const sendCountWords = (comments: number, replies: number): string =>
+  [
+    comments === 0 ? null : countWords(comments, "comment", "comments"),
+    replies === 0 ? null : countWords(replies, "reply", "replies"),
+  ]
+    .filter((part) => part !== null)
+    .join(" and ");
 
 /**
  * Comments on a change and sending them to the agent (Doop page 4, "Mend's draft", "Send
@@ -346,6 +360,19 @@ export function useChangeComments({
 
   const all = comments.isSuccess ? comments.data : [];
   const groups = commentGroups(all);
+  // A reply goes with the next send, like a comment, and tells the agent which comment it answers.
+  const replies = unsentReplies(all);
+  const repliesToSend: ReadonlyArray<ReviewCommentDto> = replies.map((reply) => {
+    const parent = all.find((comment) => comment.id === reply.parentId);
+    return {
+      ...reply,
+      body:
+        parent === undefined
+          ? reply.body
+          : `Reply to the earlier comment "${plainLine(parent.body).slice(0, 120)}": ${reply.body}`,
+    };
+  });
+  const unsent: ReadonlyArray<ReviewCommentDto> = [...groups.unsent, ...repliesToSend];
   // Until the server says where a send stands, or if it can't, the view shows none.
   const active = followUp.isPending || followUp.isError ? null : followUp.data;
   const delivery = deliveryOf(active, changeId, failure);
@@ -416,11 +443,8 @@ export function useChangeComments({
     });
   const sendAll = () =>
     sendComments({
-      comments: groups.unsent,
-      instruction: assembleInstruction(
-        detail.change?.branch ?? detail.session.branch,
-        groups.unsent,
-      ),
+      comments: unsent,
+      instruction: assembleInstruction(detail.change?.branch ?? detail.session.branch, unsent),
     });
   // Try again sends the same words under the same key, so a send that did arrive is never doubled.
   const retry = () => {
@@ -450,17 +474,22 @@ export function useChangeComments({
 
   // Dismissed comments and drafts stay out of the way until the person asks to see them.
   const shown = (comment: ReviewCommentDto) => comment.state !== "dismissed" || showDismissed;
-  const inLines = (comment: ReviewCommentDto) =>
-    comment.file !== null && comment.line !== null && shown(comment);
   const annotations = (file: ChangeFile): ReadonlyArray<DiffLineAnnotation<CommentMark>> => {
-    const marks: Array<DiffLineAnnotation<CommentMark>> = all
-      .filter((comment) => comment.file === file.path && inLines(comment))
-      .map((comment) => ({
-        side: "additions",
+    const marks: Array<DiffLineAnnotation<CommentMark>> = all.flatMap(
+      (comment): ReadonlyArray<DiffLineAnnotation<CommentMark>> => {
+        // Where it sits on this review: carried from the checkpoint it was written on.
+        const placed = placedLines(comment);
+        if (placed === null || placed.path !== file.path || !shown(comment)) return [];
         // A comment shows under the last of its lines.
-        lineNumber: comment.endLine ?? comment.line ?? 0,
-        metadata: { kind: "comment", comment },
-      }));
+        return [
+          {
+            side: placed.side === "old" ? "deletions" : "additions",
+            lineNumber: placed.endLine,
+            metadata: { kind: "comment", comment },
+          },
+        ];
+      },
+    );
     if (composer !== null && composer.file === file.path)
       marks.push({
         side: "additions",
@@ -469,9 +498,33 @@ export function useChangeComments({
       });
     return marks;
   };
+  // Reply drafts belong to the change, not one review of it: they survive a change of range.
+  const replyBox = (comment: ReviewCommentDto): ReplyBox => ({
+    draftKey: reviewDraftKey({ ...scope, sliceId: "replies" }, comment.id),
+    agent,
+    onSave: async (body: string) => {
+      const saved = await client.changes.reply.mutate({
+        id: changeId,
+        commentId: comment.id,
+        reply: { body },
+      });
+      await queryClient.invalidateQueries(trpc.changes.comments.queryFilter({ id: changeId }));
+      return saved;
+    },
+  });
+  const threadProps = (comment: ReviewCommentDto) => ({
+    reply: replyBox(comment),
+    ...(moves.showEdit === undefined ? {} : { onShowEdit: moves.showEdit }),
+  });
   const render = (mark: CommentMark): ReactNode =>
     mark.kind === "comment" ? (
-      <ReviewComment comment={mark.comment} place="line" touch={touch} narrow={narrow} />
+      <ReviewComment
+        comment={mark.comment}
+        place="line"
+        touch={touch}
+        narrow={narrow}
+        {...threadProps(mark.comment)}
+      />
     ) : (
       <div
         data-composer
@@ -553,7 +606,13 @@ export function useChangeComments({
       )}
       {/* A comment on the whole file (Mend drafts these) has no line: it sits under the header. */}
       {all
-        .filter((comment) => comment.file === file.path && comment.line === null && shown(comment))
+        .filter(
+          (comment) =>
+            (comment.placement?.path ?? comment.file) === file.path &&
+            comment.line === null &&
+            comment.placement?.mapping !== "not-found" &&
+            shown(comment),
+        )
         .map((comment) => (
           <ReviewComment
             key={comment.id}
@@ -561,6 +620,7 @@ export function useChangeComments({
             place="line"
             touch={touch}
             narrow={narrow}
+            {...threadProps(comment)}
           />
         ))}
       {also}
@@ -578,9 +638,20 @@ export function useChangeComments({
       : new Set();
   const rowNote = (comment: ReviewCommentDto): string | null => {
     if (failedIds.has(comment.id)) return "Couldn't send";
+    const waiting = replies.filter((reply) => reply.parentId === comment.id).length;
+    if (waiting > 0 && comment.state === "open")
+      return `${countWords(waiting, "reply", "replies")} not sent`;
+    if (comment.state === "open") {
+      const answered = answerNoteWords(comment, agent);
+      if (answered !== null) return answered;
+    }
     if (comment.sentToSessionId !== null || comment.state !== "open") return stateWords(comment);
+    if (comment.placement?.mapping === "not-found") return "Not in this range";
     return null;
   };
+  const answeredAny = groups.comments.some(
+    (comment) => comment.state === "open" && (comment.answers?.length ?? 0) > 0,
+  );
 
   // Mend's passes: reading the change drafts findings; suggesting drafts replacements.
   const read = passOf(passes.isSuccess ? passes.data : [], "read");
@@ -686,11 +757,16 @@ export function useChangeComments({
             hunkContextHash: null,
           })}
         />
-        {rule.can || groups.unsent.length === 0 ? null : (
+        {rule.can || unsent.length === 0 ? null : (
           <p className="mx-2 border-l-2 border-info pl-3 text-meta text-muted-foreground">
             {rule.why}
           </p>
         )}
+        {answeredAny && rule.can ? (
+          <p className="px-2 text-meta text-muted-foreground">
+            Resolve a comment when you're happy with the answer. Reply to send it back to {agent}.
+          </p>
+        ) : null}
       </section>
       <section aria-label="Drafts from Mend" className="grid gap-2 border-t px-3 py-4">
         <SectionTitle title="Drafts from Mend" fact={String(groups.drafts.length)} />
@@ -775,6 +851,7 @@ export function useChangeComments({
               place="change"
               touch={touch}
               narrow={narrow}
+              {...threadProps(comment)}
             />
           ))}
         </div>
@@ -791,7 +868,12 @@ export function useChangeComments({
         : lastAttempt === null
           ? null
           : new Set(lastAttempt.commentIds);
-  const toSend = tried === null ? groups.unsent : all.filter((comment) => tried.has(comment.id));
+  const toSend =
+    tried === null
+      ? unsent
+      : [...all, ...all.flatMap((comment) => comment.replies ?? [])].filter((comment) =>
+          tried.has(comment.id),
+        );
   const after =
     toSend.length === 0 || !rule.can ? null : (
       <section aria-label="Your review" className="border-b px-4 py-6 lg:px-11">
@@ -820,7 +902,7 @@ export function useChangeComments({
             </li>
           ))}
         </ul>
-        {delivery.kind === "none" && groups.unsent.length > 0 ? (
+        {delivery.kind === "none" && unsent.length > 0 ? (
           <Button
             variant="link"
             className="mt-3 h-auto p-0 text-info"
@@ -833,13 +915,10 @@ export function useChangeComments({
     );
 
   const sending = send.isPending;
+  const sendCount = sendCountWords(groups.unsent.length, replies.length);
   const sendLabel = (short: boolean) =>
-    sending
-      ? "Sending…"
-      : short
-        ? `Send ${countWords(groups.unsent.length, "comment", "comments")}`
-        : `Send ${countWords(groups.unsent.length, "comment", "comments")} to ${agent}`;
-  const canSend = rule.can && groups.unsent.length > 0 && delivery.kind === "none";
+    sending ? "Sending…" : short ? `Send ${sendCount}` : `Send ${sendCount} to ${agent}`;
+  const canSend = rule.can && unsent.length > 0 && delivery.kind === "none";
   const action =
     !canSend || narrow ? null : (
       <Button disabled={sending} onClick={sendAll}>
@@ -942,7 +1021,7 @@ export function useChangeComments({
       <Button
         variant="outline"
         size="icon-touch"
-        aria-label={`Comments and Mend's drafts${groups.unsent.length > 0 ? `, ${groups.unsent.length} not sent` : ""}`}
+        aria-label={`Comments and Mend's drafts${unsent.length > 0 ? `, ${unsent.length} not sent` : ""}`}
         onClick={() => setColumnOpen(true)}
       >
         <MessageSquarePlusIcon aria-hidden />
@@ -960,7 +1039,7 @@ export function useChangeComments({
       <SendDialog
         open={choosing}
         onOpenChange={setChoosing}
-        comments={groups.unsent}
+        comments={unsent}
         branch={detail.change?.branch ?? detail.session.branch}
         agent={agent}
         onSend={sendComments}
@@ -994,6 +1073,6 @@ export function useChangeComments({
     band,
     bar,
     dialogs,
-    unsent: groups.unsent.length,
+    unsent: unsent.length,
   };
 }

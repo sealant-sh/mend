@@ -1,3 +1,4 @@
+import { Banner } from "@mend/ui/components/banner";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Empty,
@@ -7,7 +8,7 @@ import {
   EmptyTitle,
 } from "@mend/ui/components/ui/empty";
 import type { DiffLineAnnotation } from "@pierre/diffs";
-import { skipToken, type UseQueryResult, useQuery } from "@tanstack/react-query";
+import { skipToken, type UseQueryResult, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { FileDiffIcon, RefreshCwIcon } from "lucide-react";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
@@ -16,8 +17,10 @@ import { QueryView } from "#/components/query-view";
 import { QueryError } from "#/components/route-screens";
 import type { ViewPlace } from "#/components/workspace/views";
 import type {
+  OpenReviewResultDto,
   ReviewCommentDto,
   ReviewDiffDto,
+  ReviewRangeRequest,
   SessionDetailDto,
   SessionInboxRowDto,
 } from "#/lib/api";
@@ -36,8 +39,11 @@ import {
   opensCurrentChange,
   renewReviewOpenKey,
   renewReviewOpenKeyFrom,
+  setReviewRange,
   useReviewOpenKey,
+  useReviewRange,
 } from "#/lib/review-open";
+import { checkpointRows, finishedWords, rangeLabel, rangeNoteWords } from "#/lib/review-range";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { harnessName } from "#/lib/session-view";
 import { removedWithin, type StopPlace, stopPlace } from "#/lib/tour";
@@ -54,6 +60,7 @@ import { ChangeToolbar } from "./change-toolbar.tsx";
 import { type TourMoves, TourNote, TourRail } from "./change-tour.tsx";
 import { FilePicker } from "./file-picker.tsx";
 import { useChangeLanding } from "./land-dialog.tsx";
+import { type PickedRange, RangePicker } from "./range-picker.tsx";
 
 /** What sits between a file's lines: a tour stop's note, or a comment and the box writing one. */
 type BetweenMark = { readonly kind: "tour" } | CommentMark;
@@ -250,6 +257,8 @@ function ReviewBody({
   detail,
   changeId,
   review,
+  opened,
+  range,
   comments,
   sessions,
   box,
@@ -257,6 +266,10 @@ function ReviewBody({
   readonly detail: SessionDetailDto;
   readonly changeId: string;
   readonly review: ReviewDiffDto;
+  /** How the review was opened: over which range, and where the person last reviewed. */
+  readonly opened: OpenReviewResultDto;
+  /** The range this tab asked for; null is the whole change. */
+  readonly range: ReviewRangeRequest | null;
   readonly comments: UseQueryResult<ReadonlyArray<ReviewCommentDto>, unknown>;
   readonly sessions: ReadonlyArray<SessionInboxRowDto>;
   readonly box: RefObject<HTMLElement | null>;
@@ -292,6 +305,35 @@ function ReviewBody({
   } | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
   const viewedCount = ordered.filter((file) => isViewed(marks, file.path, file.fingerprint)).length;
+  // Second look: the range the review covers, and moving to another one.
+  // The session's chain, with the review's own checkpoints when it was read before they were taken.
+  const chain = [
+    ...detail.checkpoints,
+    ...[review.checkpointA, review.checkpointB].filter(
+      (taken) => !detail.checkpoints.some((each) => each.id === taken.id),
+    ),
+  ];
+  const latest = Math.max(review.checkpointB.ordinal, ...chain.map((each) => each.ordinal));
+  const rangeKind = opened.range?.kind ?? "whole";
+  const fromBase = review.checkpointA.ordinal === 0;
+  const queryClient = useQueryClient();
+  // The chain grows while the agent works: read it again when a checkpoint isn't known yet.
+  const freshChain = async () =>
+    (await queryClient.fetchQuery({ ...sessionDetailQuery(trpc, detail.session.id), staleTime: 0 }))
+      .checkpoints;
+  const showEdit = (checkpointId: string) => {
+    const known = chain.some((each) => each.id === checkpointId);
+    void (known ? Promise.resolve(chain) : freshChain()).then((checkpoints) => {
+      const edited = checkpoints.find((each) => each.id === checkpointId);
+      const prior =
+        edited === undefined
+          ? undefined
+          : checkpoints.find((each) => each.ordinal === edited.ordinal - 1);
+      if (edited !== undefined && prior !== undefined)
+        setReviewRange(changeId, { from: prior.id, to: edited.id });
+      return undefined;
+    });
+  };
   const review24 = useChangeComments({
     detail,
     changeId,
@@ -318,13 +360,67 @@ function ReviewBody({
           ...(target === undefined ? {} : { target, above: 30 }),
         }));
       },
+      showEdit,
     },
   });
 
-  if (ordered.length === 0)
+  const baseName = detail.session.baseRef ?? "the base";
+  const label = rangeLabel(opened, baseName, range?.to !== undefined);
+  const picked: PickedRange =
+    rangeKind === "since-last-review" && range?.to === undefined
+      ? { kind: "since-last-review" }
+      : range !== null && range.from === "base" && range.to !== undefined
+        ? { kind: "up-to", checkpointId: range.to }
+        : fromBase
+          ? { kind: "whole" }
+          : { kind: "custom" };
+  const picker = (
+    <RangePicker
+      label={label}
+      picked={picked}
+      base={baseName}
+      latest={latest}
+      lastReview={opened.lastReview ?? null}
+      rows={checkpointRows(chain, opened.lastReview ?? null)}
+      onPick={(next) => setReviewRange(changeId, next)}
+      onOpen={() => void freshChain()}
+    />
+  );
+  if (ordered.length === 0 && fromBase)
     return (
       <>
         <NothingYet detail={detail} sessions={sessions.length} />
+        {landing.dialog}
+      </>
+    );
+  if (ordered.length === 0)
+    // A narrower range with nothing in it: say so, and keep the picker to move on.
+    return (
+      <>
+        <div className="flex h-[50px] shrink-0 items-center border-b px-4">{picker}</div>
+        <Empty className="m-auto">
+          <EmptyHeader className="max-w-md">
+            <EmptyMedia>
+              <FileDiffIcon aria-hidden className="size-6 text-muted-foreground" />
+            </EmptyMedia>
+            <EmptyTitle>
+              {rangeKind === "since-last-review"
+                ? "Nothing changed since your last review"
+                : "Nothing changed between these checkpoints"}
+            </EmptyTitle>
+            <EmptyDescription>
+              Checkpoint {review.checkpointA.ordinal} and checkpoint {review.checkpointB.ordinal}{" "}
+              hold the same files.
+            </EmptyDescription>
+          </EmptyHeader>
+          <Button
+            variant="outline"
+            className="max-lg:h-11"
+            onClick={() => setReviewRange(changeId, null)}
+          >
+            Show the whole change
+          </Button>
+        </Empty>
         {landing.dialog}
       </>
     );
@@ -341,7 +437,21 @@ function ReviewBody({
     setShowing(path);
     nextFocus(path, target);
   };
-  const base = detail.session.baseRef ?? "the base";
+  const all = comments.isSuccess ? comments.data : [];
+  const finished =
+    rangeKind === "whole"
+      ? finishedWords(all, opened.lastReview ?? null, latest, harnessName)
+      : null;
+  const resolvedAny = all.some(
+    (comment) => comment.state === "addressed" && comment.sentToSessionId !== null,
+  );
+  const rangeNote = resolvedAny
+    ? null
+    : rangeNoteWords(
+        picked.kind === "since-last-review" ? "since-last-review" : fromBase ? "whole" : "custom",
+        ordered.length,
+        review.unchangedInRange,
+      );
 
   // The tour: one stop at a time, its note at its place in the diffs, the stop list above Files.
   const stops = tour?.stops ?? [];
@@ -404,8 +514,9 @@ function ReviewBody({
   return (
     <>
       <ChangeToolbar
-        range="Whole change"
-        detail={`${base} to checkpoint ${review.checkpointB.ordinal}`}
+        range={label.range}
+        detail={label.detail}
+        picker={picker}
         layout={layout}
         onLayoutChange={diffLayout.set}
         actions={
@@ -424,16 +535,34 @@ function ReviewBody({
                   This workspace's change, from {sessions.length} sessions.
                 </span>
               ) : null}
-              {review24.note}
+              {rangeNote ?? review24.note}
             </>
           )
         }
       />
+      {finished === null ? null : (
+        <Banner
+          tone="info"
+          layout={narrow ? "stacked" : "inline"}
+          title={finished.title}
+          actions={
+            <Button
+              size={narrow ? "touch" : "sm"}
+              className={narrow ? "w-full" : undefined}
+              onClick={() => setReviewRange(changeId, { from: "last-review" })}
+            >
+              Show changes since your last review
+            </Button>
+          }
+        >
+          {finished.detail}
+        </Banner>
+      )}
       {landing.band}
       {review24.band}
       {landing.dialog}
       {review24.dialogs}
-      {review.worktreeChangedSinceSnapshot ? (
+      {review.worktreeChangedSinceSnapshot && range?.to === undefined ? (
         <div
           role="status"
           className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b bg-band px-4 py-3 lg:px-5"
@@ -508,17 +637,20 @@ function ReviewBody({
             scrollRef={scroller}
             above={
               <>
-                <ChangeDescription
-                  changeId={changeId}
-                  review={review}
-                  tour={tourRead}
-                  passes={passesRead}
-                  current={tourCurrent}
-                  folded={laterLook || narrow || phone}
-                  touch={phone}
-                  touring={at !== null}
-                  onStartTour={startTour}
-                />
+                {/* Mend's description is of the whole change: a narrower range shows none. */}
+                {fromBase ? (
+                  <ChangeDescription
+                    changeId={changeId}
+                    review={review}
+                    tour={tourRead}
+                    passes={passesRead}
+                    current={tourCurrent}
+                    folded={laterLook || narrow || phone}
+                    touch={phone}
+                    touring={at !== null}
+                    onStartTour={startTour}
+                  />
+                ) : null}
                 {place?.kind === "change" ? note : null}
                 {review24.above}
               </>
@@ -578,14 +710,23 @@ function ChangeReview({
   const trpc = useTRPC();
   // Empty while the server renders: the key lives in this tab's sessionStorage.
   const openKey = useReviewOpenKey(changeId);
-  const opened = useQuery({ ...openReviewQuery(changeId, openKey), enabled: openKey !== "" });
+  const range = useReviewRange(changeId);
+  const opened = useQuery({
+    ...openReviewQuery(changeId, openKey, range),
+    enabled: openKey !== "",
+  });
   const slice = opened.isPending || opened.isError ? null : opened.data.slice.id;
   const review = useQuery(
     trpc.changes.reviewDiff.queryOptions(
       slice === null ? skipToken : { id: changeId, sliceId: slice },
     ),
   );
-  const comments = useQuery(trpc.changes.comments.queryOptions({ id: changeId }));
+  // Read for the review's slice, each comment also says where it sits on it now.
+  const comments = useQuery(
+    trpc.changes.comments.queryOptions(
+      slice === null ? { id: changeId } : { id: changeId, sliceId: slice },
+    ),
+  );
 
   // Once per key, after its slice and the comments are read: move on from a stale slice. The key
   // lives in sessionStorage, outside React, so this is a write to it after the reads land.
@@ -595,9 +736,11 @@ function ChangeReview({
   useEffect(() => {
     if (pinned === null || commentsRead === undefined || checked.current === openKey) return;
     checked.current = openKey;
+    // A range that ends at a chosen checkpoint is meant to stay where it is.
+    if (range?.to !== undefined) return;
     if (opensCurrentChange(pinned, changeId, pinned.slice.id, commentsRead))
       renewReviewOpenKeyFrom(changeId, openKey);
-  }, [pinned, commentsRead, changeId, openKey]);
+  }, [pinned, commentsRead, changeId, openKey, range]);
 
   if (opened.isError)
     return (
@@ -630,6 +773,8 @@ function ChangeReview({
           detail={detail}
           changeId={changeId}
           review={read}
+          opened={opened.data}
+          range={range}
           comments={comments}
           sessions={sessions}
           box={box}

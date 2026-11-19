@@ -10,9 +10,8 @@ import type { DiffLayout } from "#/lib/ui-prefs";
  * Split, one muted note, and the `actions` slot. Narrow (a tile beside a conversation, or a phone)
  * it keeps the range and the actions; the diffs are unified there, so the switch goes.
  *
- * The range is a chip with no menu while the server opens a review only over the whole change; a
- * range picker (S6) makes it a menu. Land… goes in `actions` (`land-dialog.tsx`), and Send
- * comments beside it (PR 24).
+ * The range is a chip, or the menu `picker` gives in its place (`range-picker.tsx`, Second look).
+ * Land… goes in `actions` (`land-dialog.tsx`), and Send comments beside it (PR 24).
  */
 export function ChangeToolbar({
   range,
@@ -21,6 +20,7 @@ export function ChangeToolbar({
   onLayoutChange,
   note,
   actions,
+  picker,
 }: {
   /** "Whole change". */
   readonly range: string;
@@ -31,14 +31,18 @@ export function ChangeToolbar({
   /** One muted line or two on the right; hidden when narrow. */
   readonly note?: ReactNode;
   readonly actions?: ReactNode;
+  /** The range as a menu, in place of the chip. */
+  readonly picker?: ReactNode;
 }) {
   return (
     <div className="flex h-[50px] shrink-0 items-center gap-2.5 border-b bg-background pr-4 pl-[18px] @max-3xl/change:h-auto @max-3xl/change:min-h-12 @max-3xl/change:px-4 @max-3xl/change:py-2">
-      <span className="inline-flex h-8 min-w-0 items-center gap-[7px] rounded-lg border border-input px-2.5 text-control font-medium whitespace-nowrap @max-3xl/change:h-auto @max-3xl/change:border-0 @max-3xl/change:px-0 @max-3xl/change:text-lead">
-        <GitCompareArrowsIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
-        <span>{range}</span>
-        <span className="truncate font-normal text-muted-foreground">· {detail}</span>
-      </span>
+      {picker ?? (
+        <span className="inline-flex h-8 min-w-0 items-center gap-[7px] rounded-lg border border-input px-2.5 text-control font-medium whitespace-nowrap @max-3xl/change:h-auto @max-3xl/change:border-0 @max-3xl/change:px-0 @max-3xl/change:text-lead">
+          <GitCompareArrowsIcon aria-hidden className="size-3.5 shrink-0 text-muted-foreground" />
+          <span>{range}</span>
+          <span className="truncate font-normal text-muted-foreground">· {detail}</span>
+        </span>
+      )}
       <ToggleGroup
         aria-label="Diff layout"
         value={[layout]}

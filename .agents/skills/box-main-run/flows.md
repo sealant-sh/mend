@@ -1034,6 +1034,33 @@ flows reuse what earlier ones made:
   `apps/web/src/components/change/review-comment.tsx`,
   `apps/web/src/components/change/send-dialog.tsx`, `apps/web/src/lib/review-comments.ts`
 
+### review-change.new-web-second-look
+
+- **Map:** review-change.md `review-comment-state` (Second look: a review since your last review,
+  the agent's answer under each sent comment, replies)
+- **Needs:** either; no turn on a local stack, a real codex turn on the box; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe
+  `new-web-second-look`. On `change-small` it opens the range picker before anyone has sent
+  comments, comments on line 20 and on the whole change, lays where you last reviewed and Claude
+  Code's answers over the real comments, follows "Show changes since your last review", picks "Up to
+  a checkpoint" and compares one checkpoint with itself, replies and resolves, and shows 390px and a
+  review that fails to open. On the box after cut-over, `new-web-second-look-ui-box` sends real
+  comments to codex through Send and reads its answers in the view.
+- **See:** each step's note in the recipe's `steps.log`: no "Since your last review" in the picker
+  before a send; "Claude Code finished working on your 2 comments." with "Show changes since your
+  last review"; the chip "Since your last review · checkpoint N to M" and "N files changed since
+  your last review."; each comment's answer with "Changed the code at checkpoint M" or no outcome on
+  the whole change; "Up to checkpoint N"; "Nothing changed between these checkpoints" with "Show the
+  whole change"; "Your reply goes to Claude Code with your next comments." then the reply "Not sent"
+  and "Send 1 reply to Claude Code"; a resolved comment folded with what the agent did; the phone's
+  "Show changes" sheet.
+- **Mode:** `scripted` (recipes/new-web-second-look.mjs; recipes/new-web-second-look-ui-box.mjs on
+  the box)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/change/range-picker.tsx`, `apps/web/src/lib/review-range.ts`,
+  `apps/web/src/lib/review-open.ts`
+
 ### review-change.web-comments
 
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,

@@ -4,9 +4,11 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { reviewDraftKey, writeDraft } from "./drafts.ts";
 import {
   opensCurrentChange,
+  parseRange,
   renewReviewOpenKey,
   renewReviewOpenKeyFrom,
   reviewOpenKey,
+  setReviewRange,
 } from "./review-open.ts";
 
 const scope = { userId: "alice", changeId: "change-1", sliceId: "slice-old" };
@@ -65,5 +67,31 @@ describe("renewing the tab's review key after a read", () => {
     expect(reviewOpenKey("change-1")).toBe(newer);
     renewReviewOpenKeyFrom("change-1", newer);
     expect(reviewOpenKey("change-1")).not.toBe(newer);
+  });
+});
+
+describe("the range a tab reviews over", () => {
+  it("reads back what was stored, and anything else as the whole change", () => {
+    expect(parseRange(JSON.stringify({ from: "last-review" }))).toEqual({ from: "last-review" });
+    expect(parseRange(JSON.stringify({ from: "base", to: "cp-5" }))).toEqual({
+      from: "base",
+      to: "cp-5",
+    });
+    expect(parseRange(JSON.stringify({ from: "last-review", to: "cp-5" }))).toEqual({
+      from: "last-review",
+    });
+    expect(parseRange("not json")).toBeNull();
+    expect(parseRange(null)).toBeNull();
+  });
+
+  it("opens a new review when the range changes, and forgets a whole-change range", () => {
+    const key = reviewOpenKey("change-1");
+    setReviewRange("change-1", { from: "last-review" });
+    expect(reviewOpenKey("change-1")).not.toBe(key);
+    expect(parseRange(sessionStorage.getItem("mend.review.change-1.range"))).toEqual({
+      from: "last-review",
+    });
+    setReviewRange("change-1", null);
+    expect(sessionStorage.getItem("mend.review.change-1.range")).toBeNull();
   });
 });
