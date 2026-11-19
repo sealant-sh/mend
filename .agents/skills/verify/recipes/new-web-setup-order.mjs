@@ -64,6 +64,24 @@ const REPOSITORIES = [
 ];
 
 const visible = (locator) => locator.filter({ visible: true }).first();
+
+/** Marks an answer made here that carries superjson's note of which fields are Dates. */
+const DATED = Symbol("dated");
+/** The person's logins with these accounts, their dates marked as Dates for the page. */
+const withAccounts = (identity, accounts) => ({
+  [DATED]: true,
+  data: {
+    json: { ...identity, accounts },
+    meta: {
+      values: Object.fromEntries(
+        accounts.flatMap((_, index) => [
+          [`accounts.${index}.connectedAt`, ["Date"]],
+          [`accounts.${index}.updatedAt`, ["Date"]],
+        ]),
+      ),
+    },
+  },
+});
 const expect = (what, ok, seen) => {
   if (!ok) throw new Error(`${what}: ${JSON.stringify(seen)}`);
 };
@@ -179,7 +197,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       if (answer === undefined) return;
       const real = entries[at]?.result?.data;
       const json = answer(real?.json, inputAt(at));
-      entries[at] = { result: { data: json === real?.json ? real : { json } } };
+      // An answer with dates says so the way superjson does (`withDates`).
+      entries[at] = {
+        result: {
+          data: json === real?.json ? real : json?.[DATED] === true ? json.data : { json },
+        },
+      };
     });
     return route.fulfill({
       status: 200,
@@ -241,7 +264,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await button("Skip for now").click();
     await page.waitForURL((url) => url.pathname === "/welcome");
     await heading("Git access");
-    await stepsList().getByText("Skipped").waitFor({ state: "attached" });
+    await stepsList().getByText("Skipped", { exact: true }).waitFor({ state: "attached" });
     const skipped = await commands();
     expect(
       "the sign-in command once on Git access after a skip",
@@ -307,7 +330,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       .click();
     await text("Mend reached GitHub as linus-p.").waitFor();
     await page.unroute("**/trpc/git.checkKey**");
-    await stepsList().getByText(computer).waitFor({ state: "attached" });
+    await stepsList().getByText(computer, { exact: true }).waitFor({ state: "attached" });
     const signedInCommands = await commands();
     expect(
       "no install or sign-in line once signed in",
@@ -321,9 +344,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await all("git-github-waiting");
     const connectedAt = new Date().toISOString();
     githubAccount = null;
-    answers["platform.sealantIdentity"] = (identity) => ({
-      ...identity,
-      accounts: [
+    answers["platform.sealantIdentity"] = (identity) =>
+      withAccounts(identity, [
         {
           id: `fixture-github-${suffix}`,
           provider: "github",
@@ -336,8 +358,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
           lastUsedAt: null,
           isDefault: true,
         },
-      ],
-    });
+      ]);
     await readAgain([["platform", "sealantIdentity"]]);
     await text("GitHub connected as linus-p.").waitFor();
     note("fixture, a GitHub login connected: 'GitHub connected as linus-p.' with when, no note");
@@ -460,7 +481,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await open("/welcome/first-project");
     await heading("Add a project");
     await text("Step 6 of 6").waitFor({ state: "attached" });
-    await stepsList().getByText(newName).waitFor({ state: "attached" });
+    await stepsList().getByText(newName, { exact: true }).waitFor({ state: "attached" });
     await text(/Waiting for GitHub to connect · \d+s/).waitFor();
     await button("Paste a Git URL instead").waitFor();
     note(
@@ -491,9 +512,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         : sent?.owner === "acme"
           ? []
           : REPOSITORIES.slice(0, 2);
-    answers["platform.sealantIdentity"] = (identity) => ({
-      ...identity,
-      accounts: [
+    answers["platform.sealantIdentity"] = (identity) =>
+      withAccounts(identity, [
         {
           id: `fixture-github-${suffix}`,
           provider: "github",
@@ -506,8 +526,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
           lastUsedAt: null,
           isDefault: true,
         },
-      ],
-    });
+      ]);
     await readAgain([["platform", "sealantIdentity"]]);
     await readAgain([["github"]]);
     await text(/Asking GitHub which organizations linus-p belongs to · \d+s/).waitFor();
@@ -527,6 +546,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await all("project-list-own");
     const owner = visible(page.getByRole("combobox", { name: "Whose repositories" }));
     await owner.click();
+    await page.getByRole("option").first().waitFor();
     const offered = (await page.getByRole("option").allTextContents()).map((one) => one.trim());
     expect(
       "the login's own account first, then its organizations",
@@ -545,6 +565,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await text("northwind/checkout-web").waitFor({ state: "attached" });
     note("a search for 'checkout' looks within northwind");
     await owner.click();
+    await page.getByRole("option", { name: /^acme/ }).waitFor();
     await page.getByRole("option", { name: /^acme/ }).click();
     await text("No repositories in acme for linus-p.").waitFor();
     note(
@@ -592,7 +613,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       note("the fake GitHub login was removed");
     }
   } else {
-    note(`the platform refused a fake GitHub login (${connect.status}): no caller list timed here`);
+    note(
+      `the platform refused a fake GitHub login (${connect.status}: ${JSON.stringify(connect.body?.message ?? connect.body?._tag ?? null)}): no first list as the caller can be timed on a local stack`,
+    );
   }
 
   // ---- Joining from an invitation: five steps, no Organization.
