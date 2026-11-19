@@ -185,8 +185,26 @@ export default async ({ page, web, capture, note }) => {
       };
     },
   };
+  let manage = true;
   await page.route("**/trpc/**", async (route) => {
     const paths = pathsOf(route.request());
+    if (!manage && paths.includes("projects.detail")) {
+      // Someone who can't change the project: the real read with `capabilities.manage` false.
+      const response = await route.fetch();
+      const json = await response.json();
+      const list = Array.isArray(json) ? json : [json];
+      for (const [index, path] of paths.entries()) {
+        const detail = list[index]?.result?.data?.json;
+        if (path === "projects.detail" && detail?.capabilities !== undefined)
+          detail.capabilities.manage = false;
+      }
+      await route.fulfill({
+        status: response.status(),
+        contentType: "application/json",
+        body: JSON.stringify(Array.isArray(json) ? list : list[0]),
+      });
+      return;
+    }
     if (!paths.some((path) => path in answers)) return route.continue();
     const body = route.request().postDataJSON() ?? {};
     const inputs = paths.map((_, index) => (body[index] ?? body)?.json);
@@ -248,6 +266,24 @@ export default async ({ page, web, capture, note }) => {
   await section().getByRole("button", { name: "Clear", exact: true }).click();
   await toastSays("Workspaces run as the default service account again.");
   note("cluster-service-account: Clear puts workspaces back on the default account");
+
+  manage = false;
+  await clearCache();
+  await navigate("/settings/profile");
+  await heading("Profile");
+  await navigate(home);
+  await section().getByText("app-env", { exact: true }).waitFor();
+  for (const control of ["Bind", "Save", "Remove Secret app-env"])
+    expect(
+      `no ${control} for someone who can't change the project`,
+      (await page.getByRole("button", { name: control, exact: true }).count()) === 0,
+      control,
+    );
+  note(
+    "read-only (project read rewritten, manage false): the bindings and the account, no Bind, Save or Remove",
+  );
+  await shot("project-cluster-bindings-read-only-desktop-light");
+  manage = true;
 
   await page.setViewportSize(PHONE);
   await clearCache();
