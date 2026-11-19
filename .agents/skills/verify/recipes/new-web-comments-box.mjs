@@ -221,7 +221,7 @@ export default async ({ page, web, capture, note }) => {
     .waitForFunction(
       () =>
         [...document.querySelectorAll("p, span")].filter((each) =>
-          /^Worked for/.test(each.textContent ?? ""),
+          (each.textContent ?? "").startsWith("Worked for"),
         ).length >= 2,
       null,
       { timeout: 900_000 },

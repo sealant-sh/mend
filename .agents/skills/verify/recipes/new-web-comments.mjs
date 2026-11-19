@@ -110,6 +110,10 @@ const followUpAnswer = ({ sessionId, changeId, commentIds, status, error = null 
     status === "delivered" ? ["createdAt", "deliveredAt"] : ["createdAt"],
   );
 
+/** The session read as Claude Code's, its agent gone: Send shows, as for a finished session. */
+const asClaude = (status) => (data) =>
+  patchDetail(data, { status, harness: "claude", dropAgent: true });
+
 export default async ({ page, web, capture: captureOnce, note }) => {
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
   const settled = () => page.waitForTimeout(500);
@@ -217,14 +221,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // Start clean: comments an earlier run left open are dismissed (the server keeps every comment).
   const leftOpen = await client(async (trpc, id) => {
     const all = await trpc.changes.comments.query({ id });
-    const open = all.filter((each) => each.state === "open" && each.sentToSessionId === null);
-    for (const each of open)
+    const waiting = all.filter((each) => each.state === "open" && each.sentToSessionId === null);
+    for (const each of waiting)
       await trpc.changes.setCommentState.mutate({
         id,
         commentId: each.id,
         request: { state: "dismissed" },
       });
-    return open.length;
+    return waiting.length;
   }, changeId);
   note(`dismissed ${leftOpen} open comment(s) an earlier run left on change-small`);
   await page.context().clearCookies({ name: "mend-tiles" });
@@ -304,8 +308,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
 
   // change-small's sessions are `mend run` commands; read as Claude Code's, Send shows. The
   // session has finished, so the toolbar says it starts on the comments once they are sent.
-  const asClaude = (status) => (data) =>
-    patchDetail(data, { status, harness: "claude", dropAgent: true });
   const realStatus = await client(
     async (trpc, id) => (await trpc.sessions.detail.query({ id })).session.status,
     small.id,
@@ -647,14 +649,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   fixture.pending = null;
   const tidied = await client(async (trpc, id) => {
     const all = await trpc.changes.comments.query({ id });
-    const open = all.filter((each) => each.state !== "dismissed");
-    for (const each of open)
+    const kept = all.filter((each) => each.state !== "dismissed");
+    for (const each of kept)
       await trpc.changes.setCommentState.mutate({
         id,
         commentId: each.id,
         request: { state: "dismissed" },
       });
-    return open.length;
+    return kept.length;
   }, changeId);
   note(`dismissed the ${tidied} comment(s) this run left, so it can run again`);
 };
