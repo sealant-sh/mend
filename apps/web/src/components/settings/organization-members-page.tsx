@@ -34,6 +34,7 @@ import {
   LogOutIcon,
   MailIcon,
   ShieldIcon,
+  UserCogIcon,
   UserMinusIcon,
   XIcon,
 } from "lucide-react";
@@ -202,6 +203,7 @@ function MemberRow({
 }) {
   const onlyOwner = isOnlyOwner(roster, member.userId);
   const [refusal, setRefusal] = useState<string | null>(null);
+  const role = useRoleChange(member, organization.name, setRefusal);
   return (
     <div role="row" className="border-b border-border max-lg:px-4">
       <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1.6fr)_9rem_7rem_2.5rem] items-center gap-4 py-3 max-lg:grid-cols-[minmax(0,1fr)_auto] max-lg:gap-x-3 max-lg:gap-y-2">
@@ -215,15 +217,15 @@ function MemberRow({
             <p className="truncate">
               <span className="font-medium text-foreground">{member.name}</span>
               {you ? (
-                <span className="ml-1.5 text-meta text-muted-foreground">
+                <span className="ml-1.5 text-meta text-muted-foreground max-lg:hidden">
                   You{onlyOwner ? " · only owner" : ""}
                 </span>
               ) : isNew(member) ? (
-                <span className="ml-1.5 text-meta text-muted-foreground">New</span>
+                <span className="ml-1.5 text-meta text-muted-foreground max-lg:hidden">New</span>
               ) : null}
             </p>
             <p className="truncate text-meta text-muted-foreground lg:hidden">
-              {member.email} · {shortDay(member.joinedAt)}
+              {phoneLine(member, you, onlyOwner)}
             </p>
           </div>
         </div>
@@ -236,13 +238,20 @@ function MemberRow({
             owner={owner}
             onlyOwner={onlyOwner}
             organization={organization.name}
-            onRefused={setRefusal}
+            role={role}
           />
         </div>
         <div role="cell" className="text-muted-foreground max-lg:hidden">
           {shortDay(member.joinedAt)}
         </div>
-        <div role="cell" className="flex justify-end max-lg:col-start-2 max-lg:row-start-1">
+        <div
+          role="cell"
+          className="flex items-center justify-end gap-1 max-lg:col-start-2 max-lg:row-start-1"
+        >
+          {/* On a phone the role is a word here, and changes from the menu (Doop phone frames). */}
+          <span className="text-muted-foreground lg:hidden">
+            {role.pending ? "Saving…" : roleWord(member.role)}
+          </span>
           <MemberMenu
             member={member}
             you={you}
@@ -251,15 +260,7 @@ function MemberRow({
             organization={organization}
             onReset={onReset}
             onRefused={setRefusal}
-          />
-        </div>
-        <div className="col-span-2 lg:hidden">
-          <RoleControl
-            member={member}
-            owner={owner}
-            onlyOwner={onlyOwner}
-            organization={organization.name}
-            onRefused={setRefusal}
+            role={role}
           />
         </div>
       </div>
@@ -272,27 +273,24 @@ function MemberRow({
   );
 }
 
+/** A role change, shared by the row's role menu (desk) and its "…" menu (every width). */
+interface RoleChange {
+  readonly pending: boolean;
+  readonly change: (role: Role) => void;
+}
+
 /**
- * A person's role. Owners change it from a menu that applies at once, with Undo in the toast; the
- * only owner's is locked, since the server refuses leaving an organization with no owner. Members
- * read it as a word.
+ * Changing someone's role: it applies at once, says so in a toast with Undo, and a refusal (the
+ * last owner, an access key) is said under the row in the server's words.
  */
-function RoleControl({
-  member,
-  owner,
-  onlyOwner,
-  organization,
-  onRefused,
-}: {
-  readonly member: Member;
-  readonly owner: boolean;
-  readonly onlyOwner: boolean;
-  readonly organization: string;
-  readonly onRefused: (words: string | null) => void;
-}) {
+const useRoleChange = (
+  member: Member,
+  organization: string,
+  onRefused: (words: string | null) => void,
+): RoleChange => {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const change = useMutation(
+  const mutation = useMutation(
     trpc.organization.setMemberRole.mutationOptions({
       onSettled: () => queryClient.invalidateQueries(trpc.organization.pathFilter()),
     }),
@@ -300,7 +298,7 @@ function RoleControl({
   const apply = async (role: Role, undo: boolean) => {
     onRefused(null);
     try {
-      await change.mutateAsync({ userId: member.userId, role });
+      await mutation.mutateAsync({ userId: member.userId, role });
       if (undo) return;
       const before = member.role;
       toast.add({
@@ -317,6 +315,34 @@ function RoleControl({
       onRefused(refusalWords(error, `Mend didn't change ${member.name}'s role. Try again.`));
     }
   };
+  return { pending: mutation.isPending, change: (role) => void apply(role, false) };
+};
+
+/** A row's second line on a phone (Doop "Phone · Members · list"). */
+const phoneLine = (member: Member, you: boolean, onlyOwner: boolean): string => {
+  if (you) return `You${onlyOwner ? " · only owner" : ""} · Joined ${shortDay(member.joinedAt)}`;
+  if (isNew(member)) return `New · Joined ${shortDay(member.joinedAt).toLowerCase()}`;
+  return member.email;
+};
+
+/**
+ * A person's role. Owners change it from a menu that applies at once, with Undo in the toast; the
+ * only owner's is locked, since the server refuses leaving an organization with no owner. Members
+ * read it as a word.
+ */
+function RoleControl({
+  member,
+  owner,
+  onlyOwner,
+  organization,
+  role,
+}: {
+  readonly member: Member;
+  readonly owner: boolean;
+  readonly onlyOwner: boolean;
+  readonly organization: string;
+  readonly role: RoleChange;
+}) {
   if (!owner) return <span className="text-foreground-2">{roleWord(member.role)}</span>;
   if (onlyOwner)
     return (
@@ -335,29 +361,26 @@ function RoleControl({
     <Select
       value={member.role}
       onValueChange={(next) => {
-        if ((next === "owner" || next === "member") && next !== member.role)
-          void apply(next, false);
+        if ((next === "owner" || next === "member") && next !== member.role) role.change(next);
       }}
-      disabled={change.isPending}
+      disabled={role.pending}
     >
       <SelectTrigger
         aria-label={`${member.name}'s role`}
         className={cn("w-36 max-lg:w-full", CONTROL)}
       >
-        {change.isPending ? <Spinner aria-hidden /> : null}
-        <SelectValue>
-          {(value: Role) => (change.isPending ? "Saving…" : roleWord(value))}
-        </SelectValue>
+        {role.pending ? <Spinner aria-hidden /> : null}
+        <SelectValue>{(value: Role) => (role.pending ? "Saving…" : roleWord(value))}</SelectValue>
       </SelectTrigger>
       <SelectContent align="start" alignItemWithTrigger={false}>
         <SelectGroup>
           <SelectLabel>{member.name}'s role</SelectLabel>
-          {(["member", "owner"] as const).map((role) => (
-            <SelectItem key={role} value={role}>
+          {(["member", "owner"] as const).map((choice) => (
+            <SelectItem key={choice} value={choice}>
               <span className="flex flex-1 items-center justify-between gap-6">
-                {roleWord(role)}
+                {roleWord(choice)}
                 <span className="text-meta text-muted-foreground">
-                  {roleHint(role, organization)}
+                  {roleHint(choice, organization)}
                 </span>
               </span>
             </SelectItem>
@@ -380,6 +403,7 @@ function MemberMenu({
   organization,
   onReset,
   onRefused,
+  role,
 }: {
   readonly member: Member;
   readonly you: boolean;
@@ -388,6 +412,7 @@ function MemberMenu({
   readonly organization: { readonly id: string; readonly name: string };
   readonly onReset: (reset: { readonly name: string; readonly link: string }) => void;
   readonly onRefused: (words: string | null) => void;
+  readonly role: RoleChange;
 }) {
   const trpc = useTRPC();
   const phone = usePhone();
@@ -424,6 +449,24 @@ function MemberMenu({
         <DropdownMenuContent align="end" width="md">
           <DropdownMenuGroup>
             <DropdownMenuLabel>{you ? "You" : member.name}</DropdownMenuLabel>
+            {owner ? (
+              <DropdownMenuItem
+                disabled={onlyOwner || role.pending}
+                onClick={() => role.change(member.role === "owner" ? "member" : "owner")}
+              >
+                <UserCogIcon aria-hidden />
+                <span className="flex min-w-0 flex-col">
+                  {member.role === "owner"
+                    ? `Make ${you ? "yourself" : firstNameOf(member)} a member`
+                    : `Make ${firstNameOf(member)} an owner`}
+                  {onlyOwner ? (
+                    <span className="text-meta text-muted-foreground">
+                      {organization.name} needs at least one owner.
+                    </span>
+                  ) : null}
+                </span>
+              </DropdownMenuItem>
+            ) : null}
             {owner ? (
               <DropdownMenuItem
                 disabled={!offer.offer || reset.isPending}
