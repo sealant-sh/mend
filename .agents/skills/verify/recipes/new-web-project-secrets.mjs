@@ -81,8 +81,14 @@ export default async ({ page, web, capture, note, typeSecret }) => {
   const text = (words) => visible(page.getByText(words, { exact: true }));
   const button = (name) => visible(page.getByRole("button", { name, exact: true }));
   const dialog = (name) => visible(page.getByRole("dialog", { name }));
+  // Several toasts stack up in a run; one behind another doesn't count as visible, so wait for it
+  // to be in the Notifications region.
   const toastSays = (words) =>
-    visible(page.getByRole("region", { name: /Notifications/ }).getByText(words)).waitFor();
+    page
+      .getByRole("region", { name: /Notifications/ })
+      .getByText(words)
+      .first()
+      .waitFor({ state: "attached" });
   const variables = () => visible(page.getByRole("list", { name: "Environment variables" }));
   const secrets = () => visible(page.getByRole("list", { name: "Secrets" }));
   const closed = (name) => page.getByRole("dialog", { name }).waitFor({ state: "hidden" });
@@ -166,7 +172,6 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await typeSecret(add.getByLabel("Value", { exact: true }), "project-secret", FAKES.github);
     await add.getByRole("button", { name: "Add secret", exact: true }).click();
     await closed("Add secret");
-    note("Add secret closed after saving");
     await toastSays("Added VERIFY_API_TOKEN.");
     await secrets().getByText("VERIFY_API_TOKEN", { exact: true }).waitFor();
     const listed = await call("environment.secrets", { projectId: project.id });
