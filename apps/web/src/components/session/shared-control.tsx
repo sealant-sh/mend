@@ -1,4 +1,6 @@
 import { Banner } from "@mend/ui/components/banner";
+import { ConversationItem } from "@mend/ui/components/conversation";
+import { ConversationMarker } from "@mend/ui/components/conversation-marker";
 import { CopyField } from "@mend/ui/components/copy-field";
 import { Button } from "@mend/ui/components/ui/button";
 import { toast } from "@mend/ui/components/ui/toast";
@@ -17,15 +19,18 @@ import {
 import { type ReactNode, useState, useSyncExternalStore } from "react";
 
 import { AGENT_FACTS, type Agent, agentLoginState, connectCommand } from "#/lib/agent-login";
+import { type ConversationWaitWorkDto, endBackgroundWork } from "#/lib/api";
 import { readDraft, subscribeDrafts } from "#/lib/drafts";
 import { draftItems, type MessageScope, useMessageOwner } from "#/lib/outbox";
 import { usePhone } from "#/lib/phone";
+import { failureWords } from "#/lib/refusal";
 import { messageTime } from "#/lib/session-sheet";
 import { harnessName } from "#/lib/session-view";
 import {
   type Band,
   type BandAct,
   type BandIcon,
+  canEndWaitingWork,
   type ControlMarker,
   grantDialog,
   type LoginHold,
@@ -36,6 +41,7 @@ import {
   stepRefusalWords,
   type TurnOffStep,
   turnOffItems,
+  waitingLineQuery,
 } from "#/lib/shared-control";
 import { type TrpcClient, useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
@@ -587,3 +593,71 @@ export const useTurnOffItems = (
     onSelect: () => turnOff(sessionId, item.steps, nameOf),
   }));
 };
+
+/**
+ * The waiting line (docs/adr/0016, decision 6; per-person-homes.md `waiting-line`): under shared
+ * control, whose work a new sender's turn waits for, with End for each piece the viewer may end
+ * (the session's owner, or the person the work runs as). Nothing while no turn waits, and not read
+ * at all unless people run as themselves in the workspace and someone besides the owner steers.
+ */
+export function WaitingLine({ facts }: { readonly facts: SessionFacts }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const { session } = facts;
+  const reading = waitingLineQuery(session, facts.agentLive);
+  const wait = useQuery(
+    trpc.sessions.conversationWait.queryOptions({ id: session.id }, { ...reading, retry: false }),
+  );
+  const end = useMutation({
+    mutationFn: (work: ConversationWaitWorkDto) => endBackgroundWork(session.id, work),
+    onSettled: () =>
+      queryClient.invalidateQueries(trpc.sessions.conversationWait.queryFilter({ id: session.id })),
+  });
+  // Nothing to say until it is read, or if it can't be: the turns still show.
+  if (!reading.enabled || wait.isPending || wait.isError || wait.data === null) return null;
+  const waiting = wait.data;
+  const endable = canEndWaitingWork({
+    viewerId: facts.viewerId,
+    ownerUserId: session.ownerUserId,
+    runsAs: waiting.runsAs,
+    steer: facts.detail.control.steer,
+  })
+    ? waiting.work.filter((work) => work.endable)
+    : [];
+  return (
+    <ConversationItem messageId="waiting-line">
+      <div className="flex flex-col gap-1.5">
+        <div role="status">
+          <ConversationMarker kind="status" label={waiting.line} />
+        </div>
+        {endable.length === 0 ? null : (
+          <ul aria-label="Work the turn waits for" className="flex flex-col gap-1 pl-4">
+            {endable.map((work) => (
+              <li key={`${work.kind}:${work.id}`} className="flex items-center gap-3">
+                <span className="min-w-0 truncate font-mono text-meta text-muted-foreground">
+                  {work.kind} · {work.description ?? work.id}
+                </span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="max-lg:h-11"
+                  aria-label={`End ${work.kind} ${work.description ?? work.id}`}
+                  disabled={end.isPending}
+                  onClick={() => end.mutate(work)}
+                >
+                  {end.isPending && end.variables.id === work.id ? "Ending…" : "End"}
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+        {end.isError ? (
+          <p role="alert" className="pl-4 text-meta text-destructive">
+            {`It didn't end. ${failureWords(end.error, "Try again.")}`}
+          </p>
+        ) : null}
+      </div>
+    </ConversationItem>
+  );
+}

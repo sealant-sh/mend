@@ -182,6 +182,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   /** How the browser answers the member's send: refused for their Codex login, or taken. */
   let sends = "login";
   let connected = false;
+  /** The waiting line's answer, once the recipe puts the member's turn behind background work. */
+  let waiting = null;
   const sent = [];
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
@@ -193,10 +195,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
       if (path === "sessions.detail" && input?.id === id) return "detail";
       if (path === "sessions.sendMessage" && input?.id === id) return "send";
       if (path === "platform.sealantIdentity" && connected) return "identity";
+      if (path === "sessions.conversationWait" && input?.id === id) return "wait";
       return null;
     });
     if (mine.every((each) => each === null)) return route.continue();
-    const real = mine.some((each) => each !== "history" && each !== "send");
+    const real = mine.some((each) => each === "detail" || each === "identity");
     const response = real ? await route.fetch() : null;
     const body = response === null ? null : await response.json();
     const answers = body === null ? paths.map(() => null) : Array.isArray(body) ? body : [body];
@@ -204,17 +207,23 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
     paths.forEach((path, index) => {
       const input = inputs[String(index)]?.json;
       if (mine[index] === "history") answers[index] = { result: { data: conversation[path] } };
-      else if (mine[index] === "detail")
+      else if (mine[index] === "wait")
         answers[index] = {
-          result: {
-            data: patchDetail(answers[index].result.data, {
-              status: "running",
-              harness: "codex",
-              protocolAgent: true,
-            }),
-          },
+          result: { data: waiting === null ? { json: null } : superjson(waiting, ["since"]) },
         };
-      else if (mine[index] === "identity") {
+      else if (mine[index] === "detail") {
+        const data = patchDetail(answers[index].result.data, {
+          status: "running",
+          harness: "codex",
+          protocolAgent: true,
+        });
+        // Both people run as themselves in the workspace: what the waiting line needs.
+        data.json.session.livePeople = [
+          { accountId: ownerId, name: "Verifier" },
+          { accountId: memberId, name: "Ada Verify" },
+        ];
+        answers[index] = { result: { data } };
+      } else if (mine[index] === "identity") {
         const data = structuredClone(answers[index].result.data);
         const added = data.json.accounts.length;
         const stamp = new Date().toISOString();
@@ -429,6 +438,34 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
       `owner: the member's message carries their initials and name; its turn reads "${header}" (turnsOnSendersLogin ${onSenders})`,
     );
     await shoot("fixture-owner-sees-the-message", true);
+
+    // ─── The waiting line (per-person-homes.md `waiting-line`) ───
+    // The owner's next turn waits for background work running as the member: the owner may end it.
+    waiting = {
+      sessionId: id,
+      turnId: "fixture-turn-3",
+      runsAs: memberId,
+      sender: ownerId,
+      openTurn: false,
+      work: [
+        { kind: "task", id: "fixture-task-1", description: "pnpm vitest --watch", endable: true },
+        { kind: "wakeup", id: "fixture-wakeup-1", description: null, endable: false },
+      ],
+      line: "Waits for Ada Verify's 2 background tasks to finish before Verifier's turn starts.",
+      since: new Date().toISOString(),
+    };
+    await openSession();
+    const waits = visible(page.getByRole("status").filter({ hasText: /^Waits for / }));
+    await waits.waitFor();
+    const work = page.getByRole("list", { name: "Work the turn waits for" });
+    await work.getByRole("button", { name: "End task pnpm vitest --watch" }).waitFor();
+    expect("one End, for the work that can end", (await work.getByRole("button").count()) === 1, 0);
+    note(
+      "owner: the waiting line reads \"Waits for Ada Verify's 2 background tasks…\", with End for the task (the wakeup can't be ended)",
+    );
+    await shoot("fixture-owner-waiting-line");
+    waiting = null;
+    await openSession();
 
     // ─── Turn off from the tile's … (Doop BfsRBrpbsh) ───
     // The tile's "…" comes after the sidebar's own row menus in the page.

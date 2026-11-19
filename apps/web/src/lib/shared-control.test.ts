@@ -14,8 +14,10 @@ import {
   type SharedControlView,
   sharedControlBands,
   stepRefusalWords,
+  canEndWaitingWork,
   turnOffItems,
   turnOffSteps,
+  waitingLineQuery,
   withMarkers,
 } from "./shared-control.ts";
 
@@ -328,5 +330,32 @@ describe("the inbox's words", () => {
 
   it("lists names", () => {
     expect(nameList(["Ada", "Linus", "you"])).toBe("Ada, Linus and you");
+  });
+});
+
+describe("the waiting line", () => {
+  const live = [{ accountId: GRACE, name: "Grace Hopper" }];
+
+  it("is read only where people run as themselves and someone besides the owner steers", () => {
+    const base = { livePeople: live, ownerUserId: GRACE, sharedControlEnabledAt: null };
+    expect(waitingLineQuery({ ...base, sharedControlUserIds: [ADA] }, true)).toEqual({
+      enabled: true,
+      refetchInterval: 5_000,
+    });
+    expect(waitingLineQuery({ ...base, sharedControlUserIds: [ADA] }, false).refetchInterval).toBe(
+      false,
+    );
+    expect(waitingLineQuery({ ...base, sharedControlUserIds: [] }, true).enabled).toBe(false);
+    expect(
+      waitingLineQuery({ ...base, livePeople: [], sharedControlEnabledAt: asked }, true).enabled,
+    ).toBe(false);
+  });
+
+  it("lets the owner end the work, or the person it runs as while they steer", () => {
+    const facts = { ownerUserId: GRACE, runsAs: ADA, steer: true };
+    expect(canEndWaitingWork({ ...facts, viewerId: GRACE })).toBe(true);
+    expect(canEndWaitingWork({ ...facts, viewerId: ADA })).toBe(true);
+    expect(canEndWaitingWork({ ...facts, viewerId: ADA, steer: false })).toBe(false);
+    expect(canEndWaitingWork({ ...facts, viewerId: LINUS })).toBe(false);
   });
 });

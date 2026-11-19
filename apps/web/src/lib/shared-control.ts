@@ -636,3 +636,45 @@ export const askersDetail = (askers: ReadonlyArray<string | null>): string => {
   const named = askers.map((name) => name ?? "Someone");
   return `${nameList(named)} asked for shared control`;
 };
+
+// ─── The waiting line (docs/adr/0016, decision 6) ───────────────────────────
+
+/** How often the waiting line is read again while it can show: background work ends unannounced. */
+export const WAIT_POLL_MS = 5_000;
+
+/** What decides whether a session can show the waiting line. */
+export interface WaitFacts {
+  readonly livePeople: ReadonlyArray<unknown>;
+  readonly ownerUserId: string | null;
+  readonly sharedControlEnabledAt: Date | string | null;
+  readonly sharedControlUserIds?: ReadonlyArray<string> | undefined;
+}
+
+/**
+ * How the waiting line ("Waits for Ada's 2 background tasks to finish before Grace's turn
+ * starts.") is read: never where it can't show, which is unless people run as themselves in the
+ * workspace (`livePeople`) and someone besides the owner steers; while it can, every few seconds as
+ * long as the session is live, since nothing announces background work ending.
+ */
+export const waitingLineQuery = (
+  session: WaitFacts,
+  live: boolean,
+): { readonly enabled: boolean; readonly refetchInterval: number | false } => {
+  const shared =
+    session.sharedControlEnabledAt !== null || (session.sharedControlUserIds ?? []).length > 0;
+  const enabled = session.livePeople.length > 0 && shared;
+  return { enabled, refetchInterval: enabled && live ? WAIT_POLL_MS : false };
+};
+
+/**
+ * Who may end the work a turn waits for: the session's owner, or the person the conversation's
+ * process runs as while they still steer.
+ */
+export const canEndWaitingWork = (facts: {
+  readonly viewerId: string | null;
+  readonly ownerUserId: string | null;
+  readonly runsAs: string | null;
+  readonly steer: boolean;
+}): boolean =>
+  facts.viewerId !== null &&
+  (facts.viewerId === facts.ownerUserId || (facts.viewerId === facts.runsAs && facts.steer));
