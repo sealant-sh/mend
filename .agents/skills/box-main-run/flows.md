@@ -1330,6 +1330,29 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Areas:** `apps/cli/src/agent-memory.ts`, `apps/api/src/`
 
+### agent-memory.new-web-only-you
+
+- **Map:** agent-memory.md `memory-list`, `memory-show`, `memory-remove` (and Clear memory…, new on
+  the web with route PR 57); doppler.md `doppler-use`
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-project-only-you`: it makes a project with no repository,
+  imports three memory files through `POST /api/projects/<id>/memory/import`, and opens
+  `/projects/<id>/settings/only-you` from the settings sidebar; View notes…, shows MEMORY.md,
+  removes it; Clear memory… where one file isn't removed (a rewritten answer), then all of them;
+  saves a fake Doppler token, types a config the token can't list, picks one from recorded lists,
+  and chooses Stop using Doppler here; a read that fails and Try again.
+- **See:** each step's note in the recipe's `steps.log`, and its captures:
+  `3 notes. You last imported one today at …`; the notes list with each note's agent and size;
+  MEMORY.md's words; the server listing 2 files after Remove and none after Clear memory; the
+  Doppler row reading `checkout / dev_personal`, then `checkout / dev`, then `None` with Choose…; no
+  part of the token on any page. The recipe removes the token and the project.
+- **Mode:** `scripted` (recipes/new-web-project-only-you.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/only-you-page.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.only-you.tsx`,
+  `apps/web/src/server/routers/memory.ts`, `apps/web/src/lib/only-you.ts`
+
 ### appearance.web-theme
 
 - **Map:** appearance.md `theme-web`, `theme-system`, `theme-persist`
