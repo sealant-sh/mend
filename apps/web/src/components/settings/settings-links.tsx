@@ -47,6 +47,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/connected-apps" };
     case "a-devices":
       return { to: "/settings/devices" };
+    case "a-dotfiles":
+      return { to: "/settings/dotfiles" };
     case "d-appearance":
       return { to: "/settings/appearance" };
     case "o-audit":

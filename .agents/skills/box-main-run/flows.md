@@ -196,6 +196,27 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/settings-pages.ts`, `apps/web/src/lib/settings-guards.ts`,
   `apps/web/src/lib/appearance.ts`, `apps/web/src/lib/account.ts`
 
+### settings.new-web-dotfiles
+
+- **Map:** dotfiles.md `dotfiles-repo-web`, `dotfiles-repo-refused`, `dotfiles-manager`,
+  `dotfiles-web-files`; secret-files.md `secrets-list`, `secrets-add-web`, `secrets-path-refused`,
+  `secrets-remove`
+- **Needs:** no session; no turn; web; the server reaches GitHub
+- **Do:** Drive the recipe `new-web-dotfiles`: old `/settings/workspace#<section>` links land on
+  Dotfiles, Devices and access keys or Connected apps; a repository the server can't clone is
+  refused with nothing saved, and a small public one saves with its manager; a home file is added
+  from the browser and removed; a secret file's path outside the home folder is refused, then the
+  file is added from pasted text, replaced from a chosen file and removed.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the account's repository,
+  home files and secret files are what they were before the run, and no secret file's content
+  appears anywhere.
+- **Mode:** `scripted` (recipes/new-web-dotfiles.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/dotfiles-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.dotfiles.tsx`, `apps/web/src/lib/dotfiles-repository.ts`,
+  `apps/web/src/lib/secret-files.ts`
+
 ### settings.new-web-devices
 
 - **Map:** pairing-devices.md `pair-web`, `mint-by-hand`, `device-list`, `revoke`; workspace-ssh.md

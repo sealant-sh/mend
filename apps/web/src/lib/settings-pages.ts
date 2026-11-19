@@ -273,6 +273,24 @@ const OLD_PATHS: Readonly<Record<string, string>> = {
   "/settings/organization/executor": "/settings/organization/integrations",
 };
 
+/**
+ * The old Workspace page's sections, by the anchors links to it carry (`/settings#secret-files`
+ * went to `/settings/workspace#secret-files`): each lands on the page that holds it now. With no
+ * anchor, `/settings/workspace` goes to Connected apps, where Executor sends a person after linking.
+ */
+const OLD_WORKSPACE_SECTIONS: Readonly<Record<string, string>> = {
+  "dotfiles-repo-url": "/settings/dotfiles",
+  "dotfiles-manager-label": "/settings/dotfiles",
+  "home-files": "/settings/dotfiles",
+  "secret-files": "/settings/dotfiles",
+  "workspace-ssh": "/settings/devices",
+  doppler: "/settings/connected-apps",
+};
+
+/** Where `/settings/workspace` with this anchor goes. */
+export const oldWorkspacePath = (hash: string): string =>
+  OLD_WORKSPACE_SECTIONS[hash.replace(/^#/, "")] ?? "/settings/connected-apps";
+
 /** The new home of an old settings address, or null when the address isn't an old one. */
 export const oldSettingsPath = (pathname: string): string | null => {
   const path = pathname.replace(/\/+$/, "");
