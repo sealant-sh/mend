@@ -18,7 +18,8 @@
 //   the owner's put back); the phone's list and page; the old addresses; the project's "…".
 // - Rewritten: a read of the project that fails (a 500), for the error screen and Try again.
 //
-// The recipe purges the project it made and removes the person it added, so it can run again.
+// The recipe removes the person it added, and purges the project it made (or, when the server
+// still refuses the purge, leaves it removed for the next run to purge), so it can run again.
 const DESKTOP = { width: 1280, height: 900 };
 const personName = "Mae Verify";
 const PHONE = { width: 390, height: 844 };
@@ -364,10 +365,24 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await purge.getByLabel(/^Type/).fill(name);
     await shot("project-general-purge-desktop-light");
     await purge.getByRole("button", { name: "Purge project", exact: true }).click();
-    await heading("Page not found");
-    const left = (await call("projects.removed")).some((entry) => entry.id === project.id);
-    expect("purged", !left, left);
-    note("settings-retention: Purge… with the name typed deletes it; its address is not found");
+    // The server refuses a purge for a while after removal, while an upload the project started may
+    // still land, and says until when: the dialog shows its words. Either answer is the real one.
+    const gone = visible(page.getByRole("heading", { name: "Page not found", exact: true }));
+    const refusedPurge = purge.getByText(`${name} wasn't purged.`);
+    await gone.or(refusedPurge).waitFor({ timeout: 60_000 });
+    if (await refusedPurge.isVisible()) {
+      note(
+        `settings-retention: Purge… refused by the server in its words: ${(await purge.innerText()).replace(/\s+/g, " ").slice(0, 300)}`,
+      );
+      await shot("project-general-purge-refused-desktop-light");
+      await page.keyboard.press("Escape");
+      await purge.waitFor({ state: "hidden" });
+    } else {
+      const left = (await call("projects.removed")).some((entry) => entry.id === project.id);
+      expect("purged", !left, left);
+      note("settings-retention: Purge… with the name typed deletes it; its address is not found");
+      await shot("project-general-purged-desktop-light");
+    }
 
     // --- A read that fails --------------------------------------------------------------------
     const kept = other ?? null;
