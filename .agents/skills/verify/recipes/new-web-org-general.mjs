@@ -289,7 +289,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await open("/settings/organization");
     const owners = visible(page.getByRole("list", { name: `${organization}'s owners` }));
     await owners.getByText(personName).waitFor();
-    await owners.getByText("Joined today").first().waitFor();
+    await visible(owners.getByText("Joined today")).waitFor();
     note(`${personName} made an owner: the owners list has both, each with when they joined`);
     await shot("general-two-owners-desktop-light");
 
