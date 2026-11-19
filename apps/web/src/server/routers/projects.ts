@@ -245,6 +245,19 @@ export const projectsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projectLinks.remove({ params: { id: i.id, linkId: i.linkId } })),
     ),
+  // The project's mend.toml as its default branch holds it, read whole (`GET /projects/:id/contents`):
+  // `.mend/mend.toml`, else the older `mend.toml` at the root, the order sessions read them in. Null
+  // when the branch has neither. Mend has no read of the file's Services for a project without a
+  // session, so the Services settings page shows the file itself.
+  mendToml: procedure.input(byId).query(async ({ ctx, input: i }) => {
+    for (const path of [".mend/mend.toml", "mend.toml"]) {
+      const read = await run(ctx, (api) =>
+        api.projects.contents({ params: { id: i.id }, query: { path } }),
+      );
+      if (read.file !== null) return read.file;
+    }
+    return null;
+  }),
   recipes: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>

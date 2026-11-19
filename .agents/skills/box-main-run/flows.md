@@ -1520,6 +1520,27 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.folders.tsx`,
   `apps/web/src/lib/project-folders.ts`
 
+### project-settings.new-web-services
+
+- **Map:** mend-toml.md (the file's Services, read-only; `toml-project-recipes` and `toml-shadowed`
+  dropped by ruling D8); services.md (the fixed preview address and moving it to another worktree)
+- **Needs:** no session; no turn; web; `<p>` (a project whose default branch has a
+  `.mend/mend.toml`, ideally with `[preview] fixed = true`)
+- **Do:** Drive the recipe `new-web-project-services`, or by hand: open `<p>`'s Settings → Services;
+  read the banner, the file and the Fixed preview address row; on a project whose file declares a
+  fixed preview, Change worktree… to another worktree and back.
+- **See:** "Read-only here." over the page; "This is the file on <branch>." with the branch's
+  `.mend/mend.toml` shown with line numbers, or "<branch> has no .mend/mend.toml." and what that
+  means; the row naming the host, the Service and the worktree it shows; Change worktree… listing
+  the project's worktrees by their newest session with the current one marked, then Default branch;
+  after the move, `The preview address now shows "<label>".` and the row naming it.
+- **Mode:** `scripted` (recipes/new-web-project-services.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/project-services-page.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.services.tsx`,
+  `apps/web/src/lib/project-services.ts`
+
 ### references-folders.folder-cli
 
 - **Map:** references-folders.md `folder-cli`, `folder-web` (read)
