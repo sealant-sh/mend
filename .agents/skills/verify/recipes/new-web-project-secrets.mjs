@@ -89,11 +89,10 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       .getByText(words)
       .first()
       .waitFor({ state: "attached" });
-  const variables = () => visible(page.getByRole("list", { name: "Environment variables" }));
-  const secrets = () => visible(page.getByRole("list", { name: "Secrets" }));
-  // A secret's name doesn't count as visible to the driver (it hides credential-looking text from
-  // pictures): wait for it to be in the list.
-  const present = (locator) => locator.first().waitFor({ state: "attached" });
+  // Exact names: the project is called secrets-…, and the sidebar lists its pages under that name.
+  const variables = () =>
+    visible(page.getByRole("list", { name: "Environment variables", exact: true }));
+  const secrets = () => visible(page.getByRole("list", { name: "Secrets", exact: true }));
   const closed = (name) => page.getByRole("dialog", { name }).waitFor({ state: "hidden" });
 
   await page.emulateMedia({ colorScheme: "light" });
@@ -176,7 +175,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await add.getByRole("button", { name: "Add secret", exact: true }).click();
     await closed("Add secret");
     await toastSays("Added VERIFY_API_TOKEN.");
-    await present(secrets().getByText("VERIFY_API_TOKEN", { exact: true }));
+    await secrets().getByText("VERIFY_API_TOKEN", { exact: true }).waitFor();
     const listed = await call("environment.secrets", { projectId: project.id });
     expect(
       "the secret's value never comes back",
@@ -240,7 +239,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     }
     await closed("Import .env file");
     await variables().getByText("FEATURE_FLAGS", { exact: true }).waitFor();
-    await present(secrets().getByText("GITHUB_TOKEN", { exact: true }));
+    await secrets().getByText("GITHUB_TOKEN", { exact: true }).waitFor();
     note("env-routing: FEATURE_FLAGS landed in Environment variables, GITHUB_TOKEN in Secrets");
 
     // --- Remove --------------------------------------------------------------------------------------
