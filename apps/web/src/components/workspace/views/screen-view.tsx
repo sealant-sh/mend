@@ -295,7 +295,19 @@ function LiveScreen({
 
   const ownsSession = facts.session.ownerUserId === facts.viewerId;
   return (
-    <div ref={panel} className="flex min-h-0 flex-1 flex-col bg-background">
+    <div
+      ref={panel}
+      className="flex min-h-0 flex-1 flex-col bg-background"
+      // Escape leaves full screen even while the screen takes the keys.
+      onKeyDownCapture={(event) => {
+        if (event.key !== "Escape" || document.fullscreenElement !== event.currentTarget) return;
+        event.preventDefault();
+        event.stopPropagation();
+        void document
+          .exitFullscreen()
+          .catch(() => setNotice("Full screen didn't close. Try Esc again."));
+      }}
+    >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border px-5 py-2.5 max-lg:px-4">
         <p className="flex min-w-0 flex-wrap items-baseline gap-x-2 text-row" role="status">
           <span className="text-foreground">{bar.title}</span>
