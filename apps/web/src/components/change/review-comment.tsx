@@ -53,20 +53,35 @@ const metaWords = (comment: ReviewCommentDto, withPlace: boolean): string => {
 };
 
 /** The lines a suggestion would put in place, as they are; none means deleting the lines. */
-function Suggestion({ comment }: { readonly comment: ReviewCommentDto }) {
+function Suggestion({
+  comment,
+  wrap,
+}: {
+  readonly comment: ReviewCommentDto;
+  /** In a narrow view long lines wrap, so the comment keeps to the view's width. */
+  readonly wrap: boolean;
+}) {
   if (comment.kind !== "suggestion") return null;
   if (comment.suggestion === null)
     return <p className="mt-2 text-meta text-muted-foreground">Suggested: delete these lines.</p>;
   return (
     <div className="mt-2.5 grid gap-1.5">
       <p className="text-meta text-muted-foreground">Suggested replacement</p>
-      <pre className="grid grid-cols-[auto_1fr] overflow-x-auto rounded-lg border bg-success/5 px-3 py-2 font-mono text-2xs leading-[1.75] text-foreground">
-        <span aria-hidden className="pr-3 text-success select-none">
-          {comment.suggestion
-            .split("\n")
-            .map(() => "+")
-            .join("\n")}
-        </span>
+      <pre
+        className={cn(
+          "overflow-x-auto rounded-lg border bg-success/5 px-3 py-2 font-mono text-2xs leading-[1.75] text-foreground",
+          // Wrapped lines can't keep a sign column beside them: the code alone, wrapped.
+          wrap ? "whitespace-pre-wrap break-all" : "grid grid-cols-[auto_1fr]",
+        )}
+      >
+        {wrap ? null : (
+          <span aria-hidden className="pr-3 text-success select-none">
+            {comment.suggestion
+              .split("\n")
+              .map(() => "+")
+              .join("\n")}
+          </span>
+        )}
         <code>{comment.suggestion}</code>
       </pre>
     </div>
@@ -145,10 +160,13 @@ export function ReviewComment({
   comment,
   place,
   touch = false,
+  narrow = false,
 }: {
   readonly comment: ReviewCommentDto;
   readonly place: "line" | "change";
   readonly touch?: boolean;
+  /** A phone or a narrow tile: a suggestion's long lines wrap. */
+  readonly narrow?: boolean;
 }) {
   const { buttons, said } = useCommentActions(comment, touch);
   const folded = comment.state === "addressed" || comment.state === "dismissed";
@@ -185,7 +203,7 @@ export function ReviewComment({
       {folded ? null : (
         <>
           <RichText text={comment.body} className="mt-1.5 text-prose" />
-          <Suggestion comment={comment} />
+          <Suggestion comment={comment} wrap={narrow} />
           <Evidence comment={comment} />
           {draft && touch ? <div className="mt-3 flex gap-2 *:flex-1">{buttons}</div> : null}
         </>
@@ -270,7 +288,7 @@ export function CommentComposer({
         />
         <div className="flex flex-wrap items-center justify-end gap-2 px-3 pb-2.5">
           {compact ? null : (
-            <p className="mr-auto text-meta text-muted-foreground">
+            <p className="mr-auto min-w-0 flex-1 basis-56 text-meta text-muted-foreground">
               You can use Markdown. {agent} gets this when you send your comments.
             </p>
           )}

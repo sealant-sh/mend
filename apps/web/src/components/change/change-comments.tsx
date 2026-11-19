@@ -41,7 +41,6 @@ import {
   commentGroups,
   countWords,
   deliveryOf,
-  isDismissedDraft,
   type LineAnchor,
   lineLabel,
   parseAnchor,
@@ -449,8 +448,10 @@ export function useChangeComments({
         : null,
   };
 
+  // Dismissed comments and drafts stay out of the way until the person asks to see them.
+  const shown = (comment: ReviewCommentDto) => comment.state !== "dismissed" || showDismissed;
   const inLines = (comment: ReviewCommentDto) =>
-    comment.file !== null && comment.line !== null && (!isDismissedDraft(comment) || showDismissed);
+    comment.file !== null && comment.line !== null && shown(comment);
   const annotations = (file: ChangeFile): ReadonlyArray<DiffLineAnnotation<CommentMark>> => {
     const marks: Array<DiffLineAnnotation<CommentMark>> = all
       .filter((comment) => comment.file === file.path && inLines(comment))
@@ -470,7 +471,7 @@ export function useChangeComments({
   };
   const render = (mark: CommentMark): ReactNode =>
     mark.kind === "comment" ? (
-      <ReviewComment comment={mark.comment} place="line" touch={touch} />
+      <ReviewComment comment={mark.comment} place="line" touch={touch} narrow={narrow} />
     ) : (
       <div
         data-composer
@@ -556,7 +557,7 @@ export function useChangeComments({
 
   const showComment = (comment: ReviewCommentDto) => {
     setColumnOpen(false);
-    if (isDismissedDraft(comment)) setShowDismissed(true);
+    if (comment.state === "dismissed") setShowDismissed(true);
     moves.show(comment.file, `[data-comment="${comment.id}"]`);
   };
   const failedIds: ReadonlySet<string> =
@@ -600,6 +601,10 @@ export function useChangeComments({
         ? `${groups.unsent.length.toLocaleString("en")} not sent`
         : `${groups.comments.filter((comment) => comment.state === "open").length.toLocaleString("en")} open`;
   const shownDrafts = showDismissed ? [...groups.drafts, ...groups.dismissedDrafts] : groups.drafts;
+  const shownComments = groups.comments.filter(shown);
+  const dismissedComments =
+    groups.comments.length -
+    groups.comments.filter((comment) => comment.state !== "dismissed").length;
 
   const column = (
     <>
@@ -620,9 +625,9 @@ export function useChangeComments({
           <p role="status" className="px-2 text-meta text-muted-foreground">
             Reading the comments…
           </p>
-        ) : groups.comments.length === 0 ? null : (
+        ) : shownComments.length === 0 ? null : (
           <ul className="grid gap-0.5">
-            {groups.comments.map((comment) => (
+            {shownComments.map((comment) => (
               <ColumnRow
                 key={comment.id}
                 comment={comment}
@@ -632,6 +637,30 @@ export function useChangeComments({
             ))}
           </ul>
         )}
+        {dismissedComments > 0 ? (
+          <p className="px-2 text-meta text-muted-foreground">
+            {showDismissed ? (
+              <Button
+                variant="link"
+                className="h-auto p-0 text-meta text-info"
+                onClick={() => setShowDismissed(false)}
+              >
+                Hide what you dismissed
+              </Button>
+            ) : (
+              <>
+                You dismissed {countWords(dismissedComments, "comment", "comments")}.{" "}
+                <Button
+                  variant="link"
+                  className="h-auto p-0 text-meta text-info"
+                  onClick={() => setShowDismissed(true)}
+                >
+                  {dismissedComments === 1 ? "Show it" : "Show them"}
+                </Button>
+              </>
+            )}
+          </p>
+        ) : null}
         <ChangeComposer
           draftKey={reviewDraftKey(scope, "whole")}
           agent={agent}
@@ -721,16 +750,20 @@ export function useChangeComments({
   );
 
   // Comments on the whole change, over the diffs, where their states are changed.
-  const changeLevel = all.filter(
-    (comment) => comment.file === null && (!isDismissedDraft(comment) || showDismissed),
-  );
+  const changeLevel = all.filter((comment) => comment.file === null && shown(comment));
   const above =
     changeLevel.length === 0 ? null : (
       <section aria-label="On the whole change" className="border-b bg-band pt-3">
         <h3 className="px-6 text-meta text-muted-foreground">On the whole change</h3>
         <div className="divide-y">
           {changeLevel.map((comment) => (
-            <ReviewComment key={comment.id} comment={comment} place="change" touch={touch} />
+            <ReviewComment
+              key={comment.id}
+              comment={comment}
+              place="change"
+              touch={touch}
+              narrow={narrow}
+            />
           ))}
         </div>
       </section>

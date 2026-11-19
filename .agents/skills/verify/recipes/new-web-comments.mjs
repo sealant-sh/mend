@@ -456,9 +456,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   note("Reopen put it back: Send counts 4");
   const keyed = comment("Also check that a 409");
   await keyed.getByRole("button", { name: "Dismiss" }).click();
-  await keyed.getByText(/^Dismissed/).waitFor({ timeout: 15_000 });
+  await keyed.waitFor({ state: "hidden", timeout: 15_000 });
   await button("Send 3 comments to Claude Code").waitFor();
-  note("Dismiss: 'Dismissed', out of the send (3)");
+  const dismissedLine = await visible(page.getByText(/^You dismissed \d+ comments?\./)).innerText();
+  note(
+    `Dismiss: the comment leaves the diff and the send (3); the column reads "${dismissedLine}"`,
+  );
 
   // Mend's passes, for real: the stack's agent login is fake, so both fail on the stack.
   const readAsked = page.waitForResponse((response) =>
