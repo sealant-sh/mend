@@ -136,3 +136,71 @@ describe("projects router: renaming a project", () => {
     });
   });
 });
+
+const mendToml = (apiUrl: string) =>
+  createTrpcHandler({ network, apiUrl })(
+    new Request(
+      `http://internal-web.invalid/trpc/projects.mendToml?input=${encodeURIComponent(
+        JSON.stringify({ json: { id: "project-checkout" } }),
+      )}`,
+      { headers },
+    ),
+  );
+
+/** `GET /projects/:id/contents?path=…` as the API answers it for a file the branch has or lacks. */
+const contents = (path: string, text: string | null) => ({
+  status: 200,
+  body: {
+    projectId: "project-checkout",
+    file:
+      text === null
+        ? null
+        : { path, at: null, contents: text, size: text.length, truncated: false, binary: false },
+    search: null,
+  },
+});
+const contentsPath = (path: string) =>
+  `/api/projects/project-checkout/contents?path=${encodeURIComponent(path)}`;
+
+describe("projects router: the default branch's mend.toml", () => {
+  let api: Awaited<ReturnType<typeof startApi>> | null = null;
+  afterEach(async () => {
+    await api?.close();
+  });
+
+  it("reads .mend/mend.toml first, as sessions do", async () => {
+    api = await startApi({
+      [contentsPath(".mend/mend.toml")]: contents(
+        ".mend/mend.toml",
+        "[service.web]\nport = 3000\n",
+      ),
+    });
+    const response = await mendToml(api.apiUrl);
+
+    expect(api.requests.map((request) => request.path)).toEqual([contentsPath(".mend/mend.toml")]);
+    expect(await response.json()).toMatchObject({
+      result: {
+        data: { json: { path: ".mend/mend.toml", contents: "[service.web]\nport = 3000\n" } },
+      },
+    });
+  });
+
+  it("falls back to mend.toml at the root, and answers null when the branch has neither", async () => {
+    api = await startApi({
+      [contentsPath(".mend/mend.toml")]: contents(".mend/mend.toml", null),
+      [contentsPath("mend.toml")]: contents("mend.toml", "[service.db]\nport = 5432\n"),
+    });
+    expect(await (await mendToml(api.apiUrl)).json()).toMatchObject({
+      result: { data: { json: { path: "mend.toml" } } },
+    });
+    await api.close();
+
+    api = await startApi({
+      [contentsPath(".mend/mend.toml")]: contents(".mend/mend.toml", null),
+      [contentsPath("mend.toml")]: contents("mend.toml", null),
+    });
+    expect(await (await mendToml(api.apiUrl)).json()).toMatchObject({
+      result: { data: { json: null } },
+    });
+  });
+});
