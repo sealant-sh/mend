@@ -1351,6 +1351,38 @@ flows reuse what earlier ones made:
   `apps/web-old/src/routes/settings.organization.defaults.tsx`, `apps/api/src/`,
   `packages/db/src/repos/person-settings.ts`
 
+### project-settings.new-web-general
+
+- **Map:** project-settings.md `settings-visibility`, `settings-remove`, `settings-retention`;
+  organization.md `visibility`; renaming a project (`POST /projects/:id/name`, new on the web with
+  route PR 52); the project's settings frame (its pages in the settings sidebar, the phone's list of
+  them, old `/projects/<id>/configuration#…` addresses)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-project-general`: it makes a project with no repository, opens
+  `/projects/<id>/settings` (General) as its owner, follows the old configuration and settings
+  addresses and the project's "…" → Project settings; renames it (a name Mend won't take and a taken
+  one refused beside the field, Save, Enter, Escape); makes it shared and private; a second person
+  joins through an invitation and reads the shared project's page as a member; the phone's list of
+  the project's pages; removes it from its page, restores it, removes it again and purges it; a read
+  that fails and Try again.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: the breadcrumb
+  `Settings / <project> / General`; `Renamed to <name>.` with the breadcrumb and sidebar reading the
+  new name, and a `project.renamed` audit entry; the member's read-only page naming who can change
+  it and who can remove it, and the server's 404 to their rename; after Remove the page shows the
+  removed project with Restore and Purge…; after Purge its address is not found. The project is
+  purged and the second person removed.
+- **Mode:** `scripted` (recipes/new-web-project-general.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/project-general-page.tsx`,
+  `apps/web/src/components/settings/phone-project-settings.tsx`,
+  `apps/web/src/components/settings/removed-project-page.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.index.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.general.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.configuration.tsx`,
+  `apps/web/src/lib/project-settings.ts`
+
 ### references-folders.folder-cli
 
 - **Map:** references-folders.md `folder-cli`, `folder-web` (read)
