@@ -21,7 +21,8 @@
 //   first page held back for a moment), a first page that fails (Try again), and an older page that
 //   fails (said under the button).
 //
-// The recipe leaves verify-fixture private and every link it made revoked.
+// The recipe leaves verify-fixture private, every link it made revoked, and removes the member
+// it adds to show that a member can't open the page.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
@@ -68,7 +69,7 @@ const failure = {
   },
 };
 
-export default async ({ page, web, capture, note }) => {
+export default async ({ page, web, capture, note, typeSecret, registerSecret }) => {
   const settled = () => page.waitForTimeout(500);
   const heading = (name) => visible(page.getByRole("heading", { name, exact: true })).waitFor();
   const hydrated = async () => {
@@ -265,6 +266,53 @@ export default async ({ page, web, capture, note }) => {
   await visible(page.getByRole("button", { name: "Try again" })).click();
   await heading("Audit log");
   note("Try again reads the log and it draws");
+
+  // --- A member: no Audit log in the sidebar, and refused by address --------------------------
+  const invitation = await owner("POST", "/api/organization/invitations", { role: "member" });
+  expect("an invitation for the member", invitation.status === 200, invitation.status);
+  registerSecret("invitation-token", invitation.body.token);
+  const second = await page.context().browser().newContext();
+  const memberPage = await second.newPage();
+  let memberId = null;
+  try {
+    await memberPage.goto(`${web}/join#${invitation.body.token}`);
+    await memberPage.getByRole("heading", { name: /^Join / }).waitFor();
+    await memberPage.getByRole("textbox", { name: "Name" }).fill("Mae Verify");
+    await memberPage
+      .getByRole("textbox", { name: "Email" })
+      .fill(`verify-audit-${Date.now()}@example.invalid`);
+    for (const label of ["Password", "Confirm password"])
+      await typeSecret(
+        memberPage.getByLabel(label, { exact: true }),
+        "member-password",
+        "an-audit-verify-password",
+      );
+    await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
+    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    memberId = (await apiOf(memberPage)("GET", "/api/organization")).body?.userId ?? null;
+    const ownerCookies = await page.context().cookies();
+    await page.context().clearCookies();
+    await page.context().addCookies(await second.cookies());
+    await page.setViewportSize(DESKTOP);
+    await open("/settings/organization/audit-log");
+    await page.waitForURL((url) => url.pathname === "/settings/profile");
+    await heading("Profile");
+    const entries = await page
+      .locator('[data-slot="sidebar"][aria-label="Settings"]')
+      .first()
+      .getByRole("link")
+      .evaluateAll((links) => links.map((link) => link.textContent?.trim() ?? ""));
+    expect("a member's sidebar has no Audit log", !entries.includes("Audit log"), entries);
+    const refused = await apiOf(page)("GET", "/api/organization/audit");
+    expect("the server answers a member 404", refused.status === 404, refused.status);
+    note("a member: no Audit log in the sidebar; its address goes to Profile; the API answers 404");
+    await shot("audit-member-refused-desktop-light");
+    await page.context().clearCookies();
+    await page.context().addCookies(ownerCookies);
+  } finally {
+    if (memberId !== null) await owner("DELETE", `/api/organization/members/${memberId}`);
+    await second.close();
+  }
 
   // --- The phone ------------------------------------------------------------------------------
   await page.setViewportSize(PHONE);
