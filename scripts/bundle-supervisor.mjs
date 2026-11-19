@@ -137,6 +137,22 @@ export const previewSealantdEnvironment = (environment) => {
 };
 
 /**
+ * The web front the bundle serves: today's app (`apps/web-old`) unless the image was built with
+ * `MEND_WEB_APP=web`, the new app (`apps/web`, ADR 0027). Only a preview build passes it
+ * (.github/workflows/preview.yml); a release build passes none and serves today's app. Any other
+ * value is refused, so a typo can't start a front the image doesn't carry.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @returns {string}
+ */
+export const webFrontPath = (environment) => {
+  const app = environment.MEND_WEB_APP?.trim() || "web-old";
+  if (app === "web-old") return "/app/apps/web-old/.output/front.mjs";
+  if (app === "web") return "/app/apps/web/.output/front.mjs";
+  throw new Error(`MEND_WEB_APP is ${JSON.stringify(app)}: it names web-old or web`);
+};
+
+/**
  * How many workspace launches (and stops) the bundled Sealant worker runs at once. Sealant's
  * default is one, and a launch holds that slot until its executor is ready, the restore of a large
  * capture included: on the box, where several people and agents start sessions, a session waited
@@ -335,6 +351,8 @@ const baseSpecification = (name, command, environment = {}) => ({
 
 const startBundle = async (supervisor) => {
   const configuration = await parseConfiguration();
+  // Read before anything starts: a front the image doesn't carry stops the bundle here.
+  const webFront = webFrontPath(process.env);
   // Sealant's job queue lives in its Postgres database (pg-boss) and workspace images stay in the
   // host Docker Engine (no registry env means the local Engine store), so the Sealant processes
   // are the only supporting processes here.
@@ -414,7 +432,7 @@ const startBundle = async (supervisor) => {
     timeoutMs: 240_000,
   });
   await supervisor.start(
-    baseSpecification("mend-web", ["node", "/app/apps/web-old/.output/front.mjs"], {
+    baseSpecification("mend-web", ["node", webFront], {
       PORT: "3105",
       MEND_API_URL: "http://127.0.0.1:3101",
     }),

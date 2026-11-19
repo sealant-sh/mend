@@ -129,16 +129,20 @@ anyway.
 
 ### The new web app
 
-A preview image serves only the old web app (`apps/web-old`) until cut-over (ADR 0027), and so does
-every release. A route of the new app (`apps/web`) is checked on the box from its author's checkout
-instead, and nothing on the box changes for it. `pnpm verify drive new-web --box` runs `vite dev` on
-this machine behind a local proxy. The proxy sends `/api` to the box's `APP_URL` with the box's own
-`Origin`, so the box's allowed origins stay as they are. The new app signs in on its own `/login` as
-the box's checker account, and the session cookie the box sets is for `localhost`. A change that is
-only `apps/web` and `packages/ui` needs no preview of its head: `verify box identity` passes on that
+A preview image serves the old web app (`apps/web-old`) until cut-over (ADR 0027), and so does every
+release, unless its dispatch asks for the new one with `-f web_app=web`. That preview's image builds
+`apps/web`, its `dev.sealant.mend.web-app` label reads `web`, and the bundle supervisor starts the
+new app's front on 3105 in place of the old one's. Nothing else about it changes.
+
+A route of the new app (`apps/web`) is checked on the box from its author's checkout instead, and
+nothing on the box changes for it. `pnpm verify drive new-web --box` runs `vite dev` on this machine
+behind a local proxy. The proxy sends `/api` to the box's `APP_URL` with the box's own `Origin`, so
+the box's allowed origins stay as they are. The new app signs in on its own `/login` as the box's
+checker account, and the session cookie the box sets is for `localhost`. A change that is only
+`apps/web` and `packages/ui` needs no preview of its head: `verify box identity` passes on that
 drive, against a box whose server is the head's base or later. The commands are in the verify skill,
-section 9. The new app's production build has never run on the box; the box check of the whole new
-app before cut-over is what will run it.
+section 9. The box check of the whole new app before cut-over runs a preview built with
+`web_app=web`.
 
 ### From the workflow
 
