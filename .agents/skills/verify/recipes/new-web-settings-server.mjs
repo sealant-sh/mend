@@ -331,11 +331,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await navigate("/settings/profile");
   await heading("Profile");
   void navigate("/settings/server");
-  await page.waitForTimeout(1_200);
-  note("while the page's reads run (held back 4 s), the loading screen shows");
+  await visible(page.getByText("Reading the exposure report…", { exact: true })).waitFor();
+  await page.evaluate(() =>
+    document.querySelectorAll(".overflow-y-auto").forEach((element) => element.scrollTo(0, 0)),
+  );
+  await page.waitForTimeout(400);
+  note("while a section's read runs (held back 4 s), the section says what it is reading");
   await capture("server-loading-desktop-light");
-  await heading("Server");
-  await page.unroute("**/trpc/**");
+  await visible(page.getByRole("table", { name: "Exposure checks" })).waitFor({ timeout: 30_000 });
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 
   // --- Someone who isn't an operator: no Server, refused by address ------------------------
   const invitation = await operator("POST", "/api/organization/invitations", { role: "member" });

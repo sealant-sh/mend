@@ -129,7 +129,7 @@ function FactRow({
   return (
     <div
       data-slot="fact-row"
-      className="grid gap-x-8 gap-y-0.5 border-b border-border py-3.5 max-lg:px-4 lg:grid-cols-[16.5rem_1fr]"
+      className="grid gap-x-8 gap-y-0.5 border-b border-border py-3.5 max-lg:px-4 lg:grid-cols-[14.5rem_1fr]"
     >
       <p className="font-semibold max-lg:text-row max-lg:font-normal max-lg:text-muted-foreground">
         {label}
@@ -165,7 +165,7 @@ function CheckList({
   readonly label: string;
   readonly items: ReadonlyArray<CheckItem>;
 }) {
-  const columns = "lg:grid lg:grid-cols-[16.5rem_9rem_1fr] lg:gap-x-8";
+  const columns = "lg:grid lg:grid-cols-[14.5rem_8rem_1fr] lg:gap-x-8";
   return (
     <div role="table" aria-label={label}>
       <div
@@ -277,7 +277,9 @@ function ExposureSection({ machine }: { readonly machine: UseQueryResult<Machine
         query={report}
         pending={
           <SectionBody>
-            <Status tone="run">Reading the exposure report…</Status>
+            <Status tone="run" className="text-row">
+              Reading the exposure report…
+            </Status>
           </SectionBody>
         }
       >
@@ -406,7 +408,9 @@ function ThisServerSection({
         query={health}
         pending={
           <SectionBody>
-            <Status tone="run">Asking the server…</Status>
+            <Status tone="run" className="text-row">
+              Asking the server…
+            </Status>
           </SectionBody>
         }
       >
@@ -459,7 +463,9 @@ function RuntimesSection({ machine }: { readonly machine: UseQueryResult<Machine
         query={machine}
         pending={
           <SectionBody>
-            <Status tone="run">Reading the runtimes…</Status>
+            <Status tone="run" className="text-row">
+              Reading the runtimes…
+            </Status>
           </SectionBody>
         }
       >
@@ -557,7 +563,11 @@ function SealantRow({
       pending={
         <FactRow
           label="Sealant"
-          value={<Status tone="run">Checking…</Status>}
+          value={
+            <Status tone="run" className="text-row">
+              Checking…
+            </Status>
+          }
           note="Mend is asking Sealant now."
         />
       }
@@ -569,7 +579,9 @@ function SealantRow({
             label="Sealant"
             value={
               connection.isFetching ? (
-                <Status tone="run">Checking…</Status>
+                <Status tone="run" className="text-row">
+                  Checking…
+                </Status>
               ) : (
                 <Status tone={reading.tone} className="text-prose">
                   {reading.word}
@@ -607,7 +619,9 @@ function ImageSection() {
         query={settings}
         pending={
           <SectionBody>
-            <Status tone="run">Reading the image…</Status>
+            <Status tone="run" className="text-row">
+              Reading the image…
+            </Status>
           </SectionBody>
         }
       >
@@ -687,7 +701,9 @@ function OrganizationsSection({ health }: { readonly health: UseQueryResult<Heal
         query={organizations}
         pending={
           <SectionBody>
-            <Status tone="run">Reading the organizations…</Status>
+            <Status tone="run" className="text-row">
+              Reading the organizations…
+            </Status>
           </SectionBody>
         }
         empty={
@@ -704,7 +720,7 @@ function OrganizationsSection({ health }: { readonly health: UseQueryResult<Heal
                 <FactRow
                   label={summary.organization.name}
                   value={organizationCounts(summary)}
-                  note={`Created ${summary.organization.createdAt.toLocaleDateString(undefined, {
+                  note={`Created ${summary.organization.createdAt.toLocaleDateString("en-GB", {
                     day: "numeric",
                     month: "short",
                     year: "numeric",
