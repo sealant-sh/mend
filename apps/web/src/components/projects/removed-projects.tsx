@@ -69,7 +69,7 @@ export function RemovedProjects({
         </p>
         <ul aria-label="Removed projects" className="border-t">
           {removed.data.map((project) => (
-            <RemovedRow
+            <RemovedProjectRow
               key={project.id}
               project={project}
               organizationName={organizationName}
@@ -85,16 +85,24 @@ export function RemovedProjects({
   );
 }
 
-function RemovedRow({
+/**
+ * One removed project in a list: when and by whom, Restore (asking for a new name when its old one
+ * was taken since) and Purge… with its typed confirmation. A removed project's settings page shows
+ * the same row.
+ */
+export function RemovedProjectRow({
   project,
   organizationName,
   removedBy,
   onRestored,
+  onPurged,
 }: {
   readonly project: RemovedProject;
   readonly organizationName: string;
   readonly removedBy: string | null;
   readonly onRestored: (name: string) => void;
+  /** Runs once Mend has purged it. */
+  readonly onPurged?: () => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -219,7 +227,15 @@ function RemovedRow({
               size={phone ? "touch" : "default"}
               disabled={confirm !== project.name || purge.isPending}
               onClick={() =>
-                purge.mutate({ id: project.id, confirm }, { onSuccess: () => setPurging(false) })
+                purge.mutate(
+                  { id: project.id, confirm },
+                  {
+                    onSuccess: () => {
+                      setPurging(false);
+                      onPurged?.();
+                    },
+                  },
+                )
               }
             >
               {purge.isPending ? "Purging…" : "Purge project"}

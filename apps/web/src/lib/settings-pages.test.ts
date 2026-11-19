@@ -7,6 +7,8 @@ import {
   isSettingsPath,
   mayOpen,
   oldAnchorPath,
+  oldProjectAnchorPath,
+  oldProjectSettingsPath,
   oldSettingsPath,
   pageAt,
   SETTINGS_PAGES,
@@ -93,6 +95,8 @@ describe("addresses", () => {
       expect(pageAt(settingsPathOf(page, "p1"))?.page.id).toBe(page.id);
     }
     expect(pageAt("/projects/p1/settings/general")?.projectId).toBe("p1");
+    // A project's settings open on General, as its own address does.
+    expect(pageAt("/projects/p1/settings")).toEqual(pageAt("/projects/p1/settings/general"));
     expect(pageAt("/settings/profile/")?.page.id).toBe("a-profile");
     expect(pageAt("/settings")).toBeNull();
     expect(pageAt("/settings/nothing-here")).toBeNull();
@@ -129,7 +133,7 @@ describe("audience line and breadcrumb", () => {
     expect(crumbs("a-profile")).toEqual(["Account", "Profile"]);
     expect(crumbs("d-appearance")).toEqual(["This device", "Appearance"]);
     expect(crumbs("o-general")).toEqual(["Northwind", "General"]);
-    expect(crumbs("p-services")).toEqual(["Projects", "checkout-api", "Services"]);
+    expect(crumbs("p-services")).toEqual(["checkout-api", "Services"]);
     expect(crumbs("s-server")).toEqual(["Server"]);
   });
 });
@@ -180,6 +184,40 @@ describe("old settings addresses", () => {
   it("stays on Settings for no anchor or one the old page never had", () => {
     expect(oldAnchorPath("")).toBeNull();
     expect(oldAnchorPath("#nothing-here")).toBeNull();
+  });
+});
+
+describe("a project's old settings addresses", () => {
+  it.each([
+    ["#visibility", "/projects/p1/settings/general"],
+    ["#links", "/projects/p1/settings/general"],
+    ["#install-command", "/projects/p1/settings/workspace"],
+    ["#services", "/projects/p1/settings/services"],
+    ["#cluster-bindings", "/projects/p1/settings/secrets"],
+    ["#references", "/projects/p1/settings/folders"],
+    ["#skills", "/projects/p1/skills"],
+    ["#resources", "/projects/p1/resources"],
+    ["#dotfiles", "/settings/dotfiles"],
+    ["#git-access", "/settings/agent-logins"],
+    ["#landing", "/settings/automation"],
+  ])("the Configuration page's %s opens %s", (anchor, now) => {
+    expect(oldProjectAnchorPath("p1", anchor)).toBe(now);
+  });
+
+  it("opens General for no anchor or one the old page never had", () => {
+    expect(oldProjectAnchorPath("p1", "")).toBe("/projects/p1/settings/general");
+    expect(oldProjectAnchorPath("p1", "#nothing-here")).toBe("/projects/p1/settings/general");
+  });
+
+  it("sends an old settings section with no page of its own to the setting's home", () => {
+    expect(oldProjectSettingsPath("/projects/p1/settings/git")).toBe("/settings/agent-logins");
+    expect(oldProjectSettingsPath("/projects/p1/settings/review/")).toBe("/settings/automation");
+  });
+
+  it("leaves a project page's own address, built or not, and any other address", () => {
+    expect(oldProjectSettingsPath("/projects/p1/settings/services")).toBeNull();
+    expect(oldProjectSettingsPath("/projects/p1/settings/nothing-here")).toBeNull();
+    expect(oldProjectSettingsPath("/settings/git")).toBeNull();
   });
 });
 

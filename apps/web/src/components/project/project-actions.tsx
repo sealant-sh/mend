@@ -26,7 +26,6 @@ import {
 import { useState } from "react";
 
 import type { ProjectDetailDto } from "#/lib/api";
-import { laterPage } from "#/lib/later-pages";
 import { worktreeChoices, worktreeLiveWords } from "#/lib/project-sessions";
 import { startShell, type ShellTarget } from "#/lib/project-starts";
 import { shortOrigin } from "#/lib/projects";
@@ -141,7 +140,7 @@ export function ProjectMenu({
           Set up this project…
         </DropdownMenuItem>
         <DropdownMenuItem
-          render={<Link {...laterPage(`projects/${project.id}/settings/general`)} />}
+          render={<Link to="/projects/$projectId/settings" params={{ projectId: project.id }} />}
         >
           <SettingsIcon aria-hidden />
           Project settings
@@ -251,7 +250,8 @@ export function ProjectActionsSheet({
                 </SheetItem>
               )}
               <Link
-                {...laterPage(`projects/${project.id}/settings/general`)}
+                to="/projects/$projectId/settings"
+                params={{ projectId: project.id }}
                 role="menuitem"
                 className={sheetItemClass}
               >

@@ -39,17 +39,18 @@ const AUDIENCE_ICONS: Record<SettingsAudience, ReactNode> = {
  * breadcrumb's and the title's place.
  *
  * The page's name, group and audience come from `lib/settings-pages.ts`; a project's page passes
- * the project's name. The body scrolls inside the sheet.
+ * the project, whose name fills the breadcrumb and the audience line, and whose list of pages is
+ * where Back goes on a phone. The body scrolls inside the sheet.
  */
 export function SettingsPage({
   page: id,
-  projectName,
+  project,
   intro,
   banner,
   children,
 }: {
   readonly page: SettingsPageId;
-  readonly projectName?: string;
+  readonly project?: { readonly id: string; readonly name: string };
   readonly intro: ReactNode;
   /** A state that lasts, over the whole page (a key about to expire): a Banner, under the header. */
   readonly banner?: ReactNode;
@@ -57,14 +58,21 @@ export function SettingsPage({
 }) {
   const { organizationName } = useViewer();
   const page = settingsPage(id);
-  const names: SettingsNames = { organization: organizationName, project: projectName };
+  const names: SettingsNames = { organization: organizationName, project: project?.name };
   const crumbs = crumbsOf(page, names);
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:h-[calc(100dvh-2*var(--spacing-sheet-inset))] lg:flex-none">
       <PhoneHeader
         title={page.label}
-        sub={page.group === "project" ? (projectName ?? "") : groupName(page.group, names)}
-        back={{ link: { to: "/settings" }, label: "Settings" }}
+        sub={page.group === "project" ? (project?.name ?? "") : groupName(page.group, names)}
+        back={
+          project === undefined
+            ? { link: { to: "/settings" }, label: "Settings" }
+            : {
+                link: { to: "/projects/$projectId/settings", params: { projectId: project.id } },
+                label: `${project.name} settings`,
+              }
+        }
         className="lg:hidden"
       />
       <nav
