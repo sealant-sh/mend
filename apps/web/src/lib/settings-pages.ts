@@ -166,9 +166,10 @@ export const pageAt = (
   pathname: string,
 ): { readonly page: SettingsPage; readonly projectId?: string } | null => {
   const path = pathname.replace(/\/+$/, "");
-  const project = /^\/projects\/([^/]+)\/settings\/([^/]+)$/.exec(path);
+  // A project's `/projects/<id>/settings` opens its General page on the desk.
+  const project = /^\/projects\/([^/]+)\/settings(?:\/([^/]+))?$/.exec(path);
   if (project !== null) {
-    const [, projectId, slug] = project;
+    const [, projectId, slug = "general"] = project;
     const found = SETTINGS_PAGES.find(
       (candidate) => candidate.group === "project" && candidate.slug === slug,
     );
@@ -227,8 +228,9 @@ export const groupName = (group: SettingsGroup, names: SettingsNames): string =>
 };
 
 /**
- * The breadcrumb above a page, after "Settings": its group, the project for a project's page, then
- * the page. The Server group has one page, so it isn't said twice.
+ * The breadcrumb above a page, after "Settings": its group, then the page. A project's page names
+ * the project in the group's place ("Settings / checkout-api / General"); the Server group has one
+ * page, so it isn't said twice.
  */
 export const crumbsOf = (
   page: SettingsPage,
@@ -237,11 +239,7 @@ export const crumbsOf = (
   const last = { key: "page", label: page.label } as const;
   if (page.group === "server") return [last];
   if (page.group === "project") {
-    return [
-      { key: "group", label: "Projects" },
-      { key: "project", label: names.project ?? "Project" },
-      last,
-    ];
+    return [{ key: "project", label: names.project ?? "Project" }, last];
   }
   return [{ key: "group", label: groupName(page.group, names) }, last];
 };
@@ -329,3 +327,68 @@ const OLD_ANCHORS: Readonly<Record<string, string>> = {
 /** The page an old anchor opens, or null for no anchor or one the old page never had. */
 export const oldAnchorPath = (hash: string): string | null =>
   OLD_ANCHORS[hash.replace(/^#/, "")] ?? null;
+
+/** Where a section of a project's old settings lives now, given the project. */
+type ProjectHome =
+  | { readonly page: SettingsPageId }
+  | { readonly tab: "skills" | "resources" }
+  | { readonly path: string };
+
+/**
+ * Every section id the old app's project Configuration page carried (`/projects/<id>/configuration#…`),
+ * and the old project settings sections (`/projects/<id>/settings/git`), each at the page that holds
+ * that setting now (docs/adr/0025). A project's own automation, its landing policy and its Git access
+ * mode are gone: those anchors open the person's own page, where the setting lives now. A page not
+ * built yet opens its own address.
+ */
+const OLD_PROJECT_ANCHORS: Readonly<Record<string, ProjectHome>> = {
+  visibility: { page: "p-general" },
+  remove: { page: "p-general" },
+  links: { page: "p-general" },
+  environment: { page: "p-workspace" },
+  "hot-sessions": { page: "p-workspace" },
+  "install-command": { page: "p-workspace" },
+  services: { page: "p-services" },
+  variables: { page: "p-secrets" },
+  secrets: { page: "p-secrets" },
+  "cluster-bindings": { page: "p-secrets" },
+  folders: { page: "p-folders" },
+  mounts: { page: "p-folders" },
+  references: { page: "p-folders" },
+  dotfiles: { path: "/settings/dotfiles" },
+  git: { path: "/settings/agent-logins" },
+  "git-access": { path: "/settings/agent-logins" },
+  sessions: { path: "/settings/automation" },
+  landing: { path: "/settings/automation" },
+  review: { path: "/settings/automation" },
+  skills: { tab: "skills" },
+  resources: { tab: "resources" },
+};
+
+const projectHomePath = (projectId: string, home: ProjectHome): string =>
+  "page" in home
+    ? settingsPathOf(settingsPage(home.page), projectId)
+    : "tab" in home
+      ? `/projects/${projectId}/${home.tab}`
+      : home.path;
+
+/**
+ * Where an old `/projects/<id>/configuration#<anchor>` lands now. No anchor, or one the old page
+ * never had, opens the project's General page.
+ */
+export const oldProjectAnchorPath = (projectId: string, hash: string): string =>
+  projectHomePath(projectId, OLD_PROJECT_ANCHORS[hash.replace(/^#/, "")] ?? { page: "p-general" });
+
+/**
+ * Where an old project settings section that has no page of its own now
+ * (`/projects/<id>/settings/git`, `…/landing`, `…/review`) lands; null for any other address.
+ */
+export const oldProjectSettingsPath = (pathname: string): string | null => {
+  const match = /^\/projects\/([^/]+)\/settings\/([^/]+)\/?$/.exec(pathname);
+  if (match === null) return null;
+  const [, projectId, section] = match;
+  if (projectId === undefined || section === undefined) return null;
+  if (SETTINGS_PAGES.some((page) => page.group === "project" && page.slug === section)) return null;
+  const home = OLD_PROJECT_ANCHORS[section];
+  return home === undefined ? null : projectHomePath(projectId, home);
+};

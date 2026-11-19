@@ -69,7 +69,7 @@ export function RemovedProjects({
         </p>
         <ul aria-label="Removed projects" className="border-t">
           {removed.data.map((project) => (
-            <RemovedRow
+            <RemovedProjectRow
               key={project.id}
               project={project}
               organizationName={organizationName}
@@ -85,7 +85,12 @@ export function RemovedProjects({
   );
 }
 
-function RemovedRow({
+/**
+ * One removed project in a list: when and by whom, Restore (asking for a new name when its old one
+ * was taken since) and Purge… with its typed confirmation. A removed project's settings page shows
+ * the same row.
+ */
+export function RemovedProjectRow({
   project,
   organizationName,
   removedBy,

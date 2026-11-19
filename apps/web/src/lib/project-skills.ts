@@ -1,5 +1,6 @@
 import { SKILL_ENTRY_FILE } from "@mend/domain/workbench";
 
+import { projectChangers } from "./project-settings.ts";
 import {
   type DraftFile,
   justSaved,
@@ -51,17 +52,13 @@ export const projectSkillOwner = (input: {
   /** The organization's members, once read: who added the project is named from them. */
   readonly members: ReadonlyArray<{ readonly userId: string; readonly name: string }>;
 }): SkillOwner => {
-  const owners = `${input.organizationName}'s owners`;
-  const creator =
-    input.createdByUserId === null
-      ? undefined
-      : input.members.find((member) => member.userId === input.createdByUserId);
-  const changers =
-    input.createdByUserId !== null && input.createdByUserId === input.viewerUserId
-      ? `You and ${owners}`
-      : creator === undefined || creator.name.trim() === ""
-        ? `The person who added ${input.projectName} and ${owners}`
-        : `${creator.name}, who added ${input.projectName}, and ${owners}`;
+  const changers = projectChangers({
+    projectName: input.projectName,
+    organizationName: input.organizationName,
+    createdByUserId: input.createdByUserId,
+    viewerUserId: input.viewerUserId,
+    members: input.members,
+  });
   return {
     kind: "project",
     projectId: input.projectId,

@@ -16,7 +16,7 @@ import { useSettingsNav } from "./settings-sidebar.tsx";
  * The phone's Settings tab (Doop "Phone · Settings"): at its top the account row (the account's
  * actions) and the organization row (the switcher), then every page this person may open, grouped
  * as the desk's settings sidebar groups them, each project by name, and Server for its operators.
- * Each row opens its page.
+ * Each row opens its page; a project's row opens the list of that project's pages.
  */
 export function PhoneSettings() {
   const { account } = useViewer();
@@ -55,7 +55,7 @@ export function PhoneSettings() {
           {projects.map((project) => (
             <PhoneRow
               key={project.id}
-              link={settingsLink("p-general", project.id)}
+              link={{ to: "/projects/$projectId/settings", params: { projectId: project.id } }}
               icon={<FolderGit2Icon />}
             >
               {project.name}
@@ -81,7 +81,7 @@ function PhoneGroup({ label, children }: { readonly label: string; readonly chil
 }
 
 /** One page: its icon, its name, a count for Members, and the chevron; 60px tall. */
-function PhoneRow({
+export function PhoneRow({
   link,
   icon,
   count,

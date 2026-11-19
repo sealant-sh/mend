@@ -108,6 +108,13 @@ export const projectsRouter = router({
         }),
       ),
     ),
+  // Renames the project only: its store and worktrees stay where they are (`POST /projects/:id/name`).
+  // Refused for anyone the project's `capabilities.manage` leaves out, as a missing project.
+  rename: procedure
+    .input(input(Schema.Struct({ id: ProjectId, name: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.rename({ params: { id: i.id }, payload: { name: i.name } })),
+    ),
   remove: procedure
     .input(byId)
     .mutation(({ ctx, input: i }) =>
