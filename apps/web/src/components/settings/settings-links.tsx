@@ -85,6 +85,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return projectPage("/projects/$projectId/settings/only-you", id, projectId);
     case "p-services":
       return projectPage("/projects/$projectId/settings/services", id, projectId);
+    case "p-secrets":
+      return projectPage("/projects/$projectId/settings/secrets", id, projectId);
     default:
       return laterPage(settingsPathOf(settingsPage(id), projectId).slice(1));
   }
