@@ -410,6 +410,35 @@ const assertPersonAndLocal = (listed: ReturnType<typeof workspaceExtensions>): v
 
 const windowRoles: Record<string, RemoteRole> = {};
 
+/**
+ * What a workspace holds of VS Code's server while its window never reported (SLNT-1168), read over
+ * plain SSH beside Remote-SSH: what was installed, the exec server's and the server's own logs, and
+ * the processes still running. An SSH that hangs or fails here says as much about the connection.
+ */
+const unreportedWindowState = (folder: vscode.Uri): void => {
+  const alias = /@([^@]+)$/.exec(folder.authority)?.[1] ?? "";
+  const started = Date.now();
+  const read = sshIn(
+    alias,
+    sshUserOf(folder),
+    [
+      "set +e",
+      "echo '## ~/.vscode-server'; find ~/.vscode-server -maxdepth 4 -printf '%TT %s %p\\n' 2>&1 | head -n 80",
+      'for f in ~/.vscode-server/.*.log ~/.vscode-server/cli/servers/*/log.txt ~/.vscode-server/data/logs/*/*.log; do [ -f "$f" ] && { echo "## $f"; tail -n 120 "$f"; }; done',
+      "echo '## processes'; ps -o pid,etime,args -u \"$(id -u)\" 2>&1 | cut -c1-300",
+    ].join("\n"),
+  );
+  fs.writeFileSync(
+    `${resultFile}.unreported.txt`,
+    [
+      `${folder.toString()} · ssh exit ${String(read.status)}${read.error ? ` · ${String(read.error)}` : ""} · ${Date.now() - started} ms`,
+      read.stdout,
+      "## ssh stderr",
+      read.stderr,
+    ].join("\n"),
+  );
+};
+
 /** Open a Remote-SSH window for real and wait for its report. */
 const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<unknown> => {
   windowRoles[sshUserOf(folder)] = role;
@@ -422,7 +451,10 @@ const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<u
         ? JSON.parse(fs.readFileSync(reportFile(role), "utf8"))
         : null,
     300_000,
-  );
+  ).catch((cause: unknown) => {
+    unreportedWindowState(folder);
+    throw cause;
+  });
   const failed = field(report, "failed");
   if (failed !== undefined) {
     throw new Error(
