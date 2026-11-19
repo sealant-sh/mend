@@ -12,7 +12,7 @@ import {
 } from "@mend/ui/components/ui/dropdown-menu";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDownIcon, SquareTerminalIcon } from "lucide-react";
 import { type ReactNode, useCallback, useRef, useState } from "react";
 
@@ -24,18 +24,11 @@ import { copyTextChecked } from "#/lib/clipboard";
 import { age } from "#/lib/inbox";
 import { failureWords } from "#/lib/refusal";
 import { sessionDetailQuery } from "#/lib/session-queries";
-import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
-import {
-  runningShellsFact,
-  shellAccess,
-  shellLine,
-  type WorkspaceShell,
-  workspaceRuns,
-} from "#/lib/workspace-shells";
+import { shellAccess, shellLine, type WorkspaceShell, workspaceRuns } from "#/lib/workspace-shells";
 
-import type { ViewFacts, ViewPlace, WorkspaceView } from "../views.tsx";
+import type { ViewPlace } from "../views.tsx";
 import { useShellOnOwn, wantsShellOnOwn } from "./shell-on-own.ts";
 import { useWorkspaceShells } from "./use-workspace-shells.ts";
 
@@ -80,25 +73,11 @@ const useBoxSize = () => {
   return { box, ref };
 };
 
-/**
- * The Terminal tab's and its "+" item's fact: how many shells run ("1 shell") of those the person
- * may see. Nothing until who is looking is known.
- */
-const useTerminalFacts = (place: ViewPlace): ViewFacts => {
-  const trpc = useTRPC();
-  const viewer = useQuery(signedInOptions(trpc));
-  const { sessions, shells } = useWorkspaceShells(place);
-  if (viewer.isPending || viewer.isError) return {};
-  const access = shellAccess(sessions, place.sessionId, viewer.data.userId);
-  const fact = runningShellsFact(shells.filter((shell) => access.watches(shell.sessionId)));
-  return fact === undefined ? {} : { fact };
-};
-
 /** "both sessions", "all 3 sessions", "its session": who sees what a shell changes. */
 const sharedWith = (count: number): string =>
   count <= 1 ? "its session sees" : count === 2 ? "both sessions see" : `all ${count} sessions see`;
 
-function TerminalBody({ place }: { readonly place: ViewPlace }) {
+export function TerminalBody({ place }: { readonly place: ViewPlace }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
@@ -585,12 +564,3 @@ function Nothing({
     </div>
   );
 }
-
-/** The Terminal view (ADR 0026): this workspace's shells, each a live terminal. */
-export const TERMINAL_VIEW: WorkspaceView = {
-  id: "terminal",
-  name: "Terminal",
-  icon: <SquareTerminalIcon />,
-  useFacts: useTerminalFacts,
-  Body: TerminalBody,
-};

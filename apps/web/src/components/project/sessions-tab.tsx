@@ -45,11 +45,13 @@ import {
   highlightParts,
   matchesSessionFilters,
   matchLine,
-  parseProjectSessionsSearch,
   type ProjectSessionRow,
-  type ProjectSessionsSearch,
   projectSessionRows,
 } from "#/lib/project-sessions";
+import {
+  parseProjectSessionsSearch,
+  type ProjectSessionsSearch,
+} from "#/lib/project-sessions-search";
 import { useSeenAfterIdle } from "#/lib/seen";
 import { sessionLink } from "#/lib/session-sheet";
 import { worktreeJoinLine } from "#/lib/shared-workspace";

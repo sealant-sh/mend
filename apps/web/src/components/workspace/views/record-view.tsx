@@ -4,20 +4,15 @@ import { Tabs, TabsList, TabsTrigger } from "@mend/ui/components/ui/tabs";
 import { cn } from "@mend/ui/lib/utils";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useLocation, useNavigate } from "@tanstack/react-router";
-import {
-  ChevronDownIcon,
-  ChevronRightIcon,
-  GitCommitHorizontalIcon,
-  ScrollTextIcon,
-} from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, GitCommitHorizontalIcon } from "lucide-react";
 import { type ReactNode, useEffect, useRef, useState } from "react";
 
 import { QueryError } from "#/components/route-screens";
 import { useSessionFacts } from "#/components/session/session-facts";
+import { checkpointOfHash } from "#/lib/checkpoint-link";
 import { conversationQuery, heldConversation } from "#/lib/conversation";
 import {
   checkpointAt,
-  checkpointOfHash,
   commandEndWords,
   filteredRows,
   isRecordFilter,
@@ -34,7 +29,7 @@ import { noRunWords } from "#/lib/session-record";
 import { clockSeconds } from "#/lib/session-view";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
-import type { ViewFacts, WorkspaceView, ViewPlace } from "../views.tsx";
+import type { ViewPlace } from "../views.tsx";
 
 /** What "nothing of this kind" says, per filter. */
 const EMPTY_WORDS: Readonly<Record<RecordFilter, string>> = {
@@ -47,15 +42,13 @@ const EMPTY_WORDS: Readonly<Record<RecordFilter, string>> = {
     "No checkpoints yet. Mend takes one each time the agent finishes changing files, so the first shows here once this session edits something.",
 };
 
-const useRecordFacts = (_place: ViewPlace): ViewFacts => ({});
-
 /**
  * The Record view (Doop "Record" and its states): everything the session did, newest first,
  * filtered by kind, each row with its time, kind, what happened and the checkpoint it falls in; a
  * row opens to as much as the record holds of it. A pull request's link to `#checkpoint-N` lands
  * here with that checkpoint's row in view and marked.
  */
-function RecordBody({ place }: { readonly place: ViewPlace }) {
+export function RecordBody({ place }: { readonly place: ViewPlace }) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
@@ -521,12 +514,3 @@ function Note({
     </div>
   );
 }
-
-/** The Record view: everything the session did, newest first (route PR 20). */
-export const RECORD_VIEW: WorkspaceView = {
-  id: "record",
-  name: "Record",
-  icon: <ScrollTextIcon />,
-  useFacts: useRecordFacts,
-  Body: RecordBody,
-};

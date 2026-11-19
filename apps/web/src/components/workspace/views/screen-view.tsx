@@ -4,7 +4,7 @@ import { Spinner } from "@mend/ui/components/ui/spinner";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { CircleXIcon, Maximize2Icon, MonitorIcon } from "lucide-react";
+import { CircleXIcon, Maximize2Icon } from "lucide-react";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 
 import { QueryError } from "#/components/route-screens";
@@ -26,43 +26,14 @@ import { sessionDetailQuery } from "#/lib/session-queries";
 import { clockSeconds } from "#/lib/session-view";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
-import type { ViewFacts, ViewPlace, WorkspaceView } from "../views.tsx";
+import { useScreenRead } from "../view-facts.ts";
+import type { ViewPlace } from "../views.tsx";
 import { useScreenViewer } from "./screen-viewer.ts";
 
-/** Who holds a screen's input has no event of its own, so a screen that runs is read often. */
-const SCREEN_READ_MS = 3_000;
 /** A person's clicks and keys have no event either: the log is read again while one holds it. */
 const SCREEN_LOG_MS = 3_000;
 /** Under this height the tile shows the screen alone, without its log. */
 const LOG_MIN_HEIGHT = 560;
-
-const useScreenRead = (sessionId: string) => {
-  const trpc = useTRPC();
-  return useQuery(
-    trpc.screens.read.queryOptions(
-      { id: sessionId },
-      {
-        retry: false,
-        // Only a screen that runs (or starts) changes hands; an ended one waits for the session
-        // events that say it woke.
-        refetchInterval: (query) => {
-          const read = query.state.data;
-          return read?._tag === "Screen" &&
-            (read.life._tag === "Live" || read.life._tag === "Starting")
-            ? SCREEN_READ_MS
-            : false;
-        },
-      },
-    ),
-  );
-};
-
-/** The Screen tab's and its "+" item's fact: "live" while the workspace's screen runs. */
-const useScreenFacts = (place: ViewPlace): ViewFacts => {
-  const read = useScreenRead(place.sessionId);
-  if (read.isPending || read.isError) return {};
-  return read.data._tag === "Screen" && read.data.life._tag === "Live" ? { fact: "live" } : {};
-};
 
 /** The height of the element `ref` is given, as it changes; null until first measured. */
 const useBoxHeight = () => {
@@ -85,7 +56,7 @@ const useBoxHeight = () => {
  * Hand back for the session's owner; the screen log under it. Anyone who can see the session
  * watches; only its owner puts input on the screen, and the agent waits until they hand back.
  */
-function ScreenBody({ place }: { readonly place: ViewPlace }) {
+export function ScreenBody({ place }: { readonly place: ViewPlace }) {
   const read = useScreenRead(place.sessionId);
   const { height, ref } = useBoxHeight();
   const phone = usePhone();
@@ -616,12 +587,3 @@ function Note({
     </div>
   );
 }
-
-/** The Screen view: the workspace's desktop, live (route PR 19). */
-export const SCREEN_VIEW: WorkspaceView = {
-  id: "screen",
-  name: "Screen",
-  icon: <MonitorIcon />,
-  useFacts: useScreenFacts,
-  Body: ScreenBody,
-};

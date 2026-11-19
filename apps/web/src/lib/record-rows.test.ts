@@ -6,7 +6,6 @@ import { describe, expect, it } from "vitest";
 import type { TurnView } from "./conversation.ts";
 import {
   checkpointAt,
-  checkpointOfHash,
   commandEndWords,
   durationWords,
   filteredRows,
@@ -227,13 +226,6 @@ describe("checkpoints in the Record", () => {
     expect(checkpointAt(checkpoints, new Date(at(35)))).toBeNull();
     expect(checkpointAt(checkpoints, new Date(at(40)))).toBe(7);
     expect(checkpointAt(checkpoints, null)).toBeNull();
-  });
-
-  it("reads the checkpoint a pull request's link names", () => {
-    expect(checkpointOfHash("checkpoint-6")).toBe(6);
-    expect(checkpointOfHash("#checkpoint-12")).toBe(12);
-    expect(checkpointOfHash("land")).toBeNull();
-    expect(checkpointOfHash("checkpoint-")).toBeNull();
   });
 });
 

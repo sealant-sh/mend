@@ -124,7 +124,7 @@ jobs:
           scripts/ci-scope.test.mjs scripts/test-only-imports.test.mjs
           scripts/remove-package-tests.test.mjs scripts/ci-workflow.test.mjs
           scripts/ci-images.test.mjs scripts/ci-turbo.test.mjs scripts/ci-cache.test.mjs
-          scripts/ci-test-inputs.test.mjs tooling/verify/plan.test.mjs
+          scripts/ci-web-size.test.mjs scripts/ci-test-inputs.test.mjs tooling/verify/plan.test.mjs
           tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
           tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
           tooling/verify/formal.test.mjs tooling/verify/gate.test.mjs
@@ -453,6 +453,8 @@ jobs:
         run: |
           pnpm exec turbo run build --filter=@mend/web
           pnpm --filter @mend/web check:browser
+      - name: The new web app's first load stays within its budget
+        run: node scripts/ci-web-size.mjs
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

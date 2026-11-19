@@ -11,6 +11,7 @@ import { isNewSessionTab, sessionOfTab, viewOfTab } from "#/lib/tiles";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { QueryError } from "../route-screens.tsx";
+import { ViewLoadError } from "../workspace/lazy-body.tsx";
 import {
   TileTab,
   type TileTabHandlers,
@@ -149,7 +150,15 @@ function ViewTab({
 }) {
   const facts = view.useFacts(place);
   return (
-    <TileTab value={tab} kind="view" icon={view.icon} label={view.name} {...facts} {...look} />
+    <TileTab
+      value={tab}
+      kind="view"
+      icon={view.icon}
+      label={view.name}
+      onIntent={view.preload}
+      {...facts}
+      {...look}
+    />
   );
 }
 
@@ -203,6 +212,8 @@ function TabFailed({ error, reset }: ErrorComponentProps) {
         error={error}
         retrying={false}
         retry={() => {
+          // A view whose code didn't arrive fetches it again; a read that failed is read again.
+          if (error instanceof ViewLoadError) error.retry();
           void queryClient.resetQueries({ predicate: (query) => query.state.status === "error" });
           reset();
         }}

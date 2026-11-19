@@ -9,8 +9,8 @@ import { Suspense, useEffect } from "react";
 
 import { RouteErrorScreen } from "#/components/route-screens";
 import { SessionPage, SessionPending } from "#/components/session/session-sheet";
+import { checkpointOfHash } from "#/lib/checkpoint-link";
 import { conversationQuery } from "#/lib/conversation";
-import { checkpointOfHash } from "#/lib/record-rows";
 import { sessionDetailQuery } from "#/lib/session-queries";
 
 interface SessionSearch {

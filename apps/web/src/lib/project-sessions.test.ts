@@ -9,7 +9,6 @@ import {
   highlightParts,
   matchesSessionFilters,
   matchLine,
-  parseProjectSessionsSearch,
   projectSessionRows,
   worktreeChoices,
   worktreeLiveWords,
@@ -134,20 +133,6 @@ describe("a project's Sessions tab", () => {
       ["none", false],
     ]);
     expect(rows[1]?.status).toEqual({ word: "Failed", tone: "bad" });
-  });
-
-  it("reads its filters from the address and drops what it doesn't know", () => {
-    expect(
-      parseProjectSessionsSearch({
-        q: "retry",
-        who: "mine",
-        show: "stopped",
-        agent: "codex",
-        branch: "",
-        page: 2,
-      }),
-    ).toEqual({ q: "retry", who: "mine", show: "stopped", agent: "codex" });
-    expect(parseProjectSessionsSearch({ who: "everyone", show: "open", q: "  " })).toEqual({});
   });
 
   it("filters by who started it, agent, branch and every word searched", () => {

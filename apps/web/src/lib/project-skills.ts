@@ -1,13 +1,13 @@
 import { SKILL_ENTRY_FILE } from "@mend/domain/workbench";
 
 import { projectChangers } from "./project-settings.ts";
+import type { SkillSearch } from "./skill-search.ts";
 import {
   type DraftFile,
   justSaved,
   rowWhen,
   skillDay,
   type SkillFacts,
-  type SkillSearch,
   skillSize,
   withFrontMatter,
 } from "./skills.ts";

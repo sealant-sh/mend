@@ -19,7 +19,6 @@ import {
   rowWhen,
   shownFile,
   skillFilesLine,
-  skillSearch,
   skillSize,
   unsavedWords,
   usedInWords,
@@ -268,14 +267,6 @@ describe("a project skill with the same name", () => {
     expect(usedInWords("commit-messages", twins.get("commit-messages") ?? [])).toBe(
       "Used in every session you start, except in checkout-api: checkout-api has its own commit-messages, and its sessions use that one.",
     );
-  });
-});
-
-describe("the skill's URL", () => {
-  it("opens the editor for ?edit=1 and names the file", () => {
-    expect(skillSearch({ edit: 1, file: "notes.md" })).toEqual({ edit: 1, file: "notes.md" });
-    expect(skillSearch({ edit: "1" })).toEqual({ edit: 1 });
-    expect(skillSearch({ edit: 0 })).toEqual({});
   });
 });
 

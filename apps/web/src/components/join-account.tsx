@@ -1,4 +1,4 @@
-import { INVITATION_HEADER } from "@mend/network";
+import { INVITATION_HEADER } from "@mend/network/handed-links";
 import { InlineAlert } from "@mend/ui/components/banner";
 import { Button } from "@mend/ui/components/ui/button";
 import { type FormEvent, useState } from "react";

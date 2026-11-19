@@ -55,7 +55,11 @@ function ViewItem({
 }) {
   const facts = useFactWords(view, place);
   return (
-    <DropdownMenuItem onClick={() => onOpen(`view:${view.id}`)}>
+    <DropdownMenuItem
+      onClick={() => onOpen(`view:${view.id}`)}
+      onPointerEnter={view.preload}
+      onFocus={view.preload}
+    >
       <span aria-hidden className="flex shrink-0 text-muted-foreground [&_svg]:size-4">
         {view.icon}
       </span>

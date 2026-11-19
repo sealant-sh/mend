@@ -1,4 +1,4 @@
-import { fragmentFormOf, fragmentSecret, type HandedLinkKind } from "@mend/network";
+import { fragmentFormOf, fragmentSecret, type HandedLinkKind } from "@mend/network/handed-links";
 import { type ParsedLocation, redirect, useLocation } from "@tanstack/react-router";
 
 /**
