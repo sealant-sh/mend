@@ -313,7 +313,7 @@ flows reuse what earlier ones made:
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/details-view.tsx`,
-  `apps/web/src/components/workspace/shared-control-row.tsx`,
+  `apps/web/src/components/session/shared-control.tsx`,
   `apps/web/src/components/workspace/views/details-view.tsx`, `apps/web/src/lib/session-details.ts`
 
 ### session-stop.new-web-session-actions
