@@ -101,7 +101,7 @@ const STOPS = [
 const SUMMARY =
   "Checkout could charge a customer twice. After a 503, the retry wrapper sent the charge again without an idempotency key, so a slow first attempt and the retry could both go through.\n\nThis change builds a key from the order id and sends it with every attempt. It also waits longer between attempts, with some random jitter, and adds tests for both.";
 const APPROACH =
-  "The session first wrote the retry wrapper with one key per order, then added the waits and the tests. The payment tests ran 200 times and all 200 passed. The longer waits came after that run, and no test has run them yet.";
+  "The session first wrote the retry wrapper with one key per order, then added the waits and the tests. It ran `pnpm test payments` 200 times and all 200 passed. The longer waits came after that run, and no test has run them yet.";
 
 const tourAnswer = ({ changeId, sessionId, diffDigest }) =>
   superjson(
