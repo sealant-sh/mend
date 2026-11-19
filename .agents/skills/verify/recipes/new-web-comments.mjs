@@ -179,8 +179,17 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     }, keys);
   const button = (name, exact = true) => visible(page.getByRole("button", { name, exact }));
   const section = (file) => visible(page.locator(`section[data-file="${file}"]`));
+  // Comments are never deleted, so an earlier run's dismissed ones carry the same words: each
+  // run's comments end with its own mark, and are found by it.
+  const run = Date.now().toString(36).slice(-4);
+  const words = (text) => `${text} (${run})`;
   const comment = (text) =>
-    visible(page.locator("article[data-comment]").filter({ hasText: text }));
+    visible(
+      page
+        .locator("article[data-comment]")
+        .filter({ hasText: text })
+        .filter({ hasText: `(${run})` }),
+    );
   /** A line's number cell on the new side, inside the renderer's shadow root. */
   const lineNumber = (file, line) =>
     page
@@ -335,7 +344,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const lineBox = visible(page.getByRole("textbox", { name: `Comment on ${RETRY}, line 20` }));
   await lineBox.waitFor({ timeout: 15_000 });
   await lineBox.fill(
-    "Should we back off on a 409 too? Stripe sends it while the first request is still being processed.",
+    words(
+      "Should we back off on a 409 too? Stripe sends it while the first request is still being processed.",
+    ),
   );
   note("a click on line 20's number opened the box 'Comment on src/payments/retry.ts, line 20'");
   await both("writing-on-a-line-desktop");
@@ -355,7 +366,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.mouse.up();
   const rangeBox = visible(page.getByRole("textbox", { name: `Comment on ${RETRY}, lines 12–15` }));
   await rangeBox.waitFor({ timeout: 15_000 });
-  await rangeBox.fill("Cap the wait, so a long outage can't stall checkout for minutes.");
+  await rangeBox.fill(words("Cap the wait, so a long outage can't stall checkout for minutes."));
   await button("Add comment").click();
   await comment("Cap the wait").waitFor({ timeout: 30_000 });
   note(
@@ -376,7 +387,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     page.getByRole("textbox", { name: "Comment on src/payments/charge.test.ts, lines 5–6" }),
   );
   await keyBox.waitFor({ timeout: 15_000 });
-  await keyBox.fill("Also check that a 409 keeps the same key.");
+  await keyBox.fill(words("Also check that a 409 keeps the same key."));
   await keyBox.press("Control+Enter");
   await comment("Also check that a 409").waitFor({ timeout: 30_000 });
   note(
@@ -387,7 +398,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await button("Comment on the whole change").click();
   const wholeBox = visible(page.getByRole("textbox", { name: "Comment on the whole change" }));
   await wholeBox.fill(
-    "Keep the signature of `chargeWithRetry` as it is. The orders service calls it too.",
+    words("Keep the signature of `chargeWithRetry` as it is. The orders service calls it too."),
   );
   await visible(
     page.getByText("A comment here is about the whole change, not one line."),
