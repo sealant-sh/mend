@@ -178,11 +178,6 @@ jobs:
           fi
       # Cached builds restore generated routes before their own typecheck.
       - run: node scripts/ci-turbo.mjs build typecheck lint
-      # What a browser downloads before the new web app draws (its entry chunk and the sign-in
-      # page), read from the build above against apps/web/size-budget.json. A change that doesn't
-      # affect @mend/web builds nothing here and skips it.
-      - name: The new web app's first load stays within its budget
-        run: node scripts/ci-web-size.mjs
       # The recipes belong to no package, so Turbo's lint never reads them; `pnpm verify check`
       # lints them with this command (tooling/verify/check.mjs, GATE_STEPS).
       - name: Verify recipes lint
@@ -518,6 +513,10 @@ jobs:
         run: |
           pnpm exec turbo run build --filter=@mend/web
           pnpm --filter @mend/web check:browser
+      # What a browser downloads before the new web app draws (its entry chunk and the sign-in
+      # page), read from the build above against apps/web/size-budget.json.
+      - name: The new web app's first load stays within its budget
+        run: node scripts/ci-web-size.mjs
 
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}

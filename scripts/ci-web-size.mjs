@@ -11,9 +11,8 @@ import { gzipSync } from "node:zlib";
  * first preload. Sizes are the files as built and the `.gz` copies nitro serves beside them.
  *
  * `node scripts/ci-web-size.mjs` prints the sizes and fails when one passes its budget in
- * `apps/web/size-budget.json`. CI runs it in the `static` job after the build, so it measures the
- * build that job already made; a pull request that doesn't affect `@mend/web` has no build and
- * skips it.
+ * `apps/web/size-budget.json`. CI runs it in the `test-clients-b` job right after that job builds
+ * `@mend/web` for its browser check, so it measures that build and makes none of its own.
  */
 
 export const PAGES = {
@@ -112,7 +111,8 @@ const main = async () => {
   const outputDir =
     at === -1 ? path.join(root, "apps/web/.output") : path.resolve(process.argv[at + 1] ?? "");
   if (!existsSync(outputDir)) {
-    console.log("apps/web has no build here (this change doesn't affect it): nothing to measure.");
+    console.log("::error::apps/web has no build here: run `pnpm --filter @mend/web build` first.");
+    process.exitCode = 1;
     return;
   }
   const budget = JSON.parse(readFileSync(path.join(root, "apps/web/size-budget.json"), "utf8"));
