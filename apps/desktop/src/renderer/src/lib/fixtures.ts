@@ -1,3 +1,5 @@
+import { defaultWorkspaceImage } from "@mend/domain";
+
 import type {
   AgentItemDto,
   ChangeLandingDto,
@@ -38,7 +40,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
   autoLand: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: false,
   defaultShellProfile: true,
   newWorktreesUseProjectResources: true,

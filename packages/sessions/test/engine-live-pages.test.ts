@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { SessionPagesRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   PageId,
   SessionId,
@@ -60,7 +61,7 @@ describe("pages in a live and a settled transcript", () => {
             autoSuggest: "off",
             backgroundSessions: "off",
             gitAuthMode: "mend-key",
-            workspaceImage: null,
+            workspaceImage: defaultWorkspaceImage,
             applyDotfiles: false,
             defaultShellProfile: true,
             inheritUserSkills: false,

@@ -20,7 +20,6 @@ import {
 } from "@mend/db";
 import {
   defaultSettings,
-  inheritedOrganizationSettings,
   InvitationId,
   MendSettings,
   OrganizationId,
@@ -28,6 +27,8 @@ import {
   ProjectId,
   type SessionRuntime,
   SessionRuntimeOffer,
+  newOrganizationSettings,
+  defaultWorkspaceImage,
 } from "@mend/domain";
 import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import { Invitation, Organization, OrganizationMember, Project } from "@mend/domain/workbench";
@@ -322,12 +323,15 @@ const dependencies = Layer.mergeAll(
   Layer.mock(OrganizationSettingsRepo, {
     get: (organizationId) =>
       Effect.sync(
-        () => organizationDefaultsStore.get(organizationId) ?? inheritedOrganizationSettings,
+        () =>
+          organizationDefaultsStore.get(organizationId) ??
+          newOrganizationSettings(defaultWorkspaceImage),
       ),
     modify: (organizationId, update) =>
       Effect.sync(() => {
         const next = update(
-          organizationDefaultsStore.get(organizationId) ?? inheritedOrganizationSettings,
+          organizationDefaultsStore.get(organizationId) ??
+            newOrganizationSettings(defaultWorkspaceImage),
         );
         writes.push(`organizationSettings:${organizationId}`);
         organizationDefaultsStore.set(organizationId, next);
@@ -816,12 +820,16 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
   it("shows a member what their projects inherit, read-only", async () => {
     organizationDefaultsStore.set(
       acme.id,
-      new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true }),
+      new OrganizationSettings({
+        ...newOrganizationSettings(defaultWorkspaceImage),
+        autoLand: true,
+      }),
     );
     const response = await call("carol", "/api/organization/settings");
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      organization: { ...inheritAll, autoLand: true },
+      // Its starting image is its own copy of the server's, Arch.
+      organization: { ...inheritAll, workspaceImage: { os: "arch" }, autoLand: true },
       instance: { autoLand: false, autoTour: true },
       effective: { autoLand: true, autoTour: true },
       editable: false,
@@ -873,8 +881,8 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
         { workspaceImage: "fedora · 2 packages", autoTour: false, autoLand: true },
       ],
     ]);
-    // Carol's project inherits the environment and keeps standbys; they rewarm.
-    expect(reconciled).toEqual(["p-carol"]);
+    // A new starting image is for new projects: Carol's keeps its own copy, and its standbys.
+    expect(reconciled).toEqual([]);
 
     // Saving the same values again changes nothing, so nothing is recorded.
     const again = await put("alice", "/api/organization/settings", {
@@ -885,7 +893,7 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
     });
     expect(again.status).toBe(200);
     expect(audited).toHaveLength(1);
-    expect(reconciled).toEqual(["p-carol"]);
+    expect(reconciled).toEqual([]);
   });
 
   it("refuses a whole save whose workspace packages do not resolve, writing nothing", async () => {
@@ -902,14 +910,14 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
     expect({ writes, audited }).toEqual({ writes: [], audited: [] });
   });
 
-  it("saves the workspace environment alone, reports rejections, and goes back to the instance", async () => {
+  it("saves the starting image alone, reports rejections, and copies the server's for an old client's null", async () => {
     const rejected = await put("alice", "/api/organization/settings/workspace-environment", {
       workspaceImage: fedora(["nope"]),
     });
     expect(rejected.status).toBe(200);
     await expect(rejected.json()).resolves.toMatchObject({
       saved: false,
-      settings: { organization: { workspaceImage: null } },
+      settings: { organization: { workspaceImage: { os: "arch" } } },
       // Validation includes the packages Mend adds to every image even when a configured one is
       // rejected: the Doppler CLI and the Postgres and Redis clients.
       resolutions: [
@@ -932,22 +940,23 @@ describe("organization defaults (docs/adr/0003, instance-global resources)", () 
       },
     });
 
+    // A client from before SLNT-1155 sends null to follow the instance: Acme gets its own copy of
+    // the server's image, Mend's default Arch, not a link to it.
     const inherited = await put("alice", "/api/organization/settings/workspace-environment", {
       workspaceImage: null,
     });
     await expect(inherited.json()).resolves.toMatchObject({
       saved: true,
       settings: {
-        organization: { workspaceImage: null },
-        // The instance's own environment: Mend's default Arch image.
+        organization: { workspaceImage: { os: "arch" } },
         effective: { workspaceImage: { os: "arch" } },
       },
     });
     expect(audited.map((event) => event.data)).toEqual([
       { workspaceImage: "fedora · 1 package" },
-      { workspaceImage: null },
+      { workspaceImage: expect.stringMatching(/^arch · \d+ packages$/) },
     ]);
-    expect(reconciled).toEqual(["p-carol", "p-carol"]);
+    expect(reconciled).toEqual([]);
   });
 });
 

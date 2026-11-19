@@ -8,8 +8,14 @@ import {
   UserFacts,
   UsersRepo,
   type NewAuditEvent,
+  OrganizationSettingsRepo,
 } from "@mend/db";
-import { InvitationId, OrganizationId } from "@mend/domain";
+import {
+  defaultWorkspaceImage,
+  InvitationId,
+  newOrganizationSettings,
+  OrganizationId,
+} from "@mend/domain";
 import { Invitation, Organization, OrganizationMember } from "@mend/domain/workbench";
 import { it, TestClock } from "@mend/test-ci/effect-vitest";
 import { Clock, Context, Effect, Layer, ManagedRuntime, Option } from "effect";
@@ -150,6 +156,9 @@ const dependencies = Layer.mergeAll(
     create: () => Effect.sync(() => (writes.push("create"), acme)),
   }),
   Layer.mock(UsersRepo, { byEmail: (email) => Effect.succeed(accounts.get(email) ?? null) }),
+  Layer.mock(OrganizationSettingsRepo, {
+    get: () => Effect.succeed(newOrganizationSettings(defaultWorkspaceImage)),
+  }),
   Layer.mock(AuditEventsRepo, { record: (event) => Effect.sync(() => void audited.push(event)) }),
   Layer.succeed(TenancyConfig, {
     mode: "single",

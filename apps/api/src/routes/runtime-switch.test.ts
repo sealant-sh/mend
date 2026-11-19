@@ -1,7 +1,6 @@
 import { ProjectNotFoundError, type NewAuditEvent } from "@mend/db";
 import {
   defaultWorkspaceImage,
-  inheritedOrganizationSettings,
   OrganizationSettings,
   type ProjectId,
   ProjectMountId,
@@ -9,6 +8,7 @@ import {
   SessionRuntimeOffer,
   type WorkspaceImage,
   type WorkspaceRuntimesReading,
+  newOrganizationSettings,
 } from "@mend/domain";
 import { DOCKER_AND_BOAT, UNREAD } from "@mend/domain/runtime-support-fixtures";
 import { Project, ProjectMount, ServiceRecipe } from "@mend/domain/workbench";
@@ -32,7 +32,7 @@ const NOW = new Date("2026-11-13T14:00:00.000Z");
 
 interface World {
   readonly api: TenancyApi;
-  /** Each project's own environment, as the repo stores it; absent inherits. */
+  /** Each project's own environment, as the repo stores it; absent keeps the fixture's. */
   readonly images: Map<ProjectId, WorkspaceImage | null>;
   /** Each organization's own settings, as the repo stores them. */
   readonly organizations: Map<string, OrganizationSettings>;
@@ -54,9 +54,9 @@ const withWorld = async (
   const runtimes = new Map<string, SessionRuntime>();
   const audited: Array<NewAuditEvent> = [];
   const own = (organizationId: string) =>
-    organizations.get(organizationId) ?? inheritedOrganizationSettings;
+    organizations.get(organizationId) ?? newOrganizationSettings(defaultWorkspaceImage);
   const withImage = (project: Project) =>
-    new Project({ ...project, workspaceImage: images.get(project.id) ?? null });
+    new Project({ ...project, workspaceImage: images.get(project.id) ?? project.workspaceImage });
   const holder: { api: TenancyApi | null } = { api: null };
   const harnessProjects = () => [...(holder.api?.world.projects.values() ?? [])];
   const api = await createTenancyApi(
@@ -174,10 +174,14 @@ const sharedB = ids("shared-b").project;
 
 describe("what moving an organization to Boat would change (SLNT-796)", () => {
   it("is one step, as before, when Boat runs everything the organization has", async () => {
-    await withWorld({}, async ({ api, organizations, runtimes, audited }) => {
+    const onUbuntu = [sharedA, privateAlice, privateCarol].map((id) => [id, ubuntu] as const);
+    await withWorld({ images: onUbuntu }, async ({ api, organizations, runtimes, audited }) => {
       organizations.set(
         A,
-        new OrganizationSettings({ ...inheritedOrganizationSettings, workspaceImage: ubuntu }),
+        new OrganizationSettings({
+          ...newOrganizationSettings(defaultWorkspaceImage),
+          workspaceImage: ubuntu,
+        }),
       );
       const impact = await impactOf(api, "alice", "boat");
       expect(impact).toMatchObject({
@@ -220,12 +224,12 @@ describe("what moving an organization to Boat would change (SLNT-796)", () => {
           state: "observed",
           observedAt: "2026-11-13T14:02:00.000Z",
           runtime: "boat",
-          // The organization follows the instance's Arch.
+          // The organization's starting image: its own copy of the server's Arch.
           organizationDefault: {
             refusal: "Boat supports Ubuntu and Nix; Arch is unsupported.",
             from: arch,
             to: ubuntu,
-            inherited: true,
+            inherited: false,
           },
           projects: [
             {
@@ -412,5 +416,47 @@ describe("what moving an organization to Boat would change (SLNT-796)", () => {
       );
       expect(response.status).toBe(400);
     });
+  });
+});
+
+describe("a project's image is its own copy (SLNT-1155)", () => {
+  it("copies the organization's starting image for an old client's reset, and a new starting image reaches no project", async () => {
+    await withWorld(
+      { images: [[sharedA, fedora]] },
+      async ({ api, images, organizations, audited }) => {
+        organizations.set(
+          A,
+          new OrganizationSettings({ ...newOrganizationSettings(ubuntu), autoLand: true }),
+        );
+        // "Use the default" from the old web app: a copy of Acme's Ubuntu, saved as the project's.
+        const reset = await api.request(
+          "alice",
+          "PUT",
+          `/api/projects/${sharedA}/workspace-image`,
+          { workspaceImage: null },
+        );
+        expect(reset.status).toBe(200);
+        expect(await reset.json()).toMatchObject({
+          saved: true,
+          project: { workspaceImage: { os: "ubuntu" } },
+        });
+        expect(images.get(sharedA)).toEqual(ubuntu);
+
+        // An old client's null for Acme saves a copy of the server's image, Arch: the project
+        // keeps its own copy, and nothing is rebuilt for it.
+        api.world.calls.length = 0;
+        const changed = await api.request(
+          "alice",
+          "PUT",
+          "/api/organization/settings/workspace-environment",
+          { workspaceImage: null },
+        );
+        expect(changed.status).toBe(200);
+        expect(organizations.get(A)?.workspaceImage).toEqual(defaultWorkspaceImage);
+        expect(images.get(sharedA)).toEqual(ubuntu);
+        expect(api.world.calls).not.toContain("engine.reconcileHotSessions");
+        expect(audited.map((event) => event.action)).toEqual(["organization.settings_changed"]);
+      },
+    );
   });
 });

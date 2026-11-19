@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { defaultWorkspaceImage } from "@mend/domain";
 import { OrganizationId, ProjectId } from "@mend/domain";
 import { Project, type SessionProcess } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
@@ -49,7 +50,7 @@ const createdInMend = (world: World, purpose: "named" | "scratch") =>
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "mend-key",
-      workspaceImage: null,
+      workspaceImage: defaultWorkspaceImage,
       applyDotfiles: true,
       defaultShellProfile: true,
       inheritUserSkills: true,

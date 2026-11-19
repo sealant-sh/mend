@@ -1,8 +1,8 @@
 import { PgClient } from "@effect/sql-pg";
+import { defaultWorkspaceImage, newOrganizationSettings } from "@mend/domain";
 import {
   builtInSettingsFor,
   defaultSettings,
-  inheritedOrganizationSettings,
   MendSettings,
   OrganizationId,
   OrganizationSettings,
@@ -82,14 +82,25 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
     );
   });
 
-  it("reads nothing set, saves, rewrites under the latest values, and clears", async () => {
+  it("copies the server's image the first time it is read, keeps that copy, saves and rewrites", async () => {
     await run(
       Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
         const repo = yield* OrganizationSettingsRepo;
-        expect(yield* repo.get(ACME)).toEqual(inheritedOrganizationSettings);
+        const settings = yield* SettingsRepo;
+        expect(yield* repo.get(ACME)).toEqual(newOrganizationSettings(defaultWorkspaceImage));
+        // The operator changes the server's image afterwards: Acme keeps its own copy.
+        yield* settings.modify(
+          (current) => new MendSettings({ ...current, workspaceImage: fedora }),
+        );
+        expect((yield* repo.get(ACME)).workspaceImage).toEqual(defaultWorkspaceImage);
+        expect((yield* settings.forOrganization(ACME)).workspaceImage).toEqual(
+          defaultWorkspaceImage,
+        );
+        yield* sql`DELETE FROM settings WHERE key = 'mend'`;
 
         const saved = new OrganizationSettings({
-          ...inheritedOrganizationSettings,
+          ...newOrganizationSettings(defaultWorkspaceImage),
           workspaceImage: fedora,
           autoLand: true,
           autoName: false,
@@ -104,12 +115,7 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
         expect(modified.autoTour).toBe(false);
         expect(modified.workspaceImage).toEqual(fedora);
         expect(yield* repo.get(ACME)).toEqual(modified);
-
-        yield* repo.set(ACME, new OrganizationSettings({ ...modified, workspaceImage: null }));
-        expect((yield* repo.get(ACME)).workspaceImage).toBeNull();
-
-        yield* repo.clear(ACME);
-        expect(yield* repo.get(ACME)).toEqual(inheritedOrganizationSettings);
+        yield* sql`DELETE FROM organization_settings WHERE organization_id = ${ACME}`;
       }),
     );
   });
@@ -134,7 +140,7 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
         const both = yield* repo.get(GLOBEX);
         expect(both.autoTour).toBe(true);
         expect(both.autoName).toBe(true);
-        yield* repo.clear(GLOBEX);
+        yield* (yield* SqlClient.SqlClient)`DELETE FROM organization_settings WHERE organization_id = ${GLOBEX}`;
       }),
     );
   });
@@ -150,7 +156,7 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
         yield* repo.set(
           ACME,
           new OrganizationSettings({
-            ...inheritedOrganizationSettings,
+            ...newOrganizationSettings(defaultWorkspaceImage),
             workspaceImage: fedora,
             autoLand: true,
           }),
@@ -167,7 +173,7 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
 
         // The instance document is untouched by an organization's values.
         expect((yield* settings.get()).autoLand).toBe(false);
-        yield* repo.clear(ACME);
+        yield* (yield* SqlClient.SqlClient)`DELETE FROM organization_settings WHERE organization_id = ${ACME}`;
       }),
     );
   });
@@ -184,7 +190,10 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
         // Saving the defaults leaves the choice where it was, and the choice leaves them.
         yield* repo.set(
           ACME,
-          new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true }),
+          new OrganizationSettings({
+            ...newOrganizationSettings(defaultWorkspaceImage),
+            autoLand: true,
+          }),
         );
         yield* repo.modify(
           ACME,
@@ -196,7 +205,7 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
 
         expect(yield* repo.setSessionRuntime(ACME, null)).toBe("docker");
         expect(yield* repo.sessionRuntime(ACME)).toBeNull();
-        yield* repo.clear(ACME);
+        yield* (yield* SqlClient.SqlClient)`DELETE FROM organization_settings WHERE organization_id = ${ACME}`;
       }),
     );
   });
@@ -209,27 +218,31 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
         yield* sql`INSERT INTO organizations (id, name) VALUES ('org-gone', 'Gone')`;
         yield* repo.set(
           OrganizationId.make("org-gone"),
-          new OrganizationSettings({ ...inheritedOrganizationSettings, autoTour: false }),
+          new OrganizationSettings({
+            ...newOrganizationSettings(defaultWorkspaceImage),
+            autoTour: false,
+          }),
         );
         yield* sql`DELETE FROM organizations WHERE id = 'org-gone'`;
-        const rows = yield* sql`SELECT organization_id FROM organization_settings`;
+        const rows =
+          yield* sql`SELECT organization_id FROM organization_settings WHERE organization_id = 'org-gone'`;
         expect(rows).toEqual([]);
       }),
     );
   });
 
-  it("on a Boat server, follows an instance that has saved nothing onto an environment Boat runs", async () => {
+  it("on a Boat server, gives a new organization a copy of an environment Boat runs", async () => {
+    const boatBuiltIn = Layer.succeed(BuiltInSettings, builtInSettingsFor("boat"));
     const boatServer = Layer.mergeAll(
-      OrganizationSettingsRepoLive,
-      SettingsRepoLive.pipe(
-        Layer.provide(Layer.succeed(BuiltInSettings, builtInSettingsFor("boat"))),
-      ),
+      OrganizationSettingsRepoLive.pipe(Layer.provide(boatBuiltIn)),
+      SettingsRepoLive.pipe(Layer.provide(boatBuiltIn)),
     ).pipe(Layer.provideMerge(MendDBLive), Layer.provideMerge(scratchLayer));
     const onBoat = await Effect.runPromise(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`DELETE FROM settings WHERE key = 'mend'`;
-        return yield* (yield* SettingsRepo).forOrganization(ACME);
+        yield* sql`DELETE FROM organization_settings WHERE organization_id = ${ACME}`;
+        return yield* (yield* OrganizationSettingsRepo).get(ACME);
       }).pipe(Effect.provide(boatServer), Effect.scoped),
     );
     expect(onBoat.workspaceImage).toMatchObject({ mode: "family", os: "ubuntu" });

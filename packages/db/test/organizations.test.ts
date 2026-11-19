@@ -1,5 +1,11 @@
 import { PgClient } from "@effect/sql-pg";
-import { FolderId, OrganizationId, ProjectId, SessionId } from "@mend/domain";
+import {
+  FolderId,
+  OrganizationId,
+  ProjectId,
+  SessionId,
+  defaultWorkspaceImage,
+} from "@mend/domain";
 import { Effect, Layer, Option, Queue, Redacted, Schema } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -511,6 +517,7 @@ describe.skipIf(postgres.skip)("organizations", () => {
           defaultBranch: "main",
           adoptedSha: null,
           gitAuthMode: "mend-key" as const,
+          workspaceImage: defaultWorkspaceImage,
         };
         const first = yield* projects.create({
           ...base,
@@ -572,6 +579,7 @@ describe.skipIf(postgres.skip)("organizations", () => {
           name: "shell",
           originUrl: null,
           storePath: "/store/p-acme-shell/repo.git",
+          workspaceImage: defaultWorkspaceImage,
           defaultBranch: "main",
           adoptedSha: null,
           gitAuthMode: "mend-key",
@@ -610,6 +618,7 @@ describe.skipIf(postgres.skip)("organizations", () => {
           name: "token",
           originUrl: "https://oauth2:TOKEN-SECRET@gitlab.com/acme/token.git",
           storePath: "/store/p-acme-token/repo.git",
+          workspaceImage: defaultWorkspaceImage,
           defaultBranch: "main",
           adoptedSha: null,
           gitAuthMode: "mend-key",

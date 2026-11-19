@@ -47,10 +47,11 @@ workspaces; their running sessions continue until they end. Read
 
 ## Where defaults come from
 
-The workspace environment resolves project, then organization, then instance. The instance's belongs
-to the operator. An organization's owners set their own in Settings over the instance's; members
-read what applies and where it came from. A project that inherits takes its organization's value.
-Each change to an organization's defaults is recorded in its audit log.
+The workspace image does not resolve through levels: each project holds its own copy, taken from its
+organization's starting image when the project was created, and each organization its own copy of
+the instance's (see
+[Workspace images](/guides/workspace-images/#instance-organization-and-project)). Each change to an
+organization's starting image is recorded in its audit log.
 
 The automation switches (background sessions, description and tour, fix suggestions, session naming,
 landing) are each person's own, set in their Settings. A project that inherits follows the session
@@ -62,8 +63,8 @@ Choose a managed OS family or supply a custom OCI base image. Managed families l
 OS, login shell, portable package names, and Docker service. Custom images accept a base reference,
 extra packages, setup commands, and the Docker service switch.
 
-A project can inherit its organization's default or save its own override. Read
-[Workspace images](/guides/workspace-images/) for the exact fields and defaults.
+A project starts with a copy of its organization's starting image and keeps its own from then on.
+Read [Workspace images](/guides/workspace-images/) for the exact fields and defaults.
 
 ## Skills
 

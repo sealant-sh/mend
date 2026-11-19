@@ -1,4 +1,9 @@
-import { defaultSettings, MendSettings, organizationDefaults, personDefaults } from "@mend/domain";
+import {
+  MendSettings,
+  newOrganizationSettings,
+  organizationDefaults,
+  personDefaults,
+} from "@mend/domain";
 import type { OrganizationId } from "@mend/domain";
 import { eq, sql } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
@@ -10,18 +15,13 @@ import {
   settings as settingsTable,
   userAutomationSettings,
 } from "../schema/workbench.ts";
+import { BuiltInSettings, readInstanceSettings } from "./instance-settings.ts";
 import { organizationSettingsFromRow } from "./organization-settings.ts";
 import { personSettingsFromRow } from "./person-settings.ts";
 
-const decodeSettings = Schema.decodeUnknownEffect(MendSettings);
+export { BuiltInSettings } from "./instance-settings.ts";
 
-/**
- * The instance's settings while no row is saved (`builtInSettingsFor`): Mend's defaults, unless
- * the server's composition says its sessions run on Boat until organizations choose.
- */
-export const BuiltInSettings = Context.Reference<MendSettings>("@mend/db/BuiltInSettings", {
-  defaultValue: () => defaultSettings,
-});
+const decodeSettings = Schema.decodeUnknownEffect(MendSettings);
 
 /**
  * Product settings live as one jsonb row; absence means the built-in ones (`BuiltInSettings`). The row is the instance's
@@ -34,8 +34,8 @@ export class SettingsRepo extends Context.Service<
     /** The instance's settings document, as the operator edits it. */
     readonly get: () => Effect.Effect<MendSettings>;
     /**
-     * The defaults every project in the organization inherits: its own values over the
-     * instance's (`organizationDefaults`). Launches and automations read this, never `get`.
+     * The organization's values over the instance's (`organizationDefaults`): its own starting
+     * image, and the instance's queue-era values. Launches read a project's own image, not this.
      */
     readonly forOrganization: (organizationId: OrganizationId) => Effect.Effect<MendSettings>;
     /**
@@ -61,14 +61,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
     const builtIn = yield* BuiltInSettings;
 
     const get = Effect.fn("SettingsRepo.get")(function* () {
-      const [row] = yield* db
-        .select({ value: settingsTable.value })
-        .from(settingsTable)
-        .where(eq(settingsTable.key, "mend"))
-        .limit(1)
-        .pipe(Effect.orDie);
-      if (row === undefined) return builtIn;
-      return yield* decodeSettings(row.value).pipe(Effect.orDie);
+      return yield* readInstanceSettings(db, builtIn);
     });
 
     const modify = Effect.fn("SettingsRepo.modify")(function* (
@@ -113,7 +106,14 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
         .where(eq(organizationSettingsTable.organizationId, organizationId))
         .limit(1)
         .pipe(Effect.orDie);
-      return organizationDefaults(instance, yield* organizationSettingsFromRow(row));
+      // Every organization has a row since migration 0230; one made since and not yet read has
+      // none until `OrganizationSettingsRepo` writes its copy, which would be this image.
+      return organizationDefaults(
+        instance,
+        row === undefined
+          ? newOrganizationSettings(instance.workspaceImage)
+          : yield* organizationSettingsFromRow(row),
+      );
     });
 
     const forPerson = Effect.fn("SettingsRepo.forPerson")(function* (

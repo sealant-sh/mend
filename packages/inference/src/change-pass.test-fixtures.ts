@@ -9,6 +9,7 @@ import {
   type NewChangeTour,
   type NewReviewComment,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   ChangeId,
   OrganizationId,
@@ -66,7 +67,7 @@ const project = new Project({
   autoLand: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: true,
   defaultShellProfile: true,
   inheritUserSkills: true,

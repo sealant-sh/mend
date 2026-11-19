@@ -5,10 +5,9 @@ sidebar:
   order: 3
 ---
 
-Every session runs inside a Sealant workspace built from an image definition. The definition
-resolves at three levels: a project's override on its **Configuration** page, then its
-organization's default, then the instance default. See
-[Instance, organization and project](#instance-organization-and-project).
+Every session runs inside a Sealant workspace built from its project's image definition. Each
+project has its own, a copy of its organization's starting image taken when the project was created.
+See [Instance, organization and project](#instance-organization-and-project).
 
 A session records the image definition it launched with. Changing the setting affects later
 workspace launches, not a workspace that is already running.
@@ -172,32 +171,24 @@ platform services.
 
 ## Instance, organization and project
 
-A launch uses the first definition it finds, in this order:
+Each level holds its own image, and nothing follows a level above:
 
-1. the project's override, saved on its **Configuration** page;
-2. the organization's default, which the organization's owners set in **Settings**;
-3. the instance default, which only the operator sees and edits in **Settings**.
+1. a project's image, on its **Configuration** page, is what its sessions launch with;
+2. an organization's **starting image**, which its owners set in **Settings**, is what each new
+   project in it starts with a copy of;
+3. the instance's image, which only the operator sees and edits in **Settings**, is what each new
+   organization starts with a copy of.
 
-Members see the organization's resolved environment read-only, with where it came from. A project
-override remains fixed until you edit it or choose **Use default**, which returns the project to
-what it inherits. Each change to an organization's default is recorded in its audit log.
+Changing an organization's starting image changes the projects created after it, not the ones that
+exist. **Reset** on a project's image replaces it with a copy of its organization's starting image
+as it is then. Members see the organization's starting image read-only. Each change to it is
+recorded in the organization's audit log.
 
-```mermaid
-flowchart TD
-  project{Project override?}
-  organization{Organization default?}
-  instance[Instance default]
-  resolved[Resolved image for next workspace]
+On upgrade, a project or organization that followed a level above keeps what it resolved to then, as
+its own copy.
 
-  project -->|yes| resolved
-  project -->|no| organization
-  organization -->|yes| resolved
-  organization -->|no| instance
-  instance --> resolved
-```
-
-Changing a default affects every project that inherits it. Mend uses the resolved definition as part
-of the hot-workspace fingerprint, so incompatible ready workspaces are replaced.
+A project's image is part of its hot-workspace fingerprint, so changing it replaces ready workspaces
+that no longer match.
 
 ## Where sessions run
 

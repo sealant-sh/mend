@@ -27,6 +27,7 @@ import {
   RemovalFencesRepo,
   SettingsRepo,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { UNREAD } from "@mend/domain/runtime-support-fixtures";
 import {
@@ -97,7 +98,7 @@ const project = (id: ProjectId, name: string): Project =>
     autoLand: "inherit",
     backgroundSessions: "inherit",
     gitAuthMode: "mend-key",
-    workspaceImage: null,
+    workspaceImage: defaultWorkspaceImage,
     applyDotfiles: true,
     defaultShellProfile: true,
     inheritUserSkills: true,

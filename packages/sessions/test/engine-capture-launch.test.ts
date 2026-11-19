@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { WorktreesRepo, AgentMemoryRepo } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   OrganizationId,
   ProjectId,
@@ -1551,7 +1552,7 @@ describe("SessionEngine capture mode", () => {
                 autoSuggest: "inherit",
                 backgroundSessions: "inherit",
                 gitAuthMode: "mend-key",
-                workspaceImage: null,
+                workspaceImage: defaultWorkspaceImage,
                 applyDotfiles: true,
                 defaultShellProfile: true,
                 inheritUserSkills: true,

@@ -1060,20 +1060,21 @@ const ADMITTED: Readonly<
   "runs.trace": { status: 500, calls: ["runs.byId"] },
   // Shared runs.byId lookup defects before distinct SDK/detail behavior.
   "runs.sources": { status: 500, calls: ["runs.byId"] },
-  // Settings snapshot masks save.
+  // Settings snapshot masks save. A null image (an old client's "follow the instance") reads the
+  // server's image to copy it.
   "organization.setSettings": {
     status: 500,
-    calls: ["organizationSettings.get", "organizationSettings.modify"],
+    calls: ["organizationSettings.get", "settings.get", "organizationSettings.modify"],
   },
-  // Same settings snapshot masks environment save.
+  // Same settings snapshot masks environment save; its null image copies the server's too.
   "organization.setWorkspaceEnvironment": {
     status: 500,
-    calls: ["organizationSettings.get", "organizationSettings.modify"],
+    calls: ["settings.get", "organizationSettings.get", "organizationSettings.modify"],
   },
-  // Docker runs everything: the organization's settings are read, and nothing is written.
+  // Docker runs everything: the organization's own settings are read, and nothing is written.
   "organization.runtimeSwitch": {
     status: 200,
-    calls: ["organizationSettings.get", "settings.get"],
+    calls: ["organizationSettings.get"],
     body: {
       chosen: "docker",
       effective: "docker",
@@ -1193,7 +1194,11 @@ const ADMITTED: Readonly<
   "projects.visibility": { status: 500, calls: ["projects.setVisibility"] },
   "projects.automation": { status: 500, calls: ["projects.setAutomation"] },
   "projects.gitAuth": { status: 500, calls: ["projects.setGitAuthMode"] },
-  "projects.workspaceImage": { status: 500, calls: ["projects.setWorkspaceImage"] },
+  // An old client's null copies the organization's starting image.
+  "projects.workspaceImage": {
+    status: 500,
+    calls: ["organizationSettings.get", "projects.setWorkspaceImage"],
+  },
   "projects.newWorktreesUseProjectResources": {
     status: 500,
     calls: ["projects.setNewWorktreesUseProjectResources"],

@@ -2,12 +2,18 @@
 
 Every session runs in a workspace built from an image definition: a managed OS family (Arch, Fedora,
 Ubuntu or Nix) with a login shell and portable package names, or a custom OCI base with extra
-packages and setup commands, plus a Docker service switch. The definition resolves project override,
-then organization default, then instance default. A user overrides it on the project's Setup tab,
-owners set the organization's default and the operator the instance's in Settings. Mend asks the
-platform to resolve every managed OS-family package on save and refuses the save naming each package
-it could not resolve. Custom bases keep package names unchanged without catalog resolution. The next
-launch that needs a new image builds it, and the session says so while it builds.
+packages and setup commands, plus a Docker service switch. Each project has its own image, a copy of
+its organization's starting image taken when the project was created; an organization's starting
+image is a copy of the instance's taken when it was created (SLNT-1155, docs/adr/0025). Nothing
+follows a level above: changing the organization's starting image changes new projects only. A user
+changes the project's on its Settings → Workspace tab, owners the organization's and the operator
+the instance's in Settings. Mend asks the platform to resolve every managed OS-family package on
+save and refuses the save naming each package it could not resolve. Custom bases keep package names
+unchanged without catalog resolution. The next launch that needs a new image builds it, and the
+session says so while it builds. Saving an image starts no build of its own (S17): for a project
+with ready workspaces the save rewarms them, and `GET /api/projects/<id>/hot-sessions`
+(`projects.hotSessionsStatus`) reads `warming`, then `ready` or `failed` with `error`; otherwise the
+first launch after the save builds it.
 
 ## Sub-features
 
@@ -18,10 +24,12 @@ launch that needs a new image builds it, and the session says so while it builds
   starts without a restored capture.
 - `image-rejections` refuses a save and names each package Sealant could not resolve or does not
   support for the family.
-- `image-use-default` returns a project to what it inherits.
-- `image-organization-default` lets an owner set the organization's default in Settings, or follow
-  the instance.
-- `image-instance-default` lets the operator set the instance default in Settings, with
+- `image-use-default` (the field's `reset`) replaces a project's image with a copy of its
+  organization's starting image as it is now; an old client's `{ "workspaceImage": null }` does the
+  same.
+- `image-organization-default` lets an owner set the organization's starting image in Settings,
+  which new projects copy; existing projects keep their own. There is no "follow the instance".
+- `image-instance-default` lets the operator set the image new organizations copy, with
   `Scan machine` suggestions.
 - `image-build-state` shows a launch building its image: the session page summary, the CLI's start
   lines and the TUI row.
@@ -44,8 +52,8 @@ Preconditions:
 
 - Mend is healthy at `<web>`, signed in as the instance's first account (the operator and the
   organization's owner), and `<project>` is adopted.
-- The project and the organization have no override: each field of the project's `Image` section
-  reads `from the instance default`, and the organization's line ends `· from the instance`.
+- Each field of the project's `Image` section reads `set for <project> · reset`: the image is the
+  project's own.
 - `<package>` is a package id the platform's catalog resolves for Arch and no saved definition uses
   yet (for example `htop`, if the catalog has it). Launch confirms it.
 - `const section = (name) => page.locator("section").filter({ has: page.getByRole("heading", { name, exact: true }) })`.
@@ -96,28 +104,28 @@ Preconditions:
   `starting · building the workspace image · the agent starts once it is built and booted` (with
   ` · step <n>/<m>` after `image` when the platform reports the step). Close with
   `tmux kill-session -t img`.
-- **Use default.** Open `Edit…` and choose `Use default`. The line ends `· inherited` again.
-- **Organization default.** Go to `<web>/settings/organization/environment`.
-  `section("Workspace environment · <organization>")` reads
-  `<os> · <n> packages · from the instance` (or `… · set for <organization>`) and the button
-  `Set for <organization>` (see Gotchas). Choose it. The editor shows `OS family`, `Custom image`,
-  one button per OS (`Arch`, `Fedora`, `Ubuntu`, `Nix`, each named with its description),
-  `bash`/`zsh`/`fish`, the Docker toggle, the textbox `Packages`, the line
+- **Reset.** Choose a field's `reset`. The fields show the organization's starting image and the
+  line
+  `Reset to a copy of the organization's starting image · new sessions wait for the rebuilt image`.
+- **Organization default.** Go to `<web>/settings/organization/environment`. An owner sees the
+  editor at once, under
+  `Set for <organization>. Each new project starts with a copy; existing projects keep their own.`;
+  a member reads `<os> · <n> packages · set for <organization>`. The editor shows `OS family`,
+  `Custom image`, one button per OS (`Arch`, `Fedora`, `Ubuntu`, `Nix`, each named with its
+  description), `bash`/`zsh`/`fish`, the Docker toggle, the textbox `Packages`, the line
   `<n> packages · checked for Arch on save`, `Cancel` and `Save environment` (disabled until
   something changes). Add `<package>` to `Packages`; the status reads `Unsaved environment changes`.
   Choose `Save environment`: it reads `Checking packages…`, then
-  `Saved · packages resolved by Sealant`, and `Cancel` becomes `Follow the instance`.
-- **Project follows the organization.** Back on `<project>`'s Setup tab (no project override), the
-  `Workspace image` line counts the organization's packages and ends `· inherited`.
-- **Follow the instance.** In Settings choose `Follow the instance`. The organization panel's line
-  ends `· instance` again.
+  `Saved · packages resolved by Sealant`. There is no `Follow the instance`.
+- **Existing projects keep their own.** Back on `<project>`'s Workspace tab, its image is as it was;
+  a project adopted after the save starts with the organization's new image.
 - **Instance default.** As the operator, `section("Workspace environment")` (exact name) shows the
   same editor plus `Suggestions from this machine` with `Scan machine`. Choose `Scan machine`; it
   reads `Scanning…`, then lists observed tools or `No known tools observed.`. Do not save the
   instance default on a shared instance.
 - **Proof.** ARIA snapshots and screenshots of the `Workspace image` panel inherited, with the
-  rejection, as an override, and after `Use default`; the Settings panel after its save; the
-  `mend run` transcript with its launch lines; the TUI capture; the review page showing `IMAGE.txt`.
+  rejection, as saved, and after `reset`; the Settings panel after its save; the `mend run`
+  transcript with its launch lines; the TUI capture; the review page showing `IMAGE.txt`.
 
 ## Gotchas
 

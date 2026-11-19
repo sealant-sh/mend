@@ -12,6 +12,8 @@
         "$TURBO_ROOT$/packages/db/src/executor-identity-migration.ts",
         "$TURBO_ROOT$/packages/db/src/local-worktrees-migration.ts",
         "$TURBO_ROOT$/packages/db/src/mcp-apps-migration.ts",
+        "$TURBO_ROOT$/packages/db/src/workspace-image-own-migration.ts",
+        "$TURBO_ROOT$/packages/db/src/built-in-settings.ts",
         "$TURBO_ROOT$/apps/docs/src/content/docs/operate/boat.md"
       ]
     }

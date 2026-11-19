@@ -6,6 +6,7 @@ import {
   OrganizationWorkspaceEnvironmentSaveResult,
   SettingsFailure,
   WorkspacePackageResolutionView,
+  type OrganizationSettingsRequest,
   type OrganizationWorkspaceEnvironmentRequest,
 } from "@mend/api-contracts";
 import {
@@ -56,8 +57,8 @@ import {
  * members read what their projects inherit. The group in routes/organization.ts authorizes first.
  */
 
-const sameImage = (left: WorkspaceImage | null, right: WorkspaceImage | null): boolean =>
-  left === null || right === null ? left === right : workspaceImagesEqual(left, right);
+const sameImage = (left: WorkspaceImage, right: WorkspaceImage): boolean =>
+  workspaceImagesEqual(left, right);
 
 /** A workspace environment in an audit record: small, and never a package list. */
 const imageFact = (image: WorkspaceImage | null): string | null => {
@@ -146,18 +147,15 @@ export const reservedPortRefusalFor = (organizationId: OrganizationId, port: num
   });
 
 /**
- * The environment a new project in the organization starts with: null inherits the organization's,
- * unless Sealant says the runtime its sessions run on cannot run that one.
+ * The image a new project in the organization starts with: a copy of the organization's starting
+ * image (docs/adr/0025), unless Sealant says the runtime its sessions run on cannot run that one,
+ * when it is Mend's packages on a family that runtime runs.
  */
 export const newProjectWorkspaceImageFor = (organizationId: OrganizationId) =>
   Effect.gen(function* () {
-    const own = yield* (yield* OrganizationSettingsRepo).get(organizationId);
-    const instance = yield* (yield* SettingsRepo).get();
+    const starting = (yield* (yield* OrganizationSettingsRepo).get(organizationId)).workspaceImage;
     const { support } = yield* organizationRuntime(organizationId);
-    return newProjectWorkspaceImage(
-      organizationDefaults(instance, own).workspaceImage,
-      observedSupport(support),
-    );
+    return newProjectWorkspaceImage(starting, observedSupport(support)) ?? starting;
   });
 
 /** The organization's values, the instance's under them, and what a project on inherit gets. */
@@ -220,7 +218,6 @@ const impactOf = (
     if (reading.state !== "observed") return reading;
     const organizationId = found.organization.id;
     const own = yield* (yield* OrganizationSettingsRepo).get(organizationId);
-    const instance = yield* (yield* SettingsRepo).get();
     const projects = yield* (yield* ProjectsRepo).listForOrganization(organizationId);
     const recipes = yield* ProjectServiceRecipesRepo;
     const mounts = yield* ProjectMountsRepo;
@@ -248,10 +245,7 @@ const impactOf = (
     );
     return runtimeSwitchImpact({
       reading,
-      organizationDefault: {
-        image: organizationDefaults(instance, own).workspaceImage,
-        inherited: own.workspaceImage === null,
-      },
+      organizationDefault: { image: own.workspaceImage },
       projects: facts,
     });
   });
@@ -323,7 +317,7 @@ const moveEnvironments = (
     const projects = yield* ProjectsRepo;
     for (const project of impact.projects) {
       const move = project.environment;
-      if (!chosen.has(project.id) || move === null || move.inherited || move.to === null) continue;
+      if (!chosen.has(project.id) || move === null || move.to === null) continue;
       const done = yield* projects.setWorkspaceImage(project.id, move.to).pipe(
         Effect.as(true),
         Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(false)),
@@ -382,8 +376,8 @@ export const saveOrganizationSessionRuntime = (
   });
 
 /**
- * Record what changed and, when the workspace environment did, rewarm the hot workspaces of every
- * project that inherits it: their standbys were built from the old one.
+ * Record what changed. A changed starting image touches no project: each has its own copy
+ * (docs/adr/0025), so no ready workspace is rebuilt for it.
  */
 const settle = (
   found: OrganizationMembership,
@@ -402,34 +396,34 @@ const settle = (
       subjectId: found.organization.id,
       data: changes,
     });
-    if ("workspaceImage" in changes) {
-      const projects = yield* (yield* ProjectsRepo).listForOrganization(found.organization.id);
-      const engine = yield* SessionEngine;
-      yield* Effect.forEach(
-        projects.filter((project) => project.workspaceImage === null && project.hotSessions > 0),
-        (project) => engine.reconcileHotSessions(project.id),
-        { discard: true },
-      );
-    }
   });
 
 /**
- * Replace the organization's own values, as an owner. An unchanged workspace environment keeps the
- * latest one; a changed one is resolved like the environment save, and a package that does not
- * resolve refuses the whole save.
+ * The image an old client's null asks for: what it would have resolved to, the server's. The
+ * organization keeps a copy of it, so a later change to the server's does not follow.
+ */
+const serverImage = Effect.gen(function* () {
+  return (yield* (yield* SettingsRepo).get()).workspaceImage;
+});
+
+/**
+ * Replace the organization's own values, as an owner. An unchanged starting image keeps the latest
+ * one; a changed one is resolved like the environment save, and a package that does not resolve
+ * refuses the whole save. A null image (an old client's "follow the instance") saves a copy of the
+ * server's.
  */
 export const saveOrganizationSettings = (
   found: OrganizationMembership,
   actorUserId: string,
-  payload: OrganizationSettings,
+  payload: OrganizationSettingsRequest,
 ) =>
   Effect.gen(function* () {
     const repo = yield* OrganizationSettingsRepo;
     const organizationId = found.organization.id;
     const before = yield* repo.get(organizationId);
-    let image = payload.workspaceImage;
+    let image = payload.workspaceImage ?? (yield* serverImage);
     const imageChanged = !sameImage(before.workspaceImage, image);
-    if (image !== null && imageChanged) {
+    if (payload.workspaceImage !== null && imageChanged) {
       yield* refuseUnrunnableEnvironment(organizationId, image);
       const resolved = yield* resolveWorkspaceEnvironmentWithSealant(image);
       if (resolved.workspaceImage === null) {
@@ -452,8 +446,9 @@ export const saveOrganizationSettings = (
   });
 
 /**
- * Save the organization's workspace environment, as an owner: null follows the instance's again;
- * an environment is resolved first, and `saved: false` reports the rejections and persists nothing.
+ * Save the organization's starting image, as an owner: an image is resolved first, and
+ * `saved: false` reports the rejections and persists nothing. Null (an old client's "follow the
+ * instance") saves a copy of the server's image as the organization's own.
  */
 export const saveOrganizationWorkspaceEnvironment = (
   found: OrganizationMembership,
@@ -480,10 +475,11 @@ export const saveOrganizationWorkspaceEnvironment = (
       }
       image = resolved.workspaceImage;
     }
+    const starting = image ?? (yield* serverImage);
     const before = yield* repo.get(organizationId);
     const saved = yield* repo.modify(
       organizationId,
-      (latest) => new OrganizationSettings({ ...latest, workspaceImage: image }),
+      (latest) => new OrganizationSettings({ ...latest, workspaceImage: starting }),
     );
     yield* settle(found, actorUserId, before, saved);
     return new OrganizationWorkspaceEnvironmentSaveResult({

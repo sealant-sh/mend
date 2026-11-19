@@ -5,8 +5,9 @@ import { useTRPC } from "#/lib/trpc";
 import { EnvironmentForm } from "./environment-form";
 
 /**
- * O9 · Instance · Environment (the operator's): the workspace environment every organization on
- * this machine inherits unless it sets its own. Only the operator may scan the machine for tools.
+ * O9 · Instance · Environment (the operator's): the image a new organization on this machine starts
+ * with a copy of (docs/adr/0025). Existing organizations keep their own. Only the operator may scan
+ * the machine for tools.
  */
 export function InstanceEnvironmentTab() {
   const trpc = useTRPC();
@@ -16,20 +17,19 @@ export function InstanceEnvironmentTab() {
       onSuccess: (result, _variables, _context, { client }) => {
         if (!result.saved) return undefined;
         client.setQueryData(trpc.settings.get.queryKey(), result.settings);
-        // Organizations that follow the instance read it through their own view.
-        return client.invalidateQueries(trpc.organization.settings.queryFilter());
+        return undefined;
       },
     }),
   );
   return (
     <EnvironmentForm
       title="Workspace environment · instance"
-      why="The default for every organization on this machine. Operators only."
+      why="Each new organization on this machine starts with a copy; existing ones keep their own. Operators only."
       savedImage={settings.workspaceImage}
       pending={save.isPending}
       error={save.error}
       allowScan
-      saveEffect="new sessions rebuild their image"
+      saveEffect="new organizations start from it"
       onSave={(image) =>
         save.mutateAsync(image).then((result) => ({
           saved: result.saved ? result.settings.workspaceImage : null,

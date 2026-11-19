@@ -1,4 +1,4 @@
-import { inheritedOrganizationSettings, OrganizationSettings, WorkspaceImage } from "@mend/domain";
+import { OrganizationSettings, WorkspaceImage } from "@mend/domain";
 import type { OrganizationId, SessionRuntime } from "@mend/domain";
 import { eq } from "drizzle-orm";
 import { DateTime, Effect, Layer, Schema } from "effect";
@@ -6,21 +6,18 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { organizationSettings as organizationSettingsTable } from "../schema/workbench.ts";
+import { BuiltInSettings, readInstanceSettings } from "./instance-settings.ts";
 
 const decodeWorkspaceImage = Schema.decodeUnknownEffect(WorkspaceImage);
 const encodeOrganizationSettings = Schema.encodeEffect(OrganizationSettings);
 
-/** One stored row as the domain reads it; no row is an organization that set nothing. */
+/** One stored row as the domain reads it. */
 export const organizationSettingsFromRow = (
-  row: typeof organizationSettingsTable.$inferSelect | undefined,
+  row: typeof organizationSettingsTable.$inferSelect,
 ): Effect.Effect<OrganizationSettings> =>
   Effect.gen(function* () {
-    if (row === undefined) return inheritedOrganizationSettings;
     return new OrganizationSettings({
-      workspaceImage:
-        row.workspaceImage === null
-          ? null
-          : yield* decodeWorkspaceImage(row.workspaceImage).pipe(Effect.orDie),
+      workspaceImage: yield* decodeWorkspaceImage(row.workspaceImage).pipe(Effect.orDie),
       autoTour: row.autoTour,
       autoSuggest: row.autoSuggest,
       autoName: row.autoName,
@@ -30,14 +27,16 @@ export const organizationSettingsFromRow = (
   });
 
 /**
- * An organization's own defaults (docs/adr/0003-organizations-and-tenancy.md): what every project
- * in it inherits in place of the instance's, value by value. Owners write them; the routes check
- * that before calling here.
+ * An organization's own values (docs/adr/0003-organizations-and-tenancy.md): its starting image,
+ * which each new project copies, and the automation switches the old web app still stores. Owners
+ * write them; the routes check that before calling here. An organization's row is written with a
+ * copy of the server's image the first time anything asks for it, which `createOrganization` does
+ * at creation (docs/adr/0025).
  */
 export class OrganizationSettingsRepo extends Context.Service<
   OrganizationSettingsRepo,
   {
-    /** The organization's own values; every one null when it set nothing. */
+    /** The organization's own values; its starting image is always set. */
     readonly get: (organizationId: OrganizationId) => Effect.Effect<OrganizationSettings>;
     /** Replace the organization's own values. */
     readonly set: (
@@ -65,8 +64,6 @@ export class OrganizationSettingsRepo extends Context.Service<
       organizationId: OrganizationId,
       runtime: SessionRuntime | null,
     ) => Effect.Effect<SessionRuntime | null>;
-    /** Forget every value: the organization follows the instance again. */
-    readonly clear: (organizationId: OrganizationId) => Effect.Effect<void>;
   }
 >()("@mend/db/OrganizationSettingsRepo") {}
 
@@ -75,6 +72,18 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
     OrganizationSettingsRepo,
     Effect.gen(function* () {
       const db = yield* MendDB;
+      const builtIn = yield* BuiltInSettings;
+      const encodeImage = Schema.encodeEffect(WorkspaceImage);
+      /**
+       * A new row for an organization that has none: a copy of the server's image now, which is
+       * what the organization's own starting image is from then on.
+       */
+      const firstRow = (organizationId: OrganizationId) =>
+        Effect.gen(function* () {
+          const instance = yield* readInstanceSettings(db, builtIn);
+          const workspaceImage = yield* encodeImage(instance.workspaceImage).pipe(Effect.orDie);
+          return { organizationId, workspaceImage };
+        });
 
       const columns = (settings: OrganizationSettings) =>
         encodeOrganizationSettings(settings).pipe(
@@ -92,13 +101,22 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
       const get = Effect.fn("OrganizationSettingsRepo.get")(function* (
         organizationId: OrganizationId,
       ) {
-        const [row] = yield* db
+        const read = db
           .select()
           .from(organizationSettingsTable)
           .where(eq(organizationSettingsTable.organizationId, organizationId))
           .limit(1)
           .pipe(Effect.orDie);
-        return yield* organizationSettingsFromRow(row);
+        const [row] = yield* read;
+        if (row !== undefined) return yield* organizationSettingsFromRow(row);
+        yield* db
+          .insert(organizationSettingsTable)
+          .values(yield* firstRow(organizationId))
+          .onConflictDoNothing()
+          .pipe(Effect.orDie);
+        const [written] = yield* read;
+        if (written === undefined) return yield* Effect.die("organization settings row missing");
+        return yield* organizationSettingsFromRow(written);
       });
 
       const set = Effect.fn("OrganizationSettingsRepo.set")(function* (
@@ -127,7 +145,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
               // The row may not exist yet; creating it first gives the row lock something to hold.
               yield* tx
                 .insert(organizationSettingsTable)
-                .values({ organizationId })
+                .values(yield* firstRow(organizationId))
                 .onConflictDoNothing();
               const [row] = yield* tx
                 .select()
@@ -135,6 +153,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
                 .where(eq(organizationSettingsTable.organizationId, organizationId))
                 .limit(1)
                 .for("update");
+              if (row === undefined) return yield* Effect.die("organization settings row missing");
               const next = update(yield* organizationSettingsFromRow(row));
               const values = yield* columns(next);
               yield* tx
@@ -144,15 +163,6 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
               return next;
             }),
           )
-          .pipe(Effect.orDie);
-      });
-
-      const clear = Effect.fn("OrganizationSettingsRepo.clear")(function* (
-        organizationId: OrganizationId,
-      ) {
-        yield* db
-          .delete(organizationSettingsTable)
-          .where(eq(organizationSettingsTable.organizationId, organizationId))
           .pipe(Effect.orDie);
       });
 
@@ -177,7 +187,7 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
             Effect.gen(function* () {
               yield* tx
                 .insert(organizationSettingsTable)
-                .values({ organizationId })
+                .values(yield* firstRow(organizationId))
                 .onConflictDoNothing();
               const [row] = yield* tx
                 .select({ sessionRuntime: organizationSettingsTable.sessionRuntime })
@@ -195,6 +205,6 @@ export const OrganizationSettingsRepoLive: Layer.Layer<OrganizationSettingsRepo,
           .pipe(Effect.orDie);
       });
 
-      return { get, set, modify, clear, sessionRuntime, setSessionRuntime };
+      return { get, set, modify, sessionRuntime, setSessionRuntime };
     }),
   );

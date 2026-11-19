@@ -13,6 +13,7 @@ import {
   SlackInstallsRepo,
   SlackThreadsRepo,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   AgentTurnId,
   OrganizationId,
@@ -63,7 +64,7 @@ const project = new Project({
   autoLand: "off",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: false,
   defaultShellProfile: false,
   inheritUserSkills: false,

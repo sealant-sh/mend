@@ -196,17 +196,18 @@ export class OrganizationRuntimeSwitchView extends Schema.Class<OrganizationRunt
 }) {}
 
 /**
- * The defaults every project in the organization inherits (docs/adr/0003, "Resources that were
- * instance-global"): the organization's own values, the instance's under them, and the result.
+ * The organization's own values (docs/adr/0003, "Resources that were instance-global"), the
+ * instance's beside them, and the two combined. Its starting image is its own; the instance's is
+ * the image a new organization copies.
  */
 export class OrganizationSettingsView extends Schema.Class<OrganizationSettingsView>(
   "OrganizationSettingsView",
 )({
-  /** The organization's own values; each null follows the instance. */
+  /** The organization's own values; its starting image is always set. */
   organization: OrganizationSettings,
-  /** The instance's settings, which the operator sets. */
+  /** The instance's settings, which the operator sets; its image is what a new organization copies. */
   instance: MendSettings,
-  /** What a project on inherit gets: `organization` wherever it is set, else `instance`. */
+  /** `organization` wherever it is set, else `instance`; the image is always the organization's. */
   effective: MendSettings,
   /** Whether the caller may change `organization`: its owners may. */
   editable: Schema.Boolean,
@@ -214,7 +215,22 @@ export class OrganizationSettingsView extends Schema.Class<OrganizationSettingsV
   sessionRuntime: OrganizationSessionRuntimeView,
 }) {}
 
-/** The organization's workspace environment; null follows the instance's. */
+/**
+ * The organization's values as a client replaces them (`PUT /organization/settings`). The starting
+ * image may be null: what clients before SLNT-1155 sent to follow the instance. The server saves a
+ * copy of the server's image then, as the organization's own.
+ */
+export class OrganizationSettingsRequest extends Schema.Class<OrganizationSettingsRequest>(
+  "OrganizationSettingsRequest",
+)({
+  ...OrganizationSettings.fields,
+  workspaceImage: Schema.NullOr(WorkspaceImage),
+}) {}
+
+/**
+ * The organization's starting image, which each new project copies (docs/adr/0025). Null, what
+ * clients before SLNT-1155 sent to follow the instance, saves a copy of the server's image.
+ */
 export class OrganizationWorkspaceEnvironmentRequest extends Schema.Class<OrganizationWorkspaceEnvironmentRequest>(
   "OrganizationWorkspaceEnvironmentRequest",
 )({
@@ -333,7 +349,7 @@ export const organizationGroup = HttpApiGroup.make("organization")
     // Owners only. Replaces the organization's own values; a changed workspace environment is
     // resolved like the environment save below, and refused whole when a package does not resolve.
     HttpApiEndpoint.put("setSettings", "/organization/settings", {
-      payload: OrganizationSettings,
+      payload: OrganizationSettingsRequest,
       success: OrganizationSettingsView,
       error: [NotFound, SettingsFailure],
     }),

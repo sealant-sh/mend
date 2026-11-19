@@ -17,7 +17,7 @@ import {
   SetProjectFoldersRequest,
   ProjectWorkspaceImageRequest,
 } from "@mend/api-contracts";
-import { ProjectId, ProjectLinkId, ProjectMountId } from "@mend/domain";
+import { ProjectId, ProjectLinkId, ProjectMountId, WorkspaceImage } from "@mend/domain";
 import { ProjectName } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
@@ -118,10 +118,24 @@ export const projectsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projects.automation({ params: { id: i.id }, payload: i.choices })),
     ),
+  // The project's own image, a plain value (docs/adr/0025): saving it starts no build; the next
+  // session launched, or the ready workspaces the save rewarms, build it.
   setWorkspaceImage: procedure
-    .input(input(Schema.Struct({ id: ProjectId, request: ProjectWorkspaceImageRequest })))
+    .input(
+      input(
+        Schema.Struct({
+          id: ProjectId,
+          request: Schema.Struct({ workspaceImage: WorkspaceImage }),
+        }),
+      ),
+    )
     .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) => api.projects.workspaceImage({ params: { id: i.id }, payload: i.request })),
+      run(ctx, (api) =>
+        api.projects.workspaceImage({
+          params: { id: i.id },
+          payload: new ProjectWorkspaceImageRequest({ workspaceImage: i.request.workspaceImage }),
+        }),
+      ),
     ),
   setApplyDotfiles: procedure
     .input(input(Schema.Struct({ id: ProjectId, request: ProjectApplyDotfilesRequest })))

@@ -353,17 +353,18 @@ export const builtInSettingsFor = (runtime: SessionRuntime | null): MendSettings
     : defaultSettings;
 
 /**
- * An organization's own defaults (docs/adr/0003-organizations-and-tenancy.md, "Resources that were
- * instance-global"). The instance's settings document is the operator's; an organization's owners
- * set these instead. Null follows the instance. The automation switches are still stored and
- * answered for the old web app, but no session reads them: each person's own are what count
- * (docs/adr/0025-one-home-per-setting.md). The queue-era `prMode` and `concurrency` stay
+ * An organization's own values (docs/adr/0003-organizations-and-tenancy.md, "Resources that were
+ * instance-global"). The workspace image is its **starting image**: a copy of the server's taken
+ * when the organization was created, which each new project copies in turn
+ * (docs/adr/0025-one-home-per-setting.md, decision 5). Nothing follows a level above it. The
+ * automation switches are still stored and answered for the old web app, but no session reads
+ * them: each person's own are what count. The queue-era `prMode` and `concurrency` stay
  * instance-wide.
  */
 export class OrganizationSettings extends Schema.Class<OrganizationSettings>(
   "OrganizationSettings",
 )({
-  workspaceImage: Schema.NullOr(WorkspaceImage),
+  workspaceImage: WorkspaceImage,
   autoTour: Schema.NullOr(Schema.Boolean),
   autoSuggest: Schema.NullOr(Schema.Boolean),
   autoName: Schema.NullOr(Schema.Boolean),
@@ -371,15 +372,16 @@ export class OrganizationSettings extends Schema.Class<OrganizationSettings>(
   backgroundSessions: Schema.NullOr(Schema.Boolean),
 }) {}
 
-/** An organization that set nothing of its own: every value follows the instance. */
-export const inheritedOrganizationSettings = new OrganizationSettings({
-  workspaceImage: null,
-  autoTour: null,
-  autoSuggest: null,
-  autoName: null,
-  autoLand: null,
-  backgroundSessions: null,
-});
+/** A new organization's values: its starting image, and no automation switch of its own. */
+export const newOrganizationSettings = (workspaceImage: WorkspaceImage): OrganizationSettings =>
+  new OrganizationSettings({
+    workspaceImage,
+    autoTour: null,
+    autoSuggest: null,
+    autoName: null,
+    autoLand: null,
+    backgroundSessions: null,
+  });
 
 /** The values an organization may set; each one null follows the instance. */
 export const ORGANIZATION_SETTING_KEYS = [
@@ -409,7 +411,7 @@ export const organizationDefaults = (
     ? instance
     : new MendSettings({
         ...instance,
-        workspaceImage: organization.workspaceImage ?? instance.workspaceImage,
+        workspaceImage: organization.workspaceImage,
         autoTour: organization.autoTour ?? instance.autoTour,
         autoSuggest: organization.autoSuggest ?? instance.autoSuggest,
         autoName: organization.autoName ?? instance.autoName,

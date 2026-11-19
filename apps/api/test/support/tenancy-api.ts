@@ -90,10 +90,11 @@ import {
   type DotfilesRepository,
   type SessionId,
   defaultSettings,
-  inheritedOrganizationSettings,
   type SessionRuntime,
   SessionRuntimeOffer,
   type WorkspaceRuntimesReading,
+  newOrganizationSettings,
+  defaultWorkspaceImage,
 } from "@mend/domain";
 import { serverBoatFactsFixture } from "@mend/domain/boat-key-fixtures";
 import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
@@ -751,7 +752,7 @@ export const createTenancyApi = async (
         {
           sessionRuntime: (organizationId) =>
             Effect.succeed(options.organizationRuntimes?.get(organizationId) ?? null),
-          get: () => Effect.succeed(inheritedOrganizationSettings),
+          get: () => Effect.succeed(newOrganizationSettings(defaultWorkspaceImage)),
           ...options.implement?.organizationSettings,
         },
         calls,

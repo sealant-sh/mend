@@ -7,7 +7,6 @@ import {
 import {
   defaultSettings,
   defaultWorkspaceImage,
-  inheritedOrganizationSettings,
   MendSettings,
   OrganizationId,
   organizationDefaults,
@@ -16,6 +15,7 @@ import {
   type RuntimeSupportReading,
   runtimeSwitchImpact,
   type SessionRuntime,
+  newOrganizationSettings,
 } from "@mend/domain";
 import {
   BOAT_SUPPORT,
@@ -57,7 +57,10 @@ const viewer = (role: OrganizationRole) =>
     mountDelivery: "bind",
   });
 const instance = new MendSettings({ ...defaultSettings, autoLand: false, autoTour: true });
-const own = new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true });
+const own = new OrganizationSettings({
+  ...newOrganizationSettings(defaultWorkspaceImage),
+  autoLand: true,
+});
 const dockerOnly = new OrganizationSessionRuntimeView({
   chosen: null,
   effective: "docker",
@@ -103,7 +106,7 @@ const FALLBACK: Record<string, unknown> = {
     effective: "docker",
     impact: runtimeSwitchImpact({
       reading: observedSupportReading(DOCKER_SUPPORT),
-      organizationDefault: { image: defaultWorkspaceImage, inherited: true },
+      organizationDefault: { image: defaultWorkspaceImage },
       projects: [],
     }),
   },
@@ -220,7 +223,7 @@ const project = (
   id: ProjectId.make(`p-${name}`),
   name,
   visible: true,
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   services: [],
   serverFolders: 0,
   ...facts,
@@ -247,7 +250,7 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     effective: chosen ?? "docker",
     impact: runtimeSwitchImpact({
       reading,
-      organizationDefault: { image: arch, inherited: true },
+      organizationDefault: { image: arch },
       projects,
     }),
   });
@@ -305,13 +308,14 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     const text = switchDialog()?.textContent ?? "";
     expect(text).toContain("Before new sessions run on Boat");
     expect(text).toContain("Acme's environment");
-    expect(text).toContain(
-      "arch · 19 packages, from the instance → Ubuntu with Mend's default packages",
-    );
+    // Acme's starting image is its own copy: nothing reads "from the instance" any more.
+    expect(text).toContain("arch · 19 packages → Ubuntu with Mend's default packages");
+    expect(text).not.toContain("from the instance");
     expect(text).toContain("Boat supports Ubuntu and Nix; Arch is unsupported.");
     expect(text).toContain("fedora · 19 packages → Ubuntu with Mend's default packages");
     expect(text).toContain("Service dev on port 8080 cannot listen: Boat holds that port");
-    expect(text).toContain("Follows the organization's environment");
+    // A project made to follow Acme holds its own copy of Arch now, and moves on its own.
+    expect(text).not.toContain("Follows the organization's environment");
     expect(text).toContain(
       "Another member's private project uses something Boat does not run. Mend does not name or move it",
     );
@@ -322,7 +326,10 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
 
     await press("Move and switch");
     expect(switchesSent()).toEqual([
-      { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
+      {
+        sessionRuntime: "boat",
+        moves: { organizationDefault: true, projects: ["p-web", "p-docs"] },
+      },
     ]);
   });
 
@@ -389,7 +396,10 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     );
     await press("Move to what Boat runs");
     expect(switchesSent()).toEqual([
-      { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
+      {
+        sessionRuntime: "boat",
+        moves: { organizationDefault: true, projects: ["p-web", "p-docs"] },
+      },
     ]);
   });
 

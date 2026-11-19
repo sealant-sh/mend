@@ -228,7 +228,7 @@ export const followedEnvironmentNote = (
   const sentence = environmentRefusal(facts.support, image);
   return sentence === null
     ? null
-    : `${sentence} New sessions in ${facts.organization} run on ${runtimeName(facts.support.runtime)}, so no project that follows this environment can start one.`;
+    : `${sentence} New sessions in ${facts.organization} run on ${runtimeName(facts.support.runtime)}, so no new project that starts from this image can start one.`;
 };
 
 /** Hot sessions on a runtime that bills idle workspaces: sealant's sentence and what it means here. */

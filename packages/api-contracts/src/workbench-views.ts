@@ -326,7 +326,10 @@ export class ProjectGitAuthRequest extends Schema.Class<ProjectGitAuthRequest>(
   gitAuthMode: RequestedGitAuthMode,
 }) {}
 
-/** The project's workspace-image override; null returns it to the Settings default. */
+/**
+ * The project's own workspace image. Null, what clients before SLNT-1155 sent for "use the
+ * default", saves a copy of the organization's starting image as it is now (docs/adr/0025).
+ */
 export class ProjectWorkspaceImageRequest extends Schema.Class<ProjectWorkspaceImageRequest>(
   "ProjectWorkspaceImageRequest",
 )({

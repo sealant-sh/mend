@@ -32,7 +32,7 @@ import {
   WorktreesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { type OrganizationId, ProjectId } from "@mend/domain";
+import { type OrganizationId, ProjectId, defaultWorkspaceImage } from "@mend/domain";
 import { DOCKER_AND_BOAT } from "@mend/domain/runtime-support-fixtures";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient, workspaceRuntimesReportOf } from "@mend/sealant";
@@ -276,6 +276,7 @@ const holdName = (organizationId: OrganizationId, name: string, createdByUserId 
         createdByUserId,
         name,
         originUrl: "https://example.invalid/held.git",
+        workspaceImage: defaultWorkspaceImage,
         storePath: `/elsewhere/${id}/repo.git`,
         defaultBranch: "main",
         adoptedSha: null,

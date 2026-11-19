@@ -3,6 +3,7 @@ import {
   InvitationPreviewRequest,
   MemberRoleRequest,
   OrganizationSessionRuntimeRequest,
+  OrganizationSettingsRequest,
   OrganizationWorkspaceEnvironmentRequest,
 } from "@mend/api-contracts";
 import { InvitationId, OrganizationSettings, ProjectId, SessionRuntime } from "@mend/domain";
@@ -64,7 +65,7 @@ export const organizationRouter = router({
   setSettings: procedure.input(input(OrganizationSettings)).mutation(({ ctx, input: i }) =>
     run(ctx, (api) =>
       // The API encodes the class, so it gets one, never the decoded plain shape.
-      api.organization.setSettings({ payload: new OrganizationSettings({ ...i }) }),
+      api.organization.setSettings({ payload: new OrganizationSettingsRequest({ ...i }) }),
     ),
   ),
   // Owners only: what choosing a runtime would change for new sessions, before anything is saved.

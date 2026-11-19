@@ -28,14 +28,20 @@ const EnvironmentMoveFields = {
 
 export const OrganizationEnvironmentMove = Schema.Struct({
   ...EnvironmentMoveFields,
-  /** True while the organization follows the instance's environment rather than its own. */
+  /**
+   * Always false: an organization's starting image is its own (docs/adr/0025). Kept so clients
+   * that read it still decode.
+   */
   inherited: Schema.Boolean,
 });
 export type OrganizationEnvironmentMove = typeof OrganizationEnvironmentMove.Type;
 
 export const ProjectEnvironmentMove = Schema.Struct({
   ...EnvironmentMoveFields,
-  /** True when the project follows the organization's environment: it moves with that one. */
+  /**
+   * Always false: a project's image is its own copy (docs/adr/0025). Kept so clients that read it
+   * still decode.
+   */
   inherited: Schema.Boolean,
 });
 export type ProjectEnvironmentMove = typeof ProjectEnvironmentMove.Type;
@@ -82,7 +88,7 @@ export type RuntimeSwitchImpact = typeof RuntimeSwitchImpact.Type;
 /** What an owner chose to move in the same step as the switch. */
 export const RuntimeSwitchMoves = Schema.Struct({
   organizationDefault: Schema.Boolean,
-  /** Projects whose own environment moves; one that inherits moves with the organization's. */
+  /** Projects whose own environment moves. */
   projects: Schema.Array(ProjectId),
 });
 export type RuntimeSwitchMoves = typeof RuntimeSwitchMoves.Type;
@@ -93,8 +99,8 @@ export interface ProjectRuntimeFacts {
   readonly name: string;
   /** Whether the caller can see it; one they cannot is counted, never named. */
   readonly visible: boolean;
-  /** Its own environment; null follows the organization's. */
-  readonly workspaceImage: WorkspaceImage | null;
+  /** Its own environment. */
+  readonly workspaceImage: WorkspaceImage;
   readonly services: ReadonlyArray<{ readonly name: string; readonly port: number }>;
   readonly serverFolders: number;
 }
@@ -108,18 +114,10 @@ const moveOf = (support: RuntimeSupport, image: WorkspaceImage) => {
 
 const projectImpact = (
   support: RuntimeSupport,
-  inheritedMove: ReturnType<typeof moveOf>,
   project: ProjectRuntimeFacts,
 ): ProjectRuntimeImpact | null => {
-  const own = project.workspaceImage === null ? null : moveOf(support, project.workspaceImage);
-  const environment =
-    project.workspaceImage === null
-      ? inheritedMove === null
-        ? null
-        : { ...inheritedMove, inherited: true }
-      : own === null
-        ? null
-        : { ...own, inherited: false };
+  const own = moveOf(support, project.workspaceImage);
+  const environment = own === null ? null : { ...own, inherited: false };
   const services = project.services.filter((service) =>
     support.reservedPorts.includes(service.port),
   );
@@ -136,26 +134,23 @@ const projectImpact = (
  */
 export const runtimeSwitchImpact = (input: {
   readonly reading: RuntimeSupportReading;
-  /** The organization's environment, and whether it is the instance's. */
-  readonly organizationDefault: { readonly image: WorkspaceImage; readonly inherited: boolean };
+  /** The organization's starting image, which new projects copy. */
+  readonly organizationDefault: { readonly image: WorkspaceImage };
   readonly projects: ReadonlyArray<ProjectRuntimeFacts>;
 }): RuntimeSwitchImpact => {
   const { reading } = input;
   if (reading.state !== "observed") return reading;
   const support = reading.support;
-  const inheritedMove = moveOf(support, input.organizationDefault.image);
+  const startingMove = moveOf(support, input.organizationDefault.image);
   const affected = input.projects.flatMap((project) => {
-    const impact = projectImpact(support, inheritedMove, project);
+    const impact = projectImpact(support, project);
     return impact === null ? [] : [{ impact, visible: project.visible }];
   });
   return {
     state: "observed",
     observedAt: reading.observedAt,
     runtime: support.runtime,
-    organizationDefault:
-      inheritedMove === null
-        ? null
-        : { ...inheritedMove, inherited: input.organizationDefault.inherited },
+    organizationDefault: startingMove === null ? null : { ...startingMove, inherited: false },
     projects: affected.filter((entry) => entry.visible).map((entry) => entry.impact),
     unseen: affected.filter((entry) => !entry.visible).length,
   };
@@ -170,8 +165,7 @@ export const switchChangesNothing = (impact: RuntimeSwitchImpact): boolean =>
 
 /**
  * Every move the impact offers: the organization's environment when it has a target, and each
- * visible project's own environment that has one. Projects that inherit move with the
- * organization's.
+ * visible project's own environment that has one.
  */
 export const offeredMoves = (impact: RuntimeSwitchImpact): RuntimeSwitchMoves => {
   if (impact.state !== "observed") return { organizationDefault: false, projects: [] };

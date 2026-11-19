@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 
 import { Field, FieldSource, GroupField, TextInput } from "#/components/kit/field";
@@ -16,7 +16,6 @@ import {
   useRuntimeFacts,
 } from "#/lib/runtime-support";
 import { useTRPC } from "#/lib/trpc";
-import { useInheritedSettings } from "#/lib/viewer";
 import {
   createWorkspaceEnvironmentForm,
   OS_LABELS,
@@ -76,18 +75,14 @@ export type ImageDraft = ReturnType<typeof useWorkspaceImageDraft>;
  * The project's workspace image and its Screen and Docker switches (screen L2) as one draft, saved
  * together by "Save and rebuild", since every save rebuilds the image new sessions wait for. The
  * draft is null until something is edited, so the fields show what is saved, including a save
- * another person makes. Each field says whether it follows the organization or is set for this
- * project; reset puts the whole image back on the organization's, because the image is saved as
- * one. `undefined` while the inherited image is read.
+ * another person makes. The image is the project's own (docs/adr/0025); reset replaces the whole
+ * image with a copy of the organization's starting image as it is now, because the image is saved
+ * as one.
  */
 export function useWorkspaceImageDraft(project: ProjectDto) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const inherited = useInheritedSettings();
   const runtime = useRuntimeFacts();
-  const organization = useQuery(
-    trpc.organization.settings.queryOptions(undefined, { retry: false }),
-  );
   const [edited, setEdited] = useState<WorkspaceEnvironmentFormState | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   // What the last save, reset or discard did, said after the save bar has gone.
@@ -98,7 +93,7 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
     fields.current
       ?.querySelector<HTMLElement>('button[aria-pressed="true"], input, textarea, button')
       ?.focus();
-  const saved = project.workspaceImage ?? inherited?.workspaceImage;
+  const saved = project.workspaceImage;
   const save = useMutation({
     // The project travels with the save, so its answer lands on the project it was made for.
     mutationFn: ({
@@ -128,22 +123,16 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
       setEdited(null);
       setSaid(
         image === null
-          ? "Reset · new sessions follow the inherited image once it is rebuilt"
+          ? "Reset to a copy of the organization's starting image · new sessions wait for the rebuilt image"
           : "Saved · new sessions wait for the rebuilt image",
       );
       focusFields();
     },
     onError: (error) => setFailure(error.message),
   });
-  if (saved === undefined) return undefined;
   const form = edited ?? createWorkspaceEnvironmentForm(saved);
   const dispatch = (action: Parameters<typeof workspaceEnvironmentFormReducer>[1]) =>
     setEdited(workspaceEnvironmentFormReducer(form, action));
-  // From the instance when the organization set no image of its own.
-  const inheritedFrom =
-    organization.data !== undefined && organization.data.organization.workspaceImage === null
-      ? "from the instance default"
-      : "from your organization";
   const draft = workspaceImageFromForm(form);
   const dirty = !workspaceImagesEqual(draft, saved);
   return {
@@ -152,11 +141,9 @@ export function useWorkspaceImageDraft(project: ProjectDto) {
     dispatch,
     dirty,
     runtime,
-    // A project on its organization's environment that is not being changed says so.
-    notes: pickerNotes(runtime, draft, project.workspaceImage === null && !dirty),
+    notes: pickerNotes(runtime, draft, false),
     refused: draftRefusalSummary(runtime, draft),
     changes: dirty ? Math.max(1, changedFields(form, saved)) : 0,
-    inheritedFrom,
     busy: save.isPending,
     failure,
     said,
@@ -182,21 +169,18 @@ export function WorkspaceImageSections({ draft: image }: { readonly draft: Image
         </p>
       </SettingsSection>
     );
-  const { project, form, dispatch, busy, inheritedFrom, runtime, notes } = image;
-  const set = project.workspaceImage !== null;
+  const { project, form, dispatch, busy, runtime, notes } = image;
   const invalidPackage = parsePackageDraft(form.packageDraft).invalid;
   const rejections = (form.resolutions ?? []).filter(
     (resolution) => resolution.status !== "resolved" || !resolution.supported,
   );
-  const source = set ? (
+  const source = (
     <FieldSource tone="set">
       set for {project.name} ·{" "}
       <button type="button" disabled={busy} onClick={image.reset}>
         reset
       </button>
     </FieldSource>
-  ) : (
-    <FieldSource>{inheritedFrom}</FieldSource>
   );
 
   return (

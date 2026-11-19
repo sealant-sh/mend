@@ -43,7 +43,15 @@
 # sharesControl. None makes a hot-pool, claim, retire, drain, stop or session-process call, so no
 # action models them. Full tlx run at 68e02def24: every row as expected (`code` 129,386,795
 # states, 250 s on four workers).
-sync 68e02def2428cd7dda47ae9b477bf76bdf72c7df
+# b2165b19d0 is the SLNT-1155 branch (a project's workspace image is its own copy) on main at
+# a8ea15ce85; its covered files are byte-for-byte those of c25699aa2f, the same branch on 5a2a9426d. Its covered changes are in engine.ts only: every read of a project's image
+# (`hotInputsFor`, the launch's create, the person-layout image reads, the person dotfiles' image)
+# reads `project.workspaceImage` itself instead of falling back to the organization's settings, and
+# the engine no longer needs `SettingsRepo`. Which image a standby is built from feeds its
+# fingerprint, as before; no claim, retire, drain, discard or session-process call changed, so no
+# action models it. Full tlx run at c25699aa2f: every row as expected (`code` 129,386,795 states,
+# 423 s on four workers).
+sync b2165b19d39260b1a48f55199d506073009c2b6d
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

@@ -9,6 +9,7 @@ import { SqlClient } from "effect/sql";
 import { executorIdentityMigration } from "./executor-identity-migration.ts";
 import { projectLocalWorktreesMigration } from "./local-worktrees-migration.ts";
 import { mcpAppsMigration } from "./mcp-apps-migration.ts";
+import { workspaceImageOwnMigration } from "./workspace-image-own-migration.ts";
 
 /**
  * The core tables from docs/archive/ARCHITECTURE.md §3. pg-boss owns its own `pgboss`
@@ -5806,4 +5807,6 @@ export const migrations = {
       ALTER COLUMN background_sessions SET DEFAULT true,
       ALTER COLUMN background_sessions SET NOT NULL`;
   }),
+  // A project's workspace image becomes its own copy, and an organization's its own (SLNT-1155).
+  "0230_workspace_image_own": workspaceImageOwnMigration,
 };

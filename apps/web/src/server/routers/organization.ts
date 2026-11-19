@@ -3,9 +3,16 @@ import {
   InvitationPreviewRequest,
   MemberRoleRequest,
   OrganizationSessionRuntimeRequest,
+  OrganizationSettingsRequest,
   OrganizationWorkspaceEnvironmentRequest,
 } from "@mend/api-contracts";
-import { InvitationId, OrganizationSettings, ProjectId, SessionRuntime } from "@mend/domain";
+import {
+  InvitationId,
+  OrganizationSettings,
+  ProjectId,
+  SessionRuntime,
+  WorkspaceImage,
+} from "@mend/domain";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -64,7 +71,7 @@ export const organizationRouter = router({
   setSettings: procedure.input(input(OrganizationSettings)).mutation(({ ctx, input: i }) =>
     run(ctx, (api) =>
       // The API encodes the class, so it gets one, never the decoded plain shape.
-      api.organization.setSettings({ payload: new OrganizationSettings({ ...i }) }),
+      api.organization.setSettings({ payload: new OrganizationSettingsRequest({ ...i }) }),
     ),
   ),
   // Owners only: what choosing a runtime would change for new sessions, before anything is saved.
@@ -91,8 +98,10 @@ export const organizationRouter = router({
         }),
       ),
     ),
+  // Owners only: the organization's starting image, which each new project copies; projects
+  // already made keep their own (docs/adr/0025). A plain image: there is no "follow the server".
   setWorkspaceEnvironment: procedure
-    .input(input(OrganizationWorkspaceEnvironmentRequest))
+    .input(input(Schema.Struct({ workspaceImage: WorkspaceImage })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
         api.organization.setWorkspaceEnvironment({

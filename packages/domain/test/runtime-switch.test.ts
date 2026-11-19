@@ -36,7 +36,7 @@ const project = (name: string, facts: Partial<ProjectRuntimeFacts> = {}): Projec
   id: ProjectId.make(`project-${name}`),
   name,
   visible: true,
-  workspaceImage: null,
+  workspaceImage: ubuntu,
   services: [],
   serverFolders: 0,
   ...facts,
@@ -48,9 +48,10 @@ describe("what moving to a runtime would change for new sessions", () => {
   it("lists each environment Boat cannot run, with Sealant's reason and the one Mend would move it to", () => {
     const impact = runtimeSwitchImpact({
       reading: onBoat,
-      organizationDefault: { image: arch, inherited: true },
+      organizationDefault: { image: arch },
       projects: [
-        project("inherits"),
+        // Made before SLNT-1155 to follow Acme's Arch: it holds its own copy now, and moves alone.
+        project("copied", { workspaceImage: arch }),
         project("on-ubuntu", { workspaceImage: ubuntu }),
         project("on-fedora", { workspaceImage: fedoraWithTools }),
         project("custom", { workspaceImage: custom }),
@@ -64,17 +65,17 @@ describe("what moving to a runtime would change for new sessions", () => {
         refusal: "Boat supports Ubuntu and Nix; Arch is unsupported.",
         from: arch,
         to: boatTarget,
-        inherited: true,
+        inherited: false,
       },
       projects: [
         {
-          id: "project-inherits",
-          name: "inherits",
+          id: "project-copied",
+          name: "copied",
           environment: {
             refusal: "Boat supports Ubuntu and Nix; Arch is unsupported.",
             from: arch,
             to: boatTarget,
-            inherited: true,
+            inherited: false,
           },
           services: [],
           serverFolders: null,
@@ -108,14 +109,14 @@ describe("what moving to a runtime would change for new sessions", () => {
     });
     expect(offeredMoves(impact)).toEqual({
       organizationDefault: true,
-      projects: ["project-on-fedora", "project-custom"],
+      projects: ["project-copied", "project-on-fedora", "project-custom"],
     });
   });
 
   it("lists Services on a port the runtime holds and server folders it cannot bind", () => {
     const impact = runtimeSwitchImpact({
       reading: onBoat,
-      organizationDefault: { image: ubuntu, inherited: false },
+      organizationDefault: { image: ubuntu },
       projects: [
         project("web", {
           services: [
@@ -148,7 +149,7 @@ describe("what moving to a runtime would change for new sessions", () => {
   it("counts the projects the caller cannot see, and never names them", () => {
     const impact = runtimeSwitchImpact({
       reading: onBoat,
-      organizationDefault: { image: ubuntu, inherited: false },
+      organizationDefault: { image: ubuntu },
       projects: [
         project("secret", { visible: false, workspaceImage: arch }),
         project("secret-port", { visible: false, services: [{ name: "web", port: 8080 }] }),
@@ -164,7 +165,7 @@ describe("what moving to a runtime would change for new sessions", () => {
   it("changes nothing on a runtime that runs everything", () => {
     const impact = runtimeSwitchImpact({
       reading: observedSupportReading(DOCKER_SUPPORT),
-      organizationDefault: { image: arch, inherited: true },
+      organizationDefault: { image: arch },
       projects: [
         project("custom", { workspaceImage: custom, serverFolders: 1 }),
         project("web", { services: [{ name: "web", port: 8080 }] }),
@@ -181,7 +182,7 @@ describe("what moving to a runtime would change for new sessions", () => {
     });
     const impact = runtimeSwitchImpact({
       reading: observedSupportReading(archOnBoat),
-      organizationDefault: { image: arch, inherited: true },
+      organizationDefault: { image: arch },
       projects: [project("inherits")],
     });
     expect(switchChangesNothing(impact)).toBe(true);
@@ -199,7 +200,7 @@ describe("what moving to a runtime would change for new sessions", () => {
     });
     const impact = runtimeSwitchImpact({
       reading: observedSupportReading(noFamily),
-      organizationDefault: { image: arch, inherited: false },
+      organizationDefault: { image: arch },
       projects: [project("own", { workspaceImage: ubuntu })],
     });
     expect(impact).toMatchObject({
@@ -212,14 +213,14 @@ describe("what moving to a runtime would change for new sessions", () => {
   it("knows nothing when Sealant was not read or does not launch the runtime", () => {
     const unread = runtimeSwitchImpact({
       reading: { state: "unread", reason: "Sealant could not be reached" },
-      organizationDefault: { image: arch, inherited: true },
+      organizationDefault: { image: arch },
       projects: [project("inherits")],
     });
     expect(unread).toEqual({ state: "unread", reason: "Sealant could not be reached" });
     expect(switchChangesNothing(unread)).toBe(false);
     const notLaunched = runtimeSwitchImpact({
       reading: { state: "not-launched", observedAt: OBSERVED_AT, runtime: "boat" },
-      organizationDefault: { image: arch, inherited: true },
+      organizationDefault: { image: arch },
       projects: [],
     });
     expect(notLaunched).toEqual({

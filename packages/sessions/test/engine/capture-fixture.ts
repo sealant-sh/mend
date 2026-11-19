@@ -472,7 +472,7 @@ export const seedStoppedBeforeRestart = (
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "mend-key",
-      workspaceImage: null,
+      workspaceImage: defaultWorkspaceImage,
       applyDotfiles: true,
       defaultShellProfile: true,
       inheritUserSkills: true,

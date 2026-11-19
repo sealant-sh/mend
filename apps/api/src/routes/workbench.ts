@@ -105,6 +105,7 @@ import {
   FollowUpsRepo,
   HotWorkspacesRepo,
   ImportedConversationsRepo,
+  OrganizationSettingsRepo,
   OrganizationsRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
@@ -1023,20 +1024,21 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
+        const current = yield* projects
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         if (payload.workspaceImage === null) {
+          // An old client's "use the default": what it would have resolved to, a copy of the
+          // organization's starting image now, which later changes to that image don't follow.
+          const starting = (yield* (yield* OrganizationSettingsRepo).get(current.organizationId))
+            .workspaceImage;
           const project = yield* projects
-            .setWorkspaceImage(params.id, null)
+            .setWorkspaceImage(params.id, starting)
             .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
           yield* rewarmHotSessions(params.id);
           return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
         }
-        const current = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        if (
-          current.workspaceImage === null ||
-          !workspaceImagesEqual(current.workspaceImage, payload.workspaceImage)
-        )
+        if (!workspaceImagesEqual(current.workspaceImage, payload.workspaceImage))
           yield* refuseUnrunnableEnvironment(current.organizationId, payload.workspaceImage);
         const resolved = yield* resolveWorkspaceEnvironmentWithSealant(payload.workspaceImage);
         const resolutions = resolved.resolutions.map(
