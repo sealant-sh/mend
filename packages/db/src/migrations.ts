@@ -5745,4 +5745,65 @@ export const migrations = {
   // grants, one row per person and session, the granted ones mirrored on the session, and the
   // control log's words for each step.
   "0228_session_shared_control": sessionSharedControlMigration,
+  // A person's automation switches become plain values of their own (SLNT-1155, ADR 0025). Every
+  // account gets a row, and each switch left on Inherit (null) becomes what it resolved to now: the
+  // organization's value, else the instance's settings document, else Mend's default. Someone in
+  // several organizations resolves through the one `/me/automation` showed them first (last chosen,
+  // then first joined), as `OrganizationsRepo.memberships` orders them. Nobody's sessions change,
+  // except where one person's organizations disagreed. New accounts start on the column defaults.
+  "0229_person_automation_own": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO user_automation_settings (user_id)
+      SELECT id FROM "user" ON CONFLICT (user_id) DO NOTHING`;
+    yield* sql`
+      WITH first_organization AS (
+        SELECT DISTINCT ON (user_id) user_id, organization_id
+        FROM organization_members
+        ORDER BY user_id, last_chosen_at DESC NULLS LAST, created_at ASC, organization_id ASC
+      ),
+      instance AS (
+        SELECT
+          (value ->> 'autoTour')::boolean AS auto_tour,
+          (value ->> 'autoSuggest')::boolean AS auto_suggest,
+          (value ->> 'autoName')::boolean AS auto_name,
+          (value ->> 'autoLand')::boolean AS auto_land,
+          (value ->> 'backgroundSessions')::boolean AS background_sessions
+        FROM settings WHERE key = 'mend'
+      ),
+      resolved AS (
+        SELECT
+          person.user_id,
+          COALESCE(person.auto_tour, organization.auto_tour, instance.auto_tour, true) AS auto_tour,
+          COALESCE(person.auto_suggest, organization.auto_suggest, instance.auto_suggest, true)
+            AS auto_suggest,
+          COALESCE(person.auto_name, organization.auto_name, instance.auto_name, true) AS auto_name,
+          COALESCE(person.auto_land, organization.auto_land, instance.auto_land, false) AS auto_land,
+          COALESCE(person.background_sessions, organization.background_sessions,
+            instance.background_sessions, true) AS background_sessions
+        FROM user_automation_settings person
+        LEFT JOIN first_organization ON first_organization.user_id = person.user_id
+        LEFT JOIN organization_settings organization
+          ON organization.organization_id = first_organization.organization_id
+        LEFT JOIN instance ON true
+      )
+      UPDATE user_automation_settings person
+      SET auto_tour = resolved.auto_tour,
+        auto_suggest = resolved.auto_suggest,
+        auto_name = resolved.auto_name,
+        auto_land = resolved.auto_land,
+        background_sessions = resolved.background_sessions
+      FROM resolved
+      WHERE resolved.user_id = person.user_id`;
+    yield* sql`ALTER TABLE user_automation_settings
+      ALTER COLUMN auto_tour SET DEFAULT true,
+      ALTER COLUMN auto_tour SET NOT NULL,
+      ALTER COLUMN auto_suggest SET DEFAULT true,
+      ALTER COLUMN auto_suggest SET NOT NULL,
+      ALTER COLUMN auto_name SET DEFAULT true,
+      ALTER COLUMN auto_name SET NOT NULL,
+      ALTER COLUMN auto_land SET DEFAULT false,
+      ALTER COLUMN auto_land SET NOT NULL,
+      ALTER COLUMN background_sessions SET DEFAULT true,
+      ALTER COLUMN background_sessions SET NOT NULL`;
+  }),
 };

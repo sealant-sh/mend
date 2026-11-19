@@ -414,11 +414,10 @@ change.
 
 ## Organization defaults
 
-The workspace environment and the automation switches resolve project, then organization, then
-instance. Owners set the organization's values in Settings, under **Workspace environment ·
-&lt;organization&gt;** and **Defaults · &lt;organization&gt;**. Each switch offers **Instance**,
-**On** or **Off**; **Instance** follows the operator's default. Members read the values and where
-each came from. See
+The workspace environment resolves project, then organization, then instance. Owners set the
+organization's in Settings, under **Workspace environment · &lt;organization&gt;**, and where its
+new sessions run under **Defaults · &lt;organization&gt;**. Members read the values and where each
+came from. The automation switches are not the organization's: each person sets their own. See
 [Where defaults come from](/guides/project-environment/#where-defaults-come-from).
 
 ## Recover an account without email

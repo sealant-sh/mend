@@ -26,7 +26,7 @@ export const BuiltInSettings = Context.Reference<MendSettings>("@mend/db/BuiltIn
 /**
  * Product settings live as one jsonb row; absence means the built-in ones (`BuiltInSettings`). The row is the instance's
  * (the operator's); `forOrganization` is what a project in an organization inherits, and
- * `forPerson` what one person's sessions in it inherit.
+ * `forPerson` what one person's sessions in it get.
  */
 export class SettingsRepo extends Context.Service<
   SettingsRepo,
@@ -39,9 +39,10 @@ export class SettingsRepo extends Context.Service<
      */
     readonly forOrganization: (organizationId: OrganizationId) => Effect.Effect<MendSettings>;
     /**
-     * What one person's sessions inherit: their own switches over their organization's defaults
-     * (`personDefaults`). The automation switches of a session (naming, review passes, landing)
-     * read this for the session's owner; null, a session with no owner, reads the organization's.
+     * What one person's sessions get: their organization's environment, with every automation
+     * switch (naming, review passes, landing, background) from the person's own row
+     * (`personDefaults`). Null, a session with no owner, gets Mend's default switches. The
+     * organization's and the instance's own switches are never read here.
      */
     readonly forPerson: (
       organizationId: OrganizationId,
@@ -120,7 +121,7 @@ export const SettingsRepoLive: Layer.Layer<SettingsRepo, never, MendDB> = Layer.
       userId: string | null,
     ) {
       const organization = yield* forOrganization(organizationId);
-      if (userId === null) return organization;
+      if (userId === null) return personDefaults(organization, null);
       const [row] = yield* db
         .select()
         .from(userAutomationSettings)

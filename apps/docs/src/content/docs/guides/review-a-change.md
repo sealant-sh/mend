@@ -105,9 +105,10 @@ three passes at once.
 When a session settles (its agent ends or stops), Mend can compose the tour and run the suggestion
 pass so the review opens with them ready. The switches are in the project's setup under
 `Review automation`: `Description & tour`, `Suggest fixes`, and `Name the session`, each `inherit`,
-`on`, or `off`. `inherit` follows the defaults in Settings, where all three are on. An empty change
-queues nothing. A session started from Slack always gets a tour, because the tour's summary is the
-thread's end-of-session reply. `Read this change` only runs when someone asks for it.
+`on`, or `off`. `inherit` follows the session owner's own switches in their Settings, which start
+on. An empty change queues nothing. A session started from Slack always gets a tour, because the
+tour's summary is the thread's end-of-session reply. `Read this change` only runs when someone asks
+for it.
 
 ### Whose account pays
 

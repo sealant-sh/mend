@@ -28,7 +28,6 @@ export type SettingsPath =
   | "/settings/organization/projects"
   | "/settings/organization/audit-log"
   | "/settings/instance/environment"
-  | "/settings/instance/defaults"
   | "/settings/instance/exposure";
 
 export interface SettingsTab {
@@ -189,14 +188,6 @@ export const SETTINGS_TABS: ReadonlyArray<SettingsTab> = [
     title: "Environment",
     description:
       "Defaults for this machine. Operators administer it and see no organization content by default.",
-  },
-  {
-    group: "instance",
-    to: "/settings/instance/defaults",
-    label: "Defaults",
-    title: "Defaults",
-    description:
-      "What every organization on this machine inherits unless it sets its own. Operators only.",
   },
   {
     group: "instance",

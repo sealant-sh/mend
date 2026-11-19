@@ -47,12 +47,14 @@ workspaces; their running sessions continue until they end. Read
 
 ## Where defaults come from
 
-The workspace environment and the automation switches (background sessions, description and tour,
-fix suggestions, session naming, landing) resolve project, then organization, then instance. The
-instance's defaults belong to the operator, and only the operator sees them in Settings. An
-organization's owners set their own in Settings, value by value, over the instance's; members read
-what applies and where it came from. A project that inherits takes its organization's value. Each
-change to an organization's defaults is recorded in its audit log.
+The workspace environment resolves project, then organization, then instance. The instance's belongs
+to the operator. An organization's owners set their own in Settings over the instance's; members
+read what applies and where it came from. A project that inherits takes its organization's value.
+Each change to an organization's defaults is recorded in its audit log.
+
+The automation switches (background sessions, description and tour, fix suggestions, session naming,
+landing) are each person's own, set in their Settings. A project that inherits follows the session
+owner's own value; no organization or instance value sits under it.
 
 ## Workspace image
 
@@ -247,7 +249,8 @@ the project's own remote host. Each session commits as its owner's Git author. R
 
 ## Automation
 
-Project switches can inherit the organization's defaults or override them with `on` or `off`:
+Project switches can follow each session owner's own setting (`inherit`) or override it with `on` or
+`off`:
 
 - **Review automation**: **Description & tour**, **Suggest fixes**, and **Name the session**. These
   jobs run after the relevant session event.

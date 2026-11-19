@@ -8,7 +8,7 @@ import {
   organizationDefaultSources,
   organizationDefaults,
   OrganizationSettings,
-  inheritedPersonSettings,
+  defaultPersonSettings,
   personDefaults,
   PersonSettings,
 } from "../src/settings.ts";
@@ -117,40 +117,47 @@ describe("organization defaults: project → organization → instance", () => {
   });
 });
 
-describe("person defaults: project → person → organization → instance", () => {
+describe("person defaults: a project's own choice, else the person's own value", () => {
+  // An organization that turned suggestions and landing the other way: none of it reaches a person.
   const acme = organizationDefaults(
     instance,
-    new OrganizationSettings({ ...inheritedOrganizationSettings, autoSuggest: false }),
+    new OrganizationSettings({
+      ...inheritedOrganizationSettings,
+      workspaceImage: fedora,
+      autoSuggest: false,
+      autoLand: true,
+    }),
   );
 
-  it("follows the organization, and through it the instance, where the person set nothing", () => {
-    expect(personDefaults(acme, null)).toBe(acme);
-    expect(personDefaults(acme, inheritedPersonSettings)).toEqual(acme);
-    expect(personDefaults(acme, inheritedPersonSettings).autoSuggest).toBe(false);
-    expect(personDefaults(acme, inheritedPersonSettings).autoLand).toBe(false);
-  });
-
-  it("puts the person's own value over the organization's and the instance's, switch by switch", () => {
+  it("takes every switch from the person and none from the organization or the instance", () => {
     const resolved = personDefaults(
       acme,
       new PersonSettings({
-        ...inheritedPersonSettings,
+        autoTour: false,
         autoSuggest: true,
-        autoLand: true,
+        autoName: true,
+        autoLand: false,
         backgroundSessions: false,
       }),
     );
+    expect(resolved.autoTour).toBe(false);
     expect(resolved.autoSuggest).toBe(true);
-    expect(resolved.autoLand).toBe(true);
+    expect(resolved.autoLand).toBe(false);
     expect(resolved.backgroundSessions).toBe(false);
-    expect(resolved.autoTour).toBe(true);
-    expect(resolved.workspaceImage).toEqual(acme.workspaceImage);
+    expect(resolved.workspaceImage).toEqual(fedora);
+  });
+
+  it("gives a session with no owner Mend's defaults, not the organization's", () => {
+    const resolved = personDefaults(acme, null);
+    expect(resolved.autoSuggest).toBe(true);
+    expect(resolved.autoLand).toBe(false);
+    expect(defaultPersonSettings.autoLand).toBe(false);
   });
 
   it("still gives way to the project's own choice", () => {
     const own = personDefaults(
       acme,
-      new PersonSettings({ ...inheritedPersonSettings, autoName: false }),
+      new PersonSettings({ ...defaultPersonSettings, autoName: false }),
     );
     expect(resolveAutomation("inherit", own.autoName)).toBe(false);
     expect(resolveAutomation("on", own.autoName)).toBe(true);

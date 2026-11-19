@@ -1,23 +1,7 @@
 import { personSettingsGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
-import {
-  OrganizationSettingsRepo,
-  OrganizationsRepo,
-  PersonSettingsRepo,
-  SessionDefaultsRepo,
-  SettingsRepo,
-  UserEvents,
-  type OrganizationMembership,
-} from "@mend/db";
-import {
-  defaultSettings,
-  inheritedOrganizationSettings,
-  inheritedPersonSettings,
-  MendSettings,
-  OrganizationId,
-  OrganizationSettings,
-  PersonSettings,
-} from "@mend/domain";
+import { PersonSettingsRepo, SessionDefaultsRepo, UserEvents } from "@mend/db";
+import { defaultPersonSettings, PersonSettings } from "@mend/domain";
 import { NO_SESSION_DEFAULTS, SessionDefaults } from "@mend/domain/workbench";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
@@ -32,7 +16,6 @@ const TOKENS: Readonly<Record<string, string>> = {
   "Bearer ben": "ben",
 };
 const PersonApi = HttpApi.make("mend").add(personSettingsGroup).prefix("/api");
-const ACME = OrganizationId.make("org-acme");
 
 const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
   handler: () => Effect.succeed(new Response(null, { status: 404 })),
@@ -50,7 +33,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
   },
 });
 
-/** Anna is in Acme, which turned suggestions off; Ben is in no organization. */
+/** Anna and Ben, each with their own switches and nothing else. */
 const world = () => {
   const own = new Map<string, PersonSettings>();
   const defaults = new Map<string, SessionDefaults>();
@@ -61,7 +44,7 @@ const world = () => {
       leftOrganization: () => Effect.void,
     }),
     Layer.succeed(PersonSettingsRepo, {
-      forUser: (userId) => Effect.sync(() => own.get(userId) ?? inheritedPersonSettings),
+      forUser: (userId) => Effect.sync(() => own.get(userId) ?? defaultPersonSettings),
       set: (userId, settings) =>
         Effect.sync(() => {
           own.set(userId, settings);
@@ -81,33 +64,6 @@ const world = () => {
           if (adopted) defaults.set(userId, value);
           return { saved: defaults.get(userId) ?? value, adopted };
         }),
-    }),
-    Layer.mock(SettingsRepo, {
-      get: () => Effect.succeed(new MendSettings({ ...defaultSettings, autoLand: false })),
-    }),
-    Layer.mock(OrganizationsRepo, {
-      activeMembership: ({ userId }) =>
-        Effect.sync((): OrganizationMembership | null =>
-          userId === "anna"
-            ? {
-                organization: {
-                  id: ACME,
-                  name: "Acme",
-                  createdByUserId: null,
-                  createdAt: new Date(0),
-                  updatedAt: new Date(0),
-                },
-                role: "member",
-                joinedAt: new Date(0),
-              }
-            : null,
-        ),
-    }),
-    Layer.mock(OrganizationSettingsRepo, {
-      get: () =>
-        Effect.succeed(
-          new OrganizationSettings({ ...inheritedOrganizationSettings, autoSuggest: false }),
-        ),
     }),
   );
   const call = async (
@@ -145,53 +101,47 @@ const world = () => {
   return { own, defaults, changed, call };
 };
 
-const NOTHING = {
-  autoTour: null,
-  autoSuggest: null,
-  autoName: null,
-  autoLand: null,
-  backgroundSessions: null,
+const DEFAULTS = {
+  autoTour: true,
+  autoSuggest: true,
+  autoName: true,
+  autoLand: false,
+  backgroundSessions: true,
 };
 
 describe("/api/me/automation", () => {
-  it("answers Inherit everywhere, with what each follows and who set it", async () => {
+  it("answers the caller's own switches, with effective the same for CLIs that read it", async () => {
     const { call } = world();
     const anna = await call("anna", "GET", "/me/automation");
     expect(anna.status).toBe(200);
-    expect(anna.body).toMatchObject({
-      own: NOTHING,
-      inherited: { autoSuggest: false, autoLand: false, autoTour: true },
-      inheritedFrom: { autoSuggest: "organization", autoLand: "instance" },
-      effective: { autoSuggest: false, autoLand: false },
-    });
-    // Ben is in no organization: everything comes from the instance.
-    expect((await call("ben", "GET", "/me/automation")).body).toMatchObject({
-      inherited: { autoSuggest: true },
-      inheritedFrom: { autoSuggest: "instance" },
-    });
+    expect(anna.body).toEqual({ own: DEFAULTS, effective: DEFAULTS });
   });
 
-  it("saves the caller's own switches only, answers what their sessions now get, and tells their screens", async () => {
+  it("saves the caller's own switches only, answers them, and tells their screens", async () => {
     const { own, changed, call } = world();
-    const written = await call("anna", "PUT", "/me/automation", {
-      ...NOTHING,
-      autoSuggest: true,
-      autoLand: true,
-    });
+    const chosen = { ...DEFAULTS, autoSuggest: false, autoLand: true };
+    const written = await call("anna", "PUT", "/me/automation", chosen);
     expect(written.status).toBe(200);
-    expect(written.body).toMatchObject({
-      own: { autoSuggest: true, autoLand: true },
-      effective: { autoSuggest: true, autoLand: true },
-    });
+    expect(written.body).toEqual({ own: chosen, effective: chosen });
     expect([...own.keys()]).toEqual(["anna"]);
     expect(changed).toEqual(["anna:accounts"]);
-    expect((await call("ben", "GET", "/me/automation")).body).toMatchObject({ own: NOTHING });
+    expect((await call("ben", "GET", "/me/automation")).body).toEqual({
+      own: DEFAULTS,
+      effective: DEFAULTS,
+    });
   });
 
-  it("refuses a value that is not on, off or inherit, and a caller who is not signed in", async () => {
+  it("refuses an old client's Inherit with the reason, anything but true or false, and a caller who is not signed in", async () => {
     const { own, call } = world();
+    const inherit = await call("anna", "PUT", "/me/automation", { ...DEFAULTS, autoLand: null });
+    expect(inherit.status).toBe(400);
+    expect(inherit.body).toMatchObject({
+      _tag: "AutomationInheritRemoved",
+      switches: ["autoLand"],
+      message: expect.stringContaining("Inherit is gone"),
+    });
     expect(
-      (await call("anna", "PUT", "/me/automation", { ...NOTHING, autoLand: "yes" })).status,
+      (await call("anna", "PUT", "/me/automation", { ...DEFAULTS, autoLand: "yes" })).status,
     ).toBe(400);
     expect((await call("nobody", "GET", "/me/automation")).status).toBe(401);
     expect(own.size).toBe(0);

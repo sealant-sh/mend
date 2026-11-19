@@ -359,10 +359,10 @@ export interface InheritedValue {
 
 /**
  * Where a project on Inherit gets each automation setting: each person's sessions follow that
- * person's own choice (You · Settings), else the organization's default, else the instance's
- * (docs/adr/0003). The page says what it resolves to for the person reading it. Undefined while
- * their settings are read; `failed` when they cannot be read, so the page says so instead of
- * guessing.
+ * person's own choice (You · Settings), which is all there is to follow
+ * (docs/adr/0025-one-home-per-setting.md). The page says what it resolves to for the person
+ * reading it. Undefined while their settings are read; `failed` when they cannot be read, so the
+ * page says so instead of guessing.
  */
 export function useInheritedAutomation(): {
   readonly of: (key: AutomationKey, projectName: string) => InheritedValue | undefined;
@@ -370,49 +370,22 @@ export function useInheritedAutomation(): {
 } {
   const trpc = useTRPC();
   const view = useQuery(trpc.platform.automation.queryOptions(undefined, { retry: false }));
-  const organization = useQuery(
-    trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
-  ).data;
-  const name = organization?.organization.name ?? "your organization";
   return {
     failed: view.isError,
     of: (key, projectName) => {
       const settings = view.data;
       if (settings === undefined) return undefined;
-      const resolved = settings.effective[key] ? "on" : "off";
+      const resolved = settings.own[key] ? "on" : "off";
       const word = resolved === "on" ? "On" : "Off";
-      const others = "Each person's sessions follow their own setting.";
-      const pick = `Pick On or Off to set it for ${projectName}, for everyone.`;
-      if (settings.own[key] !== null) {
-        return {
-          resolved,
-          fromOrganization: false,
-          source: {
-            title: "From your own settings",
-            detail: `${word} for your sessions. ${others} ${pick}`,
-          },
-          yourSettings: YOUR_SETTINGS[key],
-        };
-      }
-      return settings.inheritedFrom[key] === "organization"
-        ? {
-            resolved,
-            fromOrganization: true,
-            yourSettings: null,
-            source: {
-              title: `From ${name}'s organization defaults`,
-              detail: `${word} for everyone in ${name} who did not pick for themselves. ${others} ${pick}`,
-            },
-          }
-        : {
-            resolved,
-            fromOrganization: false,
-            yourSettings: null,
-            source: {
-              title: "From the instance default",
-              detail: `Set by this machine's operator for every organization. ${others} ${pick}`,
-            },
-          };
+      return {
+        resolved,
+        fromOrganization: false,
+        source: {
+          title: "From your own settings",
+          detail: `${word} for your sessions. Each person's sessions follow their own setting. Pick On or Off to set it for ${projectName}, for everyone.`,
+        },
+        yourSettings: YOUR_SETTINGS[key],
+      };
     },
   };
 }

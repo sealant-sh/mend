@@ -56,8 +56,9 @@ export const platformRouter = router({
       run(ctx, (api) => api.accounts.setSettleSettings({ payload })),
     ),
   /**
-   * The caller's own automation switches (You · Sessions, Review, Landing), what each follows on
-   * Inherit and who set that, and what their sessions get.
+   * The caller's own automation switches (Your automation): plain true or false, theirs alone
+   * (docs/adr/0025-one-home-per-setting.md). The answer is `{ own, effective }`, the two the same.
+   * A save takes all five and answers the same shape; there is no Inherit to send.
    */
   automation: procedure.query(({ ctx }) => run(ctx, (api) => api.personSettings.automation())),
   setAutomation: procedure
