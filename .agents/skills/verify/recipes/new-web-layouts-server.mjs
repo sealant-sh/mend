@@ -49,6 +49,17 @@ const expect = (what, ok, seen) => {
   if (!ok) throw new Error(`${what}: saw ${JSON.stringify(seen).slice(0, 400)}`);
 };
 
+/** One person's saved layout names. */
+const names = async (as) =>
+  ((await as("GET", "/api/me/layouts")).body?.layouts ?? []).map((layout) => layout.name);
+
+/** Removes every layout this recipe saved for one person. */
+const removeOurs = async (as) => {
+  const listed = (await as("GET", "/api/me/layouts")).body?.layouts ?? [];
+  for (const layout of listed.filter((each) => each.name.startsWith(PREFIX)))
+    await as("DELETE", `/api/me/layouts/${layout.id}`);
+};
+
 export default async ({ page, web, capture, note, typeSecret, registerSecret }) => {
   const transcript = [];
   /** A call, kept for the transcript the recipe captures at its end. */
@@ -64,13 +75,6 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.goto(`${web}/`);
   await page.getByRole("heading", { name: "New session", exact: true }).waitFor();
   const owner = record("owner", callsOf(page));
-  const names = async (as) =>
-    ((await as("GET", "/api/me/layouts")).body?.layouts ?? []).map((layout) => layout.name);
-  const removeOurs = async (as) => {
-    const listed = (await as("GET", "/api/me/layouts")).body?.layouts ?? [];
-    for (const layout of listed.filter((each) => each.name.startsWith(PREFIX)))
-      await as("DELETE", `/api/me/layouts/${layout.id}`);
-  };
   // A run that stopped half way left its layouts: start from none of ours.
   await removeOurs(owner);
   const before = await names(owner);

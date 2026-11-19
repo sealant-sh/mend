@@ -42,23 +42,30 @@ describe("saved layouts", () => {
               return userId === "carol" ? [saved("Review with terminal")] : [];
             }),
           save: (userId, input) =>
-            Effect.suspend(() => {
-              asked.push(`save:${userId}:${input.name}`);
-              if (input.name === "Taken") {
-                return Effect.fail(new SavedLayoutNameTakenError({ name: input.name }));
-              }
-              if (input.name === "One too many") {
-                return Effect.fail(new SavedLayoutLimitError({ limit: 20 }));
-              }
-              return Effect.succeed(saved(input.name));
-            }),
+            Effect.suspend(
+              (): Effect.Effect<SavedLayout, SavedLayoutNameTakenError | SavedLayoutLimitError> => {
+                asked.push(`save:${userId}:${input.name}`);
+                if (input.name === "Taken") {
+                  return Effect.fail(new SavedLayoutNameTakenError({ name: input.name }));
+                }
+                if (input.name === "One too many") {
+                  return Effect.fail(new SavedLayoutLimitError({ limit: 20 }));
+                }
+                return Effect.succeed(saved(input.name));
+              },
+            ),
           rename: (userId, id, name) =>
-            Effect.suspend(() => {
-              asked.push(`rename:${userId}:${id}:${name}`);
-              return id === "layout-1" && userId === "carol"
-                ? Effect.succeed(saved(name))
-                : Effect.fail(new SavedLayoutNotFoundError({ id }));
-            }),
+            Effect.suspend(
+              (): Effect.Effect<
+                SavedLayout,
+                SavedLayoutNameTakenError | SavedLayoutNotFoundError
+              > => {
+                asked.push(`rename:${userId}:${id}:${name}`);
+                return id === "layout-1" && userId === "carol"
+                  ? Effect.succeed(saved(name))
+                  : Effect.fail(new SavedLayoutNotFoundError({ id }));
+              },
+            ),
           remove: (userId, id) =>
             Effect.sync(() => {
               asked.push(`remove:${userId}:${id}`);
