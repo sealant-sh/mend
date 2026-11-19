@@ -13,7 +13,10 @@ import {
   installSwitchLine,
   osUnavailable,
   readyWords,
+  rejectedPackages,
+  rejectionLine,
   resolutionIssue,
+  startingImageSaved,
 } from "./workspace-image.ts";
 
 const family = {
@@ -151,5 +154,47 @@ describe("readyWords", () => {
     expect(readyWords(status)).toBe("None ready yet");
     expect(readyWords({ ...status, ready: 1, warming: 1 })).toBe("1 ready for you, 1 starting");
     expect(readyWords({ ...status, failed: 2 })).toBe("2 failed");
+  });
+});
+
+describe("the organization's starting image", () => {
+  const resolved = {
+    requested: "pnpm",
+    status: "resolved",
+    supported: true,
+    canonicalId: "pnpm",
+    alternatives: [],
+  } as const;
+
+  it("names each package a save refused, with why", () => {
+    expect(
+      rejectedPackages(
+        [
+          resolved,
+          { ...resolved, requested: "terraform", status: "not-found", supported: false },
+          {
+            ...resolved,
+            requested: "tigervnc",
+            status: "unsupported",
+            supported: false,
+            canonicalId: null,
+          },
+        ],
+        "arch",
+      ),
+    ).toEqual([
+      { name: "terraform", issue: "Sealant could not find this package." },
+      { name: "tigervnc", issue: "Sealant's package catalog does not carry this package." },
+    ]);
+  });
+
+  it("says what a refused save means, and what a save does", () => {
+    expect(rejectionLine(1, "arch")).toBe(
+      "Not saved. Sealant couldn't find 1 package for Arch. Remove it or change its name, then save again.",
+    );
+    expect(rejectionLine(2, "nix")).toContain("couldn't find 2 packages for Nix");
+    expect(startingImageSaved("Northwind")).toBe(
+      "Saved. New projects in Northwind start from this image.",
+    );
   });
 });
