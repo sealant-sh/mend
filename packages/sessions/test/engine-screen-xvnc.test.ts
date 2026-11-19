@@ -1,4 +1,5 @@
-import { type ChildProcess, execFileSync, spawn } from "node:child_process";
+import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
+import { promisify } from "node:util";
 
 import type { PersonExecOptions, PersonSessionOptions } from "@mend/sealant";
 import { it } from "@mend/test-ci/effect-vitest";
@@ -15,10 +16,17 @@ import {
   withScreens,
 } from "./engine/screen-fixture.ts";
 import { eventually } from "./screen-world.ts";
-import { dockerReady, fixtureImage, removeContainer } from "./xvnc.ts";
+import { dockerReady, fixtureImage, type RunningContainer, runContainer } from "./xvnc.ts";
 
 const docker = (...args: ReadonlyArray<string>) =>
   execFileSync("docker", [...args], { encoding: "utf8", timeout: 30_000 });
+
+/** Runs `docker` without blocking the worker, so the calling hook's budget is what bounds it. */
+const answered = async (args: ReadonlyArray<string>, input?: string) => {
+  const run = promisify(execFile)("docker", [...args]);
+  run.child.stdin?.end(input);
+  await run;
+};
 
 describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a container", () => {
   const container = `mend-screen-lost-${process.pid}-${Date.now()}`;
@@ -27,22 +35,21 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
   const IDLE = ["docker-init", "ps", "sleep"];
   const opened: Array<ChildProcess> = [];
 
-  beforeAll(() => {
+  let started: RunningContainer | undefined;
+
+  beforeAll(async () => {
     const image = fixtureImage("screen");
-    docker(
-      "run",
+    started = runContainer(container, [
       "-d",
       "--init",
       "--network",
       "none",
-      "--name",
-      container,
       image,
       "sleep",
       "infinity",
-    );
-    execFileSync(
-      "docker",
+    ]);
+    await started.started;
+    await answered(
       [
         "exec",
         "-i",
@@ -51,7 +58,7 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
         "-c",
         "mkdir -p /run/mend/bin && cat > /run/mend/bin/mend && chmod 755 /run/mend/bin/mend",
       ],
-      { input: '#!/bin/sh\nprintf "%s\\n%s\\n" fullpass viewpass\n', timeout: 30_000 },
+      '#!/bin/sh\nprintf "%s\\n%s\\n" fullpass viewpass\n',
     );
   }, 660_000);
 
@@ -67,7 +74,7 @@ describe.skipIf(!dockerReady)("a screen's lost start, against TigerVNC Xvnc in a
 
   afterAll(() => {
     for (const child of opened) child.kill();
-    removeContainer(container);
+    started?.remove();
   });
 
   /** The platform starts the screen as the container's person, and its answer is still to come. */

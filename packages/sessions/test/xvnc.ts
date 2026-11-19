@@ -45,6 +45,51 @@ const docker = (...args: ReadonlyArray<string>) =>
 export const removeContainer = (name: string): void =>
   spawn("docker", ["rm", "-f", name], { detached: true, stdio: "ignore" }).unref();
 
+/** Reports the daemon's answer to a `docker run`, then removes the container once let go of. */
+const RUN_THEN_REMOVE = [
+  "trap '' PIPE",
+  'name=$1; shift; said=$(docker run --name "$name" "$@" 2>&1 >/dev/null); status=$?',
+  'printf "%s %s" "$status" "$said"; exec >&-',
+  'cat >/dev/null; docker rm -f "$name" >/dev/null 2>&1',
+].join("\n");
+
+export interface RunningContainer {
+  /** Settles once the daemon has answered the start, however long a busy one takes. */
+  readonly started: Promise<void>;
+  /** Removes the container after the daemon's answer, and returns without waiting for either. */
+  readonly remove: () => void;
+}
+
+/**
+ * `docker run --name name ...args`, from a shell that outlives the worker. The start waits for the
+ * daemon's answer within the calling hook's budget, not on a clock of the client's own: a client
+ * killed mid-start leaves the daemon making the container anyway, after a removal by name has
+ * already found nothing (SLNT-1141). The shell removes the container once it has the answer and
+ * `remove` is called or the worker has exited, so a container made late goes too.
+ */
+export const runContainer = (name: string, args: ReadonlyArray<string>): RunningContainer => {
+  const shell = spawn("sh", ["-c", RUN_THEN_REMOVE, "sh", name, ...args], {
+    detached: true,
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  shell.unref();
+  shell.stdin.on("error", () => {});
+  const started = new Promise<void>((resolve, reject) => {
+    let said = "";
+    shell.stdout.setEncoding("utf8");
+    shell.stdout.on("data", (chunk: string) => (said += chunk));
+    shell.stdout.once("end", () => {
+      const [status, ...message] = said.split(" ");
+      if (status === "0") resolve();
+      else
+        reject(
+          new Error(`docker run ${name} exited ${status || "unanswered"}: ${message.join(" ")}`),
+        );
+    });
+  });
+  return { started, remove: () => void shell.stdin.end() };
+};
+
 export interface Xvnc {
   readonly port: number;
   /** A shell command on the display, answering its output. */
