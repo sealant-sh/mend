@@ -10,6 +10,7 @@ import { Banner } from "@mend/ui/components/banner";
 import { Conversation, ConversationItem } from "@mend/ui/components/conversation";
 import { ConversationMarker } from "@mend/ui/components/conversation-marker";
 import { TraceRow } from "@mend/ui/components/trace-row";
+import { Avatar, AvatarFallback } from "@mend/ui/components/ui/avatar";
 import { Button } from "@mend/ui/components/ui/button";
 import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
 import { UserMessage } from "@mend/ui/components/user-message";
@@ -34,10 +35,13 @@ import {
 } from "#/lib/outbox";
 import { steerNote } from "#/lib/session-composer";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
+import { SESSION_STALE_MS } from "#/lib/session-queries";
 import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints, withLandings } from "#/lib/session-sheet";
+import { controlMarkers, withMarkers } from "#/lib/shared-control";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
+import { initialsOf } from "../app-sidebar.tsx";
 import { AgentTurn, type PagesById } from "./agent-turn";
 import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
@@ -46,6 +50,7 @@ import { RequestLine } from "./request-card";
 import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
 import { SessionNotices } from "./session-notices";
+import { ControlMarkerLabel, LoginBand, SharedControlBands } from "./shared-control";
 import { StoppedBanner, StoppedLine } from "./stopped-banner";
 
 /** An item kind this app knows; a newer server's kind says nothing about the work under way. */
@@ -111,17 +116,34 @@ const outboxNote = (message: OutboxMessage): string | null => {
   }
 };
 
+/**
+ * Who sent a message and when (Doop "Shared control · Grace sees Ada's message"): "You · 10:24"
+ * for the viewer's own, the sender's initials and name for anyone else's.
+ */
+const bylineOf = (facts: SessionFacts, author: string | null, time: string): ReactNode => {
+  if (author === null || author === facts.viewerId) return author === null ? time : `You · ${time}`;
+  const name = facts.nameOf(author);
+  if (name === null) return time;
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <Avatar size="sm" className="size-5" aria-hidden>
+        <AvatarFallback className="text-2xs font-semibold text-foreground">
+          {initialsOf(name)}
+        </AvatarFallback>
+      </Avatar>
+      {name} · {time}
+    </span>
+  );
+};
+
 /** What the line under a person's message says: who sent it, when, and how far it got. */
 const noteOf = (
   facts: SessionFacts,
   row: Extract<ConversationRow, { readonly kind: "you" }>,
   conversation: ConversationView | undefined,
   now: Date,
-): { readonly byline: string; readonly note: string | null; readonly pending: boolean } => {
-  const name = row.author === null ? null : facts.nameOf(row.author);
-  const byline = [name, messageTime(new Date(row.at), now)]
-    .filter((part) => part !== null)
-    .join(" · ");
+): { readonly byline: ReactNode; readonly note: string | null; readonly pending: boolean } => {
+  const byline = bylineOf(facts, row.author, messageTime(new Date(row.at), now));
   if (row.outbox !== null) {
     const note = outboxNote(row.outbox);
     return { byline, note, pending: row.outbox.state._tag !== "Sent" };
@@ -184,7 +206,7 @@ function YouMessage({
   sessionId = "",
 }: {
   readonly text: string;
-  readonly byline: string;
+  readonly byline: ReactNode;
   readonly note?: string | null;
   readonly pending?: boolean;
   /** The person's own message that didn't arrive, which they can send again or take back. */
@@ -242,12 +264,11 @@ function StartingLines({
         <ConversationItem messageId="opening">
           <YouMessage
             text={opening.text}
-            byline={[
-              facts.nameOf(facts.viewerId),
+            byline={bylineOf(
+              facts,
+              facts.viewerId,
               messageTime(new Date(opening.sentAt), new Date()),
-            ]
-              .filter((part) => part !== null)
-              .join(" · ")}
+            )}
           />
         </ConversationItem>
       )}
@@ -532,14 +553,33 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
       void conversation.fetchNextPage();
   };
   const now = new Date();
-  const entries = withLandings(
-    withCheckpoints(
-      body.rows,
-      facts.detail.checkpoints,
-      facts.session.id,
+  const control = useQuery({
+    ...trpc.sessions.controlEvents.queryOptions({ id: facts.session.id }),
+    staleTime: SESSION_STALE_MS,
+    enabled: body.list === "protocol",
+  });
+  // Shared control's asks, grants and take-backs, as lines between the messages by time.
+  const markers =
+    control.isPending || control.isError
+      ? []
+      : controlMarkers(control.data, {
+          viewerId: facts.viewerId,
+          nameOf: facts.nameOf,
+          ownerUserId: facts.session.ownerUserId,
+        });
+  const entries = withMarkers(
+    withLandings(
+      withCheckpoints(
+        body.rows,
+        facts.detail.checkpoints,
+        facts.session.id,
+        !conversation.hasNextPage,
+      ),
+      landingMarks(facts.detail.landings, facts.detail.checkpoints, facts.session.id),
       !conversation.hasNextPage,
     ),
-    landingMarks(facts.detail.landings, facts.detail.checkpoints, facts.session.id),
+    (entry) => (entry.kind === "row" ? entry.row.at : entry.mark.at),
+    markers,
     !conversation.hasNextPage,
   );
   const working =
@@ -566,6 +606,8 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
           {facts.session.summary ?? `${facts.agent} didn't start.`}
         </Banner>
       ) : null}
+      <LoginBand facts={facts} />
+      <SharedControlBands facts={facts} />
       <StoppedBanner facts={facts} />
       <SessionNotices facts={facts} />
       <Conversation
@@ -618,8 +660,18 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
         {held ? null : <StartingLines facts={facts} opening={opening} />}
         {body.list === "transcript" ? <TranscriptMessages facts={facts} /> : null}
         {body.list === "protocol"
-          ? entries.map((entry) =>
-              entry.kind === "checkpoint" ? (
+          ? entries.map((placed) => {
+              if (placed.kind === "marker")
+                return (
+                  <ConversationItem key={placed.marker.key} messageId={placed.marker.key}>
+                    <ConversationMarker
+                      kind="status"
+                      label={<ControlMarkerLabel marker={placed.marker} />}
+                    />
+                  </ConversationItem>
+                );
+              const entry = placed.entry;
+              return entry.kind === "checkpoint" ? (
                 <ConversationItem key={entry.key} messageId={entry.key}>
                   <ConversationMarker
                     id={`checkpoint-${entry.mark.ordinal}`}
@@ -670,8 +722,8 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
                     pages={pages}
                   />
                 </ConversationItem>
-              ),
-            )
+              );
+            })
           : null}
         {body.list === "protocol" && working && conversation.data !== undefined ? (
           <LiveLine facts={facts} item={workingOn(conversation.data)} />

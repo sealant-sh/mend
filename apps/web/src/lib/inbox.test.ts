@@ -42,6 +42,7 @@ const row = (
     readonly ask?: SessionInboxRowDto["ask"];
     readonly imported?: boolean;
     readonly activity?: SessionInboxRowDto["activity"];
+    readonly asks?: ReadonlyArray<string>;
   } = {},
 ): SessionInboxRowDto => ({
   session: {
@@ -78,6 +79,17 @@ const row = (
   worktreeName: null,
   failure: null,
   activity: extra.activity ?? null,
+  ...(extra.asks === undefined
+    ? {}
+    : {
+        sharedControlAsks: extra.asks.map((userId) => ({
+          userId,
+          state: "asked" as const,
+          askedAt: minutesAgo(2),
+          grantedAt: null,
+          grantedByUserId: null,
+        })),
+      }),
 });
 
 const place = (
@@ -233,6 +245,39 @@ describe("the inbox's groups", () => {
     expect(word("later")).toBe("Back today at 18:00");
     expect(word("tomorrow")).toBe("Back tomorrow at 09:00");
     expect(word("done")).toBe("Marked done");
+  });
+});
+
+describe("asks for shared control", () => {
+  it("puts the owner's session under Waiting on you while someone asks, and names them", () => {
+    const rows = inboxRows({
+      rows: [
+        row("asked", "running", { asks: ["grace"] }),
+        row("ended", "completed", { asks: ["grace"], change: { id: "c-ended", files: 0 } }),
+        row("quiet", "running"),
+      ],
+      marks: [],
+      now,
+      nameOf: (userId) => (userId === "grace" ? "Grace Hopper" : null),
+    });
+    const asked = rows.find((each) => each.session.id === "asked");
+    expect(asked?.group).toBe("waiting");
+    expect(asked === undefined ? null : rowStatus(asked, now).word).toBe(
+      "Grace asked for shared control",
+    );
+    expect(rows.find((each) => each.session.id === "ended")?.group).toBe("done");
+    expect(rows.find((each) => each.session.id === "quiet")?.group).toBe("running");
+  });
+
+  it("says what the agent asks first when the agent waits too", () => {
+    const [waiting] = inboxRows({
+      rows: [row("both", "waiting", { asks: ["grace"] })],
+      marks: [],
+      now,
+    });
+    expect(waiting === undefined ? null : rowStatus(waiting, now).word).not.toContain(
+      "shared control",
+    );
   });
 });
 

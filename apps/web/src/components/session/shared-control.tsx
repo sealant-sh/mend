@@ -1,0 +1,589 @@
+import { Banner } from "@mend/ui/components/banner";
+import { CopyField } from "@mend/ui/components/copy-field";
+import { Button } from "@mend/ui/components/ui/button";
+import { toast } from "@mend/ui/components/ui/toast";
+import { cn } from "@mend/ui/lib/utils";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  ClockIcon,
+  EyeIcon,
+  HandIcon,
+  LockIcon,
+  MessageSquareIcon,
+  ToggleLeftIcon,
+  UserXIcon,
+  UsersIcon,
+} from "lucide-react";
+import { type ReactNode, useState, useSyncExternalStore } from "react";
+
+import { AGENT_FACTS, type Agent, agentLoginState, connectCommand } from "#/lib/agent-login";
+import { readDraft, subscribeDrafts } from "#/lib/drafts";
+import { draftItems, type MessageScope, useMessageOwner } from "#/lib/outbox";
+import { usePhone } from "#/lib/phone";
+import { messageTime } from "#/lib/session-sheet";
+import { harnessName } from "#/lib/session-view";
+import {
+  type Band,
+  type BandAct,
+  type BandIcon,
+  type ControlMarker,
+  grantDialog,
+  type LoginHold,
+  loginBand,
+  parseLoginHold,
+  type SharedControlView,
+  sharedControlBands,
+  stepRefusalWords,
+  type TurnOffStep,
+  turnOffItems,
+} from "#/lib/shared-control";
+import { type TrpcClient, useTRPC, useTRPCClient } from "#/lib/trpc";
+import { useSecond } from "#/lib/use-second";
+
+import { Overlay } from "../projects/overlay.tsx";
+import type { SessionFacts } from "./session-facts.ts";
+
+/**
+ * Shared control on a session's sheet (docs/adr/0026, decision 7; Doop page 6 "Working with
+ * others"). Bands over the conversation say whose session it is and where shared control stands,
+ * with what the viewer may do about it: ask for it, cancel the request, turn it on for the person
+ * who asked or dismiss the request, turn it off. A message the server refused for the sender's own
+ * agent login says so in a band of its own, with how to connect it again.
+ */
+
+/** The session's shared control, as the server reads it for the viewer. */
+export const useSharedControl = (sessionId: string) => {
+  const trpc = useTRPC();
+  return useQuery(trpc.sessions.sharedControl.queryOptions({ id: sessionId }));
+};
+
+const BAND_ICONS: Readonly<Record<BandIcon, ReactNode>> = {
+  watching: <EyeIcon className="text-info!" />,
+  asked: <ClockIcon className="text-info!" />,
+  hand: <HandIcon className="text-info!" />,
+  shared: <UsersIcon className="text-success!" />,
+};
+
+const MARKER_ICONS: Readonly<Record<ControlMarker["icon"], ReactNode>> = {
+  hand: <HandIcon aria-hidden className="size-3.5 shrink-0" />,
+  shared: <UsersIcon aria-hidden className="size-3.5 shrink-0" />,
+  off: <UserXIcon aria-hidden className="size-3.5 shrink-0" />,
+};
+
+/** A shared control marker's line in the conversation: its icon, what happened and when. */
+export function ControlMarkerLabel({ marker }: { readonly marker: ControlMarker }) {
+  return (
+    <span className="flex items-start gap-2">
+      <span className="flex h-lh items-center">{MARKER_ICONS[marker.icon]}</span>
+      <span>
+        {marker.label} · {messageTime(new Date(marker.at), new Date())}
+      </span>
+    </span>
+  );
+}
+
+/** Read again what a step moved: the read itself, the session (who steers), the inbox. */
+const afterStep = (queryClient: QueryClient, trpc: ReturnType<typeof useTRPC>) =>
+  queryClient.invalidateQueries(trpc.sessions.pathFilter());
+
+/** Run the steps that turn shared control off, one after another. */
+export const runTurnOff = async (
+  client: TrpcClient,
+  sessionId: string,
+  steps: ReadonlyArray<TurnOffStep>,
+): Promise<void> => {
+  for (const step of steps) {
+    if (step.kind === "everyone-off")
+      await client.sessions.setSharedControl.mutate({ id: sessionId, enabled: false });
+    else await client.sessions.takeBackSharedControl.mutate({ id: sessionId, userId: step.userId });
+  }
+};
+
+/**
+ * Turn shared control off from a menu: the menu is gone by the time it answers, so a refusal is
+ * said in a toast.
+ */
+export const useTurnOffFromMenu = () => {
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  return (
+    sessionId: string,
+    steps: ReadonlyArray<TurnOffStep>,
+    nameOf: (userId: string) => string | null,
+  ) =>
+    void runTurnOff(client, sessionId, steps)
+      .then(() => toast.add({ description: "Shared control is off.", priority: "low" }))
+      .catch((cause: unknown) =>
+        toast.add({
+          title: "Shared control is still on.",
+          description: stepRefusalWords(
+            cause,
+            nameOf,
+            steps[0]?.kind === "take-back" ? steps[0].userId : null,
+          ),
+          type: "error",
+          priority: "high",
+        }),
+      )
+      .finally(() => void afterStep(queryClient, trpc));
+};
+
+/** One band, inline on a desktop and stacked under 1024px. */
+function SharedBand({
+  band,
+  pending,
+  onAct,
+  failure,
+}: {
+  readonly band: Band;
+  readonly pending: BandAct["kind"] | null;
+  readonly onAct: (act: BandAct) => void;
+  readonly failure: string | null;
+}) {
+  const buttons = (phone: boolean) =>
+    band.buttons.length === 0 ? undefined : (
+      <>
+        {band.buttons.map((button) => (
+          <Button
+            key={button.act.kind}
+            type="button"
+            size={phone ? "touch" : "sm"}
+            variant={
+              button.primary
+                ? "default"
+                : phone
+                  ? "outline"
+                  : button.act.kind === "decline"
+                    ? "ghost"
+                    : "outline"
+            }
+            className={phone ? "flex-1" : undefined}
+            disabled={pending !== null}
+            onClick={() => onAct(button.act)}
+          >
+            {pending === button.act.kind
+              ? button.pendingLabel
+              : phone
+                ? button.phoneLabel
+                : button.label}
+          </Button>
+        ))}
+      </>
+    );
+  const said =
+    failure === null ? null : (
+      <span role="alert" className="mt-1 block text-destructive">
+        {failure}
+      </span>
+    );
+  return (
+    <>
+      <Banner
+        icon={BAND_ICONS[band.icon]}
+        title={band.title}
+        className="max-lg:hidden"
+        actions={buttons(false)}
+        data-band={band.key}
+      >
+        {band.body}
+        {said}
+      </Banner>
+      <Banner
+        icon={BAND_ICONS[band.icon]}
+        title={band.title}
+        layout="stacked"
+        className="lg:hidden [&_[data-slot=alert-action]]:flex [&_[data-slot=alert-action]]:gap-2"
+        actions={buttons(true)}
+        data-band={band.key}
+      >
+        {band.phoneBody}
+        {said}
+      </Banner>
+    </>
+  );
+}
+
+/**
+ * The bands over a session's conversation about its shared control, each only when there is
+ * something to say. Until the read answers, or if it fails, nothing: the composer still says who
+ * may write.
+ */
+export function SharedControlBands({ facts }: { readonly facts: SessionFacts }) {
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  const read = useSharedControl(facts.session.id);
+  const [failure, setFailure] = useState<{ readonly band: string; readonly words: string } | null>(
+    null,
+  );
+  const [granting, setGranting] = useState<string | null>(null);
+  const step = useMutation({
+    mutationFn: async ({ act }: { readonly act: BandAct; readonly band: string }) => {
+      const id = facts.session.id;
+      switch (act.kind) {
+        case "ask":
+          return client.sessions.askSharedControl.mutate({ id });
+        case "withdraw":
+          return client.sessions.withdrawSharedControl.mutate({ id });
+        case "grant":
+          return client.sessions.grantSharedControl.mutate({ id, userId: act.userId });
+        case "decline":
+          return client.sessions.declineSharedControl.mutate({ id, userId: act.userId });
+        case "turn-off": {
+          const view = read.data;
+          if (view !== undefined)
+            await runTurnOff(
+              client,
+              id,
+              view.everyoneSince !== null
+                ? [{ kind: "everyone-off" }]
+                : view.granted.map((person) => ({ kind: "take-back", userId: person.userId })),
+            );
+          return null;
+        }
+      }
+    },
+    onMutate: () => setFailure(null),
+    onSuccess: (answer) => {
+      setGranting(null);
+      if (answer !== null)
+        queryClient.setQueryData(
+          trpc.sessions.sharedControl.queryKey({ id: facts.session.id }),
+          answer,
+        );
+    },
+    onError: (cause, { act, band }) =>
+      setFailure({
+        band,
+        words: stepRefusalWords(
+          cause,
+          facts.nameOf,
+          act.kind === "grant" || act.kind === "decline" ? act.userId : null,
+        ),
+      }),
+    onSettled: () => afterStep(queryClient, trpc),
+  });
+  if (read.isPending || read.isError) return null;
+  const view: SharedControlView = read.data;
+  const bands = sharedControlBands(view, {
+    viewerId: facts.viewerId,
+    nameOf: facts.nameOf,
+    agent: facts.agent,
+    projectName: facts.projectName,
+    ownerUserId: facts.session.ownerUserId,
+    timeOf: (at) => messageTime(at, new Date()),
+  });
+  const pendingKind = step.isPending ? step.variables.act.kind : null;
+  return (
+    <>
+      {bands.map((band) => (
+        <SharedBand
+          key={band.key}
+          band={band}
+          pending={step.isPending && step.variables.band === band.key ? pendingKind : null}
+          failure={failure?.band === band.key ? failure.words : null}
+          onAct={(act) => {
+            if (act.kind === "grant") setGranting(act.userId);
+            else step.mutate({ act, band: band.key });
+          }}
+        />
+      ))}
+      <GrantOverlay
+        facts={facts}
+        view={view}
+        askerId={granting}
+        pending={step.isPending && step.variables.act.kind === "grant"}
+        failure={granting !== null && failure?.band === `ask:${granting}` ? failure.words : null}
+        onCancel={() => {
+          if (!step.isPending) setGranting(null);
+        }}
+        onGrant={(userId) => step.mutate({ act: { kind: "grant", userId }, band: `ask:${userId}` })}
+      />
+    </>
+  );
+}
+
+const ROW_ICONS = {
+  people: <UsersIcon aria-hidden className="size-4 text-muted-foreground" />,
+  message: <MessageSquareIcon aria-hidden className="size-4 text-muted-foreground" />,
+  lock: <LockIcon aria-hidden className="size-4 text-muted-foreground" />,
+  toggle: <ToggleLeftIcon aria-hidden className="size-4 text-muted-foreground" />,
+} as const;
+
+/** Turn on shared control for the person who asked (Doop "Shared control · turn on dialog"). */
+function GrantOverlay({
+  facts,
+  view,
+  askerId,
+  pending,
+  failure,
+  onCancel,
+  onGrant,
+}: {
+  readonly facts: SessionFacts;
+  readonly view: SharedControlView;
+  readonly askerId: string | null;
+  readonly pending: boolean;
+  readonly failure: string | null;
+  readonly onCancel: () => void;
+  readonly onGrant: (userId: string) => void;
+}) {
+  const phone = usePhone();
+  const dialog = grantDialog(view, {
+    askerId: askerId ?? "",
+    nameOf: facts.nameOf,
+    agent: facts.agent,
+    projectName: facts.projectName,
+    sessionTitle: facts.title,
+  });
+  return (
+    <Overlay
+      open={askerId !== null}
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title={dialog.title}
+      description={dialog.description}
+      size="md"
+      footer={
+        <>
+          <Button
+            type="button"
+            variant="outline"
+            size={phone ? "touch" : "default"}
+            disabled={pending}
+            onClick={onCancel}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            size={phone ? "touch" : "default"}
+            disabled={pending}
+            onClick={() => {
+              if (askerId !== null) onGrant(askerId);
+            }}
+          >
+            {pending ? "Turning on…" : "Turn on shared control"}
+          </Button>
+        </>
+      }
+    >
+      <ul className="flex flex-col">
+        {dialog.rows.map((row, at) => (
+          <li
+            key={row.title}
+            className={cn("grid grid-cols-[1rem_1fr] gap-x-4 py-3", at > 0 && "border-t")}
+          >
+            <span className="flex h-lh items-center">{ROW_ICONS[row.icon]}</span>
+            <span className="flex flex-col gap-1">
+              <span className="font-semibold text-foreground">{row.title}</span>
+              <span className="text-muted-foreground">{row.body}</span>
+            </span>
+          </li>
+        ))}
+      </ul>
+      {failure === null ? null : (
+        <p role="alert" className="text-destructive">
+          {failure}
+        </p>
+      )}
+    </Overlay>
+  );
+}
+
+// ─── The sender's own login ─────────────────────────────────────────────────
+
+/** The refusal kept beside the viewer's draft for this session, if a message waits on a login. */
+export const useLoginHold = (scope: MessageScope | null): LoginHold | null => {
+  const raw = useSyncExternalStore(
+    subscribeDrafts,
+    () => (scope === null ? "" : readDraft(draftItems(scope).login)),
+    () => "",
+  );
+  return parseLoginHold(raw);
+};
+
+const isAgent = (provider: string): provider is Agent =>
+  provider === "claude" || provider === "codex";
+
+/** The provider's agent as people call it: "Claude Code", "Codex". */
+export const providerName = (provider: string): string =>
+  isAgent(provider) ? AGENT_FACTS[provider].name : harnessName(provider);
+
+/**
+ * Whether the login a held message waits on works now, read after it was refused: the `user`
+ * event a connected login sends reads the person's logins again (lib/workbench-events.ts).
+ */
+export const useLoginWorks = (hold: LoginHold | null): boolean => {
+  const trpc = useTRPC();
+  const identity = useQuery({
+    ...trpc.platform.sealantIdentity.queryOptions(),
+    enabled: hold !== null,
+  });
+  if (hold === null || hold.state === "unchosen" || !isAgent(hold.provider)) return false;
+  if (identity.isPending || identity.isError || identity.dataUpdatedAt <= hold.at) return false;
+  return agentLoginState(identity.data.accounts, hold.provider).kind === "connected";
+};
+
+/**
+ * The band over a session whose message was refused for the sender's own login (Doop "Shared
+ * control · Ada's login expired"), with Connect again… and its dialog ("Ada connects again").
+ */
+export function LoginBand({ facts }: { readonly facts: SessionFacts }) {
+  const userId = useMessageOwner();
+  const scope = userId === null ? null : { userId, sessionId: facts.session.id };
+  const hold = useLoginHold(scope);
+  const [connecting, setConnecting] = useState(false);
+  if (hold === null) return null;
+  const agentName = providerName(hold.provider);
+  const ownerId = facts.session.ownerUserId;
+  const words = loginBand(hold, {
+    agentName,
+    ownerName: ownerId === null ? null : facts.nameOf(ownerId),
+    own: ownerId === facts.viewerId,
+  });
+  const action = (phone: boolean) =>
+    words.connect && isAgent(hold.provider) ? (
+      <Button
+        type="button"
+        variant="outline"
+        size={phone ? "touch" : "sm"}
+        className={phone ? "w-full" : undefined}
+        onClick={() => setConnecting(true)}
+      >
+        {hold.state === "invalid" ? "Connect again…" : `Connect ${agentName}…`}
+      </Button>
+    ) : undefined;
+  return (
+    <>
+      <Banner tone="error" title={words.title} className="max-lg:hidden" actions={action(false)}>
+        {words.body}
+      </Banner>
+      <Banner
+        tone="error"
+        layout="stacked"
+        title={words.title}
+        className="lg:hidden"
+        actions={action(true)}
+      >
+        {words.body}
+      </Banner>
+      {isAgent(hold.provider) ? (
+        <ConnectOverlay
+          open={connecting}
+          onOpenChange={setConnecting}
+          agent={hold.provider}
+          again={hold.state === "invalid"}
+          ownerName={ownerId === null || ownerId === facts.viewerId ? null : facts.nameOf(ownerId)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+/** How long the dialog has waited: "6s", "1m 4s". */
+const waited = (since: Date, now: Date): string => {
+  const seconds = Math.max(0, Math.floor((now.getTime() - since.getTime()) / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+};
+
+/** Connect Claude Code again (Doop "Shared control · Ada connects again"). */
+function ConnectOverlay({
+  open,
+  onOpenChange,
+  agent,
+  again,
+  ownerName,
+}: {
+  readonly open: boolean;
+  readonly onOpenChange: (open: boolean) => void;
+  readonly agent: Agent;
+  readonly again: boolean;
+  readonly ownerName: string | null;
+}) {
+  const phone = usePhone();
+  const facts = AGENT_FACTS[agent];
+  return (
+    <Overlay
+      open={open}
+      onOpenChange={onOpenChange}
+      title={again ? `Connect ${facts.name} again` : `Connect ${facts.name}`}
+      description={
+        again ? `Your ${facts.name} login has expired.` : `You haven't connected ${facts.name} yet.`
+      }
+      size="sm"
+      footer={
+        <Button
+          type="button"
+          variant="outline"
+          size={phone ? "touch" : "default"}
+          onClick={() => onOpenChange(false)}
+        >
+          Cancel
+        </Button>
+      }
+    >
+      {open ? <ConnectBody agent={agent} ownerName={ownerName} phone={phone} /> : null}
+    </Overlay>
+  );
+}
+
+function ConnectBody({
+  agent,
+  ownerName,
+  phone,
+}: {
+  readonly agent: Agent;
+  readonly ownerName: string | null;
+  readonly phone: boolean;
+}) {
+  const facts = AGENT_FACTS[agent];
+  const now = useSecond();
+  const [since] = useState(() => new Date());
+  return (
+    <div className="flex flex-col gap-4">
+      <p className="text-foreground">
+        On your computer, run this command. It opens {facts.service}'s sign-in in your browser and
+        passes the login to Mend when you finish.
+      </p>
+      <CopyField
+        value={connectCommand(agent)}
+        label="Copy command"
+        size={phone ? "touch" : "default"}
+      />
+      <p role="status" className="text-row text-muted-foreground">
+        Waiting for {facts.name} to connect · {waited(since, now)}
+      </p>
+      <p className="border-t pt-4 text-row text-muted-foreground">
+        Mend sends your message to {ownerName === null ? "the session" : `${ownerName}'s session`}{" "}
+        as soon as you're connected. This renews your {facts.name} login everywhere in Mend, not
+        only in this session.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * The "…" menu's Turn off shared control (Doop "Shared control · turn off from the menu"): one
+ * item, or one per person when several hold it; none unless the viewer may take it back.
+ */
+export const useTurnOffItems = (
+  sessionId: string,
+): ReadonlyArray<{ readonly label: string; readonly onSelect: () => void }> => {
+  const trpc = useTRPC();
+  const read = useSharedControl(sessionId);
+  const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
+  const turnOff = useTurnOffFromMenu();
+  if (read.isPending || read.isError) return [];
+  const names =
+    members.isPending || members.isError
+      ? new Map<string, string>()
+      : new Map(members.data.map((member) => [member.userId, member.name]));
+  const nameOf = (userId: string) => names.get(userId) ?? null;
+  return turnOffItems(read.data, nameOf).map((item) => ({
+    label: item.label,
+    onSelect: () => turnOff(sessionId, item.steps, nameOf),
+  }));
+};

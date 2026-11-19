@@ -15,6 +15,7 @@ import {
 } from "./drafts.ts";
 import { failureWords, refusalTagOf } from "./refusal.ts";
 import { sendInTurn } from "./serial-writes.ts";
+import { loginRefusalOf, type LoginRefusal } from "./shared-control.ts";
 import { orLogin, useTRPC, useTRPCClient } from "./trpc.ts";
 import { uuidV4 } from "./uuid.ts";
 
@@ -439,7 +440,9 @@ const deliver = (courier: Courier, scope: MessageScope, message: OutboxMessage) 
       await sent;
     } catch (cause) {
       failure = cause;
-      settle(stateAfterFailure(cause, message.clientMessageId));
+      const login = loginRefusalOf(cause);
+      if (login === null) settle(stateAfterFailure(cause, message.clientMessageId));
+      else holdForLogin(scope, message, login);
     }
     setInFlight(message.clientMessageId, false);
     courier.answered(failure);
@@ -503,7 +506,43 @@ export const retryMessage = (
 export const draftItems = (scope: MessageScope) => ({
   text: `${scope.userId}.${scope.sessionId}.text`,
   key: `${scope.userId}.${scope.sessionId}.key`,
+  /** A message refused for the sender's own login, kept until it works (`lib/shared-control`). */
+  login: `${scope.userId}.${scope.sessionId}.login`,
 });
+
+/**
+ * A message the server refused for the sender's own agent login (missing, expired or not picked;
+ * Doop "Shared control · Ada's login expired"): it never reached the session, so its bubble goes
+ * and its words go back into the box, under the key they were sent with, and the refusal is kept
+ * beside them. The session's band says what to do; once the login works, the composer sends them.
+ */
+export const holdForLogin = (
+  scope: MessageScope,
+  message: OutboxMessage,
+  login: LoginRefusal,
+  now: number = Date.now(),
+) => {
+  const items = draftItems(scope);
+  const words = readDraft(items.text);
+  changeMessage(scope, message.clientMessageId, () => null);
+  const entries: Array<readonly [string, string]> =
+    words.trim() === ""
+      ? [
+          [items.text, message.text],
+          [items.key, message.clientMessageId],
+        ]
+      : [
+          [items.text, `${message.text}\n\n${words}`],
+          [items.key, ""],
+        ];
+  writeDrafts([...entries, [items.login, JSON.stringify({ ...login, at: now })]]);
+};
+
+/** Forget the login a message was refused for: it was sent again, or the box was emptied. */
+export const releaseLoginHold = (scope: MessageScope) => {
+  const items = draftItems(scope);
+  if (readDraft(items.login) !== "") writeDrafts([[items.login, ""]]);
+};
 
 /**
  * Take a message that did not arrive back into the composer to change it; its bubble goes. Into

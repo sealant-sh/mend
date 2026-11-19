@@ -45,6 +45,7 @@ import {
 import { useServerHost } from "#/lib/online";
 import { rowActions } from "#/lib/row-actions";
 import { useSeenAfterIdle } from "#/lib/seen";
+import { askersDetail } from "#/lib/shared-control";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFolds } from "#/lib/ui-prefs";
@@ -359,7 +360,11 @@ function PhoneRow({
   const handlers = useRowActions();
   const changeId = row.annotation?.changeId ?? null;
   let last: ReactNode = status.word;
-  if (row.group === "waiting") last = askDetail(row.ask);
+  if (row.group === "waiting")
+    last =
+      row.session.status !== "waiting" && row.askers.length > 0
+        ? askersDetail(row.askers)
+        : askDetail(row.ask);
   else if (row.activity !== null) last = activityDetail(row.activity);
   else if (status.failed && row.failure !== null) last = `${status.word} · ${row.failure}`;
   else if (row.group === "review" && changeId !== null && !status.failed)
