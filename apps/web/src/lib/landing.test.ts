@@ -15,6 +15,7 @@ import {
   factsWithProbe,
   landButtonLabel,
   landedSentence,
+  landedToast,
   landingBase,
   landingMarks,
   landingProblem,
@@ -394,6 +395,42 @@ describe("what a landing just did", () => {
         pullRequest: { _tag: "unavailable", reason: "origin is on gitlab.com" },
       }),
     ).toBe("Pushed mend/fix-login to origin.");
+  });
+
+  it("says which other sessions in the workspace are still running", () => {
+    const report: LandingReportDto = {
+      landing: landedInto412,
+      pullRequest: { _tag: "opened", pullRequest: openPullRequest },
+    };
+    expect(landedToast(report, [row("mine", "completed", "grace")], "mine")).toBe(
+      "Pushed mend/fix-login and opened pull request #412.",
+    );
+    expect(
+      landedToast(
+        report,
+        [row("mine", "completed", "grace"), row("ada", "running", "ada")],
+        "mine",
+      ),
+    ).toBe("Pushed mend/fix-login and opened pull request #412. Session ada is still running.");
+    expect(
+      landedToast(
+        report,
+        [row("a", "running", "ada"), row("b", "starting", "ada"), row("c", "stopped", "ada")],
+        "mine",
+      ),
+    ).toBe(
+      "Pushed mend/fix-login and opened pull request #412. Session a and Session b are still running.",
+    );
+    expect(
+      landedToast(
+        {
+          landing: landing({ outcome: "refused", pushedSha: null }),
+          pullRequest: { _tag: "off" },
+        },
+        [row("ada", "running", "ada")],
+        "mine",
+      ),
+    ).toBeNull();
   });
 });
 

@@ -507,7 +507,14 @@ function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
  * where it was asked (`RequestLine`), saying whose answer it waits for and, once settled, who
  * answered and how.
  */
-export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
+export function ConversationTile({
+  facts,
+  onStartOwn,
+}: {
+  readonly facts: SessionFacts;
+  /** Opens a New session tab in this workspace, for someone who can't message this session. */
+  readonly onStartOwn?: () => void;
+}) {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const conversation = useInfiniteQuery({
@@ -575,7 +582,9 @@ export function ConversationTile({ facts }: { readonly facts: SessionFacts }) {
           if (event.currentTarget.scrollTop < READ_OLDER_WITHIN) readOlder();
         }}
         className="min-h-0 flex-1"
-        footer={<SessionComposer facts={facts} conversation={conversation.data} />}
+        footer={
+          <SessionComposer facts={facts} conversation={conversation.data} onStartOwn={onStartOwn} />
+        }
       >
         <MendLines facts={facts} />
         <ExecutorCalls facts={facts} />

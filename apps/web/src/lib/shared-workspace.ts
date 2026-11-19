@@ -76,6 +76,57 @@ export const worktreeJoinLine = (
   }
 };
 
+/** "1 session", "2 sessions". */
+export const sessionCount = (count: number): string =>
+  count === 1 ? "1 session" : `${count} sessions`;
+
+/** A worktree as the composer's picker reads it (`worktrees.list`). */
+interface PickerWorktree {
+  readonly id: string;
+  readonly name: string;
+  readonly branch: string;
+  readonly changeOwnerUserId: string | null;
+  readonly updatedAt: Date;
+}
+
+/** One of the viewer's running workspaces, as the picker lists it. */
+export interface RunningWorkspace {
+  readonly id: string;
+  readonly name: string;
+  readonly branch: string;
+  /** How many sessions are live in it now. */
+  readonly sessions: number;
+}
+
+/**
+ * The viewer's own workspaces that run now (Doop "picks a running workspace", ADR 0026 decision
+ * 7): worktrees whose change is the viewer's with at least one live session, newest first. A new
+ * session started in one joins the sessions already there, on the same branch and files.
+ */
+export const runningWorkspaces = (
+  listing: {
+    readonly worktrees: ReadonlyArray<PickerWorktree>;
+    readonly annotations: ReadonlyArray<{
+      readonly worktreeId: string;
+      readonly liveSessions: number;
+    }>;
+  },
+  viewerId: string,
+): ReadonlyArray<RunningWorkspace> => {
+  const live = new Map(listing.annotations.map((each) => [each.worktreeId, each.liveSessions]));
+  return listing.worktrees
+    .filter((worktree) => worktree.changeOwnerUserId === viewerId)
+    .map((worktree) => ({ worktree, sessions: live.get(worktree.id) ?? 0 }))
+    .filter((each) => each.sessions > 0)
+    .toSorted((a, b) => b.worktree.updatedAt.getTime() - a.worktree.updatedAt.getTime())
+    .map(({ worktree, sessions }) => ({
+      id: worktree.id,
+      name: worktree.name,
+      branch: worktree.branch,
+      sessions,
+    }));
+};
+
 /** What the session draws for a workspace waiting to be replaced (ADR 0016, decision 14). */
 export interface RetirementView {
   readonly line: string;

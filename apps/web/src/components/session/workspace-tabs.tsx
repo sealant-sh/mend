@@ -184,8 +184,14 @@ export function WorkspaceTab({
 }
 
 /** Another session's conversation, read as its tab first shows. */
-function OtherConversation({ sessionId }: { readonly sessionId: string }) {
-  return <ConversationTile facts={useSessionFacts(sessionId)} />;
+function OtherConversation({
+  sessionId,
+  onStartOwn,
+}: {
+  readonly sessionId: string;
+  readonly onStartOwn: () => void;
+}) {
+  return <ConversationTile facts={useSessionFacts(sessionId)} onStartOwn={onStartOwn} />;
 }
 
 /** A tab whose body couldn't be read: what went wrong, and Try again, which reads it again. */
@@ -243,18 +249,22 @@ export function WorkspaceTabBody({
   facts,
   place,
   newSession,
+  onStartOwn,
 }: {
   readonly tab: string;
   readonly facts: SessionFacts;
   readonly place: ViewPlace;
   readonly newSession: (tab: string) => ReactNode;
+  /** Opens a New session tab beside this tab: a session of the viewer's own in this workspace. */
+  readonly onStartOwn: () => void;
 }) {
   const session = sessionOfTab(tab);
-  if (session === facts.session.id) return <ConversationTile facts={facts} />;
+  if (session === facts.session.id)
+    return <ConversationTile facts={facts} onStartOwn={onStartOwn} />;
   if (session !== null)
     return (
       <Guarded tab={tab} reading="Reading the conversation…">
-        <OtherConversation sessionId={session} />
+        <OtherConversation sessionId={session} onStartOwn={onStartOwn} />
       </Guarded>
     );
   const view = workspaceView(viewOfTab(tab) ?? "");

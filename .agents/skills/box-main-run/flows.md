@@ -315,6 +315,29 @@ flows reuse what earlier ones made:
   `apps/web/src/components/workspace/shared-control-row.tsx`,
   `apps/web/src/components/workspace/views/details-view.tsx`, `apps/web/src/lib/session-details.ts`
 
+### session-page.new-web-shared-workspace
+
+- **Map:** per-person-homes.md `join-line`, `runs-as-yourself`, `shared-workspace-line`;
+  start-session.md `session-stop-shared`; land-change.md `land-web`
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-shared-workspace-sessions.json` (the worktree
+  `shared-ws-<time>`: one `mend run` that writes a file, then two `sleep` sessions in it), then
+  drive the recipe `new-web-shared-workspace`: open the home composer's worktree picker, pick the
+  running workspace, read the join line with another person's session live there (fixture), open
+  that person's session and press "Start your own session in this workspace", Stop session… on the
+  second session and stop it, then Land… on the first and land (fixture answer).
+- **See:** each step's note in the recipe's `steps.log`: "Your running workspaces in <project>" with
+  the worktree and "2 sessions"; no join line where only your sessions run; the join line saying the
+  session runs as you, on your own logins; a New session tab beside the other person's with the join
+  line and the task field focused; the Stop dialog naming the session that keeps the workspace
+  running, and the toast that it is still running; the Land dialog naming the session still editing,
+  and the toast "Pushed … to origin. … is still running."
+- **Mode:** `scripted` (recipes/new-web-shared-workspace.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/new-session/join-line.tsx`,
+  `apps/web/src/components/new-session/pickers.tsx`, `apps/web/src/lib/shared-workspace.ts`
+
 ### session-stop.new-web-session-actions
 
 - **Map:** start-session.md `session-stop`, `session-stop-shared`; attach-resume.md `resume-web`,

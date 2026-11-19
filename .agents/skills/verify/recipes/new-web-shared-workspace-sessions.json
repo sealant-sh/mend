@@ -1,0 +1,10 @@
+[
+  {
+    "name": "01-sessions",
+    "run": [
+      "sh",
+      "-c",
+      "W=shared-ws-$(date +%s) && mend run --project verify-fixture --name \"$W\" --json -- sh -c 'set -e\nmkdir -p src/payments\nprintf \"export const retries = 3;\\n\" > src/payments/retry.ts' && mend run --project verify-fixture --worktree \"$W\" --detach --json -- sleep 7243 && mend run --project verify-fixture --worktree \"$W\" --detach --json -- sleep 7244"
+    ]
+  }
+]
