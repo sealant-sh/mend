@@ -142,7 +142,7 @@ describe("old settings addresses", () => {
     ["/settings/landing", "/settings/automation"],
     ["/settings/git-access", "/settings/agent-logins"],
     ["/settings/access-keys", "/settings/devices"],
-    ["/settings/workspace", "/settings/dotfiles"],
+    ["/settings/workspace", "/settings/connected-apps"],
     ["/settings/sealant", "/settings/server"],
     ["/settings/instance/exposure", "/settings/server"],
     ["/settings/organization/defaults", "/settings/organization"],

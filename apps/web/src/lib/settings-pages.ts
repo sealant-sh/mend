@@ -258,7 +258,9 @@ const OLD_PATHS: Readonly<Record<string, string>> = {
   "/settings/landing": "/settings/automation",
   "/settings/git-access": "/settings/agent-logins",
   "/settings/access-keys": "/settings/devices",
-  "/settings/workspace": "/settings/dotfiles",
+  // Executor sends a person here after linking their own account (mend-run), so it opens the page
+  // that shows that link.
+  "/settings/workspace": "/settings/connected-apps",
   "/settings/sealant": "/settings/server",
   "/settings/instance": "/settings/server",
   "/settings/instance/environment": "/settings/server",
