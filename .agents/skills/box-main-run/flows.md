@@ -1541,6 +1541,28 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.services.tsx`,
   `apps/web/src/lib/project-services.ts`
 
+### project-settings.new-web-secrets
+
+- **Map:** project-environment.md `env-composer`, `env-import`, `env-routing`, `env-configuration`,
+  `env-secrets`, `env-not-inherited` (the new web app's Variables and secrets page)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-project-secrets`, or by hand on a project the run makes: add,
+  edit, rename and remove a variable; add, replace and remove a secret (a value from
+  `scripts/fakes.mjs`); Import .env file… with a variable, a secret-looking name, a reserved name
+  and a line that isn't `NAME=value`; then remove the project.
+- **See:** `Saved <name>.`, `Added <name>.`, `Replaced <name>.`, `Removed <name>.` toasts and the
+  lists following each; a secret-looking name refused as a variable beside the field; the import's
+  rows each saying where they go, values hidden, and its toast
+  `Saved 1 variable and 1 secret. 1 name was refused.`; the secrets read and the page never holding
+  a secret's value.
+- **Mode:** `scripted` (recipes/new-web-project-secrets.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/project-secrets-page.tsx`,
+  `apps/web/src/components/settings/environment-dialogs.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.secrets.tsx`,
+  `apps/web/src/lib/project-environment.ts`, `apps/web/src/lib/env-composer.ts`
+
 ### references-folders.folder-cli
 
 - **Map:** references-folders.md `folder-cli`, `folder-web` (read)
