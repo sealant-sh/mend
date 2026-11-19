@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 
 import { FirstProjectStep } from "#/components/first-project-step";
 import { accountNameOptions } from "#/lib/auth-client";
-import { ENTRY_PATHS, firstProjectEntry, readSetup } from "#/lib/setup";
+import { ENTRY_PATHS, firstProjectEntry, readSetup, rememberStepReached } from "#/lib/setup";
 import { signedInOptions } from "#/lib/sign-in";
 
 /**
@@ -16,13 +16,14 @@ export const Route = createFileRoute("/welcome/first-project")({
   loader: async ({ context: { queryClient, trpc } }) => {
     void queryClient.prefetchQuery(trpc.platform.sealantIdentity.queryOptions());
     void queryClient.prefetchQuery(trpc.organization.members.queryOptions());
-    const [observed] = await Promise.all([
+    const [observed, viewer] = await Promise.all([
       readSetup({ queryClient, trpc }),
       queryClient.ensureQueryData(signedInOptions(trpc)),
       queryClient.ensureQueryData(accountNameOptions()),
     ]);
     const entry = firstProjectEntry(observed);
     if (entry !== "first-project") throw redirect({ href: ENTRY_PATHS[entry] });
+    rememberStepReached(viewer, "project");
   },
   component: FirstProjectStep,
 });

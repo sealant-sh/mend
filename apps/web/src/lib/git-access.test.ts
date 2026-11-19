@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   continueNote,
+  gitAccessContinues,
   gitAccessWorks,
   type KeyCheckState,
   keyCheckView,
@@ -145,6 +146,31 @@ describe("when Continue opens", () => {
     expect(gitAccessWorks(connected, { kind: "idle" })).toBe(true);
     expect(continueNote(connected, { kind: "idle" })).toBe(
       "Mend can't clone or push while linus-mbp is offline.",
+    );
+  });
+});
+
+describe("when Continue opens on a visit back to Git access", () => {
+  const madeKey = {
+    ...mendKey,
+    key: { exists: true, publicKey: "ssh-ed25519 AAAA mend:linus", fingerprint: "SHA256:abc" },
+  } as const;
+
+  it("lets someone who went past the step go on with the Mend key they have", () => {
+    expect(gitAccessContinues(madeKey, { kind: "idle" }, true)).toBe(true);
+    // The first time through, the same page waits for GitHub's answer.
+    expect(gitAccessContinues(madeKey, { kind: "idle" }, false)).toBe(false);
+  });
+
+  it("waits again once they check the key on this visit and GitHub doesn't take it", () => {
+    expect(gitAccessContinues(madeKey, refused, true)).toBe(false);
+    expect(gitAccessContinues(madeKey, { kind: "checking", since: checkedAt }, true)).toBe(false);
+    expect(gitAccessContinues(madeKey, accepted, true)).toBe(true);
+  });
+
+  it("waits for a computer that isn't connected, after a switch to the computer's key", () => {
+    expect(gitAccessContinues({ ...waiting, key: madeKey.key }, { kind: "idle" }, true)).toBe(
+      false,
     );
   });
 });

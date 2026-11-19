@@ -3,7 +3,8 @@ import type { QueryClient } from "@tanstack/react-query";
 
 import { commandLineState } from "./command-line.ts";
 import { gitAccessOptions } from "./git-access.ts";
-import { skippedCommandLine } from "./setup-skips.ts";
+import { type SetupStepKey, setupSteps } from "./onboarding.ts";
+import { rememberReached, skippedCommandLine } from "./setup-skips.ts";
 import { signedInOptions } from "./sign-in.ts";
 import type { TrpcProxy } from "./trpc.ts";
 
@@ -23,7 +24,12 @@ import type { TrpcProxy } from "./trpc.ts";
  *   (`signInEntry`).
  */
 
-/** The setup steps' pages, in order (Account is the sign-up form itself). */
+/**
+ * The pages setup sends a person to (Account is the sign-up form itself). `/welcome` is the way
+ * into setup: it opens Git access while that step is owed and sends anyone past it on
+ * (`welcomeEntry`). Each step's own page, which opens whatever the person has done, is in
+ * `STEP_PAGES`.
+ */
 export const SETUP_PATHS = {
   commandLine: "/welcome/command-line",
   gitAccess: "/welcome",
@@ -31,6 +37,109 @@ export const SETUP_PATHS = {
   organization: "/welcome/organization",
   firstProject: "/welcome/first-project",
 } as const;
+
+/**
+ * Each step's own page: the links beside the sheet, the phone's back arrow and each step's
+ * Continue open these. None of them sends a person on because the step is done, so going back to
+ * a step shows it with what was saved. Account has no page here: the account exists, and its page
+ * is sign-up.
+ */
+export const STEP_PAGES = {
+  cli: "/welcome/command-line",
+  git: "/welcome/git-access",
+  agent: "/welcome/agent-login",
+  organization: "/welcome/organization",
+  project: "/welcome/first-project",
+} as const satisfies Readonly<Record<Exclude<SetupStepKey, "account">, string>>;
+
+export type StepPage = (typeof STEP_PAGES)[keyof typeof STEP_PAGES];
+
+const pageOf = (key: SetupStepKey): StepPage | null => (key === "account" ? null : STEP_PAGES[key]);
+
+/**
+ * Where a step's Continue (and Skip for now) goes: the next step's own page, whether the person is
+ * there for the first time or came back to change something. First project has no next step: it
+ * opens Mend itself.
+ */
+export const nextStepPage = (
+  steps: ReadonlyArray<SetupStepKey>,
+  step: SetupStepKey,
+): StepPage | null => {
+  const next = steps[steps.indexOf(step) + 1];
+  return next === undefined ? null : pageOf(next);
+};
+
+/**
+ * On a phone, the header's back arrow: the step before this one, for every step after Command
+ * line (the step before Command line is Account, which has no page to go back to).
+ */
+export const previousStep = (
+  steps: ReadonlyArray<SetupStepKey>,
+  step: SetupStepKey,
+): { readonly key: SetupStepKey; readonly page: StepPage } | null => {
+  const index = steps.indexOf(step);
+  const previous = index > 0 ? steps[index - 1] : undefined;
+  if (previous === undefined) return null;
+  const page = pageOf(previous);
+  return page === null ? null : { key: previous, page };
+};
+
+/**
+ * A step beside the sheet: `done` or `skipped` once the person is past it, `current` for the page
+ * they are on, `left` for the furthest step they reached when they went back to an earlier one
+ * (where they left off, not finished yet), and `later` for a step they haven't reached.
+ */
+export type RailState = "done" | "skipped" | "current" | "left" | "later";
+
+export interface RailStep {
+  readonly key: SetupStepKey;
+  readonly state: RailState;
+  /** The step's page, for a step the person may go back to; null for Account and for steps not reached. */
+  readonly page: StepPage | null;
+}
+
+/**
+ * The steps beside the sheet. A step is past once it comes before the page the person is on or
+ * before the furthest step they reached (`reached`, which this browser remembers), so going back
+ * to Git access keeps Agent login and Organization as links. Past steps and the step the person
+ * left off at link to their pages; Account, the current step and steps not reached yet don't.
+ */
+export const railSteps = ({
+  steps,
+  step,
+  reached,
+  skipped,
+}: {
+  readonly steps: ReadonlyArray<SetupStepKey>;
+  readonly step: SetupStepKey;
+  readonly reached: SetupStepKey | null;
+  readonly skipped: ReadonlyArray<SetupStepKey>;
+}): ReadonlyArray<RailStep> => {
+  const current = steps.indexOf(step);
+  const furthest = Math.max(current, reached === null ? -1 : steps.indexOf(reached));
+  return steps.map((key, index) => {
+    const state: RailState =
+      index === current
+        ? "current"
+        : index > furthest
+          ? "later"
+          : index === furthest
+            ? "left"
+            : skipped.includes(key)
+              ? "skipped"
+              : "done";
+    return { key, state, page: state === "current" || state === "later" ? null : pageOf(key) };
+  });
+};
+
+/**
+ * Remembers in this browser that the person opened a step's page, so the steps beside the sheet
+ * keep the later steps they reached as links after they go back (`railSteps`).
+ */
+export const rememberStepReached = (
+  viewer: { readonly userId: string } & Parameters<typeof namesOrganization>[0],
+  step: SetupStepKey,
+): void => rememberReached(viewer.userId, setupSteps(namesOrganization(viewer)), step);
 
 /**
  * Git access is in place once the person has a Mend key, or chose their computer's key (only the

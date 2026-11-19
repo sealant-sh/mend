@@ -4,13 +4,10 @@ import { Button } from "@mend/ui/components/ui/button";
 import { Field, FieldDescription, FieldError, FieldLabel } from "@mend/ui/components/ui/field";
 import { Input } from "@mend/ui/components/ui/input";
 import { Spinner } from "@mend/ui/components/ui/spinner";
-import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useId, useState } from "react";
 
-import { savedAgentLine } from "#/lib/agent-login";
-import { accountNameOptions } from "#/lib/auth-client";
-import { savedModeLine } from "#/lib/git-access";
 import { nameDraft, renameRefusal } from "#/lib/organization-general";
 import { usePhone } from "#/lib/phone";
 import { failureWords } from "#/lib/refusal";
@@ -21,18 +18,12 @@ import {
   type SwitchAsk,
   switchStep,
 } from "#/lib/runtime-switch";
-import { hasAgentLogin, SETUP_PATHS } from "#/lib/setup";
+import { nextStepPage, STEP_PAGES } from "#/lib/setup";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 
 import { RuntimeList, SwitchDialog } from "./settings/runtime-page.tsx";
-import {
-  SectionTitle,
-  SetupActions,
-  SetupFrame,
-  skippedSteps,
-  useSetupProgress,
-} from "./setup-frame.tsx";
+import { SectionTitle, SetupActions, SetupFrame, useSetupProgress } from "./setup-frame.tsx";
 
 /** A failed save, as the Inline alert under the form says it. */
 interface SaveFailure {
@@ -55,14 +46,7 @@ export function OrganizationStep() {
   const ids = useId();
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
   const settings = useSuspenseQuery(trpc.organization.settings.queryOptions()).data;
-  const accountName = useSuspenseQuery(accountNameOptions()).data;
   const progress = useSetupProgress();
-  const access = useSuspenseQuery(trpc.git.access.queryOptions()).data;
-  // Read beside the page: until it answers, the steps name no agent.
-  const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
-  const logins = identity.isPending || identity.isError ? null : identity.data;
-  const skippedAgent = logins !== null && !hasAgentLogin(logins);
-  const agentLine = logins === null || skippedAgent ? "" : savedAgentLine(logins.accounts);
   const savedName = viewer.organization.name;
   const choices = runtimeChoices(settings.sessionRuntime);
   const offered = choices.kind === "offered" && choices.runtimes.length > 1 ? choices : null;
@@ -80,7 +64,8 @@ export function OrganizationStep() {
   const rename = useMutation(trpc.organization.rename.mutationOptions());
   const switchRuntime = useMutation(trpc.organization.setSessionRuntime.mutationOptions());
   const pending = rename.isPending || switchRuntime.isPending || checking;
-  const onward = () => void navigate({ to: SETUP_PATHS.firstProject });
+  const onward = () =>
+    void navigate({ to: nextStepPage(progress.steps, "organization") ?? STEP_PAGES.project });
 
   /** Saves the runtime the way the Runtime page does; false, with the alert shown, when refused. */
   const saveRuntime = async (
@@ -159,14 +144,9 @@ export function OrganizationStep() {
       title="Your organization"
       step="organization"
       steps={progress.steps}
-      saved={{
-        account: accountName,
-        ...progress.saved,
-        git: savedModeLine(access.mode),
-        agent: agentLine,
-      }}
-      skipped={skippedSteps(progress.skippedCli, skippedAgent)}
-      back={{ to: "/welcome/agent-login", label: "Back to Agent login" }}
+      saved={progress.saved}
+      skipped={progress.skipped}
+      reached={progress.reached}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         An organization is the people who share this Mend server's projects. You're its owner, and

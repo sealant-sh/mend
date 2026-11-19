@@ -21,9 +21,9 @@ import {
   initialAgent,
   refusedWords,
 } from "#/lib/agent-login";
-import { accountNameOptions } from "#/lib/auth-client";
-import { savedModeLine, waitedFor, whenSince } from "#/lib/git-access";
+import { waitedFor, whenSince } from "#/lib/git-access";
 import { usePhone } from "#/lib/phone";
+import { nextStepPage, STEP_PAGES } from "#/lib/setup";
 import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
@@ -34,7 +34,6 @@ import {
   SectionTitle,
   SetupActions,
   SetupFrame,
-  skippedSteps,
   useSetupProgress,
   WorksLine,
 } from "./setup-frame.tsx";
@@ -57,8 +56,6 @@ export function AgentLoginStep() {
   // that re-reads `platform.sealantIdentity` (lib/workbench-events.ts).
   useWorkbenchEvents();
   const identity = useSuspenseQuery(trpc.platform.sealantIdentity.queryOptions()).data;
-  const access = useSuspenseQuery(trpc.git.access.queryOptions()).data;
-  const accountName = useSuspenseQuery(accountNameOptions()).data;
   const progress = useSetupProgress();
   const [agent, setAgent] = useState<Agent>(() => initialAgent(identity.accounts));
   const [mode, setMode] = useState<Mode>("command");
@@ -69,19 +66,16 @@ export function AgentLoginStep() {
   const agentLabel = useId();
   // The first account names its organization before its first project.
   const onward = () =>
-    void navigate({
-      to: progress.steps.includes("organization")
-        ? "/welcome/organization"
-        : "/welcome/first-project",
-    });
+    void navigate({ to: nextStepPage(progress.steps, "agent") ?? STEP_PAGES.project });
 
   return (
     <SetupFrame
       title="Agent login"
       step="agent"
       steps={progress.steps}
-      saved={{ account: accountName, ...progress.saved, git: savedModeLine(access.mode) }}
-      skipped={skippedSteps(progress.skippedCli)}
+      saved={progress.saved}
+      skipped={progress.skipped}
+      reached={progress.reached}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         Sessions run on your own Claude Code or Codex account. Mend doesn't come with one. Each

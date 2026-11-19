@@ -20,11 +20,10 @@ import { CheckIcon, FolderGit2Icon, FolderSearchIcon, GithubIcon, SearchIcon } f
 import { useEffect, useId, useState } from "react";
 
 import type { AdoptionAttempt } from "#/lib/adoptions";
-import { agentLoginState, savedAgentLine } from "#/lib/agent-login";
+import { agentLoginState } from "#/lib/agent-login";
 import type { AdoptionProgressDto, ProjectDto } from "#/lib/api";
-import { accountNameOptions } from "#/lib/auth-client";
 import { type CloneState, cloneDetail } from "#/lib/clone-state";
-import { savedModeLine, waitedFor } from "#/lib/git-access";
+import { waitedFor } from "#/lib/git-access";
 import { usePhone } from "#/lib/phone";
 import {
   alreadyAdded,
@@ -53,7 +52,7 @@ import { GithubConnect } from "./github-connect.tsx";
 import { GithubOwnerChoice } from "./projects/github-owner-choice.tsx";
 import { MendKeyHelp } from "./projects/mend-key-help.tsx";
 import { RepositoryAddressField } from "./projects/repository-address.tsx";
-import { SetupActions, SetupFrame, skippedSteps, useSetupProgress } from "./setup-frame.tsx";
+import { SetupActions, SetupFrame, useSetupProgress } from "./setup-frame.tsx";
 
 type Visibility = ProjectDto["visibility"];
 type Source = "github" | "url";
@@ -78,8 +77,6 @@ export function FirstProjectStep() {
   const phone = usePhone();
   // The route's loader read these.
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
-  const access = useSuspenseQuery(trpc.git.access.queryOptions()).data;
-  const accountName = useSuspenseQuery(accountNameOptions()).data;
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   // Read beside the page.
   const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
@@ -99,7 +96,6 @@ export function FirstProjectStep() {
   const logins = identity.isPending || identity.isError ? null : identity.data;
   const memberCount = members.isPending || members.isError ? 0 : members.data.length;
   const skipped = logins !== null && !hasAgentLogin(logins);
-  const agentLine = logins === null || skipped ? "" : savedAgentLine(logins.accounts);
   const skippable = firstProjectSkippable(memberCount);
   const organizationName = viewer.organization.name;
   const home = phone ? "/new" : "/";
@@ -112,18 +108,9 @@ export function FirstProjectStep() {
       title="Add a project"
       step="project"
       steps={progress.steps}
-      saved={{
-        account: accountName,
-        ...progress.saved,
-        git: savedModeLine(access.mode),
-        agent: agentLine,
-      }}
-      skipped={skippedSteps(progress.skippedCli, skipped)}
-      back={
-        progress.steps.includes("organization")
-          ? { to: "/welcome/organization", label: "Back to Organization" }
-          : { to: "/welcome/agent-login", label: "Back to Agent login" }
-      }
+      saved={progress.saved}
+      skipped={progress.skipped}
+      reached={progress.reached}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         A project is a git repository you add to Mend. Mend clones it onto this server, and sessions

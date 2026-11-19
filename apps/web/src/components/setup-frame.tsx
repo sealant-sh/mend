@@ -4,15 +4,18 @@ import { Link } from "@tanstack/react-router";
 import { Check, ChevronLeft, CircleCheck, Minus } from "lucide-react";
 import { type ReactNode, useState, useSyncExternalStore } from "react";
 
+import { savedAgentLine } from "#/lib/agent-login";
+import { accountNameOptions } from "#/lib/auth-client";
 import { commandLineState } from "#/lib/command-line";
+import { savedModeLine } from "#/lib/git-access";
 import {
   SETUP_STEP_NAMES,
   type SetupStepKey,
   setupSteps,
   stepLine as stepLineOf,
 } from "#/lib/onboarding";
-import { namesOrganization } from "#/lib/setup";
-import { skippedCommandLine } from "#/lib/setup-skips";
+import { hasAgentLogin, namesOrganization, previousStep, railSteps } from "#/lib/setup";
+import { reachedStep, skippedCommandLine } from "#/lib/setup-skips";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 
@@ -51,91 +54,103 @@ export type SkippableStep = "cli" | "agent";
 /** Someone who joins from an invitation: five steps, no Organization. */
 export const JOINER_STEPS = setupSteps(false);
 
-/**
- * The signed-in person's setup steps, what the steps that aren't a page's own saved (the
- * organization's name, the computer the command line is signed in on), and whether they skipped
- * Command line. The root route has already read who is signed in; the devices are read beside
- * the page (`useWorkbenchEvents` reads them again when a computer signs in).
- */
-export const useSetupProgress = (): {
+/** What the steps beside the sheet need, for the signed-in person (`useSetupProgress`). */
+export interface SetupProgress {
   readonly steps: ReadonlyArray<SetupStepKey>;
   readonly userId: string;
-  readonly saved: Pick<SetupSaved, "organization" | "cli">;
+  /** What each step saved: the account's name, the computer, the Git access mode, the agent login, the organization's name. */
+  readonly saved: SetupSaved;
+  /** Steps the person skipped. A step only reads as skipped once the person is past it. */
+  readonly skipped: ReadonlyArray<SkippableStep>;
+  /** Whether this browser remembers the person skipping Command line, with no computer signed in since. */
   readonly skippedCli: boolean;
-} => {
+  /** The furthest step the person opened in this browser (`railSteps`). */
+  readonly reached: SetupStepKey | null;
+}
+
+/**
+ * The signed-in person's setup steps and what each saved, so every step's page draws the same
+ * steps beside the sheet, whichever step it is. The route's loader has read who is signed in and
+ * the account's name; the devices, Git access and agent logins are read beside the page
+ * (`useWorkbenchEvents` reads them again when something changes in a terminal).
+ */
+export const useSetupProgress = (): SetupProgress => {
   const trpc = useTRPC();
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
+  const accountName = useSuspenseQuery(accountNameOptions()).data;
   const devices = useQuery(trpc.devices.list.queryOptions());
+  const access = useQuery(trpc.git.access.queryOptions());
+  const identity = useQuery(trpc.platform.sealantIdentity.queryOptions());
+  const steps = setupSteps(namesOrganization(viewer));
+  // Read once: the route's loader remembered this page before it opened.
+  const [stored] = useState(() => reachedStep(viewer.userId));
   const [skipped] = useState(() => skippedCommandLine(viewer.userId));
-  // Until the list answers, or if it can't, no computer is named and nothing reads as skipped.
+  // Until a read answers, or if it can't, its step names nothing under it and nothing reads as
+  // skipped.
   const state = devices.isPending || devices.isError ? null : commandLineState(devices.data);
   const computer = state?.kind === "signed-in" ? state.computer : undefined;
+  const mode = access.isPending || access.isError ? null : access.data.mode;
+  const logins = identity.isPending || identity.isError ? null : identity.data;
+  const agentLogin = logins === null ? null : hasAgentLogin(logins);
+  // A computer that signed in since the skip makes it no longer a skip.
+  const skippedCli = skipped && state?.kind === "waiting";
   return {
-    steps: setupSteps(namesOrganization(viewer)),
+    steps,
     userId: viewer.userId,
     saved: {
+      account: accountName,
       organization: viewer.organization.name,
       ...(computer === undefined ? {} : { cli: computer }),
+      ...(mode === null ? {} : { git: savedModeLine(mode) }),
+      ...(logins !== null && agentLogin === true ? { agent: savedAgentLine(logins.accounts) } : {}),
     },
-    // A computer that signed in since the skip makes it no longer a skip.
-    skippedCli: skipped && state?.kind === "waiting",
+    skipped: [
+      ...(skippedCli ? (["cli"] as const) : []),
+      ...(agentLogin === false ? (["agent"] as const) : []),
+    ],
+    skippedCli,
+    reached: steps.find((key) => key === stored) ?? null,
   };
 };
 
-/** The steps a person skipped, from what each page knows. */
-export const skippedSteps = (
-  skippedCli: boolean,
-  skippedAgent = false,
-): ReadonlyArray<SkippableStep> => [
-  ...(skippedCli ? (["cli"] as const) : []),
-  ...(skippedAgent ? (["agent"] as const) : []),
-];
-
 const NO_SKIPS: ReadonlyArray<SkippableStep> = [];
+
+/** What a screen reader hears after a step's name, for a step that is a link. */
+const LINK_WORDS = { done: "done", skipped: "skipped", left: "not finished" } as const;
 
 /**
  * The person's setup steps beside the sheet: earlier ones checked, with what they saved under
- * them, or a dash and "Skipped" for one the person skipped; the current one marked.
+ * them, or a dash and "Skipped" for one the person skipped; the current one marked. Each step the
+ * person is past, and the step they left off at when they went back, is a link to its page
+ * (`railSteps`); Account, the current step and steps not reached yet are not.
  */
 export function SetupSteps({
   steps,
   step,
   saved = NOTHING_SAVED,
   skipped = NO_SKIPS,
+  reached = null,
 }: {
   readonly steps: ReadonlyArray<SetupStepKey>;
   readonly step: SetupStepKey;
   readonly saved?: SetupSaved | undefined;
   readonly skipped?: ReadonlyArray<SkippableStep> | undefined;
+  readonly reached?: SetupStepKey | null | undefined;
 }) {
-  const current = steps.indexOf(step);
   return (
     <ol aria-label="Setup steps" className="grid text-sm leading-snug">
-      {steps.map((key, index) => {
+      {railSteps({ steps, step, reached, skipped }).map(({ key, state, page }, index) => {
         const name = SETUP_STEP_NAMES[key];
-        const number = index + 1;
-        const state =
-          index < current
-            ? skipped.some((skip) => skip === key)
-              ? "skipped"
-              : "done"
-            : index === current
-              ? "current"
-              : "later";
+        const past = state === "done" || state === "skipped";
         const savedLine =
           state === "skipped" ? "Skipped" : state === "done" ? saved[key] : undefined;
-        return (
-          <li
-            key={key}
-            aria-current={state === "current" ? "step" : undefined}
-            className="relative flex items-start gap-3 pb-5 last:pb-0 not-last:after:absolute not-last:after:top-7 not-last:after:bottom-1 not-last:after:left-[11.5px] not-last:after:w-px not-last:after:bg-border"
-          >
+        const body = (
+          <>
             <span
               className={cn(
                 "grid size-6 flex-none place-items-center rounded-full border text-xs font-medium",
                 state === "current" && "border-primary bg-primary text-primary-foreground",
-                (state === "done" || state === "skipped") &&
-                  "border-input bg-background text-foreground",
+                (past || state === "left") && "border-input bg-background text-foreground",
                 state === "later" && "border-border bg-background text-muted-foreground",
               )}
             >
@@ -144,7 +159,7 @@ export function SetupSteps({
               ) : state === "skipped" ? (
                 <Minus aria-hidden className="size-3.5" />
               ) : (
-                number
+                index + 1
               )}
             </span>
             <span className="grid min-w-0 gap-0.5 pt-0.5">
@@ -155,14 +170,45 @@ export function SetupSteps({
                 )}
               >
                 {name}
-                {state === "done" || state === "skipped" ? (
-                  <span className="sr-only"> ({state})</span>
+                {state === "done" || state === "skipped" || state === "left" ? (
+                  <span className="sr-only">, {LINK_WORDS[state]}</span>
                 ) : null}
               </span>
               {savedLine === undefined || savedLine === "" ? null : (
-                <span className="truncate text-xs text-muted-foreground">{savedLine}</span>
+                <span
+                  id={`setup-step-${key}-saved`}
+                  className="truncate text-xs text-muted-foreground"
+                >
+                  {savedLine}
+                </span>
               )}
             </span>
+          </>
+        );
+        return (
+          <li
+            key={key}
+            aria-current={state === "current" ? "step" : undefined}
+            className="relative pb-5 last:pb-0 not-last:after:absolute not-last:after:top-7 not-last:after:bottom-1 not-last:after:left-[11.5px] not-last:after:w-px not-last:after:bg-border"
+          >
+            {page === null ? (
+              <div className="flex items-start gap-3">{body}</div>
+            ) : (
+              // The kit's sidebar row: the same hover and focus ring, the step where it was.
+              <Link
+                to={page}
+                // Named "Git access, done"; what the step saved is its description.
+                aria-label={`${name}, ${LINK_WORDS[state === "skipped" || state === "left" ? state : "done"]}`}
+                aria-describedby={
+                  savedLine === undefined || savedLine === ""
+                    ? undefined
+                    : `setup-step-${key}-saved`
+                }
+                className="-m-1.5 flex items-start gap-3 rounded-md p-1.5 ring-sidebar-ring outline-hidden hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2"
+              >
+                {body}
+              </Link>
+            )}
           </li>
         );
       })}
@@ -176,7 +222,7 @@ export function SetupFrame({
   steps = JOINER_STEPS,
   saved,
   skipped,
-  back,
+  reached,
   banner,
   children,
 }: {
@@ -190,21 +236,16 @@ export function SetupFrame({
   readonly saved?: SetupSaved;
   /** Steps before this one the person skipped (`SetupSteps`). */
   readonly skipped?: ReadonlyArray<SkippableStep> | undefined;
-  /** On a phone, the step before this one, as a back arrow in the header. */
-  readonly back?: {
-    readonly to:
-      | "/welcome/command-line"
-      | "/welcome"
-      | "/welcome/agent-login"
-      | "/welcome/organization";
-    readonly label: string;
-  };
+  /** The furthest step the person reached (`SetupSteps`). */
+  readonly reached?: SetupStepKey | null | undefined;
   /** A state that affects the whole page (a `Banner`), across the top of the sheet. */
   readonly banner?: ReactNode;
   readonly children: ReactNode;
 }) {
   const host = useServerHost();
   const stepLine = step === undefined ? null : stepLineOf(steps, step);
+  // On a phone, where the steps aren't beside the sheet, the step before this one.
+  const back = step === undefined ? null : previousStep(steps, step);
   return (
     <div className="flex min-h-dvh bg-background lg:bg-canvas lg:p-sheet-inset">
       <div className="hidden w-sidebar shrink-0 flex-col gap-8 px-3 pt-3 lg:flex">
@@ -213,7 +254,7 @@ export function SetupFrame({
           <p className="text-row text-muted-foreground">{host}</p>
         </div>
         {step === undefined ? null : (
-          <SetupSteps steps={steps} step={step} saved={saved} skipped={skipped} />
+          <SetupSteps steps={steps} step={step} saved={saved} skipped={skipped} reached={reached} />
         )}
       </div>
       <main className="flex min-w-0 flex-1 flex-col bg-background lg:overflow-hidden lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
@@ -221,10 +262,10 @@ export function SetupFrame({
             sheet, then the column with the heading in it. */}
         {banner === undefined ? null : <div className="order-2 lg:order-1">{banner}</div>}
         <header className="relative order-1 flex min-h-14 flex-col items-center justify-center border-b px-4 py-2 text-center lg:order-2 lg:mx-auto lg:min-h-0 lg:w-full lg:max-w-140 lg:items-start lg:border-0 lg:px-5 lg:pt-16 lg:pb-0 lg:text-left">
-          {back === undefined ? null : (
+          {back === null ? null : (
             <Link
-              to={back.to}
-              aria-label={back.label}
+              to={back.page}
+              aria-label={`Back to ${SETUP_STEP_NAMES[back.key]}`}
               className="absolute top-1/2 left-1 grid size-11 -translate-y-1/2 place-items-center rounded-lg text-foreground focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none lg:hidden"
             >
               <ChevronLeft aria-hidden className="size-5" />

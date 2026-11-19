@@ -2,7 +2,7 @@ import { createFileRoute, redirect } from "@tanstack/react-router";
 
 import { OrganizationStep } from "#/components/organization-step";
 import { accountNameOptions } from "#/lib/auth-client";
-import { gitAccessChosen, namesOrganization, SETUP_PATHS } from "#/lib/setup";
+import { gitAccessChosen, namesOrganization, rememberStepReached, SETUP_PATHS } from "#/lib/setup";
 import { signedInOptions } from "#/lib/sign-in";
 
 /**
@@ -24,6 +24,7 @@ export const Route = createFileRoute("/welcome/organization")({
     ]);
     if (!gitAccessChosen(access)) throw redirect({ href: SETUP_PATHS.gitAccess });
     if (!namesOrganization(viewer)) throw redirect({ href: SETUP_PATHS.firstProject });
+    rememberStepReached(viewer, "organization");
   },
   component: OrganizationStep,
 });
