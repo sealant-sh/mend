@@ -390,6 +390,30 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/workspace-services.ts`, `apps/web/src/lib/previews.ts`,
   `apps/web/src/server/routers/services.ts`
 
+### session-page.new-web-checks
+
+- **Map:** none in a feature file: the checks the agent ran were a section of the old app's side
+  panel, and are the Checks view in the new web app (SLNT-1157)
+- **Needs:** either; one Codex turn; web and CLI; `<p>`
+- **Do:** Drive the recipe `new-web-checks-box` (`pnpm verify drive new-web --box`): it starts a
+  Codex session on `verify-fixture` that writes three scripts, runs a test twice, a typecheck, a
+  lint that fails and `ls`, then edits README.md; it opens `/sessions/<id>/checks`, the tile's "+",
+  and 390px, then lays fixtures over that session's record reads: earlier history unread with a
+  check Claude ran through Bash, an empty record, the record being read, and a failed read with Try
+  again; then it stops the session. Locally, the CLI batch `new-web-checks-sessions.json` (a `sleep`
+  session in `checks-ws`) and the recipe `new-web-checks` draw the same states from fixtures alone.
+- **See:** each step's note in the recipe's `steps.log`: the Checks tab showing with its fact ("1
+  failed"), one row per command, newest first, `ls` not among them and the test once, each with what
+  it is, how it ended and the checkpoint it ran after ("Lint failed after checkpoint N"), the
+  command, Codex's exit code and how long it took; "No check ran after the last edit."; Checks
+  between Change and Preview in the "+" menu; no sideways scroll at 390px. From the fixtures:
+  Claude's run reading "The record doesn't hold how it ended.", Read earlier history, the empty
+  line, "Reading the record…", and "This didn't load." with Try again bringing the list back.
+- **Mode:** `scripted` (recipes/new-web-checks-box.mjs, recipes/new-web-checks.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/views/checks-view.tsx`, `apps/web/src/lib/checks.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`
