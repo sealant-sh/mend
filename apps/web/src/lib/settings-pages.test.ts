@@ -149,7 +149,7 @@ describe("old settings addresses", () => {
     ["/settings/workspace", "/settings/connected-apps"],
     ["/settings/sealant", "/settings/server"],
     ["/settings/instance/exposure", "/settings/server"],
-    ["/settings/organization/defaults", "/settings/organization"],
+    ["/settings/organization/defaults", "/settings/organization/runtime"],
     ["/settings/organization/invitations", "/settings/organization/members"],
     ["/settings/organization/environment", "/settings/organization/workspace-image"],
     ["/settings/organization/slack", "/settings/organization/integrations"],
@@ -179,6 +179,25 @@ describe("old settings addresses", () => {
   ])("the old page's %s opens %s", (anchor, now) => {
     expect(oldAnchorPath(anchor)).toBe(now);
     expect(pageAt(now)).not.toBeNull();
+  });
+
+  // The old app kept where new sessions run on Defaults (`/settings/organization/defaults`, the
+  // single page's `#organization-defaults`) and the starting image on Environment
+  // (`/settings/organization/environment`, `#organization-environment`), which had no runtime
+  // section. Each lands on its one page now, for owners and members alike.
+  it("sends the old runtime links to Runtime and the old environment links to Workspace image", () => {
+    expect(oldAnchorPath("#organization-defaults")).toBe("/settings/organization/runtime");
+    expect(oldAnchorPath("#organization-environment")).toBe(
+      "/settings/organization/workspace-image",
+    );
+    for (const viewer of [owner, member]) {
+      expect(laterSettingsTarget("/settings/organization/defaults", viewer)).toBe(
+        "/settings/organization/runtime",
+      );
+      expect(laterSettingsTarget("/settings/organization/environment/", viewer)).toBe(
+        "/settings/organization/workspace-image",
+      );
+    }
   });
 
   it("stays on Settings for no anchor or one the old page never had", () => {

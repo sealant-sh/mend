@@ -264,7 +264,8 @@ const OLD_PATHS: Readonly<Record<string, string>> = {
   "/settings/instance/environment": "/settings/server",
   "/settings/instance/defaults": "/settings/server",
   "/settings/instance/exposure": "/settings/server",
-  "/settings/organization/defaults": "/settings/organization",
+  // The old Defaults page held only where new sessions run once automation became each person's.
+  "/settings/organization/defaults": "/settings/organization/runtime",
   "/settings/organization/invitations": "/settings/organization/members",
   "/settings/organization/environment": "/settings/organization/workspace-image",
   "/settings/organization/slack": "/settings/organization/integrations",
@@ -314,7 +315,7 @@ const OLD_ANCHORS: Readonly<Record<string, string>> = {
   executor: "/settings/connected-apps",
   members: "/settings/organization/members",
   invitations: "/settings/organization/members",
-  "organization-defaults": "/settings/organization",
+  "organization-defaults": "/settings/organization/runtime",
   "organization-environment": "/settings/organization/workspace-image",
   slack: "/settings/organization/integrations",
   "slack-remove": "/settings/organization/integrations",
