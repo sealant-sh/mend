@@ -294,7 +294,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       "Mend folded this file because a tool generated it. You rarely need to read it.",
     ),
   ).waitFor();
-  await visible(page.getByText("37 files changed. Mend folds generated files.")).waitFor();
+  await visible(page.getByRole("heading", { name: "Files 0 of 37 viewed" })).waitFor();
   await section("docs/README.md").getByText("Renamed", { exact: true }).waitFor();
   await section("public/og/checkout.png").getByText("Binary", { exact: true }).waitFor();
   note("big change: 37 files; pnpm-lock.yaml folded as generated; README renamed; the png binary");
