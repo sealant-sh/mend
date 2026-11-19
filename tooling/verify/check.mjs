@@ -1,6 +1,15 @@
-import { spawn } from "node:child_process";
-import { createWriteStream, existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+} from "node:fs";
 import { connect } from "node:net";
+import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
 
 import { changedFiles, computePlan } from "./plan.mjs";
@@ -20,10 +29,18 @@ import { atRisk, readFileTimes, summarizeRisk } from "./timing.mjs";
 // CI_TEST_REPORT_DIR set, so every Vitest package and node --test suite writes the JSON report CI
 // reads (tooling/test-ci, scripts/ci-test-report.mjs); skipped tests are read from those reports.
 
+// Agent skills: the verify skill (recipes, feature notes, its scripts), the box run's flows.md and
+// the model-checking skills. turbo.json makes the verify skill an input of every package's test
+// task, so CI's shared cache never serves a test result from before a verify script changed. No
+// package's tests read a file here, so the gate leaves these files out when it asks turbo which
+// packages a change reaches; otherwise every route PR's recipe ran every package's tests.
+const AGENTS = ".agents/";
+
 /** The node --test files a change asks for: changed tests, and the tests beside changed scripts. */
 export const scriptTests = (root, files) => {
   const tests = new Set();
-  const roots = ["scripts/", "tooling/verify/", ".agents/skills/verify/scripts/"];
+  // .agents/ holds the verify skill's scripts and recipes; a test beside any of them runs.
+  const roots = ["scripts/", "tooling/verify/", AGENTS];
   for (const file of files) {
     if (!roots.some((prefix) => file.startsWith(prefix)) || !file.endsWith(".mjs")) continue;
     if (file.startsWith("tooling/verify/")) {
@@ -110,6 +127,84 @@ const turboTasks = (log) => {
   const text = existsSync(log) ? readFileSync(log, "utf8") : "";
   const total = /Tasks:\s+(\d+) successful, (\d+) total/.exec(text);
   return total ? `${total[2]} test tasks` : "test task count unknown";
+};
+
+/** The packages whose tests turbo ran, read from its task prefixes (`@mend/web:test: …`). */
+export const testedPackages = (log) => {
+  const text = existsSync(log) ? readFileSync(log, "utf8") : "";
+  return [...new Set([...text.matchAll(/^(\S+):test: /gm)].map((match) => match[1]))].toSorted();
+};
+
+/**
+ * A commit holding HEAD's tree with everything under .agents/ as it was at the merge base, so the
+ * diff turbo reads from the merge base is the change without .agents/. It is written only to the
+ * object store (a temporary index, no ref), and git collects it later.
+ */
+const commitWithoutAgents = (root, { sha, mergeBase }) => {
+  const scratch = mkdtempSync(join(tmpdir(), "mend-verify-scope-"));
+  try {
+    const env = {
+      ...process.env,
+      GIT_INDEX_FILE: join(scratch, "index"),
+      GIT_AUTHOR_NAME: "verify check",
+      GIT_AUTHOR_EMAIL: "verify-check@localhost",
+      GIT_COMMITTER_NAME: "verify check",
+      GIT_COMMITTER_EMAIL: "verify-check@localhost",
+    };
+    const git = (args) =>
+      execFileSync("git", args, {
+        cwd: root,
+        env,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      }).trim();
+    git(["read-tree", sha]);
+    git(["reset", "-q", mergeBase, "--", AGENTS]);
+    const tree = git(["write-tree"]);
+    return git(["commit-tree", "--no-gpg-sign", tree, "-p", mergeBase, "-m", "verify check scope"]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+};
+
+/**
+ * What the test step asks turbo for, and why, in words. Only a change with files under .agents/
+ * departs from plain `--affected`, and only when the tree is clean: turbo always adds uncommitted
+ * changes to the diff it reads, and a gate on a dirty tree counts for no receipt anyway. Anything
+ * that goes wrong keeps plain `--affected`, which runs more, never less.
+ */
+export const testScope = (root, { head, files, all }) => {
+  if (all) return { reason: "--all asks for every package's tests" };
+  if (head.mergeBase === null)
+    return { reason: `turbo --affected from its default base: no merge base with ${head.base}` };
+  const from = `turbo --affected from the merge base ${head.mergeBase.slice(0, 10)}`;
+  const agents = files.filter((file) => file.startsWith(AGENTS)).length;
+  if (agents === 0) return { reason: from };
+  const kept = `${from}, ${agents} files under ${AGENTS} included`;
+  if (head.dirty)
+    return { reason: `${kept}: the tree has uncommitted changes, which turbo always reads` };
+  try {
+    return {
+      scmHead: commitWithoutAgents(root, head),
+      reason: `${from}, leaving out ${agents} files under ${AGENTS} (no package's tests read them)`,
+    };
+  } catch (error) {
+    const why = String(error?.stderr ?? error?.message ?? error)
+      .trim()
+      .split("\n")[0];
+    return { reason: `${kept}: the commit without them could not be built (${why})` };
+  }
+};
+
+/** The one line the test step's result gives: which packages ran, then why. */
+export const scopeLine = (packages, reason) => {
+  const ran =
+    packages.length === 0
+      ? "no package's tests"
+      : packages.length <= 6
+        ? `tests of ${packages.join(", ")}`
+        : `tests of ${packages.length} packages`;
+  return `ran ${ran}: ${reason}`;
 };
 
 /** Runs the gate. `runner` is injectable so the skip rule can be tested on fixture reports. */
@@ -199,7 +294,14 @@ export const runCheck = async (
             detail: `No Postgres at ${new URL(postgresUrl(env)).host}; the package tests need one (DEVELOPMENT.md, Tests)`,
           };
         }
-        const code = await runner(root, "pnpm", testArgs, { env: testEnv, log: logOf("tests") });
+        const scope = testScope(root, { head, files, all });
+        const code = await runner(root, "pnpm", testArgs, {
+          env:
+            scope.scmHead === undefined ? testEnv : { ...testEnv, TURBO_SCM_HEAD: scope.scmHead },
+          log: logOf("tests"),
+        });
+        const ran = scopeLine(testedPackages(logOf("tests")), scope.reason);
+        process.stderr.write(`verify check: ${ran}\n`);
         let nodeCode = 0;
         if (nodeTests.length > 0) {
           nodeCode = await runner(
@@ -236,7 +338,9 @@ export const runCheck = async (
         return {
           status: failed ? "failed" : unallowed.length > 0 ? "skipped" : "passed",
           log: relLog(root, logOf("tests")),
+          scope: ran,
           detail: [
+            ran,
             `turbo exit ${code}, ${turboTasks(logOf("tests"))}`,
             nodeTests.length > 0 ? `node --test ${nodeTests.length} files exit ${nodeCode}` : null,
             `${skipped.length} skipped, ${unallowed.length} not allowed to skip`,

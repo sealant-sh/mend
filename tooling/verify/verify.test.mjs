@@ -127,6 +127,118 @@ test("the pre-PR gate fails when verify recipe lint fails", async (t) => {
   assert.match(lint.command, /oxlint --deny-warnings \.agents\/skills\/verify\/recipes/);
 });
 
+// Runs the gate with a stand-in turbo that prints the given packages' task prefixes, and returns
+// what it was asked: the files in the diff turbo reads (TURBO_SCM_BASE to TURBO_SCM_HEAD, or the
+// whole change when the gate sets no head), the node --test files, and the test step.
+const gateScope = async ({ root, git }, packages) => {
+  const calls = { turbo: undefined, node: [], oxlint: false };
+  const runner = async (_root, command, args, { env, log }) => {
+    if (command === "pnpm" && args.includes("test")) {
+      calls.turbo = { base: env.TURBO_SCM_BASE, head: env.TURBO_SCM_HEAD };
+      mkdirSync(dirname(log), { recursive: true });
+      writeFileSync(log, packages.map((name) => `${name}:test: cache bypass\n`).join(""));
+    }
+    if (command === "node") calls.node = args.filter((arg) => arg.endsWith(".test.mjs"));
+    if (args.includes("oxlint")) calls.oxlint = true;
+    return 0;
+  };
+  const result = await runVerb(root, "check", options({ env: noPostgres, runner }));
+  const { base, head } = calls.turbo;
+  const diffed = git("diff", "--name-only", base, ...(head ? [head] : []))
+    .split("\n")
+    .filter(Boolean);
+  const tests = result.steps.find((step) => step.id === "tests");
+  return { ...calls, diffed, tests, mergeBase: git("rev-parse", "main") };
+};
+
+test("a route PR's recipe beside one app's source asks turbo about the app alone", async (t) => {
+  const world = fixture(t);
+  world.write(".agents/skills/verify/recipes/new-web-thing.mjs");
+  world.write(".agents/skills/verify/recipes/new-web-thing.test.mjs");
+  world.commit("apps/web/src/routes/thing.tsx");
+  const run = await gateScope(world, ["@mend/web"]);
+  assert.deepEqual(run.diffed, ["apps/web/src/routes/thing.tsx"]);
+  assert.equal(run.turbo.base, run.mergeBase);
+  assert.equal(run.oxlint, true, "the recipes are still linted");
+  assert.deepEqual(run.node, [".agents/skills/verify/recipes/new-web-thing.test.mjs"]);
+  assert.equal(run.tests.status, "passed");
+  assert.equal(
+    run.tests.scope,
+    `ran tests of @mend/web: turbo --affected from the merge base ${run.mergeBase.slice(0, 10)}, ` +
+      "leaving out 2 files under .agents/ (no package's tests read them)",
+  );
+  assert.ok(run.tests.detail.startsWith(run.tests.scope), run.tests.detail);
+  // The commit turbo reads is the change's own tree with .agents/ as it was at the merge base.
+  assert.equal(world.git("rev-parse", `${run.turbo.head}^`), run.mergeBase);
+  assert.equal(
+    world.git("rev-parse", `${run.turbo.head}:apps/web/src/routes/thing.tsx`),
+    world.git("rev-parse", "HEAD:apps/web/src/routes/thing.tsx"),
+  );
+});
+
+test("a change only to the box run's flows asks turbo about no package", async (t) => {
+  const world = fixture(t);
+  world.write(".agents/skills/box-main-run/flows.md", "# Flows\n");
+  world.commit(".agents/skills/verify/features/thing.md");
+  const run = await gateScope(world, []);
+  assert.deepEqual(run.diffed, []);
+  assert.match(run.tests.scope, /^ran no package's tests: .*leaving out 2 files under \.agents\//);
+});
+
+test("a root config every package depends on still reaches turbo, alone or beside a recipe", async (t) => {
+  const alone = fixture(t);
+  alone.commit("pnpm-lock.yaml");
+  const run = await gateScope(alone, ["@mend/api-server", "@mend/db", "@mend/web", "mend"]);
+  assert.equal(run.turbo.head, undefined, "no .agents/ files: plain --affected, as before");
+  assert.deepEqual(run.diffed, ["pnpm-lock.yaml"]);
+  assert.equal(
+    run.tests.scope,
+    "ran tests of @mend/api-server, @mend/db, @mend/web, mend: " +
+      `turbo --affected from the merge base ${run.mergeBase.slice(0, 10)}`,
+  );
+
+  const beside = fixture(t);
+  beside.write(".agents/skills/verify/recipes/new-web-thing.mjs");
+  beside.commit("tooling/typescript/base.json");
+  const many = Array.from({ length: 32 }, (_, index) => `@mend/package-${index}`);
+  const both = await gateScope(beside, many);
+  assert.deepEqual(both.diffed, ["tooling/typescript/base.json"]);
+  assert.match(both.tests.scope, /^ran tests of 32 packages: /);
+});
+
+test("a mixed change hands turbo every file outside .agents/, and a dirty tree hands it all", async (t) => {
+  const world = fixture(t);
+  for (const path of [
+    ".agents/skills/verify/recipes/new-web-thing.mjs",
+    ".agents/skills/verify/features/thing.md",
+    ".agents/skills/verify/SKILL.md",
+    ".agents/skills/box-main-run/flows.md",
+    "packages/ui/src/button.tsx",
+    "apps/api/src/thing.ts",
+    ".oxlintrc.json",
+  ])
+    world.write(path, `${path}\n`);
+  world.commit("deploy/docker/Caddyfile");
+  const run = await gateScope(world, ["@mend/ui"]);
+  assert.deepEqual(run.diffed, [
+    ".oxlintrc.json",
+    "apps/api/src/thing.ts",
+    "deploy/docker/Caddyfile",
+    "packages/ui/src/button.tsx",
+  ]);
+  assert.match(run.tests.scope, /leaving out 4 files under \.agents\//);
+
+  // Turbo reads uncommitted changes whatever head it is given, so a dirty tree keeps them all.
+  world.write("apps/web/src/draft.ts");
+  const dirty = await gateScope(world, ["@mend/ui"]);
+  assert.equal(dirty.turbo.head, undefined);
+  assert.ok(dirty.diffed.includes(".agents/skills/verify/SKILL.md"), dirty.diffed.join(" "));
+  assert.match(
+    dirty.tests.scope,
+    /4 files under \.agents\/ included: the tree has uncommitted changes, which turbo always reads$/,
+  );
+});
+
 test("statuses roll up worst first and map to the shared exit codes", () => {
   assert.equal(rollUp(["passed", "skipped", "requires_external_observer"]), "skipped");
   assert.equal(rollUp(["skipped", "blocked_by_prerequisite"]), "blocked_by_prerequisite");
