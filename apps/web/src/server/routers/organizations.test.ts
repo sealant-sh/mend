@@ -144,3 +144,57 @@ describe("organizations router: creating an organization", () => {
     });
   });
 });
+
+const rename = (apiUrl: string, name: string) =>
+  createTrpcHandler({ network, apiUrl })(
+    new Request("http://internal-web.invalid/trpc/organization.rename", {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ json: { name } }),
+    }),
+  );
+
+describe("organization router: an owner renames the organization", () => {
+  let api: Awaited<ReturnType<typeof startApi>> | null = null;
+  beforeEach(() => {
+    api = null;
+  });
+  afterEach(async () => {
+    await api?.close();
+  });
+
+  it("sends the name to the API and answers the renamed organization", async () => {
+    api = await startApi({
+      "/api/organization/name": { status: 200, body: { ...engine, name: "Engine Labs" } },
+    });
+    const response = await rename(api.apiUrl, "Engine Labs");
+
+    expect(api.requests).toEqual([
+      {
+        method: "PUT",
+        path: "/api/organization/name",
+        body: JSON.stringify({ name: "Engine Labs" }),
+      },
+    ]);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      result: { data: { json: { id: engine.id, name: "Engine Labs" } } },
+    });
+  });
+
+  it("a refused name reaches the page by its tag, with the server's sentence", async () => {
+    const words = "Organization names are at most 64 characters.";
+    api = await startApi({
+      "/api/organization/name": {
+        status: 422,
+        body: { _tag: "OrganizationNameNotAllowed", message: words },
+      },
+    });
+    const response = await rename(api.apiUrl, "x".repeat(65));
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({
+      error: { json: { message: words, data: { tag: "OrganizationNameNotAllowed" } } },
+    });
+  });
+});

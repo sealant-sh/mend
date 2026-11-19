@@ -151,6 +151,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.createInvitation",
   "organization.revokeInvitation",
   // Owner actions on the caller's own organization: organization.test.ts and member-removal.test.ts.
+  "organization.rename",
   "organization.removeMember",
   "organization.setMemberRole",
   "organization.orphanedProjects",

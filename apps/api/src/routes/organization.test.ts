@@ -6,6 +6,7 @@ import {
   InstanceRolesRepo,
   InvitationUnknownError,
   LastOwnerError,
+  OrganizationNameTakenError,
   OrganizationSettingsRepo,
   OrganizationsRepo,
   ProjectMountsRepo,
@@ -114,6 +115,14 @@ const organizationsLayer = Layer.mock(OrganizationsRepo, {
     return Effect.succeed(role === undefined ? null : { organization: acme, role, joinedAt: NOW });
   },
   memberCount: () => Effect.succeed(2),
+  // Globex is taken, in any letter case.
+  rename: (id, name) =>
+    name.toLowerCase() === "globex"
+      ? Effect.fail(new OrganizationNameTakenError({ name }))
+      : Effect.sync(() => {
+          writes.push(`rename:${id}:${name}`);
+          return new Organization({ ...acme, id, name });
+        }),
   roleOf: (organizationId, userId) =>
     Effect.succeed(
       organizationId === globex.id
@@ -554,6 +563,68 @@ describe("organization routes (docs/adr/0003)", () => {
     expect(JSON.stringify(body)).not.toContain("bound@example.invalid");
     const unknown = await preview("nope");
     expect(unknown.status).toBe(404);
+  });
+});
+
+describe("an owner renames their organization (route PR 45, S15)", () => {
+  const rename = (user: string, name: string) =>
+    call(user, "/api/organization/name", { method: "PUT", body: JSON.stringify({ name }) });
+
+  it("renames the owner's own organization, trimmed, and records it as the operator's rename does", async () => {
+    const renamed = await rename("alice", "  Acme Labs  ");
+    expect(renamed.status).toBe(200);
+    await expect(renamed.json()).resolves.toMatchObject({ id: acme.id, name: "Acme Labs" });
+    expect({ writes, audited }).toEqual({
+      writes: [`rename:${acme.id}:Acme Labs`],
+      audited: [
+        {
+          organizationId: acme.id,
+          actorUserId: "alice",
+          action: "organization.renamed",
+          subjectType: "organization",
+          subjectId: acme.id,
+          data: { name: "Acme Labs" },
+        },
+      ],
+    });
+  });
+
+  it("renames only the caller's active organization", async () => {
+    expect((await rename("gina", "Globex Labs")).status).toBe(200);
+    expect(writes).toEqual([`rename:${globex.id}:Globex Labs`]);
+  });
+
+  it("refuses a member as 404, before anything is written or recorded", async () => {
+    const refused = await rename("carol", "Carol's Acme");
+    expect(refused.status).toBe(404);
+    expect({ writes, audited }).toEqual({ writes: [], audited: [] });
+  });
+
+  it("refuses each name the create rules refuse, with its own tag for the field", async () => {
+    const answers = [
+      await rename("alice", "   "),
+      await rename("alice", "a".repeat(65)),
+      await rename("alice", "Acme\u0007"),
+      await rename("alice", "GLOBEX"),
+    ];
+    const bodies = await Promise.all(answers.map((answer) => answer.json()));
+    expect({
+      statuses: answers.map((answer) => answer.status),
+      tags: bodies.map((body: { _tag: string }) => body._tag),
+    }).toEqual({
+      statuses: [422, 422, 422, 409],
+      tags: [
+        "OrganizationNameEmpty",
+        "OrganizationNameNotAllowed",
+        "OrganizationNameNotAllowed",
+        "OrganizationNameTaken",
+      ],
+    });
+    expect(bodies[3]).toMatchObject({
+      name: "GLOBEX",
+      message: "There's already an organization called GLOBEX. Pick another name.",
+    });
+    expect({ writes, audited }).toEqual({ writes: [], audited: [] });
   });
 });
 

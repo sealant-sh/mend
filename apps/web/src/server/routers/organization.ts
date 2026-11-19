@@ -4,6 +4,7 @@ import {
   MemberRoleRequest,
   OrganizationSessionRuntimeRequest,
   OrganizationWorkspaceEnvironmentRequest,
+  RenameOrganizationRequest,
 } from "@mend/api-contracts";
 import { InvitationId, OrganizationSettings, ProjectId, SessionRuntime } from "@mend/domain";
 import { Schema } from "effect";
@@ -17,6 +18,10 @@ export const organizationRouter = router({
   resourceArchives: procedure.query(({ ctx }) =>
     run(ctx, (api) => api.organization.resourceArchives()),
   ),
+  // Owners only: the same name rules as creating one; a refused name reaches the page by its tag.
+  rename: procedure
+    .input(input(RenameOrganizationRequest))
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.organization.rename({ payload }))),
   members: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.members())),
   invitations: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.invitations())),
   createInvitation: procedure
