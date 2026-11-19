@@ -33,6 +33,8 @@ type Service = (typeof ExecutorServiceDirectory.Type.services)[number];
 type Requirement = typeof ExecutorServiceRequirement.Type;
 type Method = Requirement["methods"][number];
 type Connection = typeof ExecutorServiceConnection.Type;
+/** Whose services: a person's own link, or the organization's shared account (Mend's member). */
+type Target = "person" | "member";
 
 /** A control's height: 32px beside a row on the desk, a 44px touch target on a phone. */
 const touch = (phone: boolean) => (phone ? "touch" : "default");
@@ -89,7 +91,16 @@ export function ExecutorServicesSection() {
       </SettingSection>
     );
   }
-  return <Directory />;
+  return <Directory target="person" />;
+}
+
+/**
+ * The organization's shared services (docs/adr/0022), on Integrations: added once for everyone and
+ * signed in to with the organization's shared accounts, through the Executor account Mend made for
+ * it. An owner shares a service someone added only for the shared account with everyone.
+ */
+export function SharedExecutorServices() {
+  return <Directory target="member" />;
 }
 
 function NotLinked() {
@@ -126,12 +137,11 @@ type Opened =
       readonly account: Requirement["accounts"][number];
     };
 
-function Directory() {
+function Directory({ target }: { readonly target: Target }) {
   const trpc = useTRPC();
   const phone = usePhone();
-  const directory = useQuery(
-    trpc.executor.directory.queryOptions({ target: "person" }, { retry: false }),
-  );
+  const { organizationName } = useViewer();
+  const directory = useQuery(trpc.executor.directory.queryOptions({ target }, { retry: false }));
   const [opened, setOpened] = useState<Opened | null>(null);
   const add = (
     <Button
@@ -146,17 +156,24 @@ function Directory() {
   );
   return (
     <SettingSection
-      title="Executor services"
-      description="Services only you see, which your sessions reach through your Executor link. Each one uses the account you sign in with here."
+      title={target === "person" ? "Executor services" : "Shared services"}
+      description={
+        target === "person"
+          ? "Services only you see, which your sessions reach through your Executor link. Each one uses the account you sign in with here."
+          : `Services everyone in ${organizationName} reaches when they have no Executor link of their own. Accounts you sign in with here are shared with everyone.`
+      }
       action={add}
     >
       {directory.isPending ? (
         <p role="status" className="py-3.5 text-row text-muted-foreground max-lg:px-4">
-          Reading your services from Executor…
+          {target === "person"
+            ? "Reading your services from Executor…"
+            : "Reading the shared services from Executor…"}
         </p>
       ) : directory.isError ? (
         <p role="alert" className="py-3.5 text-row text-destructive max-lg:px-4">
-          Executor didn't list your services. {failureWords(directory.error, "Try again.")}{" "}
+          Executor didn't list {target === "person" ? "your" : "the shared"} services.{" "}
+          {failureWords(directory.error, "Try again.")}{" "}
           <button
             type="button"
             className="font-medium text-foreground underline underline-offset-2"
@@ -167,17 +184,24 @@ function Directory() {
         </p>
       ) : directory.data.services.length === 0 ? (
         <p className="py-3.5 text-row text-muted-foreground max-lg:px-4">
-          No services yet. Add one to give your sessions its tools through Executor.
+          {target === "person"
+            ? "No services yet. Add one to give your sessions its tools through Executor."
+            : "No shared services yet. Mend adds none by itself; add one to give everyone's sessions its tools."}
         </p>
       ) : (
         directory.data.services.map((service) => (
-          <ServiceRow key={service.id} service={service} onOpen={setOpened} />
+          <ServiceRow key={service.id} target={target} service={service} onOpen={setOpened} />
         ))
       )}
       {phone ? <div className="mt-4 px-4">{add}</div> : null}
-      <AddService open={opened?.kind === "add"} onClose={() => setOpened(null)} />
-      <SignIn opened={opened?.kind === "sign-in" ? opened : null} onClose={() => setOpened(null)} />
+      <AddService target={target} open={opened?.kind === "add"} onClose={() => setOpened(null)} />
+      <SignIn
+        target={target}
+        opened={opened?.kind === "sign-in" ? opened : null}
+        onClose={() => setOpened(null)}
+      />
       <Disconnect
+        target={target}
         opened={opened?.kind === "disconnect" ? opened : null}
         onClose={() => setOpened(null)}
       />
@@ -199,9 +223,11 @@ const requirementWords = (requirement: Requirement, many: boolean): string => {
 };
 
 function ServiceRow({
+  target,
   service,
   onOpen,
 }: {
+  readonly target: Target;
   readonly service: Service;
   readonly onOpen: (opened: Opened) => void;
 }) {
@@ -218,11 +244,28 @@ function ServiceRow({
         }),
     }),
   );
+  const share = useMutation(
+    trpc.executor.shareService.mutationOptions({
+      onSuccess: () => {
+        toast.add({ description: `Shared ${service.name} with everyone.` });
+        return queryClient.invalidateQueries(trpc.executor.pathFilter());
+      },
+      onError: (error) =>
+        toast.add({
+          description: `Executor didn't share ${service.name}. ${failureWords(error, "Try again.")}`,
+          priority: "high",
+        }),
+    }),
+  );
   const many = service.requirements.length > 1;
-  const description =
+  const accounts =
     service.requirements.length === 0
       ? "No account needed."
       : service.requirements.map((requirement) => requirementWords(requirement, many)).join(" ");
+  const description =
+    target === "member"
+      ? `${service.shared ? "Shared with everyone." : "Only the shared account has it."} ${accounts}`
+      : accounts;
   // The first requirement nobody is signed in to, and how to sign in to it, is the row's button.
   const pending = service.requirements.find(
     (requirement) =>
@@ -237,7 +280,7 @@ function ServiceRow({
         label: `Use ${account.label || "another account"}`,
         act: () =>
           useAccount.mutate({
-            target: "person",
+            target,
             service: service.id,
             requirement: requirement.name,
             account: account.id,
@@ -264,6 +307,19 @@ function ServiceRow({
       description={description}
       control={
         <>
+          {target === "member" && !service.shared ? (
+            <Button
+              type="button"
+              variant="outline"
+              size={phone ? "touch" : "sm"}
+              disabled={share.isPending}
+              aria-label={`Share ${service.name} with everyone`}
+              onClick={() => share.mutate({ service: service.id })}
+            >
+              {share.isPending ? <Spinner aria-hidden /> : null}
+              Share with everyone
+            </Button>
+          ) : null}
           {pending === undefined || method === undefined ? null : (
             <Button
               type="button"
@@ -311,9 +367,11 @@ function ServiceRow({
  * here and sends them to Executor through Mend's server, which never returns them.
  */
 function SignIn({
+  target,
   opened,
   onClose,
 }: {
+  readonly target: Target;
   readonly opened: Extract<Opened, { kind: "sign-in" }> | null;
   readonly onClose: () => void;
 }) {
@@ -336,6 +394,7 @@ function SignIn({
       {opened === null ? null : (
         <SignInBody
           key={`${opened.service.id}-${opened.method.name}`}
+          target={target}
           opened={opened}
           onClose={onClose}
         />
@@ -345,9 +404,11 @@ function SignIn({
 }
 
 function SignInBody({
+  target,
   opened: { service, requirement, method },
   onClose,
 }: {
+  readonly target: Target;
   readonly opened: Extract<Opened, { kind: "sign-in" }>;
   readonly onClose: () => void;
 }) {
@@ -361,14 +422,17 @@ function SignInBody({
   const done = async () => {
     await queryClient.invalidateQueries(trpc.executor.pathFilter());
     toast.add({
-      description: `Signed in to ${service.name}. Your new sessions can use its tools.`,
+      description:
+        target === "person"
+          ? `Signed in to ${service.name}. Your new sessions can use its tools.`
+          : `Signed in to ${service.name} with the shared account. Everyone's new sessions can use its tools.`,
     });
     onClose();
   };
   const start = async () => {
     try {
       const result = await connect.mutateAsync({
-        target: "person",
+        target,
         service: service.id,
         requirement: requirement.name,
         method: method.name,
@@ -406,7 +470,11 @@ function SignInBody({
           <ol className="grid list-decimal gap-2 pl-5 text-prose">
             <li>Sign in with the account your sessions should use.</li>
             <li>Approve the access {service.name} asks for.</li>
-            <li>Executor keeps the sign-in for your link. Only your sessions use it.</li>
+            <li>
+              {target === "person"
+                ? "Executor keeps the sign-in for your link. Only your sessions use it."
+                : "Executor keeps the sign-in for the shared account. Everyone's sessions use it."}
+            </li>
           </ol>
         ) : null
       ) : (
@@ -450,9 +518,11 @@ function SignInBody({
 }
 
 function Disconnect({
+  target,
   opened,
   onClose,
 }: {
+  readonly target: Target;
   readonly opened: Extract<Opened, { kind: "disconnect" }> | null;
   readonly onClose: () => void;
 }) {
@@ -472,7 +542,7 @@ function Disconnect({
     if (shown === null) return;
     try {
       await disconnect.mutateAsync({
-        target: "person",
+        target,
         service: shown.service.id,
         requirement: shown.requirement.name,
         account: shown.account.id,
@@ -518,23 +588,41 @@ function Disconnect({
   );
 }
 
-/** Add a service only this person sees, by its MCP address. */
-function AddService({ open, onClose }: { readonly open: boolean; readonly onClose: () => void }) {
+/** Add a service, by its MCP address: only this person's, or shared with everyone. */
+function AddService({
+  target,
+  open,
+  onClose,
+}: {
+  readonly target: Target;
+  readonly open: boolean;
+  readonly onClose: () => void;
+}) {
   return (
     <Overlay
       open={open}
       onOpenChange={(next) => (next ? undefined : onClose())}
       size="md"
       title="Add service"
-      description="A service only you see, reached through your Executor link. It must allow anyone to connect or offer a sign-in."
+      description={
+        target === "person"
+          ? "A service only you see, reached through your Executor link. It must allow anyone to connect or offer a sign-in."
+          : "A service everyone reaches through the shared account. It must allow anyone to connect or offer a sign-in."
+      }
       footer={null}
     >
-      {open ? <AddServiceForm onClose={onClose} /> : null}
+      {open ? <AddServiceForm target={target} onClose={onClose} /> : null}
     </Overlay>
   );
 }
 
-function AddServiceForm({ onClose }: { readonly onClose: () => void }) {
+function AddServiceForm({
+  target,
+  onClose,
+}: {
+  readonly target: Target;
+  readonly onClose: () => void;
+}) {
   const trpc = useTRPC();
   const phone = usePhone();
   const queryClient = useQueryClient();
@@ -545,7 +633,7 @@ function AddServiceForm({ onClose }: { readonly onClose: () => void }) {
   const submit = async () => {
     if (!ready) return;
     try {
-      await add.mutateAsync({ target: "person", name: name.trim(), url: url.trim() });
+      await add.mutateAsync({ target, name: name.trim(), url: url.trim() });
       await queryClient.invalidateQueries(trpc.executor.pathFilter());
       toast.add({ description: `Added ${name.trim()}. Sign in to it if it asks.` });
       onClose();

@@ -7,17 +7,20 @@ import { failureWords } from "#/lib/refusal";
 
 /**
  * Where Executor sends the browser back after a person signs in to a service from Settings → MCP
- * servers (`packages/sessions/src/executor/mend-run.ts` names this address, so it stays). The
+ * servers, or an owner signs the organization's shared account in to one from Integrations (`packages/sessions/src/executor/mend-run.ts` names this address, so it stays). The
  * whole return address goes to Mend's server, which finishes the sign-in with Executor; the code
- * and state then leave the browser's history, and the person is back on MCP servers. If Executor
+ * and state then leave the browser's history, and the person is back where they started. If Executor
  * refuses, the page says why and links back.
  */
 export const Route = createFileRoute("/_inbox/executor/service-callback")({
   ssr: false,
   preload: false,
   loader: async ({ context: { queryClient, trpc, trpcClient } }) => {
+    let target: "person" | "member";
     try {
-      await trpcClient.executor.finishService.mutate({ callbackUrl: window.location.href });
+      ({ target } = await trpcClient.executor.finishService.mutate({
+        callbackUrl: window.location.href,
+      }));
     } catch (error) {
       return {
         message: failureWords(error, "Mend couldn't finish this sign-in. Start it again."),
@@ -26,7 +29,12 @@ export const Route = createFileRoute("/_inbox/executor/service-callback")({
       window.history.replaceState(null, "", window.location.pathname);
     }
     await queryClient.invalidateQueries(trpc.executor.pathFilter());
-    throw redirect({ to: "/settings/mcp-servers", replace: true });
+    // A sign-in for the organization's shared account came from Integrations; a person's own,
+    // from MCP servers.
+    throw redirect({
+      to: target === "member" ? "/settings/organization/integrations" : "/settings/mcp-servers",
+      replace: true,
+    });
   },
   component: SignInRefused,
 });

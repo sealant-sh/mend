@@ -65,6 +65,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/organization/folders" };
     case "o-projects":
       return { to: "/settings/organization/projects" };
+    case "o-integrations":
+      return { to: "/settings/organization/integrations" };
     case "o-audit":
       return { to: "/settings/organization/audit-log" };
     case "o-general":

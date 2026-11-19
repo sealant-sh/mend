@@ -349,7 +349,10 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       },
     }),
   });
-  stubs.set("executor.finishService", { full: true, answer: () => ({ json: null }) });
+  stubs.set("executor.finishService", {
+    full: true,
+    answer: () => ({ json: { target: "person" } }),
+  });
   stubs.set("executor.directory", directory(true));
   const leaving = page.waitForURL((url) => url.pathname === "/executor/service-callback", {
     timeout: 60_000,

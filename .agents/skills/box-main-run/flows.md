@@ -460,6 +460,31 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.organization.runtime.tsx`,
   `apps/web/src/lib/runtime-switch.ts`
 
+### organization.new-web-integrations
+
+- **Map:** slack.md `slack-connect`, `slack-display`, the owners' Links list; the organization's
+  Executor (manage, configure, the directory, share a service)
+- **Needs:** no session; no turn; web; for Slack and Executor for real, a Slack workspace and an
+  Executor (Mend-run or the organization's own)
+- **Do:** Drive the recipe `new-web-settings-integrations`: old `/settings/organization/slack` and
+  `/settings/organization/executor` land on Integrations under "Everyone in <organization>"; an
+  owner connects Slack from Mend's manifest with two tokens that are never shown again (a refusal
+  empties both fields), turns thread settings on and off, removes a person's Slack link from Linked
+  people, replaces the tokens and removes the app; the Executor Mend runs shows its state and
+  version with Stop, Start and Upgrade, the shared services with Share with everyone, and Who runs
+  it; your own Executor shows its address and the shared account's link; a member reads what is set
+  up with no button that changes it; a failed read shows Try again. On the box, connect a real Slack
+  workspace and start the Executor Mend runs.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no part of a token in any
+  picture, log or note.
+- **Mode:** `scripted` (recipes/new-web-settings-integrations.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/integrations-page.tsx`,
+  `apps/web/src/components/settings/executor-services.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.integrations.tsx`,
+  `apps/web/src/routes/_inbox.executor.service-callback.tsx`, `apps/web/src/lib/integrations.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
