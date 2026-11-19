@@ -238,14 +238,24 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // Marking a file viewed folds it, counts it, and is kept over a reload.
   await page.getByRole("checkbox", { name: "Viewed: src/payments/retry.ts" }).first().click();
   await settled();
-  const folded = section("src/payments/retry.ts").getByRole("button", { expanded: false });
+  const folded = section("src/payments/retry.ts").getByRole("button", {
+    name: "src/payments/retry.ts",
+    exact: true,
+    expanded: false,
+  });
   await folded.waitFor();
   if (!(await filesFact()).includes("1 of 4 viewed"))
     throw new Error(`the Files column reads "${await filesFact()}" after one mark`);
   await page.reload();
   await hydrated();
   await section("src/payments/retry.ts").waitFor({ timeout: 60_000 });
-  await section("src/payments/retry.ts").getByRole("button", { expanded: false }).waitFor();
+  await section("src/payments/retry.ts")
+    .getByRole("button", {
+      name: "src/payments/retry.ts",
+      exact: true,
+      expanded: false,
+    })
+    .waitFor();
   note("Viewed on retry.ts folds it, Files reads '1 of 4 viewed', and both hold over a reload");
   await both("viewed-desktop");
 
@@ -260,7 +270,13 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page
     .getByText("Files changed since you opened this.")
     .waitFor({ state: "hidden", timeout: 30_000 });
-  await section("src/payments/retry.ts").getByRole("button", { expanded: true }).waitFor();
+  await section("src/payments/retry.ts")
+    .getByRole("button", {
+      name: "src/payments/retry.ts",
+      exact: true,
+      expanded: true,
+    })
+    .waitFor();
   if (
     await page.getByRole("checkbox", { name: "Viewed: src/payments/retry.ts" }).first().isChecked()
   )
