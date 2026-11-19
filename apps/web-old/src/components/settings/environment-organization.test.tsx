@@ -2,9 +2,9 @@
 import {
   defaultSettings,
   defaultWorkspaceImage,
-  inheritedOrganizationSettings,
   MendSettings,
   organizationDefaults,
+  newOrganizationSettings,
 } from "@mend/domain";
 import { act, Suspense } from "react";
 import type { Root } from "react-dom/client";
@@ -37,9 +37,12 @@ const render = async (runtime: RuntimeView, role: "owner" | "member") => {
       if (path === "organization.settings")
         return {
           data: {
-            organization: inheritedOrganizationSettings,
+            organization: newOrganizationSettings(defaultWorkspaceImage),
             instance,
-            effective: organizationDefaults(instance, inheritedOrganizationSettings),
+            effective: organizationDefaults(
+              instance,
+              newOrganizationSettings(defaultWorkspaceImage),
+            ),
             editable: role === "owner",
             sessionRuntime: runtime.sessionRuntime,
           },
@@ -50,21 +53,13 @@ const render = async (runtime: RuntimeView, role: "owner" | "member") => {
 };
 
 const NOTE =
-  "Boat supports Ubuntu and Nix; Arch is unsupported. New sessions in Acme run on Boat, so no project that follows this environment can start one.";
+  "Boat supports Ubuntu and Nix; Arch is unsupported. New sessions in Acme run on Boat, so no new project that starts from this image can start one.";
 
 describe("the organization's environment, folded", () => {
-  it("says on Boat that what it follows cannot start, and points an owner at the move", async () => {
-    await render(RUNTIMES.boat, "owner");
-    expect(pageText()).toContain("arch · 19 packages · from the instance");
-    expect(document.querySelector('[role="alert"]')?.textContent).toBe(NOTE);
-    const link = [...document.querySelectorAll("a")].find((a) =>
-      a.textContent?.includes("in Defaults"),
-    );
-    expect(link?.getAttribute("href")).toBe("/settings/organization/defaults");
-  });
-
-  it("tells a member to ask an owner", async () => {
+  it("shows a member the organization's own starting image, says on Boat it cannot start, and to ask an owner", async () => {
     await render(RUNTIMES.boat, "member");
+    expect(pageText()).toContain("arch · 19 packages · set for Acme");
+    expect(pageText()).not.toContain("from the instance");
     expect(document.querySelector('[role="alert"]')?.textContent).toBe(NOTE);
     expect(pageText()).toContain("Ask an owner of Acme to change it.");
   });

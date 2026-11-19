@@ -1,4 +1,5 @@
 import { AuditEventsRepo, type NewAuditEvent, ProjectsRepo, WorktreeChangesRepo } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   ChangeId,
   ChangeLandingId,
@@ -101,7 +102,7 @@ const world = (adoption: Adoption, currentChange: ChangeId | null = CHANGE) => {
             autoLand: "inherit",
             backgroundSessions: "inherit",
             gitAuthMode: "mend-key",
-            workspaceImage: null,
+            workspaceImage: defaultWorkspaceImage,
             applyDotfiles: true,
             defaultShellProfile: true,
             inheritUserSkills: true,

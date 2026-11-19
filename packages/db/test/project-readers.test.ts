@@ -8,6 +8,10 @@ import { describe, expect, it } from "vitest";
 /** One entry per query (`queryKey`): a new query, or an edit to one, is judged again. */
 const exceptions = new Map([
   [
+    "packages/db/src/workspace-image-own-migration.ts:unknown:6f668d07",
+    "Migration 0230 gives every project, removed ones included, its own copy of the image it followed.",
+  ],
+  [
     "packages/db/src/mcp-apps-migration.ts:unknown:5b37a85f",
     "The retention trigger reads every project state to refuse content writes after removal.",
   ],

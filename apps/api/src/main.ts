@@ -412,7 +412,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionSharedControlRepoLive,
   FoldersRepoLive,
   OrganizationsRepoLive,
-  OrganizationSettingsRepoLive,
+  // A new organization's row copies the server's image, the built-in one until an operator saves.
+  OrganizationSettingsRepoLive.pipe(Layer.provide(BuiltInSettingsLive)),
   InstanceRolesRepoLive,
   ProjectsRepoLive,
   ProjectClusterBindingsRepoLive,
@@ -479,7 +480,10 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = DrizzleRepositoriesLive.pipe(
-  Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))),
+  // Migration 0230 copies the server's built-in image, which depends on its runtime.
+  Layer.provideMerge(
+    MigratorLive.pipe(Layer.provide(BuiltInSettingsLive), Layer.provideMerge(PgLive)),
+  ),
 );
 
 // ─── The central store (host-side git) + the session engine over it ────────

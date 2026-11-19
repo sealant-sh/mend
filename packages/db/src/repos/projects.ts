@@ -76,8 +76,8 @@ export interface RetainedProject {
 }
 
 export interface InitializedProject {
-  /** An explicit environment for this project; null inherits the organization's defaults. */
-  readonly workspaceImage?: WorkspaceImage | null;
+  /** The project's own image: a copy of its organization's starting image (docs/adr/0025). */
+  readonly workspaceImage: WorkspaceImage;
   readonly id: ProjectId;
   readonly organizationId: OrganizationId;
   readonly createdByUserId: string;
@@ -91,8 +91,8 @@ export interface InitializedProject {
 }
 
 export interface NewProject {
-  /** An explicit environment for this project; null inherits the organization's defaults. */
-  readonly workspaceImage?: WorkspaceImage | null;
+  /** The project's own image: a copy of its organization's starting image (docs/adr/0025). */
+  readonly workspaceImage: WorkspaceImage;
   /** Minted by the caller: new stores are laid out by project id. */
   readonly id: ProjectId;
   readonly organizationId: OrganizationId;
@@ -177,10 +177,10 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       mode: GitAuthMode,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
-    /** The project's workspace-image override; null returns it to the Settings default. */
+    /** Replace the project's own workspace image. */
     readonly setWorkspaceImage: (
       id: ProjectId,
-      image: WorkspaceImage | null,
+      image: WorkspaceImage,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Whether sessions here receive the launching user's dotfiles. */
     readonly setApplyDotfiles: (
@@ -235,7 +235,7 @@ const toProject = ({
   new Project({
     ...row,
     originUrl: redactNullableUrlCredentials(row.originUrl),
-    workspaceImage: row.workspaceImage === null ? null : decodeWorkspaceImage(row.workspaceImage),
+    workspaceImage: decodeWorkspaceImage(row.workspaceImage),
   });
 
 export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClient.PgClient> =
@@ -589,7 +589,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
 
       const setWorkspaceImage = Effect.fn("ProjectsRepo.setWorkspaceImage")(function* (
         id: ProjectId,
-        image: WorkspaceImage | null,
+        image: WorkspaceImage,
       ) {
         const [row] = yield* db
           .update(projects)

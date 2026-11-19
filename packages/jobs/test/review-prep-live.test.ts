@@ -9,6 +9,7 @@ import {
   SettingsRepo,
   WorktreeChangesRepo,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   ChangeId,
   defaultSettings,
@@ -60,7 +61,7 @@ const project = new Project({
   autoLand: "off",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: false,
   defaultShellProfile: false,
   inheritUserSkills: false,

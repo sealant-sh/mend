@@ -218,8 +218,12 @@ export class Project extends Schema.Class<Project>("Project")({
   backgroundSessions: AutomationChoice,
   /** How host-side git authenticates to this project's remote. */
   gitAuthMode: GitAuthMode,
-  /** Override of the Settings default workspace image; null inherits it. */
-  workspaceImage: Schema.NullOr(WorkspaceImage),
+  /**
+   * The project's own workspace image: a copy of its organization's starting image taken when the
+   * project was created, then the project's to change (docs/adr/0025-one-home-per-setting.md,
+   * decision 5). Never null: nothing is inherited.
+   */
+  workspaceImage: WorkspaceImage,
   /**
    * Whether sessions here receive the launching user's dotfiles (per-user store + repo). A
    * boolean, not a cascade: dotfiles are identity, so the only project-level question is

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId, ProjectId, Sha } from "@mend/domain";
+import { OrganizationId, ProjectId, Sha, defaultWorkspaceImage } from "@mend/domain";
 import { Effect, Layer, Redacted, Result, String as Str } from "effect";
 import { SqlClient } from "effect/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -41,6 +41,7 @@ const input = (name: string, purpose: "named" | "scratch", user = "anna"): Initi
     defaultBranch: "main",
     headSha: Sha.make("f1ebb8f298a55eec763d618731331fd2cc0cd444"),
     gitAuthMode: "mend-key",
+    workspaceImage: defaultWorkspaceImage,
   };
 };
 

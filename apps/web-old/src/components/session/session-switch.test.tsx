@@ -1,4 +1,3 @@
-// @vitest-environment jsdom
 import {
   ProjectCapabilities,
   ProjectDetail,
@@ -6,6 +5,8 @@ import {
   SessionDetail,
   SessionInboxRow,
 } from "@mend/api-contracts";
+// @vitest-environment jsdom
+import { defaultWorkspaceImage } from "@mend/domain";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { Project, Session, Worktree } from "@mend/domain/workbench";
 import { RouterProvider } from "@tanstack/react-router";
@@ -71,7 +72,7 @@ const project = new Project({
   autoLand: "inherit",
   backgroundSessions: "off",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: false,
   defaultShellProfile: true,
   inheritUserSkills: false,

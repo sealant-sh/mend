@@ -81,6 +81,7 @@ import {
   RemovalFencesRepo,
   SessionAdmissionId,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   AgentTurnId,
   ChangeId,
@@ -1580,6 +1581,11 @@ export const launchSkill = (
 
 /** Mutable repository state retained by one engine fixture. */
 export interface World {
+  /**
+   * The image a project the fixture adopts holds as its own: a copy of what the engine layer's
+   * settings say the organization starts with (`workspaceImage` option), as Mend copies it.
+   */
+  readonly newProjectImage: { image: typeof defaultSettings.workspaceImage | null };
   readonly removedProjects: Set<ProjectId>;
   /** Repository timestamps follow the Clock of the engine scope that owns this world. */
   readonly clock: { now: () => Date };
@@ -1708,6 +1714,7 @@ const newerObservation = <T extends { readonly position?: CapturePosition | null
 
 /** Create an isolated in-memory engine repository world. */
 export const makeWorld = (): World => ({
+  newProjectImage: { image: null },
   removedProjects: new Set(),
   clock: { now },
   projects: new Map(),
@@ -3743,7 +3750,7 @@ export const setup = (tmp: string, world: World) => {
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "mend-key",
-      workspaceImage: null,
+      workspaceImage: world.newProjectImage.image ?? defaultWorkspaceImage,
       applyDotfiles: true,
       defaultShellProfile: true,
       inheritUserSkills: true,
@@ -3801,7 +3808,7 @@ export const setupSibling = (tmp: string, world: World, name: string, fixtureOri
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "mend-key",
-      workspaceImage: null,
+      workspaceImage: world.newProjectImage.image ?? defaultWorkspaceImage,
       applyDotfiles: true,
       defaultShellProfile: true,
       inheritUserSkills: true,
@@ -4171,6 +4178,8 @@ export const withPreparedEngineEffect = <B, A, E>(
     );
     const world = options.fixture?.world ?? makeWorld();
     world.clock.now = () => new Date(ownerClock.currentTimeMillisUnsafe());
+    // The organization's starting image; projects the fixture adopts copy it, as Mend does.
+    world.newProjectImage.image = options.workspaceImage ?? null;
     options.prepareWorld?.(world, tmp);
     const storeConfigLayer = StoreConfig.layerFor(path.join(tmp, "store"));
     // Built here, once: `before` and the engine share this store instance.

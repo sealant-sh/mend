@@ -34,9 +34,9 @@ the default branch first.
 `mend screen look <session> --out shot.png --json` saves a current PNG, screen id and observation
 time. It never starts a screen, takes input, acts on it or creates a proof artifact.
 
-`mend projects image <project> --json` reads the effective workspace image. To enable Screen, run
-`mend projects image <project> --screen on --json`, then start a new session in a new worktree. The
-setting preserves the rest of the family image. Custom images are refused with a fix; select a
+`mend projects image <project> --json` reads the project's own workspace image. To enable Screen,
+run `mend projects image <project> --screen on --json`, then start a new session in a new worktree.
+The setting preserves the rest of the family image. Custom images are refused with a fix; select a
 family image in project environment settings first. Use this path when screen look returns
 `ScreenObservationUnavailable` because Screen is off. An already-enabled screen can instead need its
 reported start failure resolved.

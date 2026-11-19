@@ -870,10 +870,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "projects image",
     agentContract: true,
     section: "project setup",
-    summary: "read the effective image or change its screen setting",
+    summary: "read the project's image or change its screen setting",
     synopsis: ["<project> [--screen on|off] [--json]"],
     description: [
-      "Reads the project's image override, or its effective organization/instance default. --screen preserves the image's OS, packages, shell and services and saves through the project image setting. Custom images are refused with instructions to choose a family image.",
+      "Reads the project's own image (on a server from before projects kept their own, the organization's when the project follows it). --screen preserves the image's OS, packages, shell and services and saves through the project image setting. Custom images are refused with instructions to choose a family image.",
       "Start a new session in a new worktree for a saved image change to apply. Existing sessions keep their current image. Saving can report unresolved packages without saving anything.",
     ],
     options: [

@@ -56,10 +56,9 @@ README commit on `main` by its creator, and has no origin. Each person also has 
 project, made on first use. Today [t3code](/integrations/t3code/) is the client that creates them.
 
 A project also owns the setup used by future workspaces: image, variables, secrets, references,
-folders, Services, dotfile policy, hot-session count, Git access, and automation switches. An
-automation switch the project leaves on inherit follows the session owner's own setting. An image
-the project leaves on inherit follows its organization's, and one the organization leaves unset
-follows the instance's.
+folders, Services, dotfile policy, hot-session count, Git access, and automation switches. Its image
+is its own, a copy of its organization's starting image taken when it was created. An automation
+switch the project leaves on inherit follows the session owner's own setting.
 
 ### Worktree
 

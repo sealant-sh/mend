@@ -16,6 +16,7 @@ import {
   WorktreesRepo,
   type StoreRef,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import { OrganizationId, ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { Project, Worktree } from "@mend/domain/workbench";
 import {
@@ -190,7 +191,7 @@ export const projectFor = (storePath: string, baseSha: string) =>
     autoSuggest: "inherit",
     backgroundSessions: "inherit",
     gitAuthMode: "mend-key",
-    workspaceImage: null,
+    workspaceImage: defaultWorkspaceImage,
     applyDotfiles: true,
     defaultShellProfile: true,
     inheritUserSkills: true,

@@ -1,8 +1,9 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   defaultSettings,
-  inheritedOrganizationSettings,
   defaultPersonSettings,
+  defaultWorkspaceImage,
+  newOrganizationSettings,
   MendSettings,
   OrganizationId,
   OrganizationSettings,
@@ -99,7 +100,10 @@ describe.skipIf(postgres.skip)("a person's own settings, in Postgres", () => {
         );
         yield* (yield* OrganizationSettingsRepo).set(
           ACME,
-          new OrganizationSettings({ ...inheritedOrganizationSettings, autoSuggest: false }),
+          new OrganizationSettings({
+            ...newOrganizationSettings(defaultWorkspaceImage),
+            autoSuggest: false,
+          }),
         );
         expect(yield* people.forUser("anna")).toEqual(defaultPersonSettings);
         // Anna saves her own; Ben never saved.

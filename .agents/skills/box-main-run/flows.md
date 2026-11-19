@@ -1228,12 +1228,17 @@ flows reuse what earlier ones made:
   default on Settings → Organization → Environment. Choose nothing.
 - **See:** under `Image`, the groups `Base` (`OS family` pressed), `OS` (`Ubuntu` pressed),
   `Login shell` (one shell pressed) and the textbox `Packages` listing the packages, each field
-  marked `set for <p> · reset`, or `from your organization` or `from the instance default` when it
-  follows; the section `Workspace environment · Default` with the line
-  `<os> · <n> packages · from the instance` or `… · set for Default`.
+  marked `set for <p> · reset` (a project's image is its own since SLNT-1155: never
+  `from your organization` or `from the instance default`); the section
+  `Workspace environment · Default` reading
+  `Set for Default. Each new project starts with a copy; existing projects keep their own.`, as the
+  editor for an owner or the line `<os> · <n> packages · set for Default` for a member, with no
+  `Follow the instance`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/components/project/settings/`,
+  `apps/web-old/src/components/settings/environment-organization.tsx`, `apps/api/src/`,
+  `packages/db/src/repos/organization-settings.ts`
 
 ### automatic-install.read
 

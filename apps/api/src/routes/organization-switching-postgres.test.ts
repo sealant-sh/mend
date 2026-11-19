@@ -30,7 +30,7 @@ import {
   WorktreesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { OrganizationId } from "@mend/domain";
+import { defaultWorkspaceImage, newOrganizationSettings, OrganizationId } from "@mend/domain";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
@@ -141,7 +141,10 @@ const recorded = Layer.mergeAll(
   }),
   Layer.mock(ResourceArchivesRepo, {}),
   Layer.mock(SettingsRepo, {}),
-  Layer.mock(OrganizationSettingsRepo, {}),
+  // A new organization reads its settings once, which writes its copy of the server's image.
+  Layer.mock(OrganizationSettingsRepo, {
+    get: () => Effect.succeed(newOrganizationSettings(defaultWorkspaceImage)),
+  }),
   Layer.mock(SealantClient, {}),
   Layer.succeed(TenancyConfig, {
     get mode() {

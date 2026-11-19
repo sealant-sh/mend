@@ -1,4 +1,4 @@
-import { AuditEventsRepo, OrganizationsRepo } from "@mend/db";
+import { AuditEventsRepo, OrganizationSettingsRepo, OrganizationsRepo } from "@mend/db";
 import { organizationNameIssue, type Organization } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
@@ -19,9 +19,9 @@ export class OrganizationNameRefusedError extends Schema.TaggedError<Organizatio
 /**
  * Create an organization (docs/adr/0003-organizations-and-tenancy.md): the one path behind the
  * operator's `POST /operator/organizations` and a person's `POST /account/organizations`. Same
- * name rules, same row, same `organization.created` entry in its audit log. Nothing else is seeded:
- * a new organization's settings, runtime and starting image are the server's until an owner sets
- * its own. With `owner`, the actor is its owner from the same transaction; without, it starts
+ * name rules, same row, same `organization.created` entry in its audit log. Its starting image is
+ * a copy of the server's, taken now (docs/adr/0025): changing the server's later does not change
+ * it. Its runtime follows the server's until an owner chooses. With `owner`, the actor is its owner from the same transaction; without, it starts
  * empty and the operator invites its first owner. Who may call it is the caller's to check.
  */
 export const createOrganization = Effect.fn("createOrganization")(function* (input: {
@@ -37,6 +37,8 @@ export const createOrganization = Effect.fn("createOrganization")(function* (inp
     input.actorUserId,
     input.owner ? input.actorUserId : undefined,
   );
+  // Reading the settings writes the organization's own copy of the server's image.
+  yield* (yield* OrganizationSettingsRepo).get(created.id);
   yield* (yield* AuditEventsRepo).record({
     organizationId: created.id,
     actorUserId: input.actorUserId,

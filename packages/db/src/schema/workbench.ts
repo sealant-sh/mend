@@ -4,6 +4,7 @@ import {
   type ScreenFrameId,
   type ScreenId,
   BriefDocument,
+  defaultWorkspaceImage,
   DotfilesRepository,
   EvidencePointer,
   FailureBrief,
@@ -574,8 +575,11 @@ export const projects = pgTable(
     autoLand: text().$type<AutomationChoice>().notNull().default("inherit"),
     backgroundSessions: text().$type<AutomationChoice>().notNull().default("inherit"),
     gitAuthMode: text().$type<GitAuthMode>().notNull().default("mend-key"),
-    // NULL inherits the global settings.workspaceImage default.
-    workspaceImage: jsonbOf(WorkspaceImage),
+    // The project's own image: a copy of its organization's starting image taken at creation
+    // (migration 0230, docs/adr/0025). Mend always writes it (`NewProject.workspaceImage` is
+    // required); the column's default, Mend's built-in image, only serves rows inserted by hand,
+    // such as test fixtures.
+    workspaceImage: jsonbOf(WorkspaceImage).notNull().default(defaultWorkspaceImage),
     // Whether sessions here receive the launching user's dotfiles.
     applyDotfiles: boolean().notNull().default(true),
     // Whether a zsh launch writes Mend's default shell profile where dotfiles left no file (0071).
@@ -1466,15 +1470,16 @@ export const projectReferences = pgTable(
 );
 
 /**
- * An organization's own defaults over the instance's settings document
- * (docs/adr/0003-organizations-and-tenancy.md). Each null column follows the instance.
+ * An organization's own values (docs/adr/0003-organizations-and-tenancy.md). The workspace image is
+ * its starting image, a copy of the server's taken at creation (migration 0230, docs/adr/0025); the
+ * automation columns are stored for the old web app and read by no session.
  */
 export const organizationSettings = pgTable("organization_settings", {
   organizationId: text()
     .$type<OrganizationId>()
     .primaryKey()
     .references(() => organizations.id, { onDelete: "cascade" }),
-  workspaceImage: jsonbOf(WorkspaceImage),
+  workspaceImage: jsonbOf(WorkspaceImage).notNull(),
   autoTour: boolean(),
   autoSuggest: boolean(),
   autoName: boolean(),

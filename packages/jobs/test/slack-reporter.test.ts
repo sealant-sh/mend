@@ -23,6 +23,7 @@ import {
   type SlackProofTurnContext,
   type SlackThreadSession,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   AgentItemId,
   AgentRequestId,
@@ -153,7 +154,7 @@ const project = new Project({
   autoSuggest: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: true,
   defaultShellProfile: true,
   inheritUserSkills: true,

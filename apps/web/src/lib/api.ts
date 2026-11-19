@@ -305,10 +305,8 @@ export const setProjectAutomation = (
     readonly autoLand?: AutomationChoiceDto;
   },
 ) => orLogin(browserTrpcClient().projects.setAutomation.mutate({ id: projectId, choices }));
-export const setProjectWorkspaceImage = (
-  projectId: string,
-  workspaceImage: WorkspaceImageDto | null,
-) =>
+/** Replace the project's own image; there is no "use the default" to send (docs/adr/0025). */
+export const setProjectWorkspaceImage = (projectId: string, workspaceImage: WorkspaceImageDto) =>
   orLogin(
     browserTrpcClient().projects.setWorkspaceImage.mutate({
       id: projectId,

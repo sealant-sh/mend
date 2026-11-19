@@ -39,6 +39,7 @@ afterEach(() => {
 const ARCH: WorkspaceImage = { ...defaultWorkspaceImage, os: "arch" };
 const UBUNTU: WorkspaceImage = { ...defaultWorkspaceImage, os: "ubuntu" };
 
+/** A project made before SLNT-1155 with no image of its own now holds a copy of Ubuntu's. */
 const project = (workspaceImage: WorkspaceImage | null): ProjectDto => ({
   id: ProjectId.make("project-mend"),
   name: "mend",
@@ -56,7 +57,7 @@ const project = (workspaceImage: WorkspaceImage | null): ProjectDto => ({
   autoLand: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage,
+  workspaceImage: workspaceImage ?? UBUNTU,
   applyDotfiles: false,
   newWorktreesUseProjectResources: true,
   defaultShellProfile: true,
@@ -155,12 +156,15 @@ describe("the project's workspace image against where new sessions run", () => {
     ]);
   });
 
-  it("on Boat, keeps an inherited Arch image and says to set one here or ask an owner", async () => {
-    await renderWorkspace(null, RUNTIMES.boat, ARCH);
+  it("on Boat, keeps the project's own copy of Arch and says to pick Ubuntu or Nix", async () => {
+    // A project made to follow Acme's Arch holds its own copy now (SLNT-1155).
+    await renderWorkspace(ARCH, RUNTIMES.boat, ARCH);
     expect(choice("OS", "Arch").getAttribute("aria-pressed")).toBe("true");
     expect(alertText()).toEqual([
-      "Boat supports Ubuntu and Nix; Arch is unsupported. New sessions in Acme run on Boat, so they cannot start from the environment this project inherits. To set one for this project, pick Ubuntu or Nix and save, or ask an owner of Acme to change the organization's.",
+      "Boat supports Ubuntu and Nix; Arch is unsupported. New sessions in Acme run on Boat, so they cannot start from this environment. Pick Ubuntu or Nix and save.",
     ]);
+    expect(pageText()).toContain("set for");
+    expect(pageText()).not.toContain("from your organization");
   });
 
   it("on Boat, keeps Save and rebuild off while the draft is still Arch", async () => {

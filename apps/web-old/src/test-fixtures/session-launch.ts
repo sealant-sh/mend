@@ -5,6 +5,7 @@ import {
   SessionControlView,
   SessionDetail,
 } from "@mend/api-contracts";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   OrganizationId,
   ProjectId,
@@ -39,7 +40,7 @@ export const project = new Project({
   autoLand: "inherit",
   backgroundSessions: "off",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: false,
   defaultShellProfile: true,
   inheritUserSkills: false,

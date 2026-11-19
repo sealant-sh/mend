@@ -410,7 +410,7 @@ describe("repositories no project row claimed", () => {
 
 describe("new project environments for the server runtime", () => {
   for (const runtime of ["docker", "boat"] as const) {
-    it(`uses ${runtime === "boat" ? "Ubuntu" : "the inherited environment"} for named and scratch projects on ${runtime}`, async () => {
+    it(`uses ${runtime === "boat" ? "Ubuntu" : "a copy of the organization's image"} for named and scratch projects on ${runtime}`, async () => {
       const f = await fixture({}, runtime);
       try {
         const before = [...f.api.world.projects.values()].map((project) => [
@@ -428,7 +428,7 @@ describe("new project environments for the server runtime", () => {
               os: "ubuntu",
               services: { docker: true },
             });
-          else expect(project.workspaceImage).toBeNull();
+          else expect(project.workspaceImage).toMatchObject({ mode: "family", os: "arch" });
         }
         for (const [id, image] of before)
           expect(

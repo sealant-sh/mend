@@ -1,3 +1,4 @@
+import { defaultWorkspaceImage } from "@mend/domain";
 import { OrganizationId, ProjectId } from "@mend/domain";
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
@@ -25,7 +26,7 @@ const project: ProjectDto = {
   autoLand: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "mend-key",
-  workspaceImage: null,
+  workspaceImage: defaultWorkspaceImage,
   applyDotfiles: false,
   newWorktreesUseProjectResources: true,
   defaultShellProfile: true,

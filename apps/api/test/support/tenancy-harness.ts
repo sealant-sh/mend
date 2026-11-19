@@ -32,6 +32,7 @@ import {
   WorktreeNotFoundError,
   WorktreesRepo,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   AgentRequestId,
   AgentTurnId,
@@ -360,7 +361,7 @@ export const makeProject = (facts: {
     autoLand: "inherit",
     backgroundSessions: "off",
     gitAuthMode: "mend-key",
-    workspaceImage: null,
+    workspaceImage: defaultWorkspaceImage,
     applyDotfiles: false,
     defaultShellProfile: true,
     inheritUserSkills: false,

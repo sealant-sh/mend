@@ -69,7 +69,6 @@ import {
   type SealedMcpServer,
   PiProfilesRepo,
   SecretFilesRepo,
-  SettingsRepo,
   SkillsRepo,
   UserAgentLoginsRepo,
   UserDotfilesRepo,
@@ -3858,7 +3857,6 @@ type SessionEngineRequirements =
   | ProjectServiceRecipesRepo
   | PreviewsRepo
   | ScreensRepo
-  | SettingsRepo
   | SessionRepository
   | SessionGitOpsRepo
   | MendKeys
@@ -9557,7 +9555,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
       const secretCipher = yield* SecretCipher;
       const projectRecipes = yield* ProjectServiceRecipesRepo;
-      const settingsRepo = yield* SettingsRepo;
       const sessionRepo = yield* SessionRepository;
       const gitOps = yield* SessionGitOpsRepo;
       const mendKeys = yield* MendKeys;
@@ -13797,9 +13794,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly resources?: "none";
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
-        // The project inherits its organization's environment. What a runtime can run is sealant's to
-        // say: it refuses a create it cannot run, before anything is reserved (sealant#633).
-        const settings = yield* settingsRepo.forOrganization(project.organizationId);
+        // The project's own image. What a runtime can run is sealant's to say: it refuses a create
+        // it cannot run, before anything is reserved (sealant#633).
         // The Boat account this workspace runs in and is billed to, for its whole life: the
         // owner's own key in the organization (SLNT-797), else the organization's (SLNT-790), else
         // none (the server's). A standby asks as its owner, the person whose launch claims it.
@@ -13895,11 +13891,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             },
           ]),
         ];
-        // The project's workspace-image override wins; null inherits its organization's default,
-        // which inherits the instance's (`organizationDefaults`). The caller records whichever one
-        // it ACTUALLY provisioned with, so a later settings change never rewrites what a past
-        // session ran on.
-        const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
+        // The project's own image (docs/adr/0025). The caller records the one it ACTUALLY
+        // provisioned with, so a later settings change never rewrites what a past session ran on.
+        const workspaceImage = project.workspaceImage;
         // Dotfiles are the OWNER's (`resolveDotfiles`). Custom images skip dotfiles entirely. A
         // person launch applies none at boot (docs/adr/0016, decision 11): the launcher's go
         // through `dotfiles.apply` as them once prepare has made their user, or, where the
@@ -16527,8 +16521,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 session.workspaceImage ??
                 (yield* sessions.executorSessionOf(SealantWorkspaceId.make(workspace.id)))
                   ?.workspaceImage ??
-                project.workspaceImage ??
-                (yield* settingsRepo.forOrganization(project.organizationId)).workspaceImage;
+                project.workspaceImage;
               const dotfiles = yield* applyPersonDotfiles(
                 session,
                 project,
@@ -18995,13 +18988,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const launch = launchId === null ? null : yield* harnessLayouts.launchLayout(launchId);
         if (launch?.layout === "person") return;
         const project = yield* projects.byId(holder.projectId);
-        const image = Effect.suspend(() =>
-          project.workspaceImage === null
-            ? settingsRepo
-                .forOrganization(project.organizationId)
-                .pipe(Effect.map((settings) => settings.workspaceImage))
-            : Effect.succeed(project.workspaceImage),
-        );
+        const image = Effect.suspend(() => Effect.succeed(project.workspaceImage));
         const next = yield* layoutSteps
           .nextLaunchPerson({
             worktreeId: holder.worktreeId,
@@ -20110,13 +20097,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // create, which commits to it. A refusal leaves nothing behind: no claim, no executor.
         // The co-located store runs as before.
         // The image the create will ask for, read only when the layout decision needs it.
-        const launchImage = Effect.suspend(() =>
-          project.workspaceImage === null
-            ? settingsRepo
-                .forOrganization(project.organizationId)
-                .pipe(Effect.map((settings) => settings.workspaceImage))
-            : Effect.succeed(project.workspaceImage),
-        );
+        const launchImage = Effect.suspend(() => Effect.succeed(project.workspaceImage));
         const decideLayout = (layoutLaunchId: string, standby: HarnessLayout | null) =>
           capture === null
             ? Effect.succeed(SHARED_AS_BEFORE)
@@ -30255,8 +30236,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         project: Project,
         ownerUserId: string | null,
       ) {
-        const settings = yield* settingsRepo.forOrganization(project.organizationId);
-        const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
+        const workspaceImage = project.workspaceImage;
         const dotfilesEnabled =
           project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;
         const repository =
@@ -30591,13 +30571,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * decision 1): the project's image, read only when the flag asks.
        */
       const freshLayoutInput = (project: Project, ownerUserId: string, harness: Harness) => {
-        const image = Effect.suspend(() =>
-          project.workspaceImage === null
-            ? settingsRepo
-                .forOrganization(project.organizationId)
-                .pipe(Effect.map((settings) => settings.workspaceImage))
-            : Effect.succeed(project.workspaceImage),
-        );
+        const image = Effect.suspend(() => Effect.succeed(project.workspaceImage));
         return {
           ownerUserId,
           image,

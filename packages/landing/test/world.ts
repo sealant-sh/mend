@@ -13,6 +13,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
+import { defaultWorkspaceImage } from "@mend/domain";
 import {
   ChangeId,
   ChangeLandingId,
@@ -102,7 +103,7 @@ export const makeWorld = (options: WorldOptions = {}) => {
     autoLand: "inherit",
     backgroundSessions: "inherit",
     gitAuthMode: "mend-key",
-    workspaceImage: null,
+    workspaceImage: defaultWorkspaceImage,
     applyDotfiles: false,
     defaultShellProfile: true,
     inheritUserSkills: true,

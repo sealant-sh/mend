@@ -3,7 +3,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   defaultSettings,
-  inheritedOrganizationSettings,
   MendSettings,
   organizationDefaultSources,
   organizationDefaults,
@@ -11,6 +10,8 @@ import {
   defaultPersonSettings,
   personDefaults,
   PersonSettings,
+  newOrganizationSettings,
+  defaultWorkspaceImage,
 } from "../src/settings.ts";
 import { resolveAutoLand } from "../src/workbench/landing.ts";
 import { resolveAutomation } from "../src/workbench/project.ts";
@@ -34,18 +35,19 @@ const fedora = {
 };
 
 describe("organization defaults: project → organization → instance", () => {
-  it("is the instance when the caller has no organization or the organization set nothing", () => {
+  it("is the instance when the caller has no organization, and the organization's own image always", () => {
     expect(organizationDefaults(instance, null)).toBe(instance);
-    expect(organizationDefaults(instance, inheritedOrganizationSettings)).toEqual(instance);
+    // A new organization's starting image is a copy; the server's changing later does not reach it.
+    const acme = newOrganizationSettings(fedora);
+    expect(organizationDefaults(instance, acme).workspaceImage).toEqual(fedora);
+    expect(organizationDefaults(instance, acme).autoLand).toBe(instance.autoLand);
     expect(organizationDefaultSources(null).autoLand).toBe("instance");
-    expect(Object.values(organizationDefaultSources(inheritedOrganizationSettings))).toEqual(
-      Array.from({ length: 6 }, () => "instance"),
-    );
+    expect(organizationDefaultSources(acme).workspaceImage).toBe("organization");
   });
 
   it("takes each value the organization set and leaves the rest to the instance", () => {
     const organization = new OrganizationSettings({
-      ...inheritedOrganizationSettings,
+      ...newOrganizationSettings(defaultWorkspaceImage),
       workspaceImage: fedora,
       autoLand: true,
       autoSuggest: false,
@@ -72,7 +74,7 @@ describe("organization defaults: project → organization → instance", () => {
 
   it("keeps an organization's off as off, not as a missing value", () => {
     const organization = new OrganizationSettings({
-      ...inheritedOrganizationSettings,
+      ...newOrganizationSettings(defaultWorkspaceImage),
       autoName: false,
       backgroundSessions: false,
     });
@@ -84,14 +86,20 @@ describe("organization defaults: project → organization → instance", () => {
   it("lets a project's own choice win over the organization, and inherit follow it", () => {
     const defaults = organizationDefaults(
       instance,
-      new OrganizationSettings({ ...inheritedOrganizationSettings, autoTour: false }),
+      new OrganizationSettings({
+        ...newOrganizationSettings(defaultWorkspaceImage),
+        autoTour: false,
+      }),
     );
     expect(resolveAutomation("inherit", defaults.autoTour)).toBe(false);
     expect(resolveAutomation("on", defaults.autoTour)).toBe(true);
 
     const landing = organizationDefaults(
       instance,
-      new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true }),
+      new OrganizationSettings({
+        ...newOrganizationSettings(defaultWorkspaceImage),
+        autoLand: true,
+      }),
     );
     const land = (project: "inherit" | "on" | "off") =>
       resolveAutoLand({
@@ -107,7 +115,7 @@ describe("organization defaults: project → organization → instance", () => {
 
   it("round-trips through its encoded form, nulls included", () => {
     const organization = new OrganizationSettings({
-      ...inheritedOrganizationSettings,
+      ...newOrganizationSettings(defaultWorkspaceImage),
       workspaceImage: fedora,
       autoLand: false,
     });
@@ -122,8 +130,7 @@ describe("person defaults: a project's own choice, else the person's own value",
   const acme = organizationDefaults(
     instance,
     new OrganizationSettings({
-      ...inheritedOrganizationSettings,
-      workspaceImage: fedora,
+      ...newOrganizationSettings(fedora),
       autoSuggest: false,
       autoLand: true,
     }),

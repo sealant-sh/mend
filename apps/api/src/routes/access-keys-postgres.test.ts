@@ -56,7 +56,7 @@ import {
   WorktreesRepoLive,
 } from "@mend/db";
 import { postgresTestConfig } from "@mend/db/testing";
-import { type OrganizationId, ProjectId, SessionId } from "@mend/domain";
+import { type OrganizationId, ProjectId, SessionId, defaultWorkspaceImage } from "@mend/domain";
 import { UNREAD } from "@mend/domain/runtime-support-fixtures";
 import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
@@ -478,6 +478,7 @@ describe.skipIf(postgres.skip)("access keys through real Auth and PostgreSQL", (
             createdByUserId: row.creator,
             name: row.key,
             originUrl: null,
+            workspaceImage: defaultWorkspaceImage,
             storePath: `/elsewhere/${row.key}/repo.git`,
             defaultBranch: "main",
             adoptedSha: null,

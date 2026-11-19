@@ -59,14 +59,17 @@ describe("adopted projects' runtime defaults", () => {
       await expect(adopt("alice", "on-boat")).resolves.toMatchObject({
         workspaceImage: { mode: "family", os: "ubuntu" },
       });
-      await expect(adopt("bob", "on-docker")).resolves.toMatchObject({ workspaceImage: null });
+      // Bob's organization runs on Docker: his project copies its starting image, Arch.
+      await expect(adopt("bob", "on-docker")).resolves.toMatchObject({
+        workspaceImage: { mode: "family", os: "arch" },
+      });
     } finally {
       await api.dispose();
     }
   });
 
   for (const runtime of ["docker", "boat"] as const) {
-    it(`uses ${runtime === "boat" ? "Ubuntu" : "the inherited environment"} on ${runtime}`, async () => {
+    it(`uses ${runtime === "boat" ? "Ubuntu" : "a copy of the organization's image"} on ${runtime}`, async () => {
       const api = await adoptingApi({ sessionRuntime: runtime });
       try {
         const response = await api.request("alice", "POST", "/api/projects", {
@@ -79,7 +82,7 @@ describe("adopted projects' runtime defaults", () => {
           workspaceImage:
             runtime === "boat"
               ? { mode: "family", os: "ubuntu", services: { docker: true } }
-              : null,
+              : { mode: "family", os: "arch" },
         });
       } finally {
         await api.dispose();

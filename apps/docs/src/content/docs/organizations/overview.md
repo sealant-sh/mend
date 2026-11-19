@@ -414,11 +414,11 @@ change.
 
 ## Organization defaults
 
-The workspace environment resolves project, then organization, then instance. Owners set the
-organization's in Settings, under **Workspace environment · &lt;organization&gt;**, and where its
-new sessions run under **Defaults · &lt;organization&gt;**. Members read the values and where each
-came from. The automation switches are not the organization's: each person sets their own. See
-[Where defaults come from](/guides/project-environment/#where-defaults-come-from).
+The organization's starting image, under **Workspace environment · &lt;organization&gt;** in
+Settings, is copied into each new project; changing it leaves existing projects' images as they are.
+Where its new sessions run is under **Defaults · &lt;organization&gt;**. Members read the values and
+where each came from. The automation switches are not the organization's: each person sets their
+own. See [Where defaults come from](/guides/project-environment/#where-defaults-come-from).
 
 ## Recover an account without email
 
