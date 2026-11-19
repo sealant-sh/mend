@@ -282,7 +282,8 @@ const main = async () => {
 
 /**
  * The editor's gallery requests, into the evidence, and the failed ones into the log when the run
- * failed; then each window's renderer.log, where the gallery service logs the URL it gave up on.
+ * failed; then each window's renderer.log, where the gallery service logs the URL it gave up on,
+ * and its extension host's Remote-SSH log.
  */
 const saveEditorNetwork = () => {
   if (fs.existsSync(netLog)) {
@@ -305,7 +306,15 @@ const saveEditorNetwork = () => {
   const logs = path.join(userData, "logs");
   if (!evidenceDir || !fs.existsSync(logs)) return;
   const into = path.join(evidenceDir, "editor-logs");
-  for (const from of fs.globSync("*/window*/renderer.log", { cwd: logs })) {
+  // Remote-SSH logs its connection, the server's download and the exec server's start in the
+  // window's own extension host, not the renderer: a window that never reports (SLNT-1168) says why there.
+  const windowLogs = [
+    ...fs.globSync("*/window*/renderer.log", { cwd: logs }),
+    ...fs
+      .globSync("*/window*/exthost/**/*.log", { cwd: logs })
+      .filter((file) => /remote\W*ssh/i.test(file) || path.basename(file) === "exthost.log"),
+  ];
+  for (const from of windowLogs) {
     fs.mkdirSync(into, { recursive: true });
     fs.copyFileSync(path.join(logs, from), path.join(into, from.split(path.sep).join("-")));
   }
@@ -322,7 +331,12 @@ try {
 } finally {
   if (evidenceDir) {
     fs.mkdirSync(evidenceDir, { recursive: true });
-    for (const name of ["result.json", "result.json.remote.json", "result.json.second.json"]) {
+    for (const name of [
+      "result.json",
+      "result.json.remote.json",
+      "result.json.second.json",
+      "result.json.unreported.txt",
+    ]) {
       const from = path.join(scratch, name);
       if (fs.existsSync(from)) fs.copyFileSync(from, path.join(evidenceDir, name));
     }
