@@ -152,8 +152,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     note(`${home}/general is the same page`);
     await visible(settings.getByRole("link", { name: "Services", exact: true })).click();
     await page.waitForURL((url) => url.pathname === `${home}/services`);
-    await heading("Page not found");
-    note("Services (not built yet) opens its own address, not found inside Settings");
+    await heading("Services");
+    note("the sidebar's Services opens the project's Services page");
     await navigate(`${home}/general`);
     await heading("General");
 
