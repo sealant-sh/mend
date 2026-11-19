@@ -42,37 +42,58 @@ const dependencies = Layer.mergeAll(
 const runAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(admin), Effect.scoped));
 
-/** A GitHub login as the platform records one on connect. */
-const account = (userId: string, input: ConnectAccountInput) =>
-  new ConnectedAccount({
-    id: `cacc_${userId}_${input.provider}`,
-    provider: input.provider,
-    name: "default",
-    kind: "gh-cli-token",
-    status: "active",
-    metadata: { login: "linus-p" },
-    connectedAt: new Date("2026-11-19T10:00:00.000Z"),
-    updatedAt: new Date("2026-11-19T10:00:00.000Z"),
-    lastUsedAt: null,
-    isDefault: true,
-  });
+const WORK_TOKEN = Object.keys(STAND_IN_WORLD.tokens)[1] ?? "";
+const loginOfToken = (secret: string) => STAND_IN_WORLD.tokens[secret.trim()]?.login ?? "unknown";
 
-/** The platform's side: each person's connected accounts, as Sealant would keep them. */
+/**
+ * The platform's side: each person's GitHub logins as Sealant keeps them, with Mend's own client's
+ * rules for the default. A connect writes the login it names, else the chosen default, else a new
+ * one; the first login is the default, `makeDefault` makes one the default, and removing the
+ * default leaves the only login left as the default.
+ */
 const platform = () => {
   const accounts = new Map<string, Array<ConnectedAccount>>();
+  const held = (userId: string) => accounts.get(userId) ?? [];
   const connectedAccounts: SealantClients["Service"]["connectedAccounts"] = (userId) => ({
-    list: () => Effect.sync(() => accounts.get(userId) ?? []),
-    connect: (input) =>
+    list: () => Effect.sync(() => held(userId)),
+    connect: (input: ConnectAccountInput) =>
       Effect.sync(() => {
-        const made = account(userId, input);
-        accounts.set(userId, [made]);
+        const before = held(userId);
+        const name = input.name ?? before.find((one) => one.isDefault)?.name ?? "personal";
+        const others = before.filter((one) => one.name !== name);
+        const makeDefault = input.makeDefault === true || before.length === 0;
+        const made = new ConnectedAccount({
+          id: `cacc_${userId}_${name}`,
+          provider: input.provider,
+          name,
+          kind: "gh-cli-token",
+          status: "active",
+          metadata: { login: loginOfToken(input.secret) },
+          connectedAt: new Date("2026-11-19T10:00:00.000Z"),
+          updatedAt: new Date("2026-11-19T10:00:00.000Z"),
+          lastUsedAt: null,
+          isDefault: makeDefault || before.find((one) => one.name === name)?.isDefault === true,
+        });
+        accounts.set(userId, [
+          ...others.map((one) =>
+            makeDefault && one.isDefault ? new ConnectedAccount({ ...one, isDefault: false }) : one,
+          ),
+          made,
+        ]);
         return made;
       }),
     disconnect: (id) =>
       Effect.suspend(() => {
-        const [found] = (accounts.get(userId) ?? []).filter((held) => held.id === id);
+        const found = held(userId).find((one) => one.id === id);
         if (found === undefined) return Effect.die(new Error("no such account"));
-        accounts.set(userId, []);
+        const left = held(userId).filter((one) => one.id !== id);
+        const [only, ...more] = left;
+        accounts.set(
+          userId,
+          found.isDefault && only !== undefined && more.length === 0
+            ? [new ConnectedAccount({ ...only, isDefault: true })]
+            : left,
+        );
         return Effect.succeed(found);
       }),
   });
@@ -95,7 +116,7 @@ describe.skipIf(postgres.skip)(
     const answered: Array<string> = [];
 
     const call = async (
-      user: "carol" | "bob" | "erin",
+      user: "carol" | "bob" | "erin" | "dave",
       method: string,
       route: string,
       body?: unknown,
@@ -115,7 +136,7 @@ describe.skipIf(postgres.skip)(
             account_id: string;
             login: string | null;
             sealed_token: string;
-          }>`SELECT user_id, account_id, login, sealed_token FROM user_github_logins ORDER BY user_id`;
+          }>`SELECT user_id, account_id, login, sealed_token FROM user_github_logins ORDER BY user_id, account_id`;
         }),
       );
 
@@ -136,7 +157,8 @@ describe.skipIf(postgres.skip)(
           yield* sql`INSERT INTO "user" (id, name, email, "createdAt") VALUES
           ('carol', 'Carol', 'carol@github.invalid', now()),
           ('bob', 'Bob', 'bob@github.invalid', now()),
-          ('erin', 'Erin', 'erin@github.invalid', now())`;
+          ('erin', 'Erin', 'erin@github.invalid', now()),
+          ('dave', 'Dave', 'dave@github.invalid', now())`;
         }),
       );
       github = await startGithubStandIn();
@@ -183,7 +205,7 @@ describe.skipIf(postgres.skip)(
       const [row] = await sealedRows();
       expect(row).toMatchObject({
         user_id: "carol",
-        account_id: "cacc_carol_github",
+        account_id: "cacc_carol_personal",
         login: "linus-p",
       });
       expect(row?.sealed_token).not.toContain(TOKEN);
@@ -314,7 +336,7 @@ describe.skipIf(postgres.skip)(
         secret: TOKEN,
       });
       await Effect.runPromise(
-        sealant.connectedAccounts("bob").connect({ provider: "github", secret: "never-seen" }),
+        sealant.connectedAccounts("bob").connect({ provider: "github", secret: TOKEN }),
       );
       github.requests.length = 0;
       expect((await call("bob", "GET", "/api/github/repos")).body).toEqual({
@@ -341,7 +363,7 @@ describe.skipIf(postgres.skip)(
       });
       expect(await sealedRows()).toHaveLength(1);
       expect(
-        (await call("carol", "DELETE", "/api/me/sealant/accounts/cacc_carol_github")).status,
+        (await call("carol", "DELETE", "/api/me/sealant/accounts/cacc_carol_personal")).status,
       ).toBe(200);
       expect(await sealedRows()).toEqual([]);
     });
@@ -367,12 +389,98 @@ describe.skipIf(postgres.skip)(
       expect((await sealedRows()).map((row) => row.user_id)).toEqual(["carol"]);
     });
 
+    it("follows the person's default GitHub login when they connect, choose and remove logins", async () => {
+      const connect = (body: Record<string, unknown>) =>
+        call("dave", "POST", "/api/me/sealant/accounts", { provider: "github", ...body });
+      /** Whose login the list answers as: what status names, and the token GitHub was asked with. */
+      const listsAs = async () => {
+        github.requests.length = 0;
+        const status = await call("dave", "GET", "/api/github/status");
+        const owners = await call("dave", "GET", "/api/github/owners");
+        return {
+          status: status.body,
+          owners: owners.body,
+          asked: [...new Set(github.requests.map((request) => request.authorization))],
+        };
+      };
+      const daveCopies = async () =>
+        (await sealedRows()).filter((row) => row.user_id === "dave").map((row) => row.account_id);
+
+      // The first login is the default.
+      expect((await connect({ secret: TOKEN })).status).toBe(200);
+      expect((await listsAs()).asked).toEqual([`Bearer ${TOKEN}`]);
+
+      // A second login, connected without choosing it, leaves the list on the default.
+      expect((await connect({ secret: WORK_TOKEN, name: "work" })).status).toBe(200);
+      expect(await daveCopies()).toEqual(["cacc_dave_personal", "cacc_dave_work"]);
+      const second = await listsAs();
+      expect(second.status).toMatchObject({ authenticated: true, login: "linus-p" });
+      expect(second.asked).toEqual([`Bearer ${TOKEN}`]);
+
+      // Choosing the second as the default (mend connect github --default) moves the list to it.
+      expect((await connect({ secret: WORK_TOKEN, name: "work", makeDefault: true })).status).toBe(
+        200,
+      );
+      const chosen = await listsAs();
+      expect(chosen.status).toMatchObject({ authenticated: true, login: "linus-work" });
+      expect(chosen.owners).toEqual({
+        login: "linus-work",
+        owners: [
+          { login: "linus-work", kind: "user" },
+          { login: "contoso", kind: "organization" },
+        ],
+      });
+      expect(chosen.asked).toEqual([`Bearer ${WORK_TOKEN}`]);
+
+      // Removing the default of two leaves the other as the default, and the list follows it.
+      expect((await call("dave", "DELETE", "/api/me/sealant/accounts/cacc_dave_work")).status).toBe(
+        200,
+      );
+      expect(await daveCopies()).toEqual(["cacc_dave_personal"]);
+      const left = await listsAs();
+      expect(left.status).toMatchObject({ authenticated: true, login: "linus-p" });
+      expect(left.asked).toEqual([`Bearer ${TOKEN}`]);
+
+      // Removing the last leaves no copy, and the list says to connect GitHub.
+      expect(
+        (await call("dave", "DELETE", "/api/me/sealant/accounts/cacc_dave_personal")).status,
+      ).toBe(200);
+      expect(await daveCopies()).toEqual([]);
+      const none = await listsAs();
+      expect(none.status).toMatchObject({ authenticated: false });
+      expect(none.status).not.toHaveProperty("connectAgain");
+      expect(none.asked).toEqual([]);
+    });
+
+    it("drops the copy of a login removed on the platform itself, and asks for the default's", async () => {
+      await call("dave", "POST", "/api/me/sealant/accounts", { provider: "github", secret: TOKEN });
+      // Sealant forgets the login without Mend being told, and a login Mend never saw is the default.
+      sealant.accounts.set("dave", []);
+      await Effect.runPromise(
+        sealant
+          .connectedAccounts("dave")
+          .connect({ provider: "github", secret: WORK_TOKEN, name: "work" }),
+      );
+      github.requests.length = 0;
+      expect((await call("dave", "GET", "/api/github/status")).body).toEqual({
+        available: true,
+        authenticated: false,
+        login: "linus-work",
+        detail: CONNECT_GITHUB_AGAIN,
+        connectAgain: true,
+      });
+      expect((await sealedRows()).filter((row) => row.user_id === "dave")).toEqual([]);
+      expect(github.requests).toEqual([]);
+    });
+
     it("never puts the token in a log line or an answer", () => {
       // Every test above ran through the same server; GitHub's stand-in even echoed the token back.
       expect(answered.length).toBeGreaterThan(10);
-      expect(answered.join("\n")).not.toContain(TOKEN);
+      for (const token of [TOKEN, WORK_TOKEN]) {
+        expect(answered.join("\n")).not.toContain(token);
+        expect(logs.join("\n")).not.toContain(token);
+      }
       expect(logs.length).toBeGreaterThan(0);
-      expect(logs.join("\n")).not.toContain(TOKEN);
     });
   },
 );

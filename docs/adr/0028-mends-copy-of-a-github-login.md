@@ -22,13 +22,21 @@ App installations, not a person's login.
 
 When a person connects a GitHub login through Mend's API (`POST /me/sealant/accounts` with provider
 `github`), Mend still forwards it to Sealant, for workspaces. Once Sealant has accepted it, Mend
-also keeps one copy for that person:
+also keeps a copy of that login, and the person's list uses the copy of their default GitHub login:
 
-- **Where:** `user_github_logins`, one row per person (`user_id` primary key), holding the Sealant
-  connected account it came from, the GitHub login it names, and the token sealed with
-  `SecretCipher` (AES-256-GCM, the machine's `secrets.key`), the same mechanism as Doppler tokens,
-  secret files and MCP server secrets. A person who connects several GitHub logins has a copy of the
-  last one they connected.
+- **Where:** `user_github_logins`, one row per GitHub login the person connected through Mend
+  (`user_id`, `account_id` primary key), holding the Sealant connected account it came from, the
+  GitHub login it names, and the token sealed with `SecretCipher` (AES-256-GCM, the machine's
+  `secrets.key`), the same mechanism as Doppler tokens, secret files and MCP server secrets.
+- **Which copy:** the one of the person's default GitHub login, the login their sessions use
+  (`loginChoiceOf`: the chosen default, or the only login when none is chosen), read from their
+  connected accounts on each request. So connecting a second login leaves the list on the default,
+  `mend connect github --default` moves it to the login just chosen, and removing the default of two
+  moves it to the one left, which Mend's client makes the default. When the default has no copy in
+  Mend (connected before Mend kept copies, or chosen on the platform directly), the list asks to
+  connect GitHub again; with several logins and none chosen, it asks to choose one with
+  `mend connect github --default`. A copy whose login the platform no longer holds is removed the
+  next time the list is read.
 - **What uses it:** only that person's own requests to `github.status`, `github.owners` and
   `github.repos`. The server asks GitHub's REST API (`MEND_GITHUB_API_URL`, `https://api.github.com`
   by default) with `fetch`: `GET /user`, `/user/orgs` (every page), `/user/repos?affiliation=owner`
@@ -40,7 +48,7 @@ also keeps one copy for that person:
   client or shown. A failure becomes a sentence that names the call and what GitHub said (its
   `message` field only, with anything matching the token removed), or the rate limit and when it
   resets.
-- **When it goes:** when the person disconnects that GitHub account (before Mend asks Sealant to),
+- **When it goes:** when the person disconnects that GitHub login (before Mend asks Sealant to),
   when their account is removed (the foreign key cascades), and when GitHub answers 401 for it. Then
   the person's open pages are told (the `accounts` event) and the list says to connect GitHub again.
 - **A login connected before this:** Mend has no copy of it, so the list says "Connect GitHub again
@@ -63,5 +71,6 @@ Pull request reads and `lookupProjectRepository` still run `gh` in a workspace o
 
 - The server's `secrets.key` now also protects GitHub logins. Losing it makes every copy unreadable;
   the list then says to connect GitHub again.
-- Two copies of the same login exist: Sealant's, for workspaces, and Mend's, for the list. They can
-  drift: a login refused by GitHub is removed from Mend's copy only.
+- Two copies of each login exist: Sealant's, for workspaces, and Mend's, for the list. They can
+  drift: a login refused by GitHub is removed from Mend's copies only, and a login connected or
+  chosen on the platform directly, not through Mend, has no copy until it is connected again.

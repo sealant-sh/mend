@@ -3507,16 +3507,21 @@ export const userDopplerConnections = pgTable("user_doppler_connections", {
 });
 
 /**
- * Mend's sealed copy of a person's GitHub login (docs/adr/0028): the Sealant connected account it
- * came from, the GitHub login it names when known, and the token as `SecretCipher` sealed it.
+ * Mend's sealed copy of one of a person's GitHub logins (docs/adr/0028): the Sealant connected
+ * account it came from, the GitHub login it names when known, and the token as `SecretCipher`
+ * sealed it. One row per connected account.
  */
-export const userGithubLogins = pgTable("user_github_logins", {
-  userId: text().primaryKey(),
-  accountId: text().notNull(),
-  login: text(),
-  sealedToken: text().notNull(),
-  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-});
+export const userGithubLogins = pgTable(
+  "user_github_logins",
+  {
+    userId: text().notNull(),
+    accountId: text().notNull(),
+    login: text(),
+    sealedToken: text().notNull(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.accountId] })],
+);
 
 /** Executor credentials and incomplete PKCE exchanges stay sealed on Mend's server. */
 export const organizationExecutors = pgTable("organization_executors", {

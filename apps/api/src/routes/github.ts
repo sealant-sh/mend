@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 
 import {
+  type ConnectedAccount,
   CurrentUser,
   GhFailure,
   GhOwnersView,
@@ -11,12 +12,14 @@ import {
   PullRequestView,
 } from "@mend/api-contracts";
 import { GithubLoginsRepo, type HeldGithubLogin, UserEvents } from "@mend/db";
+import { loginChoiceOf } from "@mend/domain/default-login";
+import { SealantClients } from "@mend/sealant";
 import { SecretCipher } from "@mend/store";
 import { Effect, Layer, Redacted, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { GithubIdentity } from "../github-identity.ts";
+import { GithubIdentity, loginOf, NO_GITHUB_IDENTITY } from "../github-identity.ts";
 import { lookupProjectRepository } from "../project-operations.ts";
 import { GithubApi, type GithubApiFailure } from "../services/github-api.ts";
 
@@ -345,52 +348,148 @@ export const CONNECT_GITHUB_AGAIN =
 const UNREADABLE_COPY =
   "Mend can't read its copy of your GitHub login any more. Connect GitHub again with mend connect github.";
 
+/** Several GitHub logins and none chosen: the person's sessions can't start on GitHub either. */
+export const CHOOSE_DEFAULT_GITHUB =
+  "You have several GitHub logins and none is your default, so Mend doesn't know which one to list with. Choose one with mend connect github --default.";
+
+/** The platform couldn't say which of several copies is the default. */
+const DEFAULT_UNKNOWN =
+  "Mend couldn't ask Sealant which of your GitHub logins is your default. Try again in a moment.";
+
+/** Which of Mend's copies the person's list uses, decided from their logins on the platform. */
+export type GithubCopyChoice =
+  | { readonly kind: "copy"; readonly copy: HeldGithubLogin }
+  /** Their default GitHub login has no copy in Mend. */
+  | { readonly kind: "connect-again"; readonly login: string | null }
+  /** Several GitHub logins, none of them chosen. */
+  | { readonly kind: "choose" }
+  /** No GitHub login at all. */
+  | { readonly kind: "no-login" }
+  /** The platform couldn't be read, and Mend holds several copies. */
+  | { readonly kind: "unknown" };
+
+/**
+ * The copy of the person's default GitHub login (`loginChoiceOf`, the rule their sessions use: the
+ * chosen login, or the only one), and the copies of logins the platform no longer holds, which go.
+ * `accounts` is null when the platform couldn't be read: a single copy is then the one to use.
+ */
+export const githubCopyFor = (
+  accounts: ReadonlyArray<ConnectedAccount> | null,
+  copies: ReadonlyArray<HeldGithubLogin>,
+): { readonly choice: GithubCopyChoice; readonly stale: ReadonlyArray<HeldGithubLogin> } => {
+  if (accounts === null) {
+    const [only, ...more] = copies;
+    if (only === undefined) return { choice: { kind: "no-login" }, stale: [] };
+    return {
+      choice: more.length === 0 ? { kind: "copy", copy: only } : { kind: "unknown" },
+      stale: [],
+    };
+  }
+  const live = new Set(
+    accounts
+      .filter((account) => account.provider === "github" && account.status !== "archived")
+      .map((account) => account.id),
+  );
+  const stale = copies.filter((copy) => !live.has(copy.accountId));
+  const choice = loginChoiceOf(accounts, "github");
+  if (choice._tag === "none") return { choice: { kind: "no-login" }, stale };
+  if (choice._tag === "unchosen" && choice.accounts.length > 1)
+    return { choice: { kind: "choose" }, stale };
+  const followed = choice._tag === "chosen" ? choice.account : choice.accounts[0];
+  const copy = copies.find((held) => held.accountId === followed.id);
+  return {
+    choice:
+      copy === undefined
+        ? { kind: "connect-again", login: loginOf(followed) }
+        : { kind: "copy", copy },
+    stale,
+  };
+};
+
 const listAuthority = Effect.gen(function* () {
   const caller = yield* CurrentUser;
+  const userId = caller.user.id;
   const logins = yield* GithubLoginsRepo;
-  const held = yield* logins.held(caller.user.id);
-  if (held !== null) {
-    const token = yield* (yield* SecretCipher).decrypt(held.sealedToken).pipe(Effect.option);
-    if (token._tag === "Some")
+  const copies = yield* logins.held(userId);
+  // A platform that can't be read leaves the choice to the copies alone (`githubCopyFor`).
+  const accounts = yield* (yield* SealantClients)
+    .connectedAccounts(userId)
+    .list()
+    .pipe(
+      Effect.tapError(() =>
+        Effect.logInfo("github: the caller's connected accounts could not be read"),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+  const { choice, stale } = githubCopyFor(accounts, copies);
+  // A login removed on the platform itself takes its copy with it.
+  for (const copy of stale) yield* logins.forgetAccount(userId, copy.accountId);
+  switch (choice.kind) {
+    case "copy": {
+      const token = yield* (yield* SecretCipher)
+        .decrypt(choice.copy.sealedToken)
+        .pipe(Effect.option);
+      if (token._tag === "Some")
+        return {
+          kind: "own",
+          userId,
+          held: choice.copy,
+          token: Redacted.make(token.value),
+        } satisfies ListAuthority;
+      yield* forgetRefused(userId, choice.copy);
       return {
-        kind: "own",
-        userId: caller.user.id,
-        held,
-        token: Redacted.make(token.value),
+        kind: "none",
+        login: choice.copy.login,
+        detail: UNREADABLE_COPY,
+        connectAgain: true,
       } satisfies ListAuthority;
-    yield* forgetRefused(caller.user.id, held.sealedToken);
-    return {
-      kind: "none",
-      login: held.login,
-      detail: UNREADABLE_COPY,
-      connectAgain: true,
-    } satisfies ListAuthority;
+    }
+    case "connect-again":
+      return {
+        kind: "none",
+        login: choice.login,
+        detail: CONNECT_GITHUB_AGAIN,
+        connectAgain: true,
+      } satisfies ListAuthority;
+    case "choose":
+      return {
+        kind: "none",
+        login: null,
+        detail: CHOOSE_DEFAULT_GITHUB,
+        connectAgain: false,
+      } satisfies ListAuthority;
+    case "unknown":
+      return {
+        kind: "none",
+        login: null,
+        detail: DEFAULT_UNKNOWN,
+        connectAgain: false,
+      } satisfies ListAuthority;
+    case "no-login": {
+      // No GitHub login of their own: the host rule (`GithubIdentity`) decides, as before.
+      const authority = yield* (yield* GithubIdentity).forCaller();
+      if (authority.kind === "host-gh") return { kind: "host-gh" } satisfies ListAuthority;
+      return {
+        kind: "none",
+        login: null,
+        detail: authority.kind === "none" ? authority.detail : NO_GITHUB_IDENTITY,
+        connectAgain: false,
+      } satisfies ListAuthority;
+    }
   }
-  const authority = yield* (yield* GithubIdentity).forCaller();
-  if (authority.kind === "caller")
-    return {
-      kind: "none",
-      login: authority.login,
-      detail: CONNECT_GITHUB_AGAIN,
-      connectAgain: true,
-    } satisfies ListAuthority;
-  if (authority.kind === "none")
-    return {
-      kind: "none",
-      login: null,
-      detail: authority.detail,
-      connectAgain: false,
-    } satisfies ListAuthority;
-  return { kind: "host-gh" } satisfies ListAuthority;
 });
 
 /**
  * Removes the copy GitHub refused (or Mend can no longer read), and tells the person's open pages,
  * which read their logins and this list again and then say to connect GitHub again.
  */
-const forgetRefused = (userId: string, sealedToken: string) =>
+const forgetRefused = (userId: string, copy: HeldGithubLogin) =>
   Effect.gen(function* () {
-    const removed = yield* (yield* GithubLoginsRepo).forgetRefused(userId, sealedToken);
+    const removed = yield* (yield* GithubLoginsRepo).forgetRefused(
+      userId,
+      copy.accountId,
+      copy.sealedToken,
+    );
     if (!removed) return;
     yield* Effect.logInfo("github: Mend's copy of a GitHub login was removed (refused)");
     yield* (yield* UserEvents).changed(userId, "accounts");
@@ -403,7 +502,7 @@ const asOwn = <A>(
 ) =>
   call.pipe(
     Effect.catchTag("GithubLoginRefused", (refused) =>
-      forgetRefused(own.userId, own.held.sealedToken).pipe(
+      forgetRefused(own.userId, own.held).pipe(
         Effect.andThen(Effect.fail(new GhFailure({ message: refused.message }))),
       ),
     ),

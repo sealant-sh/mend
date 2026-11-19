@@ -4,7 +4,9 @@
 
 The repository list asks GitHub's API itself, with no workspace. When someone connects GitHub with
 `mend connect github`, Mend now keeps its own copy of that login, sealed with the server's secrets
-key, beside the one it gives Sealant. `GET /api/github/status` answers from it, and
+key, beside the one it gives Sealant, and the list uses the copy of the person's default GitHub
+login: connecting a second login leaves it on the default, `--default` moves it, and removing the
+default moves it to the login left. `GET /api/github/status` answers from it, and
 `GET /api/github/owners` and `GET /api/github/repos` call `https://api.github.com` as that person:
 their account, every organization they belong to, and one owner's repositories, most recently pushed
 first, or a search within that owner. No workspace starts for a list, an owner switch or a search.

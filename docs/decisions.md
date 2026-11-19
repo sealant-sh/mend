@@ -15,9 +15,9 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 - **2026-11-19: Mend keeps its own sealed copy of a person's GitHub login.** Yiannis, after the
   repository list started a workspace for every list ("gh must work. Don't care how you do it.";
-  SLNT-1194). The server asks GitHub's API itself, with that person's login, for their own list
-  only; the copy goes when they disconnect GitHub, when their account goes, and when GitHub refuses
-  it. Details: [ADR 0028](adr/0028-mends-copy-of-a-github-login.md).
+  SLNT-1194). The server asks GitHub's API itself, with that person's default GitHub login, for
+  their own list only; a copy goes when they disconnect that login, when their account goes, and
+  when GitHub refuses it. Details: [ADR 0028](adr/0028-mends-copy-of-a-github-login.md).
 
 - **2026-11-18: on a multi-tenant server, anyone signed in can create an organization.** Put to
   Yiannis by the web redesign's orchestrator with no objection (SLNT-1139). They become its owner

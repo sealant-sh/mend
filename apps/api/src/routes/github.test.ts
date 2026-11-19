@@ -1,8 +1,15 @@
-import { GhFailure } from "@mend/api-contracts";
+import { ConnectedAccount, GhFailure } from "@mend/api-contracts";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { classifyGhError, GhError, listOwners, listRepos, parseGithubRepo } from "./github.ts";
+import {
+  classifyGhError,
+  GhError,
+  githubCopyFor,
+  listOwners,
+  listRepos,
+  parseGithubRepo,
+} from "./github.ts";
 
 describe("parseGithubRepo", () => {
   it("reads owner/name from every GitHub origin shape", () => {
@@ -173,5 +180,46 @@ describe("listing a GitHub login's organizations and repositories", () => {
   it("passes on gh's own words when the login is signed out", async () => {
     const refused = await fails(listOwners(standInGh({ ...WORLD, signedOut: true }).run));
     expect(refused.message).toContain("gh auth login");
+  });
+});
+
+const githubLogin = (id: string, isDefault: boolean) =>
+  new ConnectedAccount({
+    id,
+    provider: "github",
+    name: id,
+    kind: "gh-cli-token",
+    status: "active",
+    metadata: { login: id },
+    connectedAt: new Date("2026-11-19T10:00:00.000Z"),
+    updatedAt: new Date("2026-11-19T10:00:00.000Z"),
+    lastUsedAt: null,
+    isDefault,
+  });
+const copyOf = (accountId: string) => ({
+  accountId,
+  login: accountId,
+  sealedToken: `v1.sealed.${accountId}`,
+  updatedAt: new Date("2026-11-19T10:00:00.000Z"),
+});
+
+describe("which of Mend's copies the list uses", () => {
+  it("asks the person to choose when they hold several GitHub logins and none is the default", () => {
+    const { choice } = githubCopyFor(
+      [githubLogin("personal", false), githubLogin("work", false)],
+      [copyOf("personal"), copyOf("work")],
+    );
+    expect(choice).toEqual({ kind: "choose" });
+  });
+
+  it("uses a lone copy when the platform can't be read, and guesses between none of several", () => {
+    expect(githubCopyFor(null, [copyOf("personal")]).choice).toEqual({
+      kind: "copy",
+      copy: copyOf("personal"),
+    });
+    expect(githubCopyFor(null, [copyOf("personal"), copyOf("work")]).choice).toEqual({
+      kind: "unknown",
+    });
+    expect(githubCopyFor(null, [copyOf("personal")]).stale).toEqual([]);
   });
 });

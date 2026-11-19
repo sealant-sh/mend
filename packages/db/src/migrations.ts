@@ -5848,19 +5848,20 @@ export const migrations = {
     yield* sql`CREATE INDEX IF NOT EXISTS follow_ups_change_requester_idx
       ON follow_ups (change_id, requested_by, created_at)`;
   }),
-  // Mend's own copy of each person's GitHub login (docs/adr/0028-mends-copy-of-a-github-login.md;
-  // SLNT-1194): one per person, sealed with the machine's secrets key, written when the person
-  // connects GitHub through Mend's API, read only for their own repository list. It goes with the
-  // account, when they disconnect that GitHub account, and when GitHub refuses it.
+  // Mend's own copy of a person's GitHub logins (docs/adr/0028-mends-copy-of-a-github-login.md;
+  // SLNT-1194): one per GitHub login they connect through Mend's API, sealed with the machine's
+  // secrets key, read only for their own repository list, which uses the copy of their default
+  // login. Each goes with the account, when they disconnect that login, and when GitHub refuses it.
   "0233_user_github_logins": Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`
       CREATE TABLE user_github_logins (
-        user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE CASCADE,
+        user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
         account_id text NOT NULL,
         login text,
         sealed_token text NOT NULL,
-        updated_at timestamptz NOT NULL DEFAULT now()
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, account_id)
       )`;
   }),
 };

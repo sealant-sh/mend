@@ -41,18 +41,28 @@ export interface GithubStandIn {
   readonly close: () => Promise<void>;
 }
 
-/** A small GitHub: one login in two organizations, one of which shows it nothing. */
+/**
+ * A small GitHub: one login in two organizations, one of which shows it nothing, and a second login
+ * in an organization of its own.
+ */
 export const STAND_IN_WORLD: StandInWorld = {
   tokens: {
     "stand-in-token-for-linus-p": {
       login: "linus-p",
       organizations: ["northwind", "acme"],
     },
+    // A second GitHub login the same person may connect, for work.
+    "stand-in-token-for-linus-work": {
+      login: "linus-work",
+      organizations: ["contoso"],
+    },
   },
   repositories: {
     "linus-p": ["dotfiles", "notes"],
     northwind: ["checkout-api", "web", "checkout-web"],
     acme: [],
+    "linus-work": ["side-project"],
+    contoso: ["portal"],
   },
 };
 
