@@ -186,6 +186,9 @@ function PageGroup({
                 render={
                   <Link
                     {...settingsLink(page.id)}
+                    // Only the page this address shows is current: the router's own match is by
+                    // prefix, so General (`/settings/organization`) would claim every organization page.
+                    activeOptions={{ exact: true }}
                     aria-current={active ? "page" : undefined}
                     aria-label={count === undefined ? undefined : `${page.label}, ${count}`}
                   />
@@ -286,6 +289,7 @@ function ProjectsGroup({
                   render={
                     <Link
                       {...settingsLink(page.id, shown.id)}
+                      activeOptions={{ exact: true }}
                       aria-current={active ? "page" : undefined}
                     />
                   }
