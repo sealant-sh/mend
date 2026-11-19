@@ -6,6 +6,9 @@ import {
   agentLoginNote,
   agentLoginState,
   anyAgentConnected,
+  arrivedToast,
+  loginArrived,
+  loginLine,
   connectCommand,
   connectedLine,
   initialAgent,
@@ -163,5 +166,66 @@ describe("keyProblem", () => {
         "Anthropic keys start with sk-ant-. Paste another key here, or create a new one in the Anthropic Console.",
     });
     expect(keyProblem("codex", "not-a-key")?.title).toBe("That isn't an OpenAI API key.");
+    // OpenAI's sk- prefix also starts an Anthropic key.
+    expect(keyProblem("codex", "sk-ant-api03-abc")?.title).toBe("That isn't an OpenAI API key.");
+  });
+});
+
+const since = () => "3m ago";
+
+describe("Settings' login lines", () => {
+  it("names a subscription's owner and never any part of a key", () => {
+    expect(loginLine("claude", agentLoginState([claude], "claude"), since)).toBe(
+      "linus@northwind.dev · subscription. Connected 3m ago.",
+    );
+    const line = loginLine("codex", agentLoginState([codexKey], "codex"), since);
+    expect(line).toBe("OpenAI API key. Saved 3m ago.");
+    expect(line).not.toContain("a91f");
+  });
+
+  it("says when there is no login, and what a refused one needs", () => {
+    expect(loginLine("claude", { kind: "none" }, since)).toBe(
+      "Not connected. Claude Code sessions can't start until you connect a login.",
+    );
+    const refused = account({ id: "c2", provider: "claude", status: "invalid" });
+    expect(loginLine("claude", agentLoginState([refused], "claude"), since)).toContain(
+      "Run the command again.",
+    );
+  });
+
+  it("reads GitHub's login for gh", () => {
+    const login = account({
+      id: "g2",
+      provider: "github",
+      kind: "gh-cli-token",
+      login: undefined,
+      metadata: { login: "linus-p" },
+    });
+    expect(loginLine("github", agentLoginState([login], "github"), since)).toBe(
+      "Connected as linus-p 3m ago. Your sessions' gh uses it.",
+    );
+    expect(loginLine("github", { kind: "none" }, since)).toBe(
+      "Your sessions run gh without a GitHub login.",
+    );
+    expect(arrivedToast("github", login)).toBe("GitHub is connected as linus-p.");
+  });
+
+  it("knows when a waited-for login arrived", () => {
+    const at = new Date("2026-11-18T10:05:00.000Z");
+    const state = agentLoginState([claude], "claude");
+    // None at first, or a refused one: any working login has arrived, however old its account.
+    expect(loginArrived(state, { login: { kind: "none" }, at })).toBe(true);
+    // The same login, untouched: nothing arrived.
+    expect(loginArrived(state, { login: state, at })).toBe(false);
+    // The same account written again (a replacement).
+    const rewritten = account({
+      id: "c1",
+      provider: "claude",
+      updatedAt: new Date("2026-11-18T10:06:00.000Z"),
+    });
+    expect(loginArrived(agentLoginState([rewritten], "claude"), { login: state, at })).toBe(true);
+    expect(loginArrived({ kind: "none" }, { login: state, at })).toBe(false);
+    expect(arrivedToast("claude", claude)).toBe("Claude Code is connected as linus@northwind.dev.");
+    expect(arrivedToast("codex", codexKey)).toBe("Codex is connected with an OpenAI API key.");
   });
 });

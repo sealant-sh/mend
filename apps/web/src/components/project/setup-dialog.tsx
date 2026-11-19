@@ -7,7 +7,6 @@ import { CircleX, InfoIcon } from "lucide-react";
 import { useState } from "react";
 
 import { QueryError } from "#/components/route-screens";
-import { laterPage } from "#/lib/later-pages";
 import { agentLogin } from "#/lib/new-session";
 import { usePhone } from "#/lib/phone";
 import { startSetupSession } from "#/lib/project-starts";
@@ -119,7 +118,7 @@ export function SetupDialog({
               setup session from here.
             </p>
             <Link
-              {...laterPage("settings/agent-logins")}
+              to="/settings/agent-logins"
               className={cn(buttonVariants({ variant: "outline", size }), "mt-2")}
             >
               Open Agent logins and Git

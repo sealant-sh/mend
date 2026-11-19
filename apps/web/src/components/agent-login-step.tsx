@@ -1,12 +1,10 @@
 import type { SealantIdentity } from "@mend/api-contracts";
 import { InlineAlert } from "@mend/ui/components/banner";
-import { CopyField } from "@mend/ui/components/copy-field";
 import { Button } from "@mend/ui/components/ui/button";
-import { Input } from "@mend/ui/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@mend/ui/components/ui/tabs";
-import { useMutation, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useSuspenseQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { type ClipboardEvent, useId, useState, useSyncExternalStore } from "react";
+import { useId, useState } from "react";
 
 import {
   AGENT_FACTS,
@@ -20,34 +18,22 @@ import {
   connectCommand,
   connectedLine,
   initialAgent,
-  keyProblem,
   refusedWords,
-  rejectedAdvice,
 } from "#/lib/agent-login";
 import { accountNameOptions } from "#/lib/auth-client";
-import {
-  requestFailure,
-  savedModeLine,
-  signInCommand,
-  waitedFor,
-  whenSince,
-} from "#/lib/git-access";
+import { savedModeLine, waitedFor, whenSince } from "#/lib/git-access";
 import { usePhone } from "#/lib/phone";
 import { useTRPC } from "#/lib/trpc";
 import { useSecond } from "#/lib/use-second";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
+import {
+  ApiKeyField,
+  ConnectCommands,
+  KeyConsoleLink,
+  useApiKeySave,
+} from "./agent-login-panels.tsx";
 import { SectionTitle, SetupActions, SetupFrame, WorksLine } from "./setup-frame.tsx";
-
-const noChange = () => () => {};
-
-/** This server's address as the browser reached it, for `mend login --url`. */
-const useOrigin = (): string =>
-  useSyncExternalStore(
-    noChange,
-    () => window.location.origin,
-    () => "",
-  );
 
 type Mode = "command" | "key";
 
@@ -171,7 +157,6 @@ function RunCommand({
   readonly onUseKey: () => void;
 }) {
   const facts = AGENT_FACTS[agent];
-  const origin = useOrigin();
   // How long the page has waited: from when this agent's commands appeared.
   const [waitingSince] = useState(() => new Date());
   return (
@@ -182,17 +167,8 @@ function RunCommand({
         then run the second command. It opens {facts.service}'s sign-in in that computer's browser
         and passes the login to Mend when you finish.
       </p>
-      <div className="mt-3 grid gap-2">
-        <CopyField
-          value={signInCommand(origin)}
-          label="Copy command"
-          size={phone ? "touch" : "default"}
-        />
-        <CopyField
-          value={connectCommand(agent)}
-          label="Copy command"
-          size={phone ? "touch" : "default"}
-        />
+      <div className="mt-3">
+        <ConnectCommands command={connectCommand(agent)} phone={phone} />
       </div>
       <div className="mt-6 grid gap-4 border-t pt-5 lg:pt-6">
         {login.kind === "connected" ? (
@@ -248,28 +224,8 @@ function ApiKey({
   readonly focus: boolean;
   readonly onRunCommand: () => void;
 }) {
-  const trpc = useTRPC();
-  const queryClient = useQueryClient();
-  const id = useId();
   const facts = AGENT_FACTS[agent];
-  const [key, setKey] = useState("");
-  const [problem, setProblem] = useState<ReturnType<typeof keyProblem>>(null);
-  const connect = useMutation(
-    trpc.platform.connectAccount.mutationOptions({
-      // Its variables carry the key: gone from the mutation cache once nothing shows its result.
-      gcTime: 0,
-      onSuccess: () => queryClient.invalidateQueries(trpc.platform.sealantIdentity.queryFilter()),
-    }),
-  );
-
-  const send = (typed: string) => {
-    const secret = typed.trim();
-    setKey("");
-    connect.reset();
-    const found = keyProblem(agent, secret);
-    setProblem(found);
-    if (found === null) connect.mutate({ provider: agent, secret, login: "api-key" });
-  };
+  const save = useApiKeySave(agent);
 
   const runCommand = (
     <p className="text-row max-lg:text-sm">
@@ -311,25 +267,10 @@ function ApiKey({
     );
   }
 
-  const rejected =
-    problem ??
-    (connect.isError
-      ? {
-          title: "Mend couldn't save this key.",
-          advice: `${requestFailure(connect.error)} ${rejectedAdvice(agent)}`,
-        }
-      : null);
   const refused = login.kind === "refused" ? refusedWords(agent, login.key) : null;
 
   return (
-    <form
-      noValidate
-      className="contents"
-      onSubmit={(event) => {
-        event.preventDefault();
-        if (!connect.isPending) send(key);
-      }}
-    >
+    <>
       {refused === null ? null : (
         <InlineAlert
           tone="warning"
@@ -340,61 +281,22 @@ function ApiKey({
           {refused.advice}
         </InlineAlert>
       )}
-      <label
-        htmlFor={id}
-        className="mt-6 mb-2 block text-lead font-medium text-foreground max-lg:text-base"
-      >
-        {facts.issuer} API key
-      </label>
-      <Input
-        id={id}
-        type="password"
-        value={key}
-        placeholder={facts.keyPlaceholder}
-        autoComplete="off"
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        enterKeyHint="done"
-        // Kept focusable while the key is sent, so focus stays here for another try.
-        readOnly={connect.isPending}
-        autoFocus={focus}
-        aria-invalid={rejected !== null}
-        aria-describedby={`${id}-help`}
-        className="h-10 font-mono text-meta max-lg:h-11"
-        onChange={(event) => setKey(event.target.value)}
-        onPaste={(event: ClipboardEvent<HTMLInputElement>) => {
-          event.preventDefault();
-          if (!connect.isPending) send(event.clipboardData.getData("text"));
-        }}
+      <ApiKeyField
+        agent={agent}
+        save={save}
+        phone={phone}
+        now={now}
+        focus={focus}
+        className="mt-6"
+        help={
+          <>
+            Create a key in <KeyConsoleLink agent={agent} />. {facts.name} sessions bill that{" "}
+            {facts.issuer} account. Mend saves the key as soon as you paste it, or when you press
+            Enter.
+          </>
+        }
       />
-      {rejected === null ? null : (
-        <InlineAlert title={rejected.title} size={phone ? "touch" : "default"} className="mt-3">
-          {rejected.advice}
-        </InlineAlert>
-      )}
-      <p
-        id={`${id}-help`}
-        className="mt-2 text-row text-pretty text-muted-foreground max-lg:text-sm"
-      >
-        Create a key in {facts.console.words}{" "}
-        <a
-          href={facts.console.url}
-          target="_blank"
-          rel="noreferrer"
-          className="text-info underline-offset-4 hover:underline"
-        >
-          {facts.console.link}
-        </a>
-        . {facts.name} sessions bill that {facts.issuer} account. Mend saves the key as soon as you
-        paste it, or when you press Enter.
-      </p>
-      {connect.isPending ? (
-        <p role="status" className="mt-3 text-row text-muted-foreground max-lg:text-sm">
-          Saving the key · {waitedFor(new Date(connect.submittedAt), now)}
-        </p>
-      ) : null}
       <div className="mt-4">{runCommand}</div>
-    </form>
+    </>
   );
 }

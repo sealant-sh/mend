@@ -38,7 +38,6 @@ import { type ReactNode, useEffect, useState } from "react";
 
 import { SidebarToggle } from "#/components/app-sidebar";
 import { WorkspacesRefusedBanner } from "#/components/host-user-namespaces";
-import { laterPage } from "#/lib/later-pages";
 import { loginBlock } from "#/lib/new-session";
 
 import { ComposerResources } from "./composer-resources.tsx";
@@ -56,8 +55,8 @@ const PROMPT_IDS = ["new-session-task", "new-session-task-phone"] as const;
 
 const PLACEHOLDER = "Describe a task or ask a question";
 
-/** Where a person adds or chooses an agent login, until the settings route exists. */
-const AGENT_LOGINS = laterPage("settings/agent-logins");
+/** Where a person adds or chooses an agent login. */
+const AGENT_LOGINS = { to: "/settings/agent-logins" } as const;
 
 /**
  * The New session composer, Mend's home (Doop page 2, "Start a session"): write the task, pick the

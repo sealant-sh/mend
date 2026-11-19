@@ -35,6 +35,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
   switch (id) {
     case "a-profile":
       return { to: "/settings/profile" };
+    case "a-logins":
+      return { to: "/settings/agent-logins" };
     case "d-appearance":
       return { to: "/settings/appearance" };
     default:
