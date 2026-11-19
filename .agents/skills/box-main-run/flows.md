@@ -1746,6 +1746,30 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.organization.index.tsx`,
   `apps/web/src/lib/organization-general.ts`
 
+### organization.new-web-members
+
+- **Map:** organization.md `members-web`, `invite-web`, `invite-revoke`, `role-change`,
+  `password-reset`, `member-removal` (the new web app's Members page)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-org-members`: `/settings/organization/invitations` lands on
+  `/settings/organization/members`; the only owner's role is locked; the owner creates a link bound
+  to an email through Create invitation, a second person joins with it in a second browser and the
+  owner's page says so; the owner makes them an owner and undoes it, makes them a reset link,
+  revokes another link, opens the fold of used and revoked links, reads the page as that person,
+  then removes them. With answers rewritten in the page: the link dialog's and reset panel's
+  pictures, a refused role change, a first read that fails; desk and phone.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: "<person> joined
+  <organization> with your invitation.", "<person> is now an owner of <organization>." with Undo,
+  "Revoked the invitation for anyone with the link.", "Removed <person> from <organization>", the
+  removed person's browser at `/login?reason=access`. The person is removed and every link the run
+  made is revoked.
+- **Mode:** `scripted` (recipes/new-web-org-members.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/organization-members-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.members.tsx`,
+  `apps/web/src/lib/organization-members.ts`
+
 ### shared-control.two-people
 
 - **Map:** shared-control.md `share-on-web`, `share-off-web`, `share-cli`, `share-refused` (a
