@@ -247,10 +247,11 @@ export default async ({ page, web, capture, note }) => {
     let target = first;
     let manage = true;
     let refuseNext = true;
+    let onDefault = false;
     const fixed = () => ({
       configured: true,
       fixed: {
-        targetMode: "worktree",
+        targetMode: onDefault ? "default" : "worktree",
         preview: {
           id: "pv-verify",
           serviceName: "web",
@@ -275,7 +276,9 @@ export default async ({ page, web, capture, note }) => {
           refuseNext = false;
           return { refused: REFUSAL };
         }
-        target = second;
+        // The first move goes to the second worktree, the next to the default branch.
+        if (target === first) target = second;
+        else onDefault = true;
         return fixed();
       },
     });
@@ -327,6 +330,20 @@ export default async ({ page, web, capture, note }) => {
     ).waitFor();
     note("Change worktree moves it: the toast, and the line names the new worktree");
     await shot("project-services-changed-desktop-light");
+    await button("Change worktree…").click();
+    const again = visible(page.getByRole("dialog", { name: "Change preview worktree" }));
+    await again.getByRole("radio", { name: /^Default branch / }).click();
+    await again.getByRole("button", { name: "Change worktree", exact: true }).click();
+    await toastSays(`The preview address now shows the default branch, ${fixture.defaultBranch}.`);
+    await visible(
+      page.getByText(
+        `from the default branch, ${fixture.defaultBranch}, in a worktree Mend keeps`,
+        {
+          exact: false,
+        },
+      ),
+    ).waitFor();
+    note("moved to Default branch: the toast, and the line says it shows the default branch");
 
     // --- Someone who can't manage it (a rewritten read: canManage false) --------------------------
     manage = false;
