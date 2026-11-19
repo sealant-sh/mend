@@ -24,7 +24,6 @@ import {
 import { type RefObject, useEffect, useRef, useState } from "react";
 
 import type { AccountOrganizationDto } from "#/lib/api";
-import { laterPage } from "#/lib/later-pages";
 import { useServerHost } from "#/lib/online";
 import {
   leaveSwitchedNote,
@@ -250,7 +249,7 @@ export function OrganizationMenu({
             ) : null}
           </DropdownMenuGroup>
           <DropdownMenuSeparator />
-          <DropdownMenuItem render={<Link {...laterPage("settings/organization")} />}>
+          <DropdownMenuItem render={<Link to="/settings/organization" />}>
             <SettingsIcon aria-hidden className="text-muted-foreground" />
             <span className="min-w-0 flex-1 truncate">{organizationName} settings</span>
           </DropdownMenuItem>
@@ -443,7 +442,7 @@ export function PhoneOrganizationRow({ organizationName }: { readonly organizati
               className={sheetItemClass}
               onClick={() => {
                 setOpen(false);
-                void navigate(laterPage("settings/organization"));
+                void navigate({ to: "/settings/organization" });
               }}
             >
               <SheetItemBody icon={<SettingsIcon aria-hidden />} chevron>

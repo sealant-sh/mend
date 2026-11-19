@@ -129,6 +129,13 @@ export class InvitationPreview extends Schema.Class<InvitationPreview>("Invitati
   expiresAt: Schema.Date,
 }) {}
 
+/** The organization's new name; trimmed before it is checked and stored. */
+export class RenameOrganizationRequest extends Schema.Class<RenameOrganizationRequest>(
+  "RenameOrganizationRequest",
+)({
+  name: Schema.String,
+}) {}
+
 export class MemberRoleRequest extends Schema.Class<MemberRoleRequest>("MemberRoleRequest")({
   role: OrganizationRole,
 }) {}
@@ -248,6 +255,15 @@ export const organizationGroup = HttpApiGroup.make("organization")
     HttpApiEndpoint.get("current", "/organization", {
       success: OrganizationView,
       error: NotFound,
+    }),
+  )
+  .add(
+    // Owners only: the same name rules as creating one, each refusal with its own tag for the
+    // field. Recorded in the audit log as `organization.renamed`.
+    HttpApiEndpoint.put("rename", "/organization/name", {
+      payload: RenameOrganizationRequest,
+      success: Organization,
+      error: [NotFound, OrganizationNameEmpty, OrganizationNameNotAllowed, OrganizationNameTaken],
     }),
   )
   .add(

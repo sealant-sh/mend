@@ -32,6 +32,7 @@ import {
   AUDIT_PAGE_MAX,
   INVITATION_DEFAULT_DAYS,
   INVITATION_MAX_DAYS,
+  organizationNameIssue,
 } from "@mend/domain/workbench";
 import { handedLinkPath } from "@mend/network";
 import { SessionEngine } from "@mend/sessions";
@@ -138,7 +139,7 @@ export const ownership = (id: string) =>
 
 /**
  * The caller's organization (docs/adr/0003-organizations-and-tenancy.md). Members read the roster
- * and the defaults their projects inherit; owners mint and revoke invitation links, remove members,
+ * and the defaults their projects inherit; owners rename it, mint and revoke invitation links, remove members,
  * change roles, take over projects a departed member created, set those defaults, and read the
  * audit log.
  */
@@ -163,6 +164,41 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
             accessKey: accessKeyIdOf(caller.credential) !== undefined,
           }),
         });
+      }),
+    )
+    .handle("rename", ({ payload }) =>
+      Effect.gen(function* () {
+        const found = yield* ownership(ORGANIZATION);
+        const caller = yield* CurrentUser;
+        const issue = organizationNameIssue(payload.name);
+        if (issue !== null) {
+          return yield* issue.reason === "empty"
+            ? new OrganizationNameEmpty({ message: issue.message })
+            : new OrganizationNameNotAllowed({ message: issue.message });
+        }
+        const renamed = yield* (yield* OrganizationsRepo)
+          .rename(found.organization.id, payload.name.trim())
+          .pipe(
+            Effect.catchTag("OrganizationNotFoundError", () => new NotFound({ id: ORGANIZATION })),
+            Effect.catchTag("OrganizationNameTakenError", ({ name }) =>
+              Effect.fail(
+                new OrganizationNameTaken({
+                  name,
+                  message: `There's already an organization called ${name}. Pick another name.`,
+                }),
+              ),
+            ),
+          );
+        // The same entry the operator's rename writes, so the log reads one way for both.
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: renamed.id,
+          actorUserId: caller.user.id,
+          action: "organization.renamed",
+          subjectType: "organization",
+          subjectId: renamed.id,
+          data: { name: renamed.name },
+        });
+        return renamed;
       }),
     )
     .handle("members", () =>

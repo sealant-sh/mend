@@ -51,6 +51,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/appearance" };
     case "o-audit":
       return { to: "/settings/organization/audit-log" };
+    case "o-general":
+      return { to: "/settings/organization" };
     default:
       return laterPage(settingsPathOf(settingsPage(id), projectId).slice(1));
   }
