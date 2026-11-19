@@ -1,0 +1,82 @@
+[
+  {
+    "name": "01-waits-command",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "waits-command",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7300"
+    ]
+  },
+  {
+    "name": "02-waits-tool",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "waits-tool",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7301"
+    ]
+  },
+  {
+    "name": "03-waits-edit",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "waits-edit",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7302"
+    ]
+  },
+  {
+    "name": "04-waits-question",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "waits-question",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7303"
+    ]
+  },
+  {
+    "name": "05-waits-unnamed",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "waits-unnamed",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7304"
+    ]
+  }
+]
