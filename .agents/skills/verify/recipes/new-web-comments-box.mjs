@@ -231,7 +231,8 @@ export default async ({ page, web, capture, note }) => {
 
   // Back on the change: what was sent reads Sent; a second look resolves one.
   await openChange(id);
-  await comment("Make the wait grow").getByText(/^Sent/).waitFor({ timeout: 60_000 });
+  // Every file was marked viewed, so line comments are folded away: read the whole-change one.
+  await comment("callers already pass both").getByText(/^Sent/).waitFor({ timeout: 60_000 });
   note(
     `back on the change: the sent comments read 'Sent'; the unchecked one still 'Not sent'; the toolbar reads "${await visible(
       page.getByText(/resolved, \d+ open\.$|Your comments stay here/),
@@ -239,7 +240,7 @@ export default async ({ page, web, capture, note }) => {
       .innerText()
       .catch(() => "?")}"`,
   );
-  await comment("Make the wait grow").getByRole("button", { name: "Resolve" }).click();
+  await comment("callers already pass both").getByRole("button", { name: "Resolve" }).click();
   await visible(page.getByText(/1 comment resolved, \d+ open\./))
     .waitFor({ timeout: 15_000 })
     .then(async () =>
