@@ -1,4 +1,5 @@
 import { MintDeviceRequest } from "@mend/api-contracts";
+import { NotificationSettings } from "@mend/domain/workbench";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -18,6 +19,16 @@ export const devicesRouter = router({
     .input(input(Schema.Struct({ id: Schema.String })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.userDevices.revoke({ params: { id: i.id } })),
+    ),
+  // What the signed-in person's phones hear about (`GET`/`PUT /me/notifications`). A save sends
+  // the whole setting and answers it as saved.
+  notificationSettings: procedure.query(({ ctx }) =>
+    run(ctx, (api) => api.devices.notificationSettings()),
+  ),
+  setNotificationSettings: procedure
+    .input(input(NotificationSettings))
+    .mutation(({ ctx, input: payload }) =>
+      run(ctx, (api) => api.devices.setNotificationSettings({ payload })),
     ),
   // The CLI authorize walk (`mend login`): the /authorize page reads the
   // pending request by its short code, then the signed-in user decides.
