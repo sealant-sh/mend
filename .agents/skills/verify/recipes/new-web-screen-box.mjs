@@ -154,7 +154,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
 
   if (real?._tag === "Screen" && real.life._tag === "Live") {
     const bar = body.getByRole("status").first();
-    await visible(body.getByText(/has input/)).waitFor({ timeout: 60_000 });
+    await visible(body.getByText(/has input|takes the input/)).waitFor({ timeout: 60_000 });
     note(`live: ${JSON.stringify(await textOf(bar))}`);
     const take = visible(body.getByRole("button", { name: "Take over" }));
     await take.click();
@@ -162,7 +162,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     note(`Take over: ${JSON.stringify(await textOf(bar))}`);
     note(`its accessibility tree:\n${await body.ariaSnapshot()}`);
     await visible(body.getByRole("button", { name: "Hand back" })).click();
-    await visible(body.getByText(/has input/)).waitFor({ timeout: 30_000 });
+    await visible(body.getByText(/has input|takes the input/)).waitFor({ timeout: 30_000 });
     note(`Hand back: ${JSON.stringify(await textOf(bar))}`);
     await visible(body.getByRole("button", { name: "Full screen" })).click();
     await page.waitForFunction(() => document.fullscreenElement !== null, null, {
