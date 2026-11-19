@@ -61,6 +61,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/organization" };
     case "o-members":
       return { to: "/settings/organization/members" };
+    case "s-server":
+      return { to: "/settings/server" };
     default:
       return laterPage(settingsPathOf(settingsPage(id), projectId).slice(1));
   }

@@ -392,6 +392,30 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.organization.projects.tsx`,
   `apps/web/src/lib/organization-projects.ts`
 
+### settings.new-web-server
+
+- **Map:** exposure.md `exposure-report`, `tenancy-gate`; doctor.md `doctor-web-connection`;
+  workspace-images.md `image-instance-default` (read-only); operator.md `org-list`
+- **Needs:** no session; no turn; web; the server's operator and a second account that isn't one
+- **Do:** Drive the recipe `new-web-settings-server`: Server under "Operators of this server" shows
+  the exposure declaration and every gate item with how it was established, with Check again; the
+  version, where the server runs, its store and session channel; the Sealant connection with Check
+  again (Checking… while it runs; connected, key refused, unreachable and not Sealant each say what
+  Mend saw), and the runtimes offered with the server's Boat lines; the starting workspace image
+  with no editor; tenancy, the multi mode gate item by item and every organization with its member
+  and owner counts ("no owner" for an ownerless one). A section whose read fails shows Try again and
+  the rest stand. Old `/settings/instance/*` and `/settings/sealant` land here. Someone who isn't an
+  operator has no Server in the sidebar, is sent to Profile, and the API answers them 404. On the
+  box, the check reads the box's own Sealant.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no key, token or
+  connection secret in any picture, log or note.
+- **Mode:** `scripted` (recipes/new-web-settings-server.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/server-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.[server].tsx`, `apps/web/src/lib/server-settings.ts`,
+  `apps/web/src/server/routers/operator.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
