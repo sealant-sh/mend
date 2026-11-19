@@ -261,6 +261,33 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.notifications.tsx`, `apps/web/src/lib/notifications.ts`,
   `apps/web/src/server/routers/devices.ts`
 
+### settings.new-web-connected-apps
+
+- **Map:** slack.md `slack-link`, `slack-default-project`; doppler.md `doppler-settings`,
+  `doppler-disconnect`
+- **Needs:** no session; no turn; web; for Slack and Executor for real, a Slack workspace and an
+  Executor connected to the organization
+- **Do:** Drive the recipe `new-web-settings-connected-apps`: Connected apps under "Only you" shows
+  Slack, Executor and Doppler; Doppler connects, replaces and disconnects a token with no part of it
+  ever shown, and the disconnect confirmation counts the projects with a picked config; a linked
+  Slack shows Your default project and unlinks; Executor's row says your link is used before the
+  organization's shared account; `/executor/callback` finishes a link and returns, or says why it
+  didn't; old `/settings/workspace` opens Connected apps; `/slack/link#<code>` names the workspace,
+  the Slack user and the Mend account, warns when it replaces a link, links, and says when a code
+  can't be used; old `/slack/link/<code>` moves the code to the fragment; a signed-out visitor signs
+  in on the same address. On the box, link Slack from a real mention.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; no token in any picture,
+  log or note; no Doppler token left on the account.
+- **Mode:** `scripted` (recipes/new-web-settings-connected-apps.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/connected-apps-page.tsx`,
+  `apps/web/src/components/settings/brand-marks.tsx`,
+  `apps/web/src/routes/_inbox.settings.connected-apps.tsx`,
+  `apps/web/src/routes/_inbox.executor.callback.tsx`, `apps/web/src/routes/slack.link.index.tsx`,
+  `apps/web/src/routes/slack.link.$code.tsx`, `apps/web/src/lib/connected-apps.ts`,
+  `apps/web/src/lib/slack-link.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`

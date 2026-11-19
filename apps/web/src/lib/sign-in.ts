@@ -24,6 +24,9 @@ const SIGNED_OUT_PAGES: ReadonlySet<string> = new Set([
   "reset",
   "authorize",
   "join",
+  // Slack's link page signs a signed-out person in itself: a walk through the server would lose
+  // the code in its fragment.
+  "slack",
   // The phone app's terminal: its URL carries a ticket in place of a cookie.
   "tty-embed",
 ]);
