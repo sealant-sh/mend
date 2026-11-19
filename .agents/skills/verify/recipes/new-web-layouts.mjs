@@ -63,11 +63,10 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
     note(`${name}: the driver kept no picture; its ARIA snapshot stands`);
   };
   const settled = () => page.waitForTimeout(500);
+  // The browser's theme, with the person's choice left on System: the app follows it, where a
+  // class set by hand is put back by the page's own theme.
   const setTheme = async (theme) => {
-    await page.evaluate(
-      (on) => document.documentElement.classList.toggle("dark", on),
-      theme === "dark",
-    );
+    await page.emulateMedia({ colorScheme: theme });
     await settled();
   };
   const both = async (name) => {
@@ -154,8 +153,9 @@ export default async ({ page, web, capture: captureOnce, note, account }) => {
   });
 
   await page.setViewportSize(DESKTOP);
+  await page.emulateMedia({ colorScheme: "light" });
   await open("/no-such-page");
-  await page.evaluate(() => localStorage.setItem("mend-theme", "light"));
+  await page.evaluate(() => localStorage.setItem("mend-theme", "system"));
 
   // The batch's sessions: two in layouts-one, one in layouts-two.
   const rows = await page.evaluate(async () => {
