@@ -751,12 +751,13 @@ flows reuse what earlier ones made:
   were the old app's Screen tab, and are the Screen view in the new web app (SLNT-1157)
 - **Needs:** either; one Codex turn; web; a project whose workspace image has Screen on (else
   `verify-fixture`, and the live states are drawn by fixtures only)
-- **Do:** Drive the recipe `new-web-screen-box` (`pnpm verify drive new-web --box`): it starts a
-  Codex session in a project with Screen on, opens `/sessions/<id>?view=desktop`, reads the Screen
-  view, and when the screen is live takes over, hands back and opens full screen; then it lays
-  fixtures over `screens.read` and `screens.log` (no screen, starting, didn't start, stopped with
-  the session, and a live screen the viewer can't reach, with Reconnect), looks at 390px and stops
-  the session.
+- **Do:** Drive the recipe `new-web-screen-box` (`pnpm verify drive new-web --box`; on a local
+  stack, `new-web-screen`, which turns Screen on in verify-fixture and starts a shell there): it
+  starts a Codex session in a project with Screen on, opens `/sessions/<id>?view=desktop`, reads the
+  Screen view, and when the screen is live takes over, hands back and opens full screen; then it
+  lays fixtures over `screens.read` and `screens.log` (no screen, starting, didn't start, stopped
+  with the session, and a live screen the viewer can't reach, with Reconnect), looks at 390px and
+  stops the session.
 - **See:** each step's note in the recipe's `steps.log`: `?view=desktop` moving to
   `/sessions/<id>/screen` with the Screen tab selected; a live screen's bar ("Codex has input ·
   You're watching", "Display :N · W × H", Full screen, Take over), "You have input · Codex waits
@@ -764,7 +765,7 @@ flows reuse what earlier ones made:
   log newest first with its frames; "No screen in this workspace.", "Starting the screen…", "The
   screen didn't start." with Try again, "The screen stopped with the session." with Resume session,
   and "Mend couldn't reach the screen." with Reconnect; no sideways scroll at 390px.
-- **Mode:** `scripted` (recipes/new-web-screen-box.mjs)
+- **Mode:** `scripted` (recipes/new-web-screen-box.mjs, recipes/new-web-screen.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/screen-view.tsx`,
