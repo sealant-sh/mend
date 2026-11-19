@@ -6,7 +6,8 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@mend/ui/components/ui/empty";
-import { skipToken, useQuery } from "@tanstack/react-query";
+import type { DiffLineAnnotation } from "@pierre/diffs";
+import { skipToken, type UseQueryResult, useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { FileDiffIcon, RefreshCwIcon } from "lucide-react";
 import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
@@ -14,7 +15,12 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 import { QueryView } from "#/components/query-view";
 import { QueryError } from "#/components/route-screens";
 import type { ViewPlace } from "#/components/workspace/views";
-import type { ReviewDiffDto, SessionDetailDto, SessionInboxRowDto } from "#/lib/api";
+import type {
+  ReviewCommentDto,
+  ReviewDiffDto,
+  SessionDetailDto,
+  SessionInboxRowDto,
+} from "#/lib/api";
 import {
   changeFileOf,
   type ChangeFile,
@@ -39,6 +45,7 @@ import { useTRPC } from "#/lib/trpc";
 import { diffLayout } from "#/lib/ui-prefs";
 import { isViewed, markViewed, viewedFiles } from "#/lib/viewed-files";
 
+import { type CommentMark, useChangeComments } from "./change-comments.tsx";
 import { ChangeDescription, useTourCurrent } from "./change-description.tsx";
 import { ChangeDiffs, type DiffsFocus, type MarkedLines, useFolds } from "./change-diffs.tsx";
 import { ChangeFileTree, FILTER_FROM, FileFilter } from "./change-file-tree.tsx";
@@ -47,6 +54,9 @@ import { ChangeToolbar } from "./change-toolbar.tsx";
 import { type TourMoves, TourNote, TourRail } from "./change-tour.tsx";
 import { FilePicker } from "./file-picker.tsx";
 import { useChangeLanding } from "./land-dialog.tsx";
+
+/** What sits between a file's lines: a tour stop's note, or a comment and the box writing one. */
+type BetweenMark = { readonly kind: "tour" } | CommentMark;
 
 /** Narrower than this, the view drops its file column for a picker over the diffs. */
 const NARROW_PX = 768;
@@ -76,9 +86,6 @@ const useWorkspaceSessions = (worktreeId: string): ReadonlyArray<SessionInboxRow
   });
   return rows.isPending || rows.isError ? [] : rows.data;
 };
-
-const plural = (count: number, one: string, many: string) =>
-  `${count.toLocaleString("en")} ${count === 1 ? one : many}`;
 
 /** Where the change starts: "main · 9c41e07", or the commit alone when the base has no name. */
 const baseWords = (detail: SessionDetailDto): string | null => {
@@ -243,12 +250,14 @@ function ReviewBody({
   detail,
   changeId,
   review,
+  comments,
   sessions,
   box,
 }: {
   readonly detail: SessionDetailDto;
   readonly changeId: string;
   readonly review: ReviewDiffDto;
+  readonly comments: UseQueryResult<ReadonlyArray<ReviewCommentDto>, unknown>;
   readonly sessions: ReadonlyArray<SessionInboxRowDto>;
   readonly box: RefObject<HTMLElement | null>;
 }) {
@@ -282,6 +291,35 @@ function ReviewBody({
     readonly showing: string | null;
   } | null>(null);
   const scroller = useRef<HTMLElement | null>(null);
+  const viewedCount = ordered.filter((file) => isViewed(marks, file.path, file.fingerprint)).length;
+  const review24 = useChangeComments({
+    detail,
+    changeId,
+    review,
+    fileCount: ordered.length,
+    viewedAll: ordered.length > 0 && viewedCount === ordered.length,
+    comments,
+    passes: passesRead,
+    narrow,
+    phone,
+    moves: {
+      show: (path, target) => {
+        if (path === null) {
+          setFocus((was) => ({ path: null, nonce: (was?.nonce ?? 0) + 1 }));
+          return;
+        }
+        const file = ordered.find((each) => each.path === path);
+        if (file !== undefined)
+          folds.fold(path, false, isViewed(marks, file.path, file.fingerprint));
+        setShowing(path);
+        setFocus((was) => ({
+          path,
+          nonce: (was?.nonce ?? 0) + 1,
+          ...(target === undefined ? {} : { target, above: 30 }),
+        }));
+      },
+    },
+  });
 
   if (ordered.length === 0)
     return (
@@ -294,7 +332,6 @@ function ReviewBody({
   const viewedOf = (file: ChangeFile) => isViewed(marks, file.path, file.fingerprint);
   const setViewed = (file: ChangeFile, viewed: boolean) =>
     viewedStore.set(markViewed(marks, file.path, file.fingerprint, viewed));
-  const viewedCount = ordered.filter(viewedOf).length;
   const current = ordered.find((file) => file.path === showing) ?? ordered[0] ?? null;
   const nextFocus = (path: string | null, target?: Pick<DiffsFocus, "target" | "above">) =>
     setFocus((was) => ({ path, nonce: (was?.nonce ?? 0) + 1, ...target }));
@@ -304,7 +341,6 @@ function ReviewBody({
     setShowing(path);
     nextFocus(path, target);
   };
-  const generated = ordered.some((file) => file.generated);
   const base = detail.session.baseRef ?? "the base";
 
   // The tour: one stop at a time, its note at its place in the diffs, the stop list above Files.
@@ -372,7 +408,14 @@ function ReviewBody({
         detail={`${base} to checkpoint ${review.checkpointB.ordinal}`}
         layout={layout}
         onLayoutChange={diffLayout.set}
-        actions={landing.action ?? undefined}
+        actions={
+          review24.action === null && landing.action === null ? undefined : (
+            <>
+              {review24.action}
+              {landing.action}
+            </>
+          )
+        }
         note={
           landing.note ?? (
             <>
@@ -381,14 +424,15 @@ function ReviewBody({
                   This workspace's change, from {sessions.length} sessions.
                 </span>
               ) : null}
-              {plural(ordered.length, "file", "files")} changed.
-              {generated ? " Mend folds generated files." : ""}
+              {review24.note}
             </>
           )
         }
       />
       {landing.band}
+      {review24.band}
       {landing.dialog}
+      {review24.dialogs}
       {review.worktreeChangedSinceSnapshot ? (
         <div
           role="status"
@@ -429,6 +473,7 @@ function ReviewBody({
               onSelect={select}
             />
           </section>
+          {review24.column}
           <Sessions sessions={sessions} />
           <Repositories detail={detail} />
           <div className="mt-auto border-t px-3 py-3">
@@ -475,23 +520,39 @@ function ReviewBody({
                   onStartTour={startTour}
                 />
                 {place?.kind === "change" ? note : null}
+                {review24.above}
               </>
             }
-            {...(place?.kind === "line"
-              ? {
-                  between: {
-                    annotations: (file: ChangeFile) =>
-                      file.path === place.path
-                        ? [{ side: "additions" as const, lineNumber: place.after }]
-                        : [],
-                    render: () => note,
-                  },
-                }
-              : {})}
-            under={(file) => (place?.kind === "file" && place.path === file.path ? note : null)}
+            between={{
+              annotations: (file: ChangeFile) => [
+                ...review24.annotations(file),
+                ...(place?.kind === "line" && file.path === place.path
+                  ? [
+                      {
+                        side: "additions" as const,
+                        lineNumber: place.after,
+                        metadata: { kind: "tour" } as const,
+                      },
+                    ]
+                  : []),
+              ],
+              render: (annotation: DiffLineAnnotation<BetweenMark>) =>
+                annotation.metadata.kind === "tour" ? note : review24.render(annotation.metadata),
+            }}
+            under={(file) =>
+              review24.under(file, place?.kind === "file" && place.path === file.path ? note : null)
+            }
             marked={marked}
-            after={<ChangeProofArtifacts changeId={changeId} />}
+            picking={review24.picking}
+            tools={review24.tools}
+            after={
+              <>
+                {review24.after}
+                <ChangeProofArtifacts changeId={changeId} />
+              </>
+            }
           />
+          {review24.bar}
         </div>
       </div>
     </>
@@ -569,6 +630,7 @@ function ChangeReview({
           detail={detail}
           changeId={changeId}
           review={read}
+          comments={comments}
           sessions={sessions}
           box={box}
         />
@@ -585,9 +647,10 @@ function ChangeReview({
  *   (the range is always the whole change today; a narrower range shows no description). The
  *   tour's stop list sits above Files; a stop's note goes between lines through `between`, under
  *   a file's header through `under`, or under the description.
- * - Comments (PR 24): rows between lines through `ChangeDiffs`'s `between`, the Comments and
- *   "Drafts from Mend" sections under Files in the column, Send comments in the toolbar's
- *   `actions`, and the toolbar's note ("Click a line to comment…").
+ * - Comments (`change-comments.tsx`): rows between lines through `between`, line picking, a
+ *   file's "…", the Comments and "Drafts from Mend" sections under Files, comments on the whole
+ *   change over the diffs, Your review after the last file, Send in the toolbar's `actions` (at
+ *   the foot of a narrow view), its note, and the band saying how a send went.
  * - Land… (`land-dialog.tsx`): the toolbar's `actions` and, once something landed, its note;
  *   `#land` opens the dialog.
  */

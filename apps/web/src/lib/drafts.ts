@@ -1,3 +1,5 @@
+import { useSyncExternalStore } from "react";
+
 /**
  * The one store of words a person is writing and has not sent: the session composer's message
  * and its send key, and the messages on their way (`lib/outbox`). They live in sessionStorage per
@@ -90,3 +92,18 @@ export interface ReviewDraftScope {
 /** The draft key of a review comment: one per account, change, review slice and anchor. */
 export const reviewDraftKey = (scope: ReviewDraftScope, anchor: string): string =>
   `review.${scope.userId}.${scope.changeId}.${scope.sliceId}.${anchor}`;
+
+/** Drop a draft once its words were saved, unless the person has written more since. */
+export const clearSentDraft = (key: string, sent: string) => {
+  if (readDraft(key).trim() === sent.trim()) writeDraft(key, "");
+};
+
+/** One draft, read as it changes, and its setter. Empty while the server renders. */
+export const useDraft = (key: string): readonly [string, (value: string) => void] => {
+  const value = useSyncExternalStore(
+    subscribeDrafts,
+    () => readDraft(key),
+    () => "",
+  );
+  return [value, (next) => writeDraft(key, next)];
+};
