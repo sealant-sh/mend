@@ -243,6 +243,24 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.mcp-servers.tsx`,
   `apps/web/src/routes/_inbox.executor.service-callback.tsx`, `apps/web/src/lib/mcp-servers.ts`
 
+### settings.new-web-notifications
+
+- **Map:** none in a feature file (route PR 42: phone notifications, `GET`/`PUT /me/notifications`)
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-settings-notifications`: Notifications shows the four switches
+  as the server holds them under "Only you"; turning one saves it at once, says so in a toast, and
+  the server keeps it; a slow save shows Saving…; a refused one goes back with Try again; Sent to
+  says no phone is paired, and (recorded answer) lists a paired iPhone and leaves a browser out; a
+  failed read shows Try again; the phone width. The recipe puts the setting back.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the account's setting is
+  what it was before the run.
+- **Mode:** `scripted` (recipes/new-web-settings-notifications.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/notifications-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.notifications.tsx`, `apps/web/src/lib/notifications.ts`,
+  `apps/web/src/server/routers/devices.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`

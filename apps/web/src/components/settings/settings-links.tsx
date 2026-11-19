@@ -39,6 +39,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/agent-logins" };
     case "a-mcp":
       return { to: "/settings/mcp-servers" };
+    case "a-notifications":
+      return { to: "/settings/notifications" };
     case "d-appearance":
       return { to: "/settings/appearance" };
     default:
