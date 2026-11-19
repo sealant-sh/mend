@@ -41,6 +41,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/mcp-servers" };
     case "d-appearance":
       return { to: "/settings/appearance" };
+    case "o-audit":
+      return { to: "/settings/organization/audit-log" };
     default:
       return laterPage(settingsPathOf(settingsPage(id), projectId).slice(1));
   }
