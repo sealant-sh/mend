@@ -121,7 +121,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await client(
     async (trpc, [project, image]) =>
       trpc.projects.setWorkspaceImage.mutate({ id: project, request: { workspaceImage: image } }),
-    [fixture.id, { ...before, screen: true }],
+    // Docker in the workspace is off: a local stack's nested Docker doesn't come up, and the
+    // screen doesn't need it.
+    [fixture.id, { ...before, screen: true, services: { ...before.services, docker: false } }],
   );
   const worktree = await client(
     async (trpc, [project, name]) =>
