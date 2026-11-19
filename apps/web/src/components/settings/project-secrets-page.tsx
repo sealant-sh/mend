@@ -16,6 +16,7 @@ import { useTRPC } from "#/lib/trpc";
 import { useProjectSettings } from "#/lib/use-project-settings";
 
 import { QueryView } from "../query-view.tsx";
+import { ClusterBindingsSection } from "./cluster-bindings-section.tsx";
 import {
   ImportDialog,
   RemoveEntryDialog,
@@ -51,7 +52,8 @@ const remember = (event: { readonly currentTarget: HTMLElement }) => event.curre
  * project reads, and its secrets, whose values nobody reads back once saved. The project's
  * creator and the organization's owners add, edit, replace, import and remove them; everyone else
  * reads the names (and the variables' values) and who can change them. They belong to this project
- * alone: nothing in the organization or on the server supplies them (docs/adr/0025).
+ * alone: nothing in the organization or on the server supplies them (docs/adr/0025). On a server
+ * that runs workspaces on Kubernetes, the project's cluster bindings follow.
  */
 export function ProjectSecretsPage({ projectId }: { readonly projectId: string }) {
   const trpc = useTRPC();
@@ -222,6 +224,7 @@ export function ProjectSecretsPage({ projectId }: { readonly projectId: string }
           </div>
         ) : null}
       </SettingSection>
+      <ClusterBindingsSection projectId={project.id} projectName={project.name} manage={manage} />
       {open?.kind === "variable" ? (
         <VariableDialog
           key={open.n}
