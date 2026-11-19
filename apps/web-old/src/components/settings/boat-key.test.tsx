@@ -15,7 +15,7 @@ import { Organization, type OrganizationRole } from "@mend/domain/workbench";
 import { QueryClient } from "@tanstack/react-query";
 import { act, Suspense } from "react";
 import type { Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type {
   BoatKeyCheckDto,
@@ -555,7 +555,17 @@ describe("the Boat page, connected", () => {
 });
 
 describe("the Boat page, full check", () => {
-  const FINISHED = new Date(Date.now() - 60_000);
+  // Local midday, so a check a minute ago is today in any time zone and the page names it by its
+  // clock time alone; on the real clock a run just after midnight reads yesterday's date.
+  const NOW = new Date(2026, 10, 19, 12, 0, 0);
+  const FINISHED = new Date(NOW.getTime() - 60_000);
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it("says what a full check costs before it runs, then shows each step it passed", async () => {
     const passed = { last: boatKeyProofFixture("passed", FINISHED), runningSince: null };
@@ -573,7 +583,7 @@ describe("the Boat page, full check", () => {
     await click(byText("button", "Run the full check"));
     await settle();
     expect(state.calls.filter((call) => call.path === "boatKey.fullCheck")).toHaveLength(1);
-    expect(text()).toMatch(/full check passed · observed \d\d:\d\d/);
+    expect(text()).toContain("full check passed · observed 11:59");
     expect(rows()).toEqual(
       expect.arrayContaining([
         "Start a VMpassed",
@@ -631,11 +641,11 @@ describe("the Boat page, full check", () => {
     await open({
       status: connected(null, {
         last: boatKeyProofFixture("passed", FINISHED),
-        runningSince: new Date(Date.now() - 20_000),
+        runningSince: new Date(NOW.getTime() - 20_000),
       }),
       role: "owner",
     });
-    expect(text()).toMatch(/full check running · started \d\d:\d\d/);
+    expect(text()).toContain("full check running · started 11:59");
     expect(text()).toContain("You can leave this page: Sealant keeps the result");
     expect(byText("button", "Full check running…").hasAttribute("disabled")).toBe(true);
   });
