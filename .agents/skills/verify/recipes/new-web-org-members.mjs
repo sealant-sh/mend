@@ -143,7 +143,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.goto(`${web}/settings/organization/invitations`);
   await page.waitForURL((url) => url.pathname === "/settings/organization/members");
   note("/settings/organization/invitations → /settings/organization/members");
-  await hydrated();
+  // Settle the page as every other step does: the dev server may reload it once on first load.
+  await open("/settings/organization/members");
   await heading("Members");
   await visible(page.getByText(`Everyone in ${organization}`, { exact: true })).waitFor();
   await visible(page.getByText(`You're ${organization}'s only owner.`)).waitFor();
