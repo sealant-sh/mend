@@ -101,11 +101,23 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     null,
   );
   if (fixture === undefined) throw new Error("no project verify-fixture on this stack");
-  const before = imageOf(
+  // The project's own image, or, when it has none yet, the organization's that it would copy.
+  const own = imageOf(
     await client(async (trpc, project) => trpc.projects.detail.query({ id: project }), fixture.id),
   );
-  if (before === null) throw new Error("verify-fixture's detail holds no family image");
-  note(`verify-fixture's image before: ${JSON.stringify(before)}`);
+  const before = own ??
+    imageOf(await client(async (trpc) => trpc.organization.settings.query(), null)) ??
+    imageOf(await client(async (trpc) => trpc.organization.runtime.query(), null)) ?? {
+      mode: "family",
+      os: "arch",
+      packages: [],
+      shell: "zsh",
+      services: { docker: true },
+      screen: false,
+    };
+  note(
+    `verify-fixture's image before (${own === null ? "none of its own; the organization's" : "its own"}): ${JSON.stringify(before)}`,
+  );
   await client(
     async (trpc, [project, image]) =>
       trpc.projects.setWorkspaceImage.mutate({ id: project, request: { workspaceImage: image } }),
@@ -317,5 +329,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       trpc.projects.setWorkspaceImage.mutate({ id: project, request: { workspaceImage: image } }),
     [fixture.id, before],
   );
-  note(`stopped session ${id} and put verify-fixture's image back`);
+  note(
+    `stopped session ${id} and set verify-fixture's image back to Screen ${before.screen ? "on" : "off"}`,
+  );
 };
