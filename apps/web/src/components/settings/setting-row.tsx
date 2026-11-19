@@ -71,24 +71,31 @@ export function SettingRow({
 
 /**
  * A heading over a run of rows ("Profile", "Sign out", "Display"), with the hairline under it.
- * `description` is one muted line under the heading, above the hairline.
+ * `description` is one muted line under the heading, above the hairline. `action` sits on its right
+ * on the desk (an "Add server…" button) and is left to the page on a phone, where it goes under the
+ * rows.
  */
 export function SettingSection({
   title,
   description,
+  action,
   children,
 }: {
   readonly title: string;
   readonly description?: ReactNode;
+  readonly action?: ReactNode;
   readonly children: ReactNode;
 }) {
   return (
     <section aria-label={title} className="mt-7 first:mt-0">
-      <div className="border-b border-border pb-2.5 max-lg:px-4">
-        <h2 className="text-lead font-semibold">{title}</h2>
-        {description === undefined ? null : (
-          <p className="mt-0.5 text-row text-pretty text-muted-foreground">{description}</p>
-        )}
+      <div className="flex items-start gap-6 border-b border-border pb-2.5 max-lg:px-4">
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lead font-semibold">{title}</h2>
+          {description === undefined ? null : (
+            <p className="mt-0.5 text-row text-pretty text-muted-foreground">{description}</p>
+          )}
+        </div>
+        {action === undefined ? null : <div className="flex-none max-lg:hidden">{action}</div>}
       </div>
       {children}
     </section>

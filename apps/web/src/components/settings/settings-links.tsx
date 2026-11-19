@@ -37,6 +37,8 @@ export const settingsLink = (id: SettingsPageId, projectId?: string): LinkProps 
       return { to: "/settings/profile" };
     case "a-logins":
       return { to: "/settings/agent-logins" };
+    case "a-mcp":
+      return { to: "/settings/mcp-servers" };
     case "d-appearance":
       return { to: "/settings/appearance" };
     default:
