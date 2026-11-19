@@ -33,9 +33,7 @@ export class GhOwnersView extends Schema.Class<GhOwnersView>("GhOwnersView")({
 
 export const githubGroup = HttpApiGroup.make("github")
   .add(HttpApiEndpoint.get("status", "/github/status", { success: GhStatusView }))
-  .add(
-    HttpApiEndpoint.get("owners", "/github/owners", { success: GhOwnersView, error: GhFailure }),
-  )
+  .add(HttpApiEndpoint.get("owners", "/github/owners", { success: GhOwnersView, error: GhFailure }))
   .add(
     HttpApiEndpoint.get("repos", "/github/repos", {
       // `owner`: one account's repositories, most recently pushed first (the login's own when

@@ -39,6 +39,10 @@ describe("classifyGhError", () => {
   });
 });
 
+const answer = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
+const refuse = (stderr: string) => ({ exitCode: 1, stdout: "", stderr });
+const pushed = (index: number) => new Date(Date.UTC(2026, 10, 19 - index)).toISOString();
+
 /**
  * A stand-in for gh over a small GitHub: one login, the organizations it belongs to, and each
  * account's repositories. It answers the commands gh answers, in gh's JSON shapes, and refuses
@@ -51,9 +55,6 @@ const standInGh = (world: {
   readonly signedOut?: boolean;
 }) => {
   const calls: Array<ReadonlyArray<string>> = [];
-  const answer = (stdout: string) => ({ exitCode: 0, stdout, stderr: "" });
-  const refuse = (stderr: string) => ({ exitCode: 1, stdout: "", stderr });
-  const pushed = (index: number) => new Date(Date.UTC(2026, 10, 19 - index)).toISOString();
   const run = (args: ReadonlyArray<string>) =>
     Effect.sync(() => {
       calls.push(args);
