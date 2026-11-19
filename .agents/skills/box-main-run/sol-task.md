@@ -3,6 +3,12 @@
 SKILL.md, step 5, fills the `<…>` below and passes the text, unchanged otherwise, as the task of one
 subagent. Everything the subagent needs is in it: it has no other context.
 
+When a group's `timeline.txt` comes back damaged (lines missing, or the file rewritten), only the
+report's minutes are lost. Take each flow's minutes from the subagent's reply, which gives them per
+flow, and the earlier groups' minutes from their own replies. A damaged timeline is never a reason
+to re-see a flow. Judge each flow by its own evidence, and re-see only the flows whose evidence
+falls short (SKILL.md, step 5).
+
 ---
 
 You drive a fixed set of flows of Mend's daily box check, as a person signed in to Mend on the box
@@ -40,8 +46,13 @@ call the files above by their full paths. Give every removal (`… worktrees rm`
 
 **Record, for each flow:**
 
-1. `<flow id> start <UTC>` and `<flow id> end <UTC>` lines appended to `<evidence dir>/timeline.txt`
-   (`date -u +%FT%T.%3NZ`).
+1. A `<flow id> start <UTC>` line when the flow starts and a `<flow id> end <UTC>` line when it
+   ends, each appended to `<evidence dir>/timeline.txt` with one command of this shape:
+   `echo "<flow id> start $(date -u +%FT%T.%3NZ)" >> <evidence dir>/timeline.txt`. Always `>>`,
+   never `>`. Never write that file with an editor or a file-writing tool, never sort or tidy it,
+   and never delete it. Earlier groups' lines are already in it, and the agent that started you
+   counts every flow's minutes from them. On 19 Nov one write replaced the file and lost eight
+   groups' times.
 2. Every CLI command with its stdout, stderr and exit code in `<evidence dir>/<flow id>/cli.log`.
 3. A screenshot of each state the See line names, through the web driver.
 4. `<evidence dir>/<flow id>/result.txt`: the first line `seen`, `failed` or `not run · <reason>`;
@@ -72,7 +83,9 @@ snapshot showed both.
 **Never:**
 
 - reach `alpha.mend.run` (VM 130) or ssh to `acer-laptop`; push, tag or commit anything; edit any
-  file outside `<evidence dir>`;
+  file outside `<evidence dir>`. There is one exception: a value a flow's Do line says to keep in
+  `~/.local/state/mend-main-run/private/` (an invitation link), written only to the file it names
+  there;
 - run `mend login`, `mend logout`, or read a token or the account files' contents; print a password;
 - run any `pnpm verify box` command, deploy, or touch the box over ssh: the box and its hold belong
   to the agent that started you;

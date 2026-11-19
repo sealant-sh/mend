@@ -33,8 +33,10 @@ Services and stops a held set; the desktop has a Services sheet with the same ve
 
 ## How to get to it (user POV)
 
-- Web: on a session page (`/sessions/<id>`), the `Services` card in the right column, and the
-  `Stop services` button beside `Stop` while Services run.
+- Web: the `Services` card on the session's `Preview` tab (`/sessions/<id>/preview`), and the
+  `Stop services` button beside `Stop` while Services run. The session page itself has no `Services`
+  card: its right column's `Preview` section reads `No service running.`, or links each live Service
+  to the Preview tab (`web :8000 · open the Preview tab`).
 - CLI:
   `mend service run [session] --port <port> [--name <n>] [--udp] [--http|--https] [--no-connect] -- <command...>`
   and `mend service run [session] <name> [--no-connect]` (shorthand `mend service <name>`).
@@ -69,13 +71,14 @@ Preconditions:
   started no Service yet, so the Services card starts empty.
 - TUI and desktop steps: the harnesses from [Start a session](./start-session.md).
 
-- **Empty card.** Go to `<web>/sessions/<id>`. The `Services` card reads
-  `none running · mend service run exposes one`.
+- **Empty card.** Go to `<web>/sessions/<id>/preview` (the session's `Preview` tab). The `Services`
+  card reads `none running · mend service run exposes one`.
 - **Start from the CLI.** Run
   `mend service run <id8> --port 8000 --name web --http --no-connect -- <serve-cmd>`. Stdout shows
   `✓ Service web · <status>`, the address lines, and `  logs: mend service logs web`. Exit code `0`.
-- **Observed on the web.** Without reloading, the `Services` card lists `web` with a status word,
-  ending at `reachable` once the port answers. The session page shows `Stop services`.
+- **Observed on the web.** Without reloading the Preview tab, its `Services` card lists `web` with a
+  status word, ending at `reachable` once the port answers. The session page shows `Stop services`,
+  and its `Preview` section links `web :8000` to the Preview tab.
 - **List.** Run `mend service list`. One row reads `web` with status `reachable`, port `:8000` and
   the Service's short id, followed by where it is reachable from here.
 - **Connect.** Run `mend service connect web --port 18000` in its own PTY. Stdout shows

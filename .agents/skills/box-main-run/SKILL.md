@@ -289,9 +289,14 @@ driver's `steps.log` and its screenshots show every part of the flow's See line.
 read-back, is yours to put right before the next flow that touches the same thing, and goes in the
 report. Read them for every flow; open screenshots where the See line names a screen. A flow the
 subagent marked `failed`, or whose evidence falls short, you see again yourself before reporting it
-as failed or filing a ticket. When a subagent's work on a group falls short on more than one flow,
-do the whole group yourself and say so in the report. Note per flow who drove it (Sol, or Opus) and
-whether you re-did it.
+as failed or filing a ticket. Re-see only those flows, however many there are in the group: a flow
+whose own evidence shows every part of its See line stays `seen` by Sol, even beside a failed
+neighbour, a slip elsewhere in the group, or a damaged `timeline.txt` (sol-task.md says what that
+costs). A slip that changed shared state (an extra invitation, a role or visibility not put back) is
+a restore to put right and report, not a reason to re-see other flows. A flow you re-do that makes a
+worktree needs a new name (`main-run-extras2-<sha8>`): the subagent's removed worktree leaves its
+branch, and Mend refuses the name. Note per flow who drove it (Sol, or Opus) and whether you re-did
+it.
 
 How a flow is driven, by you or a subagent:
 

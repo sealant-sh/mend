@@ -16,7 +16,8 @@ files are saved with the main worktree, so its own change stays at its start and
   `mend repo`).
 - `repo-refusals` refuses the session's own project, an unknown or invisible project, a bad or used
   name, a taken worktree name, a project with no origin, and a private project in a shared session.
-- `repo-session-card` shows the `Repositories` card on the session page.
+- `repo-session-card` shows the `Repositories` card on the session page, once the session holds an
+  added repository.
 - `repo-review-line` shows the `repositories ·` line on the review page.
 - `repo-removal-hold` makes a worktree that holds an added repository refuse removal until it is
   forced.
@@ -102,6 +103,9 @@ Preconditions:
   `mend: unknown command "repo" · mend help lists them`. `help.ts` does not list it, and nothing on
   the web, TUI, desktop or mobile adds a repository: the in-workspace helper is the only entry
   point.
+- The session page shows the `Repositories` card only while the session holds a repository added
+  with `mend repo add`. A session that holds none has no card at all, not an empty one: there is
+  nothing to read until the add.
 - The `Repositories` card's title is a plain paragraph, and its rows have no list or region role.
   The state word is plain text. Assert with `getByText` on the path and the state.
 - The review line names each repository by path; it links to the repository's own change only once

@@ -750,8 +750,10 @@ flows reuse what earlier ones made:
 - **Map:** review-change.md `review-open`, `review-diff`; start-session.md `session-page`
 - **Needs:** either (the turn's session); no turn; web; `start-session.boat-turn`
 - **Do:** Recipe `session-review` with `MAIN_RUN_SESSION` set to the turn's session.
-- **See:** on the Now inbox, the session's row menu `Open review` opens `/changes/<id>`, whose diff
-  shows `MAIN-RUN.md` and the added line `seen`.
+- **See:** on the Now inbox, the session's row menu `Open review` opens the session's change at
+  `/sessions/<id>/change` (`/changes/<id>` lands there too; either path is seen), whose diff shows
+  `MAIN-RUN.md` and the added line `seen`. The recipe's exit `0` and its `steps.log` line
+  `Open review on <id8>'s row opened <path>: the diff's MAIN-RUN.md reads … seen` show all of it.
 - **Mode:** `scripted` (recipes/session-review.mjs)
 - **Box-only:** no
 - **Sample:** yes
@@ -916,15 +918,26 @@ flows reuse what earlier ones made:
   `land-change.cli-again`
 - **Do:** Add unlanded work with
   `M run --project <land> --worktree main-run-land-<sha8> -- sh -c 'printf "refused\n" >> LAND.md'`.
-  On the box, in a `mktemp -d` directory, clone `<git dir>/land.git` at `<remote branch>`, commit a
-  file `OUTSIDE.md`, push it back, and record origin's head with
-  `git --git-dir <git dir>/land.git rev-parse <remote branch>`. Run
-  `M land main-run-land-<sha8> --project <land>` with no `--branch`; read `rev-parse` again and
+  On the box, in this order:
+  1. Record `<mend sha>`, the sha Mend last pushed:
+     `git --git-dir <git dir>/land.git rev-parse <remote branch>`.
+  2. In a `mktemp -d` directory, clone `<git dir>/land.git` at `<remote branch>`, write
+     `OUTSIDE.md`, `git add OUTSIDE.md`, make exactly one commit, and push it back. Write these
+     commands fresh: no other commit, no `--allow-empty`, no `|| true`. On 19 Nov a script reused
+     from another flow left an empty commit before the outside one.
+  3. Check that origin holds exactly one commit Mend has not seen:
+     `git --git-dir <git dir>/land.git log --oneline <mend sha>..<remote branch>` prints one line,
+     `OUTSIDE.md`'s commit. Record its sha as `<outside sha>`. If it prints more than one line, set
+     the branch back to `<mend sha>` with the restore's `update-ref` below and do step 2 again,
+     before any `land`.
+
+  Run `M land main-run-land-<sha8> --project <land>` with no `--branch`; read `rev-parse` again and
   `git --git-dir <git dir>/land.git branch --list 'main-run/push-only-*'`; on the review page read
   the `Land` region's first line, then choose `Check origin`. Restore: on the box, set the branch
   back to the sha Mend last pushed
   (`git --git-dir <git dir>/land.git update-ref refs/heads/<remote branch> <mend sha> <outside sha>`)
   and remove the clone.
+
 - **See:** the `land` prints `  landing <branch> to origin · <land> · session <id8> · …`, naming
   Mend's landing branch and not `main-run/push-only-<sha8>`, with no `origin no longer has …` line,
   then `· push refused · <remote branch> · <remote's words>`, exit `1`; origin's head is the outside
@@ -977,11 +990,15 @@ flows reuse what earlier ones made:
 - **Do:** On the live session, as services.md's CLI steps:
   `M service run <id8> --port 8000 --name web --http --no-connect -- python3 -m http.server 8000`,
   `service list`, `service connect web --port 18000` with one curl, `service logs`,
-  `service restart`. Start a second session in the worktree to keep the workspace running:
+  `service restart`. While `web` runs, read its card in the owner's browser: on
+  `<web>/sessions/<id>` the `Preview` section shows a link `web :8000 · open the Preview tab`;
+  choose it (or go to `<web>/sessions/<id>/preview`), and on the Preview tab wait up to 20 s for the
+  `Services` card's `web` row to read `reachable`. The session page itself has no `Services` card.
+  Start a second session in the worktree to keep the workspace running:
   `M run --project <p> --name main-run-live-<sha8> --detach --json -- sleep 1800`; record `<k8>`. In
   the owner's browser open `<web>/api/sessions/<id>/stop-preview`. Then `M stop <id8>` and
   `M stop --services <id8>`.
-- **See:** the session page's `Services` card lists `web` ending at `reachable`; curl prints `200`;
+- **See:** the Preview tab's `Services` card lists `web` ending at `reachable`; curl prints `200`;
   the preview reads `"workspace":"keeps-running"` naming `<k8>`'s session and listing `web`;
   `mend stop` prints `the workspace keeps running for …` and names what keeps the workspace up
   ending `· mend stop --services <id8>`; then `✓ stopped 1 service · …` and `no live services — …`
@@ -1337,9 +1354,16 @@ flows reuse what earlier ones made:
   `<git>/second.git` and no ref; link `<second>` as `main-run-link`. Run
   `M folder rm main-run-sel-<sha8>` (refused while selected). Then
   `M run --project <land> --name main-run-extras-<sha8> -- sh -c 'ls -R /workspace/home /workspace/ref /workspace/repos > EXTRAS.txt 2>&1; true'`
-  and read `EXTRAS.txt` in its change. Choose `refresh` on `main-run-ref`. Restore in the same flow:
-  set the folder's access back to `off`, `remove` the reference and the link,
-  `M folder rm main-run-sel-<sha8>`, and `M worktrees rm main-run-extras-<sha8> --project <land>`.
+  and record its session `<id>` from `✓ base … · session <id8>` and `M sessions --json`. Read
+  `EXTRAS.txt` in its change: in the owner's browser go straight to `<web>/sessions/<id>/change` (do
+  not click `Review change` and wait for the URL: it keeps a query string, so a wait for a URL
+  ending `/change` never matches), wait up to 30 s for
+  `page.getByRole("region", { name: "EXTRAS.txt", exact: true })`, and `note()` the text of its
+  `code` elements. Choose `refresh` (the button reads `Fetch`) on `main-run-ref`. Restore in the
+  same flow: set the folder's access back to `off`, `remove` the reference and the link,
+  `M folder rm main-run-sel-<sha8>`, and
+  `M worktrees rm main-run-extras-<sha8> --project <land> --force` (`EXTRAS.txt` is never landed, so
+  removal without `--force` is refused).
 - **See:** the folder row with `read` pressed; the reference row with its short head sha and
   `fetched <date>` (or the refusal of a `git://` URL in its own words: record which); the
   `Linked projects` row reads `main-run-second`, its worktree (`main`), and
@@ -1439,11 +1463,12 @@ flows reuse what earlier ones made:
 ### session-shell.live-shell
 
 - **Map:** session-shell.md `shell-cli`, `shell-holds`; per-person-homes.md `runs-as-yourself`;
-  repositories-in-session.md `repo-list`, `repo-projects`, `repo-session-card`
-- **Needs:** Boat; no turn; CLI in tmux and web; `start-session.boat-live`
+  repositories-in-session.md `repo-list`, `repo-projects`
+- **Needs:** Boat; no turn; CLI in tmux; `start-session.boat-live`
 - **Do:** `M shell <id8>` in tmux; in it run `id -un; id -u; echo $HOME`, `mend repo list`,
-  `mend repo projects`, and write `/workspace/repo/SHELL.md`; detach with `Ctrl+]`. Read the session
-  page's `Repositories` card. The shell stays open for `services.cli-run`.
+  `mend repo projects`, and write `/workspace/repo/SHELL.md`; detach with `Ctrl+]`. The shell stays
+  open for `services.cli-run`. The session page has no `Repositories` card here: it shows only once
+  a repository is added, and `repositories-in-session.add-second` reads it.
 - **See:** `✓ shell in … session <id8> · <branch> · detach: Ctrl+]`; a login `m` plus 8 characters,
   a uid in 40001–49999 and `/home/<name>` (or the shared-home line, record which);
   `no repositories beside /workspace/repo · …`;
@@ -1664,8 +1689,15 @@ flows reuse what earlier ones made:
 - **Do:** In the owner's browser on Settings · Members, choose `Make member` on the owner's row
   (refused). Choose `Make owner` on the second account's row; `M members`; in the second browser,
   read Settings · Members and look for `Invitations`. In the owner's browser, choose `Make member`
-  scoped to the second account's row by its email, which restores the role in the same flow;
-  `M members`, `M2 invite`. Read the audit log.
+  scoped to the second account's row by its email, which restores the role in the same flow. Then,
+  in this order:
+  1. `M members`. Go on only when the second account's row reads `member`. When the restore's recipe
+     failed (on 19 Nov a sign-in timeout) or the row still reads `owner`, run the restore again and
+     read `M members` again.
+  2. Only then `M2 invite`. Run as an owner it makes a real link, so never run it before step 1
+     reads `member`. If it exits `0` anyway, revoke the link it printed at once on Settings ·
+     Invitations, and record the slip in `result.txt`.
+  3. Read the audit log.
 - **See:** `An organization needs an owner. Make someone else an owner before this one steps down.`;
   the row then reads `owner`, and `M members` agrees; the second browser shows the owner controls
   while it is an owner (record which); after the restore the row and `M members` read `member`, the
@@ -1683,10 +1715,26 @@ flows reuse what earlier ones made:
   member, bound to another email, spent), `invite-revoke`
 - **Needs:** no session; no turn; CLI and web, one browser at a time, plus a fresh signed-out
   browser context
-- **Do:** `M invite --days 1` (link A). In the owner's browser on Settings · Invitations, make a
-  `member` link bound to `main-run-other@example.invalid` (link B), `Done`. In the second browser,
-  open `/join#not-a-token`, link A, then link B. In the owner's browser revoke links A and B, which
-  restores the open list in the same flow. In the signed-out context open link A.
+- **Do:** Each `web` call is its own browser, so the two links travel between them in files of the
+  private directory `~/.local/state/mend-main-run/private/`, never in the evidence:
+  1. `M invite --days 1 > ~/.local/state/mend-main-run/private/invite-a.out`; record the exit code.
+     Line 1 is link A. Copy both lines into `cli.log` with the token cut from the first:
+     `sed '1s/#.*/#<link A>/' ~/.local/state/mend-main-run/private/invite-a.out`.
+  2. In the owner's browser on Settings · Invitations, record `Used and closed <n> links`, then make
+     a `member` link bound to `main-run-other@example.invalid` (link B). In the same recipe, before
+     `Done`: wait for `page.getByRole("dialog")`, read its whole `innerText()` (the warning is the
+     end of a longer line, so waiting for it as an exact paragraph never matches), take the
+     `<web>/join#…` link out of it, `writeFileSync` it to
+     `~/.local/state/mend-main-run/private/link-b.txt`, and `note()` the text with the link replaced
+     by `<link B>`. Then `Done`. Once that recipe ends, link B is gone for good.
+  3. In the second browser (`web2`), one recipe opens `<web>/join#not-a-token`, then link A (line 1
+     of `invite-a.out`), then link B (`link-b.txt`), reading each file with `readFileSync`, and
+     notes each page's text. In `result.txt` call the first page "the not-a-token join page": the
+     evidence scan reads `/join#` followed by text as an invitation link and deletes the file (19
+     Nov).
+  4. In the owner's browser revoke links A and B (`Revoke the invitation for anyone with the link`,
+     `Revoke the invitation for main-run-other@example.invalid`), which restores the open list in
+     the same flow. In the signed-out context open link A.
 - **See:** link A's two lines (`works once · member · expires <day>`); for B, the dialog's
   `Copy it now: Mend shows it only this once.` and the link's line
   `works once · expires <day> · not shown again`; `This link is not an invitation`;
@@ -1799,8 +1847,13 @@ flows reuse what earlier ones made:
 - **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`. In tmux,
   `M2 run --project <second> --name main-run-share-<sha8> -- sleep 1800`; record `<id>` and `<id8>`.
   Open `/sessions/<id>` in both browsers. `M session share <id8> on --yes` (as the owner). In the
-  second browser: `On`, `Keep it off`, `On`, `Turn on`. Reload the owner's page; there choose
-  `Turn off`. `M2 session share <id8> on --yes`, `M2 session share <id8> off`, and in tmux
+  second browser: `On`, `Keep it off`, `On`, `Turn on`. Then, in the owner's browser, open the
+  `Terminal` tab: `<web>/sessions/<id>/terminal`, or the `Terminal` link in the tab row. The session
+  page opens on `Conversation`, which shows only `Type to it in the Terminal tab.`: the read-only
+  line is never there. On the Terminal tab wait up to 30 s for `Only <second> types here`, and read
+  the line. Then choose `Share` in the header; in its popover read
+  `<second> shares control of this session.` and choose `Turn off`.
+  `M2 session share <id8> on --yes`, `M2 session share <id8> off`, and in tmux
   `M2 session share <id8> on` answered `n`. Read the audit log. Restore in the same flow:
   `M2 stop <id8>`, wait until it settles,
   `M2 worktrees rm main-run-share-<sha8> --project <second>`, and set `<second>` back to `private`.
@@ -1809,10 +1862,11 @@ flows reuse what earlier ones made:
   `share` exits `1` with `mend: only the session owner can share control of this session`; in the
   second browser `Off` pressed, the who-pays line (record which layout's words), the dialog
   `Turn on shared control?`, `Off` still pressed after `Keep it off`, then `On` pressed; the owner's
-  page shows a read-only terminal line naming `<second>`, and
-  `<second> shares control of this session.` with `Turn off`, then the viewer line again;
-  `✓ shared control on · <harness> <id8>` and `✓ shared control off · …`, exit `0`;
-  `shared control stays off`; the audit log names both turn-ons and both turn-offs with their
+  Terminal tab shows the read-only line
+  `This session runs in a terminal. Only <second> types here; they can continue it as a conversation.`,
+  and the `Share` popover `<second> shares control of this session.` with `Turn off`, then the
+  viewer line again; `✓ shared control on · <harness> <id8>` and `✓ shared control off · …`, exit
+  `0`; `shared control stays off`; the audit log names both turn-ons and both turn-offs with their
   people. Record whether a `mend run` session shows the switch at all: the map drives it on a
   harness session.
 - **Mode:** `agent`
