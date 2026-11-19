@@ -1494,6 +1494,31 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.projects.$projectId_.configuration.tsx`,
   `apps/web/src/lib/project-settings.ts`
 
+### workspace-images.new-web-project
+
+- **Map:** workspace-images.md `image-project-override`, `image-rejections`, `image-use-default`
+  (read as "start again from a copy of the organization's starting image"); automatic-install.md
+  `install-detected`, `install-custom`, `install-switch`, `install-colocated`; hot-sessions.md
+  `hot-count`, `hot-status`, `hot-rewarm` (route PR 53)
+- **Needs:** no session; no turn; web; Sealant's package catalog
+- **Do:** Drive the recipe `new-web-project-workspace`: it makes a project with no repository and
+  opens `/projects/<id>/settings/workspace` from the settings sidebar; Edit image… with a package
+  Sealant can't find, then bash and the Docker switch saved; Start again from the organization's
+  image and saved; a custom command saved, install switched off and on, the command cleared; the
+  ready-workspace count raised and lowered; the ready workspaces starting again and failing
+  (rewritten status), a status read that fails, and the page as a reader.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: the refused package named
+  with Sealant's reason and nothing saved; the server holding bash and the Docker switch, then a
+  copy of the organization's starting image; `Saved the custom command.`; the switch's line saying
+  the command is kept; `None ready yet` at 1 and `Off` at 0; on the box, a real project's ready
+  workspaces reading `starting` after an image save. The recipe removes the project.
+- **Mode:** `scripted` (recipes/new-web-project-workspace.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/project-workspace-page.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.workspace.tsx`,
+  `apps/web/src/lib/workspace-image.ts`
+
 ### references-folders.new-web-project
 
 - **Map:** references-folders.md `folder-select`, `ref-select`, `host-mounts` (operator of a single
