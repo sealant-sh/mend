@@ -745,6 +745,32 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/workspace/views/record-view.tsx`,
   `apps/web/src/lib/record-rows.ts`, `apps/web/src/lib/screen-log.ts`
 
+### session-page.new-web-screen
+
+- **Map:** none in a feature file: the agent's screen, its log, Take over and Hand back (ADR 0020)
+  were the old app's Screen tab, and are the Screen view in the new web app (SLNT-1157)
+- **Needs:** either; one Codex turn; web; a project whose workspace image has Screen on (else
+  `verify-fixture`, and the live states are drawn by fixtures only)
+- **Do:** Drive the recipe `new-web-screen-box` (`pnpm verify drive new-web --box`): it starts a
+  Codex session in a project with Screen on, opens `/sessions/<id>?view=desktop`, reads the Screen
+  view, and when the screen is live takes over, hands back and opens full screen; then it lays
+  fixtures over `screens.read` and `screens.log` (no screen, starting, didn't start, stopped with
+  the session, and a live screen the viewer can't reach, with Reconnect), looks at 390px and stops
+  the session.
+- **See:** each step's note in the recipe's `steps.log`: `?view=desktop` moving to
+  `/sessions/<id>/screen` with the Screen tab selected; a live screen's bar ("Codex has input ·
+  You're watching", "Display :N · W × H", Full screen, Take over), "You have input · Codex waits
+  until you hand back" after Take over and back after Hand back, the panel full screen; the screen
+  log newest first with its frames; "No screen in this workspace.", "Starting the screen…", "The
+  screen didn't start." with Try again, "The screen stopped with the session." with Resume session,
+  and "Mend couldn't reach the screen." with Reconnect; no sideways scroll at 390px.
+- **Mode:** `scripted` (recipes/new-web-screen-box.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/workspace/views/screen-view.tsx`,
+  `apps/web/src/components/workspace/views/screen-viewer.ts`, `apps/web/src/lib/screen-state.ts`,
+  `apps/web/src/lib/screen-rtc.ts`, `apps/web/src/lib/screen-socket.ts`
+
 ### start-session.boat-turn
 
 - **Map:** start-session.md `start-cli-harness`; models.md `launch-flags`, `model-shown`

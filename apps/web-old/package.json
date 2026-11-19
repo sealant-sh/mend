@@ -31,7 +31,7 @@
     "@mend/sealant": "workspace:*",
     "@mend/t3-contracts": "workspace:*",
     "@mend/ui-old": "workspace:*",
-    "@novnc/novnc": "1.7.0",
+    "@novnc/novnc": "catalog:",
     "@pierre/diffs": "catalog:",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/react-query": "catalog:",

@@ -149,7 +149,7 @@ export default async ({ page, web, capture, note }) => {
 
   // Old links keep working.
   await open(`/sessions/${ids["session-record"]}?view=desktop`);
-  if (pathname() !== `/sessions/${ids["session-record"]}` || page.url().includes("view="))
+  if (pathname() !== `/sessions/${ids["session-record"]}/screen` || page.url().includes("view="))
     throw new Error(`?view=desktop went to ${page.url()}`);
   await open(`/sessions/${ids["session-record"]}?full=1`);
   await tile().waitFor();
@@ -158,7 +158,7 @@ export default async ({ page, web, capture, note }) => {
   await open("/starting/a-draft-from-before");
   if (pathname() !== "/") throw new Error(`/starting/<draft> went to ${page.url()}`);
   note(
-    "old links: ?view=desktop lands on the session without it, ?full=1 opens the session, #checkpoint-1 opens its Record, /starting/<draft> goes home",
+    "old links: ?view=desktop opens its Screen, ?full=1 opens the session, #checkpoint-1 opens its Record, /starting/<draft> goes home",
   );
 
   // Fixtures: what an agent's turn makes, laid over the real sessions' reads in the browser.
