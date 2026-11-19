@@ -5,7 +5,7 @@ import { SessionHistoryRepo, CaptureStoreRepo } from "@mend/db";
 import { ExecutorRepo } from "@mend/db";
 import { ProofArtifactsRepo } from "@mend/db";
 import { McpAppsRepo } from "@mend/db";
-import { DopplerRepo } from "@mend/db";
+import { DopplerRepo, GithubLoginsRepo } from "@mend/db";
 import { ProjectNameTakenError } from "@mend/db";
 import {
   AccessKeysRepo,
@@ -228,6 +228,7 @@ import { RawReadStallLimit } from "../../src/routes/worktrees.ts";
 import { ScreenRtc } from "../../src/screen-rtc.ts";
 import { ScreenWatchLive } from "../../src/screen-watch.ts";
 import { DopplerApi } from "../../src/services/doppler.ts";
+import { GithubApi } from "../../src/services/github-api.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
@@ -436,6 +437,9 @@ export const createTenancyApi = async (
       readonly slackDefaults?: Layer.PartialEffectful<SlackDefaultsRepo["Service"]>;
       readonly doppler?: Layer.PartialEffectful<DopplerRepo["Service"]>;
       readonly dopplerApi?: Layer.PartialEffectful<DopplerApi["Service"]>;
+      readonly githubLogins?: Layer.PartialEffectful<GithubLoginsRepo["Service"]>;
+      readonly userEvents?: Layer.PartialEffectful<UserEvents["Service"]>;
+      readonly githubApi?: Layer.PartialEffectful<GithubApi["Service"]>;
       readonly secretFiles?: Layer.PartialEffectful<SecretFilesRepo["Service"]>;
       readonly savedLayouts?: Layer.PartialEffectful<SavedLayoutsRepo["Service"]>;
       readonly mcpServers?: Layer.PartialEffectful<McpServersRepo["Service"]>;
@@ -465,6 +469,8 @@ export const createTenancyApi = async (
       readonly harnessModels?: Layer.PartialEffectful<HarnessModelsRepo["Service"]>;
       /** Each account's workspace SSH keys on the platform, and the gateway it reports. */
       readonly sshKeys?: SealantClients["Service"]["sshKeys"];
+      /** Each person's connected accounts on the platform (GitHub, Claude, Codex logins). */
+      readonly connectedAccounts?: SealantClients["Service"]["connectedAccounts"];
       readonly workspaceSshInfo?: SealantClients["Service"]["workspaceSshInfo"];
       readonly controlPlaneFeatures?: SealantClients["Service"]["controlPlaneFeatures"];
     };
@@ -903,7 +909,7 @@ export const createTenancyApi = async (
         },
         calls,
       ),
-      recording(UserEvents, "userEvents", {}, calls),
+      recording(UserEvents, "userEvents", options.implement?.userEvents ?? {}, calls),
       recording(UserGitAccessRepo, "gitAccess", options.implement?.gitAccess ?? {}, calls),
       recording(UserGitAuthorRepo, "gitAuthor", options.implement?.gitAuthor ?? {}, calls),
       recording(
@@ -942,9 +948,11 @@ export const createTenancyApi = async (
         SealantClients,
         "sealantClients",
         {
-          connectedAccounts: () => {
-            throw new Error("the harness does not implement sealantClients.connectedAccounts");
-          },
+          connectedAccounts:
+            options.implement?.connectedAccounts ??
+            (() => {
+              throw new Error("the harness does not implement sealantClients.connectedAccounts");
+            }),
           sshKeys:
             options.implement?.sshKeys ??
             (() => {
@@ -1090,6 +1098,8 @@ export const createTenancyApi = async (
       recording(OrganizationExecutor, "executor", options.implement?.executor ?? {}, calls),
       recording(DopplerRepo, "doppler", options.implement?.doppler ?? {}, calls),
       recording(DopplerApi, "dopplerApi", options.implement?.dopplerApi ?? {}, calls),
+      recording(GithubLoginsRepo, "githubLogins", options.implement?.githubLogins ?? {}, calls),
+      recording(GithubApi, "githubApi", options.implement?.githubApi ?? {}, calls),
       recording(SecretFilesRepo, "secretFiles", options.implement?.secretFiles ?? {}, calls),
       recording(SavedLayoutsRepo, "savedLayouts", options.implement?.savedLayouts ?? {}, calls),
       recording(McpServersRepo, "mcpServers", options.implement?.mcpServers ?? {}, calls),

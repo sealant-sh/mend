@@ -530,10 +530,10 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await readAgain([["platform", "sealantIdentity"]]);
     await readAgain([["github"]]);
     await text(/Asking GitHub which organizations linus-p belongs to · \d+s/).waitFor();
-    await text(/short-lived workspace that holds your GitHub login/).waitFor();
+    await text(/Mend asks GitHub for your account and its organizations/).waitFor();
     await page.waitForTimeout(3_000);
     note(
-      "fixture, a GitHub login connected: the page waits, 'Asking GitHub which organizations linus-p belongs to · Ns', and says Mend asks from a short-lived workspace",
+      "fixture, a GitHub login connected: the page waits, 'Asking GitHub which organizations linus-p belongs to · Ns', and says what Mend asks GitHub for",
     );
     await capture("project-list-waiting-desktop-light");
     gate.resolve();

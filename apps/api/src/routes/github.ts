@@ -10,19 +10,22 @@ import {
   MendApi,
   PullRequestView,
 } from "@mend/api-contracts";
-import { gh as ghIn, PullRequestWorkspaces } from "@mend/landing";
-import { Effect, Layer, Schema } from "effect";
+import { GithubLoginsRepo, type HeldGithubLogin, UserEvents } from "@mend/db";
+import { SecretCipher } from "@mend/store";
+import { Effect, Layer, Redacted, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/http-api";
 
 import { GithubIdentity } from "../github-identity.ts";
 import { lookupProjectRepository } from "../project-operations.ts";
+import { GithubApi, type GithubApiFailure } from "../services/github-api.ts";
 
 /**
- * Adoption discovery through the host's own GitHub CLI (plan §17, decided
- * 2026-08-02). The credentials are gh's, not Mend's: whatever `gh auth login`
- * set up on this machine answers here, and a missing or signed-out gh is
- * reported as status — never invented around with a Mend-held token.
+ * Adoption discovery: whose GitHub repositories a person can add. With a connected GitHub login,
+ * Mend asks GitHub's API itself with its own sealed copy of that login (docs/adr/0028). Without
+ * one, the host's own GitHub CLI answers for the operator of a single-organization install (plan
+ * §17): whatever `gh auth login` set up on this machine, and a missing or signed-out gh is
+ * reported as status.
  */
 
 /** A gh invocation that exited nonzero (or could not run at all). */
@@ -162,9 +165,8 @@ export interface GhOutput {
 }
 
 /**
- * Runs gh with these arguments as some GitHub login: the host's own `gh`, or the caller's `gh` in
- * a short-lived workspace of theirs. A gh that exits nonzero answers with its exit code; `E` is
- * only the failure to run it at all.
+ * Runs gh with these arguments as some GitHub login (the host's own `gh`; a stand-in in tests). A
+ * gh that exits nonzero answers with its exit code; `E` is only the failure to run it at all.
  */
 export type GhRun<E> = (args: ReadonlyArray<string>) => Effect.Effect<GhOutput, E>;
 
@@ -313,39 +315,163 @@ const hostRun: GhRun<never> = (args) =>
   );
 
 /**
- * Runs `use` with the caller's own gh: in a short-lived workspace of theirs that carries their
- * connected GitHub login (`PullRequestWorkspaces.within`, as pull request reads do), so the token
- * stays with the platform and never reaches Mend.
+ * Who answers the caller's repository list. Mend's own copy of their GitHub login first
+ * (docs/adr/0028): `token` is it unsealed, for this request only. A GitHub login they connected
+ * before Mend kept copies has none, and is asked to connect again rather than answered from a
+ * workspace. Without a connected login, the host's gh for the operator of a single-organization
+ * install, as before; everyone else is told why there is nothing to show.
  */
-const asCaller = <A>(use: (run: GhRun<never>) => Effect.Effect<A, GhFailure>) =>
+type ListAuthority =
+  | {
+      readonly kind: "own";
+      readonly userId: string;
+      readonly held: HeldGithubLogin;
+      readonly token: Redacted.Redacted<string>;
+    }
+  | { readonly kind: "host-gh" }
+  | {
+      readonly kind: "none";
+      readonly login: string | null;
+      readonly detail: string;
+      /** A connected login Mend holds no usable copy of: connecting it again fixes the list. */
+      readonly connectAgain: boolean;
+    };
+
+/** What a GitHub login connected before this change sees: Mend holds no copy of it. */
+export const CONNECT_GITHUB_AGAIN =
+  "Mend lists your repositories with its own copy of your GitHub login, and it has none of the one you connected. Connect GitHub again with mend connect github.";
+
+/** What the list says once Mend's copy can no longer be unsealed (the server's key changed). */
+const UNREADABLE_COPY =
+  "Mend can't read its copy of your GitHub login any more. Connect GitHub again with mend connect github.";
+
+const listAuthority = Effect.gen(function* () {
+  const caller = yield* CurrentUser;
+  const logins = yield* GithubLoginsRepo;
+  const held = yield* logins.held(caller.user.id);
+  if (held !== null) {
+    const token = yield* (yield* SecretCipher).decrypt(held.sealedToken).pipe(Effect.option);
+    if (token._tag === "Some")
+      return {
+        kind: "own",
+        userId: caller.user.id,
+        held,
+        token: Redacted.make(token.value),
+      } satisfies ListAuthority;
+    yield* forgetRefused(caller.user.id, held.sealedToken);
+    return {
+      kind: "none",
+      login: held.login,
+      detail: UNREADABLE_COPY,
+      connectAgain: true,
+    } satisfies ListAuthority;
+  }
+  const authority = yield* (yield* GithubIdentity).forCaller();
+  if (authority.kind === "caller")
+    return {
+      kind: "none",
+      login: authority.login,
+      detail: CONNECT_GITHUB_AGAIN,
+      connectAgain: true,
+    } satisfies ListAuthority;
+  if (authority.kind === "none")
+    return {
+      kind: "none",
+      login: null,
+      detail: authority.detail,
+      connectAgain: false,
+    } satisfies ListAuthority;
+  return { kind: "host-gh" } satisfies ListAuthority;
+});
+
+/**
+ * Removes the copy GitHub refused (or Mend can no longer read), and tells the person's open pages,
+ * which read their logins and this list again and then say to connect GitHub again.
+ */
+const forgetRefused = (userId: string, sealedToken: string) =>
   Effect.gen(function* () {
-    const caller = yield* CurrentUser;
-    return yield* (yield* PullRequestWorkspaces)
-      .within({ ownerUserId: caller.user.id, sessionId: null }, (workspace) =>
-        use((args) =>
-          workspace
-            .exec(ghIn(args))
-            .pipe(
-              Effect.catch((error) =>
-                Effect.succeed({ exitCode: 1, stdout: "", stderr: error.message }),
-              ),
-            ),
-        ),
-      )
-      .pipe(
-        Effect.catchTag("PullRequestStepError", (error) =>
-          Effect.fail(new GhFailure({ message: error.message })),
-        ),
-      );
+    const removed = yield* (yield* GithubLoginsRepo).forgetRefused(userId, sealedToken);
+    if (!removed) return;
+    yield* Effect.logInfo("github: Mend's copy of a GitHub login was removed (refused)");
+    yield* (yield* UserEvents).changed(userId, "accounts");
   });
 
-/** Whose gh answers the caller (`GithubIdentity`), as a runner of `use`, or why none does. */
-const withCallersGh = <A>(use: (run: GhRun<never>) => Effect.Effect<A, GhFailure>) =>
+/** A call made with Mend's copy, its failures in the list's words; a refusal removes the copy. */
+const asOwn = <A>(
+  own: Extract<ListAuthority, { readonly kind: "own" }>,
+  call: Effect.Effect<A, GithubApiFailure>,
+) =>
+  call.pipe(
+    Effect.catchTag("GithubLoginRefused", (refused) =>
+      forgetRefused(own.userId, own.held.sealedToken).pipe(
+        Effect.andThen(Effect.fail(new GhFailure({ message: refused.message }))),
+      ),
+    ),
+    Effect.catchTag("GithubUnavailable", (unavailable) =>
+      Effect.fail(new GhFailure({ message: unavailable.message })),
+    ),
+  );
+
+const byName = (a: string, b: string) => a.localeCompare(b, "en", { sensitivity: "base" });
+
+/** The login's own account, then each organization it belongs to, asked of GitHub directly. */
+const ownOwners = (own: Extract<ListAuthority, { readonly kind: "own" }>) =>
   Effect.gen(function* () {
-    const authority = yield* (yield* GithubIdentity).forCaller();
-    if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
-    if (authority.kind === "caller") return yield* asCaller(use);
-    return yield* use(hostRun);
+    const api = yield* GithubApi;
+    const [user, organizations] = yield* asOwn(
+      own,
+      Effect.all([api.user(own.token), api.organizations(own.token)], {
+        concurrency: "unbounded",
+      }),
+    );
+    // The platform may not have named the login when it was connected: remember what GitHub says.
+    if (own.held.login !== user.login)
+      yield* (yield* GithubLoginsRepo).keep(own.userId, {
+        accountId: own.held.accountId,
+        login: user.login,
+        sealedToken: own.held.sealedToken,
+      });
+    return new GhOwnersView({
+      login: user.login,
+      owners: [
+        new GhOwnerView({ login: user.login, kind: "user" }),
+        ...organizations
+          .filter((name) => GITHUB_LOGIN.test(name))
+          .toSorted(byName)
+          .map((name) => new GhOwnerView({ login: name, kind: "organization" })),
+      ],
+    });
+  });
+
+/**
+ * One owner's repositories, or a search within them, asked of GitHub directly: what the login owns
+ * for its own account (and when no owner is named), what it can see for an organization.
+ */
+const ownRepositories = (
+  own: Extract<ListAuthority, { readonly kind: "own" }>,
+  owner: string | undefined,
+  query: string,
+) =>
+  Effect.gen(function* () {
+    if (owner !== undefined && !GITHUB_LOGIN.test(owner))
+      return yield* new GhFailure({ message: `${owner} isn't a GitHub account or organization.` });
+    const api = yield* GithubApi;
+    const self = own.held.login ?? (yield* asOwn(own, api.user(own.token))).login;
+    const mine = owner === undefined || owner.toLowerCase() === self.toLowerCase();
+    const words = query.trim();
+    if (words !== "")
+      return yield* asOwn(
+        own,
+        api.search(
+          own.token,
+          mine ? { kind: "user", login: self } : { kind: "organization", login: owner },
+          words,
+        ),
+      );
+    return yield* asOwn(
+      own,
+      mine ? api.ownRepositories(own.token) : api.organizationRepositories(own.token, owner),
+    );
   });
 
 /** `gh pr list --json` items. */
@@ -474,30 +600,41 @@ export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers
     .handle("repository", ({ payload }) => lookupProjectRepository(payload.repository))
     .handle("status", () =>
       Effect.gen(function* () {
-        const authority = yield* (yield* GithubIdentity).forCaller();
-        // The caller's own login answers from their connected accounts, with no workspace.
-        if (authority.kind === "caller") {
+        const authority = yield* listAuthority;
+        // The caller's own login answers from Mend's copy of it: no workspace, no call to GitHub.
+        if (authority.kind === "own")
           return new GhStatusView({
             available: true,
             authenticated: true,
-            login: authority.login,
+            login: authority.held.login,
             detail: null,
           });
-        }
-        if (authority.kind === "none") {
+        if (authority.kind === "none")
           return new GhStatusView({
-            available: false,
+            available: authority.connectAgain,
             authenticated: false,
-            login: null,
+            login: authority.login,
             detail: authority.detail,
+            ...(authority.connectAgain ? { connectAgain: true } : {}),
           });
-        }
-        const cli = yield* Gh;
-        return yield* cli.status();
+        return yield* (yield* Gh).status();
       }),
     )
-    .handle("owners", () => withCallersGh((run) => listOwners(run)))
+    .handle("owners", () =>
+      Effect.gen(function* () {
+        const authority = yield* listAuthority;
+        if (authority.kind === "own") return yield* ownOwners(authority);
+        if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
+        return yield* listOwners(hostRun);
+      }),
+    )
     .handle("repos", ({ query }) =>
-      withCallersGh((run) => listRepos(run, query.owner, query.query ?? "")),
+      Effect.gen(function* () {
+        const authority = yield* listAuthority;
+        if (authority.kind === "own")
+          return yield* ownRepositories(authority, query.owner, query.query ?? "");
+        if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
+        return yield* listRepos(hostRun, query.owner, query.query ?? "");
+      }),
     ),
 );

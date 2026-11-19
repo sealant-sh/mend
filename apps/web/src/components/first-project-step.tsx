@@ -256,7 +256,11 @@ function ChooseRepository({
               repository's address instead.
             </InlineAlert>
           ) : !signedIn ? (
-            <GithubConnect phone={phone} commandLine />
+            <GithubConnect
+              phone={phone}
+              commandLine
+              again={github.data.connectAgain === true ? { login: github.data.login } : null}
+            />
           ) : (
             <GithubRepositories
               login={github.data.login ?? "the GitHub account"}
@@ -354,7 +358,7 @@ function ChooseRepository({
  */
 function GithubRepositories(props: {
   readonly login: string;
-  /** The person's own connected GitHub login answers, from a workspace of theirs. */
+  /** The person's own connected GitHub login answers (Mend's copy of it), not the server's gh. */
   readonly ownLogin: boolean;
   readonly projects: ReadonlyArray<ProjectDto>;
   readonly organizationName: string;
@@ -375,8 +379,7 @@ function GithubRepositories(props: {
         </p>
         {props.ownLogin ? (
           <p className="text-pretty">
-            Mend asks from a short-lived workspace that holds your GitHub login. Starting it can
-            take a minute the first time.
+            Mend asks GitHub for your account and its organizations, with your own GitHub login.
           </p>
         ) : null}
       </div>
@@ -424,7 +427,7 @@ function OwnerRepositories({
   owner,
 }: {
   readonly login: string;
-  /** The person's own connected GitHub login answers, from a workspace of theirs. */
+  /** The person's own connected GitHub login answers (Mend's copy of it), not the server's gh. */
   readonly ownLogin: boolean;
   /** Whose repositories: an organization, or the login's own; none lists the login's own. */
   readonly owner: string | undefined;
@@ -465,8 +468,9 @@ function OwnerRepositories({
         </p>
         {ownLogin ? (
           <p className="text-pretty">
-            Mend asks from a short-lived workspace that holds your GitHub login. Starting it can
-            take a minute the first time.
+            Mend asks GitHub for the repositories{" "}
+            {owner === undefined || owner === login ? "you own" : `your login can see in ${owner}`},
+            with your own GitHub login.
           </p>
         ) : null}
       </div>

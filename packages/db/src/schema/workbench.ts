@@ -3506,6 +3506,18 @@ export const userDopplerConnections = pgTable("user_doppler_connections", {
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Mend's sealed copy of a person's GitHub login (docs/adr/0028): the Sealant connected account it
+ * came from, the GitHub login it names when known, and the token as `SecretCipher` sealed it.
+ */
+export const userGithubLogins = pgTable("user_github_logins", {
+  userId: text().primaryKey(),
+  accountId: text().notNull(),
+  login: text(),
+  sealedToken: text().notNull(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 /** Executor credentials and incomplete PKCE exchanges stay sealed on Mend's server. */
 export const organizationExecutors = pgTable("organization_executors", {
   organizationId: text()

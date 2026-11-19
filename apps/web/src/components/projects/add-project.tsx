@@ -37,6 +37,7 @@ import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 import { type Clone, type CloneRequest, retryOf } from "#/lib/use-clone";
 
+import { GithubConnectAgain } from "../github-connect.tsx";
 import { GithubOwnerChoice } from "./github-owner-choice.tsx";
 import { MendKeyHelp } from "./mend-key-help.tsx";
 import { Overlay } from "./overlay.tsx";
@@ -299,6 +300,20 @@ function AddProjectForm({
               {failureWords(github.error, "The Mend server didn't answer.")} You can paste the
               repository's address under From a Git URL.
             </InlineAlert>
+          ) : !signedIn && github.data.connectAgain === true ? (
+            <GithubConnectAgain
+              login={github.data.login}
+              phone={phone}
+              actions={
+                <Button
+                  variant="secondary"
+                  size={phone ? "touch" : "sm"}
+                  onClick={() => setChosen("url")}
+                >
+                  Paste an address
+                </Button>
+              }
+            />
           ) : !signedIn ? (
             <InlineAlert
               tone="info"
