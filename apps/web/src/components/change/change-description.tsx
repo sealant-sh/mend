@@ -128,6 +128,10 @@ function WriteButton({
   );
 }
 
+/** How code in Mend's words looks: mono on a muted chip, as in a tour stop's note. */
+const CODE =
+  "[&_code]:rounded-sm [&_code]:bg-muted [&_code]:px-1.5 [&_code]:py-px [&_code]:font-mono [&_code]:text-meta";
+
 /** Words with `code` in them, the code in mono: "Run `mend connect claude`…". */
 export const withCode = (words: string): ReactNode =>
   narrationParts(words).map((part) =>
@@ -249,10 +253,10 @@ export function ChangeDescription({
               />
             </div>
           ) : null}
-          <div className={cn("text-prose", folded ? "line-clamp-3" : "grid gap-2.5")}>
+          <div className={cn("text-prose", CODE, folded ? "line-clamp-3" : "grid gap-2.5")}>
             {paragraphs(written.summary).map((paragraph) => (
               <p key={paragraph} className={folded ? "inline" : undefined}>
-                {paragraph}
+                {withCode(paragraph)}
                 {folded ? " " : null}
               </p>
             ))}
@@ -269,7 +273,9 @@ export function ChangeDescription({
           ) : written.approach === null ? null : (
             <div className="mt-1.5 grid gap-0.5">
               <h3 className="text-row font-semibold">How the session got there</h3>
-              <p className="text-row text-pretty text-muted-foreground">{written.approach}</p>
+              <p className={cn("text-row text-pretty text-muted-foreground", CODE)}>
+                {withCode(written.approach)}
+              </p>
             </div>
           )}
           {touring || stops === 0 ? null : (
