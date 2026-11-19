@@ -20,6 +20,8 @@ export const FAKES = Object.freeze({
   claude: "sk-ant-oat01-mendVerifyFake-claude-setup-token-000000000000",
   // sealant takes an Anthropic API key by its prefix (sk-ant-api) and checks nothing else.
   anthropicKey: "sk-ant-api03-mendVerifyFake-anthropic-api-key-000000000000",
+  // Mend takes a Boat key by its shape (16 or more letters, digits and . _ ~ -); Boat refuses this one.
+  boatKey: "boat_mendVerifyFake00000000000000000000",
   // sealant takes a Codex auth.json with tokens.refresh_token; account_id is what Mend shows.
   codexAuth: JSON.stringify(
     {

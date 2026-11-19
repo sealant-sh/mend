@@ -45,11 +45,14 @@ export function SettingsPage({
   page: id,
   projectName,
   intro,
+  banner,
   children,
 }: {
   readonly page: SettingsPageId;
   readonly projectName?: string;
   readonly intro: ReactNode;
+  /** A state that lasts, over the whole page (a key about to expire): a Banner, under the header. */
+  readonly banner?: ReactNode;
   readonly children: ReactNode;
 }) {
   const { organizationName } = useViewer();
@@ -88,6 +91,7 @@ export function SettingsPage({
           })}
         </ol>
       </nav>
+      {banner}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto w-full max-w-settings pb-16 lg:px-8 lg:pt-9">
           <header className="max-lg:px-4 max-lg:pt-3">
