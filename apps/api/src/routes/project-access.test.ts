@@ -981,6 +981,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   child("project-read", "change", "POST", "/api/changes", "/comments/comment-1/state", {
     state: "addressed",
   })("sessionChanges.commentState"),
+  child("project-read", "change", "POST", "/api/changes", "/comments/comment-1/replies", {
+    body: "b",
+  })("sessionChanges.reply"),
   child("project-read", "change", "POST", "/api/changes", "/read")("sessionChanges.read"),
   child("project-read", "change", "GET", "/api/changes", "/tour")("sessionChanges.tour"),
   child("project-read", "change", "POST", "/api/changes", "/tour")("sessionChanges.composeTour"),
@@ -1520,7 +1523,8 @@ const ADMITTED: Readonly<
     body: { _tag: "PullRequestReadFailed", message: "This project has no GitHub origin." },
   },
   "pullRequests.detail": { status: 500, calls: ["pullRequests.detail"] },
-  "sessionChanges.openReview": { status: 500, calls: ["slices.withChangeLock"] },
+  // Where the asker last reviewed is read before the change's lock.
+  "sessionChanges.openReview": { status: 500, calls: ["followUps.lastSentBy"] },
   // Review-context byId masks patch read.
   "sessionChanges.reviewDiff": { status: 500, calls: ["slices.byId"] },
   // Same review-context resolver masks anchor verification/comment creation.
@@ -1530,6 +1534,8 @@ const ADMITTED: Readonly<
   "sessionChanges.comments": { status: 500, calls: ["comments.listForChange"] },
   // Subordinate comment lookup masks write.
   "sessionChanges.commentState": { status: 500, calls: ["comments.byId"] },
+  // The comment a reply hangs under is read first.
+  "sessionChanges.reply": { status: 500, calls: ["comments.byId"] },
   // Shared queue helper defects at passes.queue before distinct job selection.
   "sessionChanges.read": { status: 500, calls: ["changePasses.queue"] },
   "sessionChanges.tour": { status: 500, calls: ["changeTours.byChange"] },

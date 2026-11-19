@@ -1,5 +1,5 @@
 import { ChangeId, ReviewCommentId, ReviewSliceId } from "@mend/domain";
-import { ChangePass, ChangeTour, ReviewComment } from "@mend/domain/workbench";
+import { ChangePass, ChangeTour, ReviewComment, ReviewReply } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/http-api";
 
@@ -8,10 +8,13 @@ import { AuthMiddleware } from "./common.ts";
 import { ChangeDiff } from "./sessions.ts";
 import {
   ChangeStats,
+  NewReviewReplyRequest,
   NewSliceReviewCommentRequest,
   OpenReviewRequest,
   OpenReviewResult,
   ReviewDiffView,
+  ReviewRangeRefused,
+  ReviewReplyRefused,
   SetCommentStateRequest,
 } from "./sessions.ts";
 import { RemovalInProgress, StoreFailure } from "./workbench-views.ts";
@@ -22,7 +25,7 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
       params: { id: ChangeId },
       payload: OpenReviewRequest,
       success: OpenReviewResult,
-      error: [NotFound, StoreFailure, RemovalInProgress],
+      error: [NotFound, StoreFailure, RemovalInProgress, ReviewRangeRefused],
     }),
   )
   .add(
@@ -60,10 +63,22 @@ export const sessionChangesGroup = HttpApiGroup.make("sessionChanges")
     }),
   )
   .add(
+    // The change's comments, each with its replies and the agent's answers. Replies are never
+    // listed on their own, so a client that predates them sees only comments. With `sliceId`,
+    // each comment also says where it sits on that Review slice.
     HttpApiEndpoint.get("comments", "/changes/:id/comments", {
       params: { id: ChangeId },
+      query: { sliceId: Schema.optional(ReviewSliceId) },
       success: Schema.Array(ReviewComment),
-      error: NotFound,
+      error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.post("reply", "/changes/:id/comments/:commentId/replies", {
+      params: { id: ChangeId, commentId: ReviewCommentId },
+      payload: NewReviewReplyRequest,
+      success: ReviewReply,
+      error: [NotFound, RemovalInProgress, ReviewReplyRefused],
     }),
   )
   .add(

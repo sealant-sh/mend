@@ -2848,9 +2848,15 @@ export const followUps = pgTable(
     deliveryLeaseExpiresAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     deliveredAt: timestamp({ mode: "date", withTimezone: true }),
+    /**
+     * Who sent the comments (0232); null on follow-ups from before it that started no turn. A FK
+     * to "user"(id) ON DELETE SET NULL, declared in the migration.
+     */
+    requestedBy: text(),
   },
   (table) => [
     index("follow_ups_session_idx").on(table.sessionId, table.createdAt),
+    index("follow_ups_change_requester_idx").on(table.changeId, table.requestedBy, table.createdAt),
     uniqueIndex("follow_ups_session_key_idx")
       .on(table.sessionId, table.idempotencyKey)
       .where(sql`${table.idempotencyKey} IS NOT NULL`),
@@ -2883,8 +2889,18 @@ export const reviewComments = pgTable(
     kind: text().$type<CommentKind>().notNull().default("note"),
     suggestion: text(),
     anchor: jsonbOf(ReviewCommentAnchor),
+    /**
+     * The comment a reply hangs under, one level deep (0232); null on a comment. A self-reference,
+     * ON DELETE CASCADE, declared in the migration.
+     */
+    parentId: text().$type<ReviewCommentId>(),
   },
-  (table) => [index("review_comments_change_idx").on(table.changeId, table.createdAt)],
+  (table) => [
+    index("review_comments_change_idx").on(table.changeId, table.createdAt),
+    index("review_comments_parent_idx")
+      .on(table.parentId)
+      .where(sql`${table.parentId} IS NOT NULL`),
+  ],
 );
 
 export const changeTours = pgTable("change_tours", {

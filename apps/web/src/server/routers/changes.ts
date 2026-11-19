@@ -1,4 +1,5 @@
 import {
+  NewReviewReplyRequest,
   NewSliceReviewCommentRequest,
   OpenReviewRequest,
   SetCommentStateRequest,
@@ -42,10 +43,34 @@ export const changesRouter = router({
         api.sessionChanges.reviewDiff({ params: { id: i.id, sliceId: i.sliceId }, query: {} }),
       ),
     ),
+  // With `sliceId`, each comment also says where it sits on that review.
   comments: procedure
-    .input(byId)
+    .input(input(Schema.Struct({ id: ChangeId, sliceId: Schema.optional(ReviewSliceId) })))
     .query(({ ctx, input: i }) =>
-      run(ctx, (api) => api.sessionChanges.comments({ params: { id: i.id } })),
+      run(ctx, (api) =>
+        api.sessionChanges.comments({
+          params: { id: i.id },
+          query: i.sliceId === undefined ? {} : { sliceId: i.sliceId },
+        }),
+      ),
+    ),
+  reply: procedure
+    .input(
+      input(
+        Schema.Struct({
+          id: ChangeId,
+          commentId: ReviewCommentId,
+          reply: NewReviewReplyRequest,
+        }),
+      ),
+    )
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessionChanges.reply({
+          params: { id: i.id, commentId: i.commentId },
+          payload: i.reply,
+        }),
+      ),
     ),
   postSliceComment: procedure
     .input(

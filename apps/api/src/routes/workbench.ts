@@ -48,7 +48,10 @@ import {
   MessageKeyConflict,
   MessageTargetAmbiguous,
   ObservationStamp,
+  LastReview,
   OpenReviewResult,
+  ReviewRangeRefused,
+  ReviewReplyRefused,
   PathsOutsideGit,
   ProtocolSessionNotLive,
   AgentRequestResolved,
@@ -165,6 +168,7 @@ import {
   currentAgentProcess,
   holdsWorkspace,
   isAgentProcessKind,
+  type Checkpoint,
   type ReviewSlice,
   formatProjectEnvironmentIssue,
   parseDotenv,
@@ -274,6 +278,7 @@ import {
 } from "./organization-settings.ts";
 import { projectContents, projectRawFile } from "./project-file-reads.ts";
 import { digestReviewPatch, parseReviewDiff } from "./review-diff.ts";
+import { reviewThreads } from "./review-threads.ts";
 
 /**
  * The workbench handlers (plan §6): projects, sessions, and the session
@@ -4526,9 +4531,16 @@ export const withinCheckpointLimit =
       );
     });
 
+/** Where a person last reviewed a change: the checkpoint their newest follow-up on it named. */
+interface LastReviewed {
+  readonly checkpoint: Checkpoint;
+  readonly at: Date;
+}
+
 const openReviewResult = Effect.fn("SessionChanges.openReviewResult")(function* (
   slice: ReviewSlice,
   reused: boolean,
+  lastReview: LastReviewed | null,
 ) {
   const checkpoints = yield* CheckpointsRepo;
   const checkpointA = yield* checkpoints.byId(slice.checkpointAId);
@@ -4536,7 +4548,53 @@ const openReviewResult = Effect.fn("SessionChanges.openReviewResult")(function* 
   if (checkpointA === null || checkpointB === null) {
     return yield* new NotFound({ id: slice.id });
   }
-  return new OpenReviewResult({ slice, checkpointA, checkpointB, reused });
+  const kind =
+    checkpointA.ordinal === 0
+      ? "whole"
+      : checkpointA.id === lastReview?.checkpoint.id
+        ? "since-last-review"
+        : "custom";
+  return new OpenReviewResult({
+    slice,
+    checkpointA,
+    checkpointB,
+    reused,
+    range: { kind },
+    lastReview:
+      lastReview === null
+        ? null
+        : new LastReview({
+            checkpointId: lastReview.checkpoint.id,
+            ordinal: lastReview.checkpoint.ordinal,
+            at: lastReview.at,
+          }),
+  });
+});
+
+/** A range Mend can't open, in a sentence a person can act on. */
+const refuseRange = (reason: "unknown-checkpoint" | "reversed") =>
+  new ReviewRangeRefused({
+    reason,
+    message:
+      reason === "reversed"
+        ? "A review's first checkpoint can't come after its last."
+        : "That checkpoint isn't in this change, so Mend can't review from or to it.",
+  });
+
+/**
+ * The asker's last review of the change: where they last sent comments on it. Null when they never
+ * have, or when that checkpoint is no longer in the worktree's chain.
+ */
+const lastReviewOf = Effect.fn("SessionChanges.lastReviewOf")(function* (
+  changeId: ChangeId,
+  worktreeId: WorktreeId,
+  userId: string,
+) {
+  const sent = yield* (yield* FollowUpsRepo).lastSentBy(changeId, userId);
+  if (sent === null) return null;
+  const checkpoint = yield* (yield* CheckpointsRepo).byId(sent.checkpointBId);
+  if (checkpoint === null || checkpoint.worktreeId !== worktreeId) return null;
+  return { checkpoint, at: sent.sentAt } satisfies LastReviewed;
 });
 
 const loadReviewContext = Effect.fn("SessionChanges.loadReviewContext")(function* (
@@ -4599,6 +4657,13 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         const checkpoints = yield* CheckpointsRepo;
         const reads = yield* WorktreeReads;
         const engine = yield* SessionEngine;
+        const caller = yield* CurrentUser;
+        // No range is the whole change as it stands now: exactly what opening did before ranges.
+        const range = payload.range;
+        const changeRow = yield* (yield* WorktreeChangesRepo)
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const lastReview = yield* lastReviewOf(params.id, changeRow.worktreeId, caller.user.id);
         // Under the change's lock: a slice this key already opened, or one that still spans the
         // worktree as it stands, answers at once. Otherwise the lock is let go before the
         // checkpoint: the engine's checkpoint flushes the executor and publishes its answer, and
@@ -4614,7 +4679,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
               .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
             const existing = yield* slices.byIdempotencyKey(params.id, key);
             if (existing !== null) {
-              return { opened: yield* openReviewResult(existing, true) } as const;
+              return { opened: yield* openReviewResult(existing, true, lastReview) } as const;
             }
 
             const worktrees = yield* WorktreesRepo;
@@ -4624,32 +4689,66 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             const project = yield* projects
               .byId(change.projectId)
               .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
-            // Anchor at ordinal 0 — the worktree's base state — so the review
+            // The whole change starts at ordinal 0 — the worktree's base state — so the review
             // spans every conversation's work, not one session's slice of it.
             const chain = yield* checkpoints.listForWorktree(worktreeRow.id);
-            const checkpointA = chain.find((checkpoint) => checkpoint.ordinal === 0);
-            if (checkpointA === undefined) {
+            const base = chain.find((checkpoint) => checkpoint.ordinal === 0);
+            if (base === undefined) {
               return yield* new StoreFailure({
                 message: "The worktree has no ordinal-0 checkpoint to anchor Review.",
               });
+            }
+            const from = range?.from;
+            const checkpointA =
+              from === undefined || from === "base"
+                ? base
+                : from === "last-review"
+                  ? (lastReview?.checkpoint ?? base)
+                  : chain.find((checkpoint) => checkpoint.id === from);
+            if (checkpointA === undefined) return yield* refuseRange("unknown-checkpoint");
+            const sliceTo = (checkpointB: Checkpoint, digest: DiffDigest | null) =>
+              Effect.gen(function* () {
+                const diffDigest =
+                  digest ??
+                  DiffDigest.make(
+                    digestReviewPatch(
+                      (yield* reads
+                        .diffRange(project.id, worktreeRow.id, checkpointA.sha, checkpointB.sha)
+                        .pipe(Effect.mapError(readFailure))).value,
+                    ),
+                  );
+                return yield* slices.create({
+                  changeId: params.id,
+                  checkpointAId: checkpointA.id,
+                  checkpointBId: checkpointB.id,
+                  diffDigest,
+                  idempotencyKey: key,
+                });
+              });
+
+            // A range that ends at a checkpoint already taken needs no new one.
+            if (range?.to !== undefined) {
+              const to = range.to;
+              const checkpointB = chain.find((checkpoint) => checkpoint.id === to);
+              if (checkpointB === undefined) return yield* refuseRange("unknown-checkpoint");
+              if (checkpointB.ordinal < checkpointA.ordinal) return yield* refuseRange("reversed");
+              const ranged = yield* sliceTo(checkpointB, null);
+              return { opened: yield* openReviewResult(ranged, true, lastReview) } as const;
             }
 
             const latest = yield* slices.latestForChange(params.id);
             if (latest !== null) {
               const latestB = yield* checkpoints.byId(latest.checkpointBId);
-              if (latestB !== null) {
+              if (latestB !== null && latestB.ordinal >= checkpointA.ordinal) {
                 const worktreeMatches = (yield* reads
                   .worktreeMatchesCommit(project.id, worktreeRow.id, latestB.sha)
                   .pipe(Effect.mapError(readFailure))).value;
                 if (worktreeMatches) {
-                  const reused = yield* slices.create({
-                    changeId: params.id,
-                    checkpointAId: latest.checkpointAId,
-                    checkpointBId: latest.checkpointBId,
-                    diffDigest: latest.diffDigest,
-                    idempotencyKey: key,
-                  });
-                  return { opened: yield* openReviewResult(reused, true) } as const;
+                  const reused = yield* sliceTo(
+                    latestB,
+                    latest.checkpointAId === checkpointA.id ? latest.diffDigest : null,
+                  );
+                  return { opened: yield* openReviewResult(reused, true, lastReview) } as const;
                 }
               }
             }
@@ -4657,22 +4756,16 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
             const orphanedCheckpoint = chain
               .toReversed()
               .find((checkpoint) => checkpoint.trigger === "review-open");
-            if (orphanedCheckpoint !== undefined) {
+            if (
+              orphanedCheckpoint !== undefined &&
+              orphanedCheckpoint.ordinal >= checkpointA.ordinal
+            ) {
               const worktreeMatches = (yield* reads
                 .worktreeMatchesCommit(project.id, worktreeRow.id, orphanedCheckpoint.sha)
                 .pipe(Effect.mapError(readFailure))).value;
               if (worktreeMatches) {
-                const patch = (yield* reads
-                  .diffRange(project.id, worktreeRow.id, checkpointA.sha, orphanedCheckpoint.sha)
-                  .pipe(Effect.mapError(readFailure))).value;
-                const recovered = yield* slices.create({
-                  changeId: params.id,
-                  checkpointAId: checkpointA.id,
-                  checkpointBId: orphanedCheckpoint.id,
-                  diffDigest: DiffDigest.make(digestReviewPatch(patch)),
-                  idempotencyKey: key,
-                });
-                return { opened: yield* openReviewResult(recovered, true) } as const;
+                const recovered = yield* sliceTo(orphanedCheckpoint, null);
+                return { opened: yield* openReviewResult(recovered, true, lastReview) } as const;
               }
             }
 
@@ -4714,7 +4807,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           Effect.gen(function* () {
             // Another open with this key answered while the checkpoint was taken: its slice.
             const existing = yield* slices.byIdempotencyKey(params.id, key);
-            if (existing !== null) return yield* openReviewResult(existing, true);
+            if (existing !== null) return yield* openReviewResult(existing, true, lastReview);
             const slice = yield* slices.create({
               changeId: params.id,
               checkpointAId: checkpointA.id,
@@ -4722,7 +4815,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
               diffDigest: DiffDigest.make(digestReviewPatch(patch)),
               idempotencyKey: key,
             });
-            return yield* openReviewResult(slice, false);
+            return yield* openReviewResult(slice, false, lastReview);
           }),
         );
       }).pipe(
@@ -4803,6 +4896,24 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         const worktreeMatches = yield* reads
           .worktreeMatchesCommit(project.id, worktreeRow.id, context.checkpointB.sha)
           .pipe(Effect.mapError(readFailure));
+        // A range that starts after the base: the whole change's files it doesn't touch.
+        const unchangedInRange =
+          context.checkpointA.ordinal === 0
+            ? undefined
+            : yield* Effect.gen(function* () {
+                const chain = yield* (yield* CheckpointsRepo).listForWorktree(worktreeRow.id);
+                const base = chain.find((checkpoint) => checkpoint.ordinal === 0);
+                if (base === undefined) return undefined;
+                const whole = (yield* reads
+                  .diffFileFacts(project.id, worktreeRow.id, base.sha, context.checkpointB.sha)
+                  .pipe(Effect.mapError(readFailure))).value;
+                const inRange = new Set(
+                  canonicalFacts.flatMap((fact) => [fact.newPath, fact.oldPath]),
+                );
+                return whole
+                  .map((fact) => fact.newPath ?? fact.oldPath ?? "")
+                  .filter((path) => path !== "" && !inRange.has(path));
+              });
         return new ReviewDiffView({
           change: context.change,
           slice: context.slice,
@@ -4814,6 +4925,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           worktreeChangedSinceSnapshot: !worktreeMatches.value,
           observation: observationOf(worktreeMatches.stamp),
           outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
+          ...(unchangedInRange === undefined ? {} : { unchangedInRange }),
         });
       }),
     )
@@ -5037,11 +5149,54 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         });
       }),
     )
-    .handle("comments", ({ params }) =>
+    .handle("comments", ({ params, query }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
+        const change = yield* (yield* WorktreeChangesRepo)
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const sliceId = query.sliceId;
+        const slice = sliceId === undefined ? null : yield* (yield* ReviewSlicesRepo).byId(sliceId);
+        if (sliceId !== undefined && (slice === null || slice.changeId !== params.id)) {
+          return yield* new NotFound({ id: sliceId });
+        }
+        return yield* reviewThreads(change, slice).pipe(Effect.mapError(readFailure));
+      }),
+    )
+    .handle("reply", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).change(params.id);
         const comments = yield* ReviewCommentsRepo;
-        return yield* comments.listForChange(params.id);
+        const user = yield* CurrentUser;
+        const parent = yield* comments
+          .byId(params.commentId)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.commentId })));
+        if (parent.changeId !== params.id) {
+          return yield* new NotFound({ id: params.commentId });
+        }
+        if (parent.parentId !== undefined && parent.parentId !== null) {
+          return yield* new ReviewReplyRefused({
+            reason: "reply-to-reply",
+            message: "Replies are one level deep: reply to the comment instead.",
+          });
+        }
+        if (parent.state === "draft") {
+          return yield* new ReviewReplyRefused({
+            reason: "draft",
+            message: "This is one of Mend's drafts. Add it to your comments before replying.",
+          });
+        }
+        const body = payload.body.trim();
+        if (body === "") {
+          return yield* new ReviewReplyRefused({
+            reason: "empty",
+            message: "A reply needs some words.",
+          });
+        }
+        return yield* comments.createReply(parent, {
+          authorName: user.user.name === "" ? user.user.email : user.user.name,
+          body,
+        });
       }),
     )
     .handle("commentState", ({ params, payload }) =>

@@ -5827,4 +5827,25 @@ export const migrations = {
       CREATE UNIQUE INDEX user_saved_layouts_user_name_key
         ON user_saved_layouts (user_id, lower(name))`;
   }),
+  // Second look (SLNT-1176): a reply hangs one level under a comment, and a follow-up records who
+  // sent it, so "since your last review" can start where a person last sent comments. Follow-ups
+  // sent before this take their sender from the conversation turn they started, where there is one;
+  // the rest have none. Existing comments are comments, with no parent: every one reads as before.
+  "0232_review_replies": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE review_comments ADD COLUMN IF NOT EXISTS parent_id text
+      REFERENCES review_comments(id) ON DELETE CASCADE`;
+    yield* sql`CREATE INDEX IF NOT EXISTS review_comments_parent_idx
+      ON review_comments (parent_id) WHERE parent_id IS NOT NULL`;
+    yield* sql`ALTER TABLE follow_ups ADD COLUMN IF NOT EXISTS requested_by text
+      REFERENCES "user"(id) ON DELETE SET NULL`;
+    yield* sql`UPDATE follow_ups f SET requested_by = t.author
+      FROM agent_turns t, "user" u
+      WHERE f.requested_by IS NULL
+        AND t.launch_correlation_id = 'follow-up:' || f.id
+        AND t.session_id = f.session_id
+        AND u.id = t.author`;
+    yield* sql`CREATE INDEX IF NOT EXISTS follow_ups_change_requester_idx
+      ON follow_ups (change_id, requested_by, created_at)`;
+  }),
 };

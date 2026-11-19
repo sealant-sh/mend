@@ -303,7 +303,11 @@ export const FollowUpDeliveryLive: Layer.Layer<
             }
           }
 
-          const changeComments = yield* comments.listForChange(change.id);
+          // A reply goes with the next follow-up like any comment.
+          const changeComments = [
+            ...(yield* comments.listForChange(change.id)),
+            ...(yield* comments.listReplies(change.id)),
+          ];
           const selected = new Set(input.commentIds);
           const selectedComments = changeComments.filter((comment) => selected.has(comment.id));
           if (
@@ -330,6 +334,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
               commentIds: input.commentIds,
               instruction: input.instruction,
               idempotencyKey: input.idempotencyKey,
+              requestedBy: input.author,
             }));
 
           const sessionProcesses = yield* processes.listForSession(input.sessionId);
