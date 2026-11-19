@@ -91,6 +91,9 @@ export default async ({ page, web, capture, note, typeSecret }) => {
       .waitFor({ state: "attached" });
   const variables = () => visible(page.getByRole("list", { name: "Environment variables" }));
   const secrets = () => visible(page.getByRole("list", { name: "Secrets" }));
+  // A secret's name doesn't count as visible to the driver (it hides credential-looking text from
+  // pictures): wait for it to be in the list.
+  const present = (locator) => locator.first().waitFor({ state: "attached" });
   const closed = (name) => page.getByRole("dialog", { name }).waitFor({ state: "hidden" });
 
   await page.emulateMedia({ colorScheme: "light" });
@@ -173,7 +176,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     await add.getByRole("button", { name: "Add secret", exact: true }).click();
     await closed("Add secret");
     await toastSays("Added VERIFY_API_TOKEN.");
-    await secrets().getByText("VERIFY_API_TOKEN", { exact: true }).waitFor();
+    await present(secrets().getByText("VERIFY_API_TOKEN", { exact: true }));
     const listed = await call("environment.secrets", { projectId: project.id });
     expect(
       "the secret's value never comes back",
@@ -237,7 +240,7 @@ export default async ({ page, web, capture, note, typeSecret }) => {
     }
     await closed("Import .env file");
     await variables().getByText("FEATURE_FLAGS", { exact: true }).waitFor();
-    await secrets().getByText("GITHUB_TOKEN", { exact: true }).waitFor();
+    await present(secrets().getByText("GITHUB_TOKEN", { exact: true }));
     note("env-routing: FEATURE_FLAGS landed in Environment variables, GITHUB_TOKEN in Secrets");
 
     // --- Remove --------------------------------------------------------------------------------------
