@@ -32,6 +32,13 @@ const PR_URL = "https://github.com/northwind/checkout-api/pull/412";
 const DESCRIPTION = "Fixes the duplicate charges that support reported on 12 November.";
 const SHA = "c71e0a2d9e8b7a6f5e4d3c2b1a0f9e8d7c6b5a49";
 
+/** superjson's Date paths of a list of landings under `prefix`. */
+const landingDates = (landings, prefix) =>
+  landings.flatMap((each, index) => [
+    `${prefix}${index}.createdAt`,
+    ...(each.pullRequest === null ? [] : [`${prefix}${index}.pullRequest.observedAt`]),
+  ]);
+
 /** The first of `locator`'s matches a person can see: under 1024px some are in the page twice. */
 const visible = (locator) => locator.filter({ visible: true }).first();
 
@@ -316,11 +323,6 @@ export default async ({ page, web, capture, note }) => {
       facts: [{ _tag: "refused", branch, message: refusedLanding.message }],
     },
   };
-  const landingDates = (landings, prefix) =>
-    landings.flatMap((each, index) => [
-      `${prefix}${index}.createdAt`,
-      ...(each.pullRequest === null ? [] : [`${prefix}${index}.pullRequest.observedAt`]),
-    ]);
   const forChange = (kind) => {
     const { landings, facts, github = true } = STATES[kind];
     return superjson(
