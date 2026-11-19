@@ -199,7 +199,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
       return null;
     });
     if (mine.every((each) => each === null)) return route.continue();
-    const real = mine.some((each) => each === "detail" || each === "identity");
+    // The server answers every call in the batch the fixtures don't, and the ones they patch.
+    const real = mine.some((each) => each === null || each === "detail" || each === "identity");
     const response = real ? await route.fetch() : null;
     const body = response === null ? null : await response.json();
     const answers = body === null ? paths.map(() => null) : Array.isArray(body) ? body : [body];
