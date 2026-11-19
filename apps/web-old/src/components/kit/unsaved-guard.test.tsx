@@ -30,6 +30,22 @@ const settle = async () => {
   }
 };
 
+/** What `find` answers once it answers anything, waiting up to 200 ticks of 10 ms. */
+const appeared = async <A,>(find: () => A | undefined): Promise<A | undefined> => {
+  for (let tick = 0; tick < 200 && find() === undefined; tick += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  return find();
+};
+
+/**
+ * The guard's dialog once it shows. Its code loads the first time it opens (`ModalDialog`), so the
+ * first test to open it waits for that import, however long a loaded machine takes.
+ */
+const openedDialog = () => appeared(() => document.querySelector('[role="dialog"]') ?? undefined);
+
 /** A button in the dialog: the save bar has a Discard of its own. */
 const button = (name: string) => {
   const found = [...document.querySelectorAll('[role="dialog"] button')].find(
@@ -87,8 +103,7 @@ describe("leaving a settings form with an unsaved draft", () => {
   it("asks first; Keep editing stays on the form", async () => {
     const router = await world(true);
     await act(async () => link().click());
-    await settle();
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain(
+    expect((await openedDialog())?.textContent).toContain(
       "1 unsaved change. Leaving drops the draft.",
     );
     await act(async () => button("Keep editing").click());
@@ -100,7 +115,7 @@ describe("leaving a settings form with an unsaved draft", () => {
   it("leaves on Discard", async () => {
     const router = await world(true);
     await act(async () => link().click());
-    await settle();
+    await openedDialog();
     await act(async () => button("Discard").click());
     await settle();
     expect(router.state.location.pathname).toBe("/settings/account");
