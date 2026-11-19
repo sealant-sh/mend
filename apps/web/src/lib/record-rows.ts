@@ -23,6 +23,7 @@ export type RecordDetail =
       readonly running: boolean;
     }
   | { readonly kind: "text"; readonly text: string }
+  | { readonly kind: "edit"; readonly diff: string }
   | { readonly kind: "checkpoint"; readonly sha: string; readonly trigger: string };
 
 /** What the Record reads of a checkpoint. */
@@ -128,6 +129,25 @@ const commandOutcome = (item: AgentItemDto): string | null => {
   return item.status === "failed" ? "failed" : null;
 };
 
+/**
+ * The files an edit changed and its diff: Codex's `fileChange` item keeps `changes` (each with its
+ * `path` and `diff`), Claude's tool call `input.file_path`.
+ */
+const editOf = (
+  item: AgentItemDto,
+): { readonly paths: string; readonly diff: string | null } | null => {
+  const data = isRecordValue(item.data) ? item.data : null;
+  const changes = Array.isArray(data?.["changes"]) ? data["changes"].filter(isRecordValue) : [];
+  const paths = changes.map((change) => change["path"]).filter(isText);
+  if (paths.length > 0) {
+    const diffs = changes.map((change) => change["diff"]).filter(isText);
+    return { paths: paths.join(", "), diff: diffs.length === 0 ? null : diffs.join("\n") };
+  }
+  const input = isRecordValue(data?.["input"]) ? data["input"] : null;
+  const path = field(input, ["file_path", "path"], isText) ?? field(data, ["path"], isText);
+  return path === null ? null : { paths: path, diff: null };
+};
+
 /** The words a line shows in one row; the rest opens under it. */
 const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
 
@@ -188,7 +208,9 @@ export const recordRows = ({
       rows.push(message(`item:${item.id}`, at, agent, item.text ?? ""));
       continue;
     }
-    const text = (kind === "command" ? stepCommand(item) : null) ?? oneLine(itemName(item));
+    const edit = kind === "edit" ? editOf(item) : null;
+    const text =
+      (kind === "command" ? stepCommand(item) : null) ?? edit?.paths ?? oneLine(itemName(item));
     rows.push({
       key: `item:${item.id}`,
       at,
@@ -198,7 +220,12 @@ export const recordRows = ({
       outcome:
         kind === "command" ? commandOutcome(item) : item.status === "failed" ? "failed" : null,
       checkpoint: null,
-      detail: kind === "command" ? commandDetail(item) : null,
+      detail:
+        kind === "command"
+          ? commandDetail(item)
+          : edit === null || edit.diff === null
+            ? null
+            : { kind: "edit", diff: edit.diff },
     });
   }
   for (const entry of screenLog)

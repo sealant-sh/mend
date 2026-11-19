@@ -58,7 +58,14 @@ const items: ReadonlyArray<AgentItemDto> = [
     title: "Bash",
     data: { type: "tool_use", name: "Bash", input: { command: 'rg "createCharge" src' } },
   }),
-  item("edit", "file-change", 36, { title: "src/payments/retry.ts" }),
+  item("edit", "file-change", 36, {
+    data: {
+      type: "fileChange",
+      changes: [
+        { path: "src/payments/retry.ts", kind: { type: "update" }, diff: "@@ -1 +1 @@\n-a\n+b" },
+      ],
+    },
+  }),
   item("test", "command-execution", 38, {
     title: "pnpm vitest run payments",
     data: {
@@ -159,6 +166,32 @@ describe("the Record's rows", () => {
     expect(grep.outcome).toBeNull();
     expect(commandEndWords(grep.detail)).toBeNull();
     expect(grep.detail.output).toBeNull();
+  });
+
+  it("names the file an edit changed and opens it to the diff", () => {
+    expect(rows.find((row) => row.key === "item:edit")?.detail).toEqual({
+      kind: "edit",
+      diff: "@@ -1 +1 @@\n-a\n+b",
+    });
+    const claude = recordRows({
+      conversation: {
+        turns: [],
+        items: [
+          item("c", "file-change", 40, {
+            title: "Edit",
+            data: { type: "tool_use", name: "Edit", input: { file_path: "src/a.ts" } },
+          }),
+        ],
+        requests: [],
+      },
+      transcript: [],
+      checkpoints: [],
+      screenLog: [],
+      agent: "Claude Code",
+      nameOf: (userId, fallback = "Mend") => userId ?? fallback,
+      actorOf: () => "Mend",
+    });
+    expect(claude.map((row) => [row.text, row.detail])).toEqual([["src/a.ts", null]]);
   });
 
   it("filters by kind", () => {

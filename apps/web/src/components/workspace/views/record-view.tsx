@@ -469,6 +469,10 @@ function Detail({ row, agent }: { readonly row: RecordRow; readonly agent: strin
     <div className="grid gap-2 pb-3 @3xl/record:ml-[208px]">
       {detail.kind === "text" ? (
         <p className="text-row whitespace-pre-wrap text-foreground">{detail.text}</p>
+      ) : detail.kind === "edit" ? (
+        <pre className="max-h-80 overflow-auto rounded-md bg-muted px-3 py-2 font-mono text-meta whitespace-pre-wrap text-foreground">
+          {detail.diff}
+        </pre>
       ) : detail.kind === "checkpoint" ? (
         <p className="text-meta text-muted-foreground">
           Mend took this checkpoint when the {TRIGGER_WORDS[detail.trigger] ?? detail.trigger}. Its

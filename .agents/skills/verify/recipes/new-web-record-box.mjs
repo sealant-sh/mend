@@ -144,7 +144,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   }
 
   // A command's row opens to what the record holds of it.
-  const failing = list.getByRole("button", { name: /echo 3 tests passed/ });
+  const failing = list.getByRole("button", { name: /^\S+ Command .*echo 3 tests passed/ });
   await failing.click();
   if ((await failing.getAttribute("aria-expanded")) !== "true")
     throw new Error("the command's row didn't open");
