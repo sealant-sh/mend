@@ -94,6 +94,7 @@ export * from "./repos/session-pages.ts";
 export * from "./repos/screens.ts";
 
 export * from "./repos/doppler.ts";
+export * from "./repos/github-logins.ts";
 export * from "./repos/executor.ts";
 export * from "./repos/executor-instances.ts";
 

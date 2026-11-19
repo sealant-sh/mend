@@ -67,7 +67,9 @@ the host Docker daemon (Kubernetes, MicroVM, Boat); this decision is independent
    an unset principal is a typed failure, never a silent fallback to a seed user.
 4. Mend API: `GET /me/sealant` (the caller's Sealant user id + accounts),
    `POST /me/sealant/accounts`, `DELETE /me/sealant/accounts/:id`. Secrets pass through to Sealant
-   and are never persisted or logged by Mend.
+   and are never logged by Mend. Mend persists one kind of them: GitHub logins, sealed with the
+   server's secrets key, for that person's own repository list, which uses their default GitHub
+   login (`docs/adr/0028-mends-copy-of-a-github-login.md`). The others are never persisted by Mend.
 5. Surfaces: Settings → "Agent logins" on web and desktop (first shipped as "Connected accounts");
    `mend connect claude|codex|github` and `mend accounts`. For codex the CLI reads the file the
    provider's CLI wrote at login, for github it asks `gh` for its token, or `--from-stdin` takes a

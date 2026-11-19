@@ -74,6 +74,7 @@ import {
   SavedLayoutsRepoLive,
   McpServersRepoLive,
   DopplerRepoLive,
+  GithubLoginsRepoLive,
   ExecutorRepoLive,
   ExecutorInstancesRepoLive,
   SshKeyRevocationsRepoLive,
@@ -348,6 +349,7 @@ import { ScreenRtcLive } from "./screen-rtc.ts";
 import { ScreenVideoSourceLive } from "./screen-video-source.ts";
 import { ScreenWatchLive } from "./screen-watch.ts";
 import { DopplerApiLive } from "./services/doppler.ts";
+import { GithubApiLive } from "./services/github-api.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
@@ -457,6 +459,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SavedLayoutsRepoLive,
   McpServersRepoLive,
   DopplerRepoLive,
+  GithubLoginsRepoLive,
   ExecutorRepoLive,
   ExecutorInstancesRepoLive,
   SshKeyRevocationsRepoLive,
@@ -1222,6 +1225,7 @@ const MainLive = Layer.unwrap(
           ),
           SlackApiLive,
           DopplerApiLive,
+          GithubApiLive,
         ).pipe(Layer.provideMerge(ExecutorIdentityLive), Layer.provideMerge(SecretCipherLayer)),
       ),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.

@@ -1,7 +1,7 @@
 import { InlineAlert } from "@mend/ui/components/banner";
 import { CopyField } from "@mend/ui/components/copy-field";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 
 import { agentLoginState, githubConnectedLine } from "#/lib/agent-login";
 import { waitedFor, whenSince } from "#/lib/git-access";
@@ -28,12 +28,18 @@ export function GithubConnect({
   phone,
   commandLine,
   heading = true,
+  again = null,
 }: {
   readonly phone: boolean;
   /** Whether to say what connecting GitHub is for: First project's list says it already. */
   readonly heading?: boolean;
   /** Whether to show Mend's command line block here: false when the page already shows it. */
   readonly commandLine: boolean;
+  /**
+   * The person's GitHub login is connected, but Mend holds no copy of it to list repositories
+   * with (`github.status`'s `connectAgain`, and the login it names): ask them to connect again.
+   */
+  readonly again?: { readonly login: string | null } | null;
 }) {
   const trpc = useTRPC();
   const now = useSecond();
@@ -56,7 +62,9 @@ export function GithubConnect({
         </p>
       ) : null}
       {commandLine ? <CommandLineBlock phone={phone} className="border-y py-4" /> : null}
-      {identity.isError ? (
+      {again !== null ? (
+        <GithubConnectAgain login={again.login} phone={phone} />
+      ) : identity.isError ? (
         <InlineAlert
           tone="warning"
           title="Mend couldn't read your logins."
@@ -105,6 +113,42 @@ export function GithubConnect({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A GitHub login Mend holds no copy of: connected before Mend kept copies, or refused by GitHub
+ * since. The person runs `mend connect github` again, and the list shows once it arrives.
+ */
+export function GithubConnectAgain({
+  login,
+  phone,
+  actions,
+}: {
+  /** The connected login's name, when known. */
+  readonly login: string | null;
+  readonly phone: boolean;
+  readonly actions?: ReactNode;
+}) {
+  return (
+    <div className="grid gap-2">
+      <InlineAlert
+        tone="warning"
+        title="Connect GitHub again."
+        size={phone ? "touch" : "default"}
+        actions={actions}
+      >
+        Mend lists your repositories with its own copy of your GitHub login, and it has none of{" "}
+        {login ?? "the one you connected"}. Run{" "}
+        <code className="font-mono text-meta">{CONNECT_GITHUB_COMMAND}</code> on your computer once
+        more.
+      </InlineAlert>
+      <CopyField
+        value={CONNECT_GITHUB_COMMAND}
+        label="Copy command"
+        size={phone ? "touch" : "default"}
+      />
     </div>
   );
 }

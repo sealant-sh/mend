@@ -4,6 +4,7 @@ import {
   AuthMiddleware,
   BriefDetail,
   AccountRejected,
+  type ConnectedAccount,
   CurrentUser,
   deviceIdOf,
   SealantUnavailable,
@@ -33,6 +34,7 @@ import {
   BriefsRepo,
   ChangesRepo,
   CurrentAccessKey,
+  GithubLoginsRepo,
   IssuesRepo,
   NotificationSettingsRepo,
   PushDevicesRepo,
@@ -56,7 +58,7 @@ import {
   takesApiKeyLogins,
   withSealantRequestPriority,
 } from "@mend/sealant";
-import { DeploymentConfig, StoreConfig } from "@mend/store";
+import { DeploymentConfig, SecretCipher, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Option, Redacted, Schema, Stream } from "effect";
 import { HttpServerRequest } from "effect/http";
 import { HttpApiBuilder } from "effect/http-api";
@@ -64,6 +66,7 @@ import { HttpApiBuilder } from "effect/http-api";
 import { ProjectAccess } from "../access.ts";
 import { BoatKeyFullChecksLive } from "../boat-key-full-checks.ts";
 import { ExposureConfig } from "../exposure.ts";
+import { loginOf } from "../github-identity.ts";
 import { instanceIdOf } from "../instance-id.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AccessKeysGroupLive } from "./access-keys.ts";
@@ -273,6 +276,27 @@ const accountsChanged = (userId: string) =>
     yield* events.changed(userId, "accounts");
   });
 
+/**
+ * Seals and keeps the GitHub login just connected as the person's copy (docs/adr/0028). A copy
+ * Mend can't seal is left out, and the repository list asks the person to connect again; the
+ * connect itself has already succeeded.
+ */
+const keepGithubLogin = (userId: string, account: ConnectedAccount, secret: string) =>
+  Effect.gen(function* () {
+    const sealedToken = yield* (yield* SecretCipher).encrypt(secret.trim());
+    yield* (yield* GithubLoginsRepo).keep(userId, {
+      accountId: account.id,
+      login: loginOf(account),
+      sealedToken,
+    });
+  }).pipe(
+    Effect.catchTag("SecretCipherError", (error) =>
+      Effect.logWarning("connect: Mend couldn't seal its copy of a GitHub login").pipe(
+        Effect.annotateLogs({ operation: error.operation }),
+      ),
+    ),
+  );
+
 export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (handlers) =>
   handlers
     .handle("identity", () =>
@@ -317,6 +341,10 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
         const account = yield* clients
           .connectedAccounts(caller.user.id)
           .connect({ ...payload, secret: narrowed.secret });
+        // Mend keeps its own sealed copy of a GitHub login, for the person's repository list
+        // (docs/adr/0028). Kept before the event, so pages that re-read on it find it.
+        if (account.provider === "github")
+          yield* keepGithubLogin(caller.user.id, account, narrowed.secret);
         yield* accountsChanged(caller.user.id);
         return account;
       }).pipe(
@@ -327,6 +355,8 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       Effect.gen(function* () {
         const clients = yield* SealantClients;
         const caller = yield* CurrentUser;
+        // Mend's copy goes first: the person asked for the login to go, whatever the platform says.
+        yield* (yield* GithubLoginsRepo).forgetAccount(caller.user.id, params.id);
         const account = yield* clients.connectedAccounts(caller.user.id).disconnect(params.id);
         yield* accountsChanged(caller.user.id);
         return account;

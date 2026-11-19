@@ -26,11 +26,11 @@ export const NO_GITHUB_IDENTITY =
 
 /**
  * GitHub API identity (docs/adr/0003-organizations-and-tenancy.md). Git over SSH already signs as
- * each account. Calls to the GitHub API (repository discovery) run as the caller's own connected
- * GitHub login when they have one: `gh` runs in a workspace of theirs that carries it, and Mend
- * never reads the token. Without one, the host's `gh` login belongs to whoever set up the
- * machine, so only the operator of a single-organization install may use it; everyone else is
- * told why there is nothing to show, rather than seeing the host account's view.
+ * each account. Calls to the GitHub API run as the caller's own connected GitHub login when they
+ * have one: the repository list with Mend's own sealed copy of it (docs/adr/0028), pull request
+ * reads with `gh` in a workspace of theirs. Without one, the host's `gh` login belongs to whoever
+ * set up the machine, so only the operator of a single-organization install may use it; everyone
+ * else is told why there is nothing to show, rather than seeing the host account's view.
  */
 export class GithubIdentity extends Context.Service<
   GithubIdentity,
@@ -38,7 +38,7 @@ export class GithubIdentity extends Context.Service<
 >()("@mend/api/GithubIdentity") {}
 
 /** The login a connected GitHub account names: gh's account name, as the platform records it. */
-const loginOf = (account: ConnectedAccount): string | null => {
+export const loginOf = (account: ConnectedAccount): string | null => {
   const login = account.metadata["login"];
   if (typeof login === "string" && login !== "") return login;
   return account.name === "" || account.name === "default" ? null : account.name;

@@ -1,10 +1,11 @@
 import { accountsGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import { MessageSettingsRepo, SettleSettingsRepo } from "@mend/db";
-import { UserAgentLoginsRepo, UserEvents } from "@mend/db";
+import { GithubLoginsRepo, UserAgentLoginsRepo, UserEvents } from "@mend/db";
 import { DEFAULT_MESSAGE_SETTINGS, DEFAULT_SETTLE_SETTINGS } from "@mend/domain/workbench";
 import { AgentLogins, DEFAULT_AGENT_LOGINS } from "@mend/domain/workbench";
 import { SealantClients } from "@mend/sealant";
+import { SecretCipher } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/http";
 import { HttpApi, HttpApiBuilder } from "effect/http-api";
@@ -65,6 +66,9 @@ const world = () => {
       forUser: () => Effect.succeed(DEFAULT_MESSAGE_SETTINGS),
       set: (_, value) => Effect.succeed(value),
     }),
+    // A GitHub connect keeps a sealed copy (docs/adr/0028); these tests connect no GitHub login.
+    Layer.mock(GithubLoginsRepo, {}),
+    Layer.mock(SecretCipher, {}),
     Layer.succeed(UserEvents, {
       changed: (userId, facet) => Effect.sync(() => changed.push(`${userId}:${facet}`)),
       leftOrganization: () => Effect.void,
@@ -98,6 +102,8 @@ const world = () => {
           | UserAgentLoginsRepo
           | MessageSettingsRepo
           | SettleSettingsRepo
+          | GithubLoginsRepo
+          | SecretCipher
         >(),
       );
       const response = await handler(

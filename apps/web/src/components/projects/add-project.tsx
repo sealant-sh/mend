@@ -37,6 +37,7 @@ import { failureWords } from "#/lib/refusal";
 import { useTRPC } from "#/lib/trpc";
 import { type Clone, type CloneRequest, retryOf } from "#/lib/use-clone";
 
+import { GithubConnectAgain } from "../github-connect.tsx";
 import { GithubOwnerChoice } from "./github-owner-choice.tsx";
 import { MendKeyHelp } from "./mend-key-help.tsx";
 import { Overlay } from "./overlay.tsx";
@@ -164,7 +165,10 @@ function AddProjectForm({
   const signedIn = github.isSuccess && github.data.authenticated;
   const [chosen, setChosen] = useState<Source | null>(initial === null ? null : "url");
   // From GitHub when the server can list repositories, else an address.
-  const source: Source = chosen ?? (github.isPending || signedIn ? "github" : "url");
+  // A login Mend must have connected again opens on GitHub too, where the page says so.
+  const connectAgain = github.isSuccess && github.data.connectAgain === true;
+  const source: Source =
+    chosen ?? (github.isPending || signedIn || connectAgain ? "github" : "url");
   const [search, setSearch] = useState("");
   const [searched, setSearched] = useState("");
   useEffect(() => {
@@ -299,6 +303,20 @@ function AddProjectForm({
               {failureWords(github.error, "The Mend server didn't answer.")} You can paste the
               repository's address under From a Git URL.
             </InlineAlert>
+          ) : !signedIn && connectAgain ? (
+            <GithubConnectAgain
+              login={github.data.login}
+              phone={phone}
+              actions={
+                <Button
+                  variant="secondary"
+                  size={phone ? "touch" : "sm"}
+                  onClick={() => setChosen("url")}
+                >
+                  Paste an address
+                </Button>
+              }
+            />
           ) : !signedIn ? (
             <InlineAlert
               tone="info"

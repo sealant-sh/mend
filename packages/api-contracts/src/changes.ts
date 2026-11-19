@@ -145,6 +145,12 @@ export class GhStatusView extends Schema.Class<GhStatusView>("GhStatusView")({
   login: Schema.NullOr(Schema.String),
   /** The CLI's own words when discovery cannot serve — verbatim, never rephrased. */
   detail: Schema.NullOr(Schema.String),
+  /**
+   * The person has a connected GitHub login, but Mend holds no copy it can use to list their
+   * repositories (connected before Mend kept copies, or refused by GitHub since): they connect it
+   * again with `mend connect github` (docs/adr/0028). `login` names it when known.
+   */
+  connectAgain: Schema.optionalKey(Schema.Boolean),
 }) {}
 
 /** One repository exactly as gh reported it (list and search shapes normalized). */
