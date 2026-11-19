@@ -95,11 +95,14 @@ export function RemovedProjectRow({
   organizationName,
   removedBy,
   onRestored,
+  onPurged,
 }: {
   readonly project: RemovedProject;
   readonly organizationName: string;
   readonly removedBy: string | null;
   readonly onRestored: (name: string) => void;
+  /** Runs once Mend has purged it. */
+  readonly onPurged?: () => void;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -224,7 +227,15 @@ export function RemovedProjectRow({
               size={phone ? "touch" : "default"}
               disabled={confirm !== project.name || purge.isPending}
               onClick={() =>
-                purge.mutate({ id: project.id, confirm }, { onSuccess: () => setPurging(false) })
+                purge.mutate(
+                  { id: project.id, confirm },
+                  {
+                    onSuccess: () => {
+                      setPurging(false);
+                      onPurged?.();
+                    },
+                  },
+                )
               }
             >
               {purge.isPending ? "Purging…" : "Purge project"}

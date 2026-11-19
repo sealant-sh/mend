@@ -1,6 +1,8 @@
+import type { RemovedProject } from "@mend/domain/workbench";
 import { toast } from "@mend/ui/components/ui/toast";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
+import { useState } from "react";
 
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/use-viewer";
@@ -29,6 +31,10 @@ export function RemovedProjectPage({
   const { organizationName } = useViewer();
   const removed = useQuery(trpc.projects.removed.queryOptions());
   const members = useQuery(trpc.organization.members.queryOptions());
+  const [seen, setSeen] = useState<RemovedProject | null>(null);
+  const [purged, setPurged] = useState(false);
+  const listed = removed.data?.find((candidate) => candidate.id === projectId) ?? null;
+  if (listed !== null && listed !== seen) setSeen(listed);
   if (removed.isPending) return <QueryPending />;
   if (removed.isError) {
     return (
@@ -41,8 +47,10 @@ export function RemovedProjectPage({
       </div>
     );
   }
-  const project = removed.data.find((candidate) => candidate.id === projectId);
-  if (project === undefined) return <NotFoundScreen />;
+  // Restoring it takes it out of the removed list before its row's callback runs: the row stays
+  // on screen until the page reads the project again, so the callback isn't lost with it.
+  const project = purged ? null : (listed ?? seen);
+  if (project === null) return <NotFoundScreen />;
   const removedBy =
     members.status === "success"
       ? (members.data.find((member) => member.userId === project.removedByUserId)?.name ?? null)
@@ -66,6 +74,7 @@ export function RemovedProjectPage({
               reset();
               void router.invalidate();
             }}
+            onPurged={() => setPurged(true)}
           />
         </ul>
       </SettingSection>
