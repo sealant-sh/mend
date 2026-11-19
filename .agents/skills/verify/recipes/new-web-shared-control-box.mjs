@@ -28,6 +28,8 @@ const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const TURN_MS = 600_000;
 const CHECKER = "boat-check@example.test";
+/** Step 1 names its session so the later steps find it among the box's other sessions. */
+const LABEL = "Shared control check";
 const FIRST = "Reply with the single word hello and change nothing.";
 const SECOND = "Reply with the single word pong and change nothing.";
 const THIRD = "Reply with the single word again and change nothing.";
@@ -106,14 +108,14 @@ export default async ({ page, web, capture, note, account }) => {
     `signed in as ${account?.email} (${checker ? "the checker, the owner" : "the second account"})`,
   );
 
-  // The session step 1 started: the newest live Codex session in verify-fixture from the last three
-  // hours. The box is held for this run, so no other check starts one meanwhile.
+  // The session step 1 started and named, newest first; a stopped one too (sending resumes it).
   const projects = (await api("GET", "/api/projects")).body ?? [];
   const fixture = projects.find((project) => project.name === "verify-fixture");
   const sessions = (await api("GET", "/api/sessions")).body ?? [];
   const ours = sessions
     .filter(
       (row) =>
+        row.label === LABEL &&
         row.harness === "codex" &&
         (fixture === undefined || row.projectId === fixture.id) &&
         // Stopped too: a step 5 that failed after its stop runs again, and sending resumes it.
@@ -143,6 +145,8 @@ export default async ({ page, web, capture, note, account }) => {
     await visible(page.getByRole("button", { name: "Start session" })).click();
     await page.waitForURL(/\/sessions\/[0-9a-f-]+$/, { timeout: 120_000 });
     const id = new URL(page.url()).pathname.split("/").at(-1);
+    const named = await api("POST", `/api/sessions/${id}/label`, { label: LABEL });
+    expect("the session named", named.status === 200, named);
     await reply("hello");
     const shared = await api("PUT", `/api/projects/${fixture.id}/visibility`, {
       visibility: "shared",
