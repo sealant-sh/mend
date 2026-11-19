@@ -149,6 +149,18 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   expect("the owner", me.status === 200 && me.body.role === "owner", me);
   const organization = me.body.organization.name;
   const made = [];
+  // Links an earlier run of this recipe left open (it stopped part way): revoked, so the run starts
+  // from the same page.
+  const left = await owner("GET", "/api/organization/invitations");
+  for (const invitation of left.body ?? [])
+    if (
+      invitation.acceptedAt === null &&
+      invitation.revokedAt === null &&
+      (invitation.email === null ||
+        invitation.email.startsWith("verify-members-") ||
+        invitation.email === "someone@example.invalid")
+    )
+      await owner("DELETE", `/api/organization/invitations/${invitation.id}`);
 
   // --- The roster, as its only owner -------------------------------------------------------------
   await page.goto(`${web}/settings/organization/invitations`);
@@ -185,8 +197,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await created.getByRole("button", { name: "Done" }).click();
   await created.waitFor({ state: "hidden" });
   const openTable = visible(page.getByRole("table", { name: "Open invitations" }));
-  await openTable.getByText(email).waitFor();
-  await openTable.getByText(/^By you · today/).waitFor();
+  const mine = openTable.getByRole("row").filter({ hasText: email });
+  await mine.waitFor();
+  await mine.getByText(/^By you · today/).waitFor();
   note("the open link is listed: sent to the email, by you today, Member, its expiry, Revoke");
   await shot("invitation-open-desktop-light");
 
