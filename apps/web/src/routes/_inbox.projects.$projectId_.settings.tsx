@@ -33,7 +33,7 @@ const notFound = (error: unknown): boolean =>
 function ProjectSettingsError(props: ErrorComponentProps) {
   const { projectId } = Route.useParams();
   return notFound(props.error) ? (
-    <RemovedProjectPage projectId={projectId} />
+    <RemovedProjectPage projectId={projectId} reset={props.reset} />
   ) : (
     <RouteErrorScreen {...props} />
   );

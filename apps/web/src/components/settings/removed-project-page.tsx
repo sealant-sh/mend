@@ -16,7 +16,14 @@ import { SettingsPage } from "./settings-page.tsx";
  * Removed projects list does); any other address is not found. Restoring it opens its settings
  * again.
  */
-export function RemovedProjectPage({ projectId }: { readonly projectId: string }) {
+export function RemovedProjectPage({
+  projectId,
+  reset,
+}: {
+  readonly projectId: string;
+  /** Clears the route's error, so reading the project again can draw its page. */
+  readonly reset: () => void;
+}) {
   const trpc = useTRPC();
   const router = useRouter();
   const { organizationName } = useViewer();
@@ -54,7 +61,9 @@ export function RemovedProjectPage({ projectId }: { readonly projectId: string }
             removedBy={removedBy}
             onRestored={(name) => {
               toast.add({ description: `${name} is back in ${organizationName}'s projects.` });
-              // Reading the project again leaves this view for its settings.
+              // Reading the project again leaves this view for its settings. The removed list no
+              // longer holds it, so the error is cleared first rather than drawing not found.
+              reset();
               void router.invalidate();
             }}
           />
