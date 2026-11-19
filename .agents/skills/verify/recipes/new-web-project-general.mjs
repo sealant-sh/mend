@@ -212,9 +212,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     note(`Save renames it: the toast, the breadcrumb and the sidebar read "${renamed}"`);
     await shot("project-general-renamed-desktop-light");
     const audit = await owner("GET", "/api/organization/audit?limit=5");
-    const entry = (audit.body ?? []).find((row) => row.event.action === "project.renamed");
-    expect("the rename's audit entry", entry?.event.data?.name === renamed, audit);
-    note(`audit log: project.renamed ${entry.event.data.previousName} → ${entry.event.data.name}`);
+    const renameEntry = (audit.body ?? []).find((row) => row.event.action === "project.renamed");
+    expect("the rename's audit entry", renameEntry?.event.data?.name === renamed, audit);
+    note(
+      `audit log: project.renamed ${renameEntry.event.data.previousName} → ${renameEntry.event.data.name}`,
+    );
     await open(`${home}/general`);
     expect("the name holds across a reload", (await nameField().inputValue()) === renamed, "");
     await nameField().fill(name);
