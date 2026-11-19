@@ -104,6 +104,17 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const dialog = (name) => visible(page.getByRole("dialog", { name }));
   const toastSays = (words) =>
     visible(page.getByRole("region", { name: /Notifications/ }).getByText(words)).waitFor();
+  /** Answer one procedure with a refusal, without sending the call: nothing changes on the server. */
+  const refuse = (procedure, answer) =>
+    page.route("**/trpc/**", async (route) => {
+      const paths = pathsOf(route.request());
+      if (!paths.includes(procedure)) return route.continue();
+      await route.fulfill({
+        status: paths.length === 1 ? answer.error.json.data.httpStatus : 207,
+        contentType: "application/json",
+        body: JSON.stringify(paths.map(() => answer)),
+      });
+    });
   /** Rewrite one procedure's answers: `change(json)` edits a success, or returns a failure. */
   const rewrite = (procedure, change) =>
     page.route("**/trpc/**", async (route) => {
@@ -246,7 +257,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     // The server's refusal, beside the row (rewritten: the last-owner words).
     const lastOwner =
       "An organization needs an owner. Make someone else an owner before this one steps down.";
-    await rewrite("organization.setMemberRole", () =>
+    await refuse(
+      "organization.setMemberRole",
       failure(lastOwner, -32022, 422, "OrganizationRejected"),
     );
     await visible(page.getByRole("combobox", { name: `${person}'s role` })).click();
