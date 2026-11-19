@@ -5,10 +5,19 @@ import {
   type FileDiffMetadata,
   parsePatchFiles,
   registerCustomCSSVariableTheme,
+  type SelectedLineRange,
   type VirtualFileMetrics,
 } from "@pierre/diffs";
 import { FileDiff, Virtualizer } from "@pierre/diffs/react";
-import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type ReactNode,
+  type RefObject,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 /**
  * Which files the person folded or opened by hand. A viewed file folds by itself; flipping it
@@ -106,6 +115,16 @@ export interface BetweenLines<A> {
 }
 
 /**
+ * Picking lines to comment on (PR 24): a click on a line number picks that line, a drag across
+ * line numbers picks a range, always on the new side. `selected` keeps the picked lines washed
+ * while their comment is being written.
+ */
+export interface LinePicking {
+  readonly onPick: (file: ChangeFile, start: number, end: number) => void;
+  readonly selected: (file: ChangeFile) => { readonly start: number; readonly end: number } | null;
+}
+
+/**
  * Lines of a file marked with the cobalt bar on their left edge (a tour stop's): new-side lines
  * `from` to `to`, and the removed lines between them by their old-side numbers.
  */
@@ -157,6 +176,7 @@ function FileLines<A>({
   sides,
   between,
   marked,
+  picking,
 }: {
   readonly file: ChangeFile;
   readonly layout: DiffLayout;
@@ -164,11 +184,21 @@ function FileLines<A>({
   readonly sides: DiffSides;
   readonly between: BetweenLines<A> | undefined;
   readonly marked: MarkedLines | null;
+  readonly picking: LinePicking | undefined;
 }) {
   const parsed = useMemo(() => parsedFile(file.file.patch), [file.file.patch]);
   const split = layout === "split" && !compact;
   // The renderer draws again when these change: keep them the same object while they hold.
   const css = [BETWEEN_CSS, markedCss(marked)].filter((part) => part !== undefined).join("\n");
+  // The renderer keeps the handlers it was given first: they read the newest `picking` through a
+  // ref, kept current after each render.
+  const pickRef = useRef(picking);
+  useLayoutEffect(() => {
+    pickRef.current = picking;
+  });
+  // A drag across line numbers, washed as it goes; the renderer's selection is controlled.
+  const [dragging, setDragging] = useState<SelectedLineRange | null>(null);
+  const picks = picking !== undefined;
   const options = useMemo(
     () => ({
       unsafeCSS: css,
@@ -180,9 +210,34 @@ function FileLines<A>({
       overflow: compact ? ("wrap" as const) : ("scroll" as const),
       disableFileHeader: true,
       lineHoverHighlight: "line" as const,
+      ...(picks
+        ? {
+            enableLineSelection: true,
+            // Comments go on the new side: a removed line has nothing there to anchor to.
+            onLineNumberClick: (line: {
+              readonly lineNumber: number;
+              readonly annotationSide?: string;
+            }) => {
+              if (line.annotationSide === "deletions") return;
+              pickRef.current?.onPick(file, line.lineNumber, line.lineNumber);
+            },
+            onLineSelectionChange: (range: SelectedLineRange | null) => setDragging(range),
+            onLineSelectionEnd: (range: SelectedLineRange | null) => {
+              setDragging(null);
+              if (range === null || range.side === "deletions" || range.endSide === "deletions")
+                return;
+              const start = Math.min(range.start, range.end);
+              const end = Math.max(range.start, range.end);
+              // A click ends a selection of one line too; the click itself picks it.
+              if (start !== end) pickRef.current?.onPick(file, start, end);
+            },
+          }
+        : {}),
     }),
-    [split, compact, css],
+    [split, compact, css, picks, file],
   );
+  const picked = picking?.selected(file) ?? null;
+  const selected = dragging ?? (picked === null ? null : { start: picked.start, end: picked.end });
   const annotations = useMemo(
     () => (between === undefined ? [] : [...between.annotations(file)]),
     [between, file],
@@ -211,6 +266,7 @@ function FileLines<A>({
         className="change-diff block border-b"
         lineAnnotations={annotations}
         {...(between === undefined ? {} : { renderAnnotation: between.render })}
+        {...(picks ? { selectedLines: selected } : {})}
         options={options}
       />
     </>
@@ -226,7 +282,8 @@ function FileLines<A>({
  * `above` is the place over the diffs (Mend's description, PR 25); `after` sits under the last
  * file (proof artifacts). `between` puts rows between a file's lines (comments, PR 24; tour stops,
  * PR 25); `under` puts one under a file's header, and `marked` gives a file's header or lines the
- * cobalt bar (a tour stop). `focus` brings a file, or the top, into view (its nonce asks again);
+ * cobalt bar (a tour stop). `picking` turns clicks and drags on line numbers into a comment's
+ * lines, and `tools` adds a file's own actions to its header. `focus` brings a file, or the top, into view (its nonce asks again);
  * `onShowing` says which file is at the top as the person scrolls. `scrollRef` is given the element
  * that scrolls, for a caller that keeps its place.
  */
@@ -245,6 +302,8 @@ export function ChangeDiffs<A = undefined>({
   between,
   under,
   marked,
+  picking,
+  tools,
   scrollRef,
 }: {
   readonly files: ReadonlyArray<ChangeFile>;
@@ -262,6 +321,10 @@ export function ChangeDiffs<A = undefined>({
   readonly under?: (file: ChangeFile) => ReactNode;
   /** The file's header (`"header"`) or some of its lines carry the bar; null for neither. */
   readonly marked?: (file: ChangeFile) => "header" | MarkedLines | null;
+  /** Clicking or dragging line numbers to comment on them (PR 24). */
+  readonly picking?: LinePicking;
+  /** A file's own actions in its header, beside Viewed. */
+  readonly tools?: (file: ChangeFile) => ReactNode;
   readonly scrollRef?: RefObject<HTMLElement | null>;
 }) {
   // Generated files whose diff the person asked to see.
@@ -369,6 +432,7 @@ export function ChangeDiffs<A = undefined>({
                 folds.reset(file.path);
               }}
               size={compact ? "compact" : "default"}
+              tools={tools?.(file)}
             >
               {under?.(file)}
               {file.generated && !asked ? (
@@ -392,6 +456,7 @@ export function ChangeDiffs<A = undefined>({
                   sides={sides}
                   between={between}
                   marked={bar === null || bar === "header" ? null : bar}
+                  picking={picking}
                 />
               )}
             </DiffFile>
