@@ -437,6 +437,29 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.organization.folders.tsx`,
   `apps/web/src/lib/organization-folders.ts`, `apps/api/src/routes/folders.ts`
 
+### settings.new-web-runtime
+
+- **Map:** none in a feature file (route PR 47: where the organization's new sessions run, Docker or
+  Boat, and what a switch changes; docs/adr/0025)
+- **Needs:** no session; no turn; web; for a real switch, a server that offers Docker and Boat
+- **Do:** Drive the recipe `new-web-settings-runtime`: Runtime under "Everyone in <organization>"
+  lists the runtimes the server offers with where new sessions run selected, Boat's line linking to
+  the Boat page; old `/settings/organization/defaults` and `/settings#organization-defaults` open
+  it. An owner switches: when the server says nothing changes, at once with a toast; otherwise a
+  dialog first says what the new runtime wouldn't run (the organization's image, projects by name, a
+  count of private ones) and that running sessions stay, with Cancel, Switch without moving and Move
+  and switch, and says a refusal there; after a switch without moving, the page lists what the
+  runtime doesn't run with Move to what <runtime> runs. A switch Mend couldn't check says so. A
+  member reads the choices and who can change them; a server where Sealant picks has no choice; a
+  failed read shows Try again. On the box, switch for real where it offers both.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; what each switch sent.
+- **Mode:** `scripted` (recipes/new-web-settings-runtime.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/runtime-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.runtime.tsx`,
+  `apps/web/src/lib/runtime-switch.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
@@ -1893,12 +1916,11 @@ flows reuse what earlier ones made:
   (`PUT /organization/name`, new with route PR 45)
 - **Needs:** no session; no turn; web
 - **Do:** Drive the recipe `new-web-org-general`: `/settings/organization` as its owner (old
-  `/settings/organization/` and `/settings/organization/defaults` land there, and so does the
-  switcher's settings item); rename it (Unsaved changes, an empty name refused beside the field,
-  Save, Enter, Escape) and put the name back; a second person joins through an invitation and reads
-  the page as a member; made an owner and back; then, with a second organization written into the
-  page's list, the Leave dialog for an owner beside another owner and for the only owner; a read
-  that fails and Try again.
+  `/settings/organization/` lands there, and so does the switcher's settings item); rename it
+  (Unsaved changes, an empty name refused beside the field, Save, Enter, Escape) and put the name
+  back; a second person joins through an invitation and reads the page as a member; made an owner
+  and back; then, with a second organization written into the page's list, the Leave dialog for an
+  owner beside another owner and for the only owner; a read that fails and Try again.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: `Renamed to <name>.`, the
   breadcrumb and audience line reading the new name, an `organization.renamed` audit entry; the
   member's read-only name with `Only an owner can rename it: <owner>.`; the server's 404 to the

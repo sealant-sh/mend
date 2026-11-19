@@ -5,8 +5,7 @@ import { guardSettingsPage } from "#/lib/settings-guards";
 
 /**
  * Settings → the organization → General: its name, who owns it, and leaving it. The old app's
- * `/settings/organization/` (which opened Members) lands here, and so does
- * `/settings/organization/defaults`, through `lib/settings-pages.ts`'s old addresses.
+ * `/settings/organization/` (which opened Members) lands here.
  */
 export const Route = createFileRoute("/_inbox/settings/organization/")({
   beforeLoad: guardSettingsPage("o-general"),

@@ -125,7 +125,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await shot("general-owner-desktop-light");
 
   // --- Old addresses, and the switcher's settings item -----------------------------------------
-  for (const old of ["/settings/organization/", "/settings/organization/defaults"]) {
+  for (const old of ["/settings/organization/"]) {
     await page.goto(`${web}${old}`);
     await page.waitForURL((url) => url.pathname.replace(/\/$/, "") === "/settings/organization");
     await heading("General");
