@@ -296,7 +296,9 @@ function VisibilityRow({
               { value: "private", label: privateLabel(people) },
               { value: "shared", label: shared },
             ]}
-            className="max-lg:w-full"
+            // Each choice is as wide as its words (the names differ in length), filling the row on a
+            // phone.
+            className="*:flex-auto max-lg:w-full"
           />
         ) : (
           <span>{shown === "shared" ? shared : privateLabel(people)}</span>
