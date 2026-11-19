@@ -45,7 +45,6 @@ export default async ({ page, web, capture, note, registerSecret }) => {
   const text = (value) => visible(page.getByText(value, { exact: false }));
   const settled = () => page.waitForTimeout(500);
   const path = () => new URL(page.url()).pathname;
-  const origin = new URL(web).origin;
   const hydrated = async () => {
     await page.waitForFunction(() => window["__TSR_ROUTER__"] !== undefined, null, {
       timeout: 90_000,
