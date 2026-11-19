@@ -119,6 +119,7 @@ const createdAccount = async (email: string, name: string) => {
 describe.skipIf(postgres.skip)("deactivation and password reset in migrated Postgres", () => {
   let operator: Awaited<ReturnType<typeof createdAccount>>;
 
+  // Creating the database and running every migration waits on the shared test server.
   beforeAll(async () => {
     await admin.query(`CREATE DATABASE ${SCRATCH_DB}`);
     databaseCreated = true;
@@ -132,7 +133,7 @@ describe.skipIf(postgres.skip)("deactivation and password reset in migrated Post
         ),
       ).pipe(Effect.scoped),
     );
-  });
+  }, 60_000);
 
   beforeEach(async () => {
     // Each case starts active, with its own live credentials, regardless of test order.
@@ -286,7 +287,11 @@ afterAll(async () => {
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
-    await disposalAdmin.query(`DROP DATABASE ${SCRATCH_DB}`);
+    // DROP DATABASE waits for a server-wide checkpoint, which takes seconds while other test files,
+    // or other checkouts sharing the test server, write. pg reads a per-query `query_timeout`,
+    // although @types/pg only declares it on the pool's config.
+    const drop = { text: `DROP DATABASE ${SCRATCH_DB}`, query_timeout: 45_000 };
+    await disposalAdmin.query(drop);
   } finally {
     try {
       await disposalAdmin.end();
@@ -294,4 +299,4 @@ afterAll(async () => {
       await admin.end();
     }
   }
-});
+}, 60_000);

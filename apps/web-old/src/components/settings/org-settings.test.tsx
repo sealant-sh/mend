@@ -154,6 +154,16 @@ const settle = async () => {
   }
 };
 
+/** What `find` answers once it answers anything, waiting up to 200 ticks of 10 ms. */
+const appeared = async <A,>(find: () => A | undefined): Promise<A | undefined> => {
+  for (let tick = 0; tick < 200 && find() === undefined; tick += 1) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    });
+  }
+  return find();
+};
+
 /** The pressed option of the setting labelled `label`. */
 const group = (label: string) =>
   [...document.querySelectorAll('[role="group"]')].find(
@@ -227,6 +237,8 @@ const project = (
 });
 
 const switchDialog = () => document.querySelector('[role="dialog"]');
+/** The switch dialog once it is open: it opens when the read of what the runtime runs answers. */
+const openedSwitchDialog = () => appeared(() => switchDialog() ?? undefined);
 
 describe("Organization · Defaults · where new sessions run (SLNT-794)", () => {
   const RUNTIME = "Where new sessions run";
@@ -260,8 +272,10 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     project("hidden", { visible: false, workspaceImage: arch }),
   ]);
   const press = async (text: string) => {
-    const found = [...document.querySelectorAll("button")].find(
-      (element) => element.textContent?.trim() === text,
+    const found = await appeared(() =>
+      [...document.querySelectorAll("button")].find(
+        (element) => element.textContent?.trim() === text,
+      ),
     );
     if (found === undefined) throw new Error(`no button ${text}`);
     await act(async () => found.click());
@@ -284,7 +298,8 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     // The server keeps the choice: the read after the save answers it too.
     answers = { ...answers, "organization.settings": settingsView(true, choseBoat) };
     await act(async () => option(RUNTIME, "Boat").click());
-    await settle();
+    // The choice reads Boat once the read of what Boat runs, the save and the read after it answer.
+    await appeared(() => (pressed(RUNTIME) === "Boat" ? true : undefined));
     expect(calls).toContain("organization.runtimeSwitch");
     expect(switchDialog()).toBeNull();
     expect(switchesSent()).toEqual([{ sessionRuntime: "boat" }]);
@@ -302,7 +317,7 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     await act(async () => option(RUNTIME, "Boat").click());
     await settle();
     expect(switchesSent()).toEqual([]);
-    const text = switchDialog()?.textContent ?? "";
+    const text = (await openedSwitchDialog())?.textContent ?? "";
     expect(text).toContain("Before new sessions run on Boat");
     expect(text).toContain("Acme's environment");
     expect(text).toContain(
@@ -367,7 +382,7 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
     await render(<DefaultsTab />);
     await act(async () => option(RUNTIME, "Boat").click());
     await settle();
-    expect(switchDialog()?.textContent).toContain(
+    expect((await openedSwitchDialog())?.textContent).toContain(
       "Not checked: Mend could not read what the new runtime runs (Sealant could not be reached), so it cannot tell which projects in Acme would stop starting.",
     );
     expect(switchDialog()?.textContent).not.toContain("Move");
@@ -383,10 +398,11 @@ describe("Organization · Defaults · where new sessions run (SLNT-794)", () => 
       "organization.setSessionRuntime": settingsView(true, choseBoat),
     };
     await render(<DefaultsTab />);
+    const standing = "New sessions in Acme run on Boat, which cannot run everything here as it is";
+    // Shown once the read of what Boat runs answers.
+    await appeared(() => (document.body.textContent?.includes(standing) ? true : undefined));
     expect(switchDialog()).toBeNull();
-    expect(document.body.textContent).toContain(
-      "New sessions in Acme run on Boat, which cannot run everything here as it is",
-    );
+    expect(document.body.textContent).toContain(standing);
     await press("Move to what Boat runs");
     expect(switchesSent()).toEqual([
       { sessionRuntime: "boat", moves: { organizationDefault: true, projects: ["p-web"] } },
@@ -489,15 +505,6 @@ describe("Organization · Members", () => {
     expect(document.querySelectorAll("button")).toHaveLength(0);
   });
 });
-
-const appeared = async <A,>(find: () => A | undefined): Promise<A | undefined> => {
-  for (let tick = 0; tick < 200 && find() === undefined; tick += 1) {
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    });
-  }
-  return find();
-};
 
 const press = async (selector: string, text: string) => {
   const found = await appeared(() =>
