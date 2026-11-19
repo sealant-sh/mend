@@ -372,6 +372,26 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.settings.organization.boat.tsx`, `apps/web/src/lib/boat-key.ts`,
   `apps/web/src/server/routers/boat-key.ts`
 
+### organization.new-web-org-projects
+
+- **Map:** none in a feature file (the owners' Projects page, the owner's ruling of 18 Nov 2026)
+- **Needs:** no session; no turn; web; a second account to join and leave
+- **Do:** Drive the recipe `new-web-settings-org-projects`: Projects under "Owners of
+  <organization>" sits in the owner's settings sidebar right before Audit log, and a member has no
+  such entry and is sent to Profile by its address; with nothing to show, both lists say so; a
+  project whose creator left is listed without a creator, and Take over… confirms, says a refusal in
+  the dialog, and once taken over the row goes, a toast says so and the project is the owner's; kept
+  volumes list their project, volume, Docker name, when and size, with no actions; a failed read
+  shows Try again.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the member and the
+  project the recipe made are gone afterwards.
+- **Mode:** `scripted` (recipes/new-web-settings-org-projects.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/organization-projects-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.projects.tsx`,
+  `apps/web/src/lib/organization-projects.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
