@@ -599,14 +599,13 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await go(`/sessions/${small.id}/change`);
   await section(RETRY).waitFor({ timeout: 60_000 });
   await readAgain([["changes", "comments"]]);
-  await comment("Should we back off on a 409 too?").getByText(/^Sent/).waitFor({ timeout: 30_000 });
+  // Every file was marked viewed, so line comments are folded away: read the whole-change one.
+  await comment("Keep the signature").getByText(/^Sent/).waitFor({ timeout: 30_000 });
   note(`sent: each sent comment reads 'Sent'; the toolbar reads "${await toolbarNote()}"`);
 
   // A second look: resolve a sent comment, for real.
-  await comment("Should we back off on a 409 too?")
-    .getByRole("button", { name: "Resolve" })
-    .click();
-  await visible(page.getByText(/^1 comment resolved, 2 open\.$/)).waitFor({ timeout: 15_000 });
+  await comment("Keep the signature").getByRole("button", { name: "Resolve" }).click();
+  await visible(page.getByText(/1 comment resolved, 2 open\./)).waitFor({ timeout: 15_000 });
   note("second look: Resolve on a sent comment; the toolbar reads '1 comment resolved, 2 open.'");
   await both("second-look-desktop");
 

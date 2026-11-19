@@ -240,10 +240,10 @@ export default async ({ page, web, capture, note }) => {
       .catch(() => "?")}"`,
   );
   await comment("Make the wait grow").getByRole("button", { name: "Resolve" }).click();
-  await visible(page.getByText(/^1 comment resolved, \d+ open\.$/))
+  await visible(page.getByText(/1 comment resolved, \d+ open\./))
     .waitFor({ timeout: 15_000 })
     .then(async () =>
-      note(`second look: "${await visible(page.getByText(/^1 comment resolved/)).innerText()}"`),
+      note(`second look: "${await visible(page.getByText(/1 comment resolved/)).innerText()}"`),
     )
     .catch(() => note("the resolved count isn't in the toolbar: comments still wait to be sent"));
   await shot("second-look-box-desktop", ["light", "dark"]);

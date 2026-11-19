@@ -38,7 +38,6 @@ import {
   anchorKey,
   assembleInstruction,
   commentGroups,
-  commentsOf,
   countWords,
   deliveryOf,
   isDismissedDraft,
@@ -558,10 +557,10 @@ export function useChangeComments({
     if (isDismissedDraft(comment)) setShowDismissed(true);
     moves.show(comment.file, `[data-comment="${comment.id}"]`);
   };
-  const failedIds =
+  const failedIds: ReadonlySet<string> =
     delivery.kind === "failed"
       ? new Set(delivery.followUp?.commentIds ?? lastAttempt?.commentIds ?? [])
-      : new Set<string>();
+      : new Set();
   const rowNote = (comment: ReviewCommentDto): string | null => {
     if (failedIds.has(comment.id)) return "Couldn't send";
     if (comment.sentToSessionId !== null || comment.state !== "open") return stateWords(comment);
@@ -736,10 +735,16 @@ export function useChangeComments({
     );
 
   // What Send sends, after the last file: once every file is viewed this is where the eye lands.
-  const toSend =
-    delivery.kind === "failed" && delivery.followUp !== null
-      ? commentsOf(delivery.followUp, all)
-      : groups.unsent;
+  // What went, when a send failed: the server's follow-up, or what this page asked to send.
+  const tried =
+    delivery.kind !== "failed"
+      ? null
+      : delivery.followUp !== null
+        ? new Set(delivery.followUp.commentIds)
+        : lastAttempt === null
+          ? null
+          : new Set(lastAttempt.commentIds);
+  const toSend = tried === null ? groups.unsent : all.filter((comment) => tried.has(comment.id));
   const after =
     toSend.length === 0 || !rule.can ? null : (
       <section aria-label="Your review" className="border-b px-4 py-6 lg:px-11">
