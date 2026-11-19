@@ -17,7 +17,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@mend/ui/component
 import { Tooltip, TooltipContent, TooltipTrigger } from "@mend/ui/components/ui/tooltip";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link, type LinkProps, useNavigate } from "@tanstack/react-router";
 import {
   ArrowUpRightIcon,
   BookOpenIcon,
@@ -47,8 +47,8 @@ import { SheetHandle, SheetItem, SheetItemBody, sheetItemClass } from "./sheet-i
  * it opens from the account row at the foot of the sidebar, or the avatar on its rail; on a phone,
  * from the account row at the top of the Settings tab, as a sheet.
  *
- * The theme belongs to this browser (Settings → This device → Appearance, route PR 37, shows the
- * same choice): it is kept under the old app's key, so a choice made there holds here.
+ * The theme belongs to this browser (Settings → This device → Appearance shows the same choice):
+ * it is kept under the old app's key, so a choice made there holds here.
  */
 
 /** Who is signed in, as the account row and the menu name them. */
@@ -108,7 +108,7 @@ export function AccountAvatar({
  * Signing out: Better Auth ends the session, then the sign-in page loads afresh, so nothing the
  * account read stays in the page.
  */
-const useSignOut = () =>
+export const useSignOut = () =>
   useMutation({
     mutationFn: async () => {
       const result = await authClient.signOut();
@@ -133,7 +133,7 @@ function ExposureLine({ className }: { readonly className?: string }) {
   );
 }
 
-const SIGN_OUT_FAILED = "Mend didn't sign you out. Check your connection and try again.";
+export const SIGN_OUT_FAILED = "Mend didn't sign you out. Check your connection and try again.";
 
 /** The trigger's place: the sidebar's account row, or the avatar on its rail. */
 type Place = "sidebar" | "rail";
@@ -196,7 +196,7 @@ export function AccountMenu({
           <ExposureLine className="truncate px-2 pb-1 font-mono text-2xs text-muted-foreground" />
         </DropdownMenuGroup>
         <DropdownMenuSeparator />
-        <DropdownMenuItem render={<Link {...laterPage("settings/profile")} />}>
+        <DropdownMenuItem render={<Link to="/settings/profile" />}>
           <CircleUserRoundIcon aria-hidden className="text-muted-foreground" />
           Profile
         </DropdownMenuItem>
@@ -273,9 +273,9 @@ export function PhoneAccountRow({ account }: { readonly account: Account }) {
     setOpen(next);
     if (next) setPage("account");
   };
-  const go = (path: string) => {
+  const go = (link: LinkProps) => {
     setOpen(false);
-    void navigate(laterPage(path));
+    void navigate(link);
   };
   return (
     <>
@@ -310,7 +310,7 @@ export function PhoneAccountRow({ account }: { readonly account: Account }) {
                 <SheetItem
                   icon={<CircleUserRoundIcon aria-hidden />}
                   chevron
-                  onClick={() => go("settings/profile")}
+                  onClick={() => go({ to: "/settings/profile" })}
                 >
                   Profile
                 </SheetItem>

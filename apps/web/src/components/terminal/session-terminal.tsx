@@ -10,6 +10,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { terminalFamily, terminalFont } from "#/lib/appearance";
 import { EmbedTicketRefused, makeEmbedExchange, notifyEmbedExpired } from "#/lib/embed-exchange";
 import { OWN_SHORTCUTS } from "#/lib/search-keys";
 import { linksOnRow } from "#/lib/terminal-links";
@@ -133,9 +134,8 @@ const themeOf = (element: Element): ITheme => {
 };
 
 /**
- * The terminal's font: the face and size the box is styled with (the kit's mono face, Geist Mono,
- * at the control size), waited for, so the canvas measures the face it draws with. "This
- * device"'s terminal font setting (route PR 37) will style the box.
+ * The terminal's font: the face and size the box is styled with (this browser's terminal font,
+ * Settings → Appearance), waited for, so the canvas measures the face it draws with.
  */
 const fontOf = async (element: Element) => {
   const style = getComputedStyle(element);
@@ -235,6 +235,8 @@ export function SessionTerminal({
   const [now, setNow] = useState(() => Date.now());
   const [image, setImage] = useState<ImageState>(null);
   const dark = usePageDark();
+  // This browser's terminal face and size; a change opens the terminal again in it.
+  const chosenFont = terminalFont.use();
   // The effect reads the latest paste without opening a new terminal when it changes.
   const pasteRef = useRef(pasteImage);
   pasteRef.current = pasteImage;
@@ -545,7 +547,17 @@ export function SessionTerminal({
       teardown?.();
     };
     // `dark`: the colours are read as the terminal opens (`themeOf`).
-  }, [sessionId, processId, embedTicket, token, readOnly, autoFocus, announceStart, dark]);
+  }, [
+    sessionId,
+    processId,
+    embedTicket,
+    token,
+    readOnly,
+    autoFocus,
+    announceStart,
+    dark,
+    chosenFont,
+  ]);
 
   const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
   const startingLine =
@@ -575,7 +587,8 @@ export function SessionTerminal({
       <div
         ref={containerRef}
         {...{ [OWN_SHORTCUTS]: "" }}
-        className="min-h-0 w-full flex-1 overflow-hidden font-mono text-control"
+        style={{ fontFamily: terminalFamily(chosenFont), fontSize: `${chosenFont.size}px` }}
+        className="min-h-0 w-full flex-1 overflow-hidden"
       />
       <div role="status" className="empty:hidden">
         {startingLine === null ? null : <p className={LINE}>{startingLine}</p>}

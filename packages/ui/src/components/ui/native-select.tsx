@@ -3,7 +3,11 @@ import { ChevronDownIcon } from "lucide-react";
 import * as React from "react";
 
 type NativeSelectProps = Omit<React.ComponentProps<"select">, "size"> & {
-  size?: "sm" | "default";
+  /**
+   * `field` is a settings field's: 36px on a desktop, the 44px touch size under 1024px, where it
+   * fills its row.
+   */
+  size?: "sm" | "default" | "field";
 };
 
 function NativeSelect({ className, size = "default", ...props }: NativeSelectProps) {
@@ -19,7 +23,7 @@ function NativeSelect({ className, size = "default", ...props }: NativeSelectPro
       <select
         data-slot="native-select"
         data-size={size}
-        className="h-8 w-full min-w-0 appearance-none rounded-lg border border-input bg-transparent py-1 pr-8 pl-2.5 text-sm transition-colors outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=sm]:h-7 data-[size=sm]:rounded-[min(var(--radius-md),10px)] data-[size=sm]:py-0.5 dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40"
+        className="h-8 w-full min-w-0 appearance-none rounded-lg border border-input bg-transparent py-1 pr-8 pl-2.5 text-sm transition-colors outline-none select-none selection:bg-primary selection:text-primary-foreground placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:pointer-events-none disabled:cursor-not-allowed aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 data-[size=sm]:h-7 data-[size=sm]:rounded-[min(var(--radius-md),10px)] data-[size=sm]:py-0.5 data-[size=field]:h-9 data-[size=field]:text-row max-lg:data-[size=field]:h-11 max-lg:data-[size=field]:text-base dark:bg-input/30 dark:hover:bg-input/50 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40"
         {...props}
       />
       <ChevronDownIcon
