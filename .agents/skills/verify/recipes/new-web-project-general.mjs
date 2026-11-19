@@ -86,6 +86,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const shot = async (name) => {
     await page.mouse.move(1, 1);
     await settled();
+    // Vite's overlay can cover the page when a proxied socket closes (ECONNRESET): not the page's.
+    await page.locator("vite-error-overlay").evaluateAll((all) => all.forEach((el) => el.remove()));
     await capture(name);
   };
   const paint = async (theme) => {
