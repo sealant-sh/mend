@@ -288,6 +288,28 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/slack.link.$code.tsx`, `apps/web/src/lib/connected-apps.ts`,
   `apps/web/src/lib/slack-link.ts`
 
+### settings.new-web-automation
+
+- **Map:** land-change.md `land-automatic` (the composer starts from the switch); review-change.md
+  (description and tour, suggested fixes as your switches); project-settings.md
+  `settings-review-automation`, `settings-landing` (moved here, no Inherit). Route PR 43.
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-settings-automation`: `/settings/review`, `/settings/landing`
+  and `/settings/sessions` open Your automation; under "Only you" the four switches (Change
+  description and tour, Suggested fixes, Automatic landing, Stop the session when you settle its
+  thread) show what the server holds, with no Inherit; turning each saves it, says so in a toast,
+  and the server keeps it without changing `autoName` or `backgroundSessions`; the home composer's
+  "Land when a turn completes" starts from Automatic landing, on and off; a slow save shows Saving…;
+  a refused one goes back with Try again; a failed read shows Try again; the phone width. The recipe
+  puts both settings back.
+- **See:** each step's note in the recipe's `steps.log`, and its captures; the account's automation
+  and settle settings are what they were before the run.
+- **Mode:** `scripted` (recipes/new-web-settings-automation.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/automation-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.automation.tsx`, `apps/web/src/lib/automation.ts`
+
 ### adopt-project.new-web-first-project
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
