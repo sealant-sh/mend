@@ -16,8 +16,10 @@ report and file tickets; you fix nothing.
 
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
 top; report any flow outside it as `not run · not in this run's set`. A flow marked
-`- **Box:** after cut-over` drives the new web app (`apps/web`), which the box does not serve yet:
-report it as `not run · after cut-over`, apart from the seen and failed flows, until cut-over.
+`- **Box:** after cut-over` drives the new web app (`apps/web`). A preview of `main`, which this run
+deploys, serves today's app until cut-over: report such a flow as `not run · after cut-over`, apart
+from the seen and failed flows. A preview built with `web_app=web` serves the new app, and
+`pnpm verify box plan`'s `flows` line says so: there every flow runs.
 
 ## Who does what
 

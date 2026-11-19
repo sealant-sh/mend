@@ -16,6 +16,7 @@ import {
   tidyScript,
 } from "./box-tidy.mjs";
 import { driveResults } from "./evidence.mjs";
+import { boxFlows, loadFlows, webAppOf } from "./flows.mjs";
 
 // The box-check setup (AGENTS.md, Check Features on the Box; docs/operations/preview-builds.md):
 // what the box runs and whether another check holds it, the database dump before a deploy, a CLI
@@ -80,6 +81,7 @@ set -u
 label() { docker inspect --format "{{index .Config.Labels \\"$1\\"}}" mend-mend-1 2>/dev/null; }
 echo "version=$(label org.opencontainers.image.version)"
 echo "revision=$(label org.opencontainers.image.revision)"
+echo "webapp=$(label dev.sealant.mend.web-app)"
 echo "started=$(docker inspect --format '{{.State.StartedAt}}' mend-mend-1 2>/dev/null)"
 echo "running=$(docker inspect --format '{{.State.Running}}' mend-mend-1 2>/dev/null)"
 echo "live=$(docker exec mend-postgres-1 psql -U postgres -d mend -At -c 'select count(*) from agent_sessions where settled_at is null' 2>/dev/null)"
@@ -114,6 +116,7 @@ export const parseState = (text) => {
   return {
     version: values.version ?? null,
     revision: /^[0-9a-f]{40}$/.test(values.revision ?? "") ? values.revision : null,
+    webApp: webAppOf(values.webapp),
     started: values.started ?? null,
     running: values.running === "true" ? true : values.running === "false" ? false : null,
     live: /^\d+$/.test(values.live ?? "") ? Number(values.live) : null,
@@ -260,6 +263,25 @@ const frontOf = (root, head, revision) => {
   }
 };
 
+/**
+ * Which flows of the daily run (.agents/skills/box-main-run/flows.md, at this head) the box can
+ * show, by the web app its image serves: on today's app the flows marked `Box: after cut-over`
+ * wait for cut-over; on a preview built with `web_app=web` every flow runs.
+ */
+const flowsStep = (root, state) => {
+  const { flows } = loadFlows(root);
+  const { run, afterCutOver } = boxFlows(flows, state.webApp);
+  return {
+    id: "flows",
+    title: "The flows this box can show",
+    status: "passed",
+    detail:
+      state.webApp === "web"
+        ? `it serves apps/web (a preview built with web_app=web): all ${run.length} flows run, the ${flows.filter((flow) => flow.afterCutOver).length} marked after cut-over included`
+        : `it serves apps/web-old: ${run.length} flows run, and the ${afterCutOver.length} marked after cut-over are reported as not run · after cut-over`,
+  };
+};
+
 const stateSteps = (root, state, { head, tag, listing }) => {
   const steps = [];
   const next = [];
@@ -288,6 +310,7 @@ const stateSteps = (root, state, { head, tag, listing }) => {
   });
   if (busy)
     next.push("wait until the other check posts its verdict and its sessions settle, then rerun");
+  steps.push(flowsStep(root, state));
   const front = frontOf(root, head, state.revision);
   const noDeploy = front.front && ["same", "later"].includes(front.server);
   // A new web app check drives the box's API as it runs now, so Mend must be running there: a
