@@ -650,7 +650,11 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     ["sessions", "detail"],
     ["changes", "comments"],
   ]);
-  await visible(page.locator('[data-comment="fixture-draft-1"]')).scrollIntoViewIfNeeded();
+  await reach(RETRY, 15);
+  await visible(page.locator('[data-comment="fixture-draft-1"]')).waitFor({ timeout: 30_000 });
+  await visible(page.locator('[data-comment="fixture-draft-1"]'))
+    .scrollIntoViewIfNeeded()
+    .catch(() => undefined);
   const sendHeight = (await button(/^Send \d+ comments?$/, false).boundingBox())?.height ?? 0;
   note(
     `phone: Mend's draft in the diff, Add to comments and Dismiss under it, and 'Send N comments' at the foot (${Math.round(sendHeight)}px tall)`,

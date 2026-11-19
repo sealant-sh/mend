@@ -405,7 +405,7 @@ export function useChangeComments({
       }
     },
     onError: (cause) => setFailure(failureWords(cause, "Nothing reached the agent.")),
-    onSettled: () => settle(),
+    onSettled: () => void settle(),
   });
 
   const sendComments = (chosen: ChosenSend) =>
