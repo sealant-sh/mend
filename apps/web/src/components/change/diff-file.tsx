@@ -33,6 +33,7 @@ export function DiffFile({
   viewed,
   onViewedChange,
   tools,
+  marked = false,
   size = "default",
   children,
 }: {
@@ -42,6 +43,8 @@ export function DiffFile({
   readonly viewed: boolean;
   readonly onViewedChange: (viewed: boolean) => void;
   readonly tools?: ReactNode;
+  /** The cobalt bar on the header's left edge: a tour stop on the whole file. */
+  readonly marked?: boolean;
   /** Compact on a phone or in a narrow tile: a shorter header, and the counts beside the name. */
   readonly size?: "default" | "compact";
   readonly children: ReactNode;
@@ -55,6 +58,7 @@ export function DiffFile({
         className={cn(
           "sticky top-0 z-10 flex items-center gap-2.5 border-b bg-background",
           compact ? "h-10 pr-2 pl-3" : "h-[38px] pr-2.5 pl-4",
+          marked && "shadow-[inset_2px_0_0_var(--color-info)]",
         )}
       >
         <button

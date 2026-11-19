@@ -539,6 +539,32 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.changes.$changeId.tsx`, `apps/web/src/lib/change-files.ts`,
   `apps/web/src/lib/review-open.ts`, `apps/web/src/lib/viewed-files.ts`
 
+### review-change.new-web-tour
+
+- **Map:** review-change.md `review-machine-pass` (the description and tour); mobile.md (the tour on
+  the phone)
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe `new-web-tour`. It
+  waits for Mend's own pass on `change-small` (written on the box, failed on a local stack) and asks
+  again; then lays a written description and a four-stop tour over the change, walks the tour
+  forwards and back, opens a link into the session, ends the tour, folds the description on a later
+  look, shows out of date, no description, being written and a login failure, then the narrow tile
+  beside the conversation and 390px.
+- **See:** each step's note in the recipe's `steps.log`: Mend's real outcome (the description "Mend
+  wrote this from checkpoint N", or "Mend couldn't write the description." with its reason and Try
+  again); "How the session got there" and "Tour · 4 stops" with Start tour; the Tour section above
+  Files; stop 1's note between rows with the bar on its lines only; "Mend's reading of the code.
+  Nothing in the session backs this up." on stop 2; stop 3 under its file's header; stop 4 under the
+  description with Finish tour; End tour back at the same scroll; a record link focusing the
+  session's conversation tab; Show more; Write again; the narrow tile's picker on the stop's file;
+  44px Previous and Next on the phone.
+- **Mode:** `scripted` (recipes/new-web-tour.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/change/change-description.tsx`,
+  `apps/web/src/components/change/change-tour.tsx`, `apps/web/src/components/change/tour-stop.tsx`,
+  `apps/web/src/lib/tour.ts`
+
 ### review-change.web-comments
 
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,
