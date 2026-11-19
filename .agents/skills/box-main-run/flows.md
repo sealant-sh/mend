@@ -1567,6 +1567,28 @@ flows reuse what earlier ones made:
   `apps/web/src/components/organization-dialogs.tsx`, `apps/web/src/lib/organization-membership.ts`,
   `apps/web/src/lib/organization-switch.ts`
 
+### organization.new-web-audit-log
+
+- **Map:** operator.md `operator-audit`; shared-control.md `audit`; organization.md `audit-log` (the
+  new web app's Audit log page)
+- **Needs:** a session of the owner's (the CLI batch `new-web-shared-control-setup.json`); no turn;
+  web
+- **Do:** Run the CLI batch, then drive the recipe `new-web-audit-log`: it makes real events as the
+  owner (verify-fixture shared and private again, shared control on and off, enough invitation links
+  made and revoked to need a second page), opens `/settings/organization/audit-log`, reads the next
+  page with Show older events, then, with the log's answers rewritten in the page, an older page
+  that fails, an empty log, the loading screen and a first page that fails with Try again; desk and
+  phone.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: "Revoked an invitation
+  link", "Made verify-fixture private", the shared-control rows, `Owners of <organization>` under
+  the title, more rows after Show older events, "Mend couldn't read older events." under the button.
+  verify-fixture ends private and every link the run made is revoked.
+- **Mode:** `scripted` (recipes/new-web-audit-log.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/audit-log-page.tsx`,
+  `apps/web/src/routes/_inbox.settings.organization.audit-log.tsx`, `apps/web/src/lib/audit-log.ts`
+
 ### shared-control.two-people
 
 - **Map:** shared-control.md `share-on-web`, `share-off-web`, `share-cli`, `share-refused` (a
