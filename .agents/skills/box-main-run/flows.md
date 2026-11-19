@@ -1423,6 +1423,32 @@ flows reuse what earlier ones made:
   `apps/web/src/routes/_inbox.projects.$projectId_.configuration.tsx`,
   `apps/web/src/lib/project-settings.ts`
 
+### references-folders.new-web-project
+
+- **Map:** references-folders.md `folder-select`, `ref-select`, `host-mounts` (operator of a single
+  install), `link-project` (on the project's General page); `ref-add` is the organization's page's
+  (docs/adr/0025)
+- **Needs:** no session; no turn; web; GitHub reachable from the server, for a reference's clone
+- **Do:** Drive the recipe `new-web-project-folders`: it makes two projects with no repository, two
+  organization folders (one with two files) and a reference cloned from GitHub; on
+  `/projects/<id>/settings/folders` it sets one folder Read only and the other Read and write, turns
+  the reference on and reloads; a refused save; as the operator it adds and removes a server folder;
+  the page as a reader, with no folders or references, and a read that fails with Try again; on
+  General it links the second project as `web` and unlinks it.
+- **See:** each step's note in the recipe's `steps.log`, and its captures: the folders with their
+  size (`2 files · …`, `Empty`) and the access pressed after the reload; the reference's switch on;
+  the refusal under the section with the folder back to Read only; `Added pf-…-tmp.` and the server
+  folder's row, then gone; the reader's page naming who can change it, with each access as words;
+  the Linked projects row reading `/workspace/repos/web` and its worktree, then
+  `No linked projects.`. The recipe removes what it made.
+- **Mode:** `scripted` (recipes/new-web-project-folders.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/settings/project-folders-page.tsx`,
+  `apps/web/src/components/settings/project-links-section.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId_.settings.folders.tsx`,
+  `apps/web/src/lib/project-folders.ts`
+
 ### references-folders.folder-cli
 
 - **Map:** references-folders.md `folder-cli`, `folder-web` (read)

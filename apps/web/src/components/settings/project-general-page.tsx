@@ -25,6 +25,7 @@ import { useTRPC } from "#/lib/trpc";
 import { useProjectSettings } from "#/lib/use-project-settings";
 
 import { RemoveProject } from "../projects/remove-project.tsx";
+import { ProjectLinksSection } from "./project-links-section.tsx";
 import { SettingRow, SettingSection } from "./setting-row.tsx";
 import { SettingsPage } from "./settings-page.tsx";
 
@@ -51,8 +52,8 @@ export function ProjectGeneralPage({ projectId }: { readonly projectId: string }
       project={{ id: project.id, name: project.name }}
       intro={
         capabilities.manage
-          ? `This is ${project.name}'s name, who can see it, and how to remove it.`
-          : `This is ${project.name}'s name, who can see it, and how to remove it. ${readOnlyLine(people)}`
+          ? `This is ${project.name}'s name, who can see it, the other projects its sessions can use, and how to remove it.`
+          : `This is ${project.name}'s name, who can see it, the other projects its sessions can use, and how to remove it. ${readOnlyLine(people)}`
       }
     >
       <SettingSection title="Project">
@@ -85,6 +86,11 @@ export function ProjectGeneralPage({ projectId }: { readonly projectId: string }
           canChange={capabilities.changeVisibility}
         />
       </SettingSection>
+      <ProjectLinksSection
+        project={project}
+        manage={capabilities.manage}
+        mountDelivery={detail.mountDelivery}
+      />
       {capabilities.manage ? (
         <SettingSection title="Setup session">
           <SettingRow
