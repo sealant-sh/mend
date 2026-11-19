@@ -5,6 +5,7 @@ import { CHECKS_VIEW } from "./views/checks-view.tsx";
 import { detailsView } from "./views/details-view.tsx";
 import { PREVIEW_VIEW } from "./views/preview-view.tsx";
 import { RECORD_VIEW } from "./views/record-view.tsx";
+import { SCREEN_VIEW } from "./views/screen-view.tsx";
 import { TERMINAL_VIEW } from "./views/terminal-view.tsx";
 
 /** Where a view opens: the workspace of the session whose page this is. */
@@ -47,6 +48,7 @@ export const WORKSPACE_VIEWS: ReadonlyArray<WorkspaceView> = [
   CHECKS_VIEW,
   PREVIEW_VIEW,
   TERMINAL_VIEW,
+  SCREEN_VIEW,
   RECORD_VIEW,
   // Details links to the views registered beside it; asked when it draws, not here.
   detailsView((id) => workspaceView(id) !== undefined),

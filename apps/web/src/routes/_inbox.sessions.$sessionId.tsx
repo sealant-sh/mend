@@ -16,15 +16,15 @@ import { sessionDetailQuery } from "#/lib/session-queries";
 interface SessionSearch {
   /** The old app's full screen (`?full=1`): the tile showing the session's conversation, maximised. */
   readonly full?: true;
-  /** The old app's Desktop panel (`?view=desktop`), read only to be dropped. */
+  /** The old app's Desktop panel (`?view=desktop`): the Screen view now. */
   readonly view?: "desktop";
 }
 
 /**
  * A session: its workspace's sheet, with the session's conversation tab showing and focused
  * (ADR 0026). Other programs open this address (the CLI, VS Code, Slack, pull request
- * descriptions), so its old forms keep working: `?view=desktop` (the old Desktop panel) lands
- * here until the Screen view exists (PR 19), and `#checkpoint-N` (a landed pull request's link)
+ * descriptions), so its old forms keep working: `?view=desktop` (the old Desktop panel) opens the
+ * Screen view, and `#checkpoint-N` (a landed pull request's link)
  * opens the Record view with that checkpoint in view and marked.
  */
 export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
@@ -47,8 +47,8 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
     }
     if (search.view === "desktop") {
       throw redirect({
-        to: "/sessions/$sessionId",
-        params,
+        to: "/sessions/$sessionId/$view",
+        params: { sessionId: params.sessionId, view: "screen" },
         search: search.full === true ? { full: true } : {},
         hash: location.hash,
         replace: true,
