@@ -116,10 +116,17 @@ export default async ({ page, web, capture, note }) => {
     page.getByText("Only an operator creates organizations, and owns each one they create."),
   );
   await who.first().waitFor({ timeout: 30_000 });
+  await who.first().scrollIntoViewIfNeeded();
   note('Settings → Server: "Who may create one" reads Only operators');
-  const gate = visible(page.getByText("Mend's git may reach private networks"));
+  // The multi mode gate's passing items fold behind one line, once the gate has been read.
+  const closed = visible(page.getByText(/^All \d+ things Mend needs to run several organizations/));
+  await closed.first().waitFor({ timeout: 30_000 });
+  await closed.first().click();
+  const source = visible(page.getByText("Mend's git may reach private networks"));
+  await source.first().waitFor();
+  await source.first().scrollIntoViewIfNeeded();
   note(
-    `Settings → Server: "Mend's git may reach private networks" shown ${await gate.count()} time(s)`,
+    `Settings → Server: ${await closed.first().textContent()} The source item reads "Mend's git may reach private networks"`,
   );
   await both("server-settings-organizations-desktop");
 

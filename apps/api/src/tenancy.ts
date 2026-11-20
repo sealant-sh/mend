@@ -1,5 +1,5 @@
 import type { MultiModeGateCase } from "@mend/api-contracts";
-import { InstanceRolesRepo, OrganizationsRepo } from "@mend/db";
+import { InstanceRolesRepo, OrganizationsRepo, UsersRepo } from "@mend/db";
 import { TenancyMode } from "@mend/domain/workbench";
 import { Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -222,19 +222,20 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
 };
 
 /**
- * Why this combination must not start, or null when it may. An instance with no organization yet
- * has no account either, so `operator-present` does not hold up its first start in `multi`: the
- * first account to register becomes the operator. The item itself still reads open until then,
- * which keeps a `public` exposure refused while registration is open to whoever arrives first.
+ * Why this combination must not start, or null when it may. An instance with no account yet does
+ * not hold up its first start in `multi` for `operator-present`: the first account to register
+ * becomes the operator. A fresh database already holds its first organization, so accounts are
+ * what is counted. The item itself still reads open until then, which keeps a `public` exposure
+ * refused while registration is open to whoever arrives first.
  */
 export const tenancyRefusal = (
   mode: TenancyMode,
-  organizationCount: number,
+  counts: { readonly organizations: number; readonly accounts: number },
   gate: ReadonlyArray<GateOutcome>,
 ): string | null => {
   if (mode === "multi") {
     const failing = gate.filter(
-      (outcome) => !outcome.ok && !(outcome.id === "operator-present" && organizationCount === 0),
+      (outcome) => !outcome.ok && !(outcome.id === "operator-present" && counts.accounts === 0),
     );
     if (failing.length === 0) return null;
     return [
@@ -244,8 +245,8 @@ export const tenancyRefusal = (
       "\nOr run one organization: MEND_TENANCY=single (mend server setup --tenancy single).",
     ].join(" ");
   }
-  if (organizationCount > 1) {
-    return `MEND_TENANCY=single is refused: ${organizationCount} organizations exist on this instance.`;
+  if (counts.organizations > 1) {
+    return `MEND_TENANCY=single is refused: ${counts.organizations} organizations exist on this instance.`;
   }
   return null;
 };
@@ -258,7 +259,7 @@ export const tenancyRefusal = (
 export const TenancyConfigLive: Layer.Layer<
   TenancyConfig,
   TenancyRefused | Config.ConfigError,
-  InstanceRolesRepo | OrganizationsRepo
+  InstanceRolesRepo | OrganizationsRepo | UsersRepo
 > = Layer.effect(
   TenancyConfig,
   Effect.gen(function* () {
@@ -307,7 +308,11 @@ export const TenancyConfigLive: Layer.Layer<
       ),
     );
     const gate = yield* currentGate;
-    const refusal = tenancyRefusal(mode, yield* organizations.count(), gate);
+    const counts = {
+      organizations: yield* organizations.count(),
+      accounts: yield* (yield* UsersRepo).count(),
+    };
+    const refusal = tenancyRefusal(mode, counts, gate);
     if (refusal !== null) return yield* new TenancyRefused({ message: refusal });
     yield* Effect.logInfo("tenancy").pipe(
       Effect.annotateLogs({

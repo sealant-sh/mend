@@ -379,10 +379,10 @@ here" (SLNT-1220).
   written with `multi`). `transport-bound-to-origin` keeps a workspace's signer, which signs as its
   owner, on the project's own remote. `raw-service-ports` keeps Services behind Mend's
   authorization. None of them stops a default fresh install.
-- First boot: an instance with no organization, so no account, starts in `multi` although
-  `operator-present` is open; the first account to register becomes the operator. The item still
-  reads open until then, so a `public` exposure stays refused while registration is open to whoever
-  arrives first (ADR 0004).
+- First boot: an instance with no account yet starts in `multi` although `operator-present` is open;
+  the first account to register becomes the operator. (A fresh database already holds its first
+  organization, so the start check counts accounts.) The item still reads open until then, so a
+  `public` exposure stays refused while registration is open to whoever arrives first (ADR 0004).
 - `MEND_ORGANIZATION_CREATION` defaults to `operator`. An account holding the operator role sees
   "Create organization…" in the web app's switcher, creates one there and owns it, as anyone does
   under `anyone`. Everyone else sees no item, and the route refuses them. `anyone` stays an explicit

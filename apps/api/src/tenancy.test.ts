@@ -1,4 +1,4 @@
-import { InstanceRolesRepo, OrganizationsRepo } from "@mend/db";
+import { InstanceRolesRepo, OrganizationsRepo, UsersRepo } from "@mend/db";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -19,6 +19,7 @@ const build = (
   env: Record<string, string>,
   organizationCount: number,
   operators: () => ReadonlyArray<string> = () => ["alice"],
+  accountCount = 1,
 ) =>
   Effect.runPromise(
     Effect.gen(function* () {
@@ -30,6 +31,7 @@ const build = (
           Layer.provide(
             Layer.mock(OrganizationsRepo, { count: () => Effect.succeed(organizationCount) }),
           ),
+          Layer.provide(Layer.mock(UsersRepo, { count: () => Effect.succeed(accountCount) })),
           Layer.provide(
             Layer.mock(InstanceRolesRepo, {
               operatorCount: () =>
@@ -107,16 +109,17 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
     expect(Result.isSuccess(result) ? result.success.mode : String(result)).toBe("multi");
   });
 
-  it("starts multi on an instance with no organization yet, before its first account", async () => {
+  it("starts multi before its first account, on a fresh database's one organization", async () => {
     const env = {
       MEND_TENANCY: "multi",
       MEND_CAPTURE_REQUIRE_SIZES: "true",
       MEND_BLOB_STORE: "s3://mend",
     };
-    const fresh = await build(env, 0, () => []);
+    // A fresh database already holds its first organization; no account exists yet.
+    const fresh = await build(env, 1, () => [], 0);
     expect(Result.isSuccess(fresh) ? fresh.success.mode : String(fresh)).toBe("multi");
-    // Once an organization exists, an instance with no operator is refused as before.
-    const orphaned = await build(env, 1, () => []);
+    // Once an account exists, an instance with no operator is refused as before.
+    const orphaned = await build(env, 1, () => [], 1);
     expect(String(orphaned)).toContain("operator-present");
   });
 
@@ -247,14 +250,28 @@ describe("the multi mode gate", () => {
     // The two items that waited on the platform are in: sealantd declares every upload's length
     // (sealantd#82) and lays down the plan's sources beside the worktree (sealantd#83).
     expect(failing(configured)).toEqual([]);
-    expect(tenancyRefusal("multi", 1, evaluateGate(configured))).toBeNull();
-    expect(tenancyRefusal("multi", 1, evaluateGate({}))).toContain("upload-length-binding");
-    expect(tenancyRefusal("multi", 1, evaluateGate({ ...configured, operatorCount: 0 }))).toContain(
-      "operator-present",
+    expect(
+      tenancyRefusal("multi", { organizations: 1, accounts: 1 }, evaluateGate(configured)),
+    ).toBeNull();
+    expect(tenancyRefusal("multi", { organizations: 1, accounts: 1 }, evaluateGate({}))).toContain(
+      "upload-length-binding",
     );
     expect(
-      tenancyRefusal("multi", 0, evaluateGate({ ...configured, operatorCount: 0 })),
+      tenancyRefusal(
+        "multi",
+        { organizations: 1, accounts: 1 },
+        evaluateGate({ ...configured, operatorCount: 0 }),
+      ),
+    ).toContain("operator-present");
+    expect(
+      tenancyRefusal(
+        "multi",
+        { organizations: 1, accounts: 0 },
+        evaluateGate({ ...configured, operatorCount: 0 }),
+      ),
     ).toBeNull();
-    expect(tenancyRefusal("single", 1, evaluateGate({}))).toBeNull();
+    expect(
+      tenancyRefusal("single", { organizations: 1, accounts: 1 }, evaluateGate({})),
+    ).toBeNull();
   });
 });
