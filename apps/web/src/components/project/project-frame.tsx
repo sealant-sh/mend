@@ -27,6 +27,7 @@ import {
   type ProjectActions,
 } from "./project-actions.tsx";
 import { SetupDialog } from "./setup-dialog.tsx";
+import { useProjectSessionRows } from "./use-project-session-rows.ts";
 
 /** A tab of the project: its label, where it goes, and its count once read. */
 export interface ProjectTab {
@@ -40,11 +41,16 @@ export interface ProjectTab {
 }
 
 /**
- * The project's tabs, each its own route under the project, with its count once read.
+ * The project's tabs, each its own route under the project, with its count once read. Sessions
+ * counts what its tab shows first: the open ones.
  */
 export const projectTabs = (
   detail: ProjectDetailDto,
-  counts: { readonly skills: number | undefined; readonly resources?: number | undefined },
+  counts: {
+    readonly openSessions: number;
+    readonly skills: number | undefined;
+    readonly resources?: number | undefined;
+  },
 ): ReadonlyArray<ProjectTab> => {
   const id = detail.project.id;
   return [
@@ -52,7 +58,7 @@ export const projectTabs = (
       label: "Sessions",
       link: { to: "/projects/$projectId", params: { projectId: id } },
       path: `/projects/${id}`,
-      count: detail.sessions.length,
+      count: counts.openSessions,
     },
     {
       label: "Worktrees",
@@ -218,7 +224,9 @@ export function ProjectFrame({
   const [removing, setRemoving] = useState(false);
   const organizationName = viewer.organization.name;
   // A count not read yet, or that couldn't be read, shows nothing; the Skills tab says why.
+  const sessions = useProjectSessionRows(detail);
   const tabs = projectTabs(detail, {
+    openSessions: sessions.filter((row) => row.open).length,
     skills: skills.isPending || skills.isError ? undefined : skills.data.length,
     resources: resources.isPending || resources.isError ? undefined : resourceCount(resources.data),
   });

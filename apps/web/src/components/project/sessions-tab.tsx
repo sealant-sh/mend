@@ -31,11 +31,10 @@ import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { MessagesSquareIcon, SearchIcon } from "lucide-react";
-import { useMemo, useRef } from "react";
+import { useRef } from "react";
 
 import type { ProjectDetailDto } from "#/lib/api";
-import { age, inboxRows } from "#/lib/inbox";
-import { inboxQuery } from "#/lib/inbox-live";
+import { age } from "#/lib/inbox";
 import { lastProject } from "#/lib/new-session";
 import { usePhone } from "#/lib/phone";
 import {
@@ -45,7 +44,6 @@ import {
   matchesSessionFilters,
   matchLine,
   type ProjectSessionRow,
-  projectSessionRows,
 } from "#/lib/project-sessions";
 import {
   parseProjectSessionsSearch,
@@ -62,6 +60,7 @@ import { useMinute } from "#/lib/use-inbox";
 import { initialsOf } from "../app-sidebar.tsx";
 import { SessionStatus } from "../session-status.tsx";
 import { PhoneSessionActions, SessionRowMenu } from "./session-actions.tsx";
+import { useProjectSessionRows } from "./use-project-session-rows.ts";
 
 /** One row as the table and the phone list draw it. */
 interface RowEntry {
@@ -96,26 +95,11 @@ export function SessionsTab({
   const now = useMinute();
   const { project } = detail;
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
-  const inbox = useQuery(inboxQuery(trpc));
   const membersRead = useQuery(trpc.organization.members.queryOptions());
-  // The inbox read names the sessions it carries and says what their agents do; without it the
-  // rows still list, with the project's own words.
-  const inboxData = inbox.isPending || inbox.isError ? undefined : inbox.data;
   // A roster that failed to read again keeps the names it had; until then nobody is named.
   const members =
     membersRead.isPending || membersRead.isError ? (membersRead.data ?? []) : membersRead.data;
-  const rows = useMemo(
-    () =>
-      projectSessionRows(
-        detail,
-        inboxRows({
-          rows: (inboxData ?? []).filter((row) => row.session.projectId === project.id),
-          marks: [],
-          now,
-        }),
-      ),
-    [detail, inboxData, project.id, now],
-  );
+  const rows = useProjectSessionRows(detail);
   const choices = filterChoices(rows);
   const stopped = search.show === "stopped";
   const inView = rows.filter((row) => row.open !== stopped);
@@ -170,7 +154,7 @@ export function SessionsTab({
   return (
     <section
       aria-label={`Sessions in ${project.name}`}
-      className="flex flex-col lg:px-8 lg:pt-6 lg:pb-12"
+      className="flex min-h-0 flex-1 flex-col lg:px-8 lg:pt-6 lg:pb-12"
     >
       <div className="flex flex-wrap items-center gap-2.5 max-lg:px-4 max-lg:pt-3">
         <InputGroup className="w-80 max-lg:h-11 max-lg:w-full">
@@ -268,20 +252,26 @@ export function SessionsTab({
         ) : (
           <p className="flex flex-wrap items-baseline gap-x-1 text-row text-muted-foreground">
             {line}
-            <Button variant="link" className="h-auto p-0 text-row" onClick={clearFilters}>
-              Clear filters
-            </Button>
+            {/* With nothing shown, the empty state below has Clear filters. */}
+            {shown.length === 0 ? null : (
+              <Button variant="link" className="h-auto p-0 text-row" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            )}
           </p>
         )}
       </div>
       {shown.length === 0 ? (
-        <p className="py-6 text-prose text-muted-foreground max-lg:px-4">
-          {line !== null
-            ? "No session matches."
-            : stopped
-              ? `No session in ${project.name} has stopped.`
-              : `Nothing is open in ${project.name}. Stopped sessions are under Stopped.`}
-        </p>
+        <NothingShown
+          projectName={project.name}
+          filtered={line !== null}
+          stopped={stopped}
+          stoppedCount={rows.length - rows.filter((row) => row.open).length}
+          phone={phone}
+          onClearFilters={clearFilters}
+          onShow={(show) => update({ show })}
+          onNewSession={newSession}
+        />
       ) : (
         <>
           <div className="max-lg:hidden">
@@ -305,6 +295,78 @@ export function SessionsTab({
 }
 
 /** The title with the search's words in bold. */
+/**
+ * The tab with sessions, none of them in view: nothing open (the sessions there have stopped),
+ * nothing stopped, or nothing matching the filters. Each says how to see the others.
+ */
+function NothingShown({
+  projectName,
+  filtered,
+  stopped,
+  stoppedCount,
+  phone,
+  onClearFilters,
+  onShow,
+  onNewSession,
+}: {
+  readonly projectName: string;
+  readonly filtered: boolean;
+  readonly stopped: boolean;
+  readonly stoppedCount: number;
+  readonly phone: boolean;
+  readonly onClearFilters: () => void;
+  readonly onShow: (show: "stopped" | undefined) => void;
+  readonly onNewSession: () => void;
+}) {
+  const size = phone ? "touch" : "default";
+  const [title, words, action] = filtered
+    ? [
+        "No session matches",
+        `No ${stopped ? "stopped" : "open"} session in ${projectName} matches these filters.`,
+        <Button key="clear" variant="outline" size={size} onClick={onClearFilters}>
+          Clear filters
+        </Button>,
+      ]
+    : stopped
+      ? [
+          "No stopped sessions",
+          `Sessions in ${projectName} show here once they stop.`,
+          <Button key="open" variant="outline" size={size} onClick={() => onShow(undefined)}>
+            Show open sessions
+          </Button>,
+        ]
+      : [
+          `Nothing open in ${projectName}`,
+          stoppedCount === 1
+            ? "Its one session has stopped."
+            : `Its ${stoppedCount} sessions have stopped.`,
+          <Button key="stopped" variant="outline" size={size} onClick={() => onShow("stopped")}>
+            Show stopped sessions
+          </Button>,
+        ];
+  return (
+    <Empty className="flex-1">
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          {filtered ? <SearchIcon aria-hidden /> : <MessagesSquareIcon aria-hidden />}
+        </EmptyMedia>
+        <EmptyTitle>
+          <h2>{title}</h2>
+        </EmptyTitle>
+        <EmptyDescription>{words}</EmptyDescription>
+      </EmptyHeader>
+      <EmptyContent className="flex-row flex-wrap justify-center">
+        {filtered || stopped ? null : (
+          <Button size={size} className="lg:hidden" onClick={onNewSession}>
+            New session
+          </Button>
+        )}
+        {action}
+      </EmptyContent>
+    </Empty>
+  );
+}
+
 function Highlighted({
   value,
   query,
