@@ -365,9 +365,10 @@ here" (SLNT-1220).
   each other, the goal this ADR started from, is not what `multi` promises today.
 - A fresh install declares `multi`: `mend server setup` writes `MEND_TENANCY=multi` when there is no
   install yet, and the Nix module, with `tenancy` unset, decides on its first start (`multi` when
-  the install has no data, `single` when it has) and keeps that decision. An install that never
-  declared tenancy stays `single` across reruns and upgrades: nothing it does today changes. The
-  server's own default, for a process nothing configured, stays `single`.
+  the install has no data and runs 0.37.0 or later, whose server starts `multi` before its first
+  account; `single` otherwise) and keeps that decision. An install that never declared tenancy stays
+  `single` across reruns and upgrades: nothing it does today changes. The server's own default, for
+  a process nothing configured, stays `single`.
 - The multi mode gate no longer requires `MEND_SOURCE_POLICY=tenant` or the address pinning that
   comes with it (`source-policy`, `source-address-pinning`). Under `operator`, Mend's own git
   reaches a Git server on the LAN or the tailnet, as on a single-organization install. Both items

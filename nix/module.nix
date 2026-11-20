@@ -198,6 +198,10 @@ let
   };
   # Read from server.env, where server.sh writes what the first start decided; not escaped, since
   # Compose fills them in.
+  # What a fresh install with `tenancy` unset runs: several organizations from 0.37.0, the first
+  # release whose server starts in `multi` before its first account exists (SLNT-1220). Nix orders
+  # `0.37.0-next.*` after `0.37.0`, so main's next builds count too.
+  freshTenancy = if lib.versionAtLeast cfg.version "0.37.0" then "multi" else "single";
   tenancyOverlay = lib.optionalAttrs (cfg.tenancy == null) {
     MEND_TENANCY = "\${MEND_TENANCY:?set MEND_TENANCY in server.env}";
     MEND_CAPTURE_REQUIRE_SIZES = "\${MEND_CAPTURE_REQUIRE_SIZES:?set MEND_CAPTURE_REQUIRE_SIZES in server.env}";
@@ -260,6 +264,7 @@ let
     generate_identity=${if cfg.secretsFile == null then "1" else "0"}
     state_dir=${lib.escapeShellArg cfg.stateDir}
     tenancy_declared=${if cfg.tenancy == null then "0" else "1"}
+    fresh_tenancy=${freshTenancy}
     exposure_public=${if cfg.exposure == "public" then "1" else "0"}
     allowed_origins=${lib.escapeShellArg (builtins.toJSON cfg.allowedOrigins)}
     tunnel_origin=${lib.escapeShellArg tunnelOrigin}
@@ -388,8 +393,10 @@ in
       default = null;
       description = ''
         One organization or many (`MEND_TENANCY`). Null lets the first start decide and keeps it:
-        `multi` on a fresh install (no `mend-store` volume yet), `single` on one that already has
-        data and never declared it. The decision is kept in `''${stateDir}/tenancy`.
+        `multi` on a fresh install (no `mend-store` volume yet) of Mend 0.37.0 or later, whose
+        server starts in `multi` before its first account exists; `single` on an older version, and
+        on an install that already has data and never declared it. The decision is kept in
+        `''${stateDir}/tenancy`.
       '';
     };
 

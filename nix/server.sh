@@ -96,16 +96,17 @@ garage_admin_token=$(hmac_sha256_hexkey "$auth" mend-garage-admin-token)
 garage_key_id=GK$(hmac_sha256_hexkey "$auth" mend-garage-key-id | cut -c1-24)
 garage_key_secret=$(hmac_sha256_hexkey "$auth" mend-garage-key-secret)
 
-# With services.mend.tenancy unset, the first start decides it and keeps it: several organizations
-# on a fresh install, one on an install that already has data and never declared it, so an upgrade
-# never changes it (docs/adr/0003).
+# With services.mend.tenancy unset, the first start decides it and keeps it: on a fresh install what
+# the module computed from the version (several organizations from 0.37.0), one organization on an
+# install that already has data and never declared it, so an upgrade never changes it
+# (docs/adr/0003).
 tenancy_file=$state_dir/tenancy
 if [[ $tenancy_declared == 0 ]]; then
   if [[ ! -e $tenancy_file ]]; then
     if docker volume inspect mend-store >/dev/null 2>&1; then
       decided=single
     else
-      decided=multi
+      decided=$fresh_tenancy
     fi
     printf '%s\n' "$decided" >"$tenancy_file"
     echo "mend: this install runs $decided tenancy; set services.mend.tenancy to change it."
