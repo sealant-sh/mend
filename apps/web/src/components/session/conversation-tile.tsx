@@ -15,7 +15,7 @@ import { Button } from "@mend/ui/components/ui/button";
 import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
 import { UserMessage } from "@mend/ui/components/user-message";
 import { cn } from "@mend/ui/lib/utils";
-import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { Schema } from "effect";
 import { CircleAlertIcon, ClockIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
 import { useLayoutEffect, type ReactNode } from "react";
@@ -40,9 +40,11 @@ import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints, withLandings } from "#/lib/session-sheet";
 import { controlMarkers, withMarkers } from "#/lib/shared-control";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
+import { checkpointMarks, sharedWorktree, turnCheckpoints } from "#/lib/turn-checkpoints";
 
 import { initialsOf } from "../app-sidebar.tsx";
 import { AgentTurn, type PagesById } from "./agent-turn";
+import { CheckpointLine } from "./checkpoint-line";
 import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
 import { PageEvent } from "./page-view";
@@ -574,14 +576,29 @@ export function ConversationTile({
           nameOf: facts.nameOf,
           ownerUserId: facts.session.ownerUserId,
         });
+  // A turn's checkpoint shows after it only when a file changed during the turn: ask which files
+  // changed for each ended turn. Both ends of a turn are fixed commits, so the answer never
+  // changes and is read once.
+  const turns = turnCheckpoints(
+    conversation.data?.turns ?? [],
+    facts.detail.checkpoints,
+    facts.session.id,
+  );
+  const turnFiles = useQueries({
+    queries: turns.map((turn) => ({
+      ...trpc.worktrees.sliceFiles.queryOptions({
+        id: facts.session.worktreeId,
+        ...(turn.from === null ? {} : { from: turn.from.id }),
+        to: turn.to.id,
+      }),
+      staleTime: Number.POSITIVE_INFINITY,
+      enabled: body.list === "protocol",
+    })),
+  });
+  const shared = sharedWorktree(facts.session.id, facts.detail.checkpoints);
   const entries = withMarkers(
     withLandings(
-      withCheckpoints(
-        body.rows,
-        facts.detail.checkpoints,
-        facts.session.id,
-        !conversation.hasNextPage,
-      ),
+      withCheckpoints(body.rows, checkpointMarks(turns, turnFiles)),
       landingMarks(facts.detail.landings, facts.detail.checkpoints, facts.session.id),
       !conversation.hasNextPage,
     ),
@@ -682,11 +699,11 @@ export function ConversationTile({
               const entry = placed.entry;
               return entry.kind === "checkpoint" ? (
                 <ConversationItem key={entry.key} messageId={entry.key}>
-                  <ConversationMarker
-                    id={`checkpoint-${entry.mark.ordinal}`}
-                    label={`Checkpoint ${entry.mark.ordinal}`}
-                    sha={entry.mark.sha}
-                    className="scroll-mt-6"
+                  <CheckpointLine
+                    mark={entry.mark}
+                    sessionId={facts.session.id}
+                    changeId={facts.detail.change?.id ?? null}
+                    shared={shared}
                   />
                 </ConversationItem>
               ) : entry.kind === "landing" ? (

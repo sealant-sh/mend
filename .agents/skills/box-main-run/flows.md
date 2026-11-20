@@ -911,6 +911,30 @@ flows reuse what earlier ones made:
 - **Areas:** `packages/sessions/`, `packages/agent-protocol/`, `packages/agent-conversation/`,
   `apps/cli/src/`
 
+### session-page.new-web-checkpoint-lines
+
+- **Map:** start-session.md `session-page`
+- **Needs:** either; web; `verify-fixture`
+- **Do:** Run the CLI batch `new-web-checkpoints-sessions.json` (three `mend run` sessions in the
+  worktree `ckpt-turns`, one after another: the first writes two files, the second only reads them,
+  the third changes one), then drive the recipe `new-web-checkpoints`. It lays one conversation of
+  three turns over the worktree's real checkpoints, a turn inside each run, and reads it with one,
+  two and three turns held; it hovers the last checkpoint line, opens it from the keyboard, follows
+  Open in Record, then Show changes, and taps the line at 390px.
+- **See:** no checkpoint line above the first message; one line after the first turn,
+  `Checkpoint · 2 files changed`; none after the turn that changed nothing;
+  `Checkpoint · 1 file changed` after the third. Hovering, Enter or a tap opens the line's details:
+  `Checkpoint N` with its short sha, "When this turn ended, Mend saved a copy of the files in this
+  worktree…", the changed file `NOTES.md`, `Show changes` and `Open in Record`, and nothing about
+  going back. Open in Record lands on `/sessions/<id>/record#checkpoint-N`, whose Checkpoints filter
+  still lists every checkpoint; Show changes opens `/sessions/<id>/change` over that turn's
+  checkpoints with `NOTES.md` in it; no sideways scroll at 390px.
+- **Mode:** `scripted` (recipes/new-web-checkpoints.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/session/checkpoint-line.tsx`,
+  `apps/web/src/lib/turn-checkpoints.ts`
+
 ### start-session.composer
 
 - **Map:** start-session.md `start-composer`; now-and-sessions.md `home-composer`
