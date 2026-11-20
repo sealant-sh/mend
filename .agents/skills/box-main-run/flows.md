@@ -667,18 +667,24 @@ flows reuse what earlier ones made:
   into another tile's middle, move tabs with Alt+Shift and the arrows, resize by the divider,
   reload, maximise and restore, close a tile's last tab, reopen it from "+", open a New session tab,
   start a session in the worktree from outside the page, open `?full=1`, and look under 1024px and
-  at 390px. Stop both batch sessions at the end.
+  at 390px. Then pick the other batch session's tab, press Back, and reload on a view's tab. Stop
+  both batch sessions at the end.
 - **See:** each step's note in the recipe's `steps.log`: the drop marks Split right and Add to this
   tile, two tiles after a split and one after a merge, the resized width kept over a reload, the
   same conversation element after its tab moved, Restore layout on a maximised tile, the started
-  session's tab beside the active one, and one strip of tabs under 1024px.
+  session's tab beside the active one, and one strip of tabs under 1024px. Picking the other
+  session's tab moves the address to `/sessions/<its id>` in place (no new history entry, the same
+  conversation elements), the sidebar marks that session's row and the browser tab reads its title;
+  Back leaves the workspace; a reload on a view's tab (`/sessions/<id>/<view>`) opens that tab
+  focused in the same arrangement.
 - **Mode:** `scripted` (recipes/new-web-tiles.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/`,
   `apps/web/src/components/session/session-sheet.tsx`,
   `apps/web/src/components/session/workspace-tabs.tsx`,
-  `apps/web/src/components/session/new-session-tab.tsx`, `apps/web/src/lib/tiles.ts`
+  `apps/web/src/components/session/new-session-tab.tsx`, `apps/web/src/lib/tiles.ts`,
+  `apps/web/src/routes/_inbox.sessions.$sessionId.tsx`
 
 ### session-page.new-web-layouts
 
@@ -1021,23 +1027,27 @@ flows reuse what earlier ones made:
 - **Needs:** Boat; real turn (codex); web; `<p>`, a worktree in it
 - **Do:** On `/`, write `Reply with the single word ready and change nothing.` and press Enter;
   while the session starts, send `Then reply with the word again.` from its composer. Then, on
-  `<p>`'s Worktrees tab, open a worktree's "…", New session in this worktree, Codex. Drive the
-  recipe `new-web-instant-start` for the same steps against a stack, with a refused start and the
-  phone width.
+  `<p>`'s Worktrees tab, open a worktree's "…", New session in this worktree, Codex, and once it has
+  started send `tell me a joke` from its composer. Drive the recipe `new-web-instant-start` for the
+  same steps against a stack, with a refused start and the phone width.
 - **See:** the session's page opens at once at `/sessions/starting-…` with the message,
   `Getting the session ready`, and a Starting row under Running; the composer is open and reads
   `Codex is starting. What you send now goes to it once it's ready.`, never `runs in a terminal`;
   the address moves to the session's id in place; the second message waits
   (`Waits for Codex to start.`) and is sent after the opening turn; the menu's start opens its page
   at once and shows no red line while it starts; nothing on the page reads `per-person users` or
-  `takes one person`.
+  `takes one person`. The session started from the worktree's menu, with no message, reads
+  `New session` in its row, its tab and the project's Sessions table, never the worktree's name or
+  its other session's name; once sent `tell me a joke` it reads `tell me a joke` at once, and within
+  about a minute a name Mend made from it, different from the worktree's other session.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/pending-starts.ts`,
   `apps/web/src/components/new-session/instant-start.ts`,
   `apps/web/src/components/session/starting-session.tsx`, `apps/web/src/lib/starting-line.ts`,
-  `apps/web/src/lib/project-starts.ts`
+  `apps/web/src/lib/project-starts.ts`, `apps/web/src/lib/session-title.ts`,
+  `apps/api/src/session-naming.ts`
 
 ### start-session.web-answer
 

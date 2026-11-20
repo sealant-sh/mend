@@ -71,6 +71,7 @@ const world = (options: {
         ),
     }),
     Layer.mock(SessionEngine, {
+      launchUnderWay: () => false,
       transcript: () => Effect.succeed({ sourceHarness: options.session.harness, events: [] }),
     }),
     Layer.mock(SessionNamer, {
@@ -133,21 +134,22 @@ describe("naming a session from its first message", () => {
   });
 });
 
-describe("a message to an unnamed session", () => {
-  const queued = (session: { readonly id: SessionId; readonly label: string | null }) => {
-    const jobs: Array<JobSpec> = [];
-    return Effect.runPromise(
-      nameOnMessage(session).pipe(
-        Effect.provide(
-          Layer.mock(JobRunner, {
-            enqueue: (job) =>
-              Effect.sync(() => jobs.push(job)).pipe(Effect.as({ _tag: "Queued", id: "job" })),
-          }),
-        ),
+/** What `nameOnMessage` queues for `session`. */
+const queued = (session: { readonly id: SessionId; readonly label: string | null }) => {
+  const jobs: Array<JobSpec> = [];
+  return Effect.runPromise(
+    nameOnMessage(session).pipe(
+      Effect.provide(
+        Layer.mock(JobRunner, {
+          enqueue: (job) =>
+            Effect.sync(() => jobs.push(job)).pipe(Effect.as({ _tag: "Queued", id: "job" })),
+        }),
       ),
-    ).then(() => jobs);
-  };
+    ),
+  ).then(() => jobs);
+};
 
+describe("a message to an unnamed session", () => {
   it("queues its namer at once, under a key the launch's waiting job doesn't hold", async () => {
     const jobs = await queued({ id: SESSION, label: null });
     expect(jobs).toEqual([
