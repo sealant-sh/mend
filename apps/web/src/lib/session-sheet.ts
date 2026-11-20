@@ -2,6 +2,7 @@ import type { LumpPr, LumpStatus } from "@mend/ui/components/lump";
 
 import type { SessionDetailDto, SessionStatusDto } from "./api.ts";
 import type { ConversationRow } from "./conversation-rows.ts";
+import type { CheckpointMark } from "./turn-checkpoints.ts";
 
 /** The address of a session's page, the conversation tab of its workspace's sheet. */
 export const sessionLink = (sessionId: string) =>
@@ -73,13 +74,6 @@ export const messageTime = (at: Date, now: Date): string => {
   return `${day}, ${time}`;
 };
 
-/** A checkpoint as the conversation marks it. */
-export interface CheckpointMark {
-  readonly ordinal: number;
-  readonly sha: string;
-  readonly at: string;
-}
-
 /** A landing as the conversation marks it (`landingMarks` in `lib/landing.ts`). */
 export interface LandingEntryMark {
   readonly key: string;
@@ -96,50 +90,32 @@ export type ConversationEntry =
   | { readonly kind: "landing"; readonly key: string; readonly mark: LandingEntryMark };
 
 /**
- * The session's own checkpoints laid between its messages, each after the last message that began
- * before it was taken: a checkpoint at the end of a turn follows that turn's reply and comes before
- * the next message. The worktree's starting checkpoint (ordinal 0) and those another session in the
- * worktree took are left out. A checkpoint older than every message held is left out too: it
- * belongs to an earlier window, shown when the reader scrolls back to it.
+ * The turns' checkpoints laid into the conversation (`checkpointMarks` in `lib/turn-checkpoints.ts`
+ * says which), each right after its turn's reply: after the turn's last reply row, else after the
+ * last row older than the checkpoint. So none comes before the first message, and a turn has one
+ * at most. One with no row before it in the held window belongs to an earlier window.
  */
 export const withCheckpoints = (
   rows: ReadonlyArray<ConversationRow>,
-  checkpoints: ReadonlyArray<{
-    readonly ordinal: number;
-    readonly sessionId: string | null;
-    readonly sha: string;
-    readonly createdAt: Date | string;
-  }>,
-  sessionId: string,
-  /** Whether the rows reach the start of the conversation (no older window to read). */
-  fromStart: boolean,
+  marks: ReadonlyArray<CheckpointMark>,
 ): ReadonlyArray<ConversationEntry> => {
-  const marks = checkpoints
-    .filter((checkpoint) => checkpoint.ordinal > 0 && checkpoint.sessionId === sessionId)
-    .map((checkpoint) => ({
-      ordinal: checkpoint.ordinal,
-      sha: checkpoint.sha.slice(0, 7),
-      at: new Date(checkpoint.createdAt).toISOString(),
-    }))
-    .toSorted((a, b) => a.ordinal - b.ordinal);
-  const first = rows[0]?.at;
-  const entries: Array<ConversationEntry> = [];
-  let next = 0;
-  const markUntil = (before: string | null) => {
-    while (next < marks.length) {
-      const mark = marks[next];
-      if (mark === undefined || (before !== null && mark.at >= before)) return;
-      next += 1;
-      if (!fromStart && first !== undefined && mark.at < first) continue;
-      entries.push({ kind: "checkpoint", key: `checkpoint:${mark.ordinal}`, mark });
-    }
-  };
-  for (const row of rows) {
-    markUntil(row.at);
-    entries.push({ kind: "row", row });
+  const after = new Map<number, Array<CheckpointMark>>();
+  for (const mark of marks.toSorted((a, b) => a.ordinal - b.ordinal)) {
+    const reply = rows.findLastIndex((row) => row.kind === "agent" && row.turn?.id === mark.turnId);
+    const index = reply === -1 ? rows.findLastIndex((row) => row.at <= mark.at) : reply;
+    if (index === -1) continue;
+    const held = after.get(index) ?? [];
+    held.push(mark);
+    after.set(index, held);
   }
-  markUntil(null);
-  return entries;
+  return rows.flatMap(
+    (row, index): ReadonlyArray<ConversationEntry> => [
+      { kind: "row", row },
+      ...(after.get(index) ?? []).map(
+        (mark): ConversationEntry => ({ kind: "checkpoint", key: mark.key, mark }),
+      ),
+    ],
+  );
 };
 
 const entryAt = (entry: ConversationEntry): string =>

@@ -1,0 +1,47 @@
+[
+  {
+    "name": "01-edits",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "ckpt-turns",
+      "--",
+      "sh",
+      "-c",
+      "printf 'retry with the order id as the key\\n' > NOTES.md; printf 'one key per order\\n' > PLAN.md"
+    ]
+  },
+  {
+    "name": "02-reads",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "ckpt-turns",
+      "--",
+      "sh",
+      "-c",
+      "cat NOTES.md PLAN.md"
+    ]
+  },
+  {
+    "name": "03-edits",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "ckpt-turns",
+      "--",
+      "sh",
+      "-c",
+      "printf 'partial refunds get their own key\\n' >> NOTES.md"
+    ]
+  }
+]
