@@ -104,6 +104,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     page.evaluate((id) => {
       localStorage.removeItem(`mend-setup-skipped-command-line:${id}`);
       localStorage.removeItem(`mend-setup-reached:${id}`);
+      // Where setup is remembered now (SLNT-1210): the Command line skip and an ended setup.
+      document.cookie = "mend-setup=; path=/; max-age=0";
     }, userId);
   const shot = async (name, sizes = ["desktop"]) => {
     for (const size of sizes) {

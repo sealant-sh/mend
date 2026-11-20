@@ -235,10 +235,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   answers["platform.sealantIdentity"] = (identity) => ({ ...identity, accounts: [] });
   // A Mend key, as the frames draw Git access.
   answers["git.access"] = (access) => ({ ...access, mode: "mend-key" });
-  await page.evaluate(
-    (id) => localStorage.removeItem(`mend-setup-skipped-command-line:${id}`),
-    me.userId,
-  );
+  await page.evaluate((id) => {
+    localStorage.removeItem(`mend-setup-skipped-command-line:${id}`);
+    // Where setup is remembered now (SLNT-1210): the Command line skip and an ended setup.
+    document.cookie = "mend-setup=; path=/; max-age=0";
+  }, me.userId);
 
   try {
     // ---- Command line, waiting.

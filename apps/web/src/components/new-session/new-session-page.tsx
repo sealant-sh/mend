@@ -39,6 +39,7 @@ import { type ReactNode, useEffect, useState } from "react";
 import { SidebarToggle } from "#/components/app-sidebar";
 import { WorkspacesRefusedBanner } from "#/components/host-user-namespaces";
 import { loginBlock } from "#/lib/new-session";
+import { keepToastsClear } from "#/lib/toast-clearance";
 
 import { ComposerResources } from "./composer-resources.tsx";
 import { JoinLine } from "./join-line.tsx";
@@ -326,7 +327,7 @@ function DesktopComposer({ composer }: { readonly composer: Composer }) {
       ) : (
         <div className="flex flex-1 justify-center px-8 pt-40 pb-16">
           <div className="flex w-full max-w-conversation flex-col gap-2">
-            <ComposerCard className="mx-0 w-full">
+            <ComposerCard ref={keepToastsClear} className="mx-0 w-full">
               {noLogins(composer) ? <NoLoginNotice /> : null}
               {composer.onClone && clone !== null && composer.projects.length === 0 ? (
                 <CloneNotice clone={clone} />

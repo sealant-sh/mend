@@ -88,7 +88,11 @@ function InboxLayout() {
               />
             )}
           </div>
-          <SidebarInset className="min-h-0 min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
+          {/* The sheet clips what it holds to its rounded corners: its scroller already clips
+              everything else, so this only takes off the square corners a page's header or
+              background drew over the curve. Menus, popovers and dialogs open in portals, outside
+              it, and focus rings inside the scroller were already clipped by the scroller. */}
+          <SidebarInset className="min-h-0 min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:overflow-hidden lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
             {home ? (
               <PhoneInbox
                 organizationName={organizationName}

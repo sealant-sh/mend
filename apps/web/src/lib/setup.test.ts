@@ -6,6 +6,7 @@ import {
   firstProjectEntry,
   firstProjectSkippable,
   hasAgentLogin,
+  homeEntry,
   namesOrganization,
   nextStepPage,
   previousStep,
@@ -41,6 +42,7 @@ describe("where /welcome sends a person", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: false,
+        ended: false,
         hasAgentLogin: notAsked,
       }),
     ).toBe("git-access");
@@ -50,6 +52,7 @@ describe("where /welcome sends a person", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: true,
+        ended: false,
         hasAgentLogin: notAsked,
       }),
     ).toBe("git-access");
@@ -63,6 +66,7 @@ describe("where /welcome sends a person", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: true,
+        ended: false,
         hasAgentLogin: notLoggedIn,
       }),
     ).toBe("git-access");
@@ -72,6 +76,7 @@ describe("where /welcome sends a person", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: false,
+        ended: false,
         hasAgentLogin: notLoggedIn,
       }),
     ).toBe("git-access");
@@ -84,6 +89,7 @@ describe("where /welcome sends a person", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: false,
+        ended: false,
         hasAgentLogin: loggedIn,
       }),
     ).toBe("first-project");
@@ -93,6 +99,7 @@ describe("where /welcome sends a person", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: true,
+        ended: false,
         hasAgentLogin: loggedIn,
       }),
     ).toBe("home");
@@ -122,6 +129,7 @@ describe("where /welcome sends someone who still owes Command line", () => {
         namesOrganization: true,
         commandLineOwed: true,
         hasProject: false,
+        ended: false,
         hasAgentLogin: notAsked,
       }),
     ).toBe("git-access");
@@ -157,6 +165,7 @@ describe("where signing in with no page to return to goes", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: true,
+        ended: false,
         hasAgentLogin: notAsked,
       }),
     ).toBe("git-access");
@@ -169,13 +178,19 @@ describe("where signing in with no page to return to goes", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: true,
+        ended: false,
         hasAgentLogin: notAsked,
       }),
     ).toBe("home");
   });
 
   it("starts again at Command line for someone who left before Git access, unless they skipped it", async () => {
-    const left = { namesOrganization: false, hasProject: false, hasAgentLogin: notAsked };
+    const left = {
+      namesOrganization: false,
+      hasProject: false,
+      ended: false,
+      hasAgentLogin: notAsked,
+    };
     expect(await signInEntry({ ...left, access: noKey, commandLineOwed: true })).toBe(
       "command-line",
     );
@@ -186,12 +201,12 @@ describe("where signing in with no page to return to goes", () => {
 
   it("sends the first account with an agent login and no project to Organization, before First project", async () => {
     const first = { namesOrganization: true, commandLineOwed: false, hasProject: false };
-    expect(await signInEntry({ ...first, access: withKey, hasAgentLogin: loggedIn })).toBe(
-      "organization",
-    );
-    expect(await welcomeEntry({ ...first, access: withKey, hasAgentLogin: loggedIn })).toBe(
-      "organization",
-    );
+    expect(
+      await signInEntry({ ...first, access: withKey, ended: false, hasAgentLogin: loggedIn }),
+    ).toBe("organization");
+    expect(
+      await welcomeEntry({ ...first, access: withKey, ended: false, hasAgentLogin: loggedIn }),
+    ).toBe("organization");
   });
 
   it("with no project, opens the step left", async () => {
@@ -201,6 +216,7 @@ describe("where signing in with no page to return to goes", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: false,
+        ended: false,
         hasAgentLogin: loggedIn,
       }),
     ).toBe("first-project");
@@ -210,6 +226,7 @@ describe("where signing in with no page to return to goes", () => {
         namesOrganization: false,
         commandLineOwed: false,
         hasProject: false,
+        ended: false,
         hasAgentLogin: notLoggedIn,
       }),
     ).toBe("git-access");
@@ -253,6 +270,75 @@ describe("after signing in", () => {
 
   it("opens Mend when setup can't be read", async () => {
     expect(await afterSignIn("/", notAsked)).toBe("/");
+  });
+});
+
+/** A read of the rest of setup that fails the test if `/` asks for it when it decides nothing. */
+const fullNotRead = () => Promise.reject(new Error("read the rest of setup"));
+
+describe("where opening Mend at / goes", () => {
+  it("opens Mend for someone with Git access and a project, without reading the rest of setup", async () => {
+    const quick = () => Promise.resolve({ access: withKey, hasProject: true, ended: false });
+    expect(await homeEntry(quick, fullNotRead)).toBe("home");
+    const bridged = () => Promise.resolve({ access: bridge, hasProject: true, ended: false });
+    expect(await homeEntry(bridged, fullNotRead)).toBe("home");
+  });
+
+  it("opens Mend for someone this browser saw reach setup's last step, project or not", async () => {
+    // A member who skipped First project, waiting for a teammate to share one.
+    const skipped = () => Promise.resolve({ access: withKey, hasProject: false, ended: true });
+    expect(await homeEntry(skipped, fullNotRead)).toBe("home");
+  });
+
+  it("sends someone who closed the tab after Agent login on to the step after it", async () => {
+    const quick = () => Promise.resolve({ access: withKey, hasProject: false, ended: false });
+    const full = (firstAccount: boolean) => () =>
+      Promise.resolve({
+        access: withKey,
+        namesOrganization: firstAccount,
+        commandLineOwed: false,
+        hasProject: false,
+        ended: false,
+        hasAgentLogin: loggedIn,
+      });
+    expect(await homeEntry(quick, full(true))).toBe("organization");
+    expect(await homeEntry(quick, full(false))).toBe("first-project");
+  });
+
+  it("gives the answer signing in gives for someone who left before Git access", async () => {
+    const quick = () => Promise.resolve({ access: noKey, hasProject: false, ended: false });
+    const full = (commandLineOwed: boolean) => () =>
+      Promise.resolve({
+        access: noKey,
+        namesOrganization: true,
+        commandLineOwed,
+        hasProject: false,
+        ended: false,
+        hasAgentLogin: notAsked,
+      });
+    expect(await homeEntry(quick, full(true))).toBe("command-line");
+    expect(await homeEntry(quick, full(false))).toBe("git-access");
+  });
+
+  it("opens Mend when setup can't be read", async () => {
+    const quick = () => Promise.resolve({ access: noKey, hasProject: false, ended: false });
+    expect(await homeEntry(fullNotRead, fullNotRead)).toBe("home");
+    expect(await homeEntry(quick, fullNotRead)).toBe("home");
+  });
+});
+
+describe("where signing in goes for someone who reached setup's last step here", () => {
+  it("opens Mend, even with no project and no agent login", async () => {
+    expect(
+      await signInEntry({
+        access: withKey,
+        namesOrganization: false,
+        commandLineOwed: false,
+        hasProject: false,
+        ended: true,
+        hasAgentLogin: notAsked,
+      }),
+    ).toBe("home");
   });
 });
 

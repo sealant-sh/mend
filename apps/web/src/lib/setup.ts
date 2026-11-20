@@ -4,7 +4,7 @@ import type { QueryClient } from "@tanstack/react-query";
 import { commandLineState } from "./command-line.ts";
 import { gitAccessOptions } from "./git-access.ts";
 import { type SetupStepKey, setupSteps } from "./onboarding.ts";
-import { rememberReached, skippedCommandLine } from "./setup-skips.ts";
+import { rememberReached, setupEnded, skippedCommandLine } from "./setup-skips.ts";
 import { signedInOptions } from "./sign-in.ts";
 import type { TrpcProxy } from "./trpc.ts";
 
@@ -19,9 +19,10 @@ import type { TrpcProxy } from "./trpc.ts";
  * - `/welcome`, opened by the first account, a new member, or the person themselves, shows Git
  *   access until the steps after it are done too, so reloading it never throws the person out of
  *   setup (`welcomeEntry`).
- * - Signing in with no page to return to opens setup only for someone who never got past it: no
- *   Git access, or no project. Someone who skipped the agent login and has a project opens Mend
- *   (`signInEntry`).
+ * - Signing in with no page to return to, or opening Mend at `/`, opens setup only for someone who
+ *   never got past it: no Git access, or no project, unless this browser saw them reach setup's
+ *   last step. Someone who skipped the agent login and has a project opens Mend (`signInEntry`,
+ *   `homeEntry`).
  */
 
 /**
@@ -191,6 +192,11 @@ export interface SetupObserved {
   readonly commandLineOwed: boolean;
   readonly hasProject: boolean;
   /**
+   * The person reached setup's last step in this browser, so every step they owed is behind them,
+   * done or skipped (`setupEnded`): such as a member who skipped First project.
+   */
+  readonly ended: boolean;
+  /**
    * Asked only when it decides something: it reads the platform, which may be slow or down. A
    * failed read counts as no agent login.
    */
@@ -232,6 +238,7 @@ export const welcomeEntry = async (observed: SetupObserved): Promise<SetupEntry>
  * signed in or they skipped it in this browser.
  */
 export const signInEntry = async (observed: SetupObserved): Promise<SetupEntry> => {
+  if (observed.ended) return "home";
   if (!gitAccessChosen(observed.access)) {
     return observed.commandLineOwed ? "command-line" : "git-access";
   }
@@ -292,6 +299,7 @@ export const readSetup = async ({
     namesOrganization: namesOrganization(viewer),
     commandLineOwed: !signedIn && !skippedCommandLine(viewer.userId),
     hasProject: projects.length > 0,
+    ended: setupEnded(viewer.userId),
     hasAgentLogin: () =>
       queryClient
         .fetchQuery(trpc.platform.sealantIdentity.queryOptions())
@@ -314,3 +322,50 @@ export const afterSignIn = async (
     return "/";
   }
 };
+
+/** What `/` reads first: enough to open Mend for anyone past setup. */
+export type QuickSetup = Pick<SetupObserved, "access" | "hasProject" | "ended">;
+
+/**
+ * Where opening Mend at `/` goes: the answer signing in gives (`signInEntry`), so someone who
+ * closed the tab partway through setup comes back to their next step. Someone past setup opens
+ * Mend from `quick` alone, the reads the inbox and the composer already hold, so only a person
+ * still in setup waits for the rest (`full`). Setup that can't be read opens Mend, whose pages say
+ * what failed, as signing in does (`afterSignIn`).
+ */
+export const homeEntry = async (
+  quick: () => Promise<QuickSetup>,
+  full: () => Promise<SetupObserved>,
+): Promise<SetupEntry> => {
+  try {
+    const seen = await quick();
+    if (seen.ended || (gitAccessChosen(seen.access) && seen.hasProject)) return "home";
+    return await signInEntry(await full());
+  } catch {
+    return "home";
+  }
+};
+
+/**
+ * `homeEntry` against the caches: who is signed in (the root route read it), Git access and the
+ * project list (the inbox's layout reads it) come from what is cached when they are, so moving to
+ * `/` within Mend asks the server nothing more.
+ */
+export const readHomeEntry = ({
+  queryClient,
+  trpc,
+}: {
+  readonly queryClient: QueryClient;
+  readonly trpc: TrpcProxy;
+}): Promise<SetupEntry> =>
+  homeEntry(
+    async () => {
+      const viewer = await queryClient.ensureQueryData(signedInOptions(trpc));
+      const [access, projects] = await Promise.all([
+        queryClient.ensureQueryData(gitAccessOptions(trpc)),
+        queryClient.ensureQueryData(trpc.projects.list.queryOptions()),
+      ]);
+      return { access, hasProject: projects.length > 0, ended: setupEnded(viewer.userId) };
+    },
+    () => readSetup({ queryClient, trpc }),
+  );

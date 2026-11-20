@@ -1,0 +1,18 @@
+[
+  {
+    "name": "01-to-stop",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "pass-stop",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7220"
+    ]
+  }
+]
