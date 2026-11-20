@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -38,6 +39,8 @@ const SSH_PORT = 2022;
 /** In the VM, the socket proxy that carries QEMU's forward to Mend's loopback port (vm-provision.sh web). */
 const GUEST_WEB_PORT = 13105;
 const DISK_SIZE = "160G";
+/** Projects of the box run whose sessions use the workspace images flows need (Ubuntu, Arch). */
+const WARM_PROJECTS = ["boat-check-ubuntu", "boat-check-arch"];
 /** Hours after which `vm list` calls a copy stale: no check runs that long. */
 const STALE_HOURS = 8;
 
@@ -63,7 +66,11 @@ const paths = (root) => ({
 });
 
 const run = (command, args, options = {}) => {
-  const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024, ...options });
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    maxBuffer: 64 * 1024 * 1024,
+    ...options,
+  });
   return {
     code: result.status ?? 255,
     stdout: String(result.stdout ?? ""),
@@ -101,7 +108,10 @@ const writeSshConfig = (p, slots) => {
       "  LogLevel ERROR",
       "",
     ].join("\n");
-  writeFileSync(p.sshConfig, slots.map(block).join("\n"), { mode: 0o600 });
+  // Copies start and stop at once: each writes the whole file aside and renames it into place.
+  const temporary = `${p.sshConfig}.${process.pid}.${Date.now()}`;
+  writeFileSync(temporary, slots.map(block).join("\n"), { mode: 0o600 });
+  renameSync(temporary, p.sshConfig);
 };
 
 export const boxSshArgs = (root, slot) => ["-F", paths(root).sshConfig, hostOf(slot)];
@@ -238,8 +248,17 @@ const runPhase = (root, slot, name, args, logDir) => {
   const at = Date.now();
   const out = spawnSync(
     "ssh",
-    ["-o", "BatchMode=yes", ...boxSshArgs(root, slot), `bash -s -- ${[name, ...args].map((a) => `'${a}'`).join(" ")}`],
-    { input: readFileSync(new URL("./vm-provision.sh", import.meta.url)), encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+    [
+      "-o",
+      "BatchMode=yes",
+      ...boxSshArgs(root, slot),
+      `bash -s -- ${[name, ...args].map((a) => `'${a}'`).join(" ")}`,
+    ],
+    {
+      input: readFileSync(new URL("./vm-provision.sh", import.meta.url)),
+      encoding: "utf8",
+      maxBuffer: 64 * 1024 * 1024,
+    },
   );
   const text = `${out.stdout ?? ""}${out.stderr ?? ""}`;
   writeFileSync(join(logDir, `provision-${name}.log`), text, { mode: 0o600 });
@@ -250,8 +269,14 @@ const runPhase = (root, slot, name, args, logDir) => {
 const keepFailure = (root, slot, dir) => {
   const out = spawnSync(
     "ssh",
-    ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", ...boxSshArgs(root, slot),
-      "docker ps -a --format '{{.Names}} {{.Status}}'; docker logs --tail 150 mend-mend-1 2>&1"],
+    [
+      "-o",
+      "BatchMode=yes",
+      "-o",
+      "ConnectTimeout=5",
+      ...boxSshArgs(root, slot),
+      "docker ps -a --format '{{.Names}} {{.Status}}'; docker logs --tail 150 mend-mend-1 2>&1",
+    ],
     { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 },
   );
   if (out.status === 0) writeFileSync(join(dir, "failure.log"), out.stdout, { mode: 0o600 });
@@ -294,7 +319,11 @@ export const vmBuild = async ({
       `copies ${liveSlots(p).join(", ")} are backed by the master: pnpm verify vm down --all first`,
     );
   if (!version || !sha || !cliVersion)
-    return fail("args", "What to install", "--version <preview>, --sha <commit> and --cli <version> are required");
+    return fail(
+      "args",
+      "What to install",
+      "--version <preview>, --sha <commit> and --cli <version> are required",
+    );
 
   // 1. The box's identity and data.
   const boxFiles = [
@@ -314,22 +343,40 @@ export const vmBuild = async ({
       ["mend-git.tgz", "tar -C /srv -czf - mend-git"],
       // The machine keys the loaded data is sealed with (Executor's authority, project secrets, each
       // user's git key) and the workspace SSH gateway's host key: volumes, not identity.env.
-      ["mend-keys.tgz", `tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-config)/mend" -czf - keys`],
-      ["mend-ssh.tgz", `tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-ssh)" -czf - .`],
+      [
+        "mend-keys.tgz",
+        `tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-config)/mend" -czf - keys`,
+      ],
+      [
+        "mend-ssh.tgz",
+        `tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-ssh)" -czf - .`,
+      ],
     ]) {
       const out = spawnSync(
         "ssh",
         ["-o", "BatchMode=yes", "-o", "ConnectTimeout=10", ...fromBox.trim().split(/\s+/), script],
         { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 2 * 1024 ** 3 },
       );
-      if (out.status !== 0) return fail("box", "Copy the box's identity and data", `${file}: ssh exited ${out.status}`);
+      if (out.status !== 0)
+        return fail("box", "Copy the box's identity and data", `${file}: ssh exited ${out.status}`);
       writeFileSync(join(p.box, file), out.stdout, { mode: 0o600 });
     }
-    steps.push(step("box", "Copy the box's identity and data", "passed", `${boxFiles.join(", ")} in ${seconds(started)}s`));
+    steps.push(
+      step(
+        "box",
+        "Copy the box's identity and data",
+        "passed",
+        `${boxFiles.join(", ")} in ${seconds(started)}s`,
+      ),
+    );
   }
   const missing = boxFiles.filter((file) => !existsSync(join(p.box, file)));
   if (missing.length > 0)
-    return fail("box", "The box's identity and data", `missing ${missing.join(", ")} in ${p.box}: pass --from-box '<ssh args of VM 131>'`);
+    return fail(
+      "box",
+      "The box's identity and data",
+      `missing ${missing.join(", ")} in ${p.box}: pass --from-box '<ssh args of VM 131>'`,
+    );
   if (!readFileSync(join(p.box, "world.sql")).subarray(-200).toString().includes("dump complete"))
     return fail("box", "The box's identity and data", "world.sql has no pg_dumpall trailer");
 
@@ -343,17 +390,27 @@ export const vmBuild = async ({
       BASE_URL,
       BASE_FILE,
     ]);
-    if (fetched.code !== 0) return fail("base", "The Ubuntu 24.04 cloud image", lastLine(fetched.stderr));
+    if (fetched.code !== 0)
+      return fail("base", "The Ubuntu 24.04 cloud image", lastLine(fetched.stderr));
   }
   const want = readFileSync(p.sums, "utf8")
     .split("\n")
     .find((line) => line.endsWith(`*${BASE_FILE}`))
     ?.split(" ")[0];
   const got = lastLine(run("sha256sum", [p.base]).stdout).split(" ")[0];
-  if (!want || want !== got) return fail("base", "The Ubuntu 24.04 cloud image", `sha256 ${got} is not Ubuntu's ${want}`);
-  steps.push(step("base", "The Ubuntu 24.04 cloud image", "passed", `${BASE_FILE} sha256 ${got.slice(0, 12)}, as Ubuntu's SHA256SUMS`));
+  if (!want || want !== got)
+    return fail("base", "The Ubuntu 24.04 cloud image", `sha256 ${got} is not Ubuntu's ${want}`);
+  steps.push(
+    step(
+      "base",
+      "The Ubuntu 24.04 cloud image",
+      "passed",
+      `${BASE_FILE} sha256 ${got.slice(0, 12)}, as Ubuntu's SHA256SUMS`,
+    ),
+  );
 
-  if (!existsSync(p.key)) run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "mend-check-vm", "-f", p.key]);
+  if (!existsSync(p.key))
+    run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "mend-check-vm", "-f", p.key]);
 
   // 3. A fresh master disk, booted with a cloud-init seed.
   const started = Date.now();
@@ -366,7 +423,14 @@ export const vmBuild = async ({
   writeSshConfig(p, [MASTER_SLOT, ...liveSlots(p)]);
   const seed = await serveSeed(readFileSync(`${p.key}.pub`, "utf8"));
   const seedUrl = `http://10.0.2.2:${seed.address().port}/`;
-  const qemu = startQemu({ dir: p.master, slot: MASTER_SLOT, cpus, memory, cache: "writeback", seedUrl });
+  const qemu = startQemu({
+    dir: p.master,
+    slot: MASTER_SLOT,
+    cpus,
+    memory,
+    cache: "writeback",
+    seedUrl,
+  });
   if (qemu) {
     seed.close();
     return fail("boot", "Boot the master", qemu);
@@ -374,7 +438,12 @@ export const vmBuild = async ({
   const ssh = sshRunner(boxSshArgs(root, MASTER_SLOT));
   const up = await waitForSsh(ssh, 180_000);
   seed.close();
-  if (!up) return fail("boot", "Boot the master", `no ssh in 180s; serial log in ${join(p.master, "serial.log")}`);
+  if (!up)
+    return fail(
+      "boot",
+      "Boot the master",
+      `no ssh in 180s; serial log in ${join(p.master, "serial.log")}`,
+    );
   steps.push(step("boot", "Boot the master", "passed", `ssh answered in ${seconds(started)}s`));
 
   // 4. Provision, phase by phase; each phase's output is kept in the master's directory.
@@ -382,7 +451,12 @@ export const vmBuild = async ({
   const put = (file, target) => {
     const out = spawnSync(
       "ssh",
-      ["-o", "BatchMode=yes", ...boxSshArgs(root, MASTER_SLOT), `umask 077; mkdir -p "$(dirname '${target}')"; cat > '${target}'`],
+      [
+        "-o",
+        "BatchMode=yes",
+        ...boxSshArgs(root, MASTER_SLOT),
+        `umask 077; mkdir -p "$(dirname '${target}')"; cat > '${target}'`,
+      ],
       { input: readFileSync(join(p.box, file)), maxBuffer: 1024 * 1024 },
     );
     return out.status === 0;
@@ -393,8 +467,20 @@ export const vmBuild = async ({
   ];
   for (const [name, args, title] of phases) {
     const done = phase(name, args);
-    if (done.code !== 0) return fail(name, title, `${lastLine(done.out)} (log: ${join(p.master, `provision-${name}.log`)})`);
-    steps.push(step(name, title, "passed", `${lastLine(done.out).replace(/^vm-provision: /, "")} in ${done.took}s`));
+    if (done.code !== 0)
+      return fail(
+        name,
+        title,
+        `${lastLine(done.out)} (log: ${join(p.master, `provision-${name}.log`)})`,
+      );
+    steps.push(
+      step(
+        name,
+        title,
+        "passed",
+        `${lastLine(done.out).replace(/^vm-provision: /, "")} in ${done.took}s`,
+      ),
+    );
   }
   for (const [file, target] of [
     ["identity.env", "/root/.config/mend/identity.env"],
@@ -404,29 +490,61 @@ export const vmBuild = async ({
     ["mend-keys.tgz", "/root/main-run/mend-keys.tgz"],
     ["mend-ssh.tgz", "/root/main-run/mend-ssh.tgz"],
   ]) {
-    if (!put(file, target)) return fail("copy-in", "Copy the box's identity and data in", `${file} could not be written`);
+    if (!put(file, target))
+      return fail("copy-in", "Copy the box's identity and data in", `${file} could not be written`);
   }
-  ssh("chmod 700 /root/.config/mend /root/main-run && tar -xzf /root/main-run/mend-git.tgz -C /srv");
-  steps.push(step("copy-in", "Copy the box's identity and data in", "passed", "identity.env, world.sql, world.store.tgz, /srv/mend-git"));
+  ssh(
+    "chmod 700 /root/.config/mend /root/main-run && tar -xzf /root/main-run/mend-git.tgz -C /srv",
+  );
+  steps.push(
+    step(
+      "copy-in",
+      "Copy the box's identity and data in",
+      "passed",
+      "identity.env, world.sql, world.store.tgz, /srv/mend-git",
+    ),
+  );
 
   // Setup checks health at its --url from inside the VM, so the forward comes first.
   const web = phase("web", [addressOf(MASTER_SLOT)]);
   if (web.code !== 0) return fail("web", "Mend's web port forwarded", lastLine(web.out));
   const server = phase("server", [version, sha, urlOf(MASTER_SLOT)]);
   if (server.code !== 0)
-    return fail("server", `mend server setup ${version}`, `${lastLine(server.out)} (log: ${join(p.master, "provision-server.log")})`);
-  steps.push(step("server", `mend server setup ${version}`, "passed", `through preview-deploy.sh in ${server.took}s`));
+    return fail(
+      "server",
+      `mend server setup ${version}`,
+      `${lastLine(server.out)} (log: ${join(p.master, "provision-server.log")})`,
+    );
+  steps.push(
+    step(
+      "server",
+      `mend server setup ${version}`,
+      "passed",
+      `through preview-deploy.sh in ${server.took}s`,
+    ),
+  );
 
   const git = phase("git", []);
   if (git.code !== 0) return fail("git", "The box run's git service", lastLine(git.out));
-  steps.push(step("git", "The box run's git service", "passed", lastLine(git.out).replace(/^vm-provision: /, "")));
+  steps.push(
+    step(
+      "git",
+      "The box run's git service",
+      "passed",
+      lastLine(git.out).replace(/^vm-provision: /, ""),
+    ),
+  );
 
   // 5. The box run's data, loaded as `box prepare --load` loads it, then Mend started on it.
   const loadAt = Date.now();
   const restored = ssh(restoreScript("/root/main-run/world.sql"));
   const errors = restored.stdout.split("\n").filter((line) => line.startsWith("error="));
   if (!restored.stdout.includes("restore=done") || errors.length > 0)
-    return fail("load", "Load the box run's data", [lastLine(restored.stdout), ...errors].join("; "));
+    return fail(
+      "load",
+      "Load the box run's data",
+      [lastLine(restored.stdout), ...errors].join("; "),
+    );
   const store = ssh(storeLoadScript("/root/main-run/world.sql"));
   if (!store.stdout.includes("store=done") || !/^missing=$/m.test(store.stdout))
     return fail("load", "Load the box run's data", lastLine(store.stdout));
@@ -436,14 +554,94 @@ s=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-ssh)
 rm -rf "$c/mend/keys" && mkdir -p "$c/mend"
 tar -xzpf /root/main-run/mend-keys.tgz --numeric-owner -C "$c/mend"
 tar -xzpf /root/main-run/mend-ssh.tgz --numeric-owner -C "$s"`);
-  if (keys.code !== 0) return fail("load", "Load the box run's data", `the box's keys: ${lastLine(keys.stderr)}`);
+  if (keys.code !== 0)
+    return fail("load", "Load the box run's data", `the box's keys: ${lastLine(keys.stderr)}`);
   const startedMend = ssh("mend server start --offline 2>&1 | tail -3");
-  if (startedMend.code !== 0) return fail("load", "Load the box run's data", lastLine(startedMend.stdout));
+  if (startedMend.code !== 0)
+    return fail("load", "Load the box run's data", lastLine(startedMend.stdout));
   const healthy = await waitForHealth(urlOf(MASTER_SLOT), 300_000);
-  if (!healthy.ok) return fail("load", "Load the box run's data", `Mend did not answer health: ${healthy.seen}`);
-  steps.push(step("load", "Load the box run's data", "passed", `world.sql and its store in ${seconds(loadAt)}s; Mend answers health`));
+  if (!healthy.ok)
+    return fail("load", "Load the box run's data", `Mend did not answer health: ${healthy.seen}`);
+  steps.push(
+    step(
+      "load",
+      "Load the box run's data",
+      "passed",
+      `world.sql and its store in ${seconds(loadAt)}s; Mend answers health`,
+    ),
+  );
 
-  // 6. Seal: Mend stopped, so each copy starts it once with its own address.
+  // 6. Warm: one session per workspace image the flows use, as the checker account, so a copy's
+  // first session does not build a 7 GB image (about 100 s each, measured 20 Nov). Then the data is
+  // loaded again, so the master holds exactly the box run's data, with the images beside it.
+  const kit = join(homedir(), ".local/share/mend-boat-check/cli");
+  if (existsSync(kit)) {
+    const warmAt = Date.now();
+    const cliDir = join(root, "cli");
+    if (!existsSync(join(cliDir, "node_modules/.bin/mend"))) {
+      const installed = run("npm", [
+        "install",
+        "--silent",
+        "--no-audit",
+        "--no-fund",
+        "--prefix",
+        cliDir,
+        `@sealant/mend@${cliVersion}`,
+      ]);
+      if (installed.code !== 0)
+        return fail(
+          "warm",
+          "Warm the workspace images",
+          `npm install: ${lastLine(installed.stderr)}`,
+        );
+    }
+    const env = { ...process.env, XDG_CONFIG_HOME: kit, MEND_URL: urlOf(MASTER_SLOT) };
+    for (const project of WARM_PROJECTS) {
+      const warmed = run(
+        join(cliDir, "node_modules/.bin/mend"),
+        ["run", "--project", project, "--name", `vm-warm-${project}`, "--", "true"],
+        { env, timeout: 900_000 },
+      );
+      if (warmed.code !== 0)
+        return fail(
+          "warm",
+          "Warm the workspace images",
+          `mend run in ${project}: ${lastLine(warmed.stdout + warmed.stderr)}`,
+        );
+    }
+    const again = ssh(restoreScript("/root/main-run/world.sql"));
+    if (!again.stdout.includes("restore=done"))
+      return fail("warm", "Warm the workspace images", `reload: ${lastLine(again.stdout)}`);
+    const restarted = ssh("mend server start --offline 2>&1 | tail -3");
+    const back =
+      restarted.code === 0
+        ? await waitForHealth(urlOf(MASTER_SLOT), 300_000)
+        : { ok: false, seen: lastLine(restarted.stdout) };
+    if (!back.ok)
+      return fail("warm", "Warm the workspace images", `Mend after the reload: ${back.seen}`);
+    const images = ssh(
+      "docker images --format '{{.Repository}}' | grep -c '^sealant-workspace-'",
+    ).stdout.trim();
+    steps.push(
+      step(
+        "warm",
+        "Warm the workspace images",
+        "passed",
+        `${WARM_PROJECTS.join(", ")}: ${images} workspace image tags in ${seconds(warmAt)}s; data loaded again`,
+      ),
+    );
+  } else {
+    steps.push(
+      step(
+        "warm",
+        "Warm the workspace images",
+        "skipped",
+        `no checker CLI kit at ${kit}: a copy's first session builds its image`,
+      ),
+    );
+  }
+
+  // 7. Seal: Mend stopped, so each copy starts it once with its own address.
   const seal = phase("seal", []);
   if (seal.code !== 0) return fail("seal", "Seal the master", lastLine(seal.out));
   ssh("poweroff");
@@ -456,7 +654,14 @@ tar -xzpf /root/main-run/mend-ssh.tgz --numeric-owner -C "$s"`);
   );
   writeSshConfig(p, liveSlots(p));
   const size = statSync(p.masterDisk).size;
-  steps.push(step("seal", "Seal the master", "passed", `${(size / 1024 ** 3).toFixed(1)} GiB on disk; built in ${seconds(started)}s`));
+  steps.push(
+    step(
+      "seal",
+      "Seal the master",
+      "passed",
+      `${(size / 1024 ** 3).toFixed(1)} GiB on disk; built in ${seconds(started)}s`,
+    ),
+  );
   return { steps, next: ["pnpm verify vm up"], master: { version, sha } };
 };
 
@@ -464,12 +669,19 @@ tar -xzpf /root/main-run/mend-ssh.tgz --numeric-owner -C "$s"`);
  * vm up: a fresh copy of the master. It takes the lowest free slot, boots an overlay of the master
  * disk, gives Mend the copy's own address with `mend server setup --url`, and waits for health.
  */
-export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "10G" }) => {
+export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G" }) => {
   const p = paths(root);
   const started = Date.now();
   if (!existsSync(p.masterMeta))
     return {
-      steps: [step("master", "The master disk", "blocked_by_prerequisite", "no master: pnpm verify vm build")],
+      steps: [
+        step(
+          "master",
+          "The master disk",
+          "blocked_by_prerequisite",
+          "no master: pnpm verify vm build",
+        ),
+      ],
       next: ["pnpm verify vm build --version <preview> --sha <commit> --cli <version>"],
     };
   const master = JSON.parse(readFileSync(p.masterMeta, "utf8"));
@@ -486,7 +698,14 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "10G" }) => {
   }
   if (slot === null)
     return {
-      steps: [step("slot", "A free slot", "blocked_by_prerequisite", `all ${SLOTS} copies are in use: pnpm verify vm list`)],
+      steps: [
+        step(
+          "slot",
+          "A free slot",
+          "blocked_by_prerequisite",
+          `all ${SLOTS} copies are in use: pnpm verify vm list`,
+        ),
+      ],
       next: ["pnpm verify vm list"],
     };
   const dir = join(p.copies, String(slot));
@@ -497,24 +716,43 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "10G" }) => {
     await stopQemu(dir);
     return { steps, next: [`pnpm verify vm down ${slot}`], copy: { slot, dir } };
   };
-  const overlay = run("qemu-img", ["create", "-q", "-f", "qcow2", "-b", p.masterDisk, "-F", "qcow2", join(dir, "disk.qcow2")]);
+  const overlay = run("qemu-img", [
+    "create",
+    "-q",
+    "-f",
+    "qcow2",
+    "-b",
+    p.masterDisk,
+    "-F",
+    "qcow2",
+    join(dir, "disk.qcow2"),
+  ]);
   if (overlay.code !== 0) return fail("disk", "The copy's disk", lastLine(overlay.stderr));
   writeSshConfig(p, liveSlots(p));
   const qemu = startQemu({ dir, slot, cpus, memory, cache: "unsafe" });
   if (qemu) return fail("boot", "Boot the copy", qemu);
   const ssh = sshRunner(boxSshArgs(root, slot));
-  if (!(await waitForSsh(ssh, 120_000))) return fail("boot", "Boot the copy", `no ssh in 120s; serial log ${join(dir, "serial.log")}`);
+  if (!(await waitForSsh(ssh, 120_000)))
+    return fail("boot", "Boot the copy", `no ssh in 120s; serial log ${join(dir, "serial.log")}`);
   const booted = seconds(started);
   steps.push(step("boot", "Boot the copy", "passed", `ssh answered ${booted}s after vm up`));
   const url = urlOf(slot);
   const web = runPhase(root, slot, "web", [addressOf(slot)], dir);
   if (web.code !== 0) return fail("web", "Mend's web port forwarded", lastLine(web.out));
   const setup = ssh(`mend server setup --offline --url ${url} 2>&1 | tail -5`);
-  if (setup.code !== 0) return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
+  if (setup.code !== 0)
+    return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
   const healthy = await waitForHealth(url, 300_000);
   if (!healthy.ok) return fail("health", "Mend answers health", healthy.seen);
   const total = seconds(started);
-  steps.push(step("health", "Mend answers health", "passed", `${url} healthy ${total}s after vm up (${master.version})`));
+  steps.push(
+    step(
+      "health",
+      "Mend answers health",
+      "passed",
+      `${url} healthy ${total}s after vm up (${master.version})`,
+    ),
+  );
   writeFileSync(
     join(dir, "copy.json"),
     `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master }, null, 2)}\n`,
@@ -526,7 +764,13 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "10G" }) => {
       `export MEND_VERIFY_BOX_SSH='${boxSshArgs(root, slot).join(" ")}' MEND_VERIFY_OUTER_URL=${url}`,
       `pnpm verify vm down ${slot}   # when the check ends`,
     ],
-    copy: { slot, url, ssh: boxSshArgs(root, slot).join(" "), healthySeconds: total, bootSeconds: booted },
+    copy: {
+      slot,
+      url,
+      ssh: boxSshArgs(root, slot).join(" "),
+      healthySeconds: total,
+      bootSeconds: booted,
+    },
   };
 };
 
@@ -543,7 +787,14 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
     }
     const stopped = await stopQemu(dir);
     rmSync(dir, { recursive: true, force: true });
-    steps.push(step(`down-${each}`, `Remove copy ${each}`, "passed", `VM ${stopped}; disk and directory removed`));
+    steps.push(
+      step(
+        `down-${each}`,
+        `Remove copy ${each}`,
+        "passed",
+        `VM ${stopped}; disk and directory removed`,
+      ),
+    );
   }
   writeSshConfig(p, liveSlots(p));
   if (steps.length === 0) steps.push(step("down", "Remove copies", "passed", "no copies"));
@@ -562,15 +813,25 @@ export const vmList = ({ root = vmRoot() }) => {
     } catch {
       // A copy still starting, or one whose start failed.
     }
-    const ageHours = record.startedAt ? (Date.now() - Date.parse(record.startedAt)) / 3_600_000 : null;
-    return { slot, running: qemuPid(dir) !== null, url: urlOf(slot), ssh: boxSshArgs(root, slot).join(" "), ageHours };
+    const ageHours = record.startedAt
+      ? (Date.now() - Date.parse(record.startedAt)) / 3_600_000
+      : null;
+    return {
+      slot,
+      running: qemuPid(dir) !== null,
+      url: urlOf(slot),
+      ssh: boxSshArgs(root, slot).join(" "),
+      ageHours,
+    };
   });
   const steps = [
     step(
       "master",
       "The master disk",
       master ? "passed" : "blocked_by_prerequisite",
-      master ? `${master.version} (${master.sha.slice(0, 12)}), built ${master.builtAt}` : "no master: pnpm verify vm build",
+      master
+        ? `${master.version} (${master.sha.slice(0, 12)}), built ${master.builtAt}`
+        : "no master: pnpm verify vm build",
     ),
     ...copies.map((copy) =>
       step(
@@ -583,4 +844,3 @@ export const vmList = ({ root = vmRoot() }) => {
   ];
   return { steps, next: [], master, copies };
 };
-

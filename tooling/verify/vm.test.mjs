@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { addressOf, boxSshArgs, hostOf, SLOTS, urlOf, vmDown, vmList, vmUp } from "./vm.mjs";
 import { parseArgs } from "./verify.mjs";
+import { addressOf, boxSshArgs, hostOf, SLOTS, urlOf, vmDown, vmList, vmUp } from "./vm.mjs";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "vm-test-"));
 
@@ -39,8 +39,12 @@ test("vm up refuses when every slot is taken", async () => {
   const root = scratch();
   try {
     mkdirSync(join(root, "master"), { recursive: true });
-    writeFileSync(join(root, "master/master.json"), JSON.stringify({ version: "v", sha: "s".repeat(40) }));
-    for (let slot = 1; slot <= SLOTS; slot++) mkdirSync(join(root, "copies", String(slot)), { recursive: true });
+    writeFileSync(
+      join(root, "master/master.json"),
+      JSON.stringify({ version: "v", sha: "s".repeat(40) }),
+    );
+    for (let slot = 1; slot <= SLOTS; slot++)
+      mkdirSync(join(root, "copies", String(slot)), { recursive: true });
     const result = await vmUp({ root });
     assert.equal(result.steps[0].id, "slot");
     assert.equal(result.steps[0].status, "blocked_by_prerequisite");

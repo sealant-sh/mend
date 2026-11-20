@@ -175,6 +175,83 @@ main:
 
 A preview of a branch is built by the workflow and deployed by hand, with the command above.
 
+## Check VMs
+
+A check whose judge answers `box` runs on a check VM on the dev machine (SLNT-1214): a throwaway
+copy of a box, one per check, so no check waits for another. VM 131 is used only for what a check VM
+cannot do yet (Boat, below).
+
+```sh
+pnpm verify vm build --version <preview> --sha <commit> --cli <mend version> [--from-box '<ssh args>']
+pnpm verify vm up            # a fresh copy: prints MEND_VERIFY_BOX_SSH and MEND_VERIFY_OUTER_URL
+pnpm verify vm list          # the master and each copy
+pnpm verify vm down <n>      # or --all: stops the copy and deletes its disk
+```
+
+**The master disk** is a stock Ubuntu 24.04 cloud image under QEMU/KVM with Docker, Node and the
+`mend` CLI, and Mend installed by `scripts/preview-deploy.sh` (so by `mend server setup`, with
+`--session-runtime docker --session-runtimes docker --allow-userns`) over VM 131's own
+`identity.env`. Setup reuses an identity it finds, so the box run's data loads as it is: `world.sql`
+and its store archive, the git service's repositories in `/srv/mend-git` on the same bridge gateway,
+and the machine keys the data is sealed with (`mend/keys` in the `mend_mend-config` volume:
+`secrets.key` and each user's git key; without it the API exits at start with
+`ExecutorIdentityFailure`) and the workspace SSH gateway's host key. The checker account, the second
+account, their CLI logins and the agent logins all work on it unchanged. The build then starts one
+session in `boat-check-ubuntu` and one in `boat-check-arch` as the checker, so the two workspace
+images are built once, and loads the data again. `--from-box` first copies all of that from VM 131
+(`identity.env`, `/root/main-run/world.{sql,store.tgz}`, `/srv/mend-git`, the two volumes); without
+it the build uses the copies already there. Measured on 20 Nov 2026: about 10 minutes, 32 GiB on
+disk, of which the warm-up is 6.5 minutes.
+
+**A copy** is a qcow2 overlay of the master with QEMU's user-mode network, 6 vCPU and 8 GB as VM 131
+has, on a loopback address of its own, `127.0.1.<n>`: web on `3105`, ssh on `2022` as root with the
+VMs' own key. Mend binds loopback in the VM, as setup requires of a loopback `--url`, and a
+`systemd-socket-proxyd` socket in the VM carries QEMU's forward and the copy's own address to it.
+`vm up` sets the copy's `APP_URL` with `mend server setup --offline --url http://127.0.1.<n>:3105`
+and waits for health. Every copy is reached through one ssh config, so the box verbs take it as is:
+
+```sh
+export MEND_VERIFY_BOX_SSH='-F ~/.local/share/mend-check-vms/ssh_config mend-check-<n>'
+export MEND_VERIFY_OUTER_URL=http://127.0.1.<n>:3105
+```
+
+(`vm up` prints both, with the home directory spelled out.) `box plan`, `prepare`, `cli`, `identity`
+and `release`, `health`, `drive new-web --box` and a deploy with `preview-deploy.sh` run there
+unchanged. No other check holds a copy, so a hold is always free, and `release` matters only for its
+evidence scan: `vm down` deletes the copy. The checker's CLI follows the copy through `MEND_URL`, as
+on the box.
+
+Everything private (the master, the copies, what was copied from VM 131, the VMs' key) lives in
+`~/.local/share/mend-check-vms`, mode 0700, outside any checkout; `MEND_CHECK_VMS` moves it.
+
+Measured on 20 Nov 2026, on the Ryzen 9 9950X3D (32 threads, 62 GB):
+
+- `vm up` to a healthy Mend: 20 s alone, 26 s with three starting at once, 29 s with five.
+- PR 1909's box check replayed on a copy, from `vm up` to `vm down`: plan, prepare, cli, the preview
+  deploy, `box identity`, a bare Codex session that Mend named on the real login 9 to 12 s after its
+  first message, the `new-web-instant-start` drive, and release. Alone: 3 to 5 minutes, most of the
+  spread being the deploy's pull of the 2.75 GB Mend image (42 to 173 s). Three at once: about 3
+  minutes each. Five at once: 3.5 minutes each, with 6 GB of the host's memory left, so five is the
+  most at once and four leaves room for the rest of the machine.
+- On VM 131 the same check held the box for 10.7 minutes (prepare 13:32, release 13:42), after
+  waiting for the box, which recent checks held for one to two hours.
+
+Limits of a check VM:
+
+- **No Boat.** No Boat key or deployment id is copied, and sessions run in Docker. A worktree the
+  data made on Boat stays on Boat and cannot start a session on a copy. Boat flows still go to VM
+  131 until SLNT-1215.
+- **One Codex login, shared.** Every copy holds the Codex login of the box run's data, and so does
+  the box while the daily run has that data loaded. On 20 Nov five copies ran Codex turns on it at
+  once: no copy refreshed it, and its revision and digest stayed the same on each. The bundled
+  worker checks every hour and refreshes a Codex login within 24 hours of its access token's expiry
+  (or when its last refresh is over 7 days old and no expiry is known), and these are constants, not
+  settings. A copy that refreshes spends the refresh token the master, the box run's `world.sql` and
+  the other copies hold: each of them is signed out at its own next refresh. Keep a copy for one
+  check, rebuild the master from a fresh `world.sql` (`--from-box`) rather than keep one for days,
+  and see SLNT-1214's follow-ups for a login of the copies' own.
+- **Memory.** A copy takes about 9 GB of the host's memory once its sessions run.
+
 ## The box
 
 Two Mend servers run as VMs on one Proxmox host. A check on the box uses VM 131, the preview server

@@ -159,7 +159,9 @@ export const health = async ({ url, from, ssh, expectVersion, fetchImpl = fetch 
       const seen = probes.find((probe) => probe.sessionEndpoint)?.sessionEndpoint ?? null;
       const urls = [healthUrl(target), ...(seen && seen !== target ? [healthUrl(seen)] : [])];
       const run = ssh(
-        `docker run --rm --pull never --entrypoint node ${quote(server.image)} --input-type=module -e ${quote(FETCH(urls))}`,
+        // On the bundle's network, as a Docker workspace is: there the compose name of a Docker-only
+        // server's session endpoint (http://mend:3106) resolves.
+        `docker run --rm --pull never $(docker network inspect mend_default >/dev/null 2>&1 && echo --network mend_default) --entrypoint node ${quote(server.image)} --input-type=module -e ${quote(FETCH(urls))}`,
       );
       const answers = parseLines(run.stdout);
       const appAnswer =

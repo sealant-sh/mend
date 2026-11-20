@@ -2,20 +2,20 @@
   "limits": [
     {
       "id": "boat",
-      "what": "A session that runs on Boat. The verify stack has no Boat; the box (VM 131) does."
+      "what": "A session that runs on Boat. Neither the verify stack nor a check VM has Boat; the box (VM 131) does, so a box run that needs Boat goes there."
     },
     {
       "id": "upgrade-real-data",
-      "what": "Upgrading or migrating an install that already holds people's data. A local stack starts with an empty database."
+      "what": "Upgrading or migrating an install that already holds people's data. A local stack starts with an empty database. A box run goes to a check VM on this machine (pnpm verify vm up), which holds the daily run's data."
     },
     {
       "id": "preview-deploy",
-      "what": "The preview deploy itself: the script only ever runs on the box.",
+      "what": "The preview deploy itself: the script only runs on a server installed with mend server setup, a check VM (pnpm verify vm up) or the box.",
       "paths": ["scripts/preview-deploy.sh"]
     },
     {
       "id": "real-agent-turn",
-      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there. A route of the new web app (apps/web) sent here runs on the box from its checkout: pnpm verify drive new-web --box serves it in front of the box's API, so a change that is only apps/web and packages/ui needs no preview deploy (the verify skill, section 9)."
+      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there. A box run goes to a check VM on this machine (pnpm verify vm up), which holds the daily run's real logins, unless it also needs Boat. A route of the new web app (apps/web) sent here runs from its checkout: pnpm verify drive new-web --box serves it in front of the check VM's or the box's API, so a change that is only apps/web and packages/ui needs no preview deploy (the verify skill, section 9)."
     }
   ]
 }

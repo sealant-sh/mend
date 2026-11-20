@@ -132,10 +132,19 @@ export const parseArgs = (argv) => {
     } else if (["--version", "--sha", "--cli", "--from-box", "--memory"].includes(arg)) {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a value`);
-      options[{ "--version": "vmVersion", "--sha": "vmSha", "--cli": "vmCli", "--from-box": "fromBox", "--memory": "memory" }[arg]] = value;
+      options[
+        {
+          "--version": "vmVersion",
+          "--sha": "vmSha",
+          "--cli": "vmCli",
+          "--from-box": "fromBox",
+          "--memory": "memory",
+        }[arg]
+      ] = value;
     } else if (arg === "--cpus") {
       const value = Number(argv[++index]);
-      if (!Number.isInteger(value) || value < 1) throw new UsageError("--cpus needs a whole number");
+      if (!Number.isInteger(value) || value < 1)
+        throw new UsageError("--cpus needs a whole number");
       options.cpus = value;
     } else if (arg === "--from") {
       const value = (argv[++index] ?? "").split(",").filter(Boolean);
