@@ -483,6 +483,11 @@ export const sealantLaunchLayer = (
     readonly stopAnswer?: (discard: boolean) => "stopped" | "draining" | "kept" | "requested";
     /** Holds the platform's answer to a stop until it completes (a sealant slow to stop the executor). */
     readonly aroundStop?: () => Effect.Effect<void>;
+    /**
+     * Holds a PTY's close until it completes (a process that ends, and is seen ending, while the
+     * platform still answers its close).
+     */
+    readonly aroundClose?: (ptyId: string) => Effect.Effect<void>;
     /** Every flush's kind, in order (`suspend` · `final`). */
     readonly flushKinds?: CaptureFlushKind[];
     /**
@@ -644,7 +649,12 @@ export const sealantLaunchLayer = (
       resize: async () => undefined,
       signal: async () => undefined,
       status: async () => ptyStates?.get(pty.id) ?? { status: "running", outputHighWater: 0n },
-      close: async () => void captureOps?.closed?.push(argvOfPty.get(pty.id) ?? []),
+      close: async () => {
+        if (captureOps?.aroundClose !== undefined) {
+          await Effect.runPromise(captureOps.aroundClose(pty.id));
+        }
+        captureOps?.closed?.push(argvOfPty.get(pty.id) ?? []);
+      },
       attach: async () => new Promise(() => undefined),
     };
     ptys.set(pty.id, pty);
