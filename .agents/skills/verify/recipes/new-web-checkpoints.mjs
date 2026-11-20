@@ -274,9 +274,12 @@ export default async ({ page, web, capture, note }) => {
   await capture("fixture-line-keyboard-desktop-light");
   await details().getByRole("link", { name: "Open in Record" }).click();
   await page.waitForURL(`**/sessions/${viewed}/record#checkpoint-${runs[2].at(-1).ordinal}`);
-  await visible(page.getByRole("button", { name: "Checkpoints" })).click();
+  await visible(page.getByRole("tab", { name: "Checkpoints" })).click();
   await settled();
-  const recordRows = await page.getByText(/^Checkpoint \d+ ·/).count();
+  const recordRows = await page
+    .getByRole("listitem")
+    .getByRole("button", { name: /Checkpoint Checkpoint \d+ ·/ })
+    .count();
   note(
     `Open in Record goes to /sessions/<id>/record#checkpoint-${runs[2].at(-1).ordinal}; filtered to Checkpoints it lists ${recordRows} rows (the chain has ${chain.length - 1} beyond the worktree's start)`,
   );

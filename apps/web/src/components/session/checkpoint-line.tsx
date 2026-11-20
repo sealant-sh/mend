@@ -74,7 +74,7 @@ export function CheckpointLine({
                     {mark.sha}
                   </code>
                 </PopoverTitle>
-                <PopoverDescription className="text-pretty whitespace-normal">
+                <PopoverDescription className="whitespace-normal">
                   When this turn ended, Mend saved a copy of the files in this worktree. Your branch
                   doesn't change.
                 </PopoverDescription>
