@@ -13,7 +13,7 @@ import { LIVE_STATES, type ProjectSessionRow } from "./project-sessions.ts";
 export interface WorktreeSession {
   readonly id: string;
   readonly title: string;
-  readonly status: { readonly word: string; readonly tone: StatusTone };
+  readonly status: ProjectSessionRow["status"];
   /** The owner's name when the session isn't the viewer's; null for the viewer's or unknown. */
   readonly owner: string | null;
 }

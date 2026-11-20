@@ -246,6 +246,19 @@ export interface NewestAgentItem {
   readonly data: unknown;
 }
 
+/** The later of two times, either of which may be missing. */
+const later = (a: Date | null, b: Date | null): Date | null =>
+  a === null ? b : b === null || a >= b ? a : b;
+
+/** What the inbox reads of one session's turns and asks (`inboxTurnFacts`). */
+export interface InboxTurnFacts {
+  readonly sessionId: SessionId;
+  /** A turn is queued or running. */
+  readonly turnOpen: boolean;
+  /** When the newest turn was sent, or the newest ask opened or was answered; null for none. */
+  readonly newestAt: Date | null;
+}
+
 export interface AgentProtocolCursor {
   readonly nextSequence: bigint;
 }
@@ -586,6 +599,14 @@ export class AgentConversationRepo extends Context.Service<
     readonly newestItems: (
       sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<NewestAgentItem>>;
+    /**
+     * Each asked session's turn and ask facts for its inbox row, in two grouped statements (one
+     * over turns, one over requests): whether a turn is queued or running, and when the newest
+     * turn was sent or the newest ask opened or was answered. A session with neither is absent.
+     */
+    readonly inboxTurnFacts: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyArray<InboxTurnFacts>>;
     /**
      * The background tasks one agent process reported (`task` items): how many still run, and
      * when any last changed.
@@ -2536,6 +2557,47 @@ export const AgentConversationRepoLive: Layer.Layer<
       },
     );
 
+    const inboxTurnFacts = Effect.fn("AgentConversationRepo.inboxTurnFacts")(function* (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) {
+      if (sessionIds.length === 0) return [];
+      const [turns, asks] = yield* Effect.all(
+        [
+          db
+            .select({
+              sessionId: agentTurns.sessionId,
+              newest: max(agentTurns.createdAt),
+              // Queued as `claimNextTurn` takes it: a turn withdrawn from history never runs.
+              open: sql<boolean>`bool_or(${agentTurns.status} = 'running' OR (${agentTurns.status} = 'queued' AND ${agentTurns.withdrawnHistoryRevision} IS NULL))`,
+            })
+            .from(agentTurns)
+            .where(inArray(agentTurns.sessionId, [...sessionIds]))
+            .groupBy(agentTurns.sessionId),
+          db
+            .select({
+              sessionId: agentRequests.sessionId,
+              opened: max(agentRequests.createdAt),
+              decided: max(agentRequests.decidedAt),
+            })
+            .from(agentRequests)
+            .where(inArray(agentRequests.sessionId, [...sessionIds]))
+            .groupBy(agentRequests.sessionId),
+        ],
+        { concurrency: 2 },
+      ).pipe(Effect.orDie);
+      const facts = new Map<SessionId, { turnOpen: boolean; newestAt: Date | null }>();
+      for (const row of turns)
+        facts.set(row.sessionId, { turnOpen: row.open, newestAt: row.newest });
+      for (const row of asks) {
+        const before = facts.get(row.sessionId) ?? { turnOpen: false, newestAt: null };
+        facts.set(row.sessionId, {
+          turnOpen: before.turnOpen,
+          newestAt: later(before.newestAt, later(row.opened, row.decided)),
+        });
+      }
+      return [...facts].map(([sessionId, fact]): InboxTurnFacts => ({ sessionId, ...fact }));
+    });
+
     const newestItems = Effect.fn("AgentConversationRepo.newestItems")(function* (
       sessionIds: ReadonlyArray<SessionId>,
     ) {
@@ -2922,6 +2984,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       listRequests,
       oldestPendingRequests,
       newestItems,
+      inboxTurnFacts,
       hasPendingRequests,
       prepareRequestResponse,
       completeRequestResponse,

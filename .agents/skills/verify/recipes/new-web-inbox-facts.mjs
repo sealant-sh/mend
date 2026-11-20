@@ -1,6 +1,6 @@
 // What the sidebar inbox's rows know from the server's inbox read (SLNT-1113): a finished session
-// goes under To review when its change has files and under Done when it has none, an Idle one the
-// same way with no second read, sessions sharing a workspace name it, a failed session says why on
+// goes under To review when its change has files and under Done when it has none, an Idle one
+// (finished its reply, still up) stays under Running saying Replied (SLNT-1199), sessions sharing a workspace name it, a failed session says why on
 // a phone, and a running one says what its agent is doing. Run the CLI batch first, once per stack:
 //
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-inbox-facts.json
@@ -142,14 +142,14 @@ export default async ({ page, web, capture, note }) => {
   await open("/");
   await readAgain();
   await openAll();
-  await row("To review", "Idle with changed files").waitFor();
-  await row("Done", "Idle with no changes").waitFor();
+  await row("Running", "Idle with changed files").getByText("Replied").waitFor();
+  await row("Running", "Idle with no changes").getByText("Replied").waitFor();
   await row("Done", "Finished with no changes").waitFor();
   await row("To review", "Finished with changes").waitFor();
   await row("Running", "Add idempotency keys to refunds").getByText("Running a command").waitFor();
   await row("Running", "Cache product images at the edge").getByText("Editing files").waitFor();
   note(
-    `fixture desktop: Idle with files under To review, Idle and finished with none under Done; running rows read "${await lines(row("Running", "Add idempotency keys to refunds"))}" and "${await lines(row("Running", "Cache product images at the edge"))}"`,
+    `fixture desktop: Idle sessions under Running saying Replied, finished with none under Done; running rows read "${await lines(row("Running", "Add idempotency keys to refunds"))}" and "${await lines(row("Running", "Cache product images at the edge"))}"`,
   );
   await both("fixture-facts-desktop");
   await page.setViewportSize(PHONE);

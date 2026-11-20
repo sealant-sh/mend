@@ -47,7 +47,7 @@ export const STATUS_WORDS: Readonly<Record<SessionStatusDto, string>> = {
   starting: "Starting",
   running: "Running",
   waiting: "Waiting on you",
-  idle: "Idle",
+  idle: "Replied",
   stopping: "Saving",
   completed: "Completed",
   failed: "Failed",

@@ -1,4 +1,3 @@
-import { Status } from "@mend/ui/components/status";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Empty,
@@ -41,6 +40,7 @@ import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
 
+import { SessionStatus } from "../session-status.tsx";
 import { ClearFinished } from "./clear-finished.tsx";
 import { NewWorktree } from "./new-worktree.tsx";
 import { type RemovalWords, RemoveWorktree } from "./remove-worktree.tsx";
@@ -87,7 +87,6 @@ export function WorktreesTab({ detail }: { readonly detail: ProjectDetailDto }) 
       marks: [],
       now,
     }),
-    now,
   );
   const names = new Map(members.map((member) => [member.userId, member.name]));
   const rows = worktreeRows(detail, sessionRows, holdingSessions(detail), names, viewer.userId);
@@ -278,9 +277,7 @@ function WorktreesTable({
                       >
                         {session.title}
                       </Link>
-                      <Status tone={session.status.tone} className="shrink-0 text-row">
-                        {session.status.word}
-                      </Status>
+                      <SessionStatus status={session.status} className="shrink-0 text-row" />
                       {session.owner === null ? null : (
                         <span className="shrink-0 truncate text-muted-foreground">
                           {session.owner}
@@ -338,9 +335,7 @@ function WorktreesList({
             <span className="flex min-w-0 items-baseline gap-2">
               <span className="min-w-0 flex-1 truncate font-mono text-lead">{row.name}</span>
               {row.status === null ? null : (
-                <Status tone={row.status.tone} className="shrink-0 text-sm">
-                  {row.status.word}
-                </Status>
+                <SessionStatus status={row.status} className="shrink-0 text-sm" />
               )}
             </span>
             <span className="truncate text-prose text-muted-foreground">

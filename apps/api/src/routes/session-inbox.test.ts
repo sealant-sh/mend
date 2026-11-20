@@ -67,6 +67,7 @@ describe("the sessions inbox read", () => {
       [
         "changes.annotationsForSessions",
         "conversation.newestItems",
+        "conversation.inboxTurnFacts",
         "conversation.oldestPendingRequests",
         "importedConversations.undeliveredAmong",
         "processes.listForSessions",

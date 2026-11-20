@@ -26,7 +26,7 @@ const row = (
 ): ProjectSessionRow => ({
   id,
   title: `Session ${id}`,
-  status,
+  status: { ...status, lump: "idle", pr: "none" },
   open: true,
   worktreeId: `wt-${tree}`,
   worktree: tree,

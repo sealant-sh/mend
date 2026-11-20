@@ -38,6 +38,7 @@ import {
   FolderIcon,
   LinkIcon,
   PencilIcon,
+  SquareIcon,
   Undo2Icon,
 } from "lucide-react";
 import { type ComponentType, type ReactNode, useRef, useState } from "react";
@@ -55,8 +56,8 @@ import { SheetHandle, SheetItem } from "./sheet-item.tsx";
  * header's "…" and the Change view. Approving from a row is the phone app's alone.
  *
  * On the desk they are the row's "…" menu and its right-click menu, the same items in both; on a
- * phone, a sheet. Stop session… is on the session's own tab (`session-actions.tsx`), where its
- * dialog says what else stops.
+ * phone, a sheet. Stop session… opens the same dialog as the session's own tab
+ * (`session-actions.tsx`), which says what else stops; the layout holds it (`StopSessionHost`).
  */
 
 /** The parts of a menu, so the "…" menu and the right-click menu draw the same items. */
@@ -117,7 +118,7 @@ export const projectLink = (row: InboxRow) =>
 
 /**
  * The desk's menu items, in the frame's order: open the session, open its project, snooze, mark
- * done, rename, copy link.
+ * done, stop, rename, copy link.
  */
 function RowMenuItems({
   parts,
@@ -141,6 +142,12 @@ function RowMenuItems({
         Open project
       </Item>
       <MarkItems parts={parts} row={row} actions={actions} handlers={handlers} />
+      {actions.stop && handlers.stop !== null ? (
+        <Item onClick={() => handlers.stop?.(row)}>
+          <SquareIcon aria-hidden />
+          Stop session…
+        </Item>
+      ) : null}
       {actions.rename ? (
         <Item onClick={onRename}>
           <PencilIcon aria-hidden />
@@ -443,6 +450,14 @@ export function PhoneRowActions({
                     onClick={() => act(() => handlers.markNotDone(row))}
                   >
                     Mark not done
+                  </SheetItem>
+                ) : null}
+                {actions.stop && handlers.stop !== null ? (
+                  <SheetItem
+                    icon={<SquareIcon aria-hidden />}
+                    onClick={() => act(() => handlers.stop?.(row))}
+                  >
+                    Stop session…
                   </SheetItem>
                 ) : null}
                 <SheetItem

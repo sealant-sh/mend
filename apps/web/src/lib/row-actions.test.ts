@@ -82,7 +82,7 @@ describe("undo", () => {
 });
 
 describe("a row's menu", () => {
-  it("offers what fits the row's group, and Rename only to the session's owner", () => {
+  it("offers what fits the row's group, and Rename and Stop only to the session's owner", () => {
     const [running, markedDone, ended] = ["running", "marked", "ended"].map((id) => {
       const [placed] = inboxRows({
         rows: [session(id, id === "running" ? "running" : "completed")],
@@ -97,14 +97,16 @@ describe("a row's menu", () => {
     });
     if (running === undefined || markedDone === undefined || ended === undefined)
       throw new Error("no rows");
+    // Running: no Snooze and no Mark done while the agent works; Stop session… instead.
     expect(rowActions(running, "ada")).toEqual({
-      snooze: true,
+      snooze: false,
       unsnooze: false,
-      markDone: true,
+      markDone: false,
       markNotDone: false,
+      stop: true,
       rename: true,
     });
-    expect(rowActions(running, "grace").rename).toBe(false);
+    expect(rowActions(running, "grace")).toMatchObject({ rename: false, stop: false });
     // Marked done by hand: it can be taken back out of Done.
     expect(rowActions(markedDone, "ada")).toMatchObject({ markDone: false, markNotDone: true });
     // Done because the session ended with nothing changed: no mark to take back.
@@ -113,6 +115,7 @@ describe("a row's menu", () => {
       snooze: false,
       markDone: false,
       markNotDone: false,
+      stop: false,
     });
   });
 });

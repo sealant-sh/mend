@@ -13,6 +13,8 @@ import {
   refusedWords,
   sessionUrl,
 } from "./row-actions.ts";
+import { stopTargetOfRow } from "./session-stop.ts";
+import { useOpenStop } from "./stop-session.ts";
 import { useTRPC, useTRPCClient } from "./trpc.ts";
 
 /** How long a toast with Undo stays: long enough to reach its button. */
@@ -46,6 +48,7 @@ export const useRowActions = () => {
   const trpc = useTRPC();
   const client = useTRPCClient();
   const queryClient = useQueryClient();
+  const openStop = useOpenStop();
   const marksKey = trpc.sessions.inboxMarks.queryKey();
   const marks = useMutation(
     marksWriter.options({
@@ -122,6 +125,16 @@ export const useRowActions = () => {
     markNotDone: (row: InboxRow) => {
       void mark(row, { _tag: "Inbox" }, "move", doneWords.markedNotDone(row.title));
     },
+    /**
+     * Opens Stop session? for the row's session, the same dialog as its tab's; null outside the
+     * inbox layout, where rows offer no Stop.
+     */
+    stop:
+      openStop === null
+        ? null
+        : (row: InboxRow) => {
+            openStop(stopTargetOfRow(row));
+          },
     /** Renames the session; an empty name clears its label, and its worktree's name shows. */
     rename: (row: InboxRow, text: string) => {
       void rename(row, text);

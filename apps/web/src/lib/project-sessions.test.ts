@@ -96,7 +96,6 @@ describe("a project's Sessions tab", () => {
         marks: [],
         now,
       }),
-      now,
     );
     expect(rows.map((row) => [row.title, row.status.word, row.status.tone, row.open])).toEqual([
       ["Fix flaky checkout retry", "Waiting on you", "wait", true],
@@ -111,28 +110,38 @@ describe("a project's Sessions tab", () => {
     });
   });
 
-  it("keeps an ended session with files open, for review, and files one with none as stopped", () => {
+  it("keeps an ended session with files, or a failed one, open for review, and files one that ended well with none as stopped", () => {
     const rows = projectSessionRows(
       {
-        sessions: [session("files", "completed"), session("none", "completed")],
+        sessions: [
+          session("files", "completed"),
+          session("none", "completed"),
+          session("failed", "failed"),
+        ],
         worktrees: [],
         annotations: [],
       },
       inboxRows({
         rows: [
           inboxRow("files", "completed", { files: 3 }),
-          inboxRow("none", "failed", { files: 0 }),
+          inboxRow("none", "completed", { files: 0 }),
+          inboxRow("failed", "failed", { files: 0 }),
         ],
         marks: [],
         now,
       }),
-      now,
     );
-    expect(rows.map((row) => [row.id, row.open])).toEqual([
-      ["files", true],
-      ["none", false],
-    ]);
-    expect(rows[1]?.status).toEqual({ word: "Failed", tone: "bad" });
+    expect(Object.fromEntries(rows.map((row) => [row.id, row.open]))).toEqual({
+      files: true,
+      none: false,
+      failed: true,
+    });
+    expect(rows.find((row) => row.id === "failed")?.status).toEqual({
+      word: "Failed",
+      tone: "bad",
+      lump: "fail",
+      pr: "none",
+    });
   });
 
   it("filters by who started it, agent, branch and every word searched", () => {
@@ -143,7 +152,6 @@ describe("a project's Sessions tab", () => {
         annotations: [],
       },
       [],
-      now,
     );
     if (row === undefined) throw new Error("no row");
     expect(matchesSessionFilters(row, {}, "ada")).toBe(true);

@@ -1,0 +1,73 @@
+[
+  {
+    "name": "01-files",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "states-files",
+      "--",
+      "sh",
+      "-c",
+      "printf 'changed\\n' > STATES.md"
+    ]
+  },
+  {
+    "name": "02-none",
+    "run": ["mend", "run", "--project", "verify-fixture", "--name", "states-none", "--", "true"]
+  },
+  {
+    "name": "03-failed",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "states-failed",
+      "--",
+      "sh",
+      "-c",
+      "exit 3"
+    ]
+  },
+  {
+    "name": "04-live",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "states-live",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "05-live-files",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "states-live-files",
+      "--detach",
+      "--json",
+      "--",
+      "sh",
+      "-c",
+      "printf 'live\\n' > LIVE.md; sleep 7200"
+    ]
+  },
+  {
+    "name": "06-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]

@@ -1,3 +1,4 @@
+import { Lump } from "@mend/ui/components/lump";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   DropdownMenu,
@@ -128,7 +129,8 @@ export function QueuedSidebarRow({ row, now }: { readonly row: QueuedRow; readon
   const note = failure ?? row.failure?.message ?? null;
   return (
     <SidebarMenuItem className="relative" data-queued-session-id={row.id}>
-      <div className="rounded-lg pt-1.5 pr-9 pb-1.75 pl-6 leading-snug">
+      <div className="relative rounded-lg pt-1.5 pr-9 pb-1.75 pl-6 leading-snug">
+        <Lump status={row.lump} className="absolute top-2.25 left-1.5 size-3.5" />
         <span className="block truncate text-row text-foreground opacity-86">{row.title}</span>
         <span className="mt-px block truncate text-meta text-muted-foreground">
           <MetaLine row={row} now={now} />
@@ -153,9 +155,10 @@ export function QueuedPhoneRow({ row, now }: { readonly row: QueuedRow; readonly
   const note = failure ?? row.failure?.message ?? null;
   return (
     <li
-      className="flex items-start border-b border-border py-3 pr-1 pl-4"
+      className="flex items-start gap-3 border-b border-border py-3 pr-1 pl-4"
       data-queued-session-id={row.id}
     >
+      <Lump status={row.lump} className="mt-0.75 size-4" />
       <span className="min-w-0 flex-1">
         <span className="flex min-w-0 items-baseline gap-2 overflow-hidden">
           <span className="min-w-0 truncate text-row font-medium text-foreground">{row.title}</span>

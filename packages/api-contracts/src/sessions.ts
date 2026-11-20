@@ -8,7 +8,7 @@ import {
   SessionProcessId,
   Timestamp,
 } from "@mend/domain";
-import { HistoryAdmissionRefusedError } from "@mend/domain/workbench";
+import { HistoryAdmissionRefusedError, PullRequestState } from "@mend/domain/workbench";
 import {
   RollbackRequest,
   RollbackOperation,
@@ -527,6 +527,11 @@ export const SessionInboxAnnotation = Schema.Struct({
    * null when no checkpoint was counted yet; absent from servers before the count (SLNT-1113).
    */
   fileCount: Schema.optionalKey(Schema.NullOr(Schema.Int)),
+  /**
+   * The state of the change's newest pull request as `gh` last reported it, for the session's
+   * glyph colour; null when the change has none; absent from older servers.
+   */
+  pullRequest: Schema.optionalKey(Schema.NullOr(PullRequestState)),
 });
 export type SessionInboxAnnotation = typeof SessionInboxAnnotation.Type;
 
@@ -567,6 +572,19 @@ export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInbox
    * about work under way.
    */
   activity: Schema.optionalKey(Schema.NullOr(AgentActivity)),
+  /**
+   * Whether the agent is on a turn: true while a terminal agent or a command runs, or a
+   * conversation has a turn queued or running; false between a conversation's turns (it still
+   * reads `running`) and whenever the session isn't `running`. Absent from older servers, as are
+   * the two below.
+   */
+  turnOpen: Schema.optionalKey(Schema.Boolean),
+  /**
+   * When something new last happened in the session: an agent process started (a launch or a
+   * resume), a turn was sent, the agent asked, or someone answered it. A person's done or snooze
+   * mark made before it no longer holds. Null when nothing has happened yet.
+   */
+  lastNewAt: Schema.optionalKey(Schema.NullOr(Timestamp)),
 }) {}
 
 const historyQuery = {

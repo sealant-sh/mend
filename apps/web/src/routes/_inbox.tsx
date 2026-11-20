@@ -7,6 +7,7 @@ import { SearchProvider } from "#/components/command-palette";
 import { SwitchedToast } from "#/components/organization-menu";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
+import { StopSessionHost } from "#/components/session/stop-session-host";
 import { SettingsSidebar } from "#/components/settings/settings-sidebar";
 import { Toaster } from "#/components/toaster";
 import { inboxQuery } from "#/lib/inbox-live";
@@ -71,39 +72,42 @@ function InboxLayout() {
     >
       {/* Search from anywhere: ⌘K, the sidebar's field, the phone inbox's search. */}
       <SearchProvider organizationName={organizationName} inbox={inbox}>
-        {/* Under 1024px there is no sidebar: home is the inbox, and Settings holds the switchers. */}
-        <div className="contents max-lg:hidden">
-          {settings ? (
-            <SettingsSidebar />
-          ) : (
-            <AppSidebar
-              organizationName={organizationName}
-              account={account}
-              inbox={inbox}
-              online={online}
-            />
-          )}
-        </div>
-        <SidebarInset className="min-h-0 min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
-          {home ? (
-            <PhoneInbox
-              organizationName={organizationName}
-              inbox={inbox}
-              online={online}
-              className="lg:hidden"
-            />
-          ) : null}
-          <div
-            className={cn(
-              "flex min-h-0 flex-1 flex-col lg:overflow-y-auto",
-              home && "max-lg:hidden",
+        {/* A row's Stop session… opens this one dialog, which outlives the row moving. */}
+        <StopSessionHost>
+          {/* Under 1024px there is no sidebar: home is the inbox, and Settings holds the switchers. */}
+          <div className="contents max-lg:hidden">
+            {settings ? (
+              <SettingsSidebar />
+            ) : (
+              <AppSidebar
+                organizationName={organizationName}
+                account={account}
+                inbox={inbox}
+                online={online}
+              />
             )}
-          >
-            <InSheet>
-              <Outlet />
-            </InSheet>
           </div>
-        </SidebarInset>
+          <SidebarInset className="min-h-0 min-w-0 lg:my-sheet-inset lg:mr-sheet-inset lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
+            {home ? (
+              <PhoneInbox
+                organizationName={organizationName}
+                inbox={inbox}
+                online={online}
+                className="lg:hidden"
+              />
+            ) : null}
+            <div
+              className={cn(
+                "flex min-h-0 flex-1 flex-col lg:overflow-y-auto",
+                home && "max-lg:hidden",
+              )}
+            >
+              <InSheet>
+                <Outlet />
+              </InSheet>
+            </div>
+          </SidebarInset>
+        </StopSessionHost>
       </SearchProvider>
       <Toaster />
       <SwitchedToast />

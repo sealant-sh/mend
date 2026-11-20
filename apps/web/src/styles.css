@@ -61,3 +61,53 @@ html[data-text-size="large"] {
   --diffs-token-punctuation: var(--diffs-foreground);
   --diffs-token-link: var(--diffs-foreground);
 }
+
+/*
+ * A sidebar row moving between groups (frame "Session states · moving between groups"): its old
+ * place closes as its new one opens at the top of its group, and it stays lit while the fill
+ * fades. Its glyph and words change in place first. `lib/sidebar-moves.ts` holds the timings.
+ */
+@theme {
+  --animate-row-open: row-open 240ms ease-out both;
+  --animate-row-close: row-close 200ms ease-in both;
+  --animate-row-lit: row-lit 1.5s ease-out both;
+  --animate-glyph-change: glyph-change 160ms ease-out both;
+  @keyframes row-open {
+    from {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    to {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+  }
+  @keyframes row-close {
+    from {
+      grid-template-rows: 1fr;
+      opacity: 1;
+    }
+    to {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+  }
+  @keyframes row-lit {
+    from {
+      background-color: var(--color-sidebar-accent);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+  @keyframes glyph-change {
+    from {
+      opacity: 0;
+      transform: scale(0.7);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}

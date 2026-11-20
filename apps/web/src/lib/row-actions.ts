@@ -1,5 +1,5 @@
 import type { SessionInboxMarkDto, SessionInboxRowDto } from "./api.ts";
-import { backAt, type InboxRow } from "./inbox.ts";
+import { backAt, type InboxRow, isAlive } from "./inbox.ts";
 import { documentWriter } from "./optimistic.ts";
 
 /**
@@ -128,17 +128,37 @@ export interface RowActions {
   readonly markDone: boolean;
   /** Back out of Done, for a row the person marked done. */
   readonly markNotDone: boolean;
+  /** Stop session…, with its confirmation: while the session is alive, for who may stop it. */
+  readonly stop: boolean;
   /** Only the session's owner renames it. */
   readonly rename: boolean;
 }
 
-export const rowActions = (row: InboxRow, viewerId: string | null): RowActions => ({
-  snooze: row.group !== "done",
-  unsnooze: row.group === "snoozed",
-  markDone: row.group !== "done",
-  markNotDone: row.group === "done" && row.markedDone,
-  rename: viewerId !== null && row.session.ownerUserId === viewerId,
-});
+/**
+ * What a row's menu offers, by its group (Yiannis, 20 Nov 2026; frame "Session states · row menu
+ * by group"). Mark done only once the session has ended: in To review, and in Snoozed when it has
+ * ended. A running or waiting session offers Stop session… instead, since marking it done would
+ * leave the agent working, or blocked, out of sight. Snooze in Waiting on you and To review.
+ */
+export const rowActions = (row: InboxRow, viewerId: string | null): RowActions => {
+  const ended = !isAlive(row.session.status);
+  const own = viewerId !== null && row.session.ownerUserId === viewerId;
+  const steers = viewerId !== null && row.session.sharedControlUserIds.includes(viewerId);
+  return {
+    snooze: row.group === "waiting" || row.group === "review",
+    unsnooze: row.group === "snoozed",
+    markDone: row.group === "review" || (row.group === "snoozed" && ended),
+    markNotDone: row.group === "done" && row.markedDone,
+    // The server lets the owner and whoever shares control stop it (and an organization's
+    // owners, from the session's own tab); a session already saving is on its way.
+    stop:
+      (row.group === "running" || row.group === "waiting") &&
+      !ended &&
+      row.session.status !== "stopping" &&
+      (own || steers),
+    rename: own,
+  };
+};
 
 /** The address a copied link opens: the session's page on this server. */
 export const sessionUrl = (origin: string, id: string): string => `${origin}/sessions/${id}`;
