@@ -63,10 +63,13 @@ const programOf = (argv: ReadonlyArray<string>): string => {
   return name.replace(/^-/, "") || "shell";
 };
 
-/** "Shell 1" from the engine's "shell 1": the list says it in sentence case. */
+/**
+ * "Shell 1" from the engine's "shell 1": the list says its own names in sentence case. A name the
+ * person gave stays as they typed it.
+ */
 const shellName = (label: string | null, fallback: string): string => {
   const name = label === null || label.trim() === "" ? fallback : label.trim();
-  return name.charAt(0).toUpperCase() + name.slice(1);
+  return /^shell \d+$/.test(name) ? `S${name.slice(1)}` : name;
 };
 
 /**

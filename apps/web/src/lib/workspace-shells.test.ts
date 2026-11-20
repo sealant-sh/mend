@@ -279,6 +279,14 @@ describe("the shells the list holds", () => {
     expect(openShellsFact([])).toBeUndefined();
   });
 
+  it("keeps a name the person gave as they typed it", () => {
+    const [renamed] = workspaceShells(
+      [session("a", { processes: [process("n", "a", { label: "build" })] })],
+      programName,
+    );
+    expect(renamed?.name).toBe("build");
+  });
+
   it("says what runs in a listed shell, and as whom", () => {
     const running = shells.find((shell) => shell.key === "r");
     expect(running && shellLine(running, nameOf)).toBe("zsh · Running · Ada Lovelace");
