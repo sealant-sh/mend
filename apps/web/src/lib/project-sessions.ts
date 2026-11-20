@@ -4,6 +4,7 @@ import type { StatusTone } from "@mend/ui/components/status";
 import type { ProjectDetailDto } from "./api.ts";
 import { type InboxRow, rowLump, rowPr, SESSION_WORDS, statusTone, statusWord } from "./inbox.ts";
 import type { ProjectSessionsSearch } from "./project-sessions-search.ts";
+import { sessionTitleOf } from "./session-title.ts";
 
 /**
  * A project's Sessions tab: every session in the project, from the project's own read (which
@@ -60,10 +61,6 @@ const LONE_LUMPS: Readonly<Record<DetailSession["status"], LumpStatus>> = {
   stopped: "stop",
 };
 
-/** What a session is called when nothing names it: its agent and short id. */
-const fallbackTitle = (session: Pick<DetailSession, "id" | "label" | "harness">): string =>
-  session.label ?? `${session.harness} session ${session.id.slice(0, 8)}`;
-
 /**
  * The tab's rows, newest activity first. `inbox` is the inbox read placed with no marks (a
  * person's snoozes and Done marks are their inbox's, not the project's), so a session is open
@@ -114,7 +111,7 @@ export const projectSessionRows = (
       };
       return {
         id: session.id,
-        title: row?.title ?? fallbackTitle(session),
+        title: sessionTitleOf(row, session.label),
         status,
         open: row === undefined ? !ENDED.has(session.status) : row.group !== "done",
         worktreeId: session.worktreeId,

@@ -467,6 +467,7 @@ const testLayer = (world: TestWorld) => {
     oldestPendingRequests: () => Effect.die("not in test"),
     newestItems: () => Effect.die("not in test"),
     inboxTurnFacts: () => Effect.die("not in test"),
+    firstMessages: () => Effect.die("not in test"),
     historyWindow: () => Effect.die("not in test"),
     turnsInRange: () => Effect.die("not in test"),
     requestsInRange: () => Effect.die("not in test"),

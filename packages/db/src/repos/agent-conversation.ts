@@ -259,6 +259,13 @@ export interface InboxTurnFacts {
   readonly newestAt: Date | null;
 }
 
+/** The first message a session was sent, as Mend recorded it (`firstMessages`). */
+export interface FirstMessage {
+  readonly sessionId: SessionId;
+  /** The turn's input: what was sent, with whatever Mend added to it (`requestOfTurn` strips it). */
+  readonly input: string;
+}
+
 export interface AgentProtocolCursor {
   readonly nextSequence: bigint;
 }
@@ -607,6 +614,14 @@ export class AgentConversationRepo extends Context.Service<
     readonly inboxTurnFacts: (
       sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<InboxTurnFacts>>;
+    /**
+     * Each asked session's first message, in one statement: its lowest-ordinal turn that Mend sent
+     * (not one the harness opened by itself) and that is still in its history. A session that was
+     * never sent a message through Mend (a terminal session typed into) is absent.
+     */
+    readonly firstMessages: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyArray<FirstMessage>>;
     /**
      * The background tasks one agent process reported (`task` items): how many still run, and
      * when any last changed.
@@ -2557,6 +2572,27 @@ export const AgentConversationRepoLive: Layer.Layer<
       },
     );
 
+    const firstMessages = Effect.fn("AgentConversationRepo.firstMessages")(function* (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) {
+      if (sessionIds.length === 0) return [];
+      return yield* db
+        .selectDistinctOn([agentTurns.sessionId], {
+          sessionId: agentTurns.sessionId,
+          input: agentTurns.input,
+        })
+        .from(agentTurns)
+        .where(
+          and(
+            inArray(agentTurns.sessionId, [...sessionIds]),
+            eq(agentTurns.origin, "request"),
+            isNull(agentTurns.withdrawnHistoryRevision),
+          ),
+        )
+        .orderBy(asc(agentTurns.sessionId), asc(agentTurns.ordinal))
+        .pipe(Effect.orDie);
+    });
+
     const inboxTurnFacts = Effect.fn("AgentConversationRepo.inboxTurnFacts")(function* (
       sessionIds: ReadonlyArray<SessionId>,
     ) {
@@ -2985,6 +3021,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       oldestPendingRequests,
       newestItems,
       inboxTurnFacts,
+      firstMessages,
       hasPendingRequests,
       prepareRequestResponse,
       completeRequestResponse,

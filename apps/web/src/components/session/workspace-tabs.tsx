@@ -8,6 +8,7 @@ import { sessionFace } from "#/lib/inbox";
 import { shownStatus } from "#/lib/session-composer";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { lumpPrOf, lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
+import { sessionTitleOf } from "#/lib/session-title";
 import { isNewSessionTab, sessionOfTab, viewOfTab } from "#/lib/tiles";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
@@ -61,7 +62,7 @@ export const faceOf = (
       status: face?.lump ?? (status === undefined ? "idle" : lumpStatusOf(status)),
       pr: session === facts.session.id ? lumpPrOf(facts.detail.landings) : (face?.pr ?? "none"),
       statusWords: face?.word ?? (status === undefined ? "" : STATUS_WORDS[status]),
-      label: session === facts.session.id ? facts.title : (row?.title ?? "Session"),
+      label: session === facts.session.id ? facts.title : sessionTitleOf(row, null),
     };
   }
   const view = workspaceView(viewOfTab(tab) ?? "");
@@ -86,10 +87,12 @@ const useShownStatus = (sessionId: string, status: SessionStatusDto): SessionSta
 };
 
 /**
- * Another session's tab: its lump and title. The glyph and word are its inbox row's, as the
- * sidebar draws them (`sessionFace`); without a row, from its detail once read.
+ * A session's tab: its lump and title. The glyph and word are its inbox row's, as the sidebar
+ * draws them (`sessionFace`); without a row, from its detail once read. The page's own session's
+ * tab is drawn the same way, so the tab stays the same element when another session's tab takes
+ * the page (the address follows the focused session's tab).
  */
-function OtherSessionTab({
+function SessionTab({
   tab,
   sessionId,
   row,
@@ -112,37 +115,7 @@ function OtherSessionTab({
       status={face?.lump ?? lumpStatusOf(status)}
       pr={detail === null ? (face?.pr ?? "none") : lumpPrOf(detail.landings)}
       statusWords={face?.word ?? STATUS_WORDS[status]}
-      label={row?.title ?? detail?.session.label ?? "Session"}
-      {...look}
-    />
-  );
-}
-
-/**
- * The page's own session's tab, from the detail the route read; its glyph and word are its inbox
- * row's when the inbox carries it, as the sidebar draws them.
- */
-function OwnSessionTab({
-  tab,
-  facts,
-  row,
-  look,
-}: {
-  readonly tab: string;
-  readonly facts: SessionFacts;
-  readonly row: SessionInboxRowDto | undefined;
-  readonly look: TabLook;
-}) {
-  const status = useShownStatus(facts.session.id, facts.session.status);
-  const face = row === undefined ? null : sessionFace(row, new Date());
-  return (
-    <TileTab
-      value={tab}
-      kind="session"
-      status={face?.lump ?? lumpStatusOf(status)}
-      pr={lumpPrOf(facts.detail.landings)}
-      statusWords={face?.word ?? STATUS_WORDS[status]}
-      label={facts.title}
+      label={sessionTitleOf(row, detail?.session.label)}
       {...look}
     />
   );
@@ -174,33 +147,22 @@ function ViewTab({
   );
 }
 
-/** The tab for `tab` in a strip: the page's session, another session, a view, or New session. */
+/** The tab for `tab` in a strip: a session, a view, or New session. */
 export function WorkspaceTab({
   tab,
-  facts,
   rows,
   place,
   look,
 }: {
   readonly tab: string;
-  readonly facts: SessionFacts;
   readonly rows: ReadonlyArray<SessionInboxRowDto>;
   readonly place: ViewPlace;
   readonly look: TabLook;
 }) {
   const session = sessionOfTab(tab);
-  if (session === facts.session.id)
-    return (
-      <OwnSessionTab
-        tab={tab}
-        facts={facts}
-        row={rows.find((each) => each.session.id === session)}
-        look={look}
-      />
-    );
   if (session !== null)
     return (
-      <OtherSessionTab
+      <SessionTab
         tab={tab}
         sessionId={session}
         row={rows.find((each) => each.session.id === session)}
@@ -212,8 +174,11 @@ export function WorkspaceTab({
   return <TileTab value={tab} {...NEW_SESSION} {...look} />;
 }
 
-/** Another session's conversation, read as its tab first shows. */
-function OtherConversation({
+/**
+ * A session's conversation, read as its tab first shows. The page's own session's is drawn the same
+ * way, so its body stays mounted when another session's tab takes the page.
+ */
+function SessionConversation({
   sessionId,
   onStartOwn,
 }: {
@@ -277,25 +242,21 @@ function Guarded({
  */
 export function WorkspaceTabBody({
   tab,
-  facts,
   place,
   newSession,
   onStartOwn,
 }: {
   readonly tab: string;
-  readonly facts: SessionFacts;
   readonly place: ViewPlace;
   readonly newSession: (tab: string) => ReactNode;
   /** Opens a New session tab beside this tab: a session of the viewer's own in this workspace. */
   readonly onStartOwn: () => void;
 }) {
   const session = sessionOfTab(tab);
-  if (session === facts.session.id)
-    return <ConversationTile facts={facts} onStartOwn={onStartOwn} />;
   if (session !== null)
     return (
       <Guarded tab={tab} reading="Reading the conversation…">
-        <OtherConversation sessionId={session} onStartOwn={onStartOwn} />
+        <SessionConversation sessionId={session} onStartOwn={onStartOwn} />
       </Guarded>
     );
   const view = workspaceView(viewOfTab(tab) ?? "");

@@ -1,4 +1,4 @@
-import { REVIEW_WAIT_MS } from "@mend/domain/workbench";
+import { messageTitle, REVIEW_WAIT_MS, UNNAMED_SESSION_TITLE } from "@mend/domain/workbench";
 import type { LumpPr, LumpStatus } from "@mend/ui/components/lump";
 import type { StatusTone } from "@mend/ui/components/status";
 
@@ -582,18 +582,15 @@ export interface QueuedRow {
   readonly at: Date;
 }
 
-const TITLE_LENGTH = 80;
-
 /** The queued sessions not started yet, newest first, each in its group. */
 export const queuedRows = (queued: ReadonlyArray<QueuedSessionDto>): ReadonlyArray<QueuedRow> =>
   queued
     .filter((row) => row.state !== "started")
     .toSorted((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime())
     .map((row): QueuedRow => {
-      const firstLine = (row.launch.prompt ?? "").trim().split("\n")[0] ?? "";
       const base = {
         id: row.id,
-        title: firstLine === "" ? "New session" : firstLine.slice(0, TITLE_LENGTH),
+        title: messageTitle(row.launch.prompt) ?? UNNAMED_SESSION_TITLE,
         projectName: row.projectName,
         at: row.updatedAt,
       };

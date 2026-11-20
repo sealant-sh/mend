@@ -88,9 +88,9 @@ function SessionRoute() {
   if (isDraftId(sessionId)) return <StartingSessionPage draftId={sessionId} />;
   return (
     <CatchBoundary getResetKey={() => sessionId} errorComponent={RouteErrorScreen}>
-      <Suspense key={sessionId} fallback={<SessionPending sessionId={sessionId} />}>
+      {/* Not keyed by the session: the page keeps its sheet across the sessions of one workspace. */}
+      <Suspense fallback={<SessionPending sessionId={sessionId} />}>
         <SessionPage
-          key={sessionId}
           sessionId={sessionId}
           {...(view === undefined ? {} : { view })}
           full={full}

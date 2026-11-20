@@ -5,7 +5,13 @@ import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
-import { type KeyboardEvent, type ReactNode, useState, useSyncExternalStore } from "react";
+import {
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useState,
+  useSyncExternalStore,
+} from "react";
 
 import type { InboxRow } from "#/lib/inbox";
 import { inboxQuery } from "#/lib/inbox-live";
@@ -392,6 +398,8 @@ function SessionSheet({
       }),
   };
   const focusedSession = sessionOfTab(focusedTab(shown));
+  useAddressFollowsFocus(focusedTab(shown), session.id, view);
+  useDocumentTitle(facts.title);
 
   const newSessionBody = (tab: string) => (
     <NewSessionTab
@@ -409,7 +417,6 @@ function SessionSheet({
   const bodyOf = (tab: string) => (
     <WorkspaceTabBody
       tab={tab}
-      facts={facts}
       place={place}
       newSession={newSessionBody}
       onStartOwn={() => openNewSession(tileOfTab(shown, tab)?.id ?? shown.focus)}
@@ -481,15 +488,7 @@ function SessionSheet({
         className="lg:hidden"
         tabs={allTabs.map((tab) => ({
           value: tab,
-          tab: (
-            <WorkspaceTab
-              tab={tab}
-              facts={facts}
-              rows={rows}
-              place={place}
-              look={lookOf(tab, "touch")}
-            />
-          ),
+          tab: <WorkspaceTab tab={tab} rows={rows} place={place} look={lookOf(tab, "touch")} />,
         }))}
         active={focusedTab(shown)}
         onActiveChange={(tab) => change((current) => activate(current, tab))}
@@ -526,7 +525,6 @@ function SessionSheet({
                   tab: (
                     <WorkspaceTab
                       tab={tab}
-                      facts={facts}
                       rows={rows}
                       place={place}
                       look={lookOf(tab, "default")}
@@ -611,6 +609,51 @@ function SessionSheet({
   );
 }
 
+/**
+ * The address names the focused tab (SLNT-1211): a session's tab is that session's page, a view's
+ * is the view of the page's session. So the sidebar marks the session the person is looking at, a
+ * reload opens the same tab in the same arrangement (kept for the workspace), and the page's
+ * session (its title, its views) is the one last focused. Replaced, never pushed: Back leaves the
+ * workspace as it did. A New session tab not yet sent has no address, and leaves it as it is.
+ */
+const useAddressFollowsFocus = (
+  focused: string,
+  pageSessionId: string,
+  pageView: string | undefined,
+) => {
+  const navigate = useNavigate();
+  const sessionId = sessionOfTab(focused);
+  const view = viewOfTab(focused);
+  useEffect(() => {
+    if (sessionId !== null && (sessionId !== pageSessionId || pageView !== undefined)) {
+      void navigate({
+        to: "/sessions/$sessionId",
+        params: { sessionId },
+        search: true,
+        replace: true,
+      });
+    } else if (view !== null && view !== pageView) {
+      void navigate({
+        to: "/sessions/$sessionId/$view",
+        params: { sessionId: pageSessionId, view },
+        search: true,
+        replace: true,
+      });
+    }
+  }, [navigate, pageSessionId, pageView, sessionId, view]);
+};
+
+/** The browser tab reads the page's session's title while the sheet shows, then what it read before. */
+const useDocumentTitle = (title: string) => {
+  useEffect(() => {
+    const before = document.title;
+    document.title = `${title} · Mend`;
+    return () => {
+      document.title = before;
+    };
+  }, [title]);
+};
+
 /** The Workspace header with the layout button, Open in VS Code and the workspace's "…", from 1024px. */
 function WorkspaceHeaderRow({
   facts,
@@ -658,9 +701,13 @@ export function SessionPage({
   readonly full: boolean;
   readonly onLeaveFull: () => void;
 }) {
+  const facts = useSessionFacts(sessionId);
+  // One sheet per workspace: moving to another session of the same workspace (its tab focused, or
+  // its row picked in the sidebar) keeps the sheet, its tiles and every tab's body as they are.
   return (
     <SessionSheet
-      facts={useSessionFacts(sessionId)}
+      key={facts.session.worktreeId}
+      facts={facts}
       view={view}
       full={full}
       onLeaveFull={onLeaveFull}

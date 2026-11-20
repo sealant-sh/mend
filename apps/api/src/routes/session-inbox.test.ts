@@ -1,7 +1,10 @@
+import { SessionId } from "@mend/domain";
+import { Session } from "@mend/domain/workbench";
+import { Effect } from "effect";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
-import { ids } from "../../test/support/tenancy-harness.ts";
+import { ids, makeSession } from "../../test/support/tenancy-harness.ts";
 
 interface InboxRowWire {
   readonly session: { readonly id: string; readonly projectId: string };
@@ -68,6 +71,8 @@ describe("the sessions inbox read", () => {
         "changes.annotationsForSessions",
         "conversation.newestItems",
         "conversation.inboxTurnFacts",
+        // An unnamed session's title: its first message, one statement for every session.
+        "conversation.firstMessages",
         "conversation.oldestPendingRequests",
         "importedConversations.undeliveredAmong",
         "processes.listForSessions",
@@ -78,6 +83,40 @@ describe("the sessions inbox read", () => {
         "worktrees.listByIds",
       ].toSorted(),
     );
+  });
+
+  it("calls an unnamed session by its first message, else New session, never by its worktree or a sibling", async () => {
+    const shared = ids("shared-a");
+    const inWorktree = (id: SessionId, label: string | null) =>
+      new Session({ ...makeSession(id, shared.project, shared.worktree, "alice"), label });
+    api = await createTenancyApi(
+      {},
+      {
+        implement: {
+          engine: { launchUnderWay: () => false },
+          sessions: {
+            // One worktree: a named session, and two not named yet. The world's own session was
+            // sent "Continue"; the newest was sent nothing.
+            listForInbox: () =>
+              Effect.succeed([
+                inWorktree(SessionId.make("session-shared-a-newest"), null),
+                inWorktree(shared.session, null),
+                inWorktree(SessionId.make("session-shared-a-named"), "repository overview"),
+              ]),
+          },
+        },
+      },
+    );
+    const response = await api.request("alice", "GET", "/api/session-inbox");
+    expect(response.status).toBe(200);
+    const rows: ReadonlyArray<InboxRowWire> = await response.json();
+    expect(rows.map((row) => [row.session.id, row.title])).toEqual([
+      ["session-shared-a-newest", "New session"],
+      [shared.session, "Continue"],
+      ["session-shared-a-named", "repository overview"],
+    ]);
+    // The worktree keeps its own name.
+    expect(new Set(rows.map((row) => row.worktreeName))).toEqual(new Set(["shared-a"]));
   });
 
   it("answers an account that can see no project with no rows and no reads past the projects", async () => {

@@ -54,6 +54,7 @@ import {
   stopWords,
   whatStays,
 } from "#/lib/session-stop";
+import { sessionTitleOf } from "#/lib/session-title";
 import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useRowActions } from "#/lib/use-row-actions";
 
@@ -99,7 +100,7 @@ const deleteTargetOf = (detail: SessionDetailDto, row: InboxRow | null): DeleteT
   const pullRequest = detail.landings.find((landing) => landing.pullRequest !== null)?.pullRequest;
   return {
     sessionId: detail.session.id,
-    title: row?.title ?? detail.session.label ?? detail.session.branch,
+    title: sessionTitleOf(row, detail.session.label),
     projectName: row?.project.name ?? "",
     stays: whatStays({
       worktreeName: row?.worktreeName ?? detail.session.branch,
@@ -132,7 +133,7 @@ export interface SessionMenuContext {
 /** The Stop dialog's subject, from the session's detail and its inbox row. */
 export const stopTargetOf = (detail: SessionDetailDto, row: InboxRow | null): StopTarget => ({
   sessionId: detail.session.id,
-  title: row?.title ?? detail.session.label ?? detail.session.branch,
+  title: sessionTitleOf(row, detail.session.label),
   agent: actorOf(detail.session.harness),
   status: detail.session.status,
   turnRunning:
@@ -181,7 +182,7 @@ const useMenuFacts = (sessionId: string, context: SessionMenuContext) => {
       })
         ? deleteTargetOf(detail, row)
         : null,
-    title: row?.title ?? detail?.session.label ?? "Session",
+    title: sessionTitleOf(row, detail?.session.label),
   };
 };
 

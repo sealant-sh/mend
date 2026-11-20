@@ -196,6 +196,7 @@ import {
   Session,
   agentActivity,
   sessionAsk,
+  requestOfTurn,
   sessionTitle,
   worktreeTitle,
   type SessionStatus,
@@ -262,6 +263,7 @@ import {
   unresolvedPackagesMessage,
 } from "../services/workspace-environment.ts";
 import { budgetExceeded } from "../session-budgets.ts";
+import { nameOnMessage } from "../session-naming.ts";
 import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
 import {
   requireOwnerRuns,
@@ -2797,17 +2799,23 @@ const inboxRowsOf = (input: {
       launching(session).status === "running" ? [session.id] : [],
     );
     const reader = yield* CurrentUser;
-    const [processes, liveServices, requests, newest, controlAsks, turnFacts] = yield* Effect.all(
-      [
-        (yield* SessionProcessesRepo).listForSessions(sessionIds),
-        (yield* ServicesRepo).liveCountsForSessions(sessionIds),
-        conversations.oldestPendingRequests(sessionIds),
-        conversations.newestItems(running),
-        (yield* SessionSharedControlRepo).asksOnOwnSessions(reader.user.id, sessionIds),
-        conversations.inboxTurnFacts(sessionIds),
-      ],
-      { concurrency: "unbounded" },
+    // An unnamed session reads as its first message until Mend names it (`sessionTitle`).
+    const unnamed = input.sessions.flatMap((session) =>
+      session.label === null ? [session.id] : [],
     );
+    const [processes, liveServices, requests, newest, controlAsks, turnFacts, firstMessages] =
+      yield* Effect.all(
+        [
+          (yield* SessionProcessesRepo).listForSessions(sessionIds),
+          (yield* ServicesRepo).liveCountsForSessions(sessionIds),
+          conversations.oldestPendingRequests(sessionIds),
+          conversations.newestItems(running),
+          (yield* SessionSharedControlRepo).asksOnOwnSessions(reader.user.id, sessionIds),
+          conversations.inboxTurnFacts(sessionIds),
+          conversations.firstMessages(unnamed),
+        ],
+        { concurrency: "unbounded" },
+      );
     const projectName = new Map<string, string>(input.projects.map((row) => [row.id, row.name]));
     const worktreeOf = new Map(input.worktrees.map((row) => [row.id, row]));
     const members = Map.groupBy(input.members, (session) => session.worktreeId);
@@ -2817,6 +2825,9 @@ const inboxRowsOf = (input: {
     const live = new Map<string, number>(liveServices);
     const activityOf = new Map(newest.map((item) => [item.sessionId, agentActivity(item)]));
     const turnFactsOf = new Map(turnFacts.map((fact) => [fact.sessionId, fact]));
+    const firstMessageOf = new Map<string, string>(
+      firstMessages.map((message) => [message.sessionId, requestOfTurn(message.input)]),
+    );
     const importedWaiting = yield* importedWaitingOf(input.sessions);
     return input.sessions.map((session) => {
       const annotation = annotationOf.get(session.id);
@@ -2845,7 +2856,7 @@ const inboxRowsOf = (input: {
           importedConversationWaiting: importedWaiting(session),
         },
         projectName: projectName.get(session.projectId) ?? "",
-        title: sessionTitle(session, worktree, worktreeMembers),
+        title: sessionTitle(session, firstMessageOf.get(session.id) ?? null),
         worktreeName: worktree === undefined ? null : worktreeTitle(worktree, worktreeMembers),
         annotation:
           annotation === undefined
@@ -3167,11 +3178,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         );
         // A keyed retry reaches the engine, which replays the caller's own message before it
         // checks steering rights: they may have lost them since the first attempt.
-        yield* (yield* SessionSteering)
+        const steered = yield* (yield* SessionSteering)
           .session(params.id)
           .pipe(
             Effect.catchTag("SessionNotSteerable", (refusal) =>
-              payload.clientMessageId === undefined ? Effect.fail(refusal) : Effect.void,
+              payload.clientMessageId === undefined ? Effect.fail(refusal) : Effect.succeed(null),
             ),
           );
         const caller = yield* CurrentUser;
@@ -3198,6 +3209,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             ? resumingInto(params.id, send, (error) => error._tag === "ProtocolHostNotLiveError")
             : send;
         return yield* resumingSend.pipe(
+          // An unnamed session is named from the message it was sent.
+          Effect.tap(() => (steered === null ? Effect.void : nameOnMessage(steered))),
           Effect.catchTags({
             SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
             ProtocolHostNotLiveError: (error) =>
@@ -3240,6 +3253,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         return yield* engine
           .submitTurn(params.id, payload.input, caller.user.id, payload.selection)
           .pipe(
+            Effect.tap(() => nameOnMessage(session)),
             Effect.catchTag("ProtocolHostNotLiveError", (error) =>
               Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
             ),
@@ -4019,16 +4033,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const reach = yield* (yield* SessionEngine)
           .stopSessionReach(session.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const [members, worktree] = yield* Effect.all(
-          [
-            (yield* SessionsRepo).listForWorktree(session.worktreeId),
-            (yield* WorktreesRepo)
-              .byId(session.worktreeId)
-              .pipe(Effect.catchTag("WorktreeNotFoundError", () => Effect.succeed(undefined))),
-          ],
-          { concurrency: "unbounded" },
-        );
+        const members = yield* (yield* SessionsRepo).listForWorktree(session.worktreeId);
         const users = yield* UsersRepo;
+        const firstMessages = yield* (yield* AgentConversationRepo).firstMessages(
+          members.flatMap((member) =>
+            member.label === null && reach.runningSessions.includes(member.id) ? [member.id] : [],
+          ),
+        );
+        const firstMessageOf = new Map<string, string>(
+          firstMessages.map((message) => [message.sessionId, requestOfTurn(message.input)]),
+        );
         const runningSessions: Array<StopSessionRunning> = [];
         for (const id of reach.runningSessions) {
           const member = members.find((row) => row.id === id);
@@ -4036,7 +4050,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           runningSessions.push(
             new StopSessionRunning({
               sessionId: member.id,
-              title: sessionTitle(member, worktree, members),
+              title: sessionTitle(member, firstMessageOf.get(member.id) ?? null),
               harness: member.harness,
               status: member.status,
               ownerUserId: member.ownerUserId,
