@@ -486,11 +486,26 @@ const storeStep = (ssh, { load }) => {
 };
 
 /**
+ * This check's own hold from an earlier prepare --load, when it still names the box's dump and what
+ * to put back (SLNT-1209): a retried prepare keeps it rather than dump the box again. Null for any
+ * other hold, or none.
+ */
+export const keptHold = (hold, tag) =>
+  hold &&
+  !hold.unreadable &&
+  hold.tag === tag &&
+  typeof hold.dump === "string" &&
+  /^\/root\/backups\/[A-Za-z0-9._-]+\.sql$/.test(hold.dump) &&
+  hold.putBack
+    ? hold
+    : null;
+
+/**
  * prepare --load: once this check holds the box and its own data is dumped, replace that data with
  * the dump at `load` (the check's own, kept between its runs), and check that this head can deploy
  * over it. Mend stays stopped until the deploy. Release puts the box's own data and build back.
  */
-const loadStep = (root, ssh, { head, load }) => {
+const loadStep = (root, ssh, { head, load, dump, tag }) => {
   const title = `Load ${load} in place of the box's data (changes the box)`;
   const outcome = restoreOutcome(ssh(restoreScript(load)));
   const after = readState(ssh).state;
@@ -513,7 +528,7 @@ const loadStep = (root, ssh, { head, load }) => {
           after === undefined ? "the box could not be read after the load" : null,
           after?.migrations.length === 0 ? "no applied migrations could be read after it" : null,
           ...problems,
-          "the hold stays: pnpm verify box release --yes puts the box's own data and build back",
+          `the hold stays. The box now holds ${load}'s data, not its own, and Mend is stopped; its own is in ${dump}. Either release (${rerun("release", tag)}) to put the box's own data and build back, or prepare --load again from a head that can take this data: it keeps this hold and that dump, and loads again`,
         ]
           .filter(Boolean)
           .join("; "),
@@ -575,6 +590,11 @@ printf '%s' '${JSON.stringify(hold)}' > ${HOLD}`);
     disk.status = "passed";
     disk.detail = `after tidying, ${gib(tidied.after)} free; one deploy needs ${gib(need.bytes)}`;
   }
+  // This check's own hold, from a prepare --load whose load did not finish (SLNT-1209): the box's own
+  // data is already in that hold's dump, and what the box holds now may be the check's data. A new
+  // dump would put the check's data where release looks for the box's own, so the hold, its dump
+  // and what it puts back are kept, and only the load runs again.
+  const kept = load === undefined ? null : keptHold(state.hold, tag);
   if (!yes) {
     return {
       steps: [
@@ -583,11 +603,13 @@ printf '%s' '${JSON.stringify(hold)}' > ${HOLD}`);
           id: "dump",
           title: "Database dump and hold (changes the box)",
           status: "skipped",
-          detail: `Would write ${dump} with pg_dumpall and hold the box for ${tag} in ${HOLD}${
-            load === undefined
-              ? ""
-              : `, then load ${load} in place of its data; release would put back ${state.version} (${state.active})${state.hold && state.hold.tag !== tag ? ` and the hold ${state.hold.tag ?? "found"}` : ""}`
-          }. Nothing was changed`,
+          detail: kept
+            ? `Would keep this check's hold and its dump ${kept.dump}, take no new dump, and load ${load} again. Nothing was changed`
+            : `Would write ${dump} with pg_dumpall and hold the box for ${tag} in ${HOLD}${
+                load === undefined
+                  ? ""
+                  : `, then load ${load} in place of its data; release would put back ${state.version} (${state.active})${state.hold && state.hold.tag !== tag ? ` and the hold ${state.hold.tag ?? "found"}` : ""}`
+              }. Nothing was changed`,
         },
       ],
       next: [rerun("prepare", tag) + (load === undefined ? "" : ` --load ${load}`)],
@@ -596,40 +618,59 @@ printf '%s' '${JSON.stringify(hold)}' > ${HOLD}`);
   }
   // A hold that lapsed (another check's in force refuses above) is written back at release.
   const found = state.hold && state.hold.tag !== tag && !state.hold.unreadable ? state.hold : null;
-  const hold = JSON.stringify({
-    tag,
-    head: head.sha,
-    at: state.now,
-    dump,
-    ...(load === undefined
-      ? {}
-      : { putBack: { active: state.active, version: state.version, hold: found } }),
-  });
-  const run = ssh(`
-set -euo pipefail
-${
-  load === undefined
-    ? ""
-    : `[ -s ${shq(load)} ] || { echo ${shq(`no dump at ${load}`)} >&2; exit 1; }
+  const hold = JSON.stringify(
+    kept
+      ? { ...kept, head: head.sha }
+      : {
+          tag,
+          head: head.sha,
+          at: state.now,
+          dump,
+          ...(load === undefined
+            ? {}
+            : { putBack: { active: state.active, version: state.version, hold: found } }),
+        },
+  );
+  const loadChecks =
+    load === undefined
+      ? ""
+      : `[ -s ${shq(load)} ] || { echo ${shq(`no dump at ${load}`)} >&2; exit 1; }
 tail -c 200 ${shq(load)} | grep -q 'dump complete' || { echo ${shq(`${load} has no pg_dumpall trailer`)} >&2; exit 1; }
+`;
+  const run = ssh(
+    kept
+      ? `
+set -euo pipefail
+${loadChecks}tail -c 200 ${shq(kept.dump)} | grep -q 'dump complete' || { echo ${shq(`this hold's dump ${kept.dump} is missing or incomplete: release by hand (docs/operations/preview-builds.md)`)} >&2; exit 1; }
+stat -c %s ${shq(kept.dump)}
+printf '%s' ${shq(hold)} > ${HOLD}
 `
-}mkdir -p /root/backups "$(dirname ${HOLD})"
+      : `
+set -euo pipefail
+${loadChecks}mkdir -p /root/backups "$(dirname ${HOLD})"
 docker exec mend-postgres-1 pg_dumpall -U postgres > ${dump}
 tail -c 200 ${dump} | grep -q 'dump complete'
 stat -c %s ${dump}
 printf '%s' ${shq(hold)} > ${HOLD}
-`);
+`,
+  );
   const bytes = Number(run.stdout.trim().split("\n").at(-1));
+  const boxDump = kept ? kept.dump : dump;
   steps.push({
     id: "dump",
     title: "Database dump and hold (changes the box)",
     status: run.code === 0 ? "passed" : "failed",
     detail:
-      run.code === 0
-        ? `${dump}: ${Math.round(bytes / 1024 ** 2)} MiB, dump complete; box held for ${tag}`
-        : `failed: ${run.stderr.trim().split("\n").at(-1)}`,
+      run.code !== 0
+        ? `failed: ${run.stderr.trim().split("\n").at(-1)}`
+        : kept
+          ? `kept this check's hold and its dump ${kept.dump} (${Math.round(bytes / 1024 ** 2)} MiB, dump complete): the box's own data from before the first load, which release puts back; no new dump taken`
+          : `${dump}: ${Math.round(bytes / 1024 ** 2)} MiB, dump complete; box held for ${tag}`,
   });
-  const loaded = run.code === 0 && load !== undefined ? loadStep(root, ssh, { head, load }) : null;
+  const loaded =
+    run.code === 0 && load !== undefined
+      ? loadStep(root, ssh, { head, load, dump: boxDump, tag })
+      : null;
   if (loaded) steps.push(loaded);
   if (loaded?.status === "passed") steps.push(storeStep(ssh, { load }));
   return {
@@ -637,11 +678,13 @@ printf '%s' ${shq(hold)} > ${HOLD}
     next:
       run.code !== 0
         ? next
-        : steps.some((step) => ["load", "store"].includes(step.id) && step.status === "failed")
-          ? [rerun("release", tag)]
-          : [rerun("cli", tag), "pnpm verify box identity"],
+        : loaded?.status === "failed"
+          ? [rerun("release", tag), `${rerun("prepare", tag)} --load ${load}`]
+          : steps.some((step) => step.id === "store" && step.status === "failed")
+            ? [rerun("release", tag)]
+            : [rerun("cli", tag), "pnpm verify box identity"],
     box: state,
-    cleanup: { status: "left", left: run.code === 0 ? [`box:${dump}`, `box:${HOLD}`] : [] },
+    cleanup: { status: "left", left: run.code === 0 ? [`box:${boxDump}`, `box:${HOLD}`] : [] },
     ...(tidy ? { tidy } : {}),
   };
 };

@@ -234,7 +234,7 @@ test("prepare changes nothing without --yes, and with it dumps and holds", async
   assert.deepEqual(validateResult(plan), []);
   assert.equal(plan.status, "skipped");
   assert.deepEqual(plan.next, ["pnpm verify box prepare --yes --pr 1700"]);
-  assert.ok(!dry.scripts.some((script) => script.includes("pg_dumpall")));
+  assert.ok(!dry.scripts.some((script) => script.includes("pg_dumpall -U")));
 
   const held = fakeBox(boxSays({ live: "1" }));
   assert.equal(
@@ -646,7 +646,82 @@ test("prepare --load refuses a box with no generation to put back, and fails on 
   const failed = await box("prepare", { sshRunner: odd.ssh, ...run, load: WORLD, yes: true });
   assert.equal(failed.status, "failed");
   assert.match(failed.steps.at(-1).detail, /9999_only_in_that_dump.*the hold stays/);
-  assert.deepEqual(failed.next, ["pnpm verify box release --yes --tag main-c374a10430f2"]);
+  // It says plainly whose data the box holds now, where its own is, and both ways on.
+  assert.match(
+    failed.steps.at(-1).detail,
+    /The box now holds \/root\/main-run\/world\.sql's data, not its own, and Mend is stopped; its own is in \/root\/backups\/pre-main-c374a10430f2-\d{8}T\d{6}Z\.sql/,
+  );
+  assert.deepEqual(failed.next, [
+    "pnpm verify box release --yes --tag main-c374a10430f2",
+    "pnpm verify box prepare --yes --tag main-c374a10430f2 --load /root/main-run/world.sql",
+  ]);
+});
+
+test("prepare --load again under its own hold keeps that hold's dump and only loads again", async () => {
+  // SLNT-1209, VM 131, 20 Nov: the first load refused and left the check's data on the box. A second
+  // prepare dumped that data and pointed the hold at it, so release would have put the check's
+  // data back as the owner's.
+  const firstDump = "/root/backups/pre-main-c374a10430f2-20261114T210000Z.sql";
+  const after = {
+    tag: "main-c374a10430f2",
+    head: "b".repeat(40),
+    at: "2026-11-14T21:00:00Z",
+    dump: firstDump,
+  };
+  const held = JSON.stringify({
+    ...after,
+    putBack: { active: OWNERS, version: "0.37.0-next.1.preview.9", hold: lapsed },
+  });
+  const written = (scripts) =>
+    JSON.parse(
+      scripts
+        .find((script) => /printf '%s' '\{.*\}' > \S*hold\.json/.test(script))
+        .match(/printf '%s' '(\{.*\})' > /)[1],
+    );
+
+  const dry = fakeBox(ownersBox({ hold: held, running: "false" }));
+  const plan = await box("prepare", { sshRunner: dry.ssh, ...run, load: WORLD });
+  assert.match(
+    plan.steps.at(-1).detail,
+    /keep this check's hold and its dump \/root\/backups\/pre-main-c374a10430f2-20261114T210000Z\.sql, take no new dump/,
+  );
+  assert.ok(!dry.scripts.some((script) => script.includes("pg_dumpall -U")));
+
+  const real = fakeBox(ownersBox({ hold: held, running: "false" }), {
+    afterRestore: boxSays({ active: OWNERS }),
+  });
+  const done = await box("prepare", { sshRunner: real.ssh, ...run, load: WORLD, yes: true });
+  assert.deepEqual(validateResult(done), []);
+  assert.equal(done.status, "passed");
+  assert.ok(
+    !real.scripts.some((script) => script.includes("pg_dumpall -U")),
+    "no new dump is taken",
+  );
+  const hold = written(real.scripts);
+  assert.equal(hold.dump, firstDump, "the hold keeps the box's own dump");
+  assert.deepEqual(hold.putBack, {
+    active: OWNERS,
+    version: "0.37.0-next.1.preview.9",
+    hold: lapsed,
+  });
+  assert.equal(hold.at, after.at);
+  const dumpStep = done.steps.find((step) => step.id === "dump");
+  assert.match(dumpStep.detail, /kept this check's hold and its dump .*no new dump taken/);
+  assert.match(
+    done.steps.find((step) => step.id === "load").detail,
+    /loaded \/root\/main-run\/world\.sql/,
+  );
+  assert.deepEqual(done.cleanup.left, [
+    `box:${firstDump}`,
+    "box:/var/lib/mend-box-check/hold.json",
+  ]);
+
+  // A hold of this tag that names no put-back (a plain prepare's) is not one to keep.
+  const plain = fakeBox(ownersBox({ hold: JSON.stringify(after) }), {
+    afterRestore: boxSays({ active: OWNERS }),
+  });
+  await box("prepare", { sshRunner: plain.ssh, ...run, load: WORLD, yes: true });
+  assert.ok(plain.scripts.some((script) => script.includes("pg_dumpall -U")));
 });
 
 const loadedHold = JSON.stringify({
