@@ -6,6 +6,7 @@ import {
   LaunchRequest,
   NewWorkbenchSession,
   PastedImageUpload,
+  RenameShellRequest,
   ReplaceWorkspaceRequest,
   RespondAgentRequest,
   ResumeRequest,
@@ -307,7 +308,10 @@ export const sessionsRouter = router({
     .input(input(Schema.Struct({ processId: SessionProcessId, label: Schema.String })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
-        api.sessions.renameShell({ params: { id: i.processId }, payload: { label: i.label } }),
+        api.sessions.renameShell({
+          params: { id: i.processId },
+          payload: new RenameShellRequest({ label: i.label }),
+        }),
       ),
     ),
   pages: procedure
