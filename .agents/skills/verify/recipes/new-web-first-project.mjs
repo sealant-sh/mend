@@ -474,7 +474,8 @@ export default async ({ page, web, capture, note }) => {
   // Put back what this drive changed: the projects it made are purged, the defaults as before.
   await open("/");
   await forgetClone(me.userId);
-  // The session the composer started holds its project until it has stopped.
+  // The session the composer started holds its project until it has stopped, and its workspace is
+  // saved first: with the big clone that took over two minutes on a loaded machine.
   await call("sessions.stop", { id: started }, "mutate").catch(() => undefined);
   for (const project of (await call("projects.list")).filter((entry) => made(entry.name)))
     await waitFor(
@@ -484,7 +485,7 @@ export default async ({ page, web, capture, note }) => {
           () => true,
           () => null,
         ),
-      120,
+      300,
     );
   for (const project of (await call("projects.removed")).filter((entry) => made(entry.name)))
     await call("projects.purge", { id: project.id, confirm: project.name }, "mutate").catch(
