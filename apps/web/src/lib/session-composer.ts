@@ -1,5 +1,6 @@
 import { type AgentSteerDeliveryDto, isOpenTurn } from "@mend/agent-conversation";
 import {
+  CONVERSATION_HARNESSES,
   type PermissionMode,
   startsInTerminal,
   takesReviewFollowUp,
@@ -16,6 +17,8 @@ import { takesFirstMessage } from "./first-message.ts";
  * - `conversation`: messages go to the agent; `resumes` when the session is stopped and the next
  *   message brings it back;
  * - `terminal`: the agent runs in a terminal, which takes the words instead;
+ * - `starting-conversation`: the session is starting a conversation and its agent isn't running
+ *   yet: messages wait in the sender's outbox and go once it runs (`releasesHeld`);
  * - `starting`: nothing can take a message until the agent runs;
  * - `not-running`: the agent isn't running and a message can't bring it back here;
  * - `no-control`: the viewer doesn't steer this session.
@@ -24,6 +27,7 @@ export type ComposerMode =
   | { readonly _tag: "first-message" }
   | { readonly _tag: "conversation"; readonly resumes: boolean }
   | { readonly _tag: "terminal" }
+  | { readonly _tag: "starting-conversation" }
   | { readonly _tag: "starting" }
   | { readonly _tag: "not-running" }
   | { readonly _tag: "no-control" };
@@ -48,6 +52,15 @@ export const composerMode = ({
   if (!steer) return { _tag: "no-control" };
   if (takesFirstMessage(session, currentAgent, steer)) return { _tag: "first-message" };
   const kind = currentAgent?.kind ?? null;
+  // A start before its agent process exists says nothing of how the agent runs: the server keeps
+  // no launch mode until then. Claude Code and Codex are what the web starts as conversations, so
+  // their composer takes messages that wait for the agent; any other agent runs in a terminal.
+  if (session.status === "starting" && currentAgent === null)
+    return CONVERSATION_HARNESSES.has(session.harness)
+      ? { _tag: "starting-conversation" }
+      : agentLive
+        ? { _tag: "terminal" }
+        : { _tag: "starting" };
   if (agentLive)
     return startsInTerminal(kind) ? { _tag: "terminal" } : { _tag: "conversation", resumes: false };
   // A stopped conversation the next message brings back: its agent ran as a conversation, on an
@@ -60,8 +73,42 @@ export const composerMode = ({
     session.status !== "stopping"
   )
     return { _tag: "conversation", resumes: true };
-  if (session.status === "starting" && currentAgent === null) return { _tag: "starting" };
   return { _tag: "not-running" };
+};
+
+/**
+ * What becomes of messages held while the session started (`starting-conversation`), now:
+ * - `wait`: the agent isn't running yet;
+ * - `send`: it runs as a conversation, and its opening turn is in, so they go after it;
+ * - `stuck`: it can't take them now (it runs in a terminal, didn't start, stopped, or the viewer
+ *   lost control): each says so, with Try again and Edit.
+ */
+export const heldMessagesFate = ({
+  mode,
+  status,
+  turns,
+  openingHeld,
+}: {
+  readonly mode: ComposerMode;
+  readonly status: SessionStatusDto;
+  /** The conversation's turns; undefined while it is read. */
+  readonly turns: ReadonlyArray<unknown> | undefined;
+  /** This tab holds the message the session was started with, not yet in its conversation. */
+  readonly openingHeld: boolean;
+}): "wait" | "send" | "stuck" => {
+  switch (mode._tag) {
+    case "starting-conversation":
+      return "wait";
+    case "conversation":
+      // The agent ran and stopped before they went: Try again resumes it, as any send does.
+      if (mode.resumes) return "stuck";
+      // The opening turn goes in just after the agent runs: a held message sent before it would
+      // become the first turn. With no opening held here, the start reading as started will do.
+      if (turns === undefined) return "wait";
+      return turns.length > 0 || (!openingHeld && status !== "starting") ? "send" : "wait";
+    default:
+      return "stuck";
+  }
 };
 
 /** Who a turn is: the person who sent it, else whose login it runs on (the server's rule). */

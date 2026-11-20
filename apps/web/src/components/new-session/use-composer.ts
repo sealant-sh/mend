@@ -1,6 +1,5 @@
 import type { EffortLevel, ModelPicker, PermissionMode } from "@mend/domain/workbench";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 
 import { adoptionProgressOptions, clonePercent, useAdoptionAttempt } from "#/lib/adoptions";
@@ -29,11 +28,12 @@ import {
   type WorktreeTarget,
   launchFields,
 } from "#/lib/new-session";
-import { holdOpeningMessage } from "#/lib/opening-messages";
-import { sessionLink } from "#/lib/session-sheet";
+import { dismissRefusal, keepRefusal, refusedStart, useRefusedStart } from "#/lib/pending-starts";
 import { signedInOptions } from "#/lib/sign-in";
-import { type StartCalls, startSession } from "#/lib/start-session";
+import { composerStart, type StartCalls } from "#/lib/start-session";
 import { useTRPC } from "#/lib/trpc";
+
+import { usePageStart, useTabStart } from "./instant-start.ts";
 
 /** The browser's server calls for a start. */
 const BROWSER_CALLS: StartCalls = {
@@ -110,6 +110,8 @@ export interface Composer {
   /** What went wrong starting the last task sent; the task is back in the field. */
   readonly startFailed: string | null;
   readonly starting: boolean;
+  /** A start in this workspace's tab, while Mend makes the session: the tab shows it. */
+  readonly startingIn: string | null;
   /** The last session queued on the clone, while the composer is left as it is. */
   readonly queuedOn: string | null;
   /** Send `text` as the session's first message; the field empties while it starts. */
@@ -133,7 +135,6 @@ export interface ComposerPlace {
 export function useComposer(place?: ComposerPlace): Composer {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
   // The route's loader read these; a failure there is the route's error screen.
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   const defaults = useSuspenseQuery(trpc.platform.sessionDefaults.queryOptions()).data;
@@ -196,7 +197,18 @@ export function useComposer(place?: ComposerPlace): Composer {
   const [askFor, setAskFor] = useState<KeptFor<Agent, boolean> | null>(null);
   const [landFor, setLandFor] = useState<KeptFor<string, boolean> | null>(null);
   const [targetFor, setTargetFor] = useState<KeptFor<string, WorktreeTarget> | null>(null);
-  const [prompt, setPrompt] = useState("");
+  // A start Mend refused comes back here: its words in the field, Mend's reason under it.
+  const refused = useRefusedStart();
+  const [prompt, setPrompt] = useState(() =>
+    place === undefined ? (refusedStart()?.prompt ?? "") : "",
+  );
+  // A refusal that lands while this composer is open (Mend answered before the start's page
+  // showed) puts its words back too, once.
+  const [tookBack, setTookBack] = useState(() => refusedStart()?.draftId ?? null);
+  if (place === undefined && refused !== null && refused.draftId !== tookBack) {
+    setTookBack(refused.draftId);
+    setPrompt(refused.prompt);
+  }
 
   const defaultsKey = trpc.platform.sessionDefaults.queryKey();
   const saveDefaults = useMutation(
@@ -227,22 +239,12 @@ export function useComposer(place?: ComposerPlace): Composer {
     },
   });
 
-  const run = useMutation({
-    mutationFn: (request: {
-      readonly projectId: string;
-      readonly target: WorktreeTarget;
-      readonly spec: StartSpec;
-    }) => startSession(BROWSER_CALLS, request.projectId, request.target, request.spec),
-    onSuccess: (sessionId, request) => {
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      // The session's page shows what was asked while the agent starts and takes it.
-      holdOpeningMessage(sessionId, request.spec.prompt);
-      if (place !== undefined) place.onStarted(sessionId);
-      else void navigate(sessionLink(sessionId));
-    },
-    // The task comes back into the field, so nothing the person wrote is lost.
-    onError: (_error, request) => setPrompt(request.spec.prompt),
-  });
+  const pageStart = usePageStart();
+  const tabStart = useTabStart();
+  // A start in a workspace's tab: the tab shows it until Mend has made the session; a refusal
+  // puts the words back here, with Mend's reason.
+  const [startingIn, setStartingIn] = useState<string | null>(null);
+  const [refusedHere, setRefusedHere] = useState<string | null>(null);
 
   const [queuedOn, setQueuedOn] = useState<string | null>(null);
   const queue = useMutation({
@@ -318,14 +320,16 @@ export function useComposer(place?: ComposerPlace): Composer {
       if (value !== "") setQueuedOn(null);
     },
     promptProblem: promptProblem(prompt),
-    startFailed:
-      run.isError || queue.isError
-        ? `The session didn't start. ${messageOf(run.error ?? queue.error)}`.trim()
-        : null,
-    starting: run.isPending || queue.isPending,
+    startFailed: queue.isError
+      ? `The session didn't start. ${messageOf(queue.error)}`.trim()
+      : place === undefined
+        ? (refused?.words ?? null)
+        : refusedHere,
+    starting: queue.isPending,
+    startingIn,
     queuedOn,
     start: (text) => {
-      if (run.isPending || queue.isPending || promptProblem(text) !== null) return;
+      if (queue.isPending || startingIn !== null || promptProblem(text) !== null) return;
       const autoLand = landing === null ? null : landing._tag === "pick" ? landing.land : null;
       const spec: StartSpec = {
         agent,
@@ -337,7 +341,6 @@ export function useComposer(place?: ComposerPlace): Composer {
         autoLand,
       };
       if (onClone && clone !== null) {
-        run.reset();
         queue.reset();
         queue.mutate({
           id: crypto.randomUUID(),
@@ -349,10 +352,31 @@ export function useComposer(place?: ComposerPlace): Composer {
         return;
       }
       if (project === undefined) return;
-      run.reset();
       queue.reset();
-      if (place === undefined) lastProject.set(project.id);
-      run.mutate({ projectId: project.id, target, spec });
+      const request = {
+        ...composerStart(BROWSER_CALLS, project.id, target, spec),
+        project: { id: project.id, name: project.name },
+      };
+      if (place !== undefined) {
+        setRefusedHere(null);
+        tabStart(request, {
+          show: setStartingIn,
+          settle: (sessionId) => {
+            setStartingIn(null);
+            place.onStarted(sessionId);
+          },
+          refuse: (refusal) => {
+            setStartingIn(null);
+            setPrompt(refusal.prompt);
+            setRefusedHere(refusal.words);
+          },
+        });
+        return;
+      }
+      lastProject.set(project.id);
+      dismissRefusal();
+      // The session's page opens now, with the message; Mend makes the session meanwhile.
+      pageStart(request, keepRefusal);
     },
   };
 }

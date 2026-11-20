@@ -5,6 +5,7 @@ import type { TurnView } from "./conversation.ts";
 import {
   composerMode,
   currentSelection,
+  heldMessagesFate,
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
@@ -88,8 +89,8 @@ describe("the composer under a session's conversation", () => {
       "first-message",
     ],
     [
-      "a session whose agent hasn't started waits for it",
-      { ...session, status: "starting" as const },
+      "a terminal agent's session that isn't live yet waits for it",
+      { ...session, harness: "pi", status: "starting" as const },
       null,
       true,
       false,
@@ -106,6 +107,37 @@ describe("the composer under a session's conversation", () => {
     ).toBe(mode);
   });
 
+  it.each([
+    ["Claude Code", "claude", "starting-conversation"],
+    ["Codex", "codex", "starting-conversation"],
+    ["pi", "pi", "terminal"],
+    ["a shell", "shell", "terminal"],
+  ] as const)(
+    "reads a starting %s session with no agent yet by what the web starts it as",
+    (_agent, harness, mode) => {
+      // The session reads live while it starts; no agent process says how the agent will run.
+      expect(
+        composerMode({
+          session: { ...session, harness, status: "starting" },
+          currentAgent: null,
+          steer: true,
+          agentLive: true,
+        })._tag,
+      ).toBe(mode);
+    },
+  );
+
+  it("never offers a starting session to a viewer who doesn't steer it", () => {
+    expect(
+      composerMode({
+        session: { ...session, status: "starting" },
+        currentAgent: null,
+        steer: false,
+        agentLive: true,
+      })._tag,
+    ).toBe("no-control");
+  });
+
   it("says a stopped conversation comes back when it takes the message", () => {
     expect(
       composerMode({
@@ -115,6 +147,65 @@ describe("the composer under a session's conversation", () => {
         agentLive: false,
       }),
     ).toEqual({ _tag: "conversation", resumes: true });
+  });
+});
+
+describe("messages held while a session started", () => {
+  const running = { _tag: "conversation", resumes: false } as const;
+  it.each([
+    [
+      "wait while the agent starts",
+      { _tag: "starting-conversation" } as const,
+      "starting",
+      [],
+      true,
+      "wait",
+    ],
+    ["wait for the opening turn once the agent runs", running, "running", [], true, "wait"],
+    ["wait while the conversation is read", running, "running", undefined, false, "wait"],
+    ["go once the opening turn is in", running, "running", [{}], true, "send"],
+    [
+      "go when this tab holds no opening and the start is over",
+      running,
+      "running",
+      [],
+      false,
+      "send",
+    ],
+    [
+      "wait while the start isn't over and no opening is held",
+      running,
+      "starting",
+      [],
+      false,
+      "wait",
+    ],
+    [
+      "are stuck when the agent runs in a terminal",
+      { _tag: "terminal" } as const,
+      "running",
+      [],
+      false,
+      "stuck",
+    ],
+    [
+      "are stuck when the start failed",
+      { _tag: "not-running" } as const,
+      "failed",
+      [],
+      false,
+      "stuck",
+    ],
+    [
+      "are stuck when the agent stopped first",
+      { _tag: "conversation", resumes: true } as const,
+      "stopped",
+      [],
+      false,
+      "stuck",
+    ],
+  ] as const)("%s", (_what, mode, status, turns, openingHeld, fate) => {
+    expect(heldMessagesFate({ mode, status, turns, openingHeld })).toBe(fate);
   });
 });
 

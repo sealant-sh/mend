@@ -43,6 +43,7 @@ import {
   rowStatus,
 } from "#/lib/inbox";
 import { useServerHost } from "#/lib/online";
+import { isPendingRow } from "#/lib/pending-starts";
 import { rowActions } from "#/lib/row-actions";
 import { useSeenAfterIdle } from "#/lib/seen";
 import { askersDetail } from "#/lib/shared-control";
@@ -383,7 +384,10 @@ function PhoneRow({
       bad={status.failed}
       when={row.group === "snoozed" ? "" : age(new Date(activity(row)), now)}
       actions={
-        <PhoneRowActions row={row} actions={rowActions(row, viewerId)} handlers={handlers} />
+        // A start still on its way to Mend has nothing on the server to act on yet.
+        isPendingRow(row) ? undefined : (
+          <PhoneRowActions row={row} actions={rowActions(row, viewerId)} handlers={handlers} />
+        )
       }
     />
   );

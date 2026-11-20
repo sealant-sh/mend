@@ -53,11 +53,14 @@ export function WorkspaceHeader({
         <span className="sr-only"> worktree </span>
         <span className="min-w-0 truncate font-semibold">{worktree}</span>
       </h1>
-      <p className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
-        <GitBranchIcon aria-hidden className="size-3.5 shrink-0" />
-        <span className="sr-only">Branch </span>
-        <span className="min-w-0 truncate font-mono text-meta">{branch}</span>
-      </p>
+      {/* A session still being made has no branch yet. */}
+      {branch === "" ? null : (
+        <p className="flex min-w-0 items-center gap-1.5 text-muted-foreground">
+          <GitBranchIcon aria-hidden className="size-3.5 shrink-0" />
+          <span className="sr-only">Branch </span>
+          <span className="min-w-0 truncate font-mono text-meta">{branch}</span>
+        </p>
+      )}
       {actions === undefined ? null : (
         <div className="ml-auto flex shrink-0 items-center gap-2 px-1">{actions}</div>
       )}

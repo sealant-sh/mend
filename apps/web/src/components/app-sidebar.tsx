@@ -73,6 +73,7 @@ import {
   shownRows,
 } from "#/lib/inbox";
 import { useServerHost } from "#/lib/online";
+import { isPendingRow } from "#/lib/pending-starts";
 import { rowActions } from "#/lib/row-actions";
 import { useKeys } from "#/lib/search-keys";
 import { lumpStatusOf, sessionLink } from "#/lib/session-sheet";
@@ -819,6 +820,8 @@ const InboxRowItem = memo(function InboxRowItem({
     link.current?.focus();
   };
   const menu = { row, actions, handlers, onRename: startRename };
+  // A start still on its way to Mend: nothing on the server to act on yet (SLNT-1196).
+  const starting = isPendingRow(row);
   return (
     <SidebarRow
       link={link}
@@ -834,9 +837,9 @@ const InboxRowItem = memo(function InboxRowItem({
           />
         ) : undefined
       }
-      onRenameKey={actions.rename ? startRename : undefined}
-      contextMenu={<RowContextMenuContent {...menu} />}
-      actions={<RowMenuButton {...menu} />}
+      onRenameKey={actions.rename && !starting ? startRename : undefined}
+      contextMenu={starting ? undefined : <RowContextMenuContent {...menu} />}
+      actions={starting ? undefined : <RowMenuButton {...menu} />}
       sessionId={row.session.id}
       title={row.title}
       project={row.project.name}

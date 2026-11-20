@@ -506,6 +506,21 @@ describe("the conversation while its history is read", () => {
   });
 });
 
+describe("a conversation before its first turn", () => {
+  const empty = { turns: [], items: [], requests: [], next: null, feed: 0 };
+  it("is an empty conversation, never a terminal's record to read", () => {
+    expect(conversationBody({ status: "success", data: empty }, [], "alice", false).list).toBe(
+      "protocol",
+    );
+  });
+
+  it("reads a terminal agent's record when nothing was said as a conversation", () => {
+    expect(conversationBody({ status: "success", data: empty }, [], "alice").list).toBe(
+      "transcript",
+    );
+  });
+});
+
 describe("setup a harness wrote as a message", () => {
   const injected =
     "# AGENTS.md instructions for /workspace/repo\n\n<INSTRUCTIONS>\n# Mend\n</INSTRUCTIONS>";

@@ -248,10 +248,18 @@ export const decideHarnessLayout = (input: LayoutDecisionInput): LayoutDecision 
     kind: "launch",
     layout: "shared",
     source: "capability",
-    reason: "per-person users not yet known for this image; checked while this workspace starts",
+    reason: UNKNOWN_IMAGE_REASON,
     probe: true,
   };
 };
+
+/**
+ * Why a launch on an image nobody has checked runs shared. Kept on the launch's layout row and in
+ * the log, never on the session line: the check runs while the workspace starts, the next launch
+ * knows its answer, and the person has nothing to do about it (SLNT-1196).
+ */
+export const UNKNOWN_IMAGE_REASON =
+  "per-person users not yet known for this image; checked while this workspace starts";
 
 /** Why a session served by a standby runs shared (`decideHarnessLayout`'s `standby`). */
 export const STANDBY_REASON =

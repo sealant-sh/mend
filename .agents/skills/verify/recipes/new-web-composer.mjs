@@ -298,7 +298,8 @@ export default async ({ page, web, capture, note }) => {
   await page.getByRole("option", { name: /composer-existing/ }).click();
   await pick(/^Worktree: mend\/composer-existing$/).waitFor();
 
-  // A start that fails says so, and the task comes back into the field.
+  // A start that fails says so, and the task comes back into the field (the start's page opened
+  // first, and the refusal brought the person back here: SLNT-1196).
   await page.route("**/trpc/**", (route) => {
     if (!route.request().url().includes("worktrees.createSession")) return route.continue();
     return route.fulfill({
@@ -326,20 +327,20 @@ export default async ({ page, web, capture, note }) => {
   await page.unroute("**/trpc/**");
   note("a refused start says so under the composer, and the task is back in the field");
 
-  // start-composer, in the worktree picked: the button reads Starting… while the session is made
-  // (the recipe holds the request a moment to see it), then the session page opens.
+  // start-composer, in the worktree picked: the session's page opens at once, at the start's own
+  // address, while the session is made (the recipe holds the request a moment to see it), then
+  // the address moves to the session's id (SLNT-1196).
   await page.route("**/trpc/**", async (route) => {
     if (route.request().url().includes("worktrees.createSession"))
       await new Promise((resolve) => setTimeout(resolve, 1_500));
     await route.continue();
   });
   await task().press("Enter");
-  await page.getByRole("button", { name: "Starting…" }).filter({ visible: true }).waitFor();
-  note("Enter: the button reads Starting… while the session is made");
-  await page.waitForURL(/\/sessions\/[^/]+$/, { timeout: 60_000 });
+  await page.waitForURL(/\/sessions\/starting-[^/]+$/);
+  note("Enter: the session's page opens at once, while the session is made");
+  await page.waitForURL(/\/sessions\/(?!starting-)[^/]+$/, { timeout: 60_000 });
   await page.unroute("**/trpc/**");
   const joined = new URL(page.url()).pathname.split("/").at(-1);
-  await heading("Page not found").waitFor();
   const detail = await page.evaluate(
     (id) => window["__TSR_ROUTER__"].options.context.trpcClient.sessions.detail.query({ id }),
     joined,
@@ -347,9 +348,7 @@ export default async ({ page, web, capture, note }) => {
   const branch = detail.session.branch;
   if (branch !== "mend/composer-existing")
     throw new Error(`the session runs on ${branch}, not mend/composer-existing`);
-  note(
-    `Enter started ${joined} in mend/composer-existing and opened /sessions/${joined} (not found until route PR 11)`,
-  );
+  note(`Enter started ${joined} in mend/composer-existing and settled on /sessions/${joined}`);
 
   // start-new-worktree and the landing choice: a new worktree, automatic landing as picked.
   await open("/");
@@ -368,7 +367,7 @@ export default async ({ page, web, capture, note }) => {
   await page.keyboard.press("Escape").catch(() => undefined);
   await task().fill("Change nothing. Reply with done.");
   await start().click();
-  await page.waitForURL(/\/sessions\/[^/]+$/, { timeout: 60_000 });
+  await page.waitForURL(/\/sessions\/(?!starting-)[^/]+$/, { timeout: 60_000 });
   const fresh = new URL(page.url()).pathname.split("/").at(-1);
   const made = await page.evaluate(
     (id) => window["__TSR_ROUTER__"].options.context.trpcClient.sessions.detail.query({ id }),

@@ -14,7 +14,7 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@mend/ui/components/ui/sheet";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import {
   ChevronLeftIcon,
@@ -32,12 +32,12 @@ import { useState } from "react";
 import { copyTextChecked } from "#/lib/clipboard";
 import { laterPage } from "#/lib/later-pages";
 import { AGENTS } from "#/lib/new-session";
-import { startInWorktree } from "#/lib/project-starts";
+import { worktreeStart } from "#/lib/project-starts";
 import type { WorktreeRow } from "#/lib/project-worktrees";
-import { failureWords } from "#/lib/refusal";
 import { sessionLink } from "#/lib/session-sheet";
 import { useTRPC } from "#/lib/trpc";
 
+import { useProjectStart } from "../new-session/instant-start.ts";
 import { SheetHandle, SheetItem } from "../sheet-item.tsx";
 import { useStartShell } from "./project-actions.tsx";
 
@@ -62,29 +62,15 @@ const copy = (what: string, text: string) => {
  * toast, since the menu that asked has closed.
  */
 const useWorktreeActions = (projectId: string, row: WorktreeRow) => {
-  const trpc = useTRPC();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const session = useMutation({
-    mutationFn: (agent: string) => startInWorktree(row.worktree.id, agent),
-    onSuccess: (sessionId) => {
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      void queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: projectId }));
-      void navigate(sessionLink(sessionId));
-    },
-    onError: (error) =>
-      toast.add({
-        description: `The session didn't start in ${row.name}. ${failureWords(error, "Try again.")}`,
-        priority: "high",
-      }),
-  });
+  // The session's page opens at once; a refusal is said in a toast (SLNT-1196).
+  const start = useProjectStart(projectId);
   const shell = useStartShell(projectId);
   return {
-    startSession: (agent: string) => session.mutate(agent),
-    startShell: () => shell.mutate({ _tag: "worktree", worktreeId: row.worktree.id }),
+    startSession: (agent: string) =>
+      start(worktreeStart(row.worktree.id, agent), `The session didn't start in ${row.name}.`),
+    startShell: () => shell({ _tag: "worktree", worktreeId: row.worktree.id }),
     copyBranch: () => copy("branch name", row.branch),
     copyDirectory: () => copy("directory name", row.worktree.directory),
-    starting: session.isPending || shell.isPending,
   };
 };
 
@@ -126,7 +112,6 @@ export function WorktreeMenu({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Actions for ${row.name}`}
-        disabled={actions.starting}
         className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "text-muted-foreground")}
       >
         <EllipsisIcon aria-hidden className="size-4" />
@@ -226,7 +211,6 @@ export function PhoneWorktreeActions({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`Actions for ${row.name}`}
-        disabled={actions.starting}
         onClick={() => show(true)}
         className={cn(buttonVariants({ variant: "ghost", size: "icon-touch" }), "mr-1")}
       >

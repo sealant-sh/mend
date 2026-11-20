@@ -12,6 +12,7 @@ import {
   type QueuedRow,
   queuedRows,
 } from "./inbox.ts";
+import { usePendingStarts, withPendingStarts } from "./pending-starts.ts";
 import { labelsWriter, marksWriter } from "./row-actions.ts";
 import { signedInOptions } from "./sign-in.ts";
 import { useTRPC } from "./trpc.ts";
@@ -118,7 +119,13 @@ export const useInbox = (): InboxState => {
   const me = viewer.data.userId;
   // What the person sees: the server's rows and marks, with their renames and marks still on
   // their way laid over them (a row's actions, `lib/row-actions.ts`).
-  const visibleRows = labelsWriter.useVisible(inbox.data);
+  // This tab's starts still on their way to Mend, laid in as starting sessions (SLNT-1196).
+  const starts = usePendingStarts();
+  const overlaid = labelsWriter.useVisible(inbox.data);
+  const visibleRows = useMemo(
+    () => (overlaid === undefined ? undefined : withPendingStarts(overlaid, starts)),
+    [overlaid, starts],
+  );
   const visibleMarks = marksWriter.useVisible(marks.data);
   // Who asks for shared control is named from the roster; until it is read, the row says someone.
   const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));

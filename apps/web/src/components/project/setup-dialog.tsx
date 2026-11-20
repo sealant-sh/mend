@@ -1,19 +1,18 @@
 import { Alert, AlertDescription, AlertTitle } from "@mend/ui/components/ui/alert";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
-import { CircleX, InfoIcon } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
+import { InfoIcon } from "lucide-react";
 import { useState } from "react";
 
 import { QueryError } from "#/components/route-screens";
 import { agentLogin } from "#/lib/new-session";
 import { usePhone } from "#/lib/phone";
-import { startSetupSession } from "#/lib/project-starts";
-import { failureWords } from "#/lib/refusal";
-import { sessionLink } from "#/lib/session-sheet";
+import { setupStart } from "#/lib/project-starts";
 import { useTRPC } from "#/lib/trpc";
 
+import { useProjectStart } from "../new-session/instant-start.ts";
 import { Overlay } from "../projects/overlay.tsx";
 
 /** The agents a setup session can run, each on the person's own login. */
@@ -44,8 +43,6 @@ export function SetupDialog({
 }) {
   const trpc = useTRPC();
   const phone = usePhone();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const identity = useQuery(
     trpc.platform.sealantIdentity.queryOptions(undefined, { staleTime: 30_000, retry: false }),
   );
@@ -54,17 +51,9 @@ export function SetupDialog({
     : [];
   const [picked, setPicked] = useState<SetupAgent | null>(null);
   const agent = connected.find((each) => each.id === picked) ?? connected[0];
-  const start = useMutation({
-    mutationFn: (choice: SetupAgent) => startSetupSession(projectId, choice),
-    onSuccess: (sessionId) => {
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      void queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: projectId }));
-      void navigate(sessionLink(sessionId));
-    },
-  });
+  // The session's page opens at once; a refusal is said in a toast (SLNT-1196).
+  const start = useProjectStart(projectId);
   const close = (next: boolean) => {
-    if (start.isPending) return;
-    if (!next) start.reset();
     onOpenChange(next);
   };
   const size = phone ? "touch" : "default";
@@ -78,22 +67,19 @@ export function SetupDialog({
       size="md"
       footer={
         <>
-          <Button
-            variant="outline"
-            size={size}
-            disabled={start.isPending}
-            onClick={() => close(false)}
-          >
+          <Button variant="outline" size={size} onClick={() => close(false)}>
             Cancel
           </Button>
           <Button
             size={size}
-            disabled={agent === undefined || start.isPending}
+            disabled={agent === undefined}
             onClick={() => {
-              if (agent !== undefined) start.mutate(agent.id);
+              if (agent === undefined) return;
+              onOpenChange(false);
+              start(setupStart(projectId, agent.id), "The setup session didn't start.");
             }}
           >
-            {start.isPending ? "Starting…" : "Start setup session"}
+            Start setup session
           </Button>
         </>
       }
@@ -126,7 +112,7 @@ export function SetupDialog({
           </AlertDescription>
         </Alert>
       ) : (
-        <fieldset className="flex flex-col gap-2" disabled={start.isPending}>
+        <fieldset className="flex flex-col gap-2">
           <legend className="mb-2 text-prose font-medium">Agent</legend>
           <div
             role="radiogroup"
@@ -169,15 +155,6 @@ export function SetupDialog({
           </p>
         </fieldset>
       )}
-      {start.isError ? (
-        <Alert tone="error">
-          <CircleX aria-hidden />
-          <AlertTitle>The setup session didn't start.</AlertTitle>
-          <AlertDescription>
-            {failureWords(start.error, "Mend couldn't start it. Try again.")}
-          </AlertDescription>
-        </Alert>
-      ) : null}
     </Overlay>
   );
 }
