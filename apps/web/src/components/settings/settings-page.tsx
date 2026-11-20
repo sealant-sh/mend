@@ -1,4 +1,5 @@
 import { cn } from "@mend/ui/lib/utils";
+import { Link, type LinkProps } from "@tanstack/react-router";
 import {
   FolderGit2Icon,
   MonitorIcon,
@@ -12,6 +13,7 @@ import { Fragment, type ReactNode } from "react";
 import {
   audienceLine,
   crumbsOf,
+  type SettingsCrumb,
   groupName,
   type SettingsAudience,
   type SettingsNames,
@@ -21,6 +23,7 @@ import {
 import { useViewer } from "#/lib/use-viewer";
 
 import { PhoneHeader } from "../workspace/phone-header.tsx";
+import { settingsLink } from "./settings-links.tsx";
 
 const AUDIENCE_ICONS: Record<SettingsAudience, ReactNode> = {
   you: <UserRoundIcon />,
@@ -29,6 +32,17 @@ const AUDIENCE_ICONS: Record<SettingsAudience, ReactNode> = {
   owners: <ShieldIcon />,
   project: <FolderGit2Icon />,
   operators: <ServerIcon />,
+};
+
+const CRUMB_LINK =
+  "outline-none hover:text-foreground focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50";
+
+/** Where a part of the breadcrumb goes: the organization's General page, or the project's page. */
+const crumbLink = (crumb: SettingsCrumb, projectId: string | undefined): LinkProps | null => {
+  if (crumb.opens === "o-general") return settingsLink("o-general");
+  if (crumb.opens === "project" && projectId !== undefined)
+    return { to: "/projects/$projectId", params: { projectId } };
+  return null;
 };
 
 /**
@@ -80,9 +94,14 @@ export function SettingsPage({
         className="flex h-header shrink-0 items-center border-b border-border px-6 text-prose text-muted-foreground max-lg:hidden"
       >
         <ol className="flex min-w-0 items-center gap-2">
-          <li>Settings</li>
+          <li>
+            <Link to="/settings" className={CRUMB_LINK}>
+              Settings
+            </Link>
+          </li>
           {crumbs.map((crumb) => {
             const last = crumb.key === "page";
+            const to = crumbLink(crumb, project?.id);
             return (
               <Fragment key={crumb.key}>
                 <li aria-hidden className="text-faint">
@@ -92,7 +111,13 @@ export function SettingsPage({
                   aria-current={last ? "page" : undefined}
                   className={cn("truncate", last && "font-semibold text-foreground")}
                 >
-                  {crumb.label}
+                  {to === null ? (
+                    crumb.label
+                  ) : (
+                    <Link {...to} className={CRUMB_LINK}>
+                      {crumb.label}
+                    </Link>
+                  )}
                 </li>
               </Fragment>
             );

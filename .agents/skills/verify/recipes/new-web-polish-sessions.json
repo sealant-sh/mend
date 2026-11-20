@@ -1,0 +1,22 @@
+[
+  {
+    "name": "01-running",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "polish-running",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "02-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]

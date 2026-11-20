@@ -1,4 +1,5 @@
 import { cn } from "@mend/ui/lib/utils";
+import { Link } from "@tanstack/react-router";
 import { GitBranchIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
@@ -6,7 +7,7 @@ import { SidebarToggle } from "../app-sidebar.tsx";
 
 /**
  * The top row of the sheet on a session screen (Doop "Workspace header"). It names the workspace,
- * not a session: the project and the worktree, then the branch in mono. `actions` holds the
+ * not a session: the project (a link to its page) and the worktree, then the branch in mono. `actions` holds the
  * buttons on the right, such as "Open in VS Code". No status word: a session's status is on its
  * tab.
  *
@@ -15,12 +16,14 @@ import { SidebarToggle } from "../app-sidebar.tsx";
  */
 export function WorkspaceHeader({
   project,
+  projectId,
   worktree,
   branch,
   actions,
   className,
 }: {
   readonly project: string;
+  readonly projectId: string;
   readonly worktree: string;
   readonly branch: string;
   readonly actions?: ReactNode;
@@ -37,7 +40,13 @@ export function WorkspaceHeader({
       <SidebarToggle />
       <span aria-hidden className="h-4 w-px shrink-0 bg-border" />
       <h1 className="flex min-w-0 items-baseline gap-2 text-prose whitespace-nowrap">
-        <span className="shrink-0 text-muted-foreground">{project}</span>
+        <Link
+          to="/projects/$projectId"
+          params={{ projectId }}
+          className="shrink-0 text-muted-foreground outline-none hover:text-foreground focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50"
+        >
+          {project}
+        </Link>
         <span aria-hidden className="shrink-0 text-faint">
           /
         </span>

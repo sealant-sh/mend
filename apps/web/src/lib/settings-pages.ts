@@ -227,21 +227,31 @@ export const groupName = (group: SettingsGroup, names: SettingsNames): string =>
   }
 };
 
+/** One part of a settings breadcrumb, and where it goes: none for the page itself or a group with no page. */
+export interface SettingsCrumb {
+  readonly key: "group" | "project" | "page";
+  readonly label: string;
+  /** The organization's name opens its General page, a project's name the project. */
+  readonly opens: "o-general" | "project" | null;
+}
+
 /**
  * The breadcrumb above a page, after "Settings": its group, then the page. A project's page names
  * the project in the group's place ("Settings / checkout-api / General"); the Server group has one
- * page, so it isn't said twice.
+ * page, so it isn't said twice. A part that names a page you can go to says which (`opens`):
+ * Account and This device are only groups.
  */
 export const crumbsOf = (
   page: SettingsPage,
   names: SettingsNames,
-): ReadonlyArray<{ readonly key: "group" | "project" | "page"; readonly label: string }> => {
-  const last = { key: "page", label: page.label } as const;
+): ReadonlyArray<SettingsCrumb> => {
+  const last = { key: "page", label: page.label, opens: null } as const;
   if (page.group === "server") return [last];
   if (page.group === "project") {
-    return [{ key: "project", label: names.project ?? "Project" }, last];
+    return [{ key: "project", label: names.project ?? "Project", opens: "project" }, last];
   }
-  return [{ key: "group", label: groupName(page.group, names) }, last];
+  const opens = page.group === "organization" && page.id !== "o-general" ? "o-general" : null;
+  return [{ key: "group", label: groupName(page.group, names), opens }, last];
 };
 
 /**

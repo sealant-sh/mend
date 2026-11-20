@@ -126,6 +126,23 @@ export const initialsOf = (name: string): string =>
     .map((part) => part[0]?.toUpperCase() ?? "")
     .join("");
 
+/**
+ * The sidebar's edge as a place to click to fold it: nothing drawn at rest, and while pointed at,
+ * a short rounded handle inside the sidebar's gutter, clear of the sheet's edge (not a border).
+ */
+const RAIL_HANDLE = cn(
+  "z-30 after:start-[calc(50%-6px)] after:inset-y-[calc(50%-1.25rem)] after:w-1 after:rounded-full",
+  "hover:after:bg-muted-foreground/45",
+);
+
+/**
+ * Room for a focus ring inside a list that scrolls: a scroller clips what is drawn outside its
+ * box, and a row's ring is drawn just outside the row. The padding gives the ring that room at
+ * the sides and the negative margin keeps the rows where they were; the scroll padding stops the
+ * keyboard from scrolling a focused row flush against the top or bottom, where its ring is cut.
+ */
+export const RING_ROOM = "-mx-1 px-1 scroll-py-1";
+
 /** On the desk, a control's own ground: the background showing through. */
 const RAISED = "bg-background/72";
 /** What pointing at an item on the desk shows. */
@@ -157,7 +174,8 @@ export function AppSidebar({
     <Sidebar
       collapsible="icon"
       aria-label="Sidebar"
-      className="border-r-0 bg-sidebar pt-3 pr-2 pb-2.5 pl-3 text-sidebar-foreground tabular-nums group-data-[collapsible=icon]:p-2"
+      // The kit draws a border on a left sidebar's edge; the sheet's own rounded edge is the edge.
+      className="bg-sidebar pt-3 group-data-[side=left]:border-r-0 pr-2 pb-2.5 pl-3 text-sidebar-foreground tabular-nums group-data-[collapsible=icon]:p-2"
     >
       {state === "expanded" ? (
         <ExpandedSidebar
@@ -178,7 +196,7 @@ export function AppSidebar({
           openId={openId}
         />
       )}
-      <SidebarRail className="z-30" />
+      <SidebarRail className={RAIL_HANDLE} />
     </Sidebar>
   );
 }
@@ -222,7 +240,7 @@ function ExpandedSidebar({ organizationName, account, inbox, online, area, openI
           </NavItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarContent className="mt-2 gap-0">
+      <SidebarContent className={cn("mt-1 gap-0 pt-1", RING_ROOM)}>
         <SidebarInbox inbox={inbox} online={online} openId={openId} host={host} />
       </SidebarContent>
       <SidebarFooter className="gap-0.5 border-t border-sidebar-border p-0 pt-2">
@@ -270,7 +288,11 @@ function SidebarRailNav({ organizationName, account, inbox, online, area, openId
         <span aria-hidden className="my-3.5 h-px w-4 shrink-0 bg-sidebar-border" />
         <SidebarMenu
           aria-label="Sessions"
-          className="min-h-0 w-auto flex-1 content-start gap-0.5 overflow-y-auto"
+          className={cn(
+            "min-h-0 w-auto flex-1 content-start gap-0.5 overflow-y-auto",
+            RING_ROOM,
+            "-my-1 py-1",
+          )}
         >
           {sessions.map((row) => (
             <RailSession
@@ -634,7 +656,10 @@ function InboxGroups({
         </div>
       ) : null}
       {online ? null : <OfflineBand view={view} layout="stacked" onRetry={view.refresh} />}
-      <nav aria-label="Inbox" className="min-h-0 flex-1 overflow-y-auto pt-1.5 pb-2">
+      <nav
+        aria-label="Inbox"
+        className={cn("min-h-0 flex-1 overflow-y-auto pt-1.5 pb-2", RING_ROOM)}
+      >
         {view.empty ? (
           <p className="px-2 pt-1 text-row text-muted-foreground">
             No sessions yet. Start one with New session, and the sessions that need you show here.
