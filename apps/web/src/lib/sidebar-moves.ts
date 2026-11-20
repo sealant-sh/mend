@@ -156,14 +156,13 @@ export const useReducedMotion = (): boolean =>
  * person's hand. The rows carry `data-row-id`; Base UI marks an open menu's trigger
  * `data-popup-open`.
  */
-const isHeld = (id: string): boolean => {
-  const element = document.querySelector(`[data-row-id="${CSS.escape(id)}"]`);
-  return (
-    element !== null &&
-    (element.matches("[data-popup-open], :active") ||
-      element.querySelector("[data-popup-open]") !== null)
+const isHeld = (id: string): boolean =>
+  // The same row can be in the page more than once (the sidebar, its flyout, the phone list).
+  [...document.querySelectorAll(`[data-row-id="${CSS.escape(id)}"]`)].some(
+    (element) =>
+      element.matches("[data-popup-open], :active") ||
+      element.querySelector("[data-popup-open]") !== null,
   );
-};
 
 /**
  * The sidebar's groups as they move. Following the inbox's live rows in time is what this is

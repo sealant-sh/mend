@@ -118,7 +118,7 @@ const rowOf = (id: string, f: Facts): SessionInboxRowDto => ({
           liveServices: 0,
           currentAgent: { kind: "agent-protocol" },
           fileCount: f.annotation.files,
-          pullRequest: f.annotation.pullRequest,
+          pullRequestState: f.annotation.pullRequest,
         },
   ask: f.status === "waiting" ? f.ask : null,
   worktreeName: null,

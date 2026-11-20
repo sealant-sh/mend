@@ -73,9 +73,6 @@ export default async ({ page, web, capture, note }) => {
         queryKey: [["sessions"]],
       }),
     );
-  const wordOf = async (locator) => (await locator.innerText()).split("\n").slice(1).join(" | ");
-  const glyphOf = (locator) =>
-    locator.locator("[data-slot=lump]").first().getAttribute("data-status");
   /** Opens a row's "…" menu and reads its items. */
   const menuOf = async (label, title) => {
     const target = row(label, title);
@@ -120,10 +117,10 @@ export default async ({ page, web, capture, note }) => {
   await row("To review", "states-failed").getByText("Failed", { exact: true }).waitFor();
   await row("Done", "states-none").waitFor();
   const facts = await page.evaluate(() => {
-    const rows = window["__TSR_ROUTER__"].options.context.queryClient
+    const listed = window["__TSR_ROUTER__"].options.context.queryClient
       .getQueryCache()
       .findAll({ queryKey: [["sessions", "inbox"]] })[0]?.state.data;
-    const live = rows?.find((each) => each.title === "states-live");
+    const live = listed?.find((each) => each.title === "states-live");
     return live === undefined
       ? null
       : { status: live.session.status, turnOpen: live.turnOpen, lastNewAt: String(live.lastNewAt) };
@@ -208,10 +205,10 @@ export default async ({ page, web, capture, note }) => {
 
   // The project's Sessions tab says the same words with the same glyphs.
   const projectId = await page.evaluate(() => {
-    const rows = window["__TSR_ROUTER__"].options.context.queryClient
+    const listed = window["__TSR_ROUTER__"].options.context.queryClient
       .getQueryCache()
       .findAll({ queryKey: [["sessions", "inbox"]] })[0]?.state.data;
-    return rows?.find((each) => each.title === "states-files")?.session.projectId ?? null;
+    return listed?.find((each) => each.title === "states-files")?.session.projectId ?? null;
   });
   if (projectId === null) throw new Error("no project for states-files");
   await navigate(`/projects/${projectId}`);
@@ -327,6 +324,13 @@ export default async ({ page, web, capture, note }) => {
   await page.unroute("**/trpc/**");
   await page.setViewportSize(DESKTOP);
 };
+
+/** The text of a row's lines under its title, as a person reads them. */
+const wordOf = async (locator) => (await locator.innerText()).split("\n").slice(1).join(" | ");
+
+/** The shape of the first session glyph inside a locator. */
+const glyphOf = (locator) =>
+  locator.locator("[data-slot=lump]").first().getAttribute("data-status");
 
 /** A minute ago, by `minutes`. */
 const ago = (minutes) => new Date(Date.now() - minutes * 60_000);
@@ -466,7 +470,7 @@ const fixtureRow = (key, owner, each) => {
       liveServices: 0,
       currentAgent: { kind: "agent-protocol" },
       fileCount: each.files,
-      pullRequest: key === "marked" ? "open" : null,
+      pullRequestState: key === "marked" ? "open" : null,
     },
     ask: each.ask ?? null,
     worktreeName: `fixture-${index}`,

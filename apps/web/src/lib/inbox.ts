@@ -376,7 +376,7 @@ export const rowLump = (row: RowFacts & Pick<InboxRow, "group">): LumpStatus => 
 
 /** The glyph's colour: the change's newest pull request as `gh` last reported it. */
 export const rowPr = (row: Pick<InboxRow, "annotation">): LumpPr => {
-  switch (row.annotation?.pullRequest) {
+  switch (row.annotation?.pullRequestState) {
     case "open":
       return "open";
     case "merged":

@@ -531,7 +531,7 @@ export const SessionInboxAnnotation = Schema.Struct({
    * The state of the change's newest pull request as `gh` last reported it, for the session's
    * glyph colour; null when the change has none; absent from older servers.
    */
-  pullRequest: Schema.optionalKey(Schema.NullOr(PullRequestState)),
+  pullRequestState: Schema.optionalKey(Schema.NullOr(PullRequestState)),
 });
 export type SessionInboxAnnotation = typeof SessionInboxAnnotation.Type;
 

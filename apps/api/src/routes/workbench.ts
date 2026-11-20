@@ -2857,7 +2857,7 @@ const inboxRowsOf = (input: {
                 liveServices: live.get(session.id) ?? 0,
                 currentAgent: agent === null ? null : { kind: agent.kind },
                 fileCount: annotation.fileCount,
-                pullRequest: annotation.pullRequest?.state ?? null,
+                pullRequestState: annotation.pullRequest?.state ?? null,
               },
         ask: askOf.get(session.id) ?? null,
         sharedControlAsks: (controlAsks.get(session.id) ?? []).map(
