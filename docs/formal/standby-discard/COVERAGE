@@ -51,7 +51,13 @@
 # fingerprint, as before; no claim, retire, drain, discard or session-process call changed, so no
 # action models it. Full tlx run at c25699aa2f: every row as expected (`code` 129,386,795 states,
 # 423 s on four workers).
-sync b2165b19d39260b1a48f55199d506073009c2b6d
+# 6f91cc5491 is the SLNT-1196 branch on main at f019cbb214. Its covered change is one line in
+# engine.ts, outside every covered function's modelled steps: after a launch, the session line no
+# longer says that an image's per-person users are still being checked (UNKNOWN_IMAGE_REASON). It
+# writes the session's summary only; no claim, retire, drain, discard, stop or session-process call
+# changed, so no action models it. Full tlx run at 6f91cc5491: every row as expected (`code`
+# 129,386,795 states, 332 s on four workers).
+sync 6f91cc54913918e432b024faf3e88ecb2e69d01d
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

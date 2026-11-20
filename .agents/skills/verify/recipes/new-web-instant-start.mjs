@@ -16,6 +16,13 @@ const FOLLOW_UP = "Then list the top-level folders.";
 const DRAFT = /\/sessions\/starting-[^/]+$/;
 const MADE = /\/sessions\/(?!starting-)[^/]+$/;
 
+/** What the server holds as said in a session: each turn's words and the words steered into it. */
+const inputsOf = (held) =>
+  held.turns.flatMap((turn) => [
+    turn.input,
+    ...(turn.steers ?? []).map((steer) => steer.input ?? ""),
+  ]);
+
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
@@ -178,11 +185,6 @@ export default async ({ page, web, capture, note }) => {
 
   // Once Codex runs and its opening turn is in, the waiting message goes after it.
   // The server holds it as a turn after the opening one (or a steer into it): proof it was sent.
-  const inputsOf = (held) =>
-    held.turns.flatMap((turn) => [
-      turn.input,
-      ...(turn.steers ?? []).map((steer) => steer.input ?? ""),
-    ]);
   let held = { turns: [] };
   for (let wait = 0; wait < 120; wait += 1) {
     held = await trpc("sessions.historyTurns", { id: sessionId, cursor: null, limit: 50 });
