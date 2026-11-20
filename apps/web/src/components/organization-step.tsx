@@ -147,6 +147,7 @@ export function OrganizationStep() {
       saved={progress.saved}
       skipped={progress.skipped}
       reached={progress.reached}
+      ended={progress.ended}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         An organization is the people who share this Mend server's projects. You're its owner, and

@@ -137,7 +137,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   expectPath(`/join#${used.token}`);
   await page.getByText(`You're invited to join ${org} on Mend as a member.`).waitFor();
   await page.getByRole("list", { name: "Setup steps" }).waitFor({ state: "attached" });
-  note("/join/<token> moved to /join#<token>: 'Join <org>', step 1 of 5, the account fields");
+  note("/join/<token> moved to /join#<token>: 'Join <org>', step 1 of 6, the account fields");
   await captureAll("join-invitation");
 
   // Sent empty: each problem under its field, nothing sent.

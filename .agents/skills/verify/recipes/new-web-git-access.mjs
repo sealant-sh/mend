@@ -4,7 +4,7 @@
 //   pnpm verify drive new-web --recipe new-web-git-access --account
 //
 // - Who lands here: a new member who joins from an invitation lands on Command line, skips it, and
-//   reaches Git access, step 3 of 5,
+//   reaches Git access, step 3 of 6,
 //   with their name under Account; their Mend key was made before the page opened (`mend-key`).
 //   Reopening /welcome keeps them there although the organization has a project (no agent login
 //   yet). Signing in with no page to return to opens setup only for someone without Git access or
@@ -158,7 +158,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await steps.getByText("Linus Verify").waitFor({ state: "attached" });
   const current = await steps.locator('[aria-current="step"]').textContent();
   if (!current?.includes("Git access")) throw new Error(`the current step is ${current}`);
-  await page.getByText("Step 3 of 5").first().waitFor({ state: "attached" });
+  await page.getByText("Step 3 of 6").first().waitFor({ state: "attached" });
   if (!(await radio("A Mend key").isChecked())) throw new Error("A Mend key is not chosen");
   const publicKey = await page.locator('[data-slot="copy-field-value"]').first().textContent();
   if (!publicKey?.startsWith("ssh-ed25519 ")) throw new Error(`the key reads ${publicKey}`);
@@ -171,7 +171,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await continueOpen(false);
   await page.getByText("Continue once GitHub accepts the key.").first().waitFor();
   note(
-    `joining as ${member} landed on /welcome/command-line, skipped it, and reached 'Git access', step 3 of 5 with 'Linus Verify' under Account, 'A Mend key' chosen, the account's Mend key (${publicKey.slice(0, 32)}…) with Copy key, 'GitHub account' → github.com/settings/keys, Continue disabled`,
+    `joining as ${member} landed on /welcome/command-line, skipped it, and reached 'Git access', step 3 of 6 with 'Linus Verify' under Account, 'A Mend key' chosen, the account's Mend key (${publicKey.slice(0, 32)}…) with Copy key, 'GitHub account' → github.com/settings/keys, Continue disabled`,
   );
   await captureAll("git-access-mend-key");
 

@@ -137,8 +137,8 @@ describe("where /welcome/first-project sends a person", () => {
     expect(firstProjectEntry({ access: bridge, hasProject: false })).toBe("first-project");
   });
 
-  it("sends someone who can see a project on to Mend, such as a member of an organization that shares one", () => {
-    expect(firstProjectEntry({ access: withKey, hasProject: true })).toBe("home");
+  it("sends someone who can see a project on to How Mend fits together, such as a member of an organization that shares one", () => {
+    expect(firstProjectEntry({ access: withKey, hasProject: true })).toBe("nouns");
   });
 });
 
@@ -274,13 +274,21 @@ describe("which steps beside the sheet lead back", () => {
       "agent:done→",
       "organization:current",
       "project:later",
+      "nouns:later",
     ]);
   });
 
   it("links a skipped step, so the person can do it now", () => {
     expect(
       rail({ steps: JOINER, step: "project", reached: "project", skipped: ["cli", "agent"] }),
-    ).toEqual(["account:done", "cli:skipped→", "git:done→", "agent:skipped→", "project:current"]);
+    ).toEqual([
+      "account:done",
+      "cli:skipped→",
+      "git:done→",
+      "agent:skipped→",
+      "project:current",
+      "nouns:later",
+    ]);
   });
 
   it("keeps the steps after the current one as links once the person went back from them", () => {
@@ -291,7 +299,17 @@ describe("which steps beside the sheet lead back", () => {
       "agent:skipped→",
       "organization:done→",
       "project:left→",
+      "nouns:later",
     ]);
+  });
+
+  it("says how the person left the last step, which no later page remembers them reaching", () => {
+    const back = { steps: JOINER, step: "git", reached: "nouns", skipped: [] } as const;
+    expect(rail(back).at(-1)).toBe("nouns:left→");
+    expect(rail({ ...back, ended: "skipped" }).at(-1)).toBe("nouns:skipped→");
+    expect(rail({ ...back, ended: "seen" }).at(-1)).toBe("nouns:done→");
+    // On the step itself it is the current step, however it was left before.
+    expect(rail({ ...back, step: "nouns", ended: "skipped" }).at(-1)).toBe("nouns:current");
   });
 
   it("treats a step remembered from the other list (the first account's Organization, for a joiner) as nothing reached", () => {
@@ -301,6 +319,7 @@ describe("which steps beside the sheet lead back", () => {
       "git:current",
       "agent:later",
       "project:later",
+      "nouns:later",
     ]);
   });
 
@@ -315,6 +334,7 @@ describe("which steps beside the sheet lead back", () => {
       "/welcome/agent-login",
       "/welcome/organization",
       null,
+      null,
     ]);
     // Not `/welcome`, which sends someone past Git access on.
     expect(Object.values(STEP_PAGES)).not.toContain("/welcome");
@@ -322,15 +342,20 @@ describe("which steps beside the sheet lead back", () => {
 });
 
 describe("where each step's Continue goes, the first time and on a visit back", () => {
-  it("walks the first account's steps one by one to First project, then out of setup", () => {
+  it("walks the first account's steps one by one to How Mend fits together, then out of setup", () => {
     expect(FIRST.map((step) => nextStepPage(FIRST, step))).toEqual([
       "/welcome/command-line",
       "/welcome/git-access",
       "/welcome/agent-login",
       "/welcome/organization",
       "/welcome/first-project",
+      "/welcome/how-mend-fits",
       null,
     ]);
+  });
+
+  it("leads someone who joined from First project to How Mend fits together too", () => {
+    expect(nextStepPage(JOINER, "project")).toBe("/welcome/how-mend-fits");
   });
 
   it("skips Organization for someone who joined", () => {

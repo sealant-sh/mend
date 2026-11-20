@@ -4,6 +4,7 @@ import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
 
 import { AppSidebar, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH } from "#/components/app-sidebar";
 import { SearchProvider } from "#/components/command-palette";
+import { HowMendFitsDialog } from "#/components/how-mend-fits-dialog";
 import { SwitchedToast } from "#/components/organization-menu";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
@@ -107,6 +108,8 @@ function InboxLayout() {
       </SearchProvider>
       <Toaster />
       <SwitchedToast />
+      {/* How Mend fits together, opened again from the account menu. */}
+      <HowMendFitsDialog />
     </SidebarProvider>
   );
 }

@@ -76,6 +76,7 @@ export function AgentLoginStep() {
       saved={progress.saved}
       skipped={progress.skipped}
       reached={progress.reached}
+      ended={progress.ended}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         Sessions run on your own Claude Code or Codex account. Mend doesn't come with one. Each

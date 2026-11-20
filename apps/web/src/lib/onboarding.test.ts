@@ -210,16 +210,18 @@ describe("where sign-in returns to", () => {
 });
 
 describe("the setup steps a person has", () => {
-  it("gives the first account six, naming its organization just before its first project", () => {
+  it("gives the first account seven, naming its organization just before its first project", () => {
     const steps = setupSteps(true);
-    expect(steps).toEqual(["account", "cli", "git", "agent", "organization", "project"]);
-    expect(stepLine(steps, "cli")).toBe("Step 2 of 6");
-    expect(stepLine(steps, "organization")).toBe("Step 5 of 6");
+    expect(steps).toEqual(["account", "cli", "git", "agent", "organization", "project", "nouns"]);
+    expect(stepLine(steps, "cli")).toBe("Step 2 of 7");
+    expect(stepLine(steps, "organization")).toBe("Step 5 of 7");
+    expect(stepLine(steps, "nouns")).toBe("Step 7 of 7");
   });
 
-  it("gives someone who joins five, with no Organization", () => {
+  it("gives someone who joins six, with no Organization", () => {
     const steps = setupSteps(false);
     expect(steps).not.toContain("organization");
-    expect(stepLine(steps, "project")).toBe("Step 5 of 5");
+    expect(stepLine(steps, "project")).toBe("Step 5 of 6");
+    expect(stepLine(steps, "nouns")).toBe("Step 6 of 6");
   });
 });

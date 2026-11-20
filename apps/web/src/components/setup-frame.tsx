@@ -14,8 +14,14 @@ import {
   setupSteps,
   stepLine as stepLineOf,
 } from "#/lib/onboarding";
-import { hasAgentLogin, namesOrganization, previousStep, railSteps } from "#/lib/setup";
-import { reachedStep, skippedCommandLine } from "#/lib/setup-skips";
+import {
+  hasAgentLogin,
+  type LastStepEnd,
+  namesOrganization,
+  previousStep,
+  railSteps,
+} from "#/lib/setup";
+import { nounsEnd, reachedStep, skippedCommandLine } from "#/lib/setup-skips";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 
@@ -23,7 +29,7 @@ import { useTRPC } from "#/lib/trpc";
  * The page a person sees before the app opens: sign-in, a reset link, the first account and the
  * setup steps after it, joining from an invitation, authorizing a terminal. On a desktop it is
  * Sheet's desk with Mend and this server's address on it (and the setup steps, during setup), and
- * the sheet holding one 560px column. Under 1024px it is the phone layout: a header with the title
+ * the sheet holding one 560px column (960px for How Mend fits together, whose pictures need room). Under 1024px it is the phone layout: a header with the title
  * and a muted line under it, the page, and the main action pinned at the foot (`SetupActions`).
  */
 
@@ -48,10 +54,10 @@ export type SetupSaved = Partial<Readonly<Record<SetupStepKey, string>>>;
 
 const NOTHING_SAVED: SetupSaved = {};
 
-/** A step the person may skip: Command line and Agent login. */
-export type SkippableStep = "cli" | "agent";
+/** A step the person may skip: Command line, Agent login and How Mend fits together. */
+export type SkippableStep = "cli" | "agent" | "nouns";
 
-/** Someone who joins from an invitation: five steps, no Organization. */
+/** Someone who joins from an invitation: six steps, no Organization. */
 export const JOINER_STEPS = setupSteps(false);
 
 /** What the steps beside the sheet need, for the signed-in person (`useSetupProgress`). */
@@ -66,6 +72,8 @@ export interface SetupProgress {
   readonly skippedCli: boolean;
   /** The furthest step the person opened in this browser (`railSteps`). */
   readonly reached: SetupStepKey | null;
+  /** How the person left the last step, How Mend fits together, in this browser (`railSteps`). */
+  readonly ended: LastStepEnd;
 }
 
 /**
@@ -85,6 +93,7 @@ export const useSetupProgress = (): SetupProgress => {
   // Read once: the route's loader remembered this page before it opened.
   const [stored] = useState(() => reachedStep(viewer.userId));
   const [skipped] = useState(() => skippedCommandLine(viewer.userId));
+  const [ended] = useState(() => nounsEnd(viewer.userId));
   // Until a read answers, or if it can't, its step names nothing under it and nothing reads as
   // skipped.
   const state = devices.isPending || devices.isError ? null : commandLineState(devices.data);
@@ -110,6 +119,7 @@ export const useSetupProgress = (): SetupProgress => {
     ],
     skippedCli,
     reached: steps.find((key) => key === stored) ?? null,
+    ended,
   };
 };
 
@@ -130,16 +140,18 @@ export function SetupSteps({
   saved = NOTHING_SAVED,
   skipped = NO_SKIPS,
   reached = null,
+  ended = null,
 }: {
   readonly steps: ReadonlyArray<SetupStepKey>;
   readonly step: SetupStepKey;
   readonly saved?: SetupSaved | undefined;
   readonly skipped?: ReadonlyArray<SkippableStep> | undefined;
   readonly reached?: SetupStepKey | null | undefined;
+  readonly ended?: LastStepEnd | undefined;
 }) {
   return (
     <ol aria-label="Setup steps" className="grid text-sm leading-snug">
-      {railSteps({ steps, step, reached, skipped }).map(({ key, state, page }, index) => {
+      {railSteps({ steps, step, reached, skipped, ended }).map(({ key, state, page }, index) => {
         const name = SETUP_STEP_NAMES[key];
         const past = state === "done" || state === "skipped";
         const savedLine =
@@ -223,6 +235,8 @@ export function SetupFrame({
   saved,
   skipped,
   reached,
+  ended,
+  wide = false,
   banner,
   children,
 }: {
@@ -230,7 +244,7 @@ export function SetupFrame({
   readonly title: string;
   /** During setup, the step this page is; the person's steps show beside the sheet. */
   readonly step?: SetupStepKey;
-  /** The person's steps (`setupSteps`); four, someone who joins from an invitation, by default. */
+  /** The person's steps (`setupSteps`); someone who joins from an invitation's, by default. */
   readonly steps?: ReadonlyArray<SetupStepKey>;
   /** What the steps before this one saved (`SetupSteps`). */
   readonly saved?: SetupSaved;
@@ -238,6 +252,10 @@ export function SetupFrame({
   readonly skipped?: ReadonlyArray<SkippableStep> | undefined;
   /** The furthest step the person reached (`SetupSteps`). */
   readonly reached?: SetupStepKey | null | undefined;
+  /** How the person left the last step (`SetupSteps`). */
+  readonly ended?: LastStepEnd | undefined;
+  /** The 960px column, for a page whose pictures need it, in place of 560px. */
+  readonly wide?: boolean;
   /** A state that affects the whole page (a `Banner`), across the top of the sheet. */
   readonly banner?: ReactNode;
   readonly children: ReactNode;
@@ -254,14 +272,26 @@ export function SetupFrame({
           <p className="text-row text-muted-foreground">{host}</p>
         </div>
         {step === undefined ? null : (
-          <SetupSteps steps={steps} step={step} saved={saved} skipped={skipped} reached={reached} />
+          <SetupSteps
+            steps={steps}
+            step={step}
+            saved={saved}
+            skipped={skipped}
+            reached={reached}
+            ended={ended}
+          />
         )}
       </div>
       <main className="flex min-w-0 flex-1 flex-col bg-background lg:overflow-hidden lg:rounded-xl lg:border lg:border-sheet-border lg:shadow-sheet">
         {/* Phone: the header first, the banner under it. Desktop: the banner across the top of the
             sheet, then the column with the heading in it. */}
         {banner === undefined ? null : <div className="order-2 lg:order-1">{banner}</div>}
-        <header className="relative order-1 flex min-h-14 flex-col items-center justify-center border-b px-4 py-2 text-center lg:order-2 lg:mx-auto lg:min-h-0 lg:w-full lg:max-w-140 lg:items-start lg:border-0 lg:px-5 lg:pt-16 lg:pb-0 lg:text-left">
+        <header
+          className={cn(
+            "relative order-1 flex min-h-14 flex-col items-center justify-center border-b px-4 py-2 text-center lg:order-2 lg:mx-auto lg:min-h-0 lg:w-full lg:items-start lg:border-0 lg:px-5 lg:pt-16 lg:pb-0 lg:text-left",
+            wide ? "lg:max-w-240" : "lg:max-w-140",
+          )}
+        >
           {back === null ? null : (
             <Link
               to={back.page}
@@ -283,7 +313,12 @@ export function SetupFrame({
             {stepLine ?? host}
           </p>
         </header>
-        <div className="order-3 mx-auto w-full max-w-140 flex-1 px-4 pt-4 pb-32 lg:px-5 lg:pt-4 lg:pb-16">
+        <div
+          className={cn(
+            "order-3 mx-auto w-full flex-1 px-4 pt-4 pb-32 lg:px-5 lg:pt-4 lg:pb-16",
+            wide ? "max-w-240" : "max-w-140",
+          )}
+        >
           {children}
         </div>
       </main>

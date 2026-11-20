@@ -6,9 +6,9 @@ import { ENTRY_PATHS, firstProjectEntry, readSetup, rememberStepReached } from "
 import { signedInOptions } from "#/lib/sign-in";
 
 /**
- * `/welcome/first-project`, setup's last step. It comes after Git access; the agent login before
- * it may have been skipped. Someone who can already see a project goes on to Mend
- * (`firstProjectEntry`).
+ * `/welcome/first-project`, setup's First project step. It comes after Git access; the agent login
+ * before it may have been skipped. Someone who can already see a project goes on to How Mend fits
+ * together, the step after it (`firstProjectEntry`).
  */
 export const Route = createFileRoute("/welcome/first-project")({
   // The clone this browser started is kept in its storage, which the server can't read.
