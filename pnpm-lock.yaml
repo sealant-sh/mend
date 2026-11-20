@@ -64,11 +64,11 @@ catalogs:
       specifier: ^1.2.12
       version: 1.3.1
     '@sealant/api-contracts':
-      specifier: npm:@sealant/api-contracts-next@0.40.0-next.923
-      version: 0.40.0-next.923
+      specifier: npm:@sealant/api-contracts-next@0.40.0-next.927
+      version: 0.40.0-next.927
     '@sealant/sdk':
-      specifier: npm:@sealant/sdk-next@0.40.0-next.923
-      version: 0.40.0-next.923
+      specifier: npm:@sealant/sdk-next@0.40.0-next.927
+      version: 0.40.0-next.927
     '@shadcn/react':
       specifier: ^0.3.0
       version: 0.3.0
@@ -437,7 +437,7 @@ importers:
         version: link:../../tooling/typescript
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)'
       '@types/node':
         specifier: 'catalog:'
         version: 22.20.0
@@ -1547,7 +1547,7 @@ importers:
         version: 2.2.0
       '@sealant/api-contracts':
         specifier: 'catalog:'
-        version: '@sealant/api-contracts-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/api-contracts-next@0.40.0-next.927(effect@4.0.5)'
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -1596,7 +1596,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)'
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -1651,7 +1651,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)'
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -1709,7 +1709,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)'
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -1805,7 +1805,7 @@ importers:
         version: link:../domain
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)'
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -1854,7 +1854,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)'
+        version: '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)'
       effect:
         specifier: 'catalog:'
         version: 4.0.5
@@ -6125,14 +6125,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@sealant/api-contracts-next@0.40.0-next.923':
-    resolution: {integrity: sha512-YG0e+adNMgyjk+i285O12Bqd0fXLIF52qKk2zHyGpr0h51J/sNtApW6mtNJD1D52wNgMRp6+rtWmnNwWMKtADg==}
+  '@sealant/api-contracts-next@0.40.0-next.927':
+    resolution: {integrity: sha512-ZGT/bycrPwqyFBLQwhVvV758Qxfk6TcR6PYzlubxqoigKo0gZdGv/wwQYkS8aDR1Jt7UxBHoS67V8Ee/zL7KJQ==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: ^4.0.5
 
-  '@sealant/sdk-next@0.40.0-next.923':
-    resolution: {integrity: sha512-ltjhxB5Yaz66bdqVjncqoUGX0+kGkE4b0pk8Hz9JOKHLaNBIdyZRN/LJYKxSXf2s71wzsq9xfLQM/a8Ad5tGgA==}
+  '@sealant/sdk-next@0.40.0-next.927':
+    resolution: {integrity: sha512-GwtjTqniKqjmzMIpQ4JfQieWz6PsHRhN1mlcace/36jCcqwjAlJCUhzob2GD53KKBazYMPY/22WPdqYVizeAXg==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: ^4.0.5
@@ -17773,13 +17773,13 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@sealant/api-contracts-next@0.40.0-next.923(effect@4.0.5)':
+  '@sealant/api-contracts-next@0.40.0-next.927(effect@4.0.5)':
     dependencies:
       effect: 4.0.5
 
-  '@sealant/sdk-next@0.40.0-next.923(effect@4.0.5)':
+  '@sealant/sdk-next@0.40.0-next.927(effect@4.0.5)':
     dependencies:
-      '@sealant/api-contracts': '@sealant/api-contracts-next@0.40.0-next.923(effect@4.0.5)'
+      '@sealant/api-contracts': '@sealant/api-contracts-next@0.40.0-next.927(effect@4.0.5)'
       effect: 4.0.5
 
   '@secretlint/config-creator@10.2.2':
