@@ -14,7 +14,11 @@ import {
   holdBy,
   parseState,
   relate,
+  restoreScript,
+  saveScript,
   schemaProblems,
+  startScript,
+  storeLoadScript,
 } from "./box.mjs";
 import { boxFlows, loadFlows } from "./flows.mjs";
 import { exitCode, validateResult } from "./result.mjs";
@@ -27,6 +31,10 @@ const migrations = execFileSync("node", [join(root, "scripts/mend-migrations.mjs
   .trim()
   .split("\n");
 
+// The generation the box runs before a check, and the one a check's deploy makes.
+const OWNERS = "generations/gen-11111111-1111-4111-8111-111111111111";
+const CHECKS = "generations/gen-22222222-2222-4222-8222-222222222222";
+
 // What READ_STATE prints on a box running `revision`, with every migration this head has.
 const boxSays = ({
   live = "0",
@@ -35,15 +43,20 @@ const boxSays = ({
   applied = migrations,
   free = 40 * 1024 ** 3,
   webapp,
+  version = "0.37.0-next.1.preview.1",
+  running = "true",
+  active = OWNERS,
 } = {}) =>
   [
-    "version=0.37.0-next.1.preview.1",
+    `version=${version}`,
     `revision=${revision}`,
     ...(webapp === undefined ? [] : [`webapp=${webapp}`]),
     "started=2026-11-14T20:00:00Z",
+    `running=${running}`,
     `live=${live}`,
     `free=${free}`,
     `hold=${hold}`,
+    `active=${active}`,
     "now=2026-11-14T22:00:00Z",
     ...applied.map((name) => `migration=${Number(name.slice(0, 4))}|${name.slice(5)}`),
   ].join("\n");
@@ -68,16 +81,34 @@ const boxLists = ({ free = 40 * GB } = {}) =>
 // A box that answers the read, the listing and a tidy, and records every script it was sent.
 const fakeBox = (
   text,
-  { listing = boxLists(), after = 40 * GB, restored = "restore=done\n", afterRestore = text } = {},
+  {
+    listing = boxLists(),
+    after = 40 * GB,
+    restored = "restore=done\n",
+    afterRestore = text,
+    saved = { code: 0, stdout: "store=168417566 8\nsave=373315461\n" },
+    stored = "extracted=/root/main-run/world.store.tgz\nmissing=\nstore=done\n",
+    started = "putback=done\n",
+    afterStart = afterRestore,
+  } = {},
 ) => {
   const scripts = [];
   let restoredYet = false;
+  let startedYet = false;
   const ssh = (script) => {
     scripts.push(script);
+    if (script.includes("# save-data")) return { stderr: "", ...saved };
+    if (script.includes("# store-load")) return { code: 0, stdout: stored, stderr: "" };
+    if (script.includes("# put-back")) {
+      startedYet = true;
+      return { code: 0, stdout: started, stderr: "" };
+    }
     if (script.includes("# restore-dump")) {
       restoredYet = true;
       return { code: 0, stdout: restored, stderr: "" };
     }
+    if (startedYet && script.includes("mend_migrations"))
+      return { code: 0, stdout: afterStart, stderr: "" };
     if (restoredYet && script.includes("mend_migrations"))
       return { code: 0, stdout: afterRestore, stderr: "" };
     if (script.includes("pg_dumpall")) return { code: 0, stdout: "141557760\n", stderr: "" };
@@ -525,6 +556,263 @@ test("release refuses to restore from a dump the hold does not name", async () =
 
 test("--no-restore parses", () => {
   assert.equal(parseArgs(["box", "release", "--no-restore"]).options.noRestore, true);
+});
+
+const WORLD = "/root/main-run/world.sql";
+// The daily run's box: the owner's build and data, and a hold of his that lapsed.
+const lapsed = { tag: "owner-onboarding", head: "c".repeat(40), at: "2026-11-13T11:05:17Z" };
+const ownersBox = (extra = {}) =>
+  boxSays({ version: "0.37.0-next.1.preview.9", hold: JSON.stringify(lapsed), ...extra });
+const holdOf = (scripts) =>
+  JSON.parse(
+    scripts
+      .find((script) => script.includes("pg_dumpall") && script.includes("hold.json"))
+      .match(/printf '%s' '(\{.*\})' > /)[1],
+  );
+const run = { pr: undefined, tag: "main-c374a10430f2" };
+
+test("--load and --save take a .sql path under /root, and nothing else", () => {
+  assert.equal(parseArgs(["box", "prepare", "--load", WORLD]).options.load, WORLD);
+  assert.equal(parseArgs(["box", "release", "--save", WORLD]).options.save, WORLD);
+  for (const path of ["/tmp/world.sql", "/root/world.txt", "/root/../etc/x.sql", "/root/a b.sql"])
+    assert.throws(() => parseArgs(["box", "prepare", "--load", path]), /\.sql path under \/root/);
+});
+
+test("with --load, the box's own schema never holds the check up", async () => {
+  const ahead = fakeBox(ownersBox({ applied: [...migrations, "9999_from_a_redesign_branch"] }));
+  const plan = await box("plan", { sshRunner: ahead.ssh, ...run, load: WORLD });
+  const schema = plan.steps.find((step) => step.id === "schema");
+  assert.equal(schema.status, "passed");
+  assert.match(schema.detail, /loads \/root\/main-run\/world\.sql and deploys over that/);
+  assert.equal(plan.steps.find((step) => step.id === "free").status, "passed", "the hold lapsed");
+});
+
+test("prepare --load dumps, holds with what to put back, then loads the check's own data", async () => {
+  const dry = fakeBox(ownersBox());
+  const plan = await box("prepare", { sshRunner: dry.ssh, ...run, load: WORLD });
+  assert.equal(plan.status, "skipped");
+  assert.match(
+    plan.steps.at(-1).detail,
+    /then load \/root\/main-run\/world\.sql .* put back 0\.37\.0-next\.1\.preview\.9 \(generations\/gen-1{8}.*\) and the hold owner-onboarding/,
+  );
+  assert.deepEqual(plan.next, [
+    "pnpm verify box prepare --yes --tag main-c374a10430f2 --load /root/main-run/world.sql",
+  ]);
+  assert.deepEqual(restores(dry.scripts), []);
+
+  const real = fakeBox(ownersBox(), { afterRestore: boxSays({ active: OWNERS }) });
+  const done = await box("prepare", { sshRunner: real.ssh, ...run, load: WORLD, yes: true });
+  assert.deepEqual(validateResult(done), []);
+  assert.equal(done.status, "passed");
+  const hold = holdOf(real.scripts);
+  assert.equal(hold.tag, "main-c374a10430f2");
+  assert.deepEqual(hold.putBack, {
+    active: OWNERS,
+    version: "0.37.0-next.1.preview.9",
+    hold: lapsed,
+  });
+  const dump = real.scripts.find((script) => script.includes("pg_dumpall"));
+  assert.match(
+    dump,
+    /\[ -s '\/root\/main-run\/world\.sql' \]/,
+    "the load is checked before anything",
+  );
+  const [load] = restores(real.scripts);
+  assert.match(load, /dump='\/root\/main-run\/world\.sql'/);
+  assert.ok(
+    real.scripts.indexOf(dump) < real.scripts.indexOf(load),
+    "its own data is dumped first",
+  );
+  const load_ = done.steps.find((step) => step.id === "load");
+  assert.match(load_.detail, /all in this head; Mend is stopped until the deploy/);
+  const store = done.steps.at(-1);
+  assert.equal(store.id, "store");
+  assert.match(store.detail, /extracted \/root\/main-run\/world\.store\.tgz; every repository/);
+  const extract = real.scripts.find((script) => script.includes("# store-load"));
+  assert.match(extract, /archive='\/root\/main-run\/world\.store\.tgz'/);
+  assert.ok(real.scripts.indexOf(load) < real.scripts.indexOf(extract), "the store after the data");
+});
+
+test("prepare --load refuses a box with no generation to put back, and fails on data the head cannot take", async () => {
+  const bare = fakeBox(ownersBox({ active: "" }));
+  const refused = await box("prepare", { sshRunner: bare.ssh, ...run, load: WORLD, yes: true });
+  assert.equal(refused.status, "failed");
+  assert.match(refused.steps.at(-1).detail, /names no generation.*Nothing was changed/);
+  assert.ok(!bare.scripts.some((script) => script.includes("pg_dumpall")));
+
+  const odd = fakeBox(ownersBox(), {
+    afterRestore: boxSays({ applied: [...migrations, "9999_only_in_that_dump"] }),
+  });
+  const failed = await box("prepare", { sshRunner: odd.ssh, ...run, load: WORLD, yes: true });
+  assert.equal(failed.status, "failed");
+  assert.match(failed.steps.at(-1).detail, /9999_only_in_that_dump.*the hold stays/);
+  assert.deepEqual(failed.next, ["pnpm verify box release --yes --tag main-c374a10430f2"]);
+});
+
+const loadedHold = JSON.stringify({
+  tag: "main-c374a10430f2",
+  head: "b".repeat(40),
+  at: "2026-11-14T21:00:00Z",
+  dump: "/root/backups/pre-main-c374a10430f2-20261114T210000Z.sql",
+  putBack: { active: OWNERS, version: "0.37.0-next.1.preview.9", hold: lapsed },
+});
+// The box at release: the check's preview runs on the check's data, in the check's generation.
+const checksBox = () =>
+  boxSays({ hold: loadedHold, version: "0.37.0-next.2.preview.10", active: CHECKS });
+const putBack = boxSays({ version: "0.37.0-next.1.preview.9", active: OWNERS });
+
+test("release after prepare --load saves the check's data, puts the box's own back and starts its build", async () => {
+  const dry = fakeBox(checksBox());
+  const plan = await box("release", { sshRunner: dry.ssh, ...run, save: WORLD });
+  assert.equal(plan.status, "skipped");
+  assert.deepEqual(
+    plan.steps.map((step) => [step.id, step.status]),
+    [
+      ["save", "skipped"],
+      ["put-back", "skipped"],
+      ["tidy", "skipped"],
+      ["release", "skipped"],
+    ],
+  );
+  assert.match(plan.steps.at(-1).detail, /write back the hold owner-onboarding/);
+  assert.equal(
+    dry.scripts.filter((script) => /# (save-data|restore-dump|put-back)/.test(script)).length,
+    0,
+  );
+
+  const real = fakeBox(checksBox(), { afterStart: putBack });
+  const done = await box("release", { sshRunner: real.ssh, ...run, save: WORLD, yes: true });
+  assert.deepEqual(validateResult(done), []);
+  assert.equal(done.status, "passed");
+  const order = ["# save-data", "# restore-dump", "# put-back", "exit 9", "hold.json"].map((mark) =>
+    real.scripts.findLastIndex((script) => script.includes(mark)),
+  );
+  assert.deepEqual(
+    [...order].sort((a, b) => a - b),
+    order,
+    "save, restore, start, tidy, hold",
+  );
+  assert.match(
+    real.scripts.find((script) => script.includes("# save-data")),
+    /dest='\/root\/main-run\/world\.sql'/,
+  );
+  assert.match(
+    restores(real.scripts)[0],
+    /dump='\/root\/backups\/pre-main-c374a10430f2-20261114T210000Z\.sql'/,
+  );
+  const start = real.scripts.find((script) => script.includes("# put-back"));
+  assert.match(start, /target='generations\/gen-1{8}-/);
+  assert.match(start, /\/root\/box-main-c374a10430f2-cli\/node_modules\/\.bin\/mend/);
+  assert.match(start, /server start --offline/);
+  assert.match(done.steps[1].detail, /0\.37\.0-next\.1\.preview\.9 runs/);
+  assert.equal(lifts(real.scripts).length, 0, "the hold it found is written back, not removed");
+  assert.equal(
+    real.scripts.at(-1),
+    `printf '%s' '${JSON.stringify(lapsed)}' > /var/lib/mend-box-check/hold.json`,
+  );
+});
+
+test("release after prepare --load keeps the hold while the box's own data or build is not back", async () => {
+  for (const options of [
+    { restored: "restore=could not stop mend-mend-1\n" },
+    { started: "putback=mend server start exited 1\n" },
+    { afterStart: boxSays({ version: "0.37.0-next.2.preview.10", active: OWNERS }) },
+    {
+      afterStart: boxSays({ version: "0.37.0-next.1.preview.9", active: OWNERS, running: "false" }),
+    },
+  ]) {
+    const real = fakeBox(checksBox(), { afterStart: putBack, ...options });
+    const done = await box("release", { sshRunner: real.ssh, ...run, yes: true });
+    assert.equal(done.status, "failed", JSON.stringify(options));
+    assert.match(done.steps.at(-1).detail, /the hold stays/);
+    assert.ok(
+      !real.scripts.some((script) => script.includes("hold.json") && !script.includes("cat ")),
+    );
+    assert.deepEqual(tidies(real.scripts), []);
+  }
+
+  const unsaved = fakeBox(checksBox(), {
+    afterStart: putBack,
+    saved: { code: 1, stdout: "save=pg_dumpall failed\n" },
+  });
+  const done = await box("release", { sshRunner: unsaved.ssh, ...run, save: WORLD, yes: true });
+  assert.equal(done.status, "failed", "a save that failed is reported");
+  assert.match(
+    done.steps[0].detail,
+    /pg_dumpall failed; \/root\/main-run\/world\.sql and \/root\/main-run\/world\.store\.tgz are left as they were/,
+  );
+  assert.equal(done.steps[1].status, "passed", "the box's own data and build go back anyway");
+});
+
+test("the scripts release sends the box are bash it can parse, whatever the path", () => {
+  for (const script of [
+    saveScript(WORLD),
+    startScript(OWNERS, "/root/box-main-c374a10430f2-cli"),
+    restoreScript(WORLD),
+    storeLoadScript(WORLD),
+  ])
+    execFileSync("bash", ["-n"], { input: script });
+  assert.match(saveScript("/root/it's.sql"), /dest='\/root\/it'\\''s\.sql'/);
+});
+
+test("prepare --load fails, keeping the hold, when the store lacks a repository the data names", async () => {
+  const bare = fakeBox(ownersBox(), {
+    afterRestore: boxSays({ active: OWNERS }),
+    stored: "missing=3f1f00fe-0f6b-4d1c-939c-dc2ec8d466f5/repo.git\nstore=done\n",
+  });
+  const done = await box("prepare", { sshRunner: bare.ssh, ...run, load: WORLD, yes: true });
+  assert.equal(done.status, "failed");
+  const store = done.steps.at(-1);
+  assert.match(
+    store.detail,
+    /lacks 1 repositories .*3f1f00fe.*\(no \/root\/main-run\/world\.store\.tgz\).*the hold stays/,
+  );
+  assert.deepEqual(done.next, ["pnpm verify box release --yes --tag main-c374a10430f2"]);
+});
+
+test("release --save refuses data a migration main lacks touched, and still puts the box's own back", async () => {
+  const pr = fakeBox(
+    boxSays({
+      hold: loadedHold,
+      version: "0.37.0-next.2.preview.10",
+      active: CHECKS,
+      applied: fromPr,
+    }),
+    { afterStart: putBack },
+  );
+  const done = await box("release", {
+    sshRunner: pr.ssh,
+    ...run,
+    save: WORLD,
+    yes: true,
+    readMain: onMain,
+  });
+  assert.equal(done.status, "failed");
+  const save = done.steps[0];
+  assert.equal(save.id, "save");
+  assert.match(save.detail, /carries 9999_from_a_pr, which origin\/main lacks/);
+  assert.match(save.detail, /left as they were\. The agent logins .* may need the owner/);
+  assert.equal(pr.scripts.filter((script) => script.includes("# save-data")).length, 0);
+  assert.equal(done.steps[1].status, "passed", "the box's own data and build go back");
+});
+
+test("release refuses --no-restore after prepare --load, and --save without it", async () => {
+  const kept = fakeBox(checksBox());
+  const refused = await box("release", { sshRunner: kept.ssh, ...run, yes: true, noRestore: true });
+  assert.equal(refused.status, "failed");
+  assert.match(refused.steps[0].detail, /always puts the box's own data back/);
+  assert.deepEqual(restores(kept.scripts), []);
+
+  const plain = fakeBox(boxSays({ hold: heldWithDump }));
+  const nothing = await box("release", {
+    sshRunner: plain.ssh,
+    readMain: onMain,
+    yes: true,
+    save: WORLD,
+  });
+  assert.equal(nothing.status, "failed");
+  assert.match(nothing.steps[0].detail, /no loaded data to save/);
+  assert.equal(plain.scripts.filter((script) => script.includes("# save-data")).length, 0);
 });
 
 // A checkout whose change is the new web app's alone, and the builds a box might run: the

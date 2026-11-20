@@ -32,6 +32,21 @@ import { boxFlows, loadFlows, webAppOf } from "./flows.mjs";
 
 const HOLD_HOURS = 6;
 
+/** The installed server's pointer to its generation, an immutable snapshot of its configuration. */
+const CONFIG = "/root/.config/mend";
+const ACTIVE = `${CONFIG}/active`;
+const GENERATION = /^generations\/gen-[0-9a-f-]{36}$/;
+
+/**
+ * Where `--load` and `--save` may read and write a pg_dumpall: a `.sql` file under /root, by a
+ * plain path. A dump outside /root/backups is never tidied.
+ */
+export const DATA_PATH =
+  /^\/root\/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*\/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.sql$/;
+
+/** Single-quotes a value for the box's shell. */
+const shq = (value) => `'${String(value).replaceAll("'", `'\\''`)}'`;
+
 export const SSH_HINT = "export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'";
 
 /**
@@ -87,6 +102,7 @@ echo "running=$(docker inspect --format '{{.State.Running}}' mend-mend-1 2>/dev/
 echo "live=$(docker exec mend-postgres-1 psql -U postgres -d mend -At -c 'select count(*) from agent_sessions where settled_at is null' 2>/dev/null)"
 echo "free=$(df -B1 --output=avail /var/lib/docker 2>/dev/null | tail -1 | tr -d ' ')"
 echo "hold=$(cat ${HOLD} 2>/dev/null | tr -d '\\n')"
+echo "active=$(readlink ${ACTIVE} 2>/dev/null)"
 echo "now=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 docker exec mend-postgres-1 psql -U postgres -d mend -At -F'|' \\
   -c 'select migration_id, name from mend_migrations order by migration_id' 2>/dev/null |
@@ -123,6 +139,7 @@ export const parseState = (text) => {
     free: /^\d+$/.test(values.free ?? "") ? Number(values.free) : null,
     now: values.now ?? null,
     hold,
+    active: GENERATION.test(values.active ?? "") ? values.active : null,
     migrations,
   };
 };
@@ -282,7 +299,7 @@ const flowsStep = (root, state) => {
   };
 };
 
-const stateSteps = (root, state, { head, tag, listing }) => {
+const stateSteps = (root, state, { head, tag, listing, load }) => {
   const steps = [];
   const next = [];
   steps.push({
@@ -328,13 +345,16 @@ const stateSteps = (root, state, { head, tag, listing }) => {
           : describeFront(front, state.revision),
     });
   const problems = schemaProblems(state.migrations, headMigrations(root));
+  // With --load, the check deploys over the data it loads, never over the box's own: prepare
+  // checks the loaded data's schema once it is in.
+  const elsewhere = load !== undefined;
   steps.push({
     id: "schema",
     title: "The box's Mend migrations against this head's",
     status:
       state.migrations.length === 0
         ? "failed"
-        : problems.length > 0 && !noDeploy
+        : problems.length > 0 && !noDeploy && !elsewhere
           ? "blocked_by_prerequisite"
           : "passed",
     detail:
@@ -343,7 +363,9 @@ const stateSteps = (root, state, { head, tag, listing }) => {
         : problems.length > 0
           ? noDeploy
             ? `${problems.join("; ")}; this check deploys nothing, so they do not apply`
-            : `${problems.join("; ")}. Deploy a build that contains them (a preview branch of this head merged with what the box runs)`
+            : elsewhere
+              ? `${problems.join("; ")}; this check loads ${load} and deploys over that, so they do not apply`
+              : `${problems.join("; ")}. Deploy a build that contains them (a preview branch of this head merged with what the box runs)`
           : `${state.migrations.length} applied, all in this head`,
   });
   const need = deployNeeds(listing);
@@ -369,19 +391,159 @@ const stateSteps = (root, state, { head, tag, listing }) => {
   return { steps, next, need };
 };
 
-export const boxPlan = (root, { head, ssh, tag }) => {
+export const boxPlan = (root, { head, ssh, tag, load }) => {
   const { state, listing, error } = readState(ssh);
   if (error) return error;
-  const { steps, next } = stateSteps(root, state, { head, tag, listing });
+  const { steps, next } = stateSteps(root, state, { head, tag, listing, load });
   return { steps, next, box: state };
 };
 
-/** prepare: with the box free, take the database dump and hold the box for this check. */
-export const boxPrepare = (root, { head, ssh, tag, yes, stamp }) => {
+/** Reads restoreScript's output: whether it finished, and the psql errors it printed. */
+const restoreOutcome = (run) => {
+  const lines = run.stdout.split("\n");
+  return {
+    done: lines.includes("restore=done"),
+    errors: lines.filter((line) => line.startsWith("error=")).map((line) => line.slice(6)),
+    refused:
+      lines.find((line) => line.startsWith("restore=") && line !== "restore=done")?.slice(8) ??
+      (run.code === 0 ? null : `restore exited ${run.code}`),
+  };
+};
+
+/**
+ * The store archive kept beside a `--load`/`--save` dump: the store directories that dump's data
+ * names. The box's store is wiped with its databases, so the data never travels without it.
+ */
+export const storeArchiveOf = (dump) => dump.replace(/\.sql$/, ".store.tgz");
+
+/**
+ * Shell that sets `$mount` to the store volume's directory on the host, `$repos` to the
+ * repositories the loaded data names (relative to it), and `$dirs` to the store directories it
+ * names: each project's, and each organization's.
+ */
+const STORE_DIRS = `vol=$(sed -n 's/^MEND_STORE_VOLUME_NAME=//p' ${ACTIVE}/server.env 2>/dev/null)
+mount=$(docker volume inspect -f '{{.Mountpoint}}' "\${vol:-mend-store}") || { echo "store=no store volume \${vol:-mend-store}"; exit 1; }
+sq() { docker exec mend-postgres-1 psql -U postgres -d mend -At -c "$1"; }
+paths=$(sq "select store_path from projects") || { echo "store=the projects could not be read"; exit 1; }
+orgs=$(sq "select id from organizations") || { echo "store=the organizations could not be read"; exit 1; }
+repos=""
+dirs=""
+for p in $paths; do
+  r=\${p#/var/lib/mend/store/}
+  case "$r" in "$p"|.*|*..*) continue ;; esac
+  repos="$repos $r"
+  dirs="$dirs \${r%%/*}"
+done
+for o in $orgs; do
+  case "$o" in *[!A-Za-z0-9_-]*) continue ;; esac
+  dirs="$dirs _organizations/$o"
+done`;
+
+/**
+ * Puts the store archive beside `load` into the store volume, when there is one, and lists the
+ * repositories the loaded data names that the store lacks. Mend is stopped.
+ */
+export const storeLoadScript = (load) => `# store-load
+set -uo pipefail
+archive=${shq(storeArchiveOf(load))}
+${STORE_DIRS}
+if [ -s "$archive" ]; then
+  tar -xzpf "$archive" --numeric-owner -C "$mount" || { echo "store=could not extract $archive"; exit 1; }
+  echo "extracted=$archive"
+fi
+missing=""
+for r in $repos; do [ -d "$mount/$r" ] || missing="$missing $r"; done
+echo "missing=\${missing# }"
+echo "store=done"
+`;
+
+const storeStep = (ssh, { load }) => {
+  const run = ssh(storeLoadScript(load));
+  const lines = run.stdout.split("\n");
+  const value = (key) =>
+    lines.find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1) ?? null;
+  const missing = (value("missing") ?? "").split(" ").filter(Boolean);
+  const ok = value("store") === "done" && missing.length === 0;
+  const archive = storeArchiveOf(load);
+  return {
+    id: "store",
+    title: `Put ${archive} into the box's store (changes the box)`,
+    status: ok ? "passed" : "failed",
+    detail: ok
+      ? value("extracted")
+        ? `extracted ${archive}; every repository the loaded data names is in the store`
+        : `no ${archive}; every repository the loaded data names is in the store already`
+      : [
+          value("store") === "done" ? null : (value("store") ?? `store-load exited ${run.code}`),
+          missing.length > 0
+            ? `the store lacks ${missing.length} repositories the loaded data names: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}${value("extracted") ? "" : ` (no ${archive})`}`
+            : null,
+          "the hold stays: pnpm verify box release --yes puts the box's own data and build back",
+        ]
+          .filter(Boolean)
+          .join("; "),
+  };
+};
+
+/**
+ * prepare --load: once this check holds the box and its own data is dumped, replace that data with
+ * the dump at `load` (the check's own, kept between its runs), and check that this head can deploy
+ * over it. Mend stays stopped until the deploy. Release puts the box's own data and build back.
+ */
+const loadStep = (root, ssh, { head, load }) => {
+  const title = `Load ${load} in place of the box's data (changes the box)`;
+  const outcome = restoreOutcome(ssh(restoreScript(load)));
+  const after = readState(ssh).state;
+  const problems = after ? schemaProblems(after.migrations, headMigrations(root)) : [];
+  const ok =
+    outcome.done &&
+    outcome.errors.length === 0 &&
+    after !== undefined &&
+    after.migrations.length > 0 &&
+    problems.length === 0;
+  return {
+    id: "load",
+    title,
+    status: ok ? "passed" : "failed",
+    detail: ok
+      ? `loaded ${load}: ${after.migrations.length} Mend migrations, all in this head; Mend is stopped until the deploy starts it`
+      : [
+          outcome.refused,
+          ...outcome.errors.map((error) => `psql: ${error}`),
+          after === undefined ? "the box could not be read after the load" : null,
+          after?.migrations.length === 0 ? "no applied migrations could be read after it" : null,
+          ...problems,
+          "the hold stays: pnpm verify box release --yes puts the box's own data and build back",
+        ]
+          .filter(Boolean)
+          .join("; "),
+  };
+};
+
+/**
+ * prepare: with the box free, take the database dump and hold the box for this check. With
+ * `load`, it then loads that dump in place of the box's data, and records in its hold the build
+ * and the hold it found, for release to put back.
+ */
+export const boxPrepare = (root, { head, ssh, tag, yes, stamp, load }) => {
   const { state, listing, error } = readState(ssh);
   if (error) return error;
-  const { steps, next, need } = stateSteps(root, state, { head, tag, listing });
+  const { steps, next, need } = stateSteps(root, state, { head, tag, listing, load });
   const dump = `/root/backups/pre-${tag}-${stamp}.sql`;
+  if (load !== undefined && state.active === null)
+    return {
+      steps: [
+        ...steps,
+        {
+          id: "load",
+          title: `Load ${load} in place of the box's data`,
+          status: "failed",
+          detail: `${ACTIVE} names no generation, so the box's build could not be put back afterwards. Nothing was changed`,
+        },
+      ],
+      next: [],
+      box: state,
+    };
   // What the box runs, and whether a new web app check needs a deploy first, never refuse the dump:
   // the deploy comes after it.
   const blocking = steps.filter(
@@ -421,21 +583,41 @@ printf '%s' '${JSON.stringify(hold)}' > ${HOLD}`);
           id: "dump",
           title: "Database dump and hold (changes the box)",
           status: "skipped",
-          detail: `Would write ${dump} with pg_dumpall and hold the box for ${tag} in ${HOLD}. Nothing was changed`,
+          detail: `Would write ${dump} with pg_dumpall and hold the box for ${tag} in ${HOLD}${
+            load === undefined
+              ? ""
+              : `, then load ${load} in place of its data; release would put back ${state.version} (${state.active})${state.hold && state.hold.tag !== tag ? ` and the hold ${state.hold.tag ?? "found"}` : ""}`
+          }. Nothing was changed`,
         },
       ],
-      next: [rerun("prepare", tag)],
+      next: [rerun("prepare", tag) + (load === undefined ? "" : ` --load ${load}`)],
       box: state,
     };
   }
-  const hold = JSON.stringify({ tag, head: head.sha, at: state.now, dump });
+  // A hold that lapsed (another check's in force refuses above) is written back at release.
+  const found = state.hold && state.hold.tag !== tag && !state.hold.unreadable ? state.hold : null;
+  const hold = JSON.stringify({
+    tag,
+    head: head.sha,
+    at: state.now,
+    dump,
+    ...(load === undefined
+      ? {}
+      : { putBack: { active: state.active, version: state.version, hold: found } }),
+  });
   const run = ssh(`
 set -euo pipefail
-mkdir -p /root/backups "$(dirname ${HOLD})"
+${
+  load === undefined
+    ? ""
+    : `[ -s ${shq(load)} ] || { echo ${shq(`no dump at ${load}`)} >&2; exit 1; }
+tail -c 200 ${shq(load)} | grep -q 'dump complete' || { echo ${shq(`${load} has no pg_dumpall trailer`)} >&2; exit 1; }
+`
+}mkdir -p /root/backups "$(dirname ${HOLD})"
 docker exec mend-postgres-1 pg_dumpall -U postgres > ${dump}
 tail -c 200 ${dump} | grep -q 'dump complete'
 stat -c %s ${dump}
-printf '%s' '${hold}' > ${HOLD}
+printf '%s' ${shq(hold)} > ${HOLD}
 `);
   const bytes = Number(run.stdout.trim().split("\n").at(-1));
   steps.push({
@@ -447,9 +629,17 @@ printf '%s' '${hold}' > ${HOLD}
         ? `${dump}: ${Math.round(bytes / 1024 ** 2)} MiB, dump complete; box held for ${tag}`
         : `failed: ${run.stderr.trim().split("\n").at(-1)}`,
   });
+  const loaded = run.code === 0 && load !== undefined ? loadStep(root, ssh, { head, load }) : null;
+  if (loaded) steps.push(loaded);
+  if (loaded?.status === "passed") steps.push(storeStep(ssh, { load }));
   return {
     steps,
-    next: run.code === 0 ? [rerun("cli", tag), "pnpm verify box identity"] : next,
+    next:
+      run.code !== 0
+        ? next
+        : steps.some((step) => ["load", "store"].includes(step.id) && step.status === "failed")
+          ? [rerun("release", tag)]
+          : [rerun("cli", tag), "pnpm verify box identity"],
     box: state,
     cleanup: { status: "left", left: run.code === 0 ? [`box:${dump}`, `box:${HOLD}`] : [] },
     ...(tidy ? { tidy } : {}),
@@ -580,8 +770,173 @@ const restoreStep = (ssh, { state, yes, noRestore, main }) => {
 };
 
 /**
- * release: put back the data a migration main lacks changed, tidy the box while this check still
- * holds it, then lift the hold.
+ * Saves the data a `prepare --load` check ran on to `save`, for its next run: the databases with
+ * pg_dumpall and, beside them, the store directories they name. Mend is stopped first, so both are
+ * quiet. Both are written aside and replace the old pair together, which is kept as `.prev`.
+ */
+export const saveScript = (save) => `# save-data
+set -uo pipefail
+dest=${shq(save)}
+archive=${shq(storeArchiveOf(save))}
+mkdir -p "$(dirname "$dest")" && chmod 700 "$(dirname "$dest")" || { echo "save=could not make $(dirname "$dest")"; exit 1; }
+docker stop --time 60 mend-mend-1 >/dev/null 2>&1
+${STORE_DIRS.replaceAll('echo "store=', 'echo "save=')}
+present=""
+for d in $dirs; do [ -e "$mount/$d" ] && present="$present $d"; done
+trap 'rm -f "$dest.tmp" "$archive.tmp"' EXIT
+(umask 077 && docker exec mend-postgres-1 pg_dumpall -U postgres > "$dest.tmp") || { echo "save=pg_dumpall failed"; exit 1; }
+tail -c 200 "$dest.tmp" | grep -q 'dump complete' || { echo "save=the dump has no pg_dumpall trailer"; exit 1; }
+# shellcheck disable=SC2086 # one store directory per word
+(umask 077 && tar -czpf "$archive.tmp" --numeric-owner -C "$mount" $present) || { echo "save=the store could not be archived"; exit 1; }
+if [ -f "$dest" ]; then mv -f "$dest" "\${dest%.sql}.prev.sql"; fi
+if [ -f "$archive" ]; then mv -f "$archive" "\${archive%.store.tgz}.prev.store.tgz"; fi
+mv "$dest.tmp" "$dest" && mv "$archive.tmp" "$archive" || { echo "save=could not move the new copies into place"; exit 1; }
+echo "store=$(stat -c %s "$archive") $(echo $present | wc -w)"
+echo "save=$(stat -c %s "$dest")"
+`;
+
+/**
+ * Points the installation back at `active`, the generation prepare --load found, and starts it as
+ * an operator would. Generations are immutable snapshots, so this is the build the box ran,
+ * whatever version the check deployed since; `mend server upgrade` would refuse it as a downgrade.
+ */
+export const startScript = (active, cliDir) => `# put-back
+set -uo pipefail
+cd ${CONFIG} || { echo "putback=no ${CONFIG}"; exit 1; }
+target=${shq(active)}
+[ -f "$target/server.env" ] || { echo "putback=no generation $target"; exit 1; }
+ln -sfn "$target" .active-put-back && mv -Tf .active-put-back active || { echo "putback=could not point active at $target"; exit 1; }
+cli=${shq(`${cliDir}/node_modules/.bin/mend`)}
+[ -x "$cli" ] || cli=$(command -v mend)
+"$cli" server start --offline >&2 || { echo "putback=mend server start exited $?"; exit 1; }
+echo "putback=done"
+`;
+
+/**
+ * release, for a hold prepare --load made: save the data the check ran on (with `save`), put the
+ * box's own data back from the hold's dump, and start the build that was active. Stops, keeping
+ * the hold, when the data or the build could not be put back.
+ */
+const putBackSteps = (ssh, { state, yes, noRestore, save, tag, main }) => {
+  const record = state.hold.putBack;
+  const dump = state.hold.dump ?? "";
+  const title = `Put back the box's data and ${record.version ?? "its build"} (changes the box)`;
+  const stopWith = (detail) => ({
+    steps: [{ id: "put-back", title, status: "failed", detail }],
+    stop: true,
+  });
+  if (noRestore)
+    return stopWith(
+      "this hold was made by prepare --load, so release always puts the box's own data back: drop --no-restore. Nothing was changed",
+    );
+  if (!DUMP_PATH.test(dump) || !GENERATION.test(record.active ?? ""))
+    return stopWith("the hold names no dump or no generation to put back. Nothing was changed");
+  const saveTitle = `Save the data this check ran on to ${save} (changes the box)`;
+  if (!yes)
+    return {
+      steps: [
+        ...(save
+          ? [
+              {
+                id: "save",
+                title: saveTitle,
+                status: "skipped",
+                detail: `Would stop Mend and write ${save} with pg_dumpall and ${storeArchiveOf(save)} with the store directories it names, keeping the pair before as .prev`,
+              },
+            ]
+          : []),
+        {
+          id: "put-back",
+          title,
+          status: "skipped",
+          detail: `Would restore ${dump}, point ${ACTIVE} at ${record.active} and start ${record.version}`,
+        },
+      ],
+    };
+  const steps = [];
+  // Data a migration main lacks touched (a PR check's build) would be refused by the next run of
+  // main: it is not saved.
+  const foreign =
+    save && main !== null ? state.migrations.filter((name) => !main.includes(name)) : [];
+  if (save && (main === null || foreign.length > 0)) {
+    steps.push({
+      id: "save",
+      title: saveTitle,
+      status: "failed",
+      detail: `${
+        main === null
+          ? "origin/main's migrations could not be read"
+          : `the data this check ran on carries ${foreign.join(", ")}, which origin/main lacks, so a run of main could not load it`
+      }; not saved: ${save} and ${storeArchiveOf(save)} are left as they were. The agent logins in them may have rotated since they were saved, so the next run may need the owner to reconnect them`,
+    });
+  } else if (save) {
+    const run = ssh(saveScript(save));
+    const lines = run.stdout.split("\n");
+    const said = lines.find((line) => line.startsWith("save=")) ?? "";
+    const store = (lines.find((line) => line.startsWith("store=")) ?? "store=").slice(6).split(" ");
+    const bytes = Number(said.slice(5));
+    const saved = run.code === 0 && Number.isInteger(bytes) && bytes > 0;
+    // A save that failed keeps the dump before it; the box's own data goes back either way.
+    steps.push({
+      id: "save",
+      title: saveTitle,
+      status: saved ? "passed" : "failed",
+      detail: saved
+        ? `${save}: ${Math.round(bytes / 1024 ** 2)} MiB, dump complete; ${storeArchiveOf(save)}: ${Math.round(Number(store[0]) / 1024 ** 2)} MiB, ${store[1] ?? "?"} store directories`
+        : `${said.slice(5) || `save exited ${run.code}`}; ${save} and ${storeArchiveOf(save)} are left as they were`,
+    });
+  }
+  const restored = restoreOutcome(ssh(restoreScript(dump)));
+  if (!restored.done || restored.errors.length > 0) {
+    steps.push({
+      id: "put-back",
+      title,
+      status: "failed",
+      detail: [
+        restored.refused,
+        ...restored.errors.map((error) => `psql: ${error}`),
+        `the hold stays: put ${dump} back by hand (docs/operations/preview-builds.md), then release again`,
+      ]
+        .filter(Boolean)
+        .join("; "),
+    });
+    return { steps, stop: true };
+  }
+  const run = ssh(startScript(record.active, `/root/box-${tag}-cli`));
+  const after = readState(ssh).state;
+  const started = run.stdout.split("\n").includes("putback=done");
+  const ok =
+    started &&
+    after?.version === record.version &&
+    after.running === true &&
+    after.active === record.active;
+  steps.push({
+    id: "put-back",
+    title,
+    status: ok ? "passed" : "failed",
+    detail: ok
+      ? `restored ${dump}; ${ACTIVE} points at ${record.active} again, and ${record.version} runs`
+      : [
+          `restored ${dump}`,
+          run.stdout
+            .split("\n")
+            .find((line) => line.startsWith("putback=") && line !== "putback=done")
+            ?.slice(8) ?? (started ? null : `put-back exited ${run.code}`),
+          after
+            ? `the box runs ${after.version ?? "nothing"} (${after.running ? "running" : "not running"}, ${after.active ?? "no generation"}), not ${record.version}`
+            : "the box could not be read after the start",
+          `the hold stays: start ${record.active} by hand (mend server start --offline), then release again`,
+        ]
+          .filter(Boolean)
+          .join("; "),
+  });
+  return { steps, stop: !ok };
+};
+
+/**
+ * release: put back the data a migration main lacks changed (or, after prepare --load, the box's
+ * own data and build), tidy the box while this check still holds it, then lift the hold (or write
+ * back the lapsed hold prepare --load found).
  */
 const FRONT_TITLE =
   "Scan the new web app check's evidence and remove its sign-in from this machine";
@@ -626,6 +981,7 @@ export const boxRelease = ({
   tag,
   yes,
   noRestore = false,
+  save,
   readMain = mainMigrations,
   front = FRONT_RUN,
 }) => {
@@ -647,14 +1003,39 @@ export const boxRelease = ({
       next: [],
     };
   }
-  const restore = restoreStep(ssh, { state, yes, noRestore, main: readMain(root) });
-  if (restore.stop) return { steps: [restore.step], next: [] };
+  const loaded = state.hold.putBack
+    ? putBackSteps(ssh, {
+        state,
+        yes,
+        noRestore,
+        save,
+        tag,
+        main: save === undefined ? null : readMain(root),
+      })
+    : null;
+  if (!loaded && save !== undefined)
+    return {
+      steps: [
+        {
+          id: "save",
+          title: `Save the data this check ran on to ${save}`,
+          status: "failed",
+          detail:
+            "this check's hold was not made by prepare --load, so there is no loaded data to save. Nothing was changed",
+        },
+      ],
+      next: [],
+    };
+  const restore = loaded ? null : restoreStep(ssh, { state, yes, noRestore, main: readMain(root) });
+  const before = loaded ? loaded.steps : [restore.step];
+  if (loaded?.stop || restore?.stop) return { steps: before, next: [] };
+  const found = state.hold.putBack?.hold ?? null;
   if (!yes) {
     const choice = chooseTidy({ listing, hold: state.hold, tag });
     const frontRun = front.read(root);
     return {
       steps: [
-        restore.step,
+        ...before,
         {
           id: "tidy",
           title: "Tidy the box (changes the box)",
@@ -675,24 +1056,27 @@ export const boxRelease = ({
           id: "release",
           title: "Lift this check's hold (changes the box)",
           status: "skipped",
-          detail: `Would remove ${HOLD}`,
+          detail: found
+            ? `Would write back the hold ${found.tag ?? "it found"} in ${HOLD}`
+            : `Would remove ${HOLD}`,
         },
       ],
-      next: [rerun("release", tag)],
+      next: [rerun("release", tag) + (save === undefined ? "" : ` --save ${save}`)],
     };
   }
   const tidied = runTidy(ssh, { hold: state.hold, tag });
   const ended = endFront(root, front);
-  const run = ssh(`rm -f ${HOLD}`);
+  const run = ssh(found ? `printf '%s' ${shq(JSON.stringify(found))} > ${HOLD}` : `rm -f ${HOLD}`);
   return {
     steps: [
-      restore.step,
+      ...before,
       tidied.step,
       ...(ended ? [ended] : []),
       {
         id: "release",
         title: "Lift this check's hold",
         status: run.code === 0 ? "passed" : "failed",
+        ...(found ? { detail: `wrote back the hold ${found.tag ?? "it found"}, as found` } : {}),
       },
     ],
     next: [],

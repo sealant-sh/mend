@@ -9,8 +9,9 @@
 #
 # Run it from the worktree's root, while this check holds the box as <hold tag> (`pnpm verify box
 # prepare --tag <hold tag> --yes`): it refuses otherwise. MEND_CLI defaults to the mend names.sh
-# installed (SKILL.md, step 4). It never signs the first account's CLI in or
-# out, and reads no token: the second account is signed in with its own config and password file.
+# installed (SKILL.md, step 4), and the address names.sh read. It never signs the first account's
+# CLI in or out, and reads no token: the second account is signed in with its own config and
+# password file, and only when its saved login is missing.
 #
 # One line per fixture: `fixture <name> · present`, `· made`, or `· manual: <the step>`.
 # Exit 0: every fixture is there. 1: a step failed (its line says how). 3: a manual step remains.
@@ -21,7 +22,9 @@ tag=${1:?usage: fixtures.sh <hold tag>}
 MEND_CLI=${MEND_CLI:-$HOME/.local/state/mend-main-run/cli/node_modules/.bin/mend}
 read -r -a box_ssh <<<"$MEND_VERIFY_BOX_SSH"
 
-WEB=https://yiannis-k8s-arc.tailc79e49.ts.net
+# The box's address, as names.sh read it from the box for this run (SKILL.md, step 4).
+WEB=$(cat "$HOME/.local/state/mend-main-run/web" 2>/dev/null)
+[[ $WEB == https://* ]] || { echo "fixtures.sh: no address in ~/.local/state/mend-main-run/web; run names.sh first" >&2; exit 2; }
 KIT=$HOME/.local/share/mend-boat-check
 KIT2=$HOME/.local/share/mend-boat-check-2
 EMAIL2=main-run-second@example.test
@@ -31,8 +34,8 @@ REPOS=(land second)
 box() { ssh -o BatchMode=yes -o ConnectTimeout=10 "${box_ssh[@]}" "bash -s" <<<"{
 $1
 }"; }
-M() { XDG_CONFIG_HOME=$KIT/cli "$MEND_CLI" "$@"; }
-M2() { XDG_CONFIG_HOME=$KIT2/cli "$MEND_CLI" "$@"; }
+M() { XDG_CONFIG_HOME=$KIT/cli MEND_URL=$WEB "$MEND_CLI" "$@"; }
+M2() { XDG_CONFIG_HOME=$KIT2/cli MEND_URL=$WEB "$MEND_CLI" "$@"; }
 say() { printf 'fixture %s · %s\n' "$1" "$2"; }
 manual=0
 failed=0
