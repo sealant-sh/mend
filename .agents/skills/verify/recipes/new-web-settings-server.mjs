@@ -704,7 +704,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         "a-server-verify-password",
       );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    await memberPage.waitForURL((url) => url.pathname.startsWith("/welcome"));
     memberId = (await apiOf(memberPage)("GET", "/api/organization")).body?.userId ?? null;
     const operatorCookies = await page.context().cookies();
     await page.context().clearCookies();
