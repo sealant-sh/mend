@@ -459,6 +459,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // The address follows the focused tab (SLNT-1211). From home, A's page; pick B's tab: the
   // address is B's, replaced in place, the sidebar marks B's row, the browser tab reads B's title,
   // and the sheet stays as it was (A's conversation is the same element).
+  await page.setViewportSize(DESKTOP);
   await page.goto(`${web}/`);
   await open(`/sessions/${A}`);
   await tabOf(tabB).waitFor();
@@ -517,7 +518,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     .catch(() => undefined);
 
   // Leave the stack as the batch left it: the extra session goes, the arrangement too.
-  await page.setViewportSize(DESKTOP);
   await client(async (trpc, id) => {
     await trpc.sessions.stop.mutate({ id }).catch(() => undefined);
   }, started);
