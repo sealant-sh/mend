@@ -8,7 +8,11 @@
 # read of each session's newest item whose turn still runs, for the inbox, and nothing else. It
 # claims, binds, completes or cancels no turn, so no action models it; SLNT-895's squash changed no
 # covered function. Full run at 0e0b2722ca: every row as expected.
-sync 0e0b2722ca259ad710cf036aa491f164846eb0bc
+# eba6946e13 is the SLNT-1199 branch: agent-conversation.ts gained inboxTurnFacts, two grouped
+# reads (whether a session has a turn queued or running, and its newest turn or request time) for
+# the inbox, and nothing else. It claims, binds, completes or cancels no turn, so no action models
+# it. Full run at eba6946e13: every row as expected.
+sync eba6946e13920ee86e1173b7bd0924c63fb39d99
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
