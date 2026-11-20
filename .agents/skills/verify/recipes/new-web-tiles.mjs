@@ -138,6 +138,21 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       await trpc.sessions.stop.mutate({ id }).catch(() => undefined);
     }, extra.session.id);
   if (running.length > 2) note(`stopped ${running.length - 2} session(s) an earlier run left`);
+  // Ended sessions an earlier run left in tiles-ws keep these titles; "+" lists them beside the
+  // running ones. Rename them so the menu has one item of each name.
+  const earlier = rows.filter(
+    (row) =>
+      row.worktreeName === "tiles-ws" &&
+      ["completed", "stopped", "failed"].includes(row.session.status) &&
+      [TITLE_A, TITLE_B].includes(row.session.label),
+  );
+  for (const row of earlier)
+    await client(
+      async (trpc, id) =>
+        trpc.sessions.setLabel.mutate({ id, label: `earlier tiles run ${id.slice(0, 8)}` }),
+      row.session.id,
+    );
+  if (earlier.length > 0) note(`renamed ${earlier.length} ended session(s) an earlier run left`);
   const worktreeId = running[0].session.worktreeId;
   const tabA = `session:${A}`;
   const tabB = `session:${B}`;
