@@ -171,23 +171,45 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await client(async (trpc, value) => trpc.sessions.setLabel.mutate(value), { id, label: TITLE });
   const rowIn = (name) => group(name).locator(`[data-session-id="${id}"]`);
 
-  // 1. Opening Mend at / for someone past setup (this account: Git access and a project) stays
-  //    on Mend, on a full load (the server decides) and moving there within the app.
+  // 1. Opening Mend at /. The stack's account has a project but no Git access: by sign-in's rule
+  //    it hasn't finished setup. The driver marks its setup as ended in this browser, which keeps
+  //    it on Mend; without that mark, a full load of / (the server decides) opens setup.
+  const viewer = await page.evaluate(
+    () =>
+      window["__TSR_ROUTER__"].options.context.queryClient
+        .getQueryCache()
+        .findAll({ queryKey: [["organization", "current"]] })[0]?.state.data?.userId,
+  );
+  const markEnded = () =>
+    page.context().addCookies([
+      {
+        name: "mend-setup",
+        value: encodeURIComponent(JSON.stringify({ skippedCommandLine: [], ended: [viewer] })),
+        url: web,
+      },
+    ]);
+  await markEnded();
   await open("/");
-  expect(path() === "/", "a full load of / opens Mend for someone past setup");
-  await open("/projects");
-  await go("/");
-  expect(path() === "/", "moving to / within Mend opens Mend for someone past setup");
+  expect(path() === "/", "a full load of / opens Mend once setup ended in this browser");
+  await page.context().clearCookies({ name: "mend-setup" });
+  await open("/");
+  note(`a full load of / without the mark went to ${path()}`);
+  expect(
+    path().startsWith("/welcome/"),
+    "a full load of / opens setup's next step for an account without Git access",
+  );
+  await capture("setup-resumed-full-load-light");
 
-  // 2. Someone who closed the tab partway through setup: Git access in place, no project yet.
-  let setupFixture = { projects: false, gitFails: false };
+  // 2. The same facts read in the browser, moving to / within Mend: Git access and a project
+  //    (made Git access: a Mend key) is past setup; no project yet is the step after Agent login.
+  let setupFixture = { projects: false, gitKey: false, gitFails: false };
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
     const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
     const faked = paths.map(
       (each) =>
         (each === "projects.list" && setupFixture.projects) ||
-        (each === "git.access" && setupFixture.gitFails),
+        (each === "git.access" && (setupFixture.gitKey || setupFixture.gitFails)),
     );
     if (!faked.some(Boolean)) return route.continue();
     const response = await route.fetch();
@@ -195,10 +217,17 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     const answers = Array.isArray(body) ? body : [body];
     paths.forEach((each, index) => {
       if (!faked[index]) return;
-      answers[index] =
-        each === "projects.list"
-          ? { result: { data: { json: [] } } }
-          : tRPCError(each, "The verify recipe failed this read on purpose.");
+      if (each === "projects.list") answers[index] = { result: { data: { json: [] } } };
+      else if (setupFixture.gitFails)
+        answers[index] = tRPCError(each, "The verify recipe failed this read on purpose.");
+      else {
+        const data = answers[index].result.data;
+        data.json.key = {
+          exists: true,
+          publicKey: "ssh-ed25519 AAAAverifyfixture mend:verify",
+          fingerprint: "SHA256:verifyfixture",
+        };
+      }
     });
     await route.fulfill({ response, json: Array.isArray(body) ? answers : answers[0] });
   });
@@ -211,29 +240,22 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     note(`${name}: / went to ${path()}`);
     return path();
   };
-  setupFixture = { projects: true, gitFails: false };
-  const resumed = await fromProjects("no project yet");
+  setupFixture = { projects: false, gitKey: true, gitFails: false };
   expect(
-    resumed.startsWith("/welcome/"),
+    (await fromProjects("Git access and a project")) === "/",
+    "/ opens Mend for someone with Git access and a project",
+  );
+  setupFixture = { projects: true, gitKey: true, gitFails: false };
+  const resumed = await fromProjects("Git access, no project yet");
+  expect(
+    /^\/welcome(\/|$)/.test(resumed),
     "/ opens setup's next step for someone without a project",
   );
   await hydrated();
   await capture("setup-resumed-light");
 
   // Reached setup's last step in this browser (a member who skipped First project): Mend.
-  const viewer = await page.evaluate(
-    () =>
-      window["__TSR_ROUTER__"].options.context.queryClient
-        .getQueryCache()
-        .findAll({ queryKey: [["organization", "current"]] })[0]?.state.data?.userId,
-  );
-  await page.context().addCookies([
-    {
-      name: "mend-setup",
-      value: encodeURIComponent(JSON.stringify({ skippedCommandLine: [], ended: [viewer] })),
-      url: web,
-    },
-  ]);
+  await markEnded();
   expect(
     (await fromProjects("setup ended here, no project")) === "/",
     "/ opens Mend for someone who reached setup's last step in this browser",
@@ -241,10 +263,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.context().clearCookies({ name: "mend-setup" });
 
   // Setup that can't be read falls through to Mend.
-  setupFixture = { projects: true, gitFails: true };
+  setupFixture = { projects: true, gitKey: false, gitFails: true };
   expect((await fromProjects("setup unreadable")) === "/", "/ opens Mend when setup can't be read");
-  setupFixture = { projects: false, gitFails: false };
+  setupFixture = { projects: false, gitKey: false, gitFails: false };
   await page.unroute("**/trpc/**");
+  // Back as the driver left it: this account's setup ended in this browser.
+  await markEnded();
 
   // 3. Stop from the sidebar row's menu, with Mend's answer held: the row is Stopped at once.
   // Replaced by each held stop's own release; nothing to release before the first.
@@ -408,12 +432,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   );
 
   // Toasts beside the session's composer: Copy branch name from the workspace's "…".
-  const copyToast = async (name) => {
-    const more = page
-      .locator("[data-slot=workspace-header]")
-      .filter({ visible: true })
-      .getByRole("button", { name: /More|Workspace actions|…/ })
-      .first();
+  const copyToast = async (name, button) => {
+    // The workspace's "…" on a wide screen; the header's "…" sheet on a phone.
+    const more = page.getByRole("button", { name: button }).filter({ visible: true }).first();
     if ((await more.count()) === 0) {
       note(`${name}: no workspace "…" to raise a toast from`);
       return;
@@ -433,10 +454,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     expect(place !== null && !place.overlaps, `${name}: the toast covers no composer`);
     await capture(`toast-${name}-light`);
   };
-  await copyToast("session-desktop");
+  await copyToast("session-desktop", /^Workspace actions/);
   await page.setViewportSize(PHONE);
   await settled();
-  await copyToast("session-phone");
+  await copyToast("session-phone", /^Actions for /);
   await page.setViewportSize(DESKTOP);
   await page.unroute("**/trpc/**");
 

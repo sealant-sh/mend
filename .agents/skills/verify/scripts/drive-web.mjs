@@ -449,6 +449,24 @@ try {
         await onward.click();
     }
     note(`signed in as the stack's first account (${account.email})`);
+    // The new app opens setup at `/` for someone who hasn't finished it (SLNT-1210), and the
+    // stack's account has a project but no Git access. It stands for a person using Mend, so this
+    // browser remembers its setup as ended, the cookie setup's last step writes; a recipe about
+    // setup clears it (`mend-setup`) first.
+    const session = await page.request
+      .get(new URL("/api/auth/get-session", signIn ?? web).href)
+      .then((response) => (response.ok() ? response.json() : null))
+      .catch(() => null);
+    const userId = session?.user?.id;
+    if (typeof userId === "string")
+      await context.addCookies([
+        {
+          name: "mend-setup",
+          value: encodeURIComponent(JSON.stringify({ skippedCommandLine: [], ended: [userId] })),
+          url: web,
+        },
+      ]);
+    else note("could not read the signed-in account's id: its setup is not marked as ended");
   }
   const run = (await import(pathToFileURL(resolve(recipe)).href)).default;
   await run({
