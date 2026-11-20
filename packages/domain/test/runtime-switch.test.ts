@@ -98,7 +98,8 @@ describe("what moving to a runtime would change for new sessions", () => {
           environment: {
             refusal: "Boat cannot boot a custom OCI base image.",
             from: custom,
-            to: boatTarget,
+            // A custom base has no screen switch, so its new family image starts without one.
+            to: { ...boatTarget, screen: false },
             inherited: false,
           },
           services: [],

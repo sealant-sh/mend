@@ -33,9 +33,11 @@ For a managed family, choose:
 - the OS family;
 - a login shell: `bash`, `zsh`, or `fish`;
 - portable package names;
-- whether the workspace receives a Docker service.
+- whether the workspace receives a Docker service;
+- whether the agent gets a screen: a display it can see and click, for testing in a browser.
 
-The default for a new install is Arch Linux with `zsh`, Docker enabled, and these packages:
+The default for a new install is Arch Linux with `zsh`, Docker enabled, the agent's screen on, and
+these packages:
 
 ```text
 pnpm
@@ -60,9 +62,15 @@ direnv
 ```
 
 The last five are what Mend's [default shell profile](/guides/dotfiles/#default-shell-profile) uses.
-A saved instance, organization or project environment keeps its own shell and packages, with one
-exception: upgrading to the release that added `bun` and `unzip` adds both to every saved managed
-family environment that lacks them. Custom base environments are not changed.
+
+A screen needs an x86_64 server, so a server on ARM64 starts with it off. It adds its own packages
+to the image (TigerVNC, a desktop, Chromium and fonts), 400 to 700 MB once per image, and each
+running session's screen holds about 100 MB of memory until the agent opens a browser. Turn it off
+in the project's workspace settings, or with `mend projects image <project> --screen off`. A saved
+instance, organization or project environment keeps its own screen setting. A saved instance,
+organization or project environment keeps its own shell and packages, with one exception: upgrading
+to the release that added `bun` and `unzip` adds both to every saved managed family environment that
+lacks them. Custom base environments are not changed.
 
 Mend checks each package name against the platform's package catalog when you save. Every id in the
 default list installs on all four families, on both x86_64 and ARM64, from the family's own

@@ -90,7 +90,7 @@ export function SettingSection({
   readonly children: ReactNode;
 }) {
   return (
-    <section aria-label={title} className="mt-7 first:mt-0">
+    <section aria-label={title} className="mt-10 first:mt-0">
       <div className="flex items-start gap-6 border-b border-border pb-2.5 max-lg:px-4">
         <div className="min-w-0 flex-1">
           <h2 className="text-lead font-semibold">

@@ -41,7 +41,7 @@ describe("MendSettings workspace image profile", () => {
       ],
       shell: "zsh",
       services: { docker: true },
-      screen: false,
+      screen: true,
     });
   });
 
@@ -79,7 +79,7 @@ describe("MendSettings workspace image profile", () => {
       ],
       shell: "zsh",
       services: { docker: true },
-      screen: false,
+      screen: true,
     });
   });
 

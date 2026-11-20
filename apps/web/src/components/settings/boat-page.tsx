@@ -535,7 +535,7 @@ function WhereBoatIsUsed({
 }) {
   const words = runtimeLine(runtime, organizationName);
   return (
-    <section aria-label="Where Boat is used" className="mt-9 max-lg:px-4">
+    <section aria-label="Where Boat is used" className="mt-10 max-lg:px-4">
       <h2 className="text-lead font-semibold">Where Boat is used</h2>
       <p className="mt-0.5 text-row text-pretty text-muted-foreground">
         {words.lead}{" "}

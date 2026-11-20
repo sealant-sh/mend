@@ -84,9 +84,7 @@ export function SkillsTab({ projectId }: { readonly projectId: string }) {
               </Button>
             ) : null}
           </header>
-          {none ? (
-            <NoSkills owner={owner} phone={phone} onCreate={() => setCreating(true)} />
-          ) : (
+          {none ? null : (
             <SkillsList owner={owner} skills={skills} openId={openId} yourNames={yourNames} />
           )}
           {none ? null : (
@@ -111,6 +109,8 @@ export function SkillsTab({ projectId }: { readonly projectId: string }) {
             </div>
           ) : null}
         </div>
+        {/* Outside the column, so it sits in the middle of the space under the header. */}
+        {none ? <NoSkills owner={owner} phone={phone} onCreate={() => setCreating(true)} /> : null}
       </section>
       {openId === undefined ? null : (
         <div className="flex min-h-0 min-w-0 flex-col max-lg:flex-1 lg:w-[43%] lg:shrink-0 lg:border-l">
@@ -220,7 +220,7 @@ function NoSkills({
   readonly onCreate: () => void;
 }) {
   return (
-    <Empty className="py-12">
+    <Empty className="flex-1">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <SparklesIcon aria-hidden />

@@ -19,6 +19,7 @@ import {
   builtInSettingsFor,
   defaultSettings,
   defaultWorkspaceImage,
+  screenRefusal,
   type WorkspaceImage,
 } from "../src/settings.ts";
 
@@ -110,17 +111,36 @@ describe("a new project's environment", () => {
     });
     expect(newProjectWorkspaceImage(arch, nixOnly)).toMatchObject({ os: "nix" });
   });
+
+  it("keeps the screen off when the organization's image has it off", () => {
+    const noScreen: WorkspaceImage = { ...arch, screen: false };
+    expect(newProjectWorkspaceImage(noScreen, BOAT_SUPPORT)).toMatchObject({
+      os: "ubuntu",
+      screen: false,
+    });
+    expect(newProjectWorkspaceImage(custom, BOAT_SUPPORT)).toMatchObject({ screen: false });
+  });
 });
 
 describe("the instance's settings before its operator saves any", () => {
   it("start on an environment the server's default runtime runs", () => {
-    expect(environmentRefusal(BOAT_SUPPORT, builtInSettingsFor("boat").workspaceImage)).toBeNull();
+    const boat = builtInSettingsFor("boat", "x86_64");
+    expect(environmentRefusal(BOAT_SUPPORT, boat.workspaceImage)).toBeNull();
     expect(environmentRefusal(BOAT_SUPPORT, defaultSettings.workspaceImage)).not.toBeNull();
-    expect(builtInSettingsFor("boat")).toMatchObject({
+    expect(boat).toMatchObject({
       ...defaultSettings,
       workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu" },
     });
-    expect(builtInSettingsFor("docker")).toBe(defaultSettings);
-    expect(builtInSettingsFor(null)).toBe(defaultSettings);
+    expect(builtInSettingsFor("docker", "x86_64")).toBe(defaultSettings);
+    expect(builtInSettingsFor(null, "x86_64")).toBe(defaultSettings);
+  });
+
+  it("give the agent a screen on a server that can run one, and none elsewhere", () => {
+    expect(builtInSettingsFor(null, "x86_64").workspaceImage).toMatchObject({ screen: true });
+    for (const runtime of [null, "boat"] as const) {
+      const image = builtInSettingsFor(runtime, "aarch64").workspaceImage;
+      expect(image).toMatchObject({ screen: false });
+      expect(screenRefusal(image, "aarch64")).toBeNull();
+    }
   });
 });
