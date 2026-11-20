@@ -285,20 +285,22 @@ export default async ({ page, web, capture, note }) => {
   );
   await capture("fixture-record-checkpoints-desktop-light");
 
-  // Show changes opens the Change tab over the turn's checkpoints.
+  // Show changes on the third turn's line opens the Change tab over that turn's checkpoints only.
   await open("/no-such-page");
   await go(`/sessions/${viewed}`);
   await visible(page.getByText(REPLIES[2])).waitFor({ timeout: 30_000 });
-  await visible(page.getByRole("button", { name: "Show changes" })).click();
+  await page.getByRole("button", { name: "Show changes" }).filter({ visible: true }).last().click();
   await page.waitForURL(`**/sessions/${viewed}/change`);
-  await visible(page.getByText("NOTES.md", { exact: false })).waitFor({ timeout: 60_000 });
+  await visible(page.getByText("1 file changed between these checkpoints.")).waitFor({
+    timeout: 60_000,
+  });
   await settled();
-  const range = await page.evaluate(() =>
-    [...document.querySelectorAll("button")]
-      .map((each) => each.textContent ?? "")
-      .find((text) => /checkpoint/i.test(text)),
+  const range = await visible(page.getByRole("button", { name: /^Checkpoints/ })).innerText();
+  const files = await page.getByText("PLAN.md", { exact: true }).count();
+  if (files !== 0) throw new Error("the third turn's changes list PLAN.md, which it didn't touch");
+  note(
+    `Show changes on the third turn opens the Change tab over "${range.replace(/\s+/g, " ")}", reading "1 file changed between these checkpoints." with NOTES.md and no PLAN.md`,
   );
-  note(`Show changes opens the Change tab; its range reads "${range}", listing NOTES.md`);
   await capture("fixture-show-changes-desktop-light");
 
   // On a phone the line is a tap target, and the details open in place.
