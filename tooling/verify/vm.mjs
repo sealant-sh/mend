@@ -14,7 +14,7 @@ import { createServer } from "node:http";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { restoreScript, storeLoadScript, sshRunner } from "./box.mjs";
+import { mainMigrations, restoreScript, saveScript, storeLoadScript, sshRunner } from "./box.mjs";
 import {
   boatOn,
   claimSlot,
@@ -513,6 +513,11 @@ export const vmBuild = async ({
     ["mend-git.tgz", "/root/main-run/mend-git.tgz"],
     ["mend-keys.tgz", "/root/main-run/mend-keys.tgz"],
     ["mend-ssh.tgz", "/root/main-run/mend-ssh.tgz"],
+    // The blob store (session captures), once `vm save` has saved one: VM 131's holds the owner's
+    // data beside the run's, so it was never copied from there (SLNT-1216).
+    ...(existsSync(join(p.box, "mend-garage.tgz"))
+      ? [["mend-garage.tgz", "/root/main-run/mend-garage.tgz"]]
+      : []),
   ]) {
     if (!put(file, target))
       return fail("copy-in", "Copy the box's identity and data in", `${file} could not be written`);
@@ -577,7 +582,14 @@ c=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-config)
 s=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-ssh)
 rm -rf "$c/mend/keys" && mkdir -p "$c/mend"
 tar -xzpf /root/main-run/mend-keys.tgz --numeric-owner -C "$c/mend"
-tar -xzpf /root/main-run/mend-ssh.tgz --numeric-owner -C "$s"`);
+tar -xzpf /root/main-run/mend-ssh.tgz --numeric-owner -C "$s"
+if [ -s /root/main-run/mend-garage.tgz ]; then
+  g=$(docker volume inspect -f '{{.Mountpoint}}' mend-garage)
+  docker stop mend-garage-1 >/dev/null
+  find "$g" -mindepth 1 -delete
+  tar -xzpf /root/main-run/mend-garage.tgz --numeric-owner -C "$g"
+  docker start mend-garage-1 >/dev/null
+fi`);
   if (keys.code !== 0)
     return fail("load", "Load the box run's data", `the box's keys: ${lastLine(keys.stderr)}`);
   const startedMend = ssh("mend server start --offline 2>&1 | tail -3");
@@ -902,6 +914,160 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
   writeSshConfig(p, liveSlots(p));
   if (steps.length === 0) steps.push(step("down", "Remove copies", "passed", "no copies"));
   return { steps, next: [] };
+};
+
+/**
+ * A refresh claim no worker ever reaches: sealant's keep-fresh sweepers take a login only when its
+ * `refresh_claimed_until` is null or past (`claimRefresh`), and answer `skipped-claimed` otherwise.
+ */
+export const LOGIN_CLAIM = "2999-01-01 00:00:00+00";
+
+/**
+ * Holds every agent login of the copy's data against refresh, with Mend stopped: one refresh token
+ * is shared by every copy of the saved data, so only the copy that lifts this claim (the daily
+ * run's, `.agents/skills/box-main-run/refresher.sh`) may spend it. Prints `held=<n>`.
+ */
+export const holdLoginsScript = `# hold-logins
+set -uo pipefail
+docker stop --time 60 mend-mend-1 >/dev/null 2>&1
+n=$(docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -v ON_ERROR_STOP=1 -c \\
+  "with held as (update connected_accounts set refresh_claimed_until = '${LOGIN_CLAIM}' where archived_at is null and kind in ('auth-json', 'credentials-json') returning 1) select count(*) from held") ||
+  { echo "held=failed"; exit 1; }
+echo "held=$n"
+`;
+
+const SAVED = [
+  { name: "world.sql", read: "cat /root/main-run/world.sql", prev: "world.prev.sql" },
+  {
+    name: "world.store.tgz",
+    read: "cat /root/main-run/world.store.tgz",
+    prev: "world.prev.store.tgz",
+  },
+  { name: "mend-git.tgz", read: "tar -C /srv -czf - mend-git", prev: "mend-git.prev.tgz" },
+  // The blob store, where sessions' captures live: a change page reads its capture from it.
+  {
+    name: "mend-garage.tgz",
+    read: `docker stop mend-garage-1 >/dev/null && tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend-garage)" -czf - .`,
+    prev: "mend-garage.prev.tgz",
+  },
+];
+
+/**
+ * vm save <n>: makes a copy's data the data the next master is built from (SLNT-1216). With Mend
+ * stopped in the copy, it holds the agent logins against refresh, dumps the databases and the store
+ * directories they name (box.mjs saveScript, as `box release --save` does), and archives the git
+ * service and the blob store. Then it copies the four into <root>/box beside the old ones, checks
+ * each, and only once all four are whole moves the old ones to `*.prev.*` and the new ones into place. A save that
+ * fails anywhere leaves <root>/box as it was. It refuses data carrying a Mend migration origin/main
+ * lacks: a master built on it could not take a preview of main. The copy is left with Mend stopped;
+ * `vm down` deletes it. The master is not touched: `vm build` builds the next one from these files.
+ */
+export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
+  const p = paths(root);
+  const dir = join(p.copies, String(slot));
+  const steps = [];
+  const done = (id, title, status, detail) => {
+    steps.push(step(id, title, status, detail));
+    return { steps, next: status === "passed" ? [] : [`pnpm verify vm down ${slot}`] };
+  };
+  if (qemuPid(dir) === null)
+    return done("copy", `Copy ${slot}`, "blocked_by_prerequisite", "no such copy running");
+  const ssh = sshRunner(boxSshArgs(root, slot));
+
+  const main = mainMigrations(repoRoot);
+  const applied = ssh(
+    `docker exec mend-postgres-1 psql -U postgres -d mend -At -F'|' -c 'select migration_id, name from mend_migrations order by migration_id'`,
+  );
+  const names = applied.stdout
+    .split("\n")
+    .map((line) => line.split("|"))
+    .filter(([id]) => /^\d+$/.test(id ?? ""))
+    .map(([id, name]) => `${id.padStart(4, "0")}_${name}`);
+  const foreign = main === null ? null : names.filter((name) => !main.includes(name));
+  if (applied.code !== 0 || names.length === 0 || foreign === null || foreign.length > 0)
+    return done(
+      "schema",
+      "Data a run of main can load",
+      "failed",
+      applied.code !== 0 || names.length === 0
+        ? "the copy's Mend migrations could not be read"
+        : foreign === null
+          ? "origin/main's migrations could not be read"
+          : `the copy's data carries ${foreign.join(", ")}, which origin/main lacks; nothing saved`,
+    );
+  steps.push(
+    step(
+      "schema",
+      "Data a run of main can load",
+      "passed",
+      `${names.length} migrations, all on main`,
+    ),
+  );
+
+  const held = ssh(holdLoginsScript);
+  const count = held.stdout.match(/^held=(\d+)$/m)?.[1];
+  if (count === undefined)
+    return done("hold", "Agent logins held against refresh", "failed", lastLine(held.stdout));
+  steps.push(
+    step(
+      "hold",
+      "Agent logins held against refresh",
+      "passed",
+      `${count} logins claimed until ${LOGIN_CLAIM.slice(0, 10)}; Mend stopped`,
+    ),
+  );
+
+  const saved = ssh(saveScript("/root/main-run/world.sql"));
+  if (!/^save=\d+$/m.test(saved.stdout))
+    return done("dump", "The copy's data dumped", "failed", lastLine(saved.stdout));
+  steps.push(step("dump", "The copy's data dumped", "passed", lastLine(saved.stdout)));
+
+  const at = Date.now();
+  const temporary = (name) => join(p.box, `${name}.${process.pid}.tmp`);
+  const clean = () => SAVED.forEach(({ name }) => rmSync(temporary(name), { force: true }));
+  for (const { name, read } of SAVED) {
+    const out = spawnSync("ssh", ["-o", "BatchMode=yes", ...boxSshArgs(root, slot), read], {
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 4 * 1024 ** 3,
+    });
+    const bytes = out.stdout?.length ?? 0;
+    const whole =
+      out.status === 0 &&
+      bytes > 0 &&
+      (name !== "world.sql" || out.stdout.subarray(-200).toString().includes("dump complete"));
+    if (!whole) {
+      clean();
+      return done(
+        "copy-out",
+        "The saved data copied out",
+        "failed",
+        `${name}: ssh exited ${out.status}, ${bytes} bytes${name === "world.sql" ? ", or no pg_dumpall trailer" : ""}; ${p.box} is as it was`,
+      );
+    }
+    writeFileSync(temporary(name), out.stdout, { mode: 0o600 });
+  }
+  for (const { name, prev } of SAVED) {
+    if (existsSync(join(p.box, name))) renameSync(join(p.box, name), join(p.box, prev));
+    renameSync(temporary(name), join(p.box, name));
+  }
+  const sizes = SAVED.map(
+    ({ name }) => `${name} ${(statSync(join(p.box, name)).size / 1024 ** 2).toFixed(1)} MiB`,
+  );
+  steps.push(
+    step(
+      "save",
+      "The next master's data",
+      "passed",
+      `${sizes.join(", ")} in ${p.box} after ${seconds(at)}s; the ones before kept as ${SAVED.map(({ prev }) => prev).join(", ")}`,
+    ),
+  );
+  return {
+    steps,
+    next: [
+      `pnpm verify vm down ${slot}`,
+      "pnpm verify vm build --version <preview> --sha <commit> --cli <version>   # once no copy runs",
+    ],
+  };
 };
 
 /** vm list: the master and each copy, whether its VM runs, its address and age. */

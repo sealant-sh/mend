@@ -188,8 +188,9 @@ install identity and the daily run's data, accounts and agent logins, one per ch
 waits. `pnpm verify vm up` starts one in about 20 seconds and prints the two exports below;
 `pnpm verify vm down <n>` deletes it when the check ends. `docs/operations/preview-builds.md`
 ("Check VMs") says how the master is built and what a copy cannot do. A check that needs Boat starts
-its copy with `pnpm verify vm up --boat`, on one of four Boat slots. The scheduled run stays on VM
-131, and VM 130 (`alpha.mend.run`) is the other server; "The box" there says how to reach each.
+its copy with `pnpm verify vm up --boat`, on one of four Boat slots. The scheduled run below runs on
+check VMs too; VM 131 and VM 130 (`alpha.mend.run`) are the owner's servers, and "The box" there
+says how to reach each.
 
 Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as root) and
 `MEND_VERIFY_OUTER_URL`, then, in order (on a check VM nobody else holds it, so `prepare` never
@@ -212,13 +213,15 @@ applied a migration `main` lacks, it first puts the box's databases back to `pre
 leaves Mend stopped for the next deploy, so the box can run plain `main` again.
 
 Once a day, when `main` has product commits since the last run, a scheduled run puts a preview of
-`main` on VM 131 and uses it as a person through a list of flows that covers every feature in the
-verify skill's feature map, beside a full CI run of `main` it starts itself. It waits for the box
-rather than skipping a day. Its skill is `.agents/skills/box-main-run/`, the flows in `flows.md`
-there, each with a stable id. So the feature you proved on a local stack is used again on the real
-server by an agent that wrote none of it. Each failure becomes a ticket in "CI follow-ups" naming
-the merged PR that most likely caused it; when it names yours, pick it up. While it runs it holds
-the box as `main-<sha12>`: wait, as for any other hold.
+`main` on up to three check VMs and uses them as a person through a list of flows that covers every
+feature in the verify skill's feature map, beside a full CI run of `main` it starts itself. Its
+skill is `.agents/skills/box-main-run/`, the flows in `flows.md` there, each with a stable id. So
+the feature you proved on a local stack is used again on a real server by an agent that wrote none
+of it. Each failure becomes a ticket in "CI follow-ups" naming the merged PR that most likely caused
+it; when it names yours, pick it up. The run's own copy is the only place the shared agent logins
+are refreshed, and its data becomes the next master (`pnpm verify vm save`, then `vm build`): the
+master is rebuilt each night once no copy runs, so a copy you start then may find no master for
+about ten minutes.
 
 ## Dependencies
 

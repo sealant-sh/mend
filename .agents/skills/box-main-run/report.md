@@ -20,7 +20,7 @@ does); otherwise leave it out. A guess (on 18 Nov, "Started by hand" for a sched
 observation.
 
 ```markdown
-**Main on the box · <commit:12> · <UTC date>**
+**Main on check VMs · <commit:12> · <UTC date>**
 
 Full CI: run <link> (dispatched by this run, `formal=full`) on <commit:12>, <conclusion>, <n> min.
 
@@ -28,18 +28,23 @@ Full CI: run <link> (dispatched by this run, `formal=full`) on <commit:12>, <con
 - Tests failed or retried: <package · file > name · outcome · ticket>, … (or none).
 - Models at full bounds: <model · status>, … Build input probe: <conclusion>.
 
-Box:
+Check VMs:
 
-- Wait for the box: <h> h <m> min from the lock to the hold.
-- Build: preview run <link>, version <version>, <n> min. Box: VM 131, was <version before>.
+- Length: <h> h <m> min from the lock to the next master built (or to the save, with why it was not
+  built). Wait for room: <m> min from the lock to lane A's copy.
+- Build: preview run <link>, version <version>, <n> min. Copies booted from the master
+  <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>), or the lanes left out.
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
-- Free on `/`: <free before> → <free after> free. Removed: <what step 6 removed>.
+- Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>); <n> after cut-over.
+- Logins: Codex <refreshed on lane A at <UTC> · held | not due (expires <UTC>) · held>; Claude <…>.
+  Saved: `vm save` <UTC>, <sizes>. Next master: <version>, built <UTC>, or why not.
+- Free on lane A's `/`: <free before> → <free after>.
 
-| Flow           | Mode     | By        | Min | Outcome         | What was seen                                  |
-| -------------- | -------- | --------- | --- | --------------- | ---------------------------------------------- |
-| server.upgrade | agent    | Opus      | 9   | seen            | finished for <version>; the box runs this head |
-| …              | scripted | Sol       | 2   | failed · SLNT-n | <the line that differed from "See">            |
-| …              | agent    | Sol, Opus |     | seen            | <Opus re-saw it>                               |
+| Flow           | Lane | Mode     | By        | Min | Outcome         | What was seen                                  |
+| -------------- | ---- | -------- | --------- | --- | --------------- | ---------------------------------------------- |
+| server.upgrade | A    | agent    | Opus      | 9   | seen            | finished for <version>; the box runs this head |
+| …              | B    | scripted | Sol       | 2   | failed · SLNT-n | <the line that differed from "See">            |
+| …              | C    | agent    | Sol, Opus |     | seen            | <Opus re-saw it>                               |
 
 - Who drove the flows: <n> by Sol subagents (<n> subagent runs), <n> of them re-done by Opus, each
   named with why; <n> by Opus.
@@ -75,20 +80,21 @@ the full CI run (after linking the failed-tests watch's ticket when it has one):
    `packages/sessions/src/launch.ts`"). When none overlaps, say so and name none: an older cause is
    likely.
 2. **Grade it** by Fix Now or File (the home repo's `AGENTS.md`): what a person does to hit it and
-   how often. A core flow failing on `main` usually meets Fix Now; a fault only this box's set-up
+   how often. A core flow failing on `main` usually meets Fix Now; a fault only a check VM's set-up
    can produce is File.
 3. **Look for a twin.** Search SLNT's open tickets (any status but Done, Canceled or Duplicate) for
    the flow's id: `list_issues` with the id as the query finds it in a title or a description, and a
-   ticket this check filed ends its title `(main on the box: <flow>)` or names the flow in its list.
-   When one describes the same failure (the same part of the See line, the same words seen), it is
-   that failure: comment one line on it (this run's commit, and anything that changed), file
-   nothing, and write `failed · SLNT-n (known)` in the report's table. A ticket kept open as a
-   product question (on 17 Nov, SLNT-1086 and SLNT-1087) counts the same way. File a new ticket only
-   when no open ticket describes the failure, or the flow now fails a different way.
+   ticket this check filed ends its title `(main on the box: <flow>)` or names the flow in its list
+   (tickets from before 21 Nov 2026 say `on the box`; later ones say `on check VMs`). When one
+   describes the same failure (the same part of the See line, the same words seen), it is that
+   failure: comment one line on it (this run's commit, and anything that changed), file nothing, and
+   write `failed · SLNT-n (known)` in the report's table. A ticket kept open as a product question
+   (on 17 Nov, SLNT-1086 and SLNT-1087) counts the same way. File a new ticket only when no open
+   ticket describes the failure, or the flow now fails a different way.
 4. **File it:** project `CI follow-ups`, status `Todo`, assigned to Yiannis, label `mend`, related
    to SLNT-1050. The title is what a person saw, in the product's words, ending
-   `(main on the box: <flow>)`. The body follows the `linear` skill's template, and its Notes hold
-   the commit, the preview version, the PR and its overlap, the grade with its reason, and the
-   evidence paths under `$E`.
+   `(main on check VMs: <flow>)`. The body follows the `linear` skill's template, and its Notes hold
+   the commit, the preview version, the flow's lane, the PR and its overlap, the grade with its
+   reason, and the evidence paths under `$E`.
 
 Fix nothing; propose no fix beyond one sentence in the ticket.

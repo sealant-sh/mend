@@ -222,9 +222,9 @@ On a copy, `preview-deploy.sh` runs over ssh as on the box:
 Without `--boat` its sessions run in Docker, and a worktree the loaded data made on Boat cannot
 start a session there: make a new one, or start the copy with `--boat`. A Boat copy refuses a
 session in a project with resources (`@db`). A copy holds the same Codex login as the box run's
-data; keep a copy for one check, not for days. `pnpm verify vm list` shows what runs; with no master
-yet, `vm build` (preview-builds.md says its arguments) makes one in about ten minutes. VM 131 takes
-the same commands with its own ssh arguments:
+data, held against refresh: keep a copy for one check, not for days. `pnpm verify vm list` shows
+what runs; with no master yet, `vm build` (preview-builds.md says its arguments) makes one in about
+ten minutes. VM 131 takes the same commands with its own ssh arguments:
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'
@@ -238,7 +238,7 @@ pnpm verify box release --pr <n> --yes
 ```
 
 A check with no PR names itself with `--tag <name>` in place of `--pr <n>`; the scheduled run of
-`main` (`.agents/skills/box-main-run/`) holds the box as `main-<sha12>`.
+`main` (`.agents/skills/box-main-run/`) holds its own copies as `main-<sha12>`.
 
 **A route of the new web app on the box.** The box's image serves only the old app until cut-over.
 `drive new-web --box` serves the new app from this checkout, behind the same proxy as on a stack, in

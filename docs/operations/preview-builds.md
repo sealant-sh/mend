@@ -187,6 +187,7 @@ pnpm verify vm up            # a fresh copy: prints MEND_VERIFY_BOX_SSH and MEND
 pnpm verify vm list          # the master and each copy
 pnpm verify vm down <n>      # or --all: stops the copy and deletes its disk
 pnpm verify vm slot add      # a Boat slot joins the tailnet (an auth key from the owner); remove <n>
+pnpm verify vm save <n>      # the copy's data becomes the next master's (the daily run's own copy)
 ```
 
 **The master disk** is a stock Ubuntu 24.04 cloud image under QEMU/KVM with Docker, Node and the
@@ -199,10 +200,28 @@ and the machine keys the data is sealed with (`mend/keys` in the `mend_mend-conf
 `ExecutorIdentityFailure`) and the workspace SSH gateway's host key. The checker account, the second
 account, their CLI logins and the agent logins all work on it unchanged. The build then starts one
 session in `boat-check-ubuntu` and one in `boat-check-arch` as the checker, so the two workspace
-images are built once, and loads the data again. `--from-box` first copies all of that from VM 131
-(`identity.env`, `/root/main-run/world.{sql,store.tgz}`, `/srv/mend-git`, the two volumes); without
-it the build uses the copies already there. Measured on 20 Nov 2026: about 10 minutes, 32 GiB on
-disk, of which the warm-up is 6.5 minutes.
+images are built once, and loads the data again. Measured on 20 Nov 2026: about 10 minutes, 32 GiB
+on disk, of which the warm-up is 6.5 minutes.
+
+**The run's data** lives in `~/.local/share/mend-check-vms/box`, and the master is built from it:
+`world.sql`, `world.store.tgz`, `mend-git.tgz` and `mend-garage.tgz` (the blob store, where
+sessions' captures live), with VM 131's identity, keys and Boat key beside them. Since SLNT-1216 the
+daily run of `main` keeps it (`.agents/skills/box-main-run/`): each night its own copy (lane A) runs
+the flows that change it, and `vm save <n>` makes that copy's data the next master's. With Mend
+stopped in the copy, it holds every agent login against refresh (below), dumps the databases and the
+store directories they name, as `box release --save` does, and archives the git service and the blob
+store. It copies the four out beside the old ones, checks each (a dump with no `pg_dumpall` trailer
+is refused), and only then moves the old ones to `*.prev.*` and the new ones into place. The first
+master (20 Nov) had no blob store: VM 131's Garage volume holds the owner's data beside the run's,
+so it was not copied, and a change made on VM 131 shows `its capture manifest could not be read` on
+a copy. Changes made on copies since keep theirs. A save that fails anywhere leaves the directory as
+it was. It refuses data carrying a Mend migration `origin/main` lacks. The run then builds the
+master with `vm build` and no `--from-box`, from those files and its own preview, once no copy runs:
+a build replaces the disk every copy is backed by, refuses while any runs, and leaves no master
+until it ends. `--from-box` copies the data from VM 131 (`identity.env`,
+`/root/main-run/world.{sql,store.tgz}`, `/srv/mend-git`, the two volumes) instead. Do not use it
+after 20 Nov 2026: VM 131's copy of the run's data stopped there, and its agent logins have been
+spent since (below).
 
 **A copy** is a qcow2 overlay of the master with QEMU's user-mode network, 6 vCPU and 8 GB as VM 131
 has, on a loopback address of its own, `127.0.1.<n>`: web on `3105`, ssh on `2022` as root with the
@@ -287,15 +306,24 @@ Limits of a check VM:
   Boat session in a project with `@db` is refused there): its host id derives from the identity the
   copy shares with VM 131, so a copy's gateway would take the box's place. A worktree the loaded
   data made on Boat under that name starts on a Boat copy; on a Docker-only copy it cannot.
-- **One Codex login, shared.** Every copy holds the Codex login of the box run's data, and so does
-  the box while the daily run has that data loaded. On 20 Nov five copies ran Codex turns on it at
-  once: no copy refreshed it, and its revision and digest stayed the same on each. The bundled
-  worker checks every hour and refreshes a Codex login within 24 hours of its access token's expiry
-  (or when its last refresh is over 7 days old and no expiry is known), and these are constants, not
-  settings. A copy that refreshes spends the refresh token the master, the box run's `world.sql` and
-  the other copies hold: each of them is signed out at its own next refresh. Keep a copy for one
-  check, rebuild the master from a fresh `world.sql` (`--from-box`) rather than keep one for days,
-  and SLNT-1217 gives the copies a Codex login of their own.
+- **One set of agent logins, refreshed in one place.** Every copy holds the Codex and Claude logins
+  of the run's data. Only sealant's keep-fresh sweeper on a server refreshes them (every other
+  holder gets a copy with no usable refresh token), and a refresh spends the refresh token every
+  other copy holds: whichever refreshes first keeps the login, and every other is signed out at its
+  own next refresh. Codex: a 240-hour access token (measured 20 Nov), refreshed within 24 hours of
+  expiry on an hourly tick whose first comes 60 minutes after Mend starts. Claude: an 8-hour access
+  token, refreshed within an hour of expiry every 15 minutes. These are constants, not settings. So
+  the saved data holds each login against refresh: `vm save` sets its `refresh_claimed_until` to
+  2999, and a sweeper takes a login only when that is null or past (`claimRefresh`), so a copy
+  answers `skipped-claimed` and never refreshes. The daily run lifts the claim on its own copy alone
+  (`.agents/skills/box-main-run/refresher.sh lift`), lets it refresh what is due, and saves. A copy
+  started in the day runs on the access tokens of the last save: Codex's stays valid for days, and a
+  refresh due in the day waits for that night's run. Claude's expires about 8 hours after the save,
+  and a copy cannot refresh it (SLNT-1219). `node .agents/skills/box-main-run/logins.mjs` prints
+  when each saved login expires and whether it is held, with times only. A master built before
+  SLNT-1216 (on 20 Nov) holds no claim: hold it on a copy with `refresher.sh hold`. VM 131's own
+  copy of the run's data, `/root/main-run/world.sql`, is no longer loaded or saved after 20 Nov: its
+  logins went stale at the run's first refresh on a copy, and loading it there signs nothing in.
 - **Memory.** A copy takes about 9 GB of the host's memory once its sessions run.
 
 ## The box
@@ -357,9 +385,10 @@ on it.
     The hosts line that let the box resolve that name,
     `100.94.101.28 yiannis-k8s-arc.tailc79e49.ts.net`, is still in `/etc/hosts` and
     `/etc/cloud/templates/hosts.debian.tmpl` (backups `*.before-slnt-892-20261115`);
-  - the daily run of `main` brings its own data (`/root/main-run/world.sql`) with `prepare --load`
-    and `release --save`, as described under [Deploy](#deploy), so the owner's data and build are
-    back when it ends;
+  - until 20 Nov 2026 the daily run of `main` brought its own data (`/root/main-run/world.sql`) with
+    `prepare --load` and `release --save`, as described under [Deploy](#deploy). It runs on check
+    VMs now (SLNT-1216), so that file is left as the run's 20 Nov data, with agent logins the run
+    has since refreshed elsewhere: stale, and not to be loaded;
   - Docker workspaces on it cannot resolve the `APP_URL` either, which does not matter: a workspace
     reaches the server only through the session endpoint, and `pnpm verify health` says the app-URL
     probe from a workspace does not apply there;

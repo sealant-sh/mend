@@ -6,7 +6,19 @@ import test from "node:test";
 
 import { parseArgs } from "./verify.mjs";
 import { claimSlot, releaseSlot, slotDriveArgs, slotOfCopy } from "./vm-boat.mjs";
-import { addressOf, boxSshArgs, hostOf, SLOTS, urlOf, vmDown, vmList, vmUp } from "./vm.mjs";
+import {
+  addressOf,
+  boxSshArgs,
+  holdLoginsScript,
+  hostOf,
+  LOGIN_CLAIM,
+  SLOTS,
+  urlOf,
+  vmDown,
+  vmList,
+  vmSave,
+  vmUp,
+} from "./vm.mjs";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "vm-test-"));
 
@@ -169,4 +181,29 @@ test("a Boat slot's disk is attached by serial, behind the copy's own disk", () 
     "-device",
     "virtio-blk-pci,drive=tailnet,serial=mendtailnet",
   ]);
+});
+
+test("vm save refuses a copy that is not running, and leaves the saved data as it was", async () => {
+  const root = scratch();
+  try {
+    mkdirSync(join(root, "box"), { recursive: true });
+    writeFileSync(join(root, "box", "world.sql"), "the last good data");
+    const result = await vmSave({ root, repoRoot: process.cwd(), slot: 3 });
+    assert.equal(result.steps[0].status, "blocked_by_prerequisite");
+    assert.equal(readFileSync(join(root, "box", "world.sql"), "utf8"), "the last good data");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a saved copy's logins are held against refresh by a claim no sweeper reaches", () => {
+  assert.ok(Date.parse(LOGIN_CLAIM) > Date.parse("2900-01-01"));
+  assert.match(holdLoginsScript, /docker stop --time 60 mend-mend-1/);
+  assert.match(holdLoginsScript, /set refresh_claimed_until = '2999-01-01 00:00:00\+00'/);
+  assert.match(holdLoginsScript, /kind in \('auth-json', 'credentials-json'\)/);
+});
+
+test("verify vm save takes a copy's number", () => {
+  const { words } = parseArgs(["vm", "save", "2"]);
+  assert.deepEqual(words, ["vm", "save", "2"]);
 });
