@@ -551,10 +551,10 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
  * What a client words an item from (Settings → Server): its case and that case's data, apart from
  * the sentences the command line prints. One representative posture per case.
  */
-describe("each exposure item names its case and carries the case's data", () => {
-  const itemOf = (posture: ExposurePosture, id: string) =>
-    evaluateExposureGate(posture).find((outcome) => outcome.id === id);
+const itemOf = (posture: ExposurePosture, id: string) =>
+  evaluateExposureGate(posture).find((outcome) => outcome.id === id);
 
+describe("each exposure item names its case and carries the case's data", () => {
   it.each<[string, Partial<ExposurePosture>, Record<string, unknown>]>([
     ["https-origin", {}, { reason: "all-https", originCount: 1, established: "observed" }],
     [

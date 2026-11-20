@@ -45,6 +45,7 @@ const SECTIONS = [
 ];
 
 const visible = (locator) => locator.filter({ visible: true }).first();
+const textOf = (locator) => locator.evaluate((element) => element.textContent ?? "");
 const apiOf = (on) => (method, url, body) =>
   on.evaluate(
     async ({ verb, address, payload }) => {
@@ -170,8 +171,8 @@ const keyReport = (refused) => {
  * addresses answered, the server's own key held (refused, or checked and fine, or none at all),
  * and Sealant listing Boat with the resource gateway.
  */
-const withBoat = (real, { key, docker = true }) => {
-  const json = real.result.data.json;
+const withBoat = (stack, { key, docker = true }) => {
+  const json = stack.result.data.json;
   const machine = {
     ...json,
     sessionRuntimes: { offered: docker ? ["docker", "boat"] : ["boat"], default: "boat" },
@@ -199,7 +200,7 @@ const withBoat = (real, { key, docker = true }) => {
     },
   };
   const dates = [
-    ...Object.keys(real.result.data.meta?.values ?? {}),
+    ...Object.keys(stack.result.data.meta?.values ?? {}),
     "boat.addresses.0.observedAt",
     "boat.addresses.1.observedAt",
     "boat.launch.observedAt",
@@ -332,7 +333,6 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await settled();
   };
   const section = (name) => visible(page.getByRole("region", { name, exact: true }));
-  const textOf = (locator) => locator.evaluate((element) => element.textContent ?? "");
   /**
    * Answer every call to the named procedures in a batch with `answer(path, real)`, where `real` is
    * what the stack answered; null keeps the stack's answer.
@@ -397,17 +397,17 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     report.body.items.every((item) => typeof item.reason === "string"),
     report.body.items.map((item) => [item.id, item.reason]),
   );
-  const open_ = report.body.items.filter((item) => item.established === "open");
+  const openChecks = report.body.items.filter((item) => item.established === "open");
   note(
-    `exposure-report: declared ${report.body.declared}, ${report.body.items.length} items, ${open_.length} open; cases ${report.body.items.map((item) => `${item.id}=${item.reason}`).join(", ")}`,
+    `exposure-report: declared ${report.body.declared}, ${report.body.items.length} items, ${openChecks.length} open; cases ${report.body.items.map((item) => `${item.id}=${item.reason}`).join(", ")}`,
   );
   const reach = section("Who can reach it");
   await visible(reach.getByText(/^Mend checked this server /)).waitFor();
-  if (report.body.declared !== "public" && open_.length > 0) {
+  if (report.body.declared !== "public" && openChecks.length > 0) {
     await visible(
       reach.getByText(
         new RegExp(
-          `^Before this server could go public, (${open_.length}|one) things? would have to change\\.$`,
+          `^Before this server could go public, (${openChecks.length}|one) things? would have to change\\.$`,
         ),
       ),
     ).waitFor();
@@ -462,7 +462,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   // --- The frames' server: private, Boat offered with a key of its own, all closed ---------
   const connected = { status: "connected", baseUrl: "http://sealant:8080", detail: null };
   await rewrite({
-    "platform.machine": (real) => withBoat(real, { key: "fine" }),
+    "platform.machine": (stack) => withBoat(stack, { key: "fine" }),
     "platform.sealantConnection": () => sealantAnswer(connected),
   });
   await reopen();
@@ -493,7 +493,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   // --- Sealant checking --------------------------------------------------------------------
   await page.unroute("**/trpc/**");
   await rewrite({
-    "platform.machine": (real) => withBoat(real, { key: "fine" }),
+    "platform.machine": (stack) => withBoat(stack, { key: "fine" }),
     "platform.sealantConnection": async () => {
       await new Promise((resolve) => setTimeout(resolve, 4_000));
       return sealantAnswer(connected);
@@ -510,7 +510,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
 
   // --- Needs you: Sealant unreachable, Boat refusing the server's key ---------------------
   await rewrite({
-    "platform.machine": (real) => withBoat(real, { key: "refused" }),
+    "platform.machine": (stack) => withBoat(stack, { key: "refused" }),
     "platform.sealantConnection": () =>
       sealantAnswer({
         status: "unreachable",
@@ -550,9 +550,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   note(`/api/health still counts the exposure checks: ${JSON.stringify(health.body?.exposure)}`);
   await rewrite({
     "platform.exposure": () => answerOf(PUBLIC_IN_PLACE(version)),
-    "platform.health": (real) =>
-      answerOf({ ...real.result.data.json, tenancy: "multi", deploymentMode: "kubernetes" }),
-    "platform.machine": (real) => withBoat(real, { key: "none", docker: false }),
+    "platform.health": (stack) =>
+      answerOf({ ...stack.result.data.json, tenancy: "multi", deploymentMode: "kubernetes" }),
+    "platform.machine": (stack) => withBoat(stack, { key: "none", docker: false }),
     "platform.sealantConnection": () => sealantAnswer(connected),
     "operator.gate": () => answerOf(GATE_IN_PLACE),
     "operator.organizations": () => organizationsAnswer(THREE_ORGANIZATIONS),
@@ -585,20 +585,20 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.unroute("**/trpc/**");
 
   // The same server public with the stack's real checks: every open one needs the operator.
-  if (open_.length > 0) {
+  if (openChecks.length > 0) {
     await rewrite({
-      "platform.exposure": (real) => answerOf({ ...real.result.data.json, declared: "public" }),
+      "platform.exposure": (stack) => answerOf({ ...stack.result.data.json, declared: "public" }),
     });
     await reopen();
     const publicNeeds = section("Needs you");
     await publicNeeds.waitFor();
     const listedOpen = await publicNeeds.getByRole("listitem").count();
-    expect("each open check needs the operator", listedOpen >= open_.length, {
+    expect("each open check needs the operator", listedOpen >= openChecks.length, {
       listedOpen,
-      open: open_.length,
+      open: openChecks.length,
     });
     note(
-      `public with the stack's ${open_.length} open checks (recorded declaration): each in Needs you`,
+      `public with the stack's ${openChecks.length} open checks (recorded declaration): each in Needs you`,
     );
     await shot("server-public-open-desktop-light");
     await page.unroute("**/trpc/**");
@@ -709,7 +709,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.setViewportSize(PHONE);
   await open("/settings/profile");
   await rewrite({
-    "platform.machine": (real) => withBoat(real, { key: "fine" }),
+    "platform.machine": (stack) => withBoat(stack, { key: "fine" }),
     "platform.sealantConnection": () => sealantAnswer(connected),
   });
   await reopen();
