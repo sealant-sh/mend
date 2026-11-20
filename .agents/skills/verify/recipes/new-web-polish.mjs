@@ -70,7 +70,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const parkMouse = () => page.mouse.move(DESKTOP.width - 4, DESKTOP.height - 4);
   /**
    * Every control under `selector` whose focus ring (3px outside its box) a scrolling or clipping
-   * ancestor cuts off at the side: the control's name and the ancestor that clips it.
+   * ancestor cuts off: the control's name, where, and the ancestor that clips it.
    */
   const clippedRings = (selector) =>
     page.evaluate((sel) => {
@@ -92,11 +92,19 @@ export default async ({ page, web, capture: captureOnce, note }) => {
           const outer = up.getBoundingClientRect();
           const left = outer.left + up.clientLeft;
           const right = left + up.clientWidth;
-          if (box.left - RING < left - 0.5 || box.right + RING > right + 0.5) {
+          const top = outer.top + up.clientTop;
+          const bottom = top + up.clientHeight;
+          const side = box.left - RING < left - 0.5 || box.right + RING > right + 0.5;
+          // Top and bottom count only for a control the list shows whole (one scrolled half out
+          // of view is cut by scrolling, not by its ring).
+          const whole = box.top >= top && box.bottom <= bottom;
+          const end = whole && (box.top - RING < top - 0.5 || box.bottom + RING > bottom + 0.5);
+          if (side || end) {
             found.push({
               control: (control.getAttribute("aria-label") ?? control.textContent ?? "")
                 .trim()
                 .slice(0, 40),
+              at: side ? "side" : "top or bottom",
               clippedBy:
                 up.getAttribute("data-slot") ??
                 `${up.tagName.toLowerCase()}${up.getAttribute("aria-label") ? `[${up.getAttribute("aria-label")}]` : ""}`,
@@ -196,7 +204,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await settled();
   expect((await edge()).border === "0px", "no border on the folded rail's edge");
   await both("rail-desktop");
-  await auditRings("the folded rail", "[data-slot=sidebar]");
+  expect(
+    (await auditRings("the folded rail", "[data-slot=sidebar]")).length === 0,
+    "no focus ring in the folded rail is cut off",
+  );
   await page.getByRole("button", { name: "Expand sidebar" }).first().click();
   await page.getByRole("navigation", { name: "Inbox" }).waitFor();
   await settled();
@@ -227,7 +238,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.getByRole("menuitem", { name: "Open project" }).waitFor();
   expect(path() === "/projects", 'the row\'s "…" opens its menu and stays on Projects');
   await page.keyboard.press("Escape");
-  await auditRings("the Projects table", "table[aria-label=Projects]");
+  expect(
+    (await auditRings("the Projects table", "table[aria-label=Projects]")).length === 0,
+    "no focus ring in the Projects table is cut off",
+  );
 
   // 10. A project's sessions: the whole row opens the session.
   await open(`/projects/${projectId}`);
@@ -240,7 +254,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await projectSessionRow.hover();
   await settled();
   await capture("project-sessions-row-hover-light");
-  await auditRings("the project's Sessions table", "table[aria-label=Sessions]");
+  expect(
+    (await auditRings("the project's Sessions table", "table[aria-label=Sessions]")).length === 0,
+    "no focus ring in the project's Sessions table is cut off",
+  );
   await projectSessionRow.getByRole("cell").nth(3).click();
   expect(
     await reaches(new RegExp(`^/sessions/${sessionId}`)),

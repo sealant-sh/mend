@@ -1915,13 +1915,13 @@ flows reuse what earlier ones made:
 - **Needs:** either; no turn; CLI and web; a session that keeps running
 - **Do:** Drive the recipe `new-web-polish` (after its CLI batch `new-web-polish-sessions.json`):
   the sheet's edge beside the sidebar, open, pointed at and folded; a session row's focus ring and
-  its right-click and "…" menus; Open project from them and from the phone's row sheet; a click on
-  a Projects row and a project's Sessions row away from the name; the session header's and
-  Settings' breadcrumbs.
-- **See:** no line on the sidebar's edge at rest, in light or dark, and a short handle while
-  pointed at; every focus ring in the app sidebar and the settings sidebar whole; `Open project`
-  right after `Open session`, opening the project; each row opens its project or session; the
-  project's name in a session's header and a project settings page's breadcrumb opens the project.
+  its right-click and "…" menus; Open project from them and from the phone's row sheet; a click on a
+  Projects row and a project's Sessions row away from the name; the session header's and Settings'
+  breadcrumbs.
+- **See:** no line on the sidebar's edge at rest, in light or dark, and a short handle while pointed
+  at; every focus ring in both sidebars and the two tables whole; `Open project` right after
+  `Open session`, opening the project; each row opens its project or session; the project's name in
+  a session's header and a project settings page's breadcrumb opens the project.
 - **Mode:** `scripted` (recipes/new-web-polish.mjs)
 - **Box-only:** no
 - **Box:** after cut-over

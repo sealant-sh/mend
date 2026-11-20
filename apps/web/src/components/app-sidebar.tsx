@@ -137,10 +137,11 @@ const RAIL_HANDLE = cn(
 
 /**
  * Room for a focus ring inside a list that scrolls: a scroller clips what is drawn outside its
- * box, and a row's ring is drawn just outside the row. The padding gives the ring that room and
- * the negative margin keeps the rows where they were.
+ * box, and a row's ring is drawn just outside the row. The padding gives the ring that room at
+ * the sides and the negative margin keeps the rows where they were; the scroll padding stops the
+ * keyboard from scrolling a focused row flush against the top or bottom, where its ring is cut.
  */
-export const RING_ROOM = "-mx-1 px-1";
+export const RING_ROOM = "-mx-1 px-1 scroll-py-1";
 
 /** On the desk, a control's own ground: the background showing through. */
 const RAISED = "bg-background/72";

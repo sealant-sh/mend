@@ -3,7 +3,12 @@ import * as React from "react";
 
 function Table({ className, ...props }: React.ComponentProps<"table">) {
   return (
-    <div data-slot="table-container" className="relative w-full overflow-x-auto">
+    // It scrolls sideways, so it clips: the padding (and the margin that cancels it) leaves room for
+    // the focus ring of a control in the first or last column.
+    <div
+      data-slot="table-container"
+      className="relative -mx-1 w-[calc(100%+0.5rem)] overflow-x-auto px-1"
+    >
       <table
         data-slot="table"
         className={cn("w-full caption-bottom text-sm", className)}
