@@ -148,6 +148,9 @@ export const defaultWorkspaceImage: FamilyWorkspaceImage = {
   screen: true,
 };
 
+/** Mend's default packages, which migration 0234 uses to tell an image nobody edited. */
+export const defaultWorkspacePackages: ReadonlyArray<string> = DEFAULT_WORKSPACE_PACKAGES;
+
 /**
  * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's
  * Xvnc and `vncpasswd`, `xauth` for the display's cookie, `xdpyinfo` to wait for the display,

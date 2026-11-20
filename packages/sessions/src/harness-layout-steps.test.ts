@@ -68,6 +68,9 @@ import {
 import { DOTFILES_NOT_TO_ROOT } from "./person-deliveries.ts";
 import { makeWriteTokens } from "./write-tokens.ts";
 
+/** These cases are about images whose per-person answer is known or not, not screens. */
+const noScreen = { ...defaultWorkspaceImage, screen: false };
+
 /**
  * The per-person steps' own memory (docs/adr/0016): the layout each launch runs, as the session
  * channel reads it on every request, and what prepare's report makes of a person who could not
@@ -394,7 +397,7 @@ const decideInput = (launchId: string, worktree = "wt-1") => ({
   launchId,
   ownerUserId: "user-alice",
   organizationId: OrganizationId.make("org-1"),
-  image: Effect.succeed(defaultWorkspaceImage),
+  image: Effect.succeed(noScreen),
   harness: claudeCode(),
   headHasPeople: Effect.succeed(false),
 });
@@ -402,7 +405,7 @@ const decideInput = (launchId: string, worktree = "wt-1") => ({
 /** What a fresh worktree of Alice's is predicted on (`freshLaunchLayout`, `standbyLayoutFor`). */
 const freshInput = {
   ownerUserId: "user-alice",
-  image: Effect.succeed(defaultWorkspaceImage),
+  image: Effect.succeed(noScreen),
   harness: claudeCode(),
 };
 
@@ -668,7 +671,7 @@ describe("the default against images and runtimes that cannot run per person (re
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const state = makeHarnessLayoutsMemoryState();
-        const spec = imageLayoutKeyOf(defaultWorkspaceImage, null);
+        const spec = imageLayoutKeyOf(noScreen, null);
         state.capabilities.set(`${spec}\u0000docker`, {
           imageKey: spec,
           runtime: "docker",

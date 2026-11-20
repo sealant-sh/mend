@@ -2,9 +2,14 @@
 //
 //   pnpm verify drive new-web --recipe new-web-owner-pass-polish
 //
-// - The agent's screen is on by default: verify-fixture, which the stack made with no image setting
-//   saved, has Screen on in its workspace settings, and a shell session started there, changing
-//   nothing about its screen, gets a live screen.
+// - The agent's screen is on by default: the organization's Workspace image, which the stack made
+//   with nothing saved, reads Screen on; a project added now (Spoon-Knife, from GitHub) opens its
+//   image editor with Screen on, and a shell session started there gets a live screen. After the
+//   owner turns the organization's Screen off, the next project starts without one and the first
+//   keeps its own. Migration 0234's effect on saved images is the box's (a local stack starts
+//   empty); its Postgres test covers it here.
+// - The project's Sessions tab counts what it shows, and with nothing open says how to see the
+//   stopped sessions; no match says so with Clear filters; Projects with no match likewise.
 // - Empty states sit in the middle of the space they're in: the project's Skills tab with no
 //   skills, and every other empty state the stack shows, each measured against its container.
 // - Settings sections stand apart: Agent logins and Git, and the organization's General page.
@@ -239,12 +244,17 @@ export default async ({ page, web, capture, note }) => {
 
   // This server can't run Executor: Use your own is selected and Mend runs it is disabled.
   stubs.set("executor.configuration", { json: { ...real, mode: null, mendRunAvailable: false } });
-  await page.goto(`${web}/settings/organization/integrations`);
-  await hydrated();
+  await reread();
   await visible(page.getByText("Not set up.", { exact: true })).waitFor();
-  note(
-    `mendRunAvailable false: selected ${JSON.stringify(await pressed())}; Mend runs it disabled: ${await visible(page.locator('[data-slot="segmented-item"]', { hasText: "Mend runs it" })).isDisabled()}`,
+  await page.waitForTimeout(800);
+  const mendRun = visible(
+    page.locator('[data-slot="segmented-item"]', { hasText: "Mend runs it" }),
   );
+  note(
+    `mendRunAvailable false: selected ${JSON.stringify(await pressed())}; Mend runs it disabled: ${await mendRun.isDisabled()}`,
+  );
+  if (JSON.stringify(await pressed()) !== JSON.stringify(["Use your own"]))
+    throw new Error("with Mend unable to run Executor, Use your own isn't the one selected");
   await shot("fixture-integrations-executor-no-mend-run-desktop-light");
 
   // Mend runs it, set up: the selected option opens nothing; the other opens its dialog.
@@ -271,7 +281,7 @@ export default async ({ page, web, capture, note }) => {
   stubs.set("executor.directory", { json: { services: [] } });
   await reread();
   await visible(page.getByText(/^Running/)).waitFor();
-  await visible(page.locator('[data-slot="segmented-item"]', { hasText: "Mend runs it" })).click();
+  await mendRun.click();
   await settled();
   if ((await page.getByRole("dialog").count()) > 0)
     throw new Error("picking the selected option opened a dialog");
@@ -282,15 +292,28 @@ export default async ({ page, web, capture, note }) => {
   stubs.clear();
 
   // --- 3. The agent's screen is on by default ----------------------------------------------------
-  const fixture = await client(
-    async (trpc) => (await trpc.projects.list.query()).find((p) => p.name === "verify-fixture"),
-    null,
-  );
-  if (fixture === undefined) throw new Error("no project verify-fixture on this stack");
-  const detail = await client(async (trpc, id) => trpc.projects.detail.query({ id }), fixture.id);
-  note(
-    `verify-fixture's own image, as the stack made it: ${JSON.stringify(detail.project.workspaceImage)}`,
-  );
+  const projects = () => client(async (trpc) => trpc.projects.list.query(), null);
+  const imageOf = async (id) =>
+    (await client(async (trpc, project) => trpc.projects.detail.query({ id: project }), id)).project
+      .workspaceImage;
+  /** Add Spoon-Knife as a new project, as anyone would, and wait until it is listed. */
+  const addProject = async (prefix) => {
+    const name = `${prefix}-${Date.now().toString(36).slice(-4)}`;
+    await client(
+      async (trpc, project) =>
+        trpc.projects.adopt.mutate({
+          name: project,
+          source: "https://github.com/octocat/Spoon-Knife.git",
+        }),
+      name,
+    );
+    for (let tries = 0; tries < 90; tries += 1) {
+      const found = (await projects()).find((p) => p.name === name);
+      if (found !== undefined) return found;
+      await page.waitForTimeout(2_000);
+    }
+    throw new Error(`${name} wasn't added`);
+  };
   /** The project's Screen switch, as its image editor opens with it; closed without saving. */
   const projectScreen = async (projectId, name) => {
     await page.goto(`${web}/projects/${projectId}/settings/workspace`);
@@ -304,11 +327,8 @@ export default async ({ page, web, capture, note }) => {
     await page.keyboard.press("Escape");
     return checked;
   };
-  note(
-    `verify-fixture's image editor opens with Screen for the agent ${await projectScreen(fixture.id, "project-workspace-screen-on-desktop-light")}`,
-  );
 
-  // The organization's starting image says the same, and new projects copy it.
+  // The organization's starting image, which the stack made with nothing saved.
   await page.goto(`${web}/settings/organization/workspace-image`);
   await hydrated();
   const orgScreen = visible(
@@ -317,80 +337,67 @@ export default async ({ page, web, capture, note }) => {
   await orgScreen.waitFor({ timeout: 30_000 });
   await orgScreen.scrollIntoViewIfNeeded();
   note(
-    `the organization's Workspace image page reads ${JSON.stringify(await orgScreen.innerText())}`,
+    `the organization's Workspace image page reads ${JSON.stringify((await orgScreen.innerText()).replace(/\s+/g, " "))}`,
   );
   await shot("organization-workspace-image-desktop-light");
-  const starting = (await client(async (trpc) => trpc.organization.settings.query(), null))
-    .workspaceImage;
-  const offSaved = await client(
-    async (trpc, image) =>
-      trpc.organization.setWorkspaceEnvironment.mutate({ workspaceImage: image }),
-    { ...starting, screen: false },
-  );
-  note(`the owner turns the organization's Screen off: saved ${offSaved.saved}`);
-  const projectName = `screen-off-${Date.now().toString(36).slice(-4)}`;
-  await client(
-    async (trpc, name) =>
-      trpc.projects.adopt.mutate({ name, source: "https://github.com/octocat/Spoon-Knife.git" }),
-    projectName,
-  );
-  let added;
-  for (let tries = 0; tries < 60 && added === undefined; tries += 1) {
-    added = (await client(async (trpc) => trpc.projects.list.query(), null)).find(
-      (p) => p.name === projectName,
-    );
-    if (added === undefined) await page.waitForTimeout(2_000);
-  }
-  if (added === undefined) throw new Error("the new project wasn't added");
-  const addedImage = (
-    await client(async (trpc, id) => trpc.projects.detail.query({ id }), added.id)
-  ).project.workspaceImage;
-  note(`${projectName}, added after that, has the image ${JSON.stringify(addedImage)}`);
-  note(
-    `${projectName}'s image editor opens with Screen for the agent ${await projectScreen(added.id, "project-after-org-off-workspace-desktop-light")}`,
-  );
-  const fixtureAfter = (
-    await client(async (trpc, id) => trpc.projects.detail.query({ id }), fixture.id)
-  ).project.workspaceImage;
-  note(`verify-fixture, which already existed, still has screen ${fixtureAfter.screen}`);
-  await client(
-    async (trpc, image) =>
-      trpc.organization.setWorkspaceEnvironment.mutate({ workspaceImage: image }),
-    starting,
-  );
-  await client(async (trpc, id) => trpc.projects.remove.mutate({ id }), added.id).catch(
-    () => undefined,
-  );
-  note(`put the organization's image back and removed ${projectName}`);
 
-  const worktree = await client(
-    async (trpc, [project, name]) =>
-      trpc.worktrees.create.mutate({ projectId: project, worktree: { name, base: null } }),
-    [fixture.id, `screen-default-${Date.now()}`],
+  // A project added now, with no setting saved anywhere, copies it.
+  const fresh = await addProject("screen-default");
+  note(
+    `${fresh.name}, added with nothing saved, has the image ${JSON.stringify(await imageOf(fresh.id))}`,
   );
-  const shell = await client(
-    async (trpc, tree) =>
-      trpc.worktrees.createSession.mutate({ id: tree, session: { harness: "shell", label: null } }),
-    worktree.id,
+  note(
+    `${fresh.name}'s image editor opens with Screen for the agent ${await projectScreen(fresh.id, "project-workspace-screen-on-desktop-light")}`,
   );
-  await client(async (trpc, id) => trpc.sessions.launch.mutate({ id, request: {} }), shell.id);
-  note(`started shell session ${shell.id} in ${worktree.name}, changing nothing in the image`);
-  let status = "";
-  for (let tries = 0; tries < 120; tries += 1) {
-    status = (await client(async (trpc, id) => trpc.sessions.detail.query({ id }), shell.id))
-      .session.status;
-    if (status !== "starting" && status !== "queued" && status !== "launching") break;
-    await page.waitForTimeout(5_000);
+
+  // A session there gets a live screen, with nothing about the screen changed.
+  const startShell = async (projectId) => {
+    const worktree = await client(
+      async (trpc, [project, name]) =>
+        trpc.worktrees.create.mutate({ projectId: project, worktree: { name, base: null } }),
+      [projectId, `screen-${Date.now().toString(36)}`],
+    );
+    const shell = await client(
+      async (trpc, tree) =>
+        trpc.worktrees.createSession.mutate({
+          id: tree,
+          session: { harness: "shell", label: null },
+        }),
+      worktree.id,
+    );
+    await client(async (trpc, id) => trpc.sessions.launch.mutate({ id, request: {} }), shell.id);
+    let status = "";
+    for (let tries = 0; tries < 120; tries += 1) {
+      status = (await client(async (trpc, id) => trpc.sessions.detail.query({ id }), shell.id))
+        .session.status;
+      if (!["starting", "queued", "launching", "pending"].includes(status)) break;
+      await page.waitForTimeout(5_000);
+    }
+    return { id: shell.id, worktree: worktree.name, status };
+  };
+  let session = await startShell(fresh.id);
+  note(`shell session ${session.id} in ${session.worktree} is ${session.status}`);
+  if (session.status !== "running") {
+    // A local stack's nested Docker doesn't come up (new-web-screen.mjs); the screen needs none.
+    const image = await imageOf(fresh.id);
+    await client(
+      async (trpc, [id, workspaceImage]) =>
+        trpc.projects.setWorkspaceImage.mutate({ id, request: { workspaceImage } }),
+      [fresh.id, { ...image, services: { docker: false } }],
+    );
+    session = await startShell(fresh.id);
+    note(
+      `with Docker inside turned off (a local stack can't run it; Screen left as it was), shell session ${session.id} is ${session.status}`,
+    );
   }
-  note(`the shell session is ${status}`);
   let screen = null;
   for (let tries = 0; tries < 48; tries += 1) {
-    screen = await client(async (trpc, id) => trpc.screens.read.query({ id }), shell.id);
+    screen = await client(async (trpc, id) => trpc.screens.read.query({ id }), session.id);
     if (screen?._tag !== "Screen" || !["NotStarted", "Starting"].includes(screen.life._tag)) break;
     await page.waitForTimeout(5_000);
   }
   note(`screens.read answers ${JSON.stringify(screen)}`);
-  await page.goto(`${web}/sessions/${shell.id}/screen`);
+  await page.goto(`${web}/sessions/${session.id}/screen`);
   await hydrated();
   const body = visible(page.locator('[data-tab-body="view:screen"]'));
   await body.waitFor({ timeout: 30_000 });
@@ -399,66 +406,90 @@ export default async ({ page, web, capture, note }) => {
     .first()
     .waitFor({ state: "hidden", timeout: 30_000 })
     .catch(() => undefined);
-  await settled();
+  await page.waitForTimeout(3_000);
   note(
     `the Screen view reads ${JSON.stringify((await body.innerText()).replace(/\s+/g, " ").trim())}`,
   );
   note(`its accessibility tree:\n${await body.ariaSnapshot()}`);
   await shot("session-screen-desktop-light");
-  await client(async (trpc, id) => trpc.sessions.stop.mutate({ id }), shell.id);
+  await client(async (trpc, id) => trpc.sessions.stop.mutate({ id }), session.id);
   for (let tries = 0; tries < 60; tries += 1) {
-    const now = (await client(async (trpc, id) => trpc.sessions.detail.query({ id }), shell.id))
+    const now = (await client(async (trpc, id) => trpc.sessions.detail.query({ id }), session.id))
       .session.status;
     if (["stopped", "completed", "failed"].includes(now)) break;
     await page.waitForTimeout(2_000);
   }
-  note(`stopped session ${shell.id}`);
+  note(`stopped session ${session.id}`);
+
+  // The owner turns the organization's Screen off: the next project starts without one, and the
+  // project that already existed keeps its own.
+  const starting = (await client(async (trpc) => trpc.organization.settings.query(), null))
+    .workspaceImage;
+  const offSaved = await client(
+    async (trpc, image) =>
+      trpc.organization.setWorkspaceEnvironment.mutate({ workspaceImage: image }),
+    { ...starting, screen: false },
+  );
+  note(`the organization's Screen turned off: saved ${offSaved.saved}`);
+  const later = await addProject("screen-off");
+  note(`${later.name}, added after that, has the image ${JSON.stringify(await imageOf(later.id))}`);
+  note(
+    `${later.name}'s image editor opens with Screen for the agent ${await projectScreen(later.id, "project-after-org-off-workspace-desktop-light")}`,
+  );
+  note(
+    `${fresh.name}, which already existed, still has screen ${(await imageOf(fresh.id)).screen}`,
+  );
+  await client(
+    async (trpc, image) =>
+      trpc.organization.setWorkspaceEnvironment.mutate({ workspaceImage: image }),
+    starting,
+  );
+  await client(async (trpc, id) => trpc.projects.remove.mutate({ id }), later.id).catch(
+    () => undefined,
+  );
+  note(`put the organization's image back and removed ${later.name}`);
 
   // --- 14. The project's Sessions tab: its count, and what it says when nothing is in view --------
   const sessionsTab = visible(page.getByRole("link", { name: /^Sessions/ }));
-  await page.goto(`${web}/projects/${fixture.id}`);
+  await page.goto(`${web}/projects/${fresh.id}`);
   await hydrated();
   await sessionsTab.waitFor({ timeout: 30_000 });
   await page.waitForTimeout(1_500);
-  const rowsShown = await page.locator("table tbody tr").filter({ visible: true }).count();
   note(
-    `Sessions tab reads ${JSON.stringify(await sessionsTab.innerText())}; the open list shows ${rowsShown} rows`,
+    `${fresh.name}'s Sessions tab reads ${JSON.stringify(await sessionsTab.innerText())}; the open list shows ${await page.locator("table tbody tr").filter({ visible: true }).count()} rows`,
   );
-  const nothingOpen = page.getByRole("heading", { name: /^Nothing open in / });
-  if (await nothingOpen.isVisible()) {
-    note(
-      `nothing open: ${JSON.stringify((await visible(page.locator('[data-slot="empty"]')).innerText()).replace(/\s+/g, " "))}`,
-    );
-    await width("desktop");
-    await both("project-sessions-nothing-open-desktop");
-    await width("phone");
-    await both("project-sessions-nothing-open-phone");
-    await width("desktop");
-    await visible(page.getByRole("button", { name: "Show stopped sessions" })).click();
-    await page.waitForURL((url) => url.searchParams.get("show") === "stopped");
-    await page.waitForTimeout(800);
-    note(
-      `Show stopped sessions: ${await page.locator("table tbody tr").filter({ visible: true }).count()} stopped rows`,
-    );
-    await shot("project-sessions-stopped-desktop-light");
-  } else note("the stack has open sessions in verify-fixture, so the tab lists them");
-  await page.goto(`${web}/projects/${fixture.id}?show=stopped&q=nothing-matches-this`);
+  await visible(page.getByRole("heading", { name: /^Nothing open in / })).waitFor({
+    timeout: 30_000,
+  });
+  note(
+    `nothing open: ${JSON.stringify((await visible(page.locator('[data-slot="empty"]')).innerText()).replace(/\s+/g, " "))}; ${JSON.stringify(await offCentre())}`,
+  );
+  await width("desktop");
+  await both("project-sessions-nothing-open-desktop");
+  await width("phone");
+  await both("project-sessions-nothing-open-phone");
+  await width("desktop");
+  await visible(page.getByRole("button", { name: "Show stopped sessions" })).click();
+  await page.waitForURL((url) => url.searchParams.get("show") === "stopped");
+  await page.waitForTimeout(800);
+  note(
+    `Show stopped sessions: ${await page.locator("table tbody tr").filter({ visible: true }).count()} stopped rows`,
+  );
+  await shot("project-sessions-stopped-desktop-light");
+  await page.goto(`${web}/projects/${fresh.id}?show=stopped&q=nothing-matches-this`);
   await hydrated();
   await visible(page.getByRole("heading", { name: "No session matches" })).waitFor({
     timeout: 30_000,
   });
   await shot("project-sessions-no-match-desktop-light");
   await visible(page.getByRole("button", { name: "Clear filters" })).click();
-  note("a search with no match shows No session matches with Clear filters, which clears it");
-  await page.goto(`${web}/projects`);
-  await hydrated();
-  await page.getByRole("searchbox").first().fill("nothing-matches-this");
-  await visible(page.getByRole("heading", { name: "No project matches" })).waitFor();
-  note(`Projects, no match: ${JSON.stringify(await offCentre())}`);
-  await shot("projects-no-match-desktop-light");
+  await page.waitForTimeout(800);
+  note(
+    `a search with no match shows No session matches; Clear filters leaves ${await page.locator("table tbody tr").filter({ visible: true }).count()} rows`,
+  );
 
   // --- 14. Empty states sit in the middle ---------------------------------------------------------
-  await page.goto(`${web}/projects/${fixture.id}/skills`);
+  await page.goto(`${web}/projects/${fresh.id}/skills`);
   await hydrated();
   await visible(page.getByRole("heading", { name: /^No skills in / })).waitFor({
     timeout: 30_000,
@@ -470,13 +501,20 @@ export default async ({ page, web, capture, note }) => {
   await both("project-skills-empty-phone");
   await width("desktop");
 
-  // Every other empty state the stack shows, each beside the one above.
+  await page.goto(`${web}/projects`);
+  await hydrated();
+  await page.getByRole("searchbox").first().fill("nothing-matches-this");
+  await visible(page.getByRole("heading", { name: "No project matches" })).waitFor();
+  note(`Projects, no match: ${JSON.stringify(await offCentre())}`);
+  await shot("projects-no-match-desktop-light");
+
+  // Every other empty state the stack shows, each measured the same way.
   for (const [path, name] of [
     ["/skills", "your-skills"],
-    [`/projects/${fixture.id}/resources`, "project-resources"],
+    [`/projects/${fresh.id}/worktrees`, "project-worktrees"],
+    [`/projects/${fresh.id}/resources`, "project-resources"],
     ["/settings/mcp-servers", "settings-mcp-servers"],
     ["/settings/organization/folders", "settings-organization-folders"],
-    [`/projects/${fixture.id}/settings/folders`, "project-settings-folders"],
   ]) {
     await page.goto(`${web}${path}`);
     await hydrated();
@@ -484,4 +522,8 @@ export default async ({ page, web, capture, note }) => {
     note(`${path}: ${JSON.stringify(await offCentre())}`);
     await shot(`empty-${name}-desktop-light`);
   }
+  await client(async (trpc, id) => trpc.projects.remove.mutate({ id }), fresh.id).catch(
+    () => undefined,
+  );
+  note(`removed ${fresh.name}`);
 };

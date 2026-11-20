@@ -720,9 +720,10 @@ function OwnerExecutor({
   const refresh = useRefresh();
   const manage = useMutation(trpc.executor.manage.mutationOptions({ onSettled: refresh }));
   const [dialog, setDialog] = useState<"mend-run" | "own" | "stop-own" | "remove" | null>(null);
-  // Before anyone sets it up, the choice is the page's own until the action below saves it. It
-  // starts on what Mend would use: the Executor it runs, where this server can run one.
-  const [choice, setChoice] = useState<ExecutorMode>(saved.mendRunAvailable ? "mend-run" : "own");
+  // Before anyone sets it up, the choice is the page's own until the action below saves it. Until
+  // someone picks, it is what Mend would use: the Executor it runs, where this server can run one.
+  const [picked, setPicked] = useState<ExecutorMode | null>(null);
+  const choice: ExecutorMode = saved.mendRunAvailable ? (picked ?? "mend-run") : "own";
   const setUp = saved.mode === null;
   const [ownUrl, setOwnUrl] = useState("");
   const setUpOwn = useMutation(
@@ -849,7 +850,7 @@ function OwnerExecutor({
             onValueChange={(value) => {
               if (value !== "mend-run" && value !== "own") return;
               // Set up, a change of who runs it is said and confirmed in its dialog first.
-              if (setUp) setChoice(value);
+              if (setUp) setPicked(value);
               else if (value !== saved.mode) setDialog(value);
             }}
             options={[

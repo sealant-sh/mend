@@ -9,6 +9,7 @@ import { SqlClient } from "effect/sql";
 import { executorIdentityMigration } from "./executor-identity-migration.ts";
 import { projectLocalWorktreesMigration } from "./local-worktrees-migration.ts";
 import { mcpAppsMigration } from "./mcp-apps-migration.ts";
+import { screenOnMigration } from "./screen-on-migration.ts";
 import { workspaceImageOwnMigration } from "./workspace-image-own-migration.ts";
 
 /**
@@ -5864,4 +5865,6 @@ export const migrations = {
         PRIMARY KEY (user_id, account_id)
       )`;
   }),
+  // The agent's screen is on by default: images nobody edited get it (SLNT-1201).
+  "0234_screen_on": screenOnMigration,
 };

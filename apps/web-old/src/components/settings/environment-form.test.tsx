@@ -77,8 +77,8 @@ describe("the workspace environment's switches", () => {
     }
   });
 
-  it("shows a family image's Screen switch, off by default, with what it adds and costs", async () => {
-    await render(defaultWorkspaceImage);
+  it("shows a family image's Screen switch, off when the saved image has none, with what it adds and costs", async () => {
+    await render({ ...defaultWorkspaceImage, screen: false });
     expect(switches()).toContainEqual({ name: "Screen", checked: "false" });
     expect(pageText()).toContain("TigerVNC, XFCE, Chromium and DejaVu fonts");
     expect(pageText()).toContain(
