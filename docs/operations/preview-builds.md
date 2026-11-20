@@ -178,14 +178,15 @@ A preview of a branch is built by the workflow and deployed by hand, with the co
 ## Check VMs
 
 A check whose judge answers `box` runs on a check VM on the dev machine (SLNT-1214): a throwaway
-copy of a box, one per check, so no check waits for another. A check that needs Boat takes the one
-Boat copy this machine serves at a time (below); VM 131 is used only for what a check VM cannot do.
+copy of a box, one per check, so no check waits for another. A check that needs Boat takes one of
+four Boat slots (below); VM 131 is used only for what a check VM cannot do.
 
 ```sh
 pnpm verify vm build --version <preview> --sha <commit> --cli <mend version> [--from-box '<ssh args>']
 pnpm verify vm up            # a fresh copy: prints MEND_VERIFY_BOX_SSH and MEND_VERIFY_OUTER_URL
 pnpm verify vm list          # the master and each copy
 pnpm verify vm down <n>      # or --all: stops the copy and deletes its disk
+pnpm verify vm slot add      # a Boat slot joins the tailnet (an auth key from the owner); remove <n>
 ```
 
 **The master disk** is a stock Ubuntu 24.04 cloud image under QEMU/KVM with Docker, Node and the
@@ -238,17 +239,44 @@ Measured on 20 Nov 2026, on the Ryzen 9 9950X3D (32 threads, 62 GB):
 
 Limits of a check VM:
 
-- **Boat on one copy at a time** (SLNT-1215). `pnpm verify vm up --boat` gives the copy Boat: this
-  machine's Tailscale Funnel forwards `https://<this machine's tailnet name>:8443` (session traffic)
-  and `:10000` (saved work) to the copy, then `mend server setup` turns Boat on with VM 131's own
-  Boat key (`--boat-api-key-stdin`), new sessions on Boat, and no resource gateway. Funnel serves
-  ports 443, 8443 and 10000 of one machine name and a copy needs two, so this machine serves one
-  Boat copy at once; `vm up --boat` refuses a second while the ports forward elsewhere. More at once
-  would need a tailnet name per copy (Tailscale in the copy, with an auth key). The Funnel is up
-  only while that copy runs: `vm down` takes both ports off, and resets the Serve config when
-  nothing else is in it. Measured on 20 Nov: `vm up --boat` 49 s to a healthy Mend; a Codex turn on
-  Boat finished 54 s after its launch; the stop took 13 s and the resume, on a new Boat VM, 2 s to
-  running; `vm down`, which stops the copy's Boat sessions and waits for their VMs to go, took 85 s.
+- **Boat on a slot** (SLNT-1215, SLNT-1218). `pnpm verify vm up --boat` claims a free Boat slot: a
+  tailnet identity of its own, `mend-check-boat-<n>.<tailnet>.ts.net`, kept on a 256 MB disk in
+  `boat-slots/<n>` in the private directory, outside the copy's throwaway overlay. That disk holds
+  tailscaled's state: its node key, its name and its HTTPS certificate. The copy mounts it, starts
+  the pinned Tailscale build (`vm-boat.mjs`, in userspace networking, so the copy's routes and
+  Docker stay as they are), and serves its own Funnel on 8443 (session traffic) and 10000 (saved
+  work) to Mend on its loopback. `mend server setup` then turns Boat on with VM 131's own Boat key
+  (`--boat-api-key-stdin`), new sessions on Boat and no resource gateway, and `vm up` waits until
+  the copy's Funnel answers. Nothing touches this machine's own Funnel or Serve config. Four slots
+  have joined, so four Boat copies can run at once; `vm list` shows each slot, who holds it and when
+  its node key expires. Measured on 20 Nov: `vm up --boat` 60 s to a healthy Mend with Boat; two
+  Boat copies each ran a real Codex turn at once; the stop took 13 s and the resume, on a new Boat
+  VM, 2 s to running; `vm down`, which stops the copy's Boat sessions and waits for their VMs to go,
+  took 85 s.
+- **One copy per slot.** A claim file names the copy that holds a slot, written aside and linked
+  into place so that two copies starting at once take different slots, and never removed unless it
+  is still the stale one read (its copy gone, five minutes after the claim). QEMU's own write lock
+  on the slot's disk refuses a second VM outright and goes with the process, so a crashed copy's
+  slot is free again. A VM holding a slot flushes and unmounts it before QEMU is stopped (`vm down`,
+  a failed start, `vm slot`): otherwise a certificate tailscaled had just written never reached the
+  disk, and the next start asked Let's Encrypt for another one (its weekly limit is five per name).
+- **Adding a slot** needs a new auth key from the owner (reusable or one-off, not ephemeral, so the
+  node outlives its copy). Put it in `~/.local/share/mend-check-vms/tailscale-authkey` (mode 0600),
+  run `pnpm verify vm slot add` once per slot, and delete the file. Each add boots a bare copy with
+  a new slot disk, logs in with the key read from a file inside the VM (never a command line),
+  checks the node may use Funnel and HTTPS, asks for its certificate once and powers off; about 46
+  s. A node without the `funnel` node attribute (a tagged key whose tag the tailnet policy's
+  `nodeAttrs` does not name), or a tailnet with HTTPS certificates off, is reported, not worked
+  around.
+- **Node keys expire.** The slots joined with an untagged key, so they are the owner's own devices,
+  like this machine, and their node keys expire 180 days after joining (the four of 20 Nov 2026 on
+  19 May 2027; `vm list` says so). Then each slot needs joining again with a new key, unless key
+  expiry is turned off for the four devices in the admin console (Machines, the device's menu,
+  Disable key expiry).
+- **Removing a slot.** `pnpm verify vm slot remove <n>` boots a bare copy with the slot's disk, logs
+  its node out and deletes the slot. A logout only expires the node's key: the device stays in the
+  tailnet as expired until someone deletes it in the admin console (Machines, Remove). It refuses a
+  slot a running copy holds.
 - **The copy shares VM 131's Boat deployment.** It runs under the deployment name the loaded data's
   sealant keeps, with the build journals of the box's Boat images (`mend_mend-boat-state`), so it
   reuses those images and builds none. With a name of its own, the copy's first image build failed

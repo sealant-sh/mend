@@ -8,6 +8,12 @@
 #   vm-provision.sh server <version> <sha> <url>    preview-deploy.sh: mend server setup, Docker only
 #   vm-provision.sh web [<address>]                 the forward of Mend's loopback port to QEMU's
 #   vm-provision.sh git                             the box run's git service on mend_default's gateway
+#   vm-provision.sh tailnet <hostname>              a Boat slot's Tailscale, from its disk (vm-boat.mjs)
+#   vm-provision.sh tailnet-funnel                  the copy's own Funnel: 8443 and 10000 to Mend
+#   vm-provision.sh tailnet-cert <dns name>         the slot's HTTPS certificate, kept in its state
+#   vm-provision.sh tailnet-wait <dns name>         until the copy's own Funnel answers
+#   vm-provision.sh tailnet-down                    flush and unmount the slot before the VM stops
+#   vm-provision.sh tailnet-logout                  the slot's node leaves the tailnet
 #   vm-provision.sh seal                            stop Mend, turn cloud-init off, trim the disk
 #
 # identity.env (the box's install secrets) and the run's data are copied in by vm.mjs over ssh
@@ -71,9 +77,7 @@ web)
   # QEMU's user-mode network forwards the host's <copy address>:3105 to this VM's 13105, and setup
   # publishes Mend on 127.0.0.1:3105 only (a loopback --url takes a loopback bind). A systemd socket
   # proxy joins the two, and with <address> also answers on the copy's own address here, so its
-  # APP_URL resolves inside the VM as it does on the host. Two more carry the Boat endpoints setup
-  # publishes on loopback with Boat on (session channel 13106, bucket 13900) to 23106 and 23900,
-  # which QEMU forwards from the host for the Funnel (SLNT-1215).
+  # APP_URL resolves inside the VM as it does on the host.
   proxy() { # <unit> <description> <target> <listen…>
     local unit=$1 description=$2 target=$3
     shift 3
@@ -85,16 +89,111 @@ web)
   }
   proxy mend-web-proxy "Mend's web port for the check VM's forward (SLNT-1214)" 127.0.0.1:3105 \
     13105 ${1:+"$1:3105"}
-  proxy mend-session-proxy "Mend's session endpoint for the Funnel (SLNT-1215)" 127.0.0.1:13106 23106
-  proxy mend-blob-proxy "Mend's bucket for the Funnel (SLNT-1215)" 127.0.0.1:13900 23900
   rm -rf /etc/systemd/system/mend-web-proxy.socket.d
   systemctl daemon-reload
-  for unit in mend-web-proxy mend-session-proxy mend-blob-proxy; do
+  for unit in mend-web-proxy; do
     systemctl enable "$unit.socket" >/dev/null 2>&1
     systemctl stop "$unit.service" >/dev/null 2>&1 || true
     systemctl restart "$unit.socket"
   done
-  say "web forward on 13105${1:+ and $1:3105}; Boat endpoints on 23106 and 23900"
+  say "web forward on 13105${1:+ and $1:3105}"
+  ;;
+tailnet)
+  # A Boat slot's tailnet identity lives on its own disk (serial mendtailnet), outside the copy's
+  # throwaway overlay: tailscaled's state directory, with its node key and certificates. tailscaled
+  # runs in userspace networking, so the VM's routes, DNS and Docker stay as they are; Funnel needs no
+  # tun. With /run/mend-tailnet-authkey present (a new slot) it logs in with that key, read from the
+  # file, never a command line, and removes the file at once.
+  host=${1:?hostname}
+  dev=/dev/disk/by-id/virtio-mendtailnet
+  [[ -b $dev ]] || { say "no slot disk at $dev" >&2; exit 1; }
+  blkid "$dev" >/dev/null 2>&1 || mkfs.ext4 -q -L mend-tailnet "$dev"
+  mkdir -p /var/lib/tailscale
+  mountpoint -q /var/lib/tailscale || mount "$dev" /var/lib/tailscale
+  chmod 700 /var/lib/tailscale
+  if [[ -s /root/tailscale.tgz ]]; then
+    tar -xzf /root/tailscale.tgz -C /usr/local/bin --strip-components=1 --wildcards '*/tailscale' '*/tailscaled'
+    rm -f /root/tailscale.tgz
+  fi
+  if ! systemctl is-active --quiet mend-tailscaled; then
+    systemd-run --unit=mend-tailscaled --property=Restart=on-failure --quiet \
+      /usr/local/bin/tailscaled --statedir=/var/lib/tailscale --socket=/run/tailscale/tailscaled.sock \
+      --tun=userspace-networking
+  fi
+  for _ in $(seq 60); do tailscale status --json >/dev/null 2>&1 && break; sleep 0.5; done
+  if [[ -s /run/mend-tailnet-authkey ]]; then
+    up=0
+    tailscale up --auth-key=file:/run/mend-tailnet-authkey --hostname="$host" --timeout=90s >/dev/null 2>&1 || up=$?
+    rm -f /run/mend-tailnet-authkey
+    [[ $up -eq 0 ]] || { say "tailscale up with the auth key failed ($up)" >&2; exit 1; }
+  fi
+  state=
+  for _ in $(seq 120); do
+    state=$(tailscale status --json 2>/dev/null | jq -r .BackendState || true)
+    [[ $state == Running || $state == NeedsLogin || $state == NeedsMachineAuth ]] && break
+    sleep 0.5
+  done
+  echo "state=$state"
+  case $state in
+  Running) ;;
+  NeedsLogin) say "the slot's node is not logged in: it never joined, or its node key expired (vm slot add, with a new key)" >&2; exit 1 ;;
+  NeedsMachineAuth) say "the slot's node waits for device approval in the admin console" >&2; exit 1 ;;
+  *) say "tailscale did not come up (state ${state:-none})" >&2; exit 1 ;;
+  esac
+  self=$(tailscale status --json | jq -c .Self)
+  echo "dns=$(jq -r '.DNSName | rtrimstr(".")' <<<"$self")"
+  echo "key-expiry=$(jq -r '.KeyExpiry // empty' <<<"$self")"
+  caps=$(jq -r '((.CapMap // {}) | keys) + (.Capabilities // []) | join(" ")' <<<"$self")
+  [[ " $caps " == *" funnel "* || $caps == *"cap/funnel"* ]] && echo "funnel=yes" || echo "funnel=no"
+  [[ " $caps " == *" https "* ]] && echo "https=yes" || echo "https=no"
+  crt=$(ls /var/lib/tailscale/certs/*.crt 2>/dev/null | head -1 || true)
+  echo "certs=$(ls /var/lib/tailscale/certs/*.crt 2>/dev/null | wc -l)"
+  [[ -z $crt ]] || echo "cert-sha=$(openssl x509 -in "$crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :)"
+  say "tailnet up as $(jq -r .HostName <<<"$self")"
+  ;;
+tailnet-funnel)
+  # Mend publishes its session endpoint (13106) and bucket (13900) on this VM's loopback once Boat
+  # is set up; Funnel ends TLS on the slot's own name and passes the connection through.
+  tailscale funnel --bg --tls-terminated-tcp=8443 tcp://127.0.0.1:13106 >/dev/null
+  tailscale funnel --bg --tls-terminated-tcp=10000 tcp://127.0.0.1:13900 >/dev/null
+  say "funnel on 8443 and 10000"
+  ;;
+tailnet-cert)
+  # Asks for the slot's certificate once; tailscaled keeps it in its state, on the slot's disk.
+  name=${1:?dns name}
+  t=$(mktemp -d)
+  tailscale cert --cert-file "$t/c.crt" --key-file "$t/c.key" "$name" >/dev/null 2>&1 ||
+    { rm -rf "$t"; say "tailscale cert $name failed" >&2; exit 1; }
+  echo "subject=$(openssl x509 -in "$t/c.crt" -noout -subject | sed 's/^subject= *//')"
+  echo "not-after=$(openssl x509 -in "$t/c.crt" -noout -enddate | cut -d= -f2)"
+  echo "cert-sha=$(openssl x509 -in "$t/c.crt" -noout -fingerprint -sha256 | cut -d= -f2 | tr -d :)"
+  rm -rf "$t"
+  echo "certs=$(ls /var/lib/tailscale/certs/*.crt 2>/dev/null | wc -l)"
+  say "certificate for $name"
+  ;;
+tailnet-down)
+  # Before the VM stops: QEMU is killed, not shut down, so what tailscaled wrote last (a new
+  # certificate) reaches the slot's disk only if it is flushed and unmounted first.
+  systemctl stop mend-tailscaled >/dev/null 2>&1 || true
+  sync
+  umount /var/lib/tailscale 2>/dev/null || true
+  sync
+  say "slot flushed and unmounted"
+  ;;
+tailnet-wait)
+  # Funnel takes a few seconds to answer on a name after it is turned on; setup probes it once.
+  name=${1:?dns name}
+  for i in $(seq 90); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' -m 5 "https://$name:8443/" || true)
+    [[ $code =~ ^[1-5][0-9][0-9]$ ]] && { say "https://$name:8443 answered $code after ${i}s"; exit 0; }
+    sleep 1
+  done
+  say "https://$name:8443 did not answer in 90s" >&2
+  exit 1
+  ;;
+tailnet-logout)
+  tailscale logout >/dev/null 2>&1 && say "logged out: the node left the tailnet" ||
+    { say "tailscale logout failed" >&2; exit 1; }
   ;;
 git)
   # The box run's git service (.agents/skills/box-main-run/fixtures.sh, step 1), on the same bridge

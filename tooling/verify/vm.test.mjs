@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { parseArgs } from "./verify.mjs";
+import { claimSlot, releaseSlot, slotDriveArgs, slotOfCopy } from "./vm-boat.mjs";
 import { addressOf, boxSshArgs, hostOf, SLOTS, urlOf, vmDown, vmList, vmUp } from "./vm.mjs";
 
 const scratch = () => mkdtempSync(join(tmpdir(), "vm-test-"));
@@ -103,4 +104,69 @@ test("verify vm up takes --boat", () => {
   const { words, options } = parseArgs(["vm", "up", "--boat"]);
   assert.deepEqual(words, ["vm", "up"]);
   assert.equal(options.boat, true);
+});
+
+const slots = (root, count) => {
+  for (let slot = 1; slot <= count; slot++) {
+    mkdirSync(join(root, "boat-slots", String(slot)), { recursive: true });
+    writeFileSync(
+      join(root, "boat-slots", String(slot), "slot.json"),
+      JSON.stringify({ dnsName: `mend-check-boat-${slot}.example.ts.net` }),
+    );
+  }
+};
+
+test("two copies claiming at once get different Boat slots, and a live claim is never taken", () => {
+  const root = scratch();
+  try {
+    slots(root, 2);
+    const running = () => true;
+    assert.equal(claimSlot(root, 1, running), 1);
+    assert.equal(claimSlot(root, 5, running), 2);
+    assert.equal(claimSlot(root, 6, running), null, "both slots are held");
+    // The loser of a race cleans up only its own claim.
+    releaseSlot(root, 1, 6);
+    assert.equal(slotOfCopy(root, 1), 1);
+    releaseSlot(root, 1, 1);
+    assert.equal(slotOfCopy(root, 1), null);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a stale claim (its copy gone, past the grace) is taken over; a young one is not", () => {
+  const root = scratch();
+  try {
+    slots(root, 1);
+    const claim = join(root, "boat-slots/1/claim.json");
+    writeFileSync(claim, JSON.stringify({ copy: 3, at: new Date().toISOString() }));
+    assert.equal(
+      claimSlot(root, 4, () => false),
+      null,
+      "a copy still booting keeps its slot",
+    );
+    writeFileSync(claim, JSON.stringify({ copy: 3, at: "2026-01-01T00:00:00Z" }));
+    assert.equal(
+      claimSlot(root, 4, () => true),
+      null,
+      "a running copy keeps its slot",
+    );
+    assert.equal(
+      claimSlot(root, 4, () => false),
+      1,
+      "a crashed copy's slot is free again",
+    );
+    assert.equal(JSON.parse(readFileSync(claim, "utf8")).copy, 4);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a Boat slot's disk is attached by serial, behind the copy's own disk", () => {
+  assert.deepEqual(slotDriveArgs("/vms", 2), [
+    "-drive",
+    "file=/vms/boat-slots/2/tailnet.img,if=none,id=tailnet,format=raw,cache=writeback",
+    "-device",
+    "virtio-blk-pci,drive=tailnet,serial=mendtailnet",
+  ]);
 });
