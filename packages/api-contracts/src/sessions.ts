@@ -545,7 +545,7 @@ export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInbox
   session: SessionInboxSession,
   projectName: Schema.String,
   /**
-   * What every list and tab calls the session (`sessionTitle`): its label; until it has one, the
+   * What every list and tab calls the session (`sessionTitleFrom`): its label; until it has one, the
    * first line of the first message it was sent; else "New session". Never its worktree's name.
    */
   title: Schema.String,

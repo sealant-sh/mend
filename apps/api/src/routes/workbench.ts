@@ -197,7 +197,7 @@ import {
   agentActivity,
   sessionAsk,
   requestOfTurn,
-  sessionTitle,
+  sessionTitleFrom,
   worktreeTitle,
   type SessionStatus,
   RECIPE_NAME,
@@ -2799,7 +2799,7 @@ const inboxRowsOf = (input: {
       launching(session).status === "running" ? [session.id] : [],
     );
     const reader = yield* CurrentUser;
-    // An unnamed session reads as its first message until Mend names it (`sessionTitle`).
+    // An unnamed session reads as its first message until Mend names it (`sessionTitleFrom`).
     const unnamed = input.sessions.flatMap((session) =>
       session.label === null ? [session.id] : [],
     );
@@ -2856,7 +2856,7 @@ const inboxRowsOf = (input: {
           importedConversationWaiting: importedWaiting(session),
         },
         projectName: projectName.get(session.projectId) ?? "",
-        title: sessionTitle(session, firstMessageOf.get(session.id) ?? null),
+        title: sessionTitleFrom(session, firstMessageOf.get(session.id) ?? null),
         worktreeName: worktree === undefined ? null : worktreeTitle(worktree, worktreeMembers),
         annotation:
           annotation === undefined
@@ -4050,7 +4050,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           runningSessions.push(
             new StopSessionRunning({
               sessionId: member.id,
-              title: sessionTitle(member, firstMessageOf.get(member.id) ?? null),
+              title: sessionTitleFrom(member, firstMessageOf.get(member.id) ?? null),
               harness: member.harness,
               status: member.status,
               ownerUserId: member.ownerUserId,

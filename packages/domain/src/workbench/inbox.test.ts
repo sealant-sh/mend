@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { agentActivity, messageTitle, sessionAsk, sessionTitle, worktreeTitle } from "./inbox.ts";
+import {
+  agentActivity,
+  messageTitle,
+  sessionAsk,
+  sessionTitleFrom,
+  worktreeTitle,
+} from "./inbox.ts";
 
 const request = (
   kind: Parameters<typeof sessionAsk>[0]["kind"],
@@ -101,21 +107,21 @@ describe("what a running agent is doing", () => {
 
 describe("what a session is called", () => {
   it("is its label once it has one", () => {
-    expect(sessionTitle({ label: "repository overview" }, "Tell me about this repo")).toBe(
+    expect(sessionTitleFrom({ label: "repository overview" }, "Tell me about this repo")).toBe(
       "repository overview",
     );
   });
 
   it("is its first message's first line until it is named", () => {
-    expect(sessionTitle({ label: null }, "  tell me a joke\nabout monitors")).toBe(
+    expect(sessionTitleFrom({ label: null }, "  tell me a joke\nabout monitors")).toBe(
       "tell me a joke",
     );
-    expect(sessionTitle({ label: null }, "x".repeat(200))).toBe("x".repeat(80));
+    expect(sessionTitleFrom({ label: null }, "x".repeat(200))).toBe("x".repeat(80));
   });
 
   it("is New session before it has been sent anything", () => {
-    expect(sessionTitle({ label: null }, null)).toBe("New session");
-    expect(sessionTitle({ label: null }, " \n ")).toBe("New session");
+    expect(sessionTitleFrom({ label: null }, null)).toBe("New session");
+    expect(sessionTitleFrom({ label: null }, " \n ")).toBe("New session");
   });
 
   it("never borrows the name its worktree took from another session in it", () => {
@@ -125,7 +131,7 @@ describe("what a session is called", () => {
       { id: "session-first", label: "repository overview" },
     ];
     expect(worktreeTitle({ name: "wt-9c1ccb02" }, members)).toBe("repository overview");
-    expect(sessionTitle(members[0] ?? { label: null }, null)).toBe("New session");
+    expect(sessionTitleFrom(members[0] ?? { label: null }, null)).toBe("New session");
   });
 
   it("takes a message's first line with words, trimmed", () => {
