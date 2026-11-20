@@ -73,11 +73,14 @@ SHA=$(git rev-parse HEAD); TAG=main-${SHA:0:12}; E=$STATE/runs/$TAG
   `mend logout`, and never read a token from it. The login is a device token in the run's data, so
   it comes back with that data each night. The password file is read only into the private account
   file of step 4.
-- `$WORLD` lives outside `/root/backups`, so a tidy never takes it, and `release --save` keeps the
-  one before as `/root/main-run/world.prev.sql`. It holds the accounts' agent logins: sealant
-  refreshes those while the run's data is loaded, so only the newest copy can still refresh them.
-  Never load an older copy unless the newest is lost; then expect `reconnect needed` on the agent
-  logins.
+- `$WORLD` lives outside `/root/backups`, so a tidy never takes it. Beside it, `world.store.tgz`
+  holds the store directories that data names (its projects' repositories and worktrees, its
+  organization's folders and references): a wipe empties the store too (20 Nov). `prepare --load`
+  puts both in; `release --save` writes both again and keeps the pair before as `world.prev.*`. The
+  dump holds the accounts' agent logins. sealant refreshes those while the run's data is loaded, so
+  only the newest copy can still refresh them. Never load an older copy unless the newest is lost;
+  then expect `reconnect needed` on the agent logins. `--save` refuses data that carries a migration
+  `origin/main` lacks (a PR check's build loaded it) and leaves the pair as it was.
 - Never ssh to `acer-laptop`.
 - Run the shell steps in `bash`. zsh does not split an unquoted `$MEND_VERIFY_BOX_SSH` into
   arguments, and it may alias `mend` to another checkout's CLI.
@@ -210,9 +213,10 @@ Its last line says what happened:
   `pnpm install --frozen-lockfile`, and record `dump` in the ledger from
   `.verify/latest/box-prepare.json`.
 - `failed <what failed>`: the box is held for this run, but its data did not load (a missing
-  `$WORLD`, or data this head cannot deploy over). No flow can run. Release at once, which puts the
-  owner's data and build back (`pnpm verify box release --tag <the tag prepare named> --yes`,
-  without `--save`). File it as Fix Now (step 7), and finish (step 8) without moving `lastCommit`.
+  `$WORLD`, data this head cannot deploy over, or a repository it names missing from the store with
+  no `world.store.tgz` to put it back). No flow can run. Release at once, which puts the owner's
+  data and build back (`pnpm verify box release --tag <the tag prepare named> --yes`, without
+  `--save`). File it as Fix Now (step 7), and finish (step 8) without moving `lastCommit`.
 - `again <what blocked>`: a background command's 2-hour limit came first. Start it again with the
   same deadline.
 - `deadline <what blocked>`: 20 hours passed without a free box. End the run with
@@ -390,13 +394,14 @@ owner's again, and no `M` command may run.
    pnpm verify box release --tag $TAG --yes --save /root/main-run/world.sql
    ```
 
-   Its steps, in order: `save` (Mend stopped, the run's data dumped to `$WORLD`, the one before kept
-   as `world.prev.sql`), `put-back` (the owner's dump restored, the box's `active` generation
-   pointed back at his build and started), `tidy`, and `release` (his lapsed hold written back, or
-   the hold lifted). A failed `save` keeps the old `$WORLD` and still puts his data back: report it,
-   because tomorrow's run then loads data with spent agent logins. A failed `put-back` keeps the
-   hold: put it right by hand (`docs/operations/preview-builds.md`, Deploy), release again, and file
-   Fix Now. It must not wait for the morning.
+   Its steps, in order: `save` (Mend stopped, the run's data dumped to `$WORLD` and its store
+   directories to `world.store.tgz`, the pair before kept as `world.prev.*`), `put-back` (the
+   owner's dump restored, the box's `active` generation pointed back at his build and started),
+   `tidy`, and `release` (his lapsed hold written back, or the hold lifted). A failed `save` keeps
+   the old `$WORLD` and still puts his data back: report it, because tomorrow's run then loads data
+   with spent agent logins. A failed `put-back` keeps the hold: put it right by hand
+   (`docs/operations/preview-builds.md`, Deploy), release again, and file Fix Now. It must not wait
+   for the morning.
 
 5. Clean up the rest of the ledger over ssh. Keep `runs[0]` (this run) and `runs[1]`; for every
    older entry, remove each thing it names, after checking its name has the shape below. A name of

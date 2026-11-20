@@ -18,6 +18,7 @@ import {
   saveScript,
   schemaProblems,
   startScript,
+  storeLoadScript,
 } from "./box.mjs";
 import { boxFlows, loadFlows } from "./flows.mjs";
 import { exitCode, validateResult } from "./result.mjs";
@@ -85,7 +86,8 @@ const fakeBox = (
     after = 40 * GB,
     restored = "restore=done\n",
     afterRestore = text,
-    saved = { code: 0, stdout: "save=373315461\n" },
+    saved = { code: 0, stdout: "store=168417566 8\nsave=373315461\n" },
+    stored = "extracted=/root/main-run/world.store.tgz\nmissing=\nstore=done\n",
     started = "putback=done\n",
     afterStart = afterRestore,
   } = {},
@@ -96,6 +98,7 @@ const fakeBox = (
   const ssh = (script) => {
     scripts.push(script);
     if (script.includes("# save-data")) return { stderr: "", ...saved };
+    if (script.includes("# store-load")) return { code: 0, stdout: stored, stderr: "" };
     if (script.includes("# put-back")) {
       startedYet = true;
       return { code: 0, stdout: started, stderr: "" };
@@ -620,7 +623,14 @@ test("prepare --load dumps, holds with what to put back, then loads the check's 
     real.scripts.indexOf(dump) < real.scripts.indexOf(load),
     "its own data is dumped first",
   );
-  assert.match(done.steps.at(-1).detail, /all in this head; Mend is stopped until the deploy/);
+  const load_ = done.steps.find((step) => step.id === "load");
+  assert.match(load_.detail, /all in this head; Mend is stopped until the deploy/);
+  const store = done.steps.at(-1);
+  assert.equal(store.id, "store");
+  assert.match(store.detail, /extracted \/root\/main-run\/world\.store\.tgz; every repository/);
+  const extract = real.scripts.find((script) => script.includes("# store-load"));
+  assert.match(extract, /archive='\/root\/main-run\/world\.store\.tgz'/);
+  assert.ok(real.scripts.indexOf(load) < real.scripts.indexOf(extract), "the store after the data");
 });
 
 test("prepare --load refuses a box with no generation to put back, and fails on data the head cannot take", async () => {
@@ -729,7 +739,7 @@ test("release after prepare --load keeps the hold while the box's own data or bu
   assert.equal(done.status, "failed", "a save that failed is reported");
   assert.match(
     done.steps[0].detail,
-    /pg_dumpall failed; \/root\/main-run\/world\.sql is left as it was/,
+    /pg_dumpall failed; \/root\/main-run\/world\.sql and \/root\/main-run\/world\.store\.tgz are left as they were/,
   );
   assert.equal(done.steps[1].status, "passed", "the box's own data and build go back anyway");
 });
@@ -739,9 +749,51 @@ test("the scripts release sends the box are bash it can parse, whatever the path
     saveScript(WORLD),
     startScript(OWNERS, "/root/box-main-c374a10430f2-cli"),
     restoreScript(WORLD),
+    storeLoadScript(WORLD),
   ])
     execFileSync("bash", ["-n"], { input: script });
   assert.match(saveScript("/root/it's.sql"), /dest='\/root\/it'\\''s\.sql'/);
+});
+
+test("prepare --load fails, keeping the hold, when the store lacks a repository the data names", async () => {
+  const bare = fakeBox(ownersBox(), {
+    afterRestore: boxSays({ active: OWNERS }),
+    stored: "missing=3f1f00fe-0f6b-4d1c-939c-dc2ec8d466f5/repo.git\nstore=done\n",
+  });
+  const done = await box("prepare", { sshRunner: bare.ssh, ...run, load: WORLD, yes: true });
+  assert.equal(done.status, "failed");
+  const store = done.steps.at(-1);
+  assert.match(
+    store.detail,
+    /lacks 1 repositories .*3f1f00fe.*\(no \/root\/main-run\/world\.store\.tgz\).*the hold stays/,
+  );
+  assert.deepEqual(done.next, ["pnpm verify box release --yes --tag main-c374a10430f2"]);
+});
+
+test("release --save refuses data a migration main lacks touched, and still puts the box's own back", async () => {
+  const pr = fakeBox(
+    boxSays({
+      hold: loadedHold,
+      version: "0.37.0-next.2.preview.10",
+      active: CHECKS,
+      applied: fromPr,
+    }),
+    { afterStart: putBack },
+  );
+  const done = await box("release", {
+    sshRunner: pr.ssh,
+    ...run,
+    save: WORLD,
+    yes: true,
+    readMain: onMain,
+  });
+  assert.equal(done.status, "failed");
+  const save = done.steps[0];
+  assert.equal(save.id, "save");
+  assert.match(save.detail, /carries 9999_from_a_pr, which origin\/main lacks/);
+  assert.match(save.detail, /left as they were\. The agent logins .* may need the owner/);
+  assert.equal(pr.scripts.filter((script) => script.includes("# save-data")).length, 0);
+  assert.equal(done.steps[1].status, "passed", "the box's own data and build go back");
 });
 
 test("release refuses --no-restore after prepare --load, and --save without it", async () => {

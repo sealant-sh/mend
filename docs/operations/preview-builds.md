@@ -101,17 +101,21 @@ right. `--no-restore` leaves the data, for a check whose branch is about to merg
 
 A check that brings its own data (the daily run of `main`, on a box that also serves someone's own
 instance) uses two more flags. `prepare --load <dump>` takes the dump and the hold as above, then
-loads `<dump>` in place of the box's data and leaves Mend stopped for the deploy. Its hold records
-the generation `/root/.config/mend/active` points at, that build's version, and any lapsed hold it
-replaced. With `--load`, the box's own schema does not hold the check up, since the check never
-deploys over that data; the loaded data's schema is checked once it is in. `release --save <dump>`
-then stops Mend and dumps the data the check ran on to `<dump>`, keeping the previous copy as
-`<name>.prev.sql`. After that it restores the hold's dump, points `active` back at the recorded
-generation and starts it (`mend server start --offline`), checks that version runs, tidies, and
-writes the lapsed hold back. Generations are immutable snapshots, so this restarts exactly the build
-the box ran, which `mend server upgrade` would refuse as a downgrade. A put-back that fails keeps
-the hold. Both paths must be `.sql` files under `/root`; keep them outside `/root/backups`, which a
-tidy prunes.
+loads `<dump>` in place of the box's data and leaves Mend stopped for the deploy. When
+`<name>.store.tgz` sits beside it, it extracts that into the store volume. Then it checks that every
+repository the loaded data names is in the store. Its hold records the generation
+`/root/.config/mend/active` points at, that build's version, and any lapsed hold it replaced. With
+`--load`, the box's own schema does not hold the check up, since the check never deploys over that
+data; the loaded data's schema is checked once it is in. `release --save <dump>` then stops Mend and
+dumps the data the check ran on to `<dump>`, with the store directories it names (its projects' and
+organizations') in `<name>.store.tgz`. It replaces the old pair together and keeps it as
+`<name>.prev.*`. It refuses, leaving the pair as it was, when that data carries a Mend migration
+`origin/main` lacks: a later check of `main` could not load it. After that it restores the hold's
+dump, points `active` back at the recorded generation and starts it (`mend server start --offline`),
+checks that version runs, tidies, and writes the lapsed hold back. Generations are immutable
+snapshots, so this restarts exactly the build the box ran, which `mend server upgrade` would refuse
+as a downgrade. A put-back that fails keeps the hold. Both paths must be `.sql` files under `/root`;
+keep them outside `/root/backups`, which a tidy prunes.
 
 A restore puts back the databases only. What the check made outside them stays, with no row that
 names it: worktrees and repositories in the `mend-store` volume, captured objects in the

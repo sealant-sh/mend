@@ -411,6 +411,81 @@ const restoreOutcome = (run) => {
 };
 
 /**
+ * The store archive kept beside a `--load`/`--save` dump: the store directories that dump's data
+ * names. The box's store is wiped with its databases, so the data never travels without it.
+ */
+export const storeArchiveOf = (dump) => dump.replace(/\.sql$/, ".store.tgz");
+
+/**
+ * Shell that sets `$mount` to the store volume's directory on the host, `$repos` to the
+ * repositories the loaded data names (relative to it), and `$dirs` to the store directories it
+ * names: each project's, and each organization's.
+ */
+const STORE_DIRS = `vol=$(sed -n 's/^MEND_STORE_VOLUME_NAME=//p' ${ACTIVE}/server.env 2>/dev/null)
+mount=$(docker volume inspect -f '{{.Mountpoint}}' "\${vol:-mend-store}") || { echo "store=no store volume \${vol:-mend-store}"; exit 1; }
+sq() { docker exec mend-postgres-1 psql -U postgres -d mend -At -c "$1"; }
+paths=$(sq "select store_path from projects") || { echo "store=the projects could not be read"; exit 1; }
+orgs=$(sq "select id from organizations") || { echo "store=the organizations could not be read"; exit 1; }
+repos=""
+dirs=""
+for p in $paths; do
+  r=\${p#/var/lib/mend/store/}
+  case "$r" in "$p"|.*|*..*) continue ;; esac
+  repos="$repos $r"
+  dirs="$dirs \${r%%/*}"
+done
+for o in $orgs; do
+  case "$o" in *[!A-Za-z0-9_-]*) continue ;; esac
+  dirs="$dirs _organizations/$o"
+done`;
+
+/**
+ * Puts the store archive beside `load` into the store volume, when there is one, and lists the
+ * repositories the loaded data names that the store lacks. Mend is stopped.
+ */
+export const storeLoadScript = (load) => `# store-load
+set -uo pipefail
+archive=${shq(storeArchiveOf(load))}
+${STORE_DIRS}
+if [ -s "$archive" ]; then
+  tar -xzpf "$archive" --numeric-owner -C "$mount" || { echo "store=could not extract $archive"; exit 1; }
+  echo "extracted=$archive"
+fi
+missing=""
+for r in $repos; do [ -d "$mount/$r" ] || missing="$missing $r"; done
+echo "missing=\${missing# }"
+echo "store=done"
+`;
+
+const storeStep = (ssh, { load }) => {
+  const run = ssh(storeLoadScript(load));
+  const lines = run.stdout.split("\n");
+  const value = (key) =>
+    lines.find((line) => line.startsWith(`${key}=`))?.slice(key.length + 1) ?? null;
+  const missing = (value("missing") ?? "").split(" ").filter(Boolean);
+  const ok = value("store") === "done" && missing.length === 0;
+  const archive = storeArchiveOf(load);
+  return {
+    id: "store",
+    title: `Put ${archive} into the box's store (changes the box)`,
+    status: ok ? "passed" : "failed",
+    detail: ok
+      ? value("extracted")
+        ? `extracted ${archive}; every repository the loaded data names is in the store`
+        : `no ${archive}; every repository the loaded data names is in the store already`
+      : [
+          value("store") === "done" ? null : (value("store") ?? `store-load exited ${run.code}`),
+          missing.length > 0
+            ? `the store lacks ${missing.length} repositories the loaded data names: ${missing.slice(0, 3).join(", ")}${missing.length > 3 ? ", …" : ""}${value("extracted") ? "" : ` (no ${archive})`}`
+            : null,
+          "the hold stays: pnpm verify box release --yes puts the box's own data and build back",
+        ]
+          .filter(Boolean)
+          .join("; "),
+  };
+};
+
+/**
  * prepare --load: once this check holds the box and its own data is dumped, replace that data with
  * the dump at `load` (the check's own, kept between its runs), and check that this head can deploy
  * over it. Mend stays stopped until the deploy. Release puts the box's own data and build back.
@@ -556,12 +631,13 @@ printf '%s' ${shq(hold)} > ${HOLD}
   });
   const loaded = run.code === 0 && load !== undefined ? loadStep(root, ssh, { head, load }) : null;
   if (loaded) steps.push(loaded);
+  if (loaded?.status === "passed") steps.push(storeStep(ssh, { load }));
   return {
     steps,
     next:
       run.code !== 0
         ? next
-        : loaded?.status === "failed"
+        : steps.some((step) => ["load", "store"].includes(step.id) && step.status === "failed")
           ? [rerun("release", tag)]
           : [rerun("cli", tag), "pnpm verify box identity"],
     box: state,
@@ -694,19 +770,29 @@ const restoreStep = (ssh, { state, yes, noRestore, main }) => {
 };
 
 /**
- * Saves the data a `prepare --load` check ran on to `save`, for its next run: Mend stopped first,
- * so the dump is quiet; the dump before is kept beside it as `<name>.prev.sql`.
+ * Saves the data a `prepare --load` check ran on to `save`, for its next run: the databases with
+ * pg_dumpall and, beside them, the store directories they name. Mend is stopped first, so both are
+ * quiet. Both are written aside and replace the old pair together, which is kept as `.prev`.
  */
 export const saveScript = (save) => `# save-data
 set -uo pipefail
 dest=${shq(save)}
-tmp="$dest.tmp"
+archive=${shq(storeArchiveOf(save))}
 mkdir -p "$(dirname "$dest")" && chmod 700 "$(dirname "$dest")" || { echo "save=could not make $(dirname "$dest")"; exit 1; }
 docker stop --time 60 mend-mend-1 >/dev/null 2>&1
-(umask 077 && docker exec mend-postgres-1 pg_dumpall -U postgres > "$tmp") || { rm -f "$tmp"; echo "save=pg_dumpall failed"; exit 1; }
-tail -c 200 "$tmp" | grep -q 'dump complete' || { rm -f "$tmp"; echo "save=the dump has no pg_dumpall trailer"; exit 1; }
+${STORE_DIRS.replaceAll('echo "store=', 'echo "save=')}
+present=""
+for d in $dirs; do [ -e "$mount/$d" ] && present="$present $d"; done
+trap 'rm -f "$dest.tmp" "$archive.tmp"' EXIT
+(umask 077 && docker exec mend-postgres-1 pg_dumpall -U postgres > "$dest.tmp") || { echo "save=pg_dumpall failed"; exit 1; }
+tail -c 200 "$dest.tmp" | grep -q 'dump complete' || { echo "save=the dump has no pg_dumpall trailer"; exit 1; }
+# shellcheck disable=SC2086 # one store directory per word
+(umask 077 && tar -czpf "$archive.tmp" --numeric-owner -C "$mount" $present) || { echo "save=the store could not be archived"; exit 1; }
 if [ -f "$dest" ]; then mv -f "$dest" "\${dest%.sql}.prev.sql"; fi
-mv "$tmp" "$dest" && echo "save=$(stat -c %s "$dest")"
+if [ -f "$archive" ]; then mv -f "$archive" "\${archive%.store.tgz}.prev.store.tgz"; fi
+mv "$dest.tmp" "$dest" && mv "$archive.tmp" "$archive" || { echo "save=could not move the new copies into place"; exit 1; }
+echo "store=$(stat -c %s "$archive") $(echo $present | wc -w)"
+echo "save=$(stat -c %s "$dest")"
 `;
 
 /**
@@ -731,7 +817,7 @@ echo "putback=done"
  * box's own data back from the hold's dump, and start the build that was active. Stops, keeping
  * the hold, when the data or the build could not be put back.
  */
-const putBackSteps = (ssh, { state, yes, noRestore, save, tag }) => {
+const putBackSteps = (ssh, { state, yes, noRestore, save, tag, main }) => {
   const record = state.hold.putBack;
   const dump = state.hold.dump ?? "";
   const title = `Put back the box's data and ${record.version ?? "its build"} (changes the box)`;
@@ -755,7 +841,7 @@ const putBackSteps = (ssh, { state, yes, noRestore, save, tag }) => {
                 id: "save",
                 title: saveTitle,
                 status: "skipped",
-                detail: `Would stop Mend and write ${save} with pg_dumpall, keeping the one before as ${save.replace(/\.sql$/, ".prev.sql")}`,
+                detail: `Would stop Mend and write ${save} with pg_dumpall and ${storeArchiveOf(save)} with the store directories it names, keeping the pair before as .prev`,
               },
             ]
           : []),
@@ -768,9 +854,26 @@ const putBackSteps = (ssh, { state, yes, noRestore, save, tag }) => {
       ],
     };
   const steps = [];
-  if (save) {
+  // Data a migration main lacks touched (a PR check's build) would be refused by the next run of
+  // main: it is not saved.
+  const foreign =
+    save && main !== null ? state.migrations.filter((name) => !main.includes(name)) : [];
+  if (save && (main === null || foreign.length > 0)) {
+    steps.push({
+      id: "save",
+      title: saveTitle,
+      status: "failed",
+      detail: `${
+        main === null
+          ? "origin/main's migrations could not be read"
+          : `the data this check ran on carries ${foreign.join(", ")}, which origin/main lacks, so a run of main could not load it`
+      }; not saved: ${save} and ${storeArchiveOf(save)} are left as they were. The agent logins in them may have rotated since they were saved, so the next run may need the owner to reconnect them`,
+    });
+  } else if (save) {
     const run = ssh(saveScript(save));
-    const said = run.stdout.split("\n").find((line) => line.startsWith("save=")) ?? "";
+    const lines = run.stdout.split("\n");
+    const said = lines.find((line) => line.startsWith("save=")) ?? "";
+    const store = (lines.find((line) => line.startsWith("store=")) ?? "store=").slice(6).split(" ");
     const bytes = Number(said.slice(5));
     const saved = run.code === 0 && Number.isInteger(bytes) && bytes > 0;
     // A save that failed keeps the dump before it; the box's own data goes back either way.
@@ -779,8 +882,8 @@ const putBackSteps = (ssh, { state, yes, noRestore, save, tag }) => {
       title: saveTitle,
       status: saved ? "passed" : "failed",
       detail: saved
-        ? `${save}: ${Math.round(bytes / 1024 ** 2)} MiB, dump complete`
-        : `${said.slice(5) || `save exited ${run.code}`}; ${save} is left as it was`,
+        ? `${save}: ${Math.round(bytes / 1024 ** 2)} MiB, dump complete; ${storeArchiveOf(save)}: ${Math.round(Number(store[0]) / 1024 ** 2)} MiB, ${store[1] ?? "?"} store directories`
+        : `${said.slice(5) || `save exited ${run.code}`}; ${save} and ${storeArchiveOf(save)} are left as they were`,
     });
   }
   const restored = restoreOutcome(ssh(restoreScript(dump)));
@@ -901,7 +1004,14 @@ export const boxRelease = ({
     };
   }
   const loaded = state.hold.putBack
-    ? putBackSteps(ssh, { state, yes, noRestore, save, tag })
+    ? putBackSteps(ssh, {
+        state,
+        yes,
+        noRestore,
+        save,
+        tag,
+        main: save === undefined ? null : readMain(root),
+      })
     : null;
   if (!loaded && save !== undefined)
     return {
