@@ -156,10 +156,10 @@ SSM Session Manager, and Mend's own port stays on loopback.
    are: the instance role and the build role are granted exactly those.
 4. First boot with `MEND_TENANCY=single`, `MEND_EXPOSURE=private` and
    `MEND_ALLOWED_ORIGINS=["http://localhost:3105"]`, **and start `mend` only**:
-   `docker compose -f compose.aws.yaml up -d mend`. Both gates count the operator account, so
-   neither `multi` nor `public` may start on an empty database. Registration is open until that
-   account exists, and the edge would serve the public name the moment it starts, putting the name
-   in the public certificate logs. So the edge stays down until step 6.
+   `docker compose -f compose.aws.yaml up -d mend`. The public exposure gate counts the operator
+   account, so `public` may not start on an empty database (`multi` alone may). Registration is open
+   until that account exists, and the edge would serve the public name the moment it starts, putting
+   the name in the public certificate logs. So the edge stays down until step 6.
 5. Run `instance_first_account_tunnel` and create the first account at `http://localhost:3105`. It
    becomes the owner and the operator, and registration closes (`/api/instance` answers
    `"registration":"closed"`). The extra origin in step 4 is what lets sign-up accept the tunnel.

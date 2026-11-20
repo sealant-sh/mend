@@ -90,12 +90,15 @@ let
       };
   t3Volume = "mend-t3-gateway";
 
-  gate = cfg.tenancy == "multi" || cfg.exposure == "public";
+  # As `mend server setup` writes them (apps/cli/src/server-edge.ts postureEnvironment): sizes
+  # with multi or public, the tenant source policy with public only. Several organizations on one
+  # Mend belong to one business (docs/adr/0003, "What multi means"). With `tenancy` unset, the
+  # first start decides it and server.sh writes it and its sizes into server.env (`tenancyOverlay`).
   postureEnvironment =
     lib.optionalAttrs (cfg.exposure != null) { MEND_EXPOSURE = cfg.exposure; }
     // lib.optionalAttrs (cfg.tenancy != null) { MEND_TENANCY = cfg.tenancy; }
-    // lib.optionalAttrs gate {
-      MEND_SOURCE_POLICY = "tenant";
+    // lib.optionalAttrs (cfg.exposure == "public") { MEND_SOURCE_POLICY = "tenant"; }
+    // lib.optionalAttrs (cfg.tenancy != null && (cfg.tenancy == "multi" || cfg.exposure == "public")) {
       MEND_CAPTURE_REQUIRE_SIZES = "true";
     }
     // lib.optionalAttrs (cfg.exposure == "public") { MEND_URL_BEARERS = "refuse"; }
@@ -193,9 +196,15 @@ let
       lib.optionalAttrs (t3 != null) { ${t3Volume} = { }; }
       // lib.optionalAttrs boat.enable { ${boatStateVolume} = { }; };
   };
+  # Read from server.env, where server.sh writes what the first start decided; not escaped, since
+  # Compose fills them in.
+  tenancyOverlay = lib.optionalAttrs (cfg.tenancy == null) {
+    MEND_TENANCY = "\${MEND_TENANCY:?set MEND_TENANCY in server.env}";
+    MEND_CAPTURE_REQUIRE_SIZES = "\${MEND_CAPTURE_REQUIRE_SIZES:?set MEND_CAPTURE_REQUIRE_SIZES in server.env}";
+  };
   overlay = lib.recursiveUpdate servicesOverlay (
-    lib.optionalAttrs (mendEnvironment != { }) {
-      services.mend.environment = lib.mapAttrs (_: escapeCompose) mendEnvironment;
+    lib.optionalAttrs (mendEnvironment != { } || tenancyOverlay != { }) {
+      services.mend.environment = tenancyOverlay // lib.mapAttrs (_: escapeCompose) mendEnvironment;
     }
   );
   moduleOverlay = pkgs.writeText "compose.module.json" (builtins.toJSON overlay);
@@ -250,6 +259,8 @@ let
     }
     generate_identity=${if cfg.secretsFile == null then "1" else "0"}
     state_dir=${lib.escapeShellArg cfg.stateDir}
+    tenancy_declared=${if cfg.tenancy == null then "0" else "1"}
+    exposure_public=${if cfg.exposure == "public" then "1" else "0"}
     allowed_origins=${lib.escapeShellArg (builtins.toJSON cfg.allowedOrigins)}
     tunnel_origin=${lib.escapeShellArg tunnelOrigin}
     static_env=${staticEnv}
@@ -375,7 +386,11 @@ in
         ]
       );
       default = null;
-      description = "One organization or many (`MEND_TENANCY`). Null keeps the server's default, `single`.";
+      description = ''
+        One organization or many (`MEND_TENANCY`). Null lets the first start decide and keeps it:
+        `multi` on a fresh install (no `mend-store` volume yet), `single` on one that already has
+        data and never declared it. The decision is kept in `''${stateDir}/tenancy`.
+      '';
     };
 
     declared = mkOption {

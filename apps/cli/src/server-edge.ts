@@ -242,16 +242,18 @@ export const parseEdgeHost = (value: string): string | null => {
 /**
  * The variables the posture puts in `server.env`, in order. `MEND_EXPOSURE` and `MEND_TENANCY`
  * are the operator's statements. With `multi`, and for a `public` exposure (ADR 0004 item 5: an
- * Internet-facing single-organization install needs the same items closed), the multi mode gate's
- * configuration items follow: Mend's own git keeps to the tenant source policy and every capture
- * upload is signed for its size. `MEND_GIT_TRANSPORT_BIND_ORIGIN` and `MEND_SERVICE_HOSTS` stay
- * unset, which is what the gate asks of them. A `public` exposure also refuses bearers in URLs,
- * which its gate needs (`no-bearers-in-urls`).
+ * Internet-facing single-organization install needs the same items closed), every capture upload
+ * is signed for its size. Only a `public` exposure also keeps Mend's own git to the tenant source
+ * policy: several organizations on one Mend belong to one business (docs/adr/0003, "What multi
+ * means"), so `multi` alone leaves it at `operator`, and private networks stay reachable.
+ * `MEND_GIT_TRANSPORT_BIND_ORIGIN` and `MEND_SERVICE_HOSTS` stay unset, which is what the gate asks
+ * of them. A `public` exposure also refuses bearers in URLs, which its gate needs
+ * (`no-bearers-in-urls`).
  */
 export const postureEnvironment = (
   posture: ServerPosture,
 ): ReadonlyArray<readonly [string, string]> => {
-  const gate = posture.tenancy === "multi" || posture.exposure === "public";
+  const sizes = posture.tenancy === "multi" || posture.exposure === "public";
   return [
     ...(posture.sessionRuntime === undefined
       ? []
@@ -261,9 +263,8 @@ export const postureEnvironment = (
       : [["MEND_SESSION_RUNTIMES", posture.sessionRuntimes.join(",")] as const]),
     ...(posture.exposure === undefined ? [] : [["MEND_EXPOSURE", posture.exposure] as const]),
     ...(posture.tenancy === undefined ? [] : [["MEND_TENANCY", posture.tenancy] as const]),
-    ...(gate
-      ? [["MEND_SOURCE_POLICY", "tenant"] as const, ["MEND_CAPTURE_REQUIRE_SIZES", "true"] as const]
-      : []),
+    ...(posture.exposure === "public" ? [["MEND_SOURCE_POLICY", "tenant"] as const] : []),
+    ...(sizes ? [["MEND_CAPTURE_REQUIRE_SIZES", "true"] as const] : []),
     ...(posture.exposure === "public" ? [["MEND_URL_BEARERS", "refuse"] as const] : []),
     // The gate's workspace-ssh item reads where SSH is published apart from the web port; the
     // container cannot see what its host publishes.
@@ -336,9 +337,9 @@ export const renderPostureOverlay = (posture: ServerPosture): string | undefined
     "# Written by mend server setup: the posture this install declares, read from server.env",
     "# (docs/adr/0003-organizations-and-tenancy.md, docs/adr/0004-access-without-a-private-network.md).",
     "# MEND_EXPOSURE and MEND_TENANCY are the operator's statements. With multi tenancy or a public",
-    "# exposure, the multi mode gate's configuration items follow: Mend's own git keeps to the tenant",
-    "# source policy and every capture upload is signed for its size. MEND_GIT_TRANSPORT_BIND_ORIGIN",
-    "# and MEND_SERVICE_HOSTS are not set, which is what the gate asks of them.",
+    "# exposure, every capture upload is signed for its size; a public exposure also keeps Mend's",
+    "# own git to the tenant source policy. MEND_GIT_TRANSPORT_BIND_ORIGIN and MEND_SERVICE_HOSTS",
+    "# are not set, which is what the multi mode gate asks of them.",
     "services:",
     "  mend:",
     "    environment:",

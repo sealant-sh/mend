@@ -21,7 +21,11 @@ describe("the mirrors", { timeout: 120_000 }, () => {
     expect(files["compose.mirrors.yaml"]).toContain("\n  npm-mirror:\n");
     expect(files["compose.mirrors.yaml"]).toContain("\n  docker-mirror:\n");
     expect(files["npm-mirror.conf"]).toContain("proxy_cache npm;");
-    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.posture.yaml",
+      "compose.mirrors.yaml",
+    ]);
     // Both images are checked beside the bundle's.
     expect(f.runCalls.some((call) => call.args.includes("nginx:1.29-alpine"))).toBe(true);
     expect(f.runCalls.some((call) => call.args.includes("registry:3.1"))).toBe(true);
@@ -49,7 +53,11 @@ describe("the mirrors", { timeout: 120_000 }, () => {
       docker: { maxSize: "20g" },
     });
     expect(f.files()["server.env"]).toContain("MEND_NPM_MIRROR_MAX_SIZE=10g\n");
-    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.posture.yaml",
+      "compose.mirrors.yaml",
+    ]);
     expect(f.lines).toContain(
       "The npm mirror runs on this install. New sessions install npm packages through it, capped at 10g.",
     );
@@ -88,7 +96,7 @@ describe("the mirrors", { timeout: 120_000 }, () => {
       _tag: "ok",
     });
     expect(f.files()["compose.mirrors.yaml"]).toBeUndefined();
-    expect(f.state().upFiles).toEqual(["compose.yaml"]);
+    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.posture.yaml"]);
     f.lines.length = 0;
     expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
     expect(f.lines).toContain(

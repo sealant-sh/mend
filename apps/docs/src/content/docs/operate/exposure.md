@@ -146,7 +146,7 @@ The `tenancy-gate` item includes every item of the multi mode gate, whatever `ME
 ✓ cross-organization-authorization  every route is classified and refuses across organizations with zero effects (project-access.test.ts)
 ✓ per-account-resources             signers, push devices, notifications and GitHub identity belong to one account
 ✓ folders-reach-workspaces          folders and references travel with the plan as content-addressed archives, laid down beside the worktree (needs sealantd 0.16.0 or newer)
-· source-policy                     Mend's own git follows the operator source policy · set MEND_SOURCE_POLICY=tenant
+· source-policy                     Mend's own git follows the operator source policy, and a public exposure needs the tenant one · set MEND_SOURCE_POLICY=tenant
 · source-address-pinning            the operator source policy leaves git to resolve names itself · set MEND_SOURCE_POLICY=tenant
 ✓ transport-bound-to-origin         a workspace's git transport signs only against its project's remote
 · upload-length-binding             capture uploads without a declared size are accepted · set MEND_CAPTURE_REQUIRE_SIZES=true with an S3-compatible MEND_BLOB_STORE
@@ -156,9 +156,11 @@ The `tenancy-gate` item includes every item of the multi mode gate, whatever `ME
 3 of 10 items open; MEND_TENANCY=multi refuses to start
 ```
 
-That is `mend operator gate` on the same instance. `operator-present` means an instance with no
-operator account refuses `public`: until the first account exists, registration is open to whoever
-arrives first.
+That is `mend operator gate` on the same instance, declared `public`. Without `public`, the two
+source items read closed under the `operator` policy: several organizations on one Mend belong to
+one business, and only an Internet-facing install keeps Mend's own git off the private network.
+`operator-present` means an instance with no operator account refuses `public`: until the first
+account exists, registration is open to whoever arrives first.
 
 ### Before you declare public
 
@@ -171,9 +173,9 @@ arrives first.
   Mend and is never offered to the Internet.
 
 On the Docker install, `mend server setup --exposure public` does the second and third for you,
-through a `compose.posture.yaml` the generation carries, and `--tenancy multi` does the second. The
-bucket is Garage, which is S3-compatible. Every variable named here is described in
-[Server environment](/reference/server-environment/).
+through a `compose.posture.yaml` the generation carries. `--tenancy multi`, which a fresh install
+declares, sets `MEND_CAPTURE_REQUIRE_SIZES=true` only. The bucket is Garage, which is S3-compatible.
+Every variable named here is described in [Server environment](/reference/server-environment/).
 
 ## The edge
 

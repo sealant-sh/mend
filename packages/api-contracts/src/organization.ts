@@ -81,13 +81,18 @@ export class OrganizationView extends Schema.Class<OrganizationView>("Organizati
   mountDelivery: Schema.Literals(["bind", "sources"]),
   /**
    * Whether this sign-in may create an organization of its own (`POST /account/organizations`):
-   * only in `multi`, only while the operator leaves `MEND_ORGANIZATION_CREATION` at `anyone`, and
-   * never with an access key. Older servers omit it, which reads as no.
+   * only in `multi`, only an operator unless `MEND_ORGANIZATION_CREATION` is `anyone`, and never
+   * with an access key. Older servers omit it, which reads as no.
    */
   canCreateOrganizations: Schema.Boolean.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(false)),
     Schema.withConstructorDefault(Effect.succeed(false)),
   ),
+  /**
+   * `MEND_ORGANIZATION_CREATION` as the server runs it: who may create an organization in `multi`.
+   * Older servers omit it: not known.
+   */
+  organizationCreation: Schema.optionalKey(Schema.Literals(["anyone", "operator"])),
 }) {}
 
 /** One audit event with the name of the account that acted, departed members included. */

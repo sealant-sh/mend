@@ -117,8 +117,14 @@ pkgs.testers.runNixOSTest {
         "MEND_T3_GATEWAY_ENABLED=true",
         "MEND_T3_GATEWAY_PUBLISHED=127.0.0.1:3120",
         "MEND_T3_GATEWAY_URL=https://t3.mend.test",
+        "MEND_TENANCY=multi",
+        "MEND_CAPTURE_REQUIRE_SIZES=true",
     ]:
         assert variable in environment, f"the Mend container's environment has no {variable}"
+    # Several organizations on a fresh install, with the operator source policy (docs/adr/0003).
+    assert not any(v.startswith("MEND_SOURCE_POLICY=") for v in environment), "multi alone set a source policy"
+    assert machine.succeed("cat /var/lib/mend/tenancy").strip() == "multi", "the first start did not keep multi"
+    assert first["tenancy"] == "multi", f"a fresh install runs {first['tenancy']} tenancy"
     published = machine.succeed("docker port mend-mend-1 3120/tcp").strip()
     assert published == "127.0.0.1:3120", f"the gateway's port is published on {published}"
     machine.wait_until_succeeds(f"curl --fail --silent {gateway}/.well-known/t3/environment", timeout=60)
@@ -174,6 +180,7 @@ pkgs.testers.runNixOSTest {
     print(f"health after restart: {second}")
     assert second["status"] == "ok", f"health status after restart is {second['status']}"
     assert second["instance"] == first["instance"], "the instance changed across the restart"
+    assert second["tenancy"] == "multi", "the tenancy changed across the restart"
     assert machine.succeed("sha256sum /var/lib/mend/identity.env") == identity_before, "the identity changed"
     assert edge_containers() != "", "the edge is not running after a restart"
 

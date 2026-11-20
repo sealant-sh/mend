@@ -169,11 +169,13 @@ its identity, so a changed author applies from your next start there.
 Adoption, reference repositories, and dotfiles clone from a URL someone typed, with the server's
 network position. `MEND_SOURCE_POLICY` decides which addresses those clones may reach:
 
-- `operator` (the default) fits one team's own machine: private networks are allowed, the cloud
-  metadata service never is, and loopback or link-local addresses only for the operator;
+- `operator` (the default) fits one team's own machine, and a server whose organizations belong to
+  one business: private networks are allowed, the cloud metadata service never is, and loopback or
+  link-local addresses only for the operator;
 - `tenant` refuses private, reserved, and local addresses, and unauthenticated `git://`, unless
-  `MEND_SOURCE_ALLOWED_HOSTS` (a comma-separated list) names the host. Loopback and the metadata
-  service can never be allowed.
+  `MEND_SOURCE_ALLOWED_HOSTS` (a comma-separated list) names the host.
+  `mend server setup --exposure public` sets it, since a public server needs it. Loopback and the
+  metadata service can never be allowed.
 
 Read [Server environment](/reference/server-environment/) for every server variable.
 

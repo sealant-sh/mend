@@ -340,9 +340,10 @@ every client in one address budget. A team that runs into it raises the budgets
 
 Setup also records how the server is reached, `--exposure loopback|private|public`, and how many
 organizations it holds, `--tenancy single|multi`. Both stay across reruns and upgrades. A server
-setup installs runs as `private` and `single` unless you say otherwise. `public` needs the edge and
-an existing first account. [Exposure](/operate/exposure/) explains the modes, the public exposure
-gate, and what Mend checks beside what you declare.
+setup installs runs as `private` and `multi` (several organizations, which only an operator creates)
+unless you say otherwise; an install from before that default stays `single`. `public` needs the
+edge and an existing first account. [Exposure](/operate/exposure/) explains the modes, the public
+exposure gate, and what Mend checks beside what you declare.
 
 ## Create your Mend account
 

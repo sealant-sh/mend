@@ -379,9 +379,9 @@ The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
 `MEND_TENANCY=multi` refuses to start until every item of the multi mode gate is in place
 (docs/adr/0003). `mend operator gate` prints each item, what this instance shows, and what would
 satisfy an open one; `/health` carries `tenancyGate.passed` and the open item ids. The configuration
-items: `MEND_SOURCE_POLICY=tenant`, `MEND_GIT_TRANSPORT_BIND_ORIGIN` unset,
-`MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://` `MEND_BLOB_STORE`, `MEND_SERVICE_HOSTS` on
-loopback, and an operator account.
+items: `MEND_GIT_TRANSPORT_BIND_ORIGIN` unset, `MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://`
+`MEND_BLOB_STORE`, `MEND_SERVICE_HOSTS` on loopback, `MEND_SOURCE_POLICY=tenant` with
+`exposure.mode: public` only, and an operator account once the first one exists.
 
 ## Exposure, and an Ingress to the web tier
 

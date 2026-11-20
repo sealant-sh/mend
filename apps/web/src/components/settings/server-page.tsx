@@ -866,7 +866,7 @@ function OrganizationsSection({
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
   const phone = usePhone();
   const tenancy = health.data?.tenancy ?? null;
-  const creation = creationWords(viewer.canCreateOrganizations);
+  const creation = creationWords(viewer);
   return (
     <SettingSection
       title="Organizations"

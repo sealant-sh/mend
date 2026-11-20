@@ -539,30 +539,40 @@ export const gateCheck = (item: MultiModeGateItem): CheckWords => {
               : ["Folders and references are mounted beside each worktree."],
           fix: null,
         };
+      // Several organizations on one Mend belong to one business: only a public server is asked
+      // for the tenant policy (docs/adr/0003, "What multi means").
       case "source-policy":
-        return {
-          title: "Mend's git stays off private networks",
-          saw:
-            item.reason === "tenant"
-              ? [
-                  "Mend's own git follows the tenant source policy, so it won't fetch from private or local addresses.",
-                ]
-              : [
-                  "Mend's own git follows the operator source policy, so it can fetch from private and local addresses.",
-                ],
-          fix: w`Set ${code("MEND_SOURCE_POLICY=tenant")}. That also fixes the next one.`,
-        };
+        return item.reason === "tenant"
+          ? {
+              title: "Mend's git stays off private networks",
+              saw: [
+                "Mend's own git follows the tenant source policy, so it won't fetch from private or local addresses.",
+              ],
+              fix: null,
+            }
+          : {
+              title: "Mend's git may reach private networks",
+              saw: [
+                "Mend's own git follows the operator source policy, so it can fetch from private and local addresses, such as a Git server on your network. The organizations on this server belong to one business, so only a public server needs more.",
+              ],
+              fix: w`On a public server, set ${code("MEND_SOURCE_POLICY=tenant")}. That also fixes the next one.`,
+            };
       case "source-address-pinning":
-        return {
-          title: "Git connects to the address it checked",
-          saw:
-            item.reason === "tenant"
-              ? ["Git connects to the exact address the source policy checked, over SSH and HTTPS."]
-              : [
-                  "Under the operator source policy, git looks up names itself, so it can connect to a different address from the one that was checked.",
-                ],
-          fix: w`Set ${code("MEND_SOURCE_POLICY=tenant")}.`,
-        };
+        return item.reason === "tenant"
+          ? {
+              title: "Git connects to the address it checked",
+              saw: [
+                "Git connects to the exact address the source policy checked, over SSH and HTTPS.",
+              ],
+              fix: null,
+            }
+          : {
+              title: "Git looks up names itself",
+              saw: [
+                "Under the operator source policy, git looks up names itself, so it can connect to a different address from the one that was checked.",
+              ],
+              fix: w`On a public server, set ${code("MEND_SOURCE_POLICY=tenant")}.`,
+            };
       case "transport-bound-to-origin":
         return {
           title: "Workspace git signs only for its own remote",
@@ -770,16 +780,22 @@ export const createdLine = (createdAt: Date): string =>
   `Created ${createdAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}`;
 
 /**
- * Who may create an organization (`MEND_ORGANIZATION_CREATION`), on a server with several. The
- * server doesn't report the value on its own: for an operator signed in with their own sign-in,
- * `organization.current`'s `canCreateOrganizations` is exactly whether it is `anyone`.
+ * Who may create an organization (`MEND_ORGANIZATION_CREATION`), on a server with several, as
+ * `organization.current` reports it. A server from before it said so leaves it out; there, for an
+ * operator signed in with their own sign-in, `canCreateOrganizations` was exactly whether it is
+ * `anyone`.
  */
-export const creationWords = (
-  canCreateOrganizations: boolean,
-): { readonly word: string; readonly means: string } =>
-  canCreateOrganizations
+export const creationWords = (viewer: {
+  readonly organizationCreation?: "anyone" | "operator";
+  readonly canCreateOrganizations: boolean;
+}): { readonly word: string; readonly means: string } =>
+  (viewer.organizationCreation ?? (viewer.canCreateOrganizations ? "anyone" : "operator")) ===
+  "anyone"
     ? { word: "Anyone signed in", means: "Anyone signed in can create an organization and own it." }
-    : { word: "Only operators", means: "Only an operator creates organizations." };
+    : {
+        word: "Only operators",
+        means: "Only an operator creates organizations, and owns each one they create.",
+      };
 
 // ---------------------------------------------------------------------------------------------
 // This server

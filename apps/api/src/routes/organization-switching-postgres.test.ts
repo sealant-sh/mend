@@ -602,4 +602,33 @@ describe.skipIf(postgres.skip)("a person creates an organization (PostgreSQL)", 
       { action: "organization.created", actorUserId: "oscar", subjectId: id },
     ]);
   });
+
+  it("with MEND_ORGANIZATION_CREATION=operator an operator creates one from their own sign-in and owns it", async () => {
+    organizationCreation = "operator";
+    await query(
+      (sql) => sql`INSERT INTO instance_roles (user_id, role) VALUES ('ada', 'operator')`,
+    );
+    try {
+      expect(await offered("ada-web")).toBe(true);
+      const created = await call("ada-web", "POST", "/api/account/organizations", {
+        name: "Analytical Society",
+      });
+      expect([created.status, field(created.body, "role"), field(created.body, "active")]).toEqual([
+        200,
+        "owner",
+        true,
+      ]);
+      const id = OrganizationId.make(String(field(created.body, "organization", "id")));
+      expect(await activeOf("ada-web")).toBe(id);
+      expect(await auditIn(id)).toEqual([
+        { action: "organization.created", actorUserId: "ada", subjectId: id },
+      ]);
+      // The server says who may create, so Settings can name it without guessing.
+      expect(
+        field((await call("ada-web", "GET", "/api/organization")).body, "organizationCreation"),
+      ).toBe("operator");
+    } finally {
+      await query((sql) => sql`DELETE FROM instance_roles WHERE user_id = 'ada'`);
+    }
+  });
 });

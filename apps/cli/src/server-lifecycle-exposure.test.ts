@@ -13,6 +13,39 @@ afterEach(async () => {
 });
 
 describe("the edge and the posture", { timeout: 120_000 }, () => {
+  it("an install that never declared tenancy stays single across an upgrade and a rerun", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    // As an install from before multi was the default: no tenancy in its config, no posture.
+    const directory = f.active();
+    const configFile = path.join(directory, "server.json");
+    const { tenancy: _tenancy, ...config } = JSON.parse(fs.readFileSync(configFile, "utf8"));
+    fs.writeFileSync(configFile, `${JSON.stringify(config, null, 2)}\n`);
+    const envFile = path.join(directory, "server.env");
+    fs.writeFileSync(
+      envFile,
+      fs
+        .readFileSync(envFile, "utf8")
+        .split("\n")
+        .filter((line) => !/^MEND_(TENANCY|CAPTURE_REQUIRE_SIZES)=/.test(line))
+        .join("\n"),
+    );
+    fs.rmSync(path.join(directory, "compose.posture.yaml"));
+    for (const step of [
+      () => f.upgrade(),
+      () => serverCommand(["setup", "--offline"], f.runtime),
+    ]) {
+      expect(await step()).toEqual({ _tag: "ok" });
+      const files = f.files();
+      expect(JSON.parse(files["server.json"] ?? "{}").tenancy).toBeUndefined();
+      expect(files["server.env"]).not.toContain("MEND_TENANCY");
+      expect(files["compose.posture.yaml"]).toBeUndefined();
+    }
+    f.lines.length = 0;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.lines).toContain("tenancy · declared single · the default, not set on this install");
+  });
+
   it("status says what was declared beside what was observed, and never a verdict", async () => {
     const f = await fixture();
     expect(await f.setupEdge(host, "--exposure", "private")).toEqual({ _tag: "ok" });
@@ -31,7 +64,8 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
       `edge · ${host} · caddy:2.10-alpine on 80 and 443 · Mend's own port on loopback`,
     );
     expect(f.lines).toContain("exposure · declared private");
-    expect(f.lines).toContain("tenancy · declared single · the default, not set on this install");
+    // A fresh install declares several organizations.
+    expect(f.lines).toContain("tenancy · declared multi");
     expect(f.lines).toContain(
       `edge · ${host} · container running · no certificate in Caddy's data yet · mend server logs shows what Caddy tried`,
     );
@@ -109,11 +143,15 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     }
     expect(fs.existsSync(path.join(f.configDir, "active"))).toBe(false);
     expect(await f.setupEdge(host)).toEqual({ _tag: "ok" });
-    const plain = f.files();
-    expect(plain["compose.posture.yaml"]).toBeUndefined();
+    // A fresh install is multi: sizes are signed, and Mend's own git keeps the operator policy.
+    const plain = f.files()["server.env"] ?? "";
+    expect(plain).toContain("MEND_TENANCY=multi\n");
+    expect(plain).toContain("MEND_CAPTURE_REQUIRE_SIZES=true\n");
+    expect(plain).not.toContain("MEND_SOURCE_POLICY");
     expect(f.state().upFiles).toEqual([
       "compose.yaml",
       "compose.edge.yaml",
+      "compose.posture.yaml",
       "compose.mirrors.yaml",
     ]);
     expect(

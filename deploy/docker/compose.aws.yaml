@@ -17,9 +17,10 @@
 #              loopback, which is also the private path for creating the first account
 #              (aws ssm start-session … AWS-StartPortForwardingSession, portNumber=3105).
 #
-# First boot is two steps, because both gates count the operator account (tenancy.ts,
-# exposure.ts): start with MEND_TENANCY=single and MEND_EXPOSURE=private, create the first
-# account through the SSM tunnel, then set multi and public and `up -d` again.
+# First boot is two steps, because the public exposure gate counts the operator account
+# (exposure.ts): start with MEND_EXPOSURE=private, create the first account through the SSM
+# tunnel, then set multi and public and `up -d` again. (Multi alone starts before the first
+# account exists since SLNT-1220.)
 #
 # `mend server setup`, `start` and `upgrade` do not know this file. Upgrade by changing
 # MEND_VERSION in .env and running the command above.

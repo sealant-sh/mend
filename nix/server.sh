@@ -96,6 +96,24 @@ garage_admin_token=$(hmac_sha256_hexkey "$auth" mend-garage-admin-token)
 garage_key_id=GK$(hmac_sha256_hexkey "$auth" mend-garage-key-id | cut -c1-24)
 garage_key_secret=$(hmac_sha256_hexkey "$auth" mend-garage-key-secret)
 
+# With services.mend.tenancy unset, the first start decides it and keeps it: several organizations
+# on a fresh install, one on an install that already has data and never declared it, so an upgrade
+# never changes it (docs/adr/0003).
+tenancy_file=$state_dir/tenancy
+if [[ $tenancy_declared == 0 ]]; then
+  if [[ ! -e $tenancy_file ]]; then
+    if docker volume inspect mend-store >/dev/null 2>&1; then
+      decided=single
+    else
+      decided=multi
+    fi
+    printf '%s\n' "$decided" >"$tenancy_file"
+    echo "mend: this install runs $decided tenancy; set services.mend.tenancy to change it."
+  fi
+  tenancy=$(<"$tenancy_file")
+  [[ $tenancy == single || $tenancy == multi ]] || fail "$tenancy_file says \"$tenancy\"; it must be single or multi."
+fi
+
 account_marker=$state_dir/first-account
 render_env() {
   local origins=$allowed_origins draft
@@ -111,6 +129,11 @@ render_env() {
     printf 'MEND_GARAGE_ADMIN_TOKEN=%s\n' "$garage_admin_token"
     printf 'MEND_GARAGE_KEY_ID=%s\n' "$garage_key_id"
     printf 'MEND_GARAGE_KEY_SECRET=%s\n' "$garage_key_secret"
+    if [[ $tenancy_declared == 0 ]]; then
+      printf 'MEND_TENANCY=%s\n' "$tenancy"
+      if [[ $tenancy == multi || $exposure_public == 1 ]]; then sizes=true; else sizes=false; fi
+      printf 'MEND_CAPTURE_REQUIRE_SIZES=%s\n' "$sizes"
+    fi
   } >"$draft"
   mv "$draft" "$env_file"
 }

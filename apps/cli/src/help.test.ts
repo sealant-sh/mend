@@ -243,7 +243,10 @@ describe("man pages", () => {
     expect(setup).toContain("--tenancy <v>");
     expect(setup).toContain("Mend's own port stays on loopback");
     expect(setup).toContain("A fresh install cannot start with the edge");
-    expect(setup).toContain("MEND_SOURCE_POLICY=tenant and MEND_CAPTURE_REQUIRE_SIZES=true");
+    expect(setup).toContain("A fresh install declares multi unless --tenancy single is given");
+    expect(setup).toContain(
+      "public also sets MEND_SOURCE_POLICY=tenant and MEND_URL_BEARERS=refuse",
+    );
     expect(setup).toContain("mend server setup --edge mend.example.com");
     const upgrade = renderCommand(findCommand(["server", "upgrade"])!, 120).replace(/\s+/g, " ");
     expect(upgrade).toContain("An upgrade never drops the edge or the posture");

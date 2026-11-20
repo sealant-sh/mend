@@ -1,9 +1,9 @@
 # Organizations and tenancy: one boundary for single-user, team and multi-tenant Mend
 
 Status: accepted 2026-09-17; built in #263 to #280. Amended 2026-10-30 (removed projects, #1253),
-2026-11-08 (organization switching, #1542) and 2026-11-18 (a person creates an organization,
-SLNT-1139). Settles the product decisions that team support findings
-(`0dd4b4bf:docs/archive/reviews/team-support-findings.md`) asked for before permissions are
+2026-11-08 (organization switching, #1542), 2026-11-18 (a person creates an organization, SLNT-1139)
+and 2026-11-20 (what multi means, SLNT-1220). Settles the product decisions that team support
+findings (`0dd4b4bf:docs/archive/reviews/team-support-findings.md`) asked for before permissions are
 implemented, and the Mend half of the account and authorization blockers in public exposure findings
 (`0dd4b4bf:docs/archive/reviews/public-exposure-findings.md`). Budgets (MEND-05, CORE-04) are
 deliberately deferred; see "Multi mode gate". Teams inside an organization are out of scope.
@@ -27,7 +27,9 @@ capture store, and its review found twelve blockers. It is ported in pieces, not
 
 ### Tenancy mode
 
-`MEND_TENANCY=single|multi`, default `single`.
+`MEND_TENANCY=single|multi`, default `single`. Amended 2026-11-20 ("What multi means"):
+`mend server setup` and the Nix module declare `multi` on a fresh install, and an install that never
+declared it stays `single`.
 
 - `single`: one organization exists. The first account is both the operator and that organization's
   owner.
@@ -60,7 +62,9 @@ each open item with its fix; `/health` reports whether the gate passes and the o
 4. Local Git sources and private or loopback destinations refused for tenants (MEND-06, MEND-07):
    `MEND_SOURCE_POLICY=tenant` checks every clone and fetch Mend itself runs, and a workspace's git
    transport signs only against its project's own remote. Git then dials the addresses that were
-   checked, so a name cannot answer differently after the check.
+   checked, so a name cannot answer differently after the check. Amended 2026-11-20 ("What multi
+   means"): `multi` no longer requires the tenant source policy or its address pinning; only a
+   `public` exposure does. The transport bound to the project's remote stays required.
 5. Upload signatures bound to exact content length, with stored-size verification (MEND-04).
 6. Raw service ports bound to loopback only.
 
@@ -338,13 +342,54 @@ Yiannis on 18 Nov 2026 with no objection.
   empty or not allowed name is refused by its own tag (`OrganizationNameTaken`,
   `OrganizationNameEmpty`, `OrganizationNameNotAllowed`).
 - An operator who runs an open server can keep creation to themselves with
-  `MEND_ORGANIZATION_CREATION=operator` (default `anyone`). `GET /organization` says whether this
-  sign-in may create one (`canCreateOrganizations`), so clients offer it only then.
+  `MEND_ORGANIZATION_CREATION=operator`. `GET /organization` says whether this sign-in may create
+  one (`canCreateOrganizations`), so clients offer it only then. Amended 2026-11-20: the default is
+  `operator`, and under it an operator creates one from the web too and owns it ("What multi
+  means").
 - Registration is still by invitation: creating an organization needs an account. An access key
   cannot create one, as it cannot join one.
 - `single` is unchanged: nobody creates a second organization.
 - Not decided: a limit on how many organizations one person may create. It belongs with budgets
   ("Multi mode gate"); until then `MEND_ORGANIZATION_CREATION=operator` is the operator's control.
+
+### What multi means (2026-11-20)
+
+Yiannis, 20 Nov 2026, first: "Ok let's change the default will be multi orgs and only operators can
+make more". Then, on the tenant source policy that `multi` required: "Let's remove this rule. Mend
+is not setup atm at all to run on multi tennant way. Multiple orgs still assume one business entity
+here" (SLNT-1220).
+
+- Several organizations on one Mend belong to one business. They are kept apart (members, projects,
+  folders, settings and audit log per organization, every route refusing across them), but they are
+  not tenants who distrust each other or the operator's network. Hosting people who do not trust
+  each other, the goal this ADR started from, is not what `multi` promises today.
+- A fresh install declares `multi`: `mend server setup` writes `MEND_TENANCY=multi` when there is no
+  install yet, and the Nix module, with `tenancy` unset, decides on its first start (`multi` when
+  the install has no data, `single` when it has) and keeps that decision. An install that never
+  declared tenancy stays `single` across reruns and upgrades: nothing it does today changes. The
+  server's own default, for a process nothing configured, stays `single`.
+- The multi mode gate no longer requires `MEND_SOURCE_POLICY=tenant` or the address pinning that
+  comes with it (`source-policy`, `source-address-pinning`). Under `operator`, Mend's own git
+  reaches a Git server on the LAN or the tailnet, as on a single-organization install. Both items
+  stay in the gate's report and are still required with a `public` exposure (ADR 0004, item 5),
+  where the people reaching Mend include the Internet; `mend server setup` writes the tenant policy
+  only for `public`. `tenant` stays an explicit choice.
+- The other items stay. `upload-length-binding` holds a workspace to the sizes it declared, whoever
+  owns it, and a fresh packaged install meets it (its Garage bucket, `MEND_CAPTURE_REQUIRE_SIZES`
+  written with `multi`). `transport-bound-to-origin` keeps a workspace's signer, which signs as its
+  owner, on the project's own remote. `raw-service-ports` keeps Services behind Mend's
+  authorization. None of them stops a default fresh install.
+- First boot: an instance with no organization, so no account, starts in `multi` although
+  `operator-present` is open; the first account to register becomes the operator. The item still
+  reads open until then, so a `public` exposure stays refused while registration is open to whoever
+  arrives first (ADR 0004).
+- `MEND_ORGANIZATION_CREATION` defaults to `operator`. An account holding the operator role sees
+  "Create organization…" in the web app's switcher, creates one there and owns it, as anyone does
+  under `anyone`. Everyone else sees no item, and the route refuses them. `anyone` stays an explicit
+  choice.
+- This departs from "Operator" above, which keeps operator power in the CLI. Creating an
+  organization and owning it is the ordinary owner's path, open to the operator by Yiannis's ask; it
+  grants no read access to any other organization, which still holds.
 
 ## Consequences
 

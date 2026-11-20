@@ -473,9 +473,9 @@ describe("each multi mode gate item, worded from its case and data", () => {
       "source-policy, operator",
       gate({ id: "source-policy", reason: "operator" }, false),
       {
-        title: "Mend's git stays off private networks",
-        saw: "Mend's own git follows the operator source policy, so it can fetch from private and local addresses.",
-        fix: "Set `MEND_SOURCE_POLICY=tenant`. That also fixes the next one.",
+        title: "Mend's git may reach private networks",
+        saw: "Mend's own git follows the operator source policy, so it can fetch from private and local addresses, such as a Git server on your network. The organizations on this server belong to one business, so only a public server needs more.",
+        fix: "On a public server, set `MEND_SOURCE_POLICY=tenant`. That also fixes the next one.",
       },
     ],
     [
@@ -860,8 +860,14 @@ describe("this server and what it offers", () => {
   it("counts members and owners, and says when an organization has no owner", () => {
     expect(organizationCounts({ memberCount: 4, ownerCount: 2 })).toBe("4 members, 2 owners");
     expect(organizationCounts({ memberCount: 1, ownerCount: 0 })).toBe("1 member, no owner");
-    expect(creationWords(true).word).toBe("Anyone signed in");
-    expect(creationWords(false).word).toBe("Only operators");
+    const operator = { organizationCreation: "operator", canCreateOrganizations: true } as const;
+    expect(creationWords(operator).word).toBe("Only operators");
+    expect(
+      creationWords({ organizationCreation: "anyone", canCreateOrganizations: true }).word,
+    ).toBe("Anyone signed in");
+    // A server from before it reported the setting: an operator could create only under anyone.
+    expect(creationWords({ canCreateOrganizations: true }).word).toBe("Anyone signed in");
+    expect(creationWords({ canCreateOrganizations: false }).word).toBe("Only operators");
   });
 });
 

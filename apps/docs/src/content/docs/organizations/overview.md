@@ -14,11 +14,14 @@ See [Several organizations](#several-organizations).
 
 ## Tenancy modes
 
-`MEND_TENANCY` sets how many organizations an instance holds. It takes `single` (the default) or
-`multi`.
+`MEND_TENANCY` sets how many organizations an instance holds. It takes `single` or `multi`.
+`mend server setup` and the Nix module declare `multi` on a fresh install; an install that never
+declared tenancy stays `single` across upgrades, and so does a server nothing configures.
 
-- `single`: one organization exists. Most installs run this way, for one person or one team.
-- `multi`: several organizations share one instance and cannot see or affect each other.
+- `single`: one organization exists, for one person or one team.
+- `multi`: several organizations share one instance. Each has its own members, projects, folders,
+  settings and audit log, and cannot see or affect the others. They belong to one business: Mend is
+  not built today to host people who distrust each other on one instance.
 
 Both modes run the same authorization checks. `single` only fixes the number of organizations at
 one.
@@ -26,8 +29,10 @@ one.
 Starting with `MEND_TENANCY=multi` is refused until the multi mode gate passes. Items this build
 already carries answer from the code, configuration items answer from the environment, and
 `operator-present` counts the operator accounts. At start, an open item stops startup, which names
-each open item with what would satisfy it. The operator reads the same list at any time, as it is
-when asked, so `operator-present` passes as soon as the first account exists:
+each open item with what would satisfy it. The one exception is a first start: an instance with no
+account yet starts with `operator-present` open, because the first account to register becomes the
+operator. The operator reads the same list at any time, as it is when asked, so `operator-present`
+passes as soon as the first account exists:
 
 ```sh
 mend operator gate
@@ -39,8 +44,8 @@ mend operator gate
 | `per-account-resources`            | Carried by this build: signers, push devices and GitHub identity belong to one account. |
 | `folders-reach-workspaces`         | Carried by this build (captured workspaces need sealantd 0.16.0 or newer).              |
 | `daemon-declares-sizes`            | Carried by this build (sealantd 0.16.0 or newer).                                       |
-| `source-policy`                    | `MEND_SOURCE_POLICY=tenant`                                                             |
-| `source-address-pinning`           | `MEND_SOURCE_POLICY=tenant`                                                             |
+| `source-policy`                    | Always, unless `MEND_EXPOSURE=public`; then `MEND_SOURCE_POLICY=tenant`                 |
+| `source-address-pinning`           | Always, unless `MEND_EXPOSURE=public`; then `MEND_SOURCE_POLICY=tenant`                 |
 | `transport-bound-to-origin`        | `MEND_GIT_TRANSPORT_BIND_ORIGIN` unset or `true` (the default)                          |
 | `upload-length-binding`            | `MEND_CAPTURE_REQUIRE_SIZES=true` with an S3-compatible `MEND_BLOB_STORE` (`s3://…`)    |
 | `raw-service-ports`                | `MEND_SERVICE_HOSTS` lists loopback addresses only (the default is `127.0.0.1`)         |
@@ -61,9 +66,12 @@ organization and the operator of the instance. After that, the only way in is an
 [invitation](#invite-people). Someone who opens the sign-up form without one is told that
 registration is by invitation.
 
-In `multi`, anyone signed in can also create an organization and becomes its owner, unless the
-operator sets `MEND_ORGANIZATION_CREATION=operator`. The operator can create one too and invite its
-first owner; that owner invites the rest. See [Operator commands](#operator-commands).
+In `multi`, an operator creates organizations. In the web app, the organization switcher offers
+"Create organization…" to an account holding the operator role: it makes them the owner of the new
+organization, and their sign-in switches to it. `mend operator org create` makes an empty one
+instead, whose first owner the operator invites; that owner invites the rest. With
+`MEND_ORGANIZATION_CREATION=anyone`, anyone signed in can create one in the web app and becomes its
+owner. See [Operator commands](#operator-commands).
 
 ## Roles
 
