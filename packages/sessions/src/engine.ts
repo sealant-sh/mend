@@ -24733,6 +24733,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // group) and is recorded as stopped; the fold then reads `idle` while shells or Services
         // hold the workspace, `stopping` while a drain saves it, or settles `stopped` at once.
         const ended: Array<SessionProcess> = [];
+        // Agents this stop closed whose end someone else recorded first: the PTY watcher sees a
+        // process end the moment the close kills it, and can record that before this stop does
+        // (box, 2026-11-20, SLNT-1205). This stop still ended a live agent, so the shells stay.
+        const closedHere: Array<SessionProcess> = [];
         // Agents the platform would not close: still live, so this stop ends nothing more.
         const notEnded: Array<SessionProcess> = [];
         for (const agent of rows.filter(isLiveAgentProcess)) {
@@ -24765,6 +24769,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             { kind: "stop" },
           );
           if (recorded === "recorded") ended.push(agent);
+          else if (agent.sealantSessionId !== null) closedHere.push(agent);
         }
         // A refused close whose process ended meanwhile anyway (a replacement's terminate reaped
         // it) is not a refusal: its words come off, and this stop goes on as one that ended it
@@ -24832,7 +24837,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // nothing to watch, so a `mend shell` beside them closes with them (box, next.786,
           // 2026-10-11: it held the session `idle` after its Stop). Services stay either way —
           // declared infrastructure with its own verb.
-          const liveShells = rows.filter((row) => row.kind === "shell" && isLiveProcess(row));
+          // A live agent this stop closed itself, whose end the watcher recorded first, is still
+          // an agent this stop ended: the shells stay, and the fold below reads them.
+          const liveShells = closedHere.some(isEngineAgentProcess)
+            ? []
+            : rows.filter((row) => row.kind === "shell" && isLiveProcess(row));
           for (const shell of liveShells) {
             if (
               shell.sealantSessionId !== null &&

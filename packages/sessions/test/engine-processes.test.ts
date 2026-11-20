@@ -539,6 +539,92 @@ describe("SessionEngine", () => {
   );
 
   it.effect(
+    "a stop keeps the shells when the watcher records the agent's end its close caused",
+    () =>
+      Effect.gen(function* () {
+        // Box, 0.37.0-next.1689 and .1696, 2026-11-20 (SLNT-1205): `mend stop` closed a `sleep`
+        // agent's terminal, the process ended at once, and the PTY watcher recorded that end
+        // before the stop did. The stop then read "no agent to close" and took the person's
+        // detached shell with it, about one stop in three.
+        const created: CreateOptions[] = [];
+        const clock = yield* makeProcessClock;
+        const stopped = clock.watched<string>();
+        const { ptyStates } = clock;
+        const closeStarted = yield* Deferred.make<string>();
+        const releaseClose = yield* Deferred.make<void>();
+        let agentPty: string | null = null;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* provisionIn(project);
+              yield* engine.launch(session.id, ["codex"]);
+              const shell = yield* engine.openShell(session.id);
+              const agent = [...world.processes.values()].find(
+                (process) => process.kind === "agent-pty",
+              );
+              if (agent === undefined || agent.sealantSessionId === null) {
+                throw new Error("the launch recorded no agent PTY");
+              }
+              agentPty = agent.sealantSessionId;
+
+              const stopping = yield* Effect.forkChild(engine.stop(session.id));
+              // The close is under way and the process it closes has ended.
+              yield* Deferred.await(closeStarted);
+              yield* clock.nextLook(
+                agent.sealantSessionId,
+                () => world.processes.get(agent.id)?.exitedAt === null,
+              );
+              yield* clock.untilChanged(
+                () => world.processes.get(agent.id)?.exitedAt !== null,
+                "the watcher records the agent's end",
+              );
+              yield* Deferred.succeed(releaseClose, undefined);
+              yield* Fiber.join(stopping);
+
+              expect(world.processes.get(shell.id)?.exitedAt).toBeNull();
+              expect(world.sessions.get(session.id)?.status).toBe("idle");
+              expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+              expect(stopped).toEqual([]);
+
+              yield* engine.stopShell(shell.id);
+              expect(world.sessions.get(session.id)?.settledAt).not.toBeNull();
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              stopped,
+              undefined,
+              undefined,
+              undefined,
+              ptyStates,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                aroundClose: (ptyId) =>
+                  ptyId !== agentPty
+                    ? Effect.void
+                    : Effect.gen(function* () {
+                        ptyStates.set(ptyId, {
+                          status: "exited",
+                          exitCode: 0,
+                          outputHighWater: 0n,
+                        });
+                        yield* Deferred.succeed(closeStarted, ptyId);
+                        yield* Deferred.await(releaseClose);
+                      }),
+              },
+            ),
+          },
+        );
+      }),
+  );
+
+  it.effect(
     "stop of a shell session closes its other shells too: its own shell is no agent to watch",
     () =>
       Effect.gen(function* () {
