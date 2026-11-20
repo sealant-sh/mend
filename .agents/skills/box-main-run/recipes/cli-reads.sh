@@ -4,9 +4,9 @@
 # See line. A flow this marks `failed` goes to an agent, who sees it again before it is reported
 # (SKILL.md, step 5).
 #
-#   E=$E SHA8=<sha8> .agents/skills/box-main-run/recipes/cli-reads.sh <flow id>
+#   E=$E SHA8=<sha8> LANE=<lane> .agents/skills/box-main-run/recipes/cli-reads.sh <flow id>
 #
-# MEND_CLI, KIT and WEB default to names.sh's CLI, the checker account and the box.
+# MEND_CLI, KIT and WEB default to names.sh's CLI, the checker account and the lane's copy.
 #
 # Writes <E>/<flow id>/cli.log (each command, its stdout and stderr, and its exit) and
 # <E>/<flow id>/result.txt (`seen` or `failed`, then one line per part of the See line). Exit 0 when
@@ -16,8 +16,8 @@ set -uo pipefail
 flow=${1:-}
 MEND_CLI=${MEND_CLI:-$HOME/.local/state/mend-main-run/cli/node_modules/.bin/mend}
 KIT=${KIT:-$HOME/.local/share/mend-boat-check}
-WEB=${WEB:-$(cat "$HOME/.local/state/mend-main-run/web" 2>/dev/null)}   # names.sh reads it from the box
-[[ $WEB == https://* ]] || { echo "cli-reads.sh: no address: set WEB or run names.sh" >&2; exit 2; }
+WEB=${WEB:-$(cat "$HOME/.local/state/mend-main-run/lanes/${LANE:-a}/web" 2>/dev/null)}   # names.sh reads it from the copy
+[[ $WEB =~ ^https?:// ]] || { echo "cli-reads.sh: no address: set WEB, or LANE after names.sh" >&2; exit 2; }
 : "${E:?set E}"
 P=${P:-boat-check-ubuntu}
 dir=$E/$flow

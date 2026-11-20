@@ -1,20 +1,24 @@
-# Flows on the box
+# Flows of the daily run
 
 Runs: every flow below, once a day (the owner's choice on SLNT-1050, 17 Nov). To run fewer, name the
 set on this line, for example "the flows marked `Sample: yes`"; a run reports each flow outside it
 as `not run · not in this run's set`.
 
-Every flow one run of [SKILL.md](SKILL.md) can use on the box (VM 131), as its signed-in owner,
-after the preview of `main` is deployed. Each flow comes from the feature map
-(`.agents/skills/verify/features/`, written "the map"); the feature file holds the exact handles,
-commands and strings, and a flow points at it instead of copying them. Every feature in the map has
-at least one flow here or a line in [Not on the box](#not-on-the-box). A PR that adds or changes a
-feature adds or updates its flow here in the same PR, and its judge names that flow
-(`pnpm verify judge`, which refuses an id this file does not have). Ids are stable: reports, tickets
-and PRs name flows by id, so rename one only with a note in the PR that does it. A flow's `Areas`
-line names the paths it passes through: an entry ending in `/` holds everything under it, and a
-judge cannot answer "no flow" for a change inside one. A flow for a route only the new web app
-(`apps/web`) has carries `- **Box:** after cut-over`, and runs once the box serves that app.
+Every flow one run of [SKILL.md](SKILL.md) can use on the box, as its signed-in owner, after the
+preview of `main` is deployed. **The box**, in this file, is the check VM copy of the run's own data
+that runs the flow's lane (SKILL.md, Lanes): lane A, B or C, each at its own address. Where a flow
+says `MEND_VERIFY_BOX_SSH`, it is that copy's (`~/.local/state/mend-main-run/lanes/<lane>/ssh`), and
+`box`, `M`, `M2` and `web` are that lane's names. Until 20 Nov 2026 the box was VM 131; nothing here
+reaches VM 131 now. Each flow comes from the feature map (`.agents/skills/verify/features/`, written
+"the map"); the feature file holds the exact handles, commands and strings, and a flow points at it
+instead of copying them. Every feature in the map has at least one flow here or a line in
+[Not on the box](#not-on-the-box). A PR that adds or changes a feature adds or updates its flow here
+in the same PR, and its judge names that flow (`pnpm verify judge`, which refuses an id this file
+does not have). Ids are stable: reports, tickets and PRs name flows by id, so rename one only with a
+note in the PR that does it. A flow's `Areas` line names the paths it passes through: an entry
+ending in `/` holds everything under it, and a judge cannot answer "no flow" for a change inside
+one. A flow for a route only the new web app (`apps/web`) has carries `- **Box:** after cut-over`,
+and runs once the box serves that app.
 
 `M` is the CLI under test, signed in as the box's owner account (never `mend login` or `mend logout`
 it). `<p>` is the project `boat-check-ubuntu` (Ubuntu, branch `master`). `<sha8>` is the first 8
@@ -23,15 +27,17 @@ a fresh `mktemp -d` directory of this run. Web flows run through
 `.agents/skills/verify/scripts/drive-web.mjs`; `scripted` flows name their recipe, `agent` flows are
 driven by the run's agent from the feature file.
 
-Box facts the flows depend on: the flows run on the run's own data, which SKILL.md loads in place of
-the owner's while it holds the box, at the address the box serves (`$WEB`, read each run). Sessions
-run on Boat by default, and Docker is offered beside it; the runtime is chosen per organization and
-a worktree keeps the runtime it was made on. One organization (Default), single tenancy. Provider
-logins on 16 Nov: codex and claude connected, GitHub not. Flows use codex only: the box's Claude
-login stays unused until SLNT-905 is decided. Five flows run a real agent turn, each with one-line
-prompts: `start-session.boat-turn`, `start-session.composer`, `start-session.web-write`,
-`start-session.web-answer` and `send-review-back.deliver`. They use codex: the owner has far more
-Codex capacity than Claude (17 Nov).
+Box facts the flows depend on: the flows run on the run's own data, which every copy boots with, at
+the address the lane's copy serves (`$WEB`, read each run). On a Boat copy (lane A, while
+`BOAT_COPIES` is 1) sessions run on Boat by default, and Docker is offered beside it; on a copy
+without Boat they run on Docker. The runtime is chosen per organization and a worktree keeps the
+runtime it was made on, so a worktree the data made on Boat starts no session on a copy without it.
+One organization (Default), single tenancy. Provider logins on 16 Nov: codex and claude connected,
+GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided.
+Five flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
+`start-session.composer`, `start-session.web-write`, `start-session.web-answer` and
+`send-review-back.deliver`. They use codex: the owner has far more Codex capacity than Claude (17
+Nov).
 
 For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
 git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
@@ -60,10 +66,11 @@ gap, not a product failure.
 
 ## Fixtures
 
-Made once, kept in the run's data (`/root/main-run/world.sql` on the box, saved by each run) and in
-the box's store and git service, and checked by each run before the flow that needs it. A missing
-fixture makes its flow `not run · fixture <name> missing`; recreate it as written, and only while
-you hold the box with the run's data loaded (`verify box prepare --load`).
+Made once, kept in the run's data (`world.sql`, its store and the git service's repositories, which
+`pnpm verify vm save` writes from lane A each night and the master is built from), and checked on
+each lane before the flow that needs it. A missing fixture makes its flow
+`not run · fixture <name> missing`; recreate it as written, on lane A only: what lanes B and C make
+goes with their copies.
 
 - **The project** `<p>`: adopted by the owner account from its network origin. `M projects` lists
   it. To recreate: `M adopt <origin> --name boat-check-ubuntu` (adopt-project.md `adopt-cli`).
@@ -76,6 +83,8 @@ you hold the box with the run's data loaded (`verify box prepare --load`).
   `Inherit · Boat` on 16 Nov), switch to Docker without moving anything; run
   `M run --project <p> --name main-run-docker -- sh -c 'echo docker > MAIN-RUN-DOCKER.md'`; put the
   noted choice back without moving anything. Made on 16 Nov. `M worktrees --project <p>` lists it.
+  Since 20 Nov no flow starts a session in it: its captures stayed in VM 131's blob store, and
+  `start-session.docker-run` makes a worktree of its own on lane B instead.
 - **The git service** on the box, serving bare repositories at `<git>/<name>.git` that accept
   pushes. Not on GitHub. Made by `fixtures.sh`, which keeps the repositories in `/srv/mend-git` on
   the box, written `<git dir>`.
@@ -99,8 +108,10 @@ removes what SKILL.md's ledger says to remove.
 
 ## Run order
 
-Flows are grouped below as the map's README groups features; they run in this order, because later
-flows reuse what earlier ones made:
+Flows are grouped below as the map's README groups features; within a lane they run in this order,
+because later flows reuse what earlier ones made. SKILL.md's Lanes says which lane runs each group:
+A runs 1, 3, 4, 6 and 7 and group 9's Boat flows; B runs 2, 5 and 8; C runs group 9's other flows.
+Each copy has its own data, so a group on one lane never sees what another lane changed.
 
 1. `server.data-intact` (before half), `server.upgrade`, `server.data-intact` (after half),
    `server.status-logs`
@@ -124,8 +135,8 @@ flows reuse what earlier ones made:
    `references-folders.select-link`, `organization.roles-roundtrip`, `organization.join-refused`,
    `operator.owner-grant-restore`, `shared-control.two-people`, `shared-control.ask-and-grant`,
    `shared-control.new-web-ask-and-grant`, `per-person-homes.two-people`, in that order and one at a
-   time: several change `<land>`, `<second>` or a role, and each runs only after the one before it
-   has put that back.
+   time within a lane: several change `<land>`, `<second>` or a role, and each runs only after the
+   one before it in its lane has put that back.
 
 ## The core loop
 
@@ -1089,8 +1100,11 @@ flows reuse what earlier ones made:
 ### start-session.docker-run
 
 - **Map:** start-session.md `start-cli-run`
-- **Needs:** Docker; no turn; CLI; fixture `main-run-docker`
-- **Do:** `M run --project <p> --worktree main-run-docker -- sh -c 'date -u > MAIN-RUN-DOCKER.md'`.
+- **Needs:** Docker; no turn; CLI; a copy without Boat (lane B), where a new worktree runs on Docker
+- **Do:**
+  `M run --project <p> --name main-run-docker-<sha8> -- sh -c 'date -u > MAIN-RUN-DOCKER.md'`. A new
+  worktree each run: the fixture `main-run-docker`'s earlier captures stayed in VM 131's blob store,
+  so a session in it fails at boot on a check VM (20 Nov, `BlobNotFoundError`).
 - **See:** `✓ recording · sh · workspace mounts the worktree` and `✓ exited · code 0 · recorded`;
   exit code `0`.
 - **Mode:** `agent`
@@ -2688,7 +2702,8 @@ flows reuse what earlier ones made:
   of `doctor.checklist`'s output.
 - **See:** JSON with `"tenancy": "single"` and an `exposure` object naming no item; line 1
   `exposure · declared <posture> · …`; the gate ending `<k> of 10 items open; …`; the popover
-  `Account and machine` with `machine` and the line `exposure · <posture> · https`.
+  `Account and machine` with `machine` and the line `exposure · <posture> · <scheme>`, `<scheme>`
+  being `$WEB`'s (`http` on a check VM copy, `https` behind an edge).
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/exposure.ts`, `packages/network/`, `apps/cli/src/`
@@ -2698,9 +2713,9 @@ flows reuse what earlier ones made:
 ### server.upgrade
 
 - **Map:** server.md `server-upgrade`
-- **Needs:** no session; no turn; the box over `MEND_VERIFY_BOX_SSH`; the run's data loaded, with
-  every earlier run's data in it, and the build the box ran (the owner's) pinned
-- **Do:** SKILL.md step 4: deploy the preview of this commit over the build the box ran.
+- **Needs:** no session; no turn; lane A's copy over `MEND_VERIFY_BOX_SSH`; the run's data, with
+  every earlier run's data in it, and the master's build pinned
+- **Do:** SKILL.md step 4: deploy the preview of this commit over the master's build, on lane A.
 - **See:** `$E/server.upgrade/deploy.log` ends `preview-deploy: finished for <version>`;
   `verify box identity` reads `the box runs this head`.
 - **Mode:** `agent`

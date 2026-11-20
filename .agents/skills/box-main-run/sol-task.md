@@ -1,7 +1,8 @@
 # The task a flow-driving subagent gets
 
-SKILL.md, step 5, fills the `<…>` below and passes the text, unchanged otherwise, as the task of one
-subagent. Everything the subagent needs is in it: it has no other context.
+SKILL.md, step 5, fills the `<…>` below (`<lane>` is `a`, `b` or `c`) and passes the text, unchanged
+otherwise, as the task of one subagent. Everything the subagent needs is in it: it has no other
+context.
 
 When a group's `timeline.txt` comes back damaged (lines missing, or the file rewritten), only the
 report's minutes are lost. Take each flow's minutes from the subagent's reply, which gives them per
@@ -11,8 +12,9 @@ falls short (SKILL.md, step 5).
 
 ---
 
-You drive a fixed set of flows of Mend's daily box check, as a person signed in to Mend on the box
-(VM 131). Another agent checks your evidence afterwards. Do these flows and nothing else.
+You drive a fixed set of flows of Mend's daily check of `main`, as a person signed in to Mend on a
+check VM on this machine: a throwaway copy of the run's own data, lane `<lane>` of the run (flows.md
+calls it the box). Another agent checks your evidence afterwards. Do these flows and nothing else.
 
 **Flows, in this order:** <flow ids, one per line>
 
@@ -23,19 +25,22 @@ worktree is `<worktree path>`; run every command from there.
 
 **Names.** Each is a file; type its full path in every command:
 
-- `~/.local/state/mend-main-run/bin/M`: mend, signed in as the checker account (written `M` in
-  flows.md). `~/.local/state/mend-main-run/bin/M2`: mend as the second account (`M2`).
-- `~/.local/state/mend-main-run/bin/web <out dir> <recipe> [flags]`: the web driver against the box,
-  as the checker account; `…/bin/web2` as the second account. `<recipe>` is the flow's recipe in
-  `.agents/skills/box-main-run/recipes/`, or a module you write into `<evidence dir>/<flow id>/` for
-  a flow with none (default export `async ({ page, web, capture, note }) => {}`; `capture(name)`
-  saves the screen). A recipe that reads a session takes it from the environment:
-  `MAIN_RUN_SESSION=<id> ~/.local/state/mend-main-run/bin/web <out dir> <recipe>`.
+- `~/.local/state/mend-main-run/lanes/<lane>/bin/M`: mend, signed in as the checker account (written
+  `M` in flows.md). `~/.local/state/mend-main-run/lanes/<lane>/bin/M2`: mend as the second account
+  (`M2`).
+- `~/.local/state/mend-main-run/lanes/<lane>/bin/web <out dir> <recipe> [flags]`: the web driver
+  against your copy, as the checker account; `…/bin/web2` as the second account. `<recipe>` is the
+  flow's recipe in `.agents/skills/box-main-run/recipes/`, or a module you write into
+  `<evidence dir>/<flow id>/` for a flow with none (default export
+  `async ({ page, web, capture, note }) => {}`; `capture(name)` saves the screen). A recipe that
+  reads a session takes it from the environment:
+  `MAIN_RUN_SESSION=<id> ~/.local/state/mend-main-run/lanes/<lane>/bin/web <out dir> <recipe>`.
 - A flow whose Mode is `scripted (recipes/cli-reads.sh <id>)` runs
-  `E=<evidence dir> SHA8=<the commit's first 8 characters> .agents/skills/box-main-run/recipes/cli-reads.sh <id>`,
+  `E=<evidence dir> SHA8=<the commit's first 8 characters> LANE=<lane> .agents/skills/box-main-run/recipes/cli-reads.sh <id>`,
   which writes its own `cli.log` and `result.txt`.
-- The box's web: `<web>`. The project: `boat-check-ubuntu`, written `<p>`. Where flows.md writes
-  `<sha8>`, use `<the commit's first 8 characters>`.
+- Your copy's web: `<web>`. Other lanes run other copies at the same time: use only lane `<lane>`'s
+  names, and never another lane's. The project: `boat-check-ubuntu`, written `<p>`. Where flows.md
+  writes `<sha8>`, use `<the commit's first 8 characters>`.
 - Sessions earlier flows made: <name = session id, one per line, or "none">
 - Evidence: `<evidence dir>/<flow id>/` per flow.
 
@@ -86,9 +91,10 @@ snapshot showed both.
   file outside `<evidence dir>`. There is one exception: a value a flow's Do line says to keep in
   `~/.local/state/mend-main-run/private/` (an invitation link), written only to the file it names
   there;
+- reach VM 131 (`mend.yiannisp.dev`) or any copy but your lane's;
 - run `mend login`, `mend logout`, or read a token or the account files' contents; print a password;
-- run any `pnpm verify box` command, deploy, or touch the box over ssh: the box and its hold belong
-  to the agent that started you;
+- run any `pnpm verify box` or `pnpm verify vm` command, deploy, or touch your copy over ssh: the
+  copies and their holds belong to the agent that started you;
 - comment on or file Linear tickets, or fix anything you find;
 - start a real agent turn other than a flow's own one-line prompt, exactly as flows.md writes it;
 - stop a session a later flow needs, beyond what a flow's Do line says;

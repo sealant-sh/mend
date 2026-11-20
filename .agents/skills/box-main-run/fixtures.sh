@@ -4,12 +4,13 @@
 # database it rebuilds them all, except the steps that cannot be scripted within the rules: those it
 # names, and it exits 3.
 #
-#   MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41' \
+#   MEND_VERIFY_BOX_SSH="$(cat ~/.local/state/mend-main-run/lanes/<lane>/ssh)" LANE=<lane> \
 #     .agents/skills/box-main-run/fixtures.sh <hold tag>
 #
-# Run it from the worktree's root, while this check holds the box as <hold tag> (`pnpm verify box
-# prepare --tag <hold tag> --yes`): it refuses otherwise. MEND_CLI defaults to the mend names.sh
-# installed (SKILL.md, step 4), and the address names.sh read. It never signs the first account's
+# The box is the lane's check VM copy (SKILL.md, Lanes). Run it from the worktree's root, while this
+# check holds that copy as <hold tag> (`pnpm verify box prepare --tag <hold tag> --yes`): it refuses
+# otherwise. MEND_CLI defaults to the mend names.sh installed (SKILL.md, step 4), and the address
+# names.sh read for the lane. It never signs the first account's
 # CLI in or out, and reads no token: the second account is signed in with its own config and
 # password file, and only when its saved login is missing.
 #
@@ -22,9 +23,10 @@ tag=${1:?usage: fixtures.sh <hold tag>}
 MEND_CLI=${MEND_CLI:-$HOME/.local/state/mend-main-run/cli/node_modules/.bin/mend}
 read -r -a box_ssh <<<"$MEND_VERIFY_BOX_SSH"
 
-# The box's address, as names.sh read it from the box for this run (SKILL.md, step 4).
-WEB=$(cat "$HOME/.local/state/mend-main-run/web" 2>/dev/null)
-[[ $WEB == https://* ]] || { echo "fixtures.sh: no address in ~/.local/state/mend-main-run/web; run names.sh first" >&2; exit 2; }
+# The copy's address, as names.sh read it for the lane (SKILL.md, step 4).
+: "${LANE:?set LANE to the lane (a, b or c)}"
+WEB=$(cat "$HOME/.local/state/mend-main-run/lanes/$LANE/web" 2>/dev/null)
+[[ $WEB =~ ^https?:// ]] || { echo "fixtures.sh: no address in ~/.local/state/mend-main-run/lanes/$LANE/web; run names.sh first" >&2; exit 2; }
 KIT=$HOME/.local/share/mend-boat-check
 KIT2=$HOME/.local/share/mend-boat-check-2
 EMAIL2=main-run-second@example.test
