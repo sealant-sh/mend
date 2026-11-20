@@ -554,49 +554,88 @@ export const startXvfb = async (
   throw new Error(`displays :${candidates[0]} to :${candidates.at(-1)} are all taken`);
 };
 
+const vscodeUpdates = "https://update.code.visualstudio.com";
+
+/** curl that drops a transfer falling under 1 MB/s for 30 s and tries again on a new connection. */
+const curlArgs = ["-fsSL", "--retry", "4", "--retry-all-errors"];
+const slowTransfer = ["--speed-limit", "1000000", "--speed-time", "30"];
+
+/** One artifact of VS Code's update service, fetched once into ~/.cache/mend-vscode-server. */
+const fetchVscodeArtifact = async (commit, artifact, { log, what }) => {
+  const dir = path.join(os.homedir(), ".cache", "mend-vscode-server");
+  const archive = path.join(dir, `${commit}-${artifact}.tar.gz`);
+  if (fs.existsSync(archive)) return archive;
+  fs.mkdirSync(dir, { recursive: true });
+  const partial = `${archive}.${process.pid}.partial`;
+  const started = Date.now();
+  await run(
+    "curl",
+    [
+      ...curlArgs,
+      ...slowTransfer,
+      "-o",
+      partial,
+      `${vscodeUpdates}/commit:${commit}/${artifact}/stable`,
+    ],
+    { timeout: 900_000 },
+  ).catch((cause) => {
+    fs.rmSync(partial, { force: true });
+    throw cause;
+  });
+  fs.renameSync(partial, archive);
+  log(`${what} ${commit} fetched in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  return archive;
+};
+
 /**
- * VS Code's server for the editor's own commit, fetched once onto this machine (kept under
- * ~/.cache/mend-vscode-server) so the suite can put it in each workspace home before Remote-SSH
- * opens it. A fresh home otherwise downloads its 217 MB from Microsoft's CDN inside the workspace,
- * and one that slowed to 200 KB/s held a window past its wait (SLNT-1168). A transfer that falls
- * under 1 MB/s for 30 s is dropped and tried again on a new connection.
+ * Everything a fresh workspace home would otherwise download from Microsoft's CDN while its
+ * Remote-SSH window opens, fetched once onto this machine so the suite can put it in each home
+ * first. A CDN that slowed to 200–300 KB/s held a window past its wait (SLNT-1168):
+ *
+ * - the server for the editor's own commit (217 MB);
+ * - VS Code's CLI for that commit (`cli-alpine-<arch>`, 35 MB), which Remote-SSH's exec-server
+ *   installer otherwise downloads with wget into `~/.vscode-server/code-<commit>`;
+ * - the server for the latest stable release, when it is not the editor's. The CLI's agent host
+ *   supervisor downloads it before it reports ready, and the CLI waits for that supervisor before
+ *   it starts the editor's server (VS Code 1.142's `handle_serve`), so no window connects until it
+ *   is there. Resolved as the CLI resolves it (`/api/latest/server-<platform>/stable`); if that
+ *   fails here, nothing is seeded for it and the CLI's own lookup decides.
  */
 export const fetchVscodeServer = async (code, { env, log }) => {
   const [, commit = ""] = lines((await run(code, ["--version"], { env })).stdout);
   if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`${code} --version names no commit`);
-  const platform = { x64: "linux-x64", arm64: "linux-arm64" }[process.arch];
-  if (platform === undefined) throw new Error(`no VS Code server for ${process.arch} workspaces`);
-  const dir = path.join(os.homedir(), ".cache", "mend-vscode-server");
-  const archive = path.join(dir, `${commit}-server-${platform}.tar.gz`);
-  if (!fs.existsSync(archive)) {
-    fs.mkdirSync(dir, { recursive: true });
-    const partial = `${archive}.${process.pid}.partial`;
-    const url = `https://update.code.visualstudio.com/commit:${commit}/server-${platform}/stable`;
-    const started = Date.now();
-    await run(
-      "curl",
-      [
-        "-fsSL",
-        "--retry",
-        "4",
-        "--retry-all-errors",
-        "--speed-limit",
-        "1000000",
-        "--speed-time",
-        "30",
-        "-o",
-        partial,
-        url,
-      ],
-      { timeout: 900_000 },
-    ).catch((cause) => {
-      fs.rmSync(partial, { force: true });
-      throw cause;
-    });
-    fs.renameSync(partial, archive);
-    log(`VS Code's server ${commit} fetched in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  const arch = { x64: "x64", arm64: "arm64" }[process.arch];
+  if (arch === undefined) throw new Error(`no VS Code server for ${process.arch} workspaces`);
+  const server = `server-linux-${arch}`;
+  const archive = await fetchVscodeArtifact(commit, server, { log, what: "VS Code's server" });
+  const cli = await fetchVscodeArtifact(commit, `cli-alpine-${arch}`, {
+    log,
+    what: "VS Code's CLI",
+  });
+  const resolved = await run(
+    "curl",
+    [...curlArgs, `${vscodeUpdates}/api/latest/${server}/stable`],
+    {
+      allowFailure: true,
+      timeout: 120_000,
+    },
+  );
+  let latestCommit = "";
+  try {
+    latestCommit = resolved.status === 0 ? String(JSON.parse(resolved.stdout).version ?? "") : "";
+  } catch {
+    latestCommit = "";
   }
-  return { commit, archive };
+  if (!/^[0-9a-f]{40}$/.test(latestCommit)) {
+    log(`the latest stable VS Code server did not resolve; the agent host will look it up itself`);
+    return { commit, archive, cli, latest: null };
+  }
+  if (latestCommit === commit) return { commit, archive, cli, latest: null };
+  const latestArchive = await fetchVscodeArtifact(latestCommit, server, {
+    log,
+    what: "the agent host's server (latest stable)",
+  });
+  return { commit, archive, cli, latest: { commit: latestCommit, archive: latestArchive } };
 };
 
 /** `code --install-extension` into the run's own extensions directory. */

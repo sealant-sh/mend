@@ -45,6 +45,9 @@ const seededUiExtension = process.env["MEND_E2E_SEED_UI"] ?? "";
 const priorSession = process.env["MEND_E2E_PRIOR_SESSION"] ?? "";
 const vscodeServer = env("MEND_E2E_VSCODE_SERVER");
 const vscodeCommit = env("MEND_E2E_VSCODE_COMMIT");
+const vscodeCli = env("MEND_E2E_VSCODE_CLI");
+const latestServer = process.env["MEND_E2E_VSCODE_LATEST_SERVER"] ?? "";
+const latestCommit = process.env["MEND_E2E_VSCODE_LATEST_COMMIT"] ?? "";
 
 const evidence: Record<string, unknown> = { serverUrl, home: os.homedir() };
 const record = (step: string, value: unknown): void => {
@@ -412,25 +415,44 @@ const windowRoles: Record<string, RemoteRole> = {};
 
 const aliasOf = (folder: vscode.Uri): string => /@([^@]+)$/.exec(folder.authority)?.[1] ?? "";
 
-/**
- * VS Code's server for this editor's commit, put in the window's home before the window opens, as
- * the person, where VS Code's CLI keeps it (`~/.vscode-server/cli/servers/Stable-<commit>`; the CLI
- * takes the directory as installed once it exists). Otherwise every fresh workspace downloads the
- * 217 MB server from Microsoft's CDN, and a CDN that slows to 200 KB/s held a window past its
- * wait (SLNT-1168). The setup fetched the archive once; Remote-SSH, its exec server and the server
- * itself still run for real. Asynchronous: the extension host keeps serving Mend's requests.
- */
-const seedVscodeServer = async (folder: vscode.Uri): Promise<number> => {
-  const started = Date.now();
-  const dir = `~/.vscode-server/cli/servers/Stable-${vscodeCommit}`;
-  const script = [
-    "set -e",
+/** `~/.vscode-server` as Remote-SSH's installer makes it when it is missing. */
+const agentFolder = [
+  "[ -d ~/.vscode-server ] || { mkdir -p ~/.vscode-server; chmod 750 ~/.vscode-server; }",
+];
+
+/** A server archive unpacked where VS Code's CLI keeps it; the CLI takes the directory as installed. */
+const serverSeed = (commit: string): string[] => {
+  const dir = `~/.vscode-server/cli/servers/Stable-${commit}`;
+  return [
     `[ -d ${dir} ] && exit 0`,
     `staging=${dir}.seed-$$`,
     'mkdir -p "$staging/server"',
     'tar -xzf - --strip-components=1 -C "$staging/server"',
     `mv "$staging" ${dir}`,
-  ].join("\n");
+  ];
+};
+
+/** The CLI where Remote-SSH's exec-server installer looks before it downloads one. */
+const cliSeed = (commit: string): string[] => {
+  const cli = `~/.vscode-server/code-${commit}`;
+  return [
+    `[ -f ${cli} ] && exit 0`,
+    `staging=${cli}.seed-$$`,
+    'mkdir "$staging"',
+    'tar -xzf - -C "$staging"',
+    `mv "$staging/code" ${cli}`,
+    'rmdir "$staging"',
+  ];
+};
+
+/** One archive streamed into the window's home over plain SSH, as the person. */
+const seedArchive = async (
+  folder: vscode.Uri,
+  what: string,
+  archive: string,
+  steps: string[],
+): Promise<void> => {
+  const script = ["set -e", ...agentFolder, ...steps].join("\n");
   const child = spawn("ssh", sshArgs(aliasOf(folder), sshUserOf(folder), script), {
     stdio: ["pipe", "ignore", "pipe"],
   });
@@ -438,7 +460,7 @@ const seedVscodeServer = async (folder: vscode.Uri): Promise<number> => {
   child.stderr.on("data", (chunk: Buffer) => {
     stderr += chunk.toString();
   });
-  fs.createReadStream(vscodeServer).pipe(child.stdin);
+  fs.createReadStream(archive).pipe(child.stdin);
   const timer = setTimeout(() => child.kill("SIGTERM"), 180_000);
   const status = await new Promise<number | null>((resolve, reject) => {
     child.once("error", reject);
@@ -446,9 +468,28 @@ const seedVscodeServer = async (folder: vscode.Uri): Promise<number> => {
   }).finally(() => clearTimeout(timer));
   if (status !== 0) {
     throw new Error(
-      `seeding VS Code's server in ${folder.authority} exited ${String(status)}: ${stderr.trim()}`,
+      `seeding ${what} in ${folder.authority} exited ${String(status)}: ${stderr.trim()}`,
     );
   }
+};
+
+/**
+ * What a fresh workspace home would otherwise download from Microsoft's CDN while its window
+ * opens, put there first, as the person (SLNT-1168): the editor's server and CLI, and the latest
+ * stable server, which the CLI's agent host fetches before the CLI starts the editor's server. A
+ * CDN that slowed to 200–300 KB/s held a window past its wait. The setup fetched each archive
+ * once; Remote-SSH, its exec server, the agent host and both servers still run for real.
+ * Asynchronous: the extension host keeps serving Mend's requests.
+ */
+const seedVscodeServer = async (folder: vscode.Uri): Promise<number> => {
+  const started = Date.now();
+  await Promise.all([
+    seedArchive(folder, "VS Code's server", vscodeServer, serverSeed(vscodeCommit)),
+    seedArchive(folder, "VS Code's CLI", vscodeCli, cliSeed(vscodeCommit)),
+    ...(latestServer !== "" && latestCommit !== ""
+      ? [seedArchive(folder, "the agent host's server", latestServer, serverSeed(latestCommit))]
+      : []),
+  ]);
   return Date.now() - started;
 };
 
@@ -465,7 +506,7 @@ const unreportedWindowState = (folder: vscode.Uri): void => {
     [
       "set +e",
       "echo '## ~/.vscode-server'; find ~/.vscode-server -maxdepth 4 -printf '%TT %s %p\\n' 2>&1 | head -n 80",
-      'for f in ~/.vscode-server/.*.log ~/.vscode-server/cli/servers/*/log.txt ~/.vscode-server/data/logs/*/*.log; do [ -f "$f" ] && { echo "## $f"; tail -n 120 "$f"; }; done',
+      'for f in ~/.vscode-server/.*.log ~/.vscode-server/cli/*.log ~/.vscode-server/cli/servers/*/log.txt ~/.vscode-server/data/logs/*/*.log; do [ -f "$f" ] && { echo "## $f"; tail -n 120 "$f"; }; done',
       "echo '## processes'; ps -o pid,etime,args -u \"$(id -u)\" 2>&1 | cut -c1-300",
     ].join("\n"),
   );
@@ -486,7 +527,7 @@ const openRemoteWindow = async (folder: vscode.Uri, role: RemoteRole): Promise<u
   fs.writeFileSync(rolesFile, JSON.stringify(windowRoles));
   const seededMs = await seedVscodeServer(folder);
   console.log(
-    `[mend-e2e] info: VS Code's server seeded in the ${role} window's home (${seededMs} ms)`,
+    `[mend-e2e] info: VS Code's CLI and server${latestServer === "" ? "" : "s"} seeded in the ${role} window's home (${seededMs} ms)`,
   );
   await original.executeCommand("vscode.openFolder", folder, { forceNewWindow: true });
   const report: unknown = await until(
