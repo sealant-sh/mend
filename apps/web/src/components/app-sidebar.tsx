@@ -240,7 +240,7 @@ function ExpandedSidebar({ organizationName, account, inbox, online, area, openI
           </NavItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarContent className={cn("mt-2 gap-0", RING_ROOM)}>
+      <SidebarContent className={cn("mt-1 gap-0 pt-1", RING_ROOM)}>
         <SidebarInbox inbox={inbox} online={online} openId={openId} host={host} />
       </SidebarContent>
       <SidebarFooter className="gap-0.5 border-t border-sidebar-border p-0 pt-2">
