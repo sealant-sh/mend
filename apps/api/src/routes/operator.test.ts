@@ -25,7 +25,7 @@ import { afterAll, beforeEach, describe, expect } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig, type ExposureOutcome } from "../exposure.ts";
-import { TenancyConfig } from "../tenancy.ts";
+import { evaluateGate, TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { OperatorGroupLive } from "./operator.ts";
 
@@ -78,10 +78,17 @@ const authLayer = Layer.succeed(Auth, {
     }),
 });
 
+/** The multi mode gate of a server with one organization, its git on the operator source policy. */
+const GATE = evaluateGate({ serviceHosts: "127.0.0.1,0.0.0.0", operatorCount: 2 }).filter(
+  (outcome) => outcome.id === "raw-service-ports" || outcome.id === "operator-present",
+);
+
 /** What this instance's exposure gate leaves open, as the operator report reads it. */
 const OPEN_ITEMS: ReadonlyArray<ExposureOutcome> = [
   {
     id: "https-origin",
+    reason: "plain-origins",
+    origins: ["http://10.0.0.216:3105"],
     established: "open",
     detail: "plain http origin(s): http://10.0.0.216:3105",
     fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
@@ -90,6 +97,8 @@ const OPEN_ITEMS: ReadonlyArray<ExposureOutcome> = [
   },
   {
     id: "reassessment",
+    reason: "none",
+    version: "dev",
     established: "open",
     detail: "no independent reassessment of dev is recorded",
     fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",
@@ -163,7 +172,7 @@ const dependencies = Layer.mergeAll(
   Layer.succeed(TenancyConfig, {
     mode: "single",
     organizationCreation: "anyone",
-    gate: Effect.succeed([]),
+    gate: Effect.succeed(GATE),
   }),
   Layer.succeed(ExposureConfig, {
     exposure: "private",
@@ -440,12 +449,37 @@ describe("an operator's access key (docs/adr/0023, decision 10)", () => {
   });
 });
 
+describe("the multi mode gate (docs/adr/0003)", () => {
+  it("lists each item with its case and data beside what the command line prints", async () => {
+    const response = await call("alice", "GET", "/operator/gate");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual([
+      {
+        id: "raw-service-ports",
+        reason: "exposed",
+        addresses: ["0.0.0.0"],
+        ok: false,
+        detail: "raw service listeners on 0.0.0.0",
+        fix: "unset MEND_SERVICE_HOSTS",
+      },
+      {
+        id: "operator-present",
+        reason: "operators",
+        count: 2,
+        ok: true,
+        detail: "2 operator account(s)",
+        fix: null,
+      },
+    ]);
+  });
+});
+
 describe("the exposure report (docs/adr/0004)", () => {
   it("is the operator's alone", async () => {
     expect((await call("sam", "GET", "/operator/exposure")).status).toBe(404);
   });
 
-  it("states what was declared and how each item was established", async () => {
+  it("states what was declared and how each item was established, with its case and data", async () => {
     const response = await call("alice", "GET", "/operator/exposure");
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
@@ -453,6 +487,8 @@ describe("the exposure report (docs/adr/0004)", () => {
       items: [
         {
           id: "https-origin",
+          reason: "plain-origins",
+          origins: ["http://10.0.0.216:3105"],
           established: "open",
           detail: "plain http origin(s): http://10.0.0.216:3105",
           fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
@@ -460,6 +496,8 @@ describe("the exposure report (docs/adr/0004)", () => {
         },
         {
           id: "reassessment",
+          reason: "none",
+          version: "dev",
           established: "open",
           detail: "no independent reassessment of dev is recorded",
           fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",

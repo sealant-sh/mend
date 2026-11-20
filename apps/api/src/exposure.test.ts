@@ -14,7 +14,7 @@ const closed: ExposurePosture = {
   appUrl: "https://mend.example",
   allowedOrigins: ["https://mend.example"],
   trustedProxies: ["10.244.0.0/16"],
-  tenancyGate: [{ id: "source-policy", ok: true, detail: "tenant", fix: null }],
+  tenancyGate: [{ id: "source-policy", reason: "tenant", ok: true, detail: "tenant", fix: null }],
   budgetsOff: [],
   urlBearers: "refuse",
   errorDetail: "redacted",
@@ -75,11 +75,26 @@ describe("the public exposure gate", () => {
     ["trusted-proxies", { trustedProxies: ["0.0.0.0/0"] }],
     [
       "tenancy-gate",
-      { tenancyGate: [{ id: "source-policy", ok: false, detail: "operator", fix: "x" }] },
+      {
+        tenancyGate: [
+          { id: "source-policy", reason: "operator", ok: false, detail: "operator", fix: "x" },
+        ],
+      },
     ],
     [
       "tenancy-gate",
-      { tenancyGate: [{ id: "operator-present", ok: false, detail: "0", fix: "x" }] },
+      {
+        tenancyGate: [
+          {
+            id: "operator-present",
+            reason: "operators",
+            count: 0,
+            ok: false,
+            detail: "0",
+            fix: "x",
+          },
+        ],
+      },
     ],
     ["budgets", { budgetsOff: ["bodyBytes"] }],
     ["no-bearers-in-urls", { urlBearers: "accept" }],
@@ -529,5 +544,242 @@ describe("gate item 15, preview-gateway (ADR 0017, Exposure)", () => {
     expect(item?.fix).toContain("set APP_URL to an https origin");
     expect(exposureRefusal("private", evaluateExposureGate(posture))).toBeNull();
     expect(exposureRefusal("public", evaluateExposureGate(posture))).toContain("preview-gateway:");
+  });
+});
+
+/**
+ * What a client words an item from (Settings → Server): its case and that case's data, apart from
+ * the sentences the command line prints. One representative posture per case.
+ */
+describe("each exposure item names its case and carries the case's data", () => {
+  const itemOf = (posture: ExposurePosture, id: string) =>
+    evaluateExposureGate(posture).find((outcome) => outcome.id === id);
+
+  it.each<[string, Partial<ExposurePosture>, Record<string, unknown>]>([
+    ["https-origin", {}, { reason: "all-https", originCount: 1, established: "observed" }],
+    [
+      "https-origin",
+      { allowedOrigins: ["https://mend.example", "http://10.0.0.5:3105"] },
+      { reason: "plain-origins", origins: ["http://10.0.0.5:3105"], established: "open" },
+    ],
+    ["secure-cookies", {}, { reason: "secure", established: "observed" }],
+    [
+      "secure-cookies",
+      { appUrl: "http://mend.example" },
+      { reason: "app-url-http", established: "open" },
+    ],
+    ["trusted-proxies", {}, { reason: "ranges", rangeCount: 1, established: "observed" }],
+    ["trusted-proxies", { trustedProxies: [] }, { reason: "unset", established: "open" }],
+    [
+      "trusted-proxies",
+      { trustedProxies: ["0.0.0.0/0"] },
+      { reason: "trusts-every-address", established: "open" },
+    ],
+    ["enrollment-closed", {}, { reason: "built-in", established: "carried" }],
+    ["tenancy-gate", {}, { reason: "complete", established: "observed" }],
+    [
+      "tenancy-gate",
+      {
+        tenancyGate: [
+          { id: "source-policy", reason: "operator", ok: false, detail: "operator", fix: "x" },
+          { id: "raw-service-ports", reason: "loopback", ok: true, detail: "loopback", fix: null },
+        ],
+      },
+      { reason: "missing", missing: ["source-policy"], total: 2, established: "open" },
+    ],
+    ["budgets", {}, { reason: "all-set", established: "observed" }],
+    [
+      "budgets",
+      { budgetsOff: ["bodyBytes"] },
+      { reason: "off", variables: ["MEND_BUDGET_BODY_BYTES"], established: "open" },
+    ],
+    ["no-bearers-in-urls", {}, { reason: "refused", established: "observed" }],
+    ["no-bearers-in-urls", { urlBearers: "accept" }, { reason: "accepted", established: "open" }],
+    ["browser-headers", {}, { reason: "built-in", established: "carried" }],
+    ["error-redaction", {}, { reason: "redacted", established: "observed" }],
+    ["error-redaction", { errorDetail: "verbose" }, { reason: "verbose", established: "open" }],
+    [
+      "executor-channel-transport",
+      { sessionChannelUrl: undefined },
+      { reason: "socket", established: "observed" },
+    ],
+    ["executor-channel-transport", {}, { reason: "https", established: "observed" }],
+    [
+      "executor-channel-transport",
+      { sessionChannelUrl: "http://mend-api:3106", executorNetwork: "private" },
+      { reason: "plain-http-private", established: "declared" },
+    ],
+    [
+      "executor-channel-transport",
+      { sessionChannelUrl: "http://mend-api:3106" },
+      { reason: "plain-http", established: "open" },
+    ],
+    ["workspace-ssh", {}, { reason: "unpublished", established: "observed" }],
+    [
+      "workspace-ssh",
+      { sshPublished: "127.0.0.1:2222" },
+      { reason: "loopback", published: "127.0.0.1:2222", established: "observed" },
+    ],
+    [
+      "workspace-ssh",
+      { sshPublished: "0.0.0.0:2222" },
+      { reason: "published", published: "0.0.0.0:2222", established: "open" },
+    ],
+    [
+      "workspace-ssh",
+      { sshPublished: "0.0.0.0:2222", declared: ["workspace-ssh"] },
+      { reason: "published", published: "0.0.0.0:2222", established: "declared" },
+    ],
+    ["core-private", {}, { reason: "outside-view", mirrors: [], established: "open" }],
+    [
+      "core-private",
+      { mirrors: ["npm-mirror:4873"], declared: ["core-private"] },
+      { reason: "outside-view", mirrors: ["npm-mirror:4873"], established: "declared" },
+    ],
+    ["edge-tls", {}, { reason: "outside-view", established: "open" }],
+    ["t3code-gateway", { t3Gateway: true }, { reason: "not-said", established: "open" }],
+    [
+      "t3code-gateway",
+      {
+        t3Gateway: true,
+        t3GatewayPublished: "127.0.0.1:3773",
+        t3GatewayUrl: "https://t3.mend.example",
+      },
+      {
+        reason: "edge",
+        published: "127.0.0.1:3773",
+        url: "https://t3.mend.example",
+        established: "open",
+      },
+    ],
+    [
+      "t3code-gateway",
+      { t3Gateway: true, t3GatewayPublished: "127.0.0.1:3773" },
+      { reason: "loopback", published: "127.0.0.1:3773", established: "observed" },
+    ],
+    [
+      "t3code-gateway",
+      { t3Gateway: true, t3GatewayPublished: "10.0.0.5:3773" },
+      { reason: "published", published: "10.0.0.5:3773", established: "open" },
+    ],
+    ["reassessment", {}, { reason: "none", version: "0.29.0", established: "open" }],
+    [
+      "reassessment",
+      { reassessedVersion: "0.29.0" },
+      { reason: "reviewed", version: "0.29.0", established: "declared" },
+    ],
+    [
+      "reassessment",
+      { reassessedVersion: "0.28.0" },
+      { reason: "older", version: "0.29.0", reviewed: "0.28.0", established: "open" },
+    ],
+    ["reassessment", { version: "dev" }, { reason: "unversioned", established: "open" }],
+  ])("%s: %j", (id, change, expected) => {
+    expect(itemOf({ ...closed, ...change }, id)).toMatchObject({ id, ...expected });
+  });
+
+  it("names where previews are served, each way they fall short, and what only a look from outside can check", () => {
+    expect(
+      itemOf({ ...closed, exposure: "loopback", preview: LOOPBACK_PREVIEW }, "preview-gateway"),
+    ).toMatchObject({
+      reason: "loopback-http",
+      pattern: "http://<label>.localhost:3130",
+      problems: [],
+      outside: "none",
+      established: "observed",
+    });
+    expect(itemOf({ ...closed, preview: LOOPBACK_PREVIEW }, "preview-gateway")).toMatchObject({
+      reason: "loopback-http",
+      problems: [
+        {
+          kind: "plain-http",
+          url: "http://<label>.localhost:3130",
+          because: "exposure-not-loopback",
+        },
+      ],
+      established: "open",
+    });
+    expect(
+      itemOf(
+        { ...closed, exposure: "loopback", preview: { ...LOOPBACK_PREVIEW, bind: "0.0.0.0" } },
+        "preview-gateway",
+      ),
+    ).toMatchObject({ problems: [{ kind: "plain-http", because: "reached-beyond-loopback" }] });
+
+    expect(itemOf({ ...closed, preview: DOMAIN_PREVIEW }, "preview-gateway")).toMatchObject({
+      reason: "domain-https",
+      pattern: "https://<label>.previews.example.net",
+      domain: "previews.example.net",
+      sharedSite: null,
+      problems: [],
+      outside: "open",
+    });
+    expect(
+      itemOf(
+        { ...closed, preview: DOMAIN_PREVIEW, declared: ["preview-gateway"] },
+        "preview-gateway",
+      ),
+    ).toMatchObject({ outside: "declared", established: "declared" });
+    expect(
+      itemOf(
+        {
+          ...closed,
+          appUrl: "https://mend.previews.example.net",
+          allowedOrigins: ["https://mend.previews.example.net"],
+          preview: DOMAIN_PREVIEW,
+        },
+        "preview-gateway",
+      ),
+    ).toMatchObject({
+      problems: [
+        {
+          kind: "domain-overlap",
+          host: "mend.previews.example.net",
+          domain: "previews.example.net",
+          overlap: "under",
+        },
+      ],
+    });
+    const sibling = (appUrl: string) =>
+      itemOf(
+        {
+          ...closed,
+          appUrl,
+          allowedOrigins: [appUrl],
+          preview: {
+            ...DOMAIN_PREVIEW,
+            routing: { mode: "domain-https", domain: "previews.example.com", port: 443 },
+          },
+        },
+        "preview-gateway",
+      );
+    expect(sibling("https://mend.example.com")).toMatchObject({
+      sharedSite: "example.com",
+      problems: [],
+    });
+    expect(sibling("http://mend.example.com")).toMatchObject({
+      problems: [{ kind: "cookies", cookie: "better-auth.session_token" }],
+    });
+
+    expect(itemOf({ ...closed, preview: TAILNET_PREVIEW }, "preview-gateway")).toMatchObject({
+      reason: "tailnet-https",
+      pattern: "https://mend-preview.tail1234.ts.net:<port>",
+      hostname: "mend-preview.tail1234.ts.net",
+      problems: [{ kind: "tailnet-public" }],
+    });
+    expect(
+      itemOf(
+        {
+          ...closed,
+          exposure: "private",
+          preview: { ...TAILNET_PREVIEW, published: "10.0.0.5:3130" },
+        },
+        "preview-gateway",
+      ),
+    ).toMatchObject({
+      problems: [
+        { kind: "published-mismatch", listener: "127.0.0.1:3130", published: "10.0.0.5:3130" },
+      ],
+    });
   });
 });

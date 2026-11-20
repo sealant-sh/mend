@@ -1,3 +1,4 @@
+import type { ExposureCase, PreviewProblem } from "@mend/api-contracts";
 import { sessionCookiePolicy } from "@mend/auth";
 import {
   NetworkConfig,
@@ -55,8 +56,14 @@ export const DECLARABLE = [
 ] as const;
 export type Declarable = (typeof DECLARABLE)[number];
 
-export interface ExposureOutcome {
-  readonly id: string;
+/**
+ * One item, as evaluated here. Its case (`reason`) and that case's data come with it, apart from
+ * `detail` and `fix`, the sentences `mend operator exposure` prints: a client that words an item
+ * for a person reads the case, not the sentences.
+ */
+export type ExposureOutcome = ExposureCase & ExposureOutcomeFacts;
+
+interface ExposureOutcomeFacts {
   readonly established: Established;
   /** What was observed or declared, in plain words. */
   readonly detail: string;
@@ -160,8 +167,13 @@ export interface ExposurePosture {
   readonly mirrors?: ReadonlyArray<string>;
 }
 
-const observed = (id: string, ok: boolean, detail: string, fix: string): ExposureOutcome => ({
-  id,
+const observed = (
+  item: ExposureCase,
+  ok: boolean,
+  detail: string,
+  fix: string,
+): ExposureOutcome => ({
+  ...item,
   established: ok ? "observed" : "open",
   detail,
   fix: ok ? null : fix,
@@ -170,8 +182,8 @@ const observed = (id: string, ok: boolean, detail: string, fix: string): Exposur
 });
 
 /** In this build, and not something this process can see in effect. `verify` says what would. */
-const carried = (id: string, detail: string, verify: string): ExposureOutcome => ({
-  id,
+const carried = (item: ExposureCase, detail: string, verify: string): ExposureOutcome => ({
+  ...item,
   established: "carried",
   detail,
   fix: `what would observe it: ${verify}`,
@@ -182,14 +194,14 @@ const carried = (id: string, detail: string, verify: string): ExposureOutcome =>
 /** Something only a look from outside can establish: open until the operator states they looked. */
 const unobservable = (
   posture: ExposurePosture,
-  id: Declarable,
+  item: ExposureCase & { readonly id: Declarable },
   cannot: string,
   stated: string,
   verify: string,
 ): ExposureOutcome =>
-  posture.declared.includes(id)
+  posture.declared.includes(item.id)
     ? {
-        id,
+        ...item,
         established: "declared",
         detail: `${stated} (MEND_EXPOSURE_DECLARED); this process cannot check it`,
         fix: null,
@@ -197,10 +209,10 @@ const unobservable = (
         observable: false,
       }
     : {
-        id,
+        ...item,
         established: "open",
         detail: cannot,
-        fix: `what would verify it: ${verify}; then add ${id} to MEND_EXPOSURE_DECLARED`,
+        fix: `what would verify it: ${verify}; then add ${item.id} to MEND_EXPOSURE_DECLARED`,
         blocksStart: false,
         observable: false,
       };
@@ -229,18 +241,25 @@ const workspaceSsh = (posture: ExposurePosture): ExposureOutcome => {
   const published = posture.sshPublished;
   if (published === undefined) {
     return observed(
-      "workspace-ssh",
+      { id: "workspace-ssh", reason: "unpublished" },
       true,
       "workspace SSH is not published apart from the web port (MEND_SSH_PUBLISHED unset)",
       "",
     );
   }
   if (isLoopbackAddress(publishedAddress(published))) {
-    return observed("workspace-ssh", true, `workspace SSH is published on ${published} only`, "");
+    return observed(
+      { id: "workspace-ssh", reason: "loopback", published },
+      true,
+      `workspace SSH is published on ${published} only`,
+      "",
+    );
   }
   return posture.declared.includes("workspace-ssh")
     ? {
         id: "workspace-ssh",
+        reason: "published",
+        published,
         established: "declared",
         detail: `workspace SSH is published on ${published} apart from the web port, and the operator states who can reach it (MEND_EXPOSURE_DECLARED); this process cannot check it`,
         fix: null,
@@ -249,6 +268,8 @@ const workspaceSsh = (posture: ExposurePosture): ExposureOutcome => {
       }
     : {
         id: "workspace-ssh",
+        reason: "published",
+        published,
         established: "open",
         detail: `workspace SSH is published on ${published} apart from the web port; this process cannot observe who can reach it`,
         fix: `what would verify it: a connection attempt to ${published} from each network that should not reach it; then add workspace-ssh to MEND_EXPOSURE_DECLARED, or publish it on loopback`,
@@ -272,7 +293,7 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
   if (published === undefined) {
     return unobservable(
       posture,
-      "t3code-gateway",
+      { id: "t3code-gateway", reason: "not-said" },
       "the t3code gateway is enabled (MEND_T3_GATEWAY_ENABLED), on a port of its own; where it is published was not said (MEND_T3_GATEWAY_PUBLISHED unset), and this process cannot observe who reaches it, nor whether it is listening",
       "the operator states who reaches the t3code gateway's port",
       "a connection attempt to its port from each network that should not reach it",
@@ -282,7 +303,7 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
   if (onLoopback && url !== undefined && isHttps(url)) {
     return unobservable(
       posture,
-      "t3code-gateway",
+      { id: "t3code-gateway", reason: "edge", published, url },
       `the t3code gateway's port is published on ${published} only (MEND_T3_GATEWAY_PUBLISHED), and the edge serves it at ${url} (MEND_T3_GATEWAY_URL); this process cannot observe that origin's certificate`,
       `the operator states ${url} serves the t3code gateway with a certificate that chains to a public root`,
       `${url}/.well-known/t3/environment from another network, over a certificate that chains to a public root, and ${published} answering nothing from another machine`,
@@ -290,7 +311,7 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
   }
   if (onLoopback) {
     return observed(
-      "t3code-gateway",
+      { id: "t3code-gateway", reason: "loopback", published },
       true,
       `the t3code gateway's port is published on ${published} only (MEND_T3_GATEWAY_PUBLISHED)`,
       "",
@@ -299,6 +320,8 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
   return posture.declared.includes("t3code-gateway")
     ? {
         id: "t3code-gateway",
+        reason: "published",
+        published,
         established: "declared",
         detail: `the t3code gateway's port is published on ${published} (MEND_T3_GATEWAY_PUBLISHED), and the operator states who can reach it (MEND_EXPOSURE_DECLARED); this process cannot check it`,
         fix: null,
@@ -307,6 +330,8 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
       }
     : {
         id: "t3code-gateway",
+        reason: "published",
+        published,
         established: "open",
         detail: `the t3code gateway's port is published on ${published} (MEND_T3_GATEWAY_PUBLISHED); every device pairs through Mend, and this process cannot observe who can reach the port`,
         fix: `what would verify it: a connection attempt to ${published} from each network that should not reach it; then add t3code-gateway to MEND_EXPOSURE_DECLARED, or publish it on loopback`,
@@ -317,12 +342,25 @@ const t3codeGateway = (posture: ExposurePosture): ExposureOutcome => {
 
 type PreviewFact =
   | { readonly established: "observed" | "carried"; readonly said: string }
-  | { readonly established: "open"; readonly said: string; readonly fix: string };
+  | {
+      readonly established: "open";
+      readonly said: string;
+      readonly fix: string;
+      readonly problem: PreviewProblem;
+    };
 
 interface PreviewOutside {
   readonly unobservable: string;
   readonly howToVerify: string;
 }
+
+/** Where previews are served, as the `preview-gateway` item's case names it. */
+type PreviewWhere =
+  Extract<ExposureCase, { readonly id: "preview-gateway" }> extends infer Case
+    ? Case extends unknown
+      ? Omit<Case, "id" | "problems" | "outside">
+      : never
+    : never;
 
 const bracketed = (address: string): string => (address.includes(":") ? `[${address}]` : address);
 
@@ -341,6 +379,7 @@ const hostCookieFact = (posture: ExposurePosture): PreviewFact => {
         established: "open",
         said: `Mend's cookies are named ${cookie.name}, not __Host-, and every preview is Mend's own site: APP_URL is ${new URL(posture.appUrl).protocol.slice(0, -1)}`,
         fix: "set APP_URL to an https origin",
+        problem: { kind: "cookies", cookie: cookie.name },
       };
 };
 
@@ -378,6 +417,12 @@ const domainFacts = (
         established: "open",
         said: `APP_URL's host ${appHost} is ${overlap.kind === "holds" ? "under" : "above"} ${domain}`,
         fix: "set MEND_PREVIEW_DOMAIN to a domain apart from Mend's",
+        problem: {
+          kind: "domain-overlap",
+          host: appHost,
+          domain,
+          overlap: overlap.kind === "holds" ? "under" : "above",
+        },
       },
     ],
     site: null,
@@ -389,11 +434,17 @@ const routingOf = (
   routing: PreviewRouting,
   onLoopback: boolean,
   reached: string,
-): { readonly facts: ReadonlyArray<PreviewFact>; readonly outside: PreviewOutside | null } => {
+): {
+  readonly facts: ReadonlyArray<PreviewFact>;
+  readonly outside: PreviewOutside | null;
+  readonly where: PreviewWhere;
+} => {
   const appHost = new URL(posture.appUrl).hostname;
   switch (routing.mode) {
-    case "loopback-http":
+    case "loopback-http": {
+      const pattern = `http://<label>.localhost:${routing.port}`;
       return {
+        where: { reason: "loopback-http", pattern },
         facts: [
           posture.exposure === "loopback" && onLoopback
             ? {
@@ -404,18 +455,26 @@ const routingOf = (
                 established: "open",
                 said: `previews are plain http at http://<label>.localhost:${routing.port}, ${onLoopback ? `and MEND_EXPOSURE is ${posture.exposure}` : "and the listener is reached beyond loopback"}`,
                 fix: "set MEND_PREVIEW_DOMAIN to serve previews over https behind an edge, or keep the gateway on loopback under MEND_EXPOSURE=loopback",
+                problem: {
+                  kind: "plain-http",
+                  url: pattern,
+                  because: onLoopback ? "exposure-not-loopback" : "reached-beyond-loopback",
+                },
               },
         ],
         outside: null,
       };
+    }
     case "domain-https": {
       const { facts, site } = domainFacts(posture, routing.domain);
+      const pattern = `https://<label>.${routing.domain}${routing.port === 443 ? "" : `:${routing.port}`}`;
       return {
+        where: { reason: "domain-https", pattern, domain: routing.domain, sharedSite: site },
         facts: [
           ...facts,
           {
             established: "observed",
-            said: `previews are https at https://<label>.${routing.domain}${routing.port === 443 ? "" : `:${routing.port}`}`,
+            said: `previews are https at ${pattern}`,
           },
         ],
         outside: {
@@ -429,6 +488,11 @@ const routingOf = (
     }
     case "tailnet-https":
       return {
+        where: {
+          reason: "tailnet-https",
+          pattern: `https://${routing.hostname}:<port>`,
+          hostname: routing.hostname,
+        },
         facts: [
           {
             established: "observed",
@@ -444,6 +508,7 @@ const routingOf = (
                 established: "open",
                 said: "previews are on a tailnet, and MEND_EXPOSURE is public: a tailnet's names are one site, not a registrable domain of the previews' own",
                 fix: "keep the exposure private on a tailnet, or serve previews under a registrable domain of their own (MEND_PREVIEW_DOMAIN, behind the edge)",
+                problem: { kind: "tailnet-public" },
               }
             : {
                 established: "observed",
@@ -469,6 +534,7 @@ const previewGateway = (posture: ExposurePosture, preview: PreviewPosture): Expo
           established: "open",
           said: `it listens on ${listener}, and MEND_PREVIEW_PUBLISHED says ${preview.published}: that statement is not this listener's`,
           fix: "run mend server setup again, or set MEND_PREVIEW_PUBLISHED to where the gateway's port is published",
+          problem: { kind: "published-mismatch", listener, published: preview.published },
         }
       : {
           established: "observed",
@@ -514,6 +580,9 @@ const previewGateway = (posture: ExposurePosture, preview: PreviewPosture): Expo
   ];
   return {
     id: "preview-gateway",
+    ...routing.where,
+    problems: failed.map((fact) => fact.problem),
+    outside: outside === null ? "none" : declared ? "declared" : "open",
     established:
       failed.length > 0 ? "open" : outside === null ? "observed" : declared ? "declared" : "open",
     detail: lines.join("; "),
@@ -539,7 +608,9 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
 
   return [
     observed(
-      "https-origin",
+      plainOrigins.length === 0
+        ? { id: "https-origin", reason: "all-https", originCount: posture.allowedOrigins.length }
+        : { id: "https-origin", reason: "plain-origins", origins: plainOrigins },
       plainOrigins.length === 0,
       plainOrigins.length === 0
         ? `every browser origin is https (${posture.allowedOrigins.length})`
@@ -547,7 +618,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
     ),
     observed(
-      "secure-cookies",
+      { id: "secure-cookies", reason: cookie.secure ? "secure" : "app-url-http" },
       cookie.secure,
       cookie.secure
         ? "session cookies are Secure, HttpOnly and SameSite=Lax"
@@ -555,7 +626,15 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "set APP_URL to https",
     ),
     observed(
-      "trusted-proxies",
+      posture.trustedProxies.length === 0
+        ? { id: "trusted-proxies", reason: "unset" }
+        : trustsEveryAddress(posture.trustedProxies)
+          ? { id: "trusted-proxies", reason: "trusts-every-address" }
+          : {
+              id: "trusted-proxies",
+              reason: "ranges",
+              rangeCount: posture.trustedProxies.length,
+            },
       posture.trustedProxies.length > 0 && !trustsEveryAddress(posture.trustedProxies),
       posture.trustedProxies.length === 0
         ? "MEND_TRUSTED_PROXIES is unset: every client behind the edge counts as one address"
@@ -565,12 +644,19 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "set MEND_TRUSTED_PROXIES to the ranges of the edge and the web tier, and nothing wider",
     ),
     carried(
-      "enrollment-closed",
+      { id: "enrollment-closed", reason: "built-in" },
       "this build closes registration after the first account; everyone else joins by invitation",
       "a sign-up without an invitation, from outside, answering a refusal",
     ),
     observed(
-      "tenancy-gate",
+      openTenancy.length === 0
+        ? { id: "tenancy-gate", reason: "complete" }
+        : {
+            id: "tenancy-gate",
+            reason: "missing",
+            missing: openTenancy,
+            total: posture.tenancyGate.length,
+          },
       openTenancy.length === 0,
       openTenancy.length === 0
         ? "every multi mode gate item this build observes is closed"
@@ -578,7 +664,9 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "close them: mend operator gate",
     ),
     observed(
-      "budgets",
+      posture.budgetsOff.length === 0
+        ? { id: "budgets", reason: "all-set" }
+        : { id: "budgets", reason: "off", variables: posture.budgetsOff.map(budgetEnvName) },
       posture.budgetsOff.length === 0,
       posture.budgetsOff.length === 0
         ? "every budget is set"
@@ -586,7 +674,10 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "unset them, or set each to a positive number (https://docs.mend.run/operate/exposure/#budgets)",
     ),
     observed(
-      "no-bearers-in-urls",
+      {
+        id: "no-bearers-in-urls",
+        reason: posture.urlBearers === "refuse" ? "refused" : "accepted",
+      },
       posture.urlBearers === "refuse",
       posture.urlBearers === "refuse"
         ? "a bearer in a URL is refused; sockets take upgrade tickets"
@@ -594,12 +685,15 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       "set MEND_URL_BEARERS=refuse once every client sends tickets",
     ),
     carried(
-      "browser-headers",
+      { id: "browser-headers", reason: "built-in" },
       "this build's web tier sets the browser header policy; the API cannot see the web tier that is actually in front of it",
       "mend doctor against the public origin, which reads the headers a browser receives",
     ),
     observed(
-      "error-redaction",
+      {
+        id: "error-redaction",
+        reason: posture.errorDetail === "redacted" ? "redacted" : "verbose",
+      },
       posture.errorDetail === "redacted",
       posture.errorDetail === "redacted"
         ? "error responses are scrubbed of upstream detail"
@@ -609,7 +703,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
     ((): ExposureOutcome => {
       if (posture.sessionChannelUrl === undefined) {
         return observed(
-          "executor-channel-transport",
+          { id: "executor-channel-transport", reason: "socket" },
           true,
           "workspaces reach their session over a mounted socket, not a network",
           "",
@@ -617,7 +711,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       }
       if (channelIsHttps) {
         return observed(
-          "executor-channel-transport",
+          { id: "executor-channel-transport", reason: "https" },
           true,
           "the session channel is advertised over https",
           "",
@@ -626,6 +720,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
       return posture.executorNetwork === "private"
         ? {
             id: "executor-channel-transport",
+            reason: "plain-http-private",
             established: "declared",
             detail:
               "the session channel is plain http, and the operator declared the executor network private (MEND_EXECUTOR_NETWORK=private)",
@@ -634,7 +729,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
             observable: true,
           }
         : observed(
-            "executor-channel-transport",
+            { id: "executor-channel-transport", reason: "plain-http" },
             false,
             "the session channel is advertised over plain http",
             "serve the session channel over https, or set MEND_EXECUTOR_NETWORK=private when executors reach it over a private network",
@@ -649,7 +744,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
           : `Sealant, its registry, the database and the package mirrors (${mirrors.join(", ")})`;
       return unobservable(
         posture,
-        "core-private",
+        { id: "core-private", reason: "outside-view", mirrors },
         `this process cannot observe whether ${services} are reachable from the Internet`,
         `the operator states ${services} are not reachable from the Internet`,
         "a connection attempt to each from outside the deployment's network",
@@ -657,7 +752,7 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
     })(),
     unobservable(
       posture,
-      "edge-tls",
+      { id: "edge-tls", reason: "outside-view" },
       "this process cannot observe the edge's certificate, its renewal, or its port 80 redirect",
       "the operator states the edge's certificate chains to a public root, renews, and port 80 redirects",
       "mend doctor run against the origin from another network",
@@ -666,7 +761,18 @@ export const evaluateExposureGate = (posture: ExposurePosture): ReadonlyArray<Ex
     ...(posture.t3Gateway === true ? [t3codeGateway(posture)] : []),
     ...(posture.preview === undefined ? [] : [previewGateway(posture, posture.preview)]),
     {
-      id: "reassessment",
+      ...(reassessed
+        ? { id: "reassessment", reason: "reviewed", version: posture.version }
+        : posture.version === UNVERSIONED
+          ? { id: "reassessment", reason: "unversioned" }
+          : posture.reassessedVersion === undefined
+            ? { id: "reassessment", reason: "none", version: posture.version }
+            : {
+                id: "reassessment",
+                reason: "older",
+                version: posture.version,
+                reviewed: posture.reassessedVersion,
+              }),
       established: reassessed ? "declared" : "open",
       detail: reassessed
         ? `the operator recorded an independent reassessment of ${posture.version}`

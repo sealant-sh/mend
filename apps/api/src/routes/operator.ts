@@ -1,8 +1,6 @@
 import {
   MendApi,
-  ExposureGateItem,
   ExposureReport,
-  MultiModeGateItem,
   NotFound,
   OneTimeLink,
   OrganizationRejected,
@@ -55,10 +53,8 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
         const gate = yield* exposure.gate;
         return new ExposureReport({
           declared: exposure.exposure,
-          items: gate.map(
-            ({ id, established, detail, fix, blocksStart }) =>
-              new ExposureGateItem({ id, established, detail, fix, blocksStart }),
-          ),
+          // `observable` is what the server's own summaries count; the report leaves it out.
+          items: gate.map(({ observable: _observable, ...item }) => item),
         });
       }),
     )
@@ -66,7 +62,7 @@ export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (hand
       Effect.gen(function* () {
         yield* operator;
         const gate = yield* (yield* TenancyConfig).gate;
-        return gate.map((outcome) => new MultiModeGateItem(outcome));
+        return gate;
       }),
     )
     .handle("organizations", () =>

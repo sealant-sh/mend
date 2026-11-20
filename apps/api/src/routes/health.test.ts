@@ -23,6 +23,7 @@ describe("GET /api/health, read by anyone", () => {
           gate: [
             {
               id: "no-bearers-in-urls",
+              reason: "accepted",
               established: "open",
               detail: "a bearer in a URL is still accepted",
               fix: "set MEND_URL_BEARERS=refuse",
@@ -31,6 +32,7 @@ describe("GET /api/health, read by anyone", () => {
             },
             {
               id: "edge-tls",
+              reason: "outside-view",
               established: "open",
               detail: "this process cannot observe the edge's certificate",
               fix: "what would verify it: mend doctor from another network",
@@ -40,6 +42,8 @@ describe("GET /api/health, read by anyone", () => {
             // It refuses a public start, and still no build can observe it: counted as unobservable.
             {
               id: "workspace-ssh",
+              reason: "published",
+              published: "0.0.0.0:2222",
               established: "open",
               detail: "workspace SSH is published on 0.0.0.0:2222 apart from the web port",
               fix: "what would verify it: a connection attempt from outside",
@@ -48,6 +52,7 @@ describe("GET /api/health, read by anyone", () => {
             },
             {
               id: "budgets",
+              reason: "all-set",
               established: "observed",
               detail: "every budget is set",
               fix: null,
