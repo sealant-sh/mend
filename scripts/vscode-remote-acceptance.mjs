@@ -214,6 +214,9 @@ const main = async () => {
     MEND_E2E_PRIOR_SESSION: freshWorktreeSession,
     MEND_E2E_VSCODE_SERVER: vscodeServer.archive,
     MEND_E2E_VSCODE_COMMIT: vscodeServer.commit,
+    MEND_E2E_VSCODE_CLI: vscodeServer.cli,
+    MEND_E2E_VSCODE_LATEST_SERVER: vscodeServer.latest?.archive ?? "",
+    MEND_E2E_VSCODE_LATEST_COMMIT: vscodeServer.latest?.commit ?? "",
   };
   log(
     `VS Code ${lines((await run(code, ["--version"], { env: vscodeEnv })).stdout)[0]} on ${display}`,
