@@ -111,6 +111,21 @@ const REFUSED = {
   },
 };
 
+/** The permissions Mend asks of every Boat key (`BOAT_KEY_REQUIRED_PERMISSIONS` in @mend/domain). */
+const PERMISSIONS = [
+  "exec",
+  "file.write",
+  "host",
+  "sandbox.create",
+  "sandbox.delete",
+  "sandbox.read",
+  "sandbox.resume",
+  "sandbox.stop",
+  "snapshot.read",
+  "snapshot.write",
+  "account.read",
+];
+
 /** A server Boat key report shaped as sealant answers it; refused, every fact Boat withheld. */
 const keyReport = (refused) => {
   const report = {
@@ -134,8 +149,8 @@ const keyReport = (refused) => {
     },
     wallets: null,
     billing: { mode: "pinned", organization: "org_verify" },
-    requiredPermissions: [],
-    permissions: { observed: true, held: [], missing: [], limitedToSandboxes: false },
+    requiredPermissions: PERMISSIONS,
+    permissions: { observed: true, held: PERMISSIONS, missing: [], limitedToSandboxes: false },
     expiry: {
       observed: true,
       expiresAt: new Date(Date.now() + 200 * 86_400_000).toISOString(),
