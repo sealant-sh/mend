@@ -305,9 +305,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // F2 on a focused row renames it too; Esc leaves it.
   await rowButton("Shell 2").focus();
   await page.keyboard.press("F2");
-  await page.getByRole("dialog", { name: "Rename Shell 2" }).waitFor();
+  const renameTwo = page.getByRole("dialog", { name: "Rename Shell 2" });
+  await renameTwo.waitFor();
   await page.keyboard.press("Escape");
-  await page.getByRole("dialog").waitFor({ state: "hidden" });
+  await renameTwo.waitFor({ state: "hidden" });
   note("F2 on the focused Shell 2 row opened Rename Shell 2; Esc closed it");
 
   // `exit` in Shell 2: it leaves the list, one line says it exited, and the next shell shows.
