@@ -32,7 +32,9 @@ import { PersonalMcp } from "./mend-mcp/personal.ts";
 
 const alice = new LinuxIdentity({ accountId: "alice-1", name: "m3kq7xj2a", uid: 40_001 });
 const bob = new LinuxIdentity({ accountId: "bob-2", name: "mb7ezq4fd", uid: 40_002 });
-const SESSION = "s-shared-1";
+// The stage script ends every process on the machine that carries this session's marker, so
+// another run of this file at the same time (another worktree's checks) must not share the id.
+const SESSION = `s-shared-${process.pid}`;
 
 const temps: Array<string> = [];
 const tempDir = (prefix: string) => {
