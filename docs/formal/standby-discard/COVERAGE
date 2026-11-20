@@ -57,7 +57,14 @@
 # writes the session's summary only; no claim, retire, drain, discard, stop or session-process call
 # changed, so no action models it. Full tlx run at 6f91cc5491: every row as expected (`code`
 # 129,386,795 states, 332 s on four workers).
-sync 6f91cc54913918e432b024faf3e88ecb2e69d01d
+# 1e50a49f7d is the SLNT-1205 branch on main at b165a2b0ed, whose covered files carry nothing since
+# 6f91cc5491 but SLNT-1196's squash, which the line before accounted for. SLNT-1205 changed engine.ts
+# only inside `stop`'s choice of the shells it closes: an agent whose terminal the stop closed, and
+# whose end the PTY watcher recorded first, counts as one the stop ended, so the session's shells
+# stay. It makes no hot-pool, claim, retire, discard or drain call, and no action models a shell, so
+# no action models it. Full tlx run at 1e50a49f7d: every row as expected (`code` 129,386,795 states,
+# 218 s on four workers).
+sync 1e50a49f7dc337b2a1d3a91c314e88924aee6361
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
