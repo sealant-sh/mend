@@ -2020,6 +2020,31 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/app-sidebar.tsx`, `apps/web/src/components/row-actions.tsx`,
   `apps/web/src/lib/row-link.ts`, `apps/web/src/components/workspace/workspace-header.tsx`
 
+### now-and-sessions.new-web-sheet-stop-setup
+
+- **Map:** now-and-sessions.md `inbox-groups`; start-session.md `session-stop`; sign-in.md
+  `web-sign-in`
+- **Needs:** either; no turn; CLI and web; a session that keeps running
+- **Do:** Drive the recipe `new-web-sheet-stop-setup` (after its CLI batch
+  `new-web-sheet-stop-setup-sessions.json`): `/` for an account past setup, and for one with no
+  project, one whose setup ended in this browser and one whose setup can't be read; Stop from a
+  sidebar row's menu with Mend's answer held, refused, then let through with the toast's Try again;
+  a toast beside a session's composer at desktop and phone width; the sheet's corners on a
+  session's, a project's and a settings page, light and dark.
+- **See:** `/` stays on Mend for someone past setup, opens setup's next step for someone without a
+  project, and stays on Mend once setup ended here or can't be read; the row reads Stopped under
+  Done or To review the moment Stop is confirmed, goes back to Running with a toast and Try again
+  when Mend refuses, and stays where the stop put it once Mend took it; toasts sit in the
+  bottom-right corner on a desktop and cover no composer; nothing square shows over the sheet's
+  rounded corners, and no focus ring is cut by the sheet.
+- **Mode:** `scripted` (recipes/new-web-sheet-stop-setup.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/web/src/routes/_inbox.index.tsx`,
+  `apps/web/src/lib/setup.ts`, `apps/web/src/lib/setup-skips.ts`,
+  `apps/web/src/lib/pending-stops.ts`, `apps/web/src/lib/toast-clearance.ts`,
+  `apps/web/src/components/toaster.tsx`
+
 ### now-and-sessions.new-web-session-states
 
 - **Map:** now-and-sessions.md `inbox-groups`, `inbox-snooze-settle`, `rail`; start-session.md
