@@ -43,11 +43,12 @@ someone cannot see answers as a missing one does.
   sign-ins switch; with a key, `GET /api/account/organizations` and the switch answer
   `403 AccessKeyRefused`, and removal from that organization revokes the key.
 - `org-create` lets a signed-in person create an organization with `POST /api/account/organizations`
-  (`multi` only, and only while `MEND_ORGANIZATION_CREATION` is `anyone`): they own it alone and
-  that sign-in switches to it. A taken, empty or not allowed name answers `OrganizationNameTaken`
-  (409), `OrganizationNameEmpty` or `OrganizationNameNotAllowed` (422); `GET /api/organization` says
-  whether to offer it (`canCreateOrganizations`). No screen offers it yet: the new web app's
-  switcher will (route PR 35).
+  (`multi` only, and only an operator unless `MEND_ORGANIZATION_CREATION` is `anyone`; `operator` is
+  the default): they own it alone and that sign-in switches to it. A taken, empty or not allowed
+  name answers `OrganizationNameTaken` (409), `OrganizationNameEmpty` or
+  `OrganizationNameNotAllowed` (422); `GET /api/organization` says whether to offer it
+  (`canCreateOrganizations`). No screen offers it yet: the new web app's switcher will (route PR
+  35).
 - `operator-add-member` adds an existing account to another organization with
   `mend operator org add-member <org> <email> [--role member|owner]` (`multi` only).
 - `take-over` makes an owner the creator of a project whose creator was removed.
@@ -209,9 +210,10 @@ Preconditions:
 
 - Mend runs with `MEND_TENANCY=multi`. It refuses to start until every item of the multi mode gate
   is satisfied: run `mend operator gate` on a single-tenancy start first and set what each open item
-  names (`MEND_SOURCE_POLICY=tenant`, `MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://`
-  `MEND_BLOB_STORE`, loopback-only `MEND_SERVICE_HOSTS`). If the run cannot satisfy the gate, report
-  this section unreachable; do not weaken the gate.
+  names (`MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://` `MEND_BLOB_STORE`, loopback-only
+  `MEND_SERVICE_HOSTS`; `MEND_SOURCE_POLICY=tenant` only with `MEND_EXPOSURE=public`). A fresh
+  `mend server setup` install already runs multi. If the run cannot satisfy the gate, report this
+  section unreachable; do not weaken the gate.
 - `<owner>` is the operator and the owner of `<org>` (`Acme` below). Create the second one:
   `mend operator org create Globex`, then
   `mend operator org invite-owner Globex --email <owner-email>`. `mend operator org list` lists

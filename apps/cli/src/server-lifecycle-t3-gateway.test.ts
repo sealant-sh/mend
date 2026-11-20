@@ -41,11 +41,17 @@ describe("the t3code gateway overlay", { timeout: 120_000 }, () => {
       f.lines.some((line) => line.startsWith("The t3code gateway answered at 127.0.0.1:3120")),
     ).toBe(true);
     gatewayProbes.length = 0;
-    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml", "compose.t3.yaml"]);
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.posture.yaml",
+      "compose.mirrors.yaml",
+      "compose.t3.yaml",
+    ]);
     for (const command of [["restart"], ["stop"], ["start", "--offline"]]) {
       expect(await serverCommand(command, runtime)).toEqual({ _tag: "ok" });
       expect(f.state().upFiles).toEqual([
         "compose.yaml",
+        "compose.posture.yaml",
         "compose.mirrors.yaml",
         "compose.t3.yaml",
       ]);

@@ -97,12 +97,12 @@ describe("the posture", () => {
     expect(composeOverlays({ edgeHost: "mend.example.com" })).toEqual(["compose.edge.yaml"]);
   });
 
-  it("declares exposure and tenancy as stated, and the gate's items with multi or public", () => {
+  it("declares exposure and tenancy as stated, sizes with multi or public, tenant git with public", () => {
     expect(postureEnvironment({ exposure: "private" })).toEqual([["MEND_EXPOSURE", "private"]]);
     expect(postureEnvironment({ tenancy: "single" })).toEqual([["MEND_TENANCY", "single"]]);
+    // Several organizations on one Mend are one business: multi leaves the source policy alone.
     expect(postureEnvironment({ tenancy: "multi" })).toEqual([
       ["MEND_TENANCY", "multi"],
-      ["MEND_SOURCE_POLICY", "tenant"],
       ["MEND_CAPTURE_REQUIRE_SIZES", "true"],
     ]);
     expect(postureEnvironment({ edgeHost: "mend.example.com", exposure: "public" })).toEqual([
@@ -154,9 +154,9 @@ describe("the posture", () => {
         "# Written by mend server setup: the posture this install declares, read from server.env",
         "# (docs/adr/0003-organizations-and-tenancy.md, docs/adr/0004-access-without-a-private-network.md).",
         "# MEND_EXPOSURE and MEND_TENANCY are the operator's statements. With multi tenancy or a public",
-        "# exposure, the multi mode gate's configuration items follow: Mend's own git keeps to the tenant",
-        "# source policy and every capture upload is signed for its size. MEND_GIT_TRANSPORT_BIND_ORIGIN",
-        "# and MEND_SERVICE_HOSTS are not set, which is what the gate asks of them.",
+        "# exposure, every capture upload is signed for its size; a public exposure also keeps Mend's",
+        "# own git to the tenant source policy. MEND_GIT_TRANSPORT_BIND_ORIGIN and MEND_SERVICE_HOSTS",
+        "# are not set, which is what the multi mode gate asks of them.",
         "services:",
         "  mend:",
         "    environment:",

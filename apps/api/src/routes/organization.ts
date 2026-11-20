@@ -82,7 +82,7 @@ const LAST_OWNER_LEAVING =
 const SINGLE_ORGANIZATION = "This Mend runs one organization (MEND_TENANCY=single).";
 
 const OPERATOR_CREATES =
-  "On this Mend, the operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask them for one.";
+  "On this Mend, only an operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask one for an organization.";
 
 const ONLY_ORGANIZATION =
   "This is your only organization. Ask one of its owners to remove you instead.";
@@ -152,17 +152,20 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const organizations = yield* OrganizationsRepo;
         const roles = yield* InstanceRolesRepo;
         const tenancy = yield* TenancyConfig;
+        const operator = yield* roles.isOperator(caller.user.id);
         return new OrganizationView({
           organization: found.organization,
           userId: caller.user.id,
           role: found.role,
           memberCount: yield* organizations.memberCount(found.organization.id),
-          operator: yield* roles.isOperator(caller.user.id),
+          operator,
           tenancy: tenancy.mode,
           mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "sources" : "bind",
           canCreateOrganizations: peopleCreateOrganizations(tenancy, {
             accessKey: accessKeyIdOf(caller.credential) !== undefined,
+            operator,
           }),
+          organizationCreation: tenancy.organizationCreation,
         });
       }),
     )
@@ -524,10 +527,14 @@ export const AccountOrganizationsGroupLive = HttpApiBuilder.group(
         Effect.gen(function* () {
           const caller = yield* CurrentUser;
           const tenancy = yield* TenancyConfig;
-          // The contract refuses a key first (`PersonCredentialOnly`).
+          // The contract refuses a key first (`PersonCredentialOnly`). Under `operator` an operator
+          // creates one here too, and owns it like anyone else who creates one.
           if (
             tenancy.mode === "multi" &&
-            !peopleCreateOrganizations(tenancy, { accessKey: false })
+            !peopleCreateOrganizations(tenancy, {
+              accessKey: false,
+              operator: yield* (yield* InstanceRolesRepo).isOperator(caller.user.id),
+            })
           ) {
             return yield* new OrganizationRejected({ message: OPERATOR_CREATES });
           }

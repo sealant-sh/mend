@@ -570,6 +570,7 @@ describe.skipIf(!composeAvailable)(
                     "server.json",
                     "server.env",
                     "compose.yaml",
+                    "compose.posture.yaml",
                     "compose.mirrors.yaml",
                     "docker-mirror-guard.sh",
                     "npm-mirror.conf",

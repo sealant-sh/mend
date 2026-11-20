@@ -159,8 +159,6 @@ describe("the guided server setup", () => {
       "https://mend-box.tailc79e49.ts.net:8443",
       "--exposure",
       "private",
-      "--tenancy",
-      "multi",
       "--t3-gateway",
     ]);
     expect(transcript).toContain(

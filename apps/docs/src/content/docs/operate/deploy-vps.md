@@ -287,10 +287,13 @@ image and its private configuration. It prints the plan and asks you to type `de
 
 A server installed by `mend server setup` runs with these defaults:
 
-- `MEND_TENANCY=single`: one organization. The operator role administers the instance and has no
-  default read access to organization content. `mend server setup --tenancy multi` declares many,
-  and sets `MEND_SOURCE_POLICY=tenant` and `MEND_CAPTURE_REQUIRE_SIZES=true` with it. `multi`
-  refuses to start until every item of the multi mode gate passes; `mend operator gate` lists them.
+- `MEND_TENANCY=multi`: several organizations, which belong to one business. A fresh install
+  declares it, with `MEND_CAPTURE_REQUIRE_SIZES=true`; `--tenancy single` declares one instead, and
+  an install that never declared tenancy stays `single`. Only an operator creates organizations
+  (`MEND_ORGANIZATION_CREATION=operator`), in the web app or with `mend operator org create`. The
+  operator role administers the instance and has no default read access to organization content.
+  `multi` refuses to start until every item of the multi mode gate passes, except `operator-present`
+  before the first account exists; `mend operator gate` lists them.
 - Budgets on at their default sizes. A budget bounds what a client, an account or an organization
   may ask; it refuses new work and never stops running work. Setup does not expose them as options.
 - Database pool caps of 6 connections for Mend's queries (`MEND_DATABASE_POOL_MAX`), 3 for the job

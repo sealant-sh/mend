@@ -2448,6 +2448,29 @@ lane changed.
   `apps/web/src/components/organization-dialogs.tsx`, `apps/web/src/lib/organization-membership.ts`,
   `apps/web/src/lib/organization-switch.ts`
 
+### organization.new-web-operator-create
+
+- **Map:** organization.md `org-create` (an operator, under `MEND_ORGANIZATION_CREATION=operator`,
+  the default)
+- **Needs:** no session; no turn; web; a server running several organizations (`MEND_TENANCY=multi`)
+  whose signed-in account holds the operator role. The run's data never declared tenancy and stays
+  single, so this runs on a copy that is not saved, after
+  `mend server setup --offline --tenancy multi` there.
+- **Do:** Drive the recipe `new-web-org-create-operator`: the operator's switcher on the desk, the
+  Create organization dialog with a name, the home it lands on, Settings → Server's Organizations
+  rows, and the phone's Settings sheet. Then, as the second account (not an operator),
+  `M2 organization` reads `canCreateOrganizations` false and a create is refused.
+- **See:** the recipe's `steps.log`: `organizationCreation operator, canCreateOrganizations true`;
+  the switcher reads `… | Create organization…`; `role owner, 1 member(s)` for the new organization;
+  `Only an operator creates organizations, and owns each one they create.`;
+  `Mend's git may reach private networks`. The second account's create answers
+  `On this Mend, only an operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask one for an organization.`
+- **Mode:** `scripted` (recipes/new-web-org-create-operator.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/api/src/tenancy.ts`, `apps/api/src/routes/organization.ts`,
+  `apps/web/src/lib/server-settings.ts`
+
 ### organization.new-web-audit-log
 
 - **Map:** operator.md `operator-audit`; shared-control.md `audit`; organization.md `audit-log` (the
@@ -2754,8 +2777,9 @@ lane changed.
 - **Needs:** no session; no turn; the box's host CLI over `MEND_VERIFY_BOX_SSH`
 - **Do:** On the box host, `mend server status` and `mend server logs --tail 20`. Change nothing.
 - **See:** `Pinned Mend <version> at …`, the `exposure · declared …` and
-  `tenancy · declared single …` lines and the containers up; at most 20 lines per container, exit
-  `0`.
+  `tenancy · declared single …` lines (the run's data never declared tenancy, so the upgrade keeps
+  it single; a fresh install would read `declared multi`) and the containers up; at most 20 lines
+  per container, exit `0`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/` (server), `scripts/preview-deploy.sh`

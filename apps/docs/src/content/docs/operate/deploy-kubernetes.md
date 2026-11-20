@@ -305,9 +305,10 @@ extraEnv:
   - { name: MEND_DATABASE_POOL_MAX, value: "10" }
 ```
 
-`MEND_TENANCY=multi` refuses to start until every item of the multi mode gate passes;
-`mend operator gate` lists each item and what would satisfy it. Browser origins are set with
-`web.appUrl` and `web.allowedOrigins`, which reach both tiers.
+The chart sets no tenancy, so the server runs `single` unless `MEND_TENANCY=multi` is set here.
+`multi` refuses to start until every item of the multi mode gate passes (`operator-present` waits
+for the first account); `mend operator gate` lists each item and what would satisfy it. Browser
+origins are set with `web.appUrl` and `web.allowedOrigins`, which reach both tiers.
 [Server environment](/reference/server-environment/) lists every variable.
 
 ## Git access

@@ -25,7 +25,11 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(JSON.parse(files["server.json"] ?? "{}")).not.toHaveProperty("edgeHost");
     expect(files["server.env"]).toContain(`APP_URL=http://127.0.0.1:${f.port}\n`);
     expect(files["server.env"]).not.toContain("MEND_EDGE_HOST");
-    expect(f.state().upFiles).toEqual(["compose.yaml", "compose.mirrors.yaml"]);
+    expect(f.state().upFiles).toEqual([
+      "compose.yaml",
+      "compose.posture.yaml",
+      "compose.mirrors.yaml",
+    ]);
     // The edge's container went by its labels, before the edge-less `up`; nothing else was removed.
     const removal = f.runCalls.findIndex(
       (call) => call.args[2] === "container" && call.args[3] === "rm",

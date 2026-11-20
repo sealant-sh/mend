@@ -8,6 +8,8 @@ let
   version = (lib.importJSON ../../apps/cli/package.json).version;
   pins = lib.importJSON ../test-images.json;
   mendImage = "ghcr.io/sealant-sh/mend:${version}";
+  # A fresh install with `tenancy` unset runs several organizations from 0.37.0 (module.nix).
+  tenancy = if lib.versionAtLeast version "0.37.0" then "multi" else "single";
   images =
     assert lib.assertMsg (
       pins ? ${mendImage}
@@ -117,8 +119,14 @@ pkgs.testers.runNixOSTest {
         "MEND_T3_GATEWAY_ENABLED=true",
         "MEND_T3_GATEWAY_PUBLISHED=127.0.0.1:3120",
         "MEND_T3_GATEWAY_URL=https://t3.mend.test",
+        "MEND_TENANCY=${tenancy}",
+        "MEND_CAPTURE_REQUIRE_SIZES=${if tenancy == "multi" then "true" else "false"}",
     ]:
         assert variable in environment, f"the Mend container's environment has no {variable}"
+    # A fresh install's tenancy, with the operator source policy either way (docs/adr/0003).
+    assert not any(v.startswith("MEND_SOURCE_POLICY=") for v in environment), "a source policy was set"
+    assert machine.succeed("cat /var/lib/mend/tenancy").strip() == "${tenancy}", "the first start did not keep ${tenancy}"
+    assert first["tenancy"] == "${tenancy}", f"a fresh install runs {first['tenancy']} tenancy"
     published = machine.succeed("docker port mend-mend-1 3120/tcp").strip()
     assert published == "127.0.0.1:3120", f"the gateway's port is published on {published}"
     machine.wait_until_succeeds(f"curl --fail --silent {gateway}/.well-known/t3/environment", timeout=60)
@@ -174,6 +182,7 @@ pkgs.testers.runNixOSTest {
     print(f"health after restart: {second}")
     assert second["status"] == "ok", f"health status after restart is {second['status']}"
     assert second["instance"] == first["instance"], "the instance changed across the restart"
+    assert second["tenancy"] == "${tenancy}", "the tenancy changed across the restart"
     assert machine.succeed("sha256sum /var/lib/mend/identity.env") == identity_before, "the identity changed"
     assert edge_containers() != "", "the edge is not running after a restart"
 

@@ -1081,6 +1081,7 @@ describe("mend server setup", () => {
           expect(fs.readFileSync(path.join(directory, "identity.env"))).toEqual(identity);
           expect(fs.readdirSync(directory).toSorted()).toEqual([
             "compose.mirrors.yaml",
+            "compose.posture.yaml",
             "compose.yaml",
             "docker-mirror-guard.sh",
             "identity.env",
@@ -2002,6 +2003,7 @@ describe("mend server setup", () => {
         "DOCKER_SOCKET_PATH",
         "MEND_ALLOWED_ORIGINS",
         "MEND_BIND_HOST",
+        "MEND_CAPTURE_REQUIRE_SIZES",
         "MEND_CONTROL_VOLUME_NAME",
         "MEND_DB_PASSWORD",
         "MEND_DOCKER_MIRROR_MAX_SIZE",
@@ -2016,6 +2018,7 @@ describe("mend server setup", () => {
         "MEND_POSTGRES_ADMIN_PASSWORD",
         "MEND_SSH_PORT",
         "MEND_STORE_VOLUME_NAME",
+        "MEND_TENANCY",
         "MEND_VERSION",
         "SEALANT_CREDENTIALS_KEY",
         "SEALANT_DB_PASSWORD",
@@ -2025,6 +2028,10 @@ describe("mend server setup", () => {
       ].toSorted(),
     );
     expect(env.get("MEND_NPM_MIRROR_MAX_SIZE")).toBe("10g");
+    // A fresh install serves several organizations, and leaves the source policy at operator.
+    expect(env.get("MEND_TENANCY")).toBe("multi");
+    expect(env.get("MEND_CAPTURE_REQUIRE_SIZES")).toBe("true");
+    expect(env.has("MEND_SOURCE_POLICY")).toBe(false);
     expect(
       JSON.parse(fs.readFileSync(activeFile(control.runtime.configDir, "server.json"), "utf8"))
         .mirrors,
@@ -2058,6 +2065,8 @@ describe("mend server setup", () => {
       activeFile(control.runtime.configDir, "server.env"),
       "-f",
       activeFile(control.runtime.configDir, "compose.yaml"),
+      "-f",
+      activeFile(control.runtime.configDir, "compose.posture.yaml"),
       "-f",
       activeFile(control.runtime.configDir, "compose.mirrors.yaml"),
       "up",
@@ -3009,6 +3018,7 @@ describe("mend server setup", () => {
       "Caddyfile",
       "compose.edge.yaml",
       "compose.mirrors.yaml",
+      "compose.posture.yaml",
       "compose.yaml",
       "docker-mirror-guard.sh",
       "identity.env",
@@ -3038,7 +3048,7 @@ describe("mend server setup", () => {
     expect(env.get("MEND_BIND_HOST")).toBe("127.0.0.1");
     expect(env.has("MEND_EXPOSURE")).toBe(false);
     const up = control.commands.slice(plainCommands).find(([, args]) => args.includes("up"));
-    expect(up?.[1].slice(0, 16)).toEqual([
+    expect(up?.[1].slice(0, 18)).toEqual([
       "--context",
       "default",
       "compose",
@@ -3052,6 +3062,8 @@ describe("mend server setup", () => {
       path.join(generation, "compose.yaml"),
       "-f",
       path.join(generation, "compose.edge.yaml"),
+      "-f",
+      path.join(generation, "compose.posture.yaml"),
       "-f",
       path.join(generation, "compose.mirrors.yaml"),
       "up",
@@ -4682,9 +4694,12 @@ describe("mend server setup, guided and unasked", () => {
 
   it("refuses to apply answers when another setup changed the install meanwhile", async () => {
     const configDir = temporaryDirectory("guided-race");
-    expect(await serverCommand(["setup", "--yes"], makeRuntime({ configDir }).runtime)).toEqual({
-      _tag: "ok",
-    });
+    expect(
+      await serverCommand(
+        ["setup", "--yes", "--tenancy", "single"],
+        makeRuntime({ configDir }).runtime,
+      ),
+    ).toEqual({ _tag: "ok" });
     // keep it as it is · apply
     const answers = ["1", ""];
     const control = makeRuntime({ configDir });

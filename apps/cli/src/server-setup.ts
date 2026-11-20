@@ -1551,7 +1551,9 @@ const validateExposure = (
   // The edge and the posture are kept across reruns and upgrades; only a flag changes them.
   const edgeHost = options.noEdge ? undefined : (options.edge ?? existing?.edgeHost);
   const exposure = options.exposure ?? existing?.exposure;
-  const tenancy = options.tenancy ?? existing?.tenancy;
+  // A fresh install serves several organizations unless told otherwise; one that never declared
+  // tenancy keeps the server's default, single, across reruns and upgrades (docs/adr/0003).
+  const tenancy = options.tenancy ?? (existing === null ? "multi" : existing.tenancy);
   // The t3code gateway, like the edge, is kept across reruns and upgrades until a flag changes it.
   // Naming its edge origin turns it on too.
   const t3GatewayPort = options.noT3Gateway

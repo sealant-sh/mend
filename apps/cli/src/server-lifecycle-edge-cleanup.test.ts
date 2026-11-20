@@ -76,6 +76,7 @@ describe("the edge and the posture", { timeout: 120_000 }, () => {
     expect(f.state().downFiles).toEqual([
       "compose.yaml",
       "compose.edge.yaml",
+      "compose.posture.yaml",
       "compose.mirrors.yaml",
     ]);
     expect(f.state().edgeRunning).toBe(false);
