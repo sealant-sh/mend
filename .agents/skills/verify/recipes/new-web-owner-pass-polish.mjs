@@ -283,7 +283,7 @@ export default async ({ page, web, capture, note }) => {
   await visible(page.getByText(/^Running/)).waitFor();
   await mendRun.click();
   await settled();
-  if ((await page.getByRole("dialog").count()) > 0)
+  if ((await page.getByRole("dialog").filter({ visible: true }).count()) > 0)
     throw new Error("picking the selected option opened a dialog");
   await visible(page.locator('[data-slot="segmented-item"]', { hasText: "Use your own" })).click();
   await heading("Use your own Executor");
