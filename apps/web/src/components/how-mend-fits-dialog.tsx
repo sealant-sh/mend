@@ -5,8 +5,9 @@ import { screenTitle } from "#/lib/how-mend-fits";
 import { fitsDialog } from "#/lib/how-mend-fits-open";
 import { type FitsScreen, screenCount } from "#/lib/how-mend-fits-screen";
 import { usePhone } from "#/lib/phone";
+import { useFitsNames } from "#/lib/use-fits-names";
 
-import { FitsScreenBody, useFitsNames } from "./how-mend-fits.tsx";
+import { FitsScreenView } from "./fits-screen.tsx";
 import { Overlay } from "./projects/overlay.tsx";
 
 /**
@@ -62,5 +63,5 @@ export function HowMendFitsDialog() {
 /** The screen's body; the names are read only while the dialog is open. */
 function DialogScreen({ screen, phone }: { readonly screen: FitsScreen; readonly phone: boolean }) {
   const names = useFitsNames();
-  return <FitsScreenBody key={screen} screen={screen} names={names} phone={phone} place="dialog" />;
+  return <FitsScreenView key={screen} screen={screen} names={names} phone={phone} place="dialog" />;
 }

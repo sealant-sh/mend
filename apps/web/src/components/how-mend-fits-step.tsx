@@ -7,8 +7,9 @@ import { screenTitle } from "#/lib/how-mend-fits";
 import { type FitsScreen, screenCount } from "#/lib/how-mend-fits-screen";
 import { usePhone } from "#/lib/phone";
 import { rememberNounsEnd } from "#/lib/setup-skips";
+import { useFitsNames } from "#/lib/use-fits-names";
 
-import { FitsScreenBody, useFitsNames } from "./how-mend-fits.tsx";
+import { FitsScreenView } from "./fits-screen.tsx";
 import { SetupFrame, useSetupProgress } from "./setup-frame.tsx";
 
 /**
@@ -43,7 +44,7 @@ export function HowMendFitsStep({ screen }: { readonly screen: FitsScreen }) {
       ended={progress.ended}
       wide
     >
-      <FitsScreenBody screen={screen} names={names} phone={phone} place="step" />
+      <FitsScreenView screen={screen} names={names} phone={phone} place="step" />
       <FitsActions
         screen={screen}
         skip={

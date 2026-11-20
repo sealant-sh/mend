@@ -1,13 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { sampleInboxView } from "./how-mend-fits-sample.ts";
 import { screenOf } from "./how-mend-fits-screen.ts";
-import {
-  type FitsNames,
-  nestingIntro,
-  organizationLine,
-  pictureProject,
-  sampleInboxView,
-} from "./how-mend-fits.ts";
+import { type FitsNames, nestingIntro, organizationLine, pictureProject } from "./how-mend-fits.ts";
 
 const names: FitsNames = {
   host: "mend.northwind.dev",

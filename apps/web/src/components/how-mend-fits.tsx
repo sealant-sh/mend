@@ -4,11 +4,9 @@ import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/m
 import { SidebarMenu, SidebarProvider } from "@mend/ui/components/ui/sidebar";
 import { UserMessage } from "@mend/ui/components/user-message";
 import { cn } from "@mend/ui/lib/utils";
-import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { ChevronsUpDownIcon, FileDiffIcon, InfoIcon, PanelLeftIcon } from "lucide-react";
 import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } from "react";
 
-import { useAdoptionAttempt } from "#/lib/adoptions";
 import {
   type FitsNames,
   GROUP_WORDS,
@@ -18,17 +16,12 @@ import {
   SAMPLE_BRANCH,
   SAMPLE_SESSION,
   SAMPLE_WORKTREE,
-  sampleInboxView,
   sessionCaption,
   sidebarCaption,
-  pictureProject,
   sidebarIntro,
 } from "#/lib/how-mend-fits";
+import { sampleInboxView } from "#/lib/how-mend-fits-sample";
 import type { FitsScreen } from "#/lib/how-mend-fits-screen";
-import { useServerHost } from "#/lib/online";
-import { signedInOptions } from "#/lib/sign-in";
-import { useTRPC } from "#/lib/trpc";
-import { useViewer } from "#/lib/use-viewer";
 
 import { AppSidebar, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH, SidebarRow } from "./app-sidebar.tsx";
 import { NoSearch } from "./command-palette.tsx";
@@ -54,32 +47,9 @@ import { WorkspaceHeader } from "./workspace/workspace-header.tsx";
  */
 
 /**
- * What the screens name, for the signed-in person: their organization and whether they own it,
- * their name, this server, and the project the pictures show (the clone this browser started, the
- * newest project they can see, or the sample).
+ * One screen's words and pictures. It loads apart from the app's first page; open it through
+ * `FitsScreenView` (`fits-screen.tsx`).
  */
-export const useFitsNames = (): FitsNames => {
-  const trpc = useTRPC();
-  const signedIn = useSuspenseQuery(signedInOptions(trpc)).data;
-  const { organizationName, account } = useViewer();
-  const host = useServerHost();
-  const cloning = useAdoptionAttempt(signedIn.userId);
-  const projects = useQuery(trpc.projects.list.queryOptions());
-  // Until the list answers, or if it can't, the pictures use the clone or the sample.
-  const project = pictureProject(
-    cloning?.name ?? null,
-    projects.isPending || projects.isError ? [] : projects.data,
-  );
-  return {
-    host,
-    organization: organizationName,
-    owner: signedIn.role === "owner",
-    person: account.name,
-    email: account.email,
-    project: project.name,
-    ownProject: project.own,
-  };
-};
 
 /** The words of a screen and how wide they may run: the setup column, or the narrower dialog. */
 interface ScreenProps {
