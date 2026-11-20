@@ -445,20 +445,37 @@ export default async ({ page, web, capture, note }) => {
       trpc.organization.setWorkspaceEnvironment.mutate({ workspaceImage: image }),
     starting,
   );
-  await client(async (trpc, id) => trpc.projects.remove.mutate({ id }), later.id).catch(
-    () => undefined,
+  note("put the organization's image back");
+
+  // A project whose only session has stopped: Docker off from the start (a local stack can't run
+  // it), one shell session started and stopped.
+  await client(
+    async (trpc, [id, workspaceImage]) =>
+      trpc.projects.setWorkspaceImage.mutate({ id, request: { workspaceImage } }),
+    [later.id, { ...(await imageOf(later.id)), services: { docker: false } }],
   );
-  note(`put the organization's image back and removed ${later.name}`);
+  const only = await startShell(later.id);
+  await client(async (trpc, id) => trpc.sessions.stop.mutate({ id }), only.id);
+  for (let tries = 0; tries < 60; tries += 1) {
+    const now = (await client(async (trpc, id) => trpc.sessions.detail.query({ id }), only.id))
+      .session.status;
+    if (["stopped", "completed"].includes(now)) break;
+    await page.waitForTimeout(2_000);
+  }
+  note(`${later.name}: shell session ${only.id} was ${only.status}, then stopped`);
 
   // --- 14. The project's Sessions tab: its count, and what it says when nothing is in view --------
   const sessionsTab = visible(page.getByRole("link", { name: /^Sessions/ }));
-  await page.goto(`${web}/projects/${fresh.id}`);
-  await hydrated();
-  await sessionsTab.waitFor({ timeout: 30_000 });
-  await page.waitForTimeout(1_500);
-  note(
-    `${fresh.name}'s Sessions tab reads ${JSON.stringify(await sessionsTab.innerText())}; the open list shows ${await page.locator("table tbody tr").filter({ visible: true }).count()} rows`,
-  );
+  for (const project of [fresh, later]) {
+    await page.goto(`${web}/projects/${project.id}`);
+    await hydrated();
+    await sessionsTab.waitFor({ timeout: 30_000 });
+    await page.waitForTimeout(1_500);
+    note(
+      `${project.name}'s Sessions tab reads ${JSON.stringify(await sessionsTab.innerText())}; the open list shows ${await page.locator("table tbody tr").filter({ visible: true }).count()} rows`,
+    );
+  }
+  await shot("project-sessions-desktop-light");
   await visible(page.getByRole("heading", { name: /^Nothing open in / })).waitFor({
     timeout: 30_000,
   });
@@ -477,7 +494,7 @@ export default async ({ page, web, capture, note }) => {
     `Show stopped sessions: ${await page.locator("table tbody tr").filter({ visible: true }).count()} stopped rows`,
   );
   await shot("project-sessions-stopped-desktop-light");
-  await page.goto(`${web}/projects/${fresh.id}?show=stopped&q=nothing-matches-this`);
+  await page.goto(`${web}/projects/${later.id}?show=stopped&q=nothing-matches-this`);
   await hydrated();
   await visible(page.getByRole("heading", { name: "No session matches" })).waitFor({
     timeout: 30_000,
@@ -523,8 +540,9 @@ export default async ({ page, web, capture, note }) => {
     note(`${path}: ${JSON.stringify(await offCentre())}`);
     await shot(`empty-${name}-desktop-light`);
   }
-  await client(async (trpc, id) => trpc.projects.remove.mutate({ id }), fresh.id).catch(
-    () => undefined,
-  );
-  note(`removed ${fresh.name}`);
+  for (const project of [fresh, later])
+    await client(async (trpc, id) => trpc.projects.remove.mutate({ id }), project.id).catch(
+      () => undefined,
+    );
+  note(`removed ${fresh.name} and ${later.name}`);
 };
