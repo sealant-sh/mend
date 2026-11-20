@@ -4,7 +4,7 @@ import { buttonVariants } from "@mend/ui/components/ui/button";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
+import { Link, useNavigate } from "@tanstack/react-router";
 import { type KeyboardEvent, type ReactNode, useState, useSyncExternalStore } from "react";
 
 import type { InboxRow } from "#/lib/inbox";
@@ -624,6 +624,7 @@ function WorkspaceHeaderRow({
   return (
     <WorkspaceHeader
       project={facts.projectName}
+      projectId={facts.session.projectId}
       worktree={facts.worktreeName}
       branch={facts.session.branch}
       className="max-lg:hidden"
@@ -686,7 +687,13 @@ export function SessionPending({ sessionId }: { readonly sessionId: string }) {
           <Skeleton className="h-4 w-56" />
         ) : (
           <p className="min-w-0 truncate text-prose">
-            <span className="text-muted-foreground">{listed.projectName}</span>
+            <Link
+              to="/projects/$projectId"
+              params={{ projectId: listed.session.projectId }}
+              className="text-muted-foreground outline-none hover:text-foreground focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50"
+            >
+              {listed.projectName}
+            </Link>
             <span aria-hidden className="text-faint">
               {" / "}
             </span>

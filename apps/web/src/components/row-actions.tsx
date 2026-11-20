@@ -35,6 +35,7 @@ import {
   CheckCheckIcon,
   ChevronLeftIcon,
   EllipsisIcon,
+  FolderIcon,
   LinkIcon,
   PencilIcon,
   Undo2Icon,
@@ -110,7 +111,14 @@ export interface RowMenuProps {
 /** A value on a menu item's right ("F2", "Thu 09:00"), in plain muted text on one line. */
 export const META = "pl-4 tracking-normal whitespace-nowrap tabular-nums";
 
-/** The desk's menu items, in the frame's order: open, snooze, mark done, rename, copy link. */
+/** Where a session's project page is: Open project in a row's menus goes there. */
+export const projectLink = (row: InboxRow) =>
+  ({ to: "/projects/$projectId", params: { projectId: row.project.id } }) as const;
+
+/**
+ * The desk's menu items, in the frame's order: open the session, open its project, snooze, mark
+ * done, rename, copy link.
+ */
 function RowMenuItems({
   parts,
   row,
@@ -127,6 +135,10 @@ function RowMenuItems({
         <ArrowUpRightIcon aria-hidden />
         Open session
         <Shortcut className={META}>↵</Shortcut>
+      </Item>
+      <Item onClick={() => void navigate(projectLink(row))}>
+        <FolderIcon aria-hidden />
+        Open project
       </Item>
       <MarkItems parts={parts} row={row} actions={actions} handlers={handlers} />
       {actions.rename ? (
@@ -302,11 +314,12 @@ export function PhoneRowActions({
   more,
 }: Omit<RowMenuProps, "onRename"> & {
   readonly triggerClassName?: string;
-  /** Rows before Rename… (a session's Turn off shared control); pressing one closes the sheet. */
+  /** Rows before Open project (a session's Turn off shared control); pressing one closes the sheet. */
   readonly first?: ReactNode;
   /** Rows after Copy link (a session tab's own, its workspace's); pressing one closes the sheet. */
   readonly more?: ReactNode;
 }) {
+  const navigate = useNavigate();
   const [open, setOpen] = useState(false);
   const [page, setPage] = useState<Page>("actions");
   const [name, setName] = useState(row.title);
@@ -388,6 +401,12 @@ export function PhoneRowActions({
                     {first}
                   </div>
                 )}
+                <SheetItem
+                  icon={<FolderIcon aria-hidden />}
+                  onClick={() => act(() => void navigate(projectLink(row)))}
+                >
+                  Open project
+                </SheetItem>
                 {actions.rename ? (
                   <SheetItem icon={<PencilIcon aria-hidden />} onClick={() => setPage("rename")}>
                     Rename…

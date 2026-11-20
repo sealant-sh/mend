@@ -29,6 +29,7 @@ import type { ReactNode } from "react";
 import type { ProjectDto } from "#/lib/api";
 import type { CloneState } from "#/lib/clone-state";
 import { openSessionsWords, repositoryWords, visibleToWords } from "#/lib/projects";
+import { ABOVE_ROW_LINK, LINK_ROW, ROW_LINK } from "#/lib/row-link";
 
 import { initialsOf } from "../app-sidebar.tsx";
 
@@ -65,7 +66,7 @@ const openWords = (open: number | null | undefined): string =>
 /**
  * The desktop Projects table (Doop "Project row"): the project over its repository, who can see
  * it, its open sessions, its default branch, who added it, and a "…" for its menu, which a
- * right-click on the row opens too.
+ * right-click on the row opens too. A click anywhere else on the row opens the project.
  */
 export function ProjectsTable({
   entries,
@@ -112,12 +113,15 @@ export function ProjectRow({
   const { project, open, addedBy, actions } = entry;
   return (
     <ContextMenu>
-      <ContextMenuTrigger render={<TableRow />}>
+      <ContextMenuTrigger render={<TableRow className={LINK_ROW} />}>
         <TableCell className={cn(CELL, "max-w-80 pl-0")}>
           <Link
             to="/projects/$projectId"
             params={{ projectId: project.id }}
-            className="block truncate font-medium outline-none hover:underline focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50"
+            className={cn(
+              "block truncate font-medium outline-none hover:underline focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50",
+              ROW_LINK,
+            )}
           >
             {project.name}
           </Link>
@@ -146,7 +150,7 @@ export function ProjectRow({
           )}
         </TableCell>
         <TableCell className={cn(CELL, "w-10 pr-0")}>
-          <ProjectMenu project={project} actions={actions} />
+          <ProjectMenu project={project} actions={actions} className={ABOVE_ROW_LINK} />
         </TableCell>
       </ContextMenuTrigger>
       <ContextMenuContent width="sm">
@@ -192,10 +196,12 @@ export function ProjectMenu({
   project,
   actions,
   touch = false,
+  className,
 }: {
   readonly project: ProjectDto;
   readonly actions: ProjectActions;
   readonly touch?: boolean;
+  readonly className?: string;
 }) {
   return (
     <DropdownMenu>
@@ -204,6 +210,7 @@ export function ProjectMenu({
         className={cn(
           buttonVariants({ variant: "ghost", size: touch ? "icon-touch" : "icon" }),
           "text-muted-foreground",
+          className,
         )}
       >
         <EllipsisIcon aria-hidden className={touch ? "size-5.5" : "size-4"} />

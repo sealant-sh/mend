@@ -136,6 +136,17 @@ describe("audience line and breadcrumb", () => {
     expect(crumbs("p-services")).toEqual(["checkout-api", "Services"]);
     expect(crumbs("s-server")).toEqual(["Server"]);
   });
+
+  it("links each part of the breadcrumb that names a page", () => {
+    const opens = (id: Parameters<typeof settingsPage>[0]) =>
+      crumbsOf(settingsPage(id), names).map((crumb) => crumb.opens);
+    expect(opens("a-profile")).toEqual([null, null]);
+    expect(opens("d-appearance")).toEqual([null, null]);
+    expect(opens("o-members")).toEqual(["o-general", null]);
+    expect(opens("o-general")).toEqual([null, null]);
+    expect(opens("p-services")).toEqual(["project", null]);
+    expect(opens("s-server")).toEqual([null]);
+  });
 });
 
 describe("old settings addresses", () => {

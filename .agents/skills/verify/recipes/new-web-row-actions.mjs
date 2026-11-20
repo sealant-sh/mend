@@ -14,7 +14,7 @@ const PHONE = { width: 390, height: 844 };
 const RUNNING = "row-running";
 const REVIEW = "row-review";
 const RENAMED = "Row actions renamed";
-const MENU_ITEMS = ["Open session", "Snooze", "Mark done", "Rename", "Copy link"];
+const MENU_ITEMS = ["Open session", "Open project", "Snooze", "Mark done", "Rename", "Copy link"];
 /** The workspace's actions and the phone app's Approve, which a session row's menu never holds. */
 const NOT_IN_MENU = ["Copy branch name", "Land…", "Approve…", "Approve"];
 const REFUSAL = "The verify recipe refused this on purpose.";

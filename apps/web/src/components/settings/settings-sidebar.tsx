@@ -38,6 +38,7 @@ import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { useViewer } from "#/lib/use-viewer";
 
+import { RING_ROOM } from "../app-sidebar.tsx";
 import { SETTINGS_ICONS, settingsLink } from "./settings-links.tsx";
 
 /** The settings sidebar's width on the desk, as the canvas draws it. */
@@ -127,7 +128,8 @@ export function SettingsSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
-      <SidebarContent className="gap-0">
+      {/* The list scrolls: room for the rings of the rows at its edges (`RING_ROOM`). */}
+      <SidebarContent className={cn("gap-0 pb-1", RING_ROOM)}>
         {groups.map((group) => (
           <PageGroup
             key={group}

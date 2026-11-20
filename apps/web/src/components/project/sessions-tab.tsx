@@ -52,6 +52,7 @@ import {
   parseProjectSessionsSearch,
   type ProjectSessionsSearch,
 } from "#/lib/project-sessions-search";
+import { ABOVE_ROW_LINK, LINK_ROW, ROW_LINK } from "#/lib/row-link";
 import { useSeenAfterIdle } from "#/lib/seen";
 import { sessionLink } from "#/lib/session-sheet";
 import { worktreeJoinLine } from "#/lib/shared-workspace";
@@ -360,7 +361,7 @@ function SessionsTable({
       </TableHeader>
       <TableBody className="[&_tr:last-child]:border-b">
         {entries.map(({ row, owner, joinLine }) => (
-          <TableRow key={row.id}>
+          <TableRow key={row.id} className={LINK_ROW}>
             <TableCell className={cn(CELL, "pl-0")}>
               <Status tone={row.status.tone} className="text-row">
                 {row.status.word}
@@ -369,7 +370,10 @@ function SessionsTable({
             <TableCell className={cn(CELL, "max-w-110")}>
               <Link
                 {...sessionLink(row.id)}
-                className="block truncate font-medium outline-none hover:underline focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50"
+                className={cn(
+                  "block truncate font-medium outline-none hover:underline focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50",
+                  ROW_LINK,
+                )}
               >
                 <Highlighted value={row.title} query={search.q} />
               </Link>
@@ -396,7 +400,7 @@ function SessionsTable({
             <TableCell className={cn(CELL, "text-right")}>
               <ChangeSize row={row} />
             </TableCell>
-            <TableCell className={cn(CELL, "w-10 pr-0")}>
+            <TableCell className={cn(CELL, "w-10 pr-0", ABOVE_ROW_LINK)}>
               <SessionRowMenu projectId={projectId} row={row} joinLine={joinLine} />
             </TableCell>
           </TableRow>
