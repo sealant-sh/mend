@@ -41,7 +41,9 @@ export default async ({ page, web, capture, note }) => {
       .getByRole("button", { name: new RegExp(`^${label}`), expanded: open })
       .waitFor({ timeout: 5_000 });
   };
-  const rows = (label, title) => group(label).getByRole("link", { name: new RegExp(`^${title}`) });
+  // A whole title: "states-live" must not match "states-live-files".
+  const rows = (label, title) =>
+    group(label).getByRole("link", { name: new RegExp(`^${title}(?!-)`) });
   const row = (label, title) => rows(label, title).first();
   const showAll = async (label) => {
     const more = group(label).getByRole("button", { name: /^Show \d+ more$/ });
@@ -78,7 +80,7 @@ export default async ({ page, web, capture, note }) => {
     const target = row(label, title);
     await target.hover();
     await group(label)
-      .getByRole("button", { name: `Actions for ${title}` })
+      .getByRole("button", { name: `Actions for ${title}`, exact: true })
       .click();
     const menu = page.getByRole("menu").filter({ visible: true });
     await menu.waitFor();
@@ -187,7 +189,9 @@ export default async ({ page, web, capture, note }) => {
   await dialog.getByRole("button", { name: "Stop session", exact: true }).click();
   await waitFor(
     "states-live-files in To review",
-    async () => (await rows("To review", "states-live-files").count()) > 0,
+    async () =>
+      (await rows("Running", "states-live-files").count()) === 0 &&
+      (await rows("To review", "states-live-files").count()) > 0,
     120,
   );
   note(
