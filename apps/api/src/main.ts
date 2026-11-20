@@ -132,7 +132,6 @@ import {
   UpgradeTicketsRepoLive,
 } from "@mend/db";
 import { builtInSettingsFor, type ChangeId, type SessionId } from "@mend/domain";
-import { resolveAutomation } from "@mend/domain/workbench";
 import {
   BriefCompiler,
   ChangeReader,
@@ -155,7 +154,6 @@ import {
   SummarizeFailureJob,
   ThreadProjectReaderLive,
   TourComposer,
-  withoutFirstPrompt,
 } from "@mend/inference";
 import {
   CaptureRetentionLive,
@@ -352,6 +350,7 @@ import { DopplerApiLive } from "./services/doppler.ts";
 import { GithubApiLive } from "./services/github-api.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { serverImageArchitecture } from "./services/workspace-environment.ts";
+import { nameSession } from "./session-naming.ts";
 import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
 import { SlackReportEventsLive } from "./slack-report-events.ts";
@@ -725,9 +724,6 @@ const decodeComposeTourJob = Schema.decodeUnknownEffect(ComposeTourJob);
 const decodeSuggestChangeJob = Schema.decodeUnknownEffect(SuggestChangeJob);
 const decodeNameSessionJob = Schema.decodeUnknownEffect(NameSessionJob);
 
-/** Harnesses whose native transcript the engine can parse for the first prompt. */
-const NAMEABLE_HARNESSES = new Set(["claude", "codex"]);
-
 /** The inference job workers: a failed handler dies into the engine's retry. */
 const InferenceWorkersLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -829,88 +825,21 @@ const InferenceWorkersLive = Layer.effectDiscard(
         Effect.orDie,
       ),
     );
-    // Session auto-naming, two payload shapes: launch-time (no prompt — poll
-    // the harness's native transcript, retried with backoff until the first
-    // prompt exists) and send-time (prompt inline from a Mend-owned composer —
-    // name immediately, any harness). Every no-name outcome besides "no
-    // prompt yet" is a quiet success — a renamed or deleted session, a
-    // switched-off cascade, an unparseable harness on the transcript path.
-    const namer = yield* SessionNamer;
-    const sessions = yield* SessionsRepo;
-    const projects = yield* ProjectsRepo;
-    const settingsRepo = yield* SettingsRepo;
-    const engine = yield* SessionEngine;
-    const firstPromptFromTranscript = Effect.fn("firstPromptFromTranscript")(function* (
-      job: NameSessionJob,
-      session: { readonly settledAt: Date | null },
-    ) {
-      const transcript = yield* engine
-        .transcript(job.sessionId)
-        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-      const events = transcript?.events ?? [];
-      const firstUserAt = events.findIndex((event) => event.kind === "user");
-      const firstUser = firstUserAt === -1 ? undefined : events[firstUserAt];
-      if (firstUser === undefined || firstUser.kind !== "user") {
-        // A settled session gets no first prompt any more: it stays unnamed, and the job ends
-        // here instead of retrying for an hour into the dead letter.
-        if (withoutFirstPrompt(session) === "leave-unnamed") return null;
-        // Retryable by design: the user has not typed the first prompt yet.
-        return yield* Effect.die(new Error("no first prompt in the transcript yet — retrying"));
-      }
-      const reply = events
-        .slice(firstUserAt + 1)
-        .find((event): event is typeof event & { kind: "assistant" } => event.kind === "assistant");
-      return {
-        firstUserTurn: firstUser.text,
-        ...(reply === undefined ? {} : { assistantReply: reply.text }),
-      };
-    });
-    const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
-      const session = yield* sessions
-        .byId(job.sessionId)
-        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-      if (session === null || session.label !== null) return;
-      const inlinePrompt = job.firstUserTurn?.trim();
-      const hasInlinePrompt = inlinePrompt !== undefined && inlinePrompt.length > 0;
-      // The harness gate guards only transcript parsing — an inline prompt
-      // names any harness, opencode and shell included.
-      if (!hasInlinePrompt && !NAMEABLE_HARNESSES.has(session.harness)) return;
-      const project = yield* projects
-        .byId(session.projectId)
-        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
-      if (project === null) return;
-      // The project's choice, else the session owner's own, else their organization's.
-      const settings = yield* settingsRepo.forPerson(project.organizationId, session.ownerUserId);
-      if (!resolveAutomation(project.autoName, settings.autoName)) return;
-
-      const turns = hasInlinePrompt
-        ? { firstUserTurn: inlinePrompt }
-        : yield* firstPromptFromTranscript(job, session);
-      if (turns === null) {
-        yield* Effect.logInfo("session left unnamed · it settled without a first prompt").pipe(
-          Effect.annotateLogs({
-            sessionId: job.sessionId,
-            status: session.status,
-          }),
-        );
-        return;
-      }
-
-      const label = yield* namer.name({
-        harness: session.harness,
-        projectName: project.name,
-        ...turns,
-      });
-      const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
-      yield* Effect.annotateLogs(Effect.logInfo("session named"), {
-        sessionId: job.sessionId,
-        label,
-        wrote,
-      });
-    });
+    // Session auto-naming (`session-naming.ts`): a job with the prompt inline (a composed start)
+    // names at once; one without reads the first message from Mend's record, else polls the
+    // harness's transcript, retried until the first prompt exists.
+    const naming = yield* Effect.context<
+      | SessionsRepo
+      | ProjectsRepo
+      | SettingsRepo
+      | SessionEngine
+      | SessionNamer
+      | AgentConversationRepo
+    >();
     yield* jobs.work("name-session", (payload) =>
       decodeNameSessionJob(payload).pipe(
         Effect.flatMap((job) => asSessionOwner(job.sessionId)(nameSession(job))),
+        Effect.provideContext(naming),
         Effect.orDie,
       ),
     );

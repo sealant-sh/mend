@@ -1461,6 +1461,8 @@ const ADMITTED: Readonly<
       "conversation.newestItems",
       "sharedControl.asksOnOwnSessions",
       "conversation.inboxTurnFacts",
+      // An unnamed session's title: its first message.
+      "conversation.firstMessages",
       "importedConversations.undeliveredAmong",
       "engine.launchUnderWay",
     ],

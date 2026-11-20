@@ -2,7 +2,8 @@
 // workspace as tabs, split by dragging a tab onto a tile's edge and by the keyboard, added to a
 // tile by dropping it in the middle, resized, maximised and restored, a tile's last tab closed,
 // the arrangement kept over a reload, `?full=1`, a New session tab, a session that starts in the
-// workspace opening as a tab, a tab's body kept while it moves, and the one strip under 1024px.
+// workspace opening as a tab, a tab's body kept while it moves, the one strip under 1024px, and
+// the address following the focused tab (SLNT-1211).
 // Run the CLI batch first, once per stack: it gives the account a fake Codex login and starts two
 // sessions in the worktree `tiles-ws`.
 //
@@ -137,6 +138,21 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       await trpc.sessions.stop.mutate({ id }).catch(() => undefined);
     }, extra.session.id);
   if (running.length > 2) note(`stopped ${running.length - 2} session(s) an earlier run left`);
+  // Ended sessions an earlier run left in tiles-ws keep these titles; "+" lists them beside the
+  // running ones. Rename them so the menu has one item of each name.
+  const earlier = rows.filter(
+    (row) =>
+      row.worktreeName === "tiles-ws" &&
+      ["completed", "stopped", "failed"].includes(row.session.status) &&
+      [TITLE_A, TITLE_B].includes(row.session.label),
+  );
+  for (const row of earlier)
+    await client(
+      async (trpc, id) =>
+        trpc.sessions.setLabel.mutate({ id, label: `earlier tiles run ${id.slice(0, 8)}` }),
+      row.session.id,
+    );
+  if (earlier.length > 0) note(`renamed ${earlier.length} ended session(s) an earlier run left`);
   const worktreeId = running[0].session.worktreeId;
   const tabA = `session:${A}`;
   const tabB = `session:${B}`;
@@ -348,7 +364,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
   const draftAt = beforeStart.findIndex((tab) => tab.startsWith("new:"));
   const draftAgain = beforeStart[draftAt] ?? "";
-  const pageBefore = page.url();
+  const historyBefore = await page.evaluate(() => history.length);
   await page
     .getByRole("button", { name: /^Agent and model: / })
     .filter({ visible: true })
@@ -367,9 +383,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const startedHere = afterStart[draftAt] ?? "";
   if (!startedHere.startsWith("session:") || [tabA, tabB].includes(startedHere))
     throw new Error(`after Start session the tabs read ${afterStart.join(", ")}`);
-  if (page.url() !== pageBefore) throw new Error(`Start session left the page for ${page.url()}`);
+  // The started session's tab is the focused one, so the address is its page, replaced in place
+  // (SLNT-1211): the same sheet, no new history entry.
+  const startedPath = `/sessions/${startedHere.slice("session:".length)}`;
+  await page.waitForFunction((path) => location.pathname === path, startedPath);
+  if ((await page.evaluate(() => history.length)) !== historyBefore)
+    throw new Error("Start session added a history entry");
   note(
-    `Start session in the New session tab: its tab became ${startedHere}'s, in the same place (tab ${draftAt + 1}), and the page stayed at ${new URL(pageBefore).pathname}`,
+    `Start session in the New session tab: its tab became ${startedHere}'s, in the same place (tab ${draftAt + 1}), and the address moved to ${startedPath} in place`,
   );
   await both("new-session-started");
   await client(
@@ -450,8 +471,68 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.getByRole("button", { name: "Close", exact: true }).click();
   note("phone: the strip shows B's conversation when picked; + opens the Open a view sheet");
 
-  // Leave the stack as the batch left it: the extra session goes, the arrangement too.
+  // The address follows the focused tab (SLNT-1211). From home, A's page; pick B's tab: the
+  // address is B's, replaced in place, the sidebar marks B's row, the browser tab reads B's title,
+  // and the sheet stays as it was (A's conversation is the same element).
   await page.setViewportSize(DESKTOP);
+  await page.goto(`${web}/`);
+  await open(`/sessions/${A}`);
+  await tabOf(tabB).waitFor();
+  const entries = await page.evaluate(() => history.length);
+  await page.locator(`[data-tab-body="${tabA}"]`).waitFor({ state: "attached" });
+  await page.evaluate((key) => {
+    document.querySelector(`[data-tab-body="${key}"]`).firstElementChild.dataset.keptMark = "a";
+  }, tabA);
+  await tabOf(tabB).click();
+  await page.waitForFunction((path) => location.pathname === path, `/sessions/${B}`);
+  if ((await page.evaluate(() => history.length)) !== entries)
+    throw new Error("picking a tab added a history entry");
+  await page.locator(`[data-session-id="${B}"][aria-current="page"]`).waitFor();
+  if ((await page.locator('[aria-current="page"][data-session-id]').count()) !== 1)
+    throw new Error("the sidebar marks more than one session");
+  await page.waitForFunction((title) => document.title === title, `${TITLE_B} · Mend`);
+  const keptA = await page.evaluate(
+    (key) =>
+      document.querySelector(`[data-tab-body="${key}"]`)?.firstElementChild?.dataset.keptMark,
+    tabA,
+  );
+  if (keptA !== "a") throw new Error("A's conversation was drawn again when the address moved");
+  note(
+    `B's tab: the address is /sessions/${B}, replaced; the sidebar marks B's row; the browser tab reads "${TITLE_B} · Mend"; A's conversation is the same element`,
+  );
+  await both("address-follows-tab");
+  await page.goBack();
+  await page.waitForFunction(() => !location.pathname.startsWith("/sessions/"));
+  note(`Back: left the workspace for ${new URL(page.url()).pathname}`);
+
+  // A view's tab is its own address; a reload opens it focused, in the same arrangement.
+  await open(`/sessions/${A}`);
+  await tabOf(tabB).waitFor();
+  await tileOf(tabA).getByRole("button", { name: "Open a view" }).click();
+  await page.getByRole("menuitem", { name: "Change" }).click();
+  await page.waitForFunction((path) => location.pathname === path, `/sessions/${A}/change`);
+  const arrangedBefore = await page
+    .locator("[data-tile] [data-tab]")
+    .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
+  await page.reload();
+  await hydrated();
+  await tabOf("view:change").waitFor();
+  if ((await tabOf("view:change").getAttribute("aria-selected")) !== "true")
+    throw new Error("after a reload the Change tab is not the active one");
+  const arrangedAfter = await page
+    .locator("[data-tile] [data-tab]")
+    .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
+  if (arrangedAfter.join() !== arrangedBefore.join())
+    throw new Error(`after a reload the tabs read ${arrangedAfter.join(", ")}`);
+  note(
+    `Change's tab: the address is /sessions/${A}/change; a reload opens it focused, tabs as they were`,
+  );
+  await tileOf(tabA)
+    .getByRole("button", { name: "Close Change" })
+    .click()
+    .catch(() => undefined);
+
+  // Leave the stack as the batch left it: the extra session goes, the arrangement too.
   await client(async (trpc, id) => {
     await trpc.sessions.stop.mutate({ id }).catch(() => undefined);
   }, started);

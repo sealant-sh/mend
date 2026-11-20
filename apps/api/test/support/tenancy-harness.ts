@@ -1143,6 +1143,20 @@ export const createTenancyWorld = async (
           ),
         newestItems: () => Effect.succeed([]),
         inboxTurnFacts: () => Effect.succeed([]),
+        firstMessages: (sessionIds) =>
+          Effect.sync(() =>
+            sessionIds.flatMap((sessionId) => {
+              const [first] = [...turns.values()]
+                .filter(
+                  (turn) =>
+                    turn.sessionId === sessionId &&
+                    turn.origin === "request" &&
+                    turn.withdrawnHistoryRevision === null,
+                )
+                .toSorted((a, b) => a.ordinal - b.ordinal);
+              return first === undefined ? [] : [{ sessionId, input: first.input }];
+            }),
+          ),
         listConversationTurns: (sessionId) =>
           Effect.sync(() =>
             [...turns.values()]

@@ -12,7 +12,11 @@
 # reads (whether a session has a turn queued or running, and its newest turn or request time) for
 # the inbox, and nothing else. It claims, binds, completes or cancels no turn, so no action models
 # it. Full run at 764de6838d: every row as expected.
-sync 764de6838dd3a52f4c95b7bdb064cf9ef7134a08
+# 38a41001d0 is the SLNT-1211 branch rebased on main (#1910): agent-conversation.ts gained firstMessages, one read of each
+# session's lowest-ordinal turn Mend sent and still in its history (an unnamed session's title, and
+# the namer's first prompt), and nothing else. It claims, binds, completes or cancels no turn, so no
+# action models it. Full run at 752341b3fe, its commit before the rebase: every row as expected.
+sync 38a41001ddd9d4f663c41dfe9849c59463422b7a
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

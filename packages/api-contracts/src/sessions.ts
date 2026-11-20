@@ -544,7 +544,10 @@ export type SessionInboxAnnotation = typeof SessionInboxAnnotation.Type;
 export class SessionInboxRow extends Schema.Class<SessionInboxRow>("SessionInboxRow")({
   session: SessionInboxSession,
   projectName: Schema.String,
-  /** The session's label, else its worktree's name, as the session's own header says it. */
+  /**
+   * What every list and tab calls the session (`sessionTitleFrom`): its label; until it has one, the
+   * first line of the first message it was sent; else "New session". Never its worktree's name.
+   */
   title: Schema.String,
   /** The worktree's change facts; null for a session whose worktree has no change yet. */
   annotation: Schema.NullOr(SessionInboxAnnotation),

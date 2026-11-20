@@ -126,11 +126,33 @@ export const agentActivity = (item: {
   }
 };
 
+/** What a session nobody has named reads, before it has been sent a message. */
+export const UNNAMED_SESSION_TITLE = "New session";
+
+/** How long a title taken from a message runs. */
+export const MESSAGE_TITLE_LENGTH = 80;
+
+/** A message's first line, as a title; null when it says nothing. */
+export const messageTitle = (text: string | null | undefined): string | null => {
+  const firstLine = text?.trim().split("\n")[0]?.trim() ?? "";
+  return firstLine === "" ? null : firstLine.slice(0, MESSAGE_TITLE_LENGTH);
+};
+
 /**
- * What a session is called wherever it is listed or opened: its label; else its worktree's name;
- * a worktree Mend named itself (`wt-…`) by its first labelled session's label, else by its first
- * session's id. A session whose worktree is unknown reads `session <id>`. `members` are the
- * worktree's sessions, newest first.
+ * What a session is called wherever it is listed or opened: its label; until it has one, the first
+ * line of the first message it was sent (`firstMessage`, as the person wrote it); else "New
+ * session". Never its worktree's name: a worktree Mend named itself reads as a named session in
+ * it (`worktreeTitle`), so another session there would read as that one.
+ */
+export const sessionTitleFrom = (
+  session: { readonly label: string | null },
+  firstMessage: string | null,
+): string => session.label ?? messageTitle(firstMessage) ?? UNNAMED_SESSION_TITLE;
+
+/**
+ * The old web app's fallback title (`apps/web-old`, frozen until cut-over): its label, else its
+ * worktree's name (`worktreeTitle`); `session <id>` when its worktree is unknown. The server and
+ * the new web app call a session by `sessionTitleFrom`, which never borrows the worktree's name.
  */
 export const sessionTitle = (
   session: { readonly id: string; readonly label: string | null },
@@ -142,7 +164,11 @@ export const sessionTitle = (
   return worktreeTitle(worktree, members);
 };
 
-/** A worktree's name as lists show it: see `sessionTitle`. */
+/**
+ * A worktree's name as lists show it: its own; a worktree Mend named itself (`wt-…`) by its first
+ * labelled session's label, else by its first session's id. `members` are the worktree's
+ * sessions, newest first.
+ */
 export const worktreeTitle = (
   worktree: { readonly name: string },
   members: ReadonlyArray<{ readonly id: string; readonly label: string | null }>,

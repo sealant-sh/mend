@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { agentActivity, sessionAsk } from "./inbox.ts";
+import {
+  agentActivity,
+  messageTitle,
+  sessionAsk,
+  sessionTitleFrom,
+  worktreeTitle,
+} from "./inbox.ts";
 
 const request = (
   kind: Parameters<typeof sessionAsk>[0]["kind"],
@@ -96,5 +102,40 @@ describe("what a running agent is doing", () => {
   it("says nothing for an item that isn't work under way", () => {
     expect(item("user-message", null, null)).toBeNull();
     expect(item("error", "boom", null)).toBeNull();
+  });
+});
+
+describe("what a session is called", () => {
+  it("is its label once it has one", () => {
+    expect(sessionTitleFrom({ label: "repository overview" }, "Tell me about this repo")).toBe(
+      "repository overview",
+    );
+  });
+
+  it("is its first message's first line until it is named", () => {
+    expect(sessionTitleFrom({ label: null }, "  tell me a joke\nabout monitors")).toBe(
+      "tell me a joke",
+    );
+    expect(sessionTitleFrom({ label: null }, "x".repeat(200))).toBe("x".repeat(80));
+  });
+
+  it("is New session before it has been sent anything", () => {
+    expect(sessionTitleFrom({ label: null }, null)).toBe("New session");
+    expect(sessionTitleFrom({ label: null }, " \n ")).toBe("New session");
+  });
+
+  it("never borrows the name its worktree took from another session in it", () => {
+    // A worktree Mend named reads as a named session in it; a second session in it doesn't.
+    const members = [
+      { id: "session-second", label: null },
+      { id: "session-first", label: "repository overview" },
+    ];
+    expect(worktreeTitle({ name: "wt-9c1ccb02" }, members)).toBe("repository overview");
+    expect(sessionTitleFrom(members[0] ?? { label: null }, null)).toBe("New session");
+  });
+
+  it("takes a message's first line with words, trimmed", () => {
+    expect(messageTitle("\n\n  fix the login loop  \nmore")).toBe("fix the login loop");
+    expect(messageTitle(undefined)).toBeNull();
   });
 });

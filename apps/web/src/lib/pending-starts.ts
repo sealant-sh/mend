@@ -1,5 +1,5 @@
 import { ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import type { TurnSelection } from "@mend/domain/workbench";
+import { messageTitle, type TurnSelection, UNNAMED_SESSION_TITLE } from "@mend/domain/workbench";
 import { useSyncExternalStore } from "react";
 
 import type { SessionInboxRowDto } from "./api.ts";
@@ -115,13 +115,8 @@ export const useRefusedStart = (): RefusedStart | null =>
     () => null,
   );
 
-const TITLE_LENGTH = 80;
-
-/** What a start is called until Mend names it: its first line, as a queued session is. */
-export const startTitle = (prompt: string): string => {
-  const firstLine = prompt.trim().split("\n")[0] ?? "";
-  return firstLine === "" ? "New session" : firstLine.slice(0, TITLE_LENGTH);
-};
+/** What a start is called until Mend names it: its first line, as an unnamed session is. */
+export const startTitle = (prompt: string): string => messageTitle(prompt) ?? UNNAMED_SESSION_TITLE;
 
 /**
  * The inbox's rows with this tab's starts laid in: each as a starting session of its own, so the

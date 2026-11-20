@@ -99,7 +99,8 @@ describe("a project's Sessions tab", () => {
     );
     expect(rows.map((row) => [row.title, row.status.word, row.status.tone, row.open])).toEqual([
       ["Fix flaky checkout retry", "Waiting on you", "wait", true],
-      ["claude session old", "Completed", "ok", false],
+      // Not in the inbox and not named: what an unnamed session reads, never its worktree.
+      ["New session", "Completed", "ok", false],
     ]);
     expect(rows[0]?.worktree).toBe("fix-tree");
     expect(rows[1]).toMatchObject({
@@ -159,7 +160,7 @@ describe("a project's Sessions tab", () => {
     expect(matchesSessionFilters(row, { who: "mine" }, "grace")).toBe(true);
     expect(matchesSessionFilters(row, { agent: "codex" }, "ada")).toBe(false);
     expect(matchesSessionFilters(row, { branch: "mend/retry" }, "ada")).toBe(true);
-    expect(matchesSessionFilters(row, { q: "RETRY claude" }, "ada")).toBe(true);
+    expect(matchesSessionFilters(row, { q: "RETRY mend" }, "ada")).toBe(true);
     expect(matchesSessionFilters(row, { q: "retry webhook" }, "ada")).toBe(false);
   });
 

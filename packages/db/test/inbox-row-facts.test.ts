@@ -154,4 +154,27 @@ describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktr
     });
     expect(byId.has(SessionId.make("quiet"))).toBe(false);
   });
+
+  it("reads each session's first message Mend sent, not a turn the harness opened, and nothing for a session sent none", async () => {
+    const first = await withRepos(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // Each was sent "go", and before it, a turn the harness opened by itself. Last in this
+        // file: these turns are newer than what the facts above read.
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, author, input, status, origin)
+          VALUES ('t-2-harness', 'between', 'p-2', 0, null, 'background task ended', 'completed', 'harness')`;
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, author, input, status, origin)
+          VALUES ('t-1-harness', 'talks', 'p-1', 0, null, 'woke up', 'completed', 'harness')`;
+        return yield* (yield* AgentConversationRepo).firstMessages([
+          SessionId.make("talks"),
+          SessionId.make("quiet"),
+          SessionId.make("between"),
+        ]);
+      }),
+    );
+    expect(first.toSorted((a, b) => a.sessionId.localeCompare(b.sessionId))).toEqual([
+      { sessionId: "between", input: "go" },
+      { sessionId: "talks", input: "go" },
+    ]);
+  });
 });

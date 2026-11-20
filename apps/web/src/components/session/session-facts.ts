@@ -3,6 +3,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { agentIsLive } from "#/lib/api";
 import { inboxQuery } from "#/lib/inbox-live";
 import { sessionDetailQuery } from "#/lib/session-queries";
+import { sessionTitleOf } from "#/lib/session-title";
 import { harnessName } from "#/lib/session-view";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
@@ -40,7 +41,7 @@ export const useSessionFacts = (sessionId: string) => {
     detail,
     session,
     viewerId: viewer.userId,
-    title: listed?.title ?? session.label ?? directoryName,
+    title: sessionTitleOf(listed, session.label),
     worktreeName: listed?.worktreeName ?? directoryName,
     projectName: project.isPending || project.isError ? "" : (project.data ?? ""),
     agent: harnessName(session.harness),

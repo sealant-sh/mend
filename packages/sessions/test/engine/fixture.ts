@@ -1064,6 +1064,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   oldestPendingRequests: () => Effect.succeed([]),
   newestItems: () => Effect.succeed([]),
   inboxTurnFacts: () => Effect.succeed([]),
+  firstMessages: () => Effect.succeed([]),
   historyWindow: () =>
     Effect.succeed({
       items: [],
