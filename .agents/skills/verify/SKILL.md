@@ -204,8 +204,9 @@ The box is a Mend server with the daily run's data and real agent logins. A chan
 its judge answered `box`, or when the owner asks (AGENTS.md, The Box). You run it there yourself,
 and see what the judge listed.
 
-**Start your own box on this machine** unless the check needs Boat: a check VM is a fresh copy of
-the box, nobody else's, deleted when you are done (docs/operations/preview-builds.md, "Check VMs").
+**Start your own box on this machine**: a check VM is a fresh copy of the box, nobody else's,
+deleted when you are done (docs/operations/preview-builds.md, "Check VMs"). A check that needs Boat
+starts it with `pnpm verify vm up --boat`; this machine serves one Boat copy at a time.
 
 ```sh
 pnpm verify vm up      # ~20 s; prints the two exports for this copy, as below
@@ -217,11 +218,12 @@ pnpm verify vm down <n>   # after `box release`: stops the VM and deletes its di
 
 On a copy, `preview-deploy.sh` runs over ssh as on the box:
 `ssh $MEND_VERIFY_BOX_SSH 'curl -fsSL https://raw.githubusercontent.com/sealant-sh/mend/<sha>/scripts/preview-deploy.sh | bash -s -- <version> <sha>'`.
-Its sessions run in Docker: a worktree the loaded data made on Boat cannot start a session there, so
-make a new one. A copy holds the same Codex login as the box run's data; keep a copy for one check,
-not for days. `pnpm verify vm list` shows what runs; with no master yet, `vm build`
-(preview-builds.md says its arguments) makes one in about ten minutes. A check that needs Boat goes
-to VM 131, with the commands below and its own ssh arguments:
+Without `--boat` its sessions run in Docker, and a worktree the loaded data made on Boat cannot
+start a session there: make a new one, or start the copy with `--boat`. A Boat copy refuses a
+session in a project with resources (`@db`). A copy holds the same Codex login as the box run's
+data; keep a copy for one check, not for days. `pnpm verify vm list` shows what runs; with no master
+yet, `vm build` (preview-builds.md says its arguments) makes one in about ten minutes. VM 131 takes
+the same commands with its own ssh arguments:
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'

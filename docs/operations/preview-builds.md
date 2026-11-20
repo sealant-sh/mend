@@ -178,8 +178,8 @@ A preview of a branch is built by the workflow and deployed by hand, with the co
 ## Check VMs
 
 A check whose judge answers `box` runs on a check VM on the dev machine (SLNT-1214): a throwaway
-copy of a box, one per check, so no check waits for another. VM 131 is used only for what a check VM
-cannot do yet (Boat, below).
+copy of a box, one per check, so no check waits for another. A check that needs Boat takes the one
+Boat copy this machine serves at a time (below); VM 131 is used only for what a check VM cannot do.
 
 ```sh
 pnpm verify vm build --version <preview> --sha <commit> --cli <mend version> [--from-box '<ssh args>']
@@ -238,9 +238,27 @@ Measured on 20 Nov 2026, on the Ryzen 9 9950X3D (32 threads, 62 GB):
 
 Limits of a check VM:
 
-- **No Boat.** No Boat key or deployment id is copied, and sessions run in Docker. A worktree the
-  data made on Boat stays on Boat and cannot start a session on a copy. Boat flows still go to VM
-  131 until SLNT-1215.
+- **Boat on one copy at a time** (SLNT-1215). `pnpm verify vm up --boat` gives the copy Boat: this
+  machine's Tailscale Funnel forwards `https://<this machine's tailnet name>:8443` (session traffic)
+  and `:10000` (saved work) to the copy, then `mend server setup` turns Boat on with VM 131's own
+  Boat key (`--boat-api-key-stdin`), new sessions on Boat, and no resource gateway. Funnel serves
+  ports 443, 8443 and 10000 of one machine name and a copy needs two, so this machine serves one
+  Boat copy at once; `vm up --boat` refuses a second while the ports forward elsewhere. More at once
+  would need a tailnet name per copy (Tailscale in the copy, with an auth key). The Funnel is up
+  only while that copy runs: `vm down` takes both ports off, and resets the Serve config when
+  nothing else is in it. Measured on 20 Nov: `vm up --boat` 49 s to a healthy Mend; a Codex turn on
+  Boat finished 54 s after its launch; the stop took 13 s and the resume, on a new Boat VM, 2 s to
+  running; `vm down`, which stops the copy's Boat sessions and waits for their VMs to go, took 85 s.
+- **The copy shares VM 131's Boat deployment.** It runs under the deployment name the loaded data's
+  sealant keeps, with the build journals of the box's Boat images (`mend_mend-boat-state`), so it
+  reuses those images and builds none. With a name of its own, the copy's first image build failed
+  at once (`native-local-io-failed`) and sealant quarantined the image, so sessions never started.
+  Sharing is safe because sealant acts only on runs in its own database: every Boat run the loaded
+  data holds under that name is settled, VM 131 never sees a copy's runs, and `vm down` stops the
+  copy's Boat sessions so no VM it launched is left. The resource gateway stays off on a copy (a
+  Boat session in a project with `@db` is refused there): its host id derives from the identity the
+  copy shares with VM 131, so a copy's gateway would take the box's place. A worktree the loaded
+  data made on Boat under that name starts on a Boat copy; on a Docker-only copy it cannot.
 - **One Codex login, shared.** Every copy holds the Codex login of the box run's data, and so does
   the box while the daily run has that data loaded. On 20 Nov five copies ran Codex turns on it at
   once: no copy refreshed it, and its revision and digest stayed the same on each. The bundled

@@ -98,3 +98,9 @@ test("verify vm takes its build options", () => {
   assert.equal(options.cpus, 4);
   assert.equal(options.memory, "8G");
 });
+
+test("verify vm up takes --boat", () => {
+  const { words, options } = parseArgs(["vm", "up", "--boat"]);
+  assert.deepEqual(words, ["vm", "up"]);
+  assert.equal(options.boat, true);
+});

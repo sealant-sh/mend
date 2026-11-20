@@ -52,7 +52,7 @@ const VERBS = {
   drive:
     "Run a recipe against web, the new web app (new-web, or --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
-  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy, list, down <n>|--all",
+  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy (--boat: Boat through this machine's Funnel), list, down <n>|--all",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
 
@@ -89,6 +89,7 @@ export const parseArgs = (argv) => {
     else if (arg === "--yes") options.yes = true;
     else if (arg === "--no-restore") options.noRestore = true;
     else if (arg === "--box") options.box = true;
+    else if (arg === "--boat") options.boat = true;
     else if (arg === "--self") options.self = true;
     else if (arg === "--body") {
       const value = argv[++index];
@@ -370,7 +371,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
           fromBox: options.fromBox,
           ...sizing,
         }),
-      up: () => vmUp(sizing),
+      up: () => vmUp({ ...sizing, boat: options.boat === true }),
       down: () => vmDown({ slot: options.slot, all: options.all }),
       list: () => vmList({}),
     }[options.subverb]();
