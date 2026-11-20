@@ -59,7 +59,7 @@ const upgraded = async (
       for (const [name, migration] of ordered) if (name < MIGRATION) yield* migration;
       yield* seed;
       yield* migrations[MIGRATION].pipe(
-        Effect.provideService(BuiltInSettings, builtInSettingsFor(runtime)),
+        Effect.provideService(BuiltInSettings, builtInSettingsFor(runtime, "x86_64")),
       );
     }),
   );

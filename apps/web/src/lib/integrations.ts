@@ -5,6 +5,8 @@ import { AGENTS } from "./new-session.ts";
 
 /** The organization's Executor settings, as an owner reads them. */
 export type ExecutorConfigurationDto = inferRouterOutputs<AppRouter>["executor"]["configuration"];
+/** Who runs an organization's Executor, once someone has set it up. */
+export type ExecutorMode = NonNullable<ExecutorConfigurationDto["mode"]>;
 
 /**
  * Settings → the organization → Integrations (docs/adr/0006 Slack, docs/adr/0022 Executor,

@@ -232,7 +232,7 @@ describe.skipIf(postgres.skip)("organization settings, in Postgres", () => {
   });
 
   it("on a Boat server, gives a new organization a copy of an environment Boat runs", async () => {
-    const boatBuiltIn = Layer.succeed(BuiltInSettings, builtInSettingsFor("boat"));
+    const boatBuiltIn = Layer.succeed(BuiltInSettings, builtInSettingsFor("boat", "x86_64"));
     const boatServer = Layer.mergeAll(
       OrganizationSettingsRepoLive.pipe(Layer.provide(boatBuiltIn)),
       SettingsRepoLive.pipe(Layer.provide(boatBuiltIn)),

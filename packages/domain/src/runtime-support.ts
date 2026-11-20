@@ -2,6 +2,7 @@ import { Schema } from "effect";
 
 import {
   defaultWorkspaceImage,
+  imageHasScreen,
   type SessionRuntime,
   type WorkspaceImage,
   type WorkspaceImageOs,
@@ -184,8 +185,10 @@ const OS_PREFERENCE: ReadonlyArray<WorkspaceImageOs> = [
 /**
  * The environment a new project starts with: null inherits its organization's, which it does
  * whenever the runtime its sessions will run on can run it. Otherwise Mend's default packages on
- * the first OS family the runtime runs, with Docker inside only where the runtime has it. Null too
- * when nothing is known about the runtime: an environment is never changed on a guess.
+ * the first OS family the runtime runs, with Docker inside only where the runtime has it, and the
+ * screen only where the inherited image had one and the runtime runs it: whoever set the
+ * organization's image chose that, for the machine it runs on. Null too when nothing is known
+ * about the runtime: an environment is never changed on a guess.
  */
 export const newProjectWorkspaceImage = (
   inherited: WorkspaceImage,
@@ -198,5 +201,6 @@ export const newProjectWorkspaceImage = (
     ...defaultWorkspaceImage,
     os,
     services: { docker: support.docker.supported },
+    screen: imageHasScreen(inherited) && support.screen.supported,
   };
 };

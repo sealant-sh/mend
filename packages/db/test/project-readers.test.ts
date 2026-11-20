@@ -12,6 +12,10 @@ const exceptions = new Map([
     "Migration 0230 gives every project, removed ones included, its own copy of the image it followed.",
   ],
   [
+    "packages/db/src/screen-on-migration.ts:unknown:c0d889a1",
+    "Migration 0234 turns the screen on in every untouched project image, removed ones included, so one restored later reads as it would have.",
+  ],
+  [
     "packages/db/src/mcp-apps-migration.ts:unknown:5b37a85f",
     "The retention trigger reads every project state to refuse content writes after removal.",
   ],

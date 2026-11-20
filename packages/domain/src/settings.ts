@@ -109,6 +109,10 @@ export const FamilyWorkspaceImage = Schema.Struct({
    */
   shell: shellWithDefault,
   services: workspaceImageServices,
+  /**
+   * A stored image with no `screen` key was saved before the switch existed, without one. New
+   * images start with it on (`defaultWorkspaceImage`); this only reads old rows as they were.
+   */
   screen: offByDefault,
 });
 export type FamilyWorkspaceImage = typeof FamilyWorkspaceImage.Type;
@@ -131,14 +135,21 @@ export type CustomWorkspaceImage = typeof CustomWorkspaceImage.Type;
 export const WorkspaceImage = Schema.Union([FamilyWorkspaceImage, CustomWorkspaceImage]);
 export type WorkspaceImage = typeof WorkspaceImage.Type;
 
+/**
+ * Mend's built-in image. The agent's screen is on (SLNT-1201): a new session gets one unless
+ * someone turned it off. A server that cannot run one leaves it off (`builtInSettingsFor`).
+ */
 export const defaultWorkspaceImage: FamilyWorkspaceImage = {
   mode: "family",
   os: "arch",
   packages: [...DEFAULT_WORKSPACE_PACKAGES],
   shell: "zsh",
   services: { docker: true },
-  screen: false,
+  screen: true,
 };
+
+/** Mend's default packages, which migration 0234 uses to tell an image nobody edited. */
+export const defaultWorkspacePackages: ReadonlyArray<string> = DEFAULT_WORKSPACE_PACKAGES;
 
 /**
  * What a screen needs in its image (docs/adr/0020-guis-in-sessions.md, D1 and D8): TigerVNC's
@@ -340,17 +351,24 @@ export const defaultSettings = new MendSettings({
 
 /**
  * The instance's settings while its operator has saved none, for a server whose organizations'
- * sessions run on `runtime` until they choose. Boat runs no Arch, so a Boat server starts on
- * Ubuntu, which it runs with Docker inside; every organization that follows the instance then
- * starts with an environment its sessions can run.
+ * sessions run on `runtime` until they choose, on a machine of `architecture`. Boat runs no Arch,
+ * so a Boat server starts on Ubuntu, which it runs with Docker inside; a screen needs x86_64
+ * (`screenRefusal`), so anywhere else starts without one. Every organization that follows the
+ * instance then starts with an environment its sessions can run.
  */
-export const builtInSettingsFor = (runtime: SessionRuntime | null): MendSettings =>
-  runtime === "boat"
-    ? new MendSettings({
-        ...defaultSettings,
-        workspaceImage: { ...defaultWorkspaceImage, os: "ubuntu" },
-      })
-    : defaultSettings;
+export const builtInSettingsFor = (
+  runtime: SessionRuntime | null,
+  architecture: ImageArchitecture,
+): MendSettings => {
+  const workspaceImage: FamilyWorkspaceImage = {
+    ...defaultWorkspaceImage,
+    os: runtime === "boat" ? "ubuntu" : defaultWorkspaceImage.os,
+    screen: architecture === "x86_64",
+  };
+  return workspaceImagesEqual(workspaceImage, defaultWorkspaceImage)
+    ? defaultSettings
+    : new MendSettings({ ...defaultSettings, workspaceImage });
+};
 
 /**
  * An organization's own values (docs/adr/0003-organizations-and-tenancy.md, "Resources that were

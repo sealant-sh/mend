@@ -351,6 +351,7 @@ import { ScreenWatchLive } from "./screen-watch.ts";
 import { DopplerApiLive } from "./services/doppler.ts";
 import { GithubApiLive } from "./services/github-api.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
+import { serverImageArchitecture } from "./services/workspace-environment.ts";
 import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
 import { SlackReportEventsLive } from "./slack-report-events.ts";
@@ -376,12 +377,16 @@ const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
  */
 
 // ─── Data: Postgres, migrated before anything reads it ─────────────────────
-// A Boat server's instance settings start on an environment Boat runs (`builtInSettingsFor`).
+// A Boat server's instance settings start on an environment Boat runs, and only an x86_64 one
+// starts with the agent's screen on (`builtInSettingsFor`).
 const BuiltInSettingsLive: Layer.Layer<never> = Layer.effect(
   BuiltInSettings,
   Effect.gen(function* () {
     const deployment = yield* DeploymentConfig;
-    return builtInSettingsFor(sessionRuntimeOfferOf(deployment)?.default ?? null);
+    return builtInSettingsFor(
+      sessionRuntimeOfferOf(deployment)?.default ?? null,
+      serverImageArchitecture,
+    );
   }),
 ).pipe(Layer.provide(DeploymentConfigLive));
 

@@ -81,7 +81,7 @@ import {
   RemovalFencesRepo,
   SessionAdmissionId,
 } from "@mend/db";
-import { defaultWorkspaceImage } from "@mend/domain";
+import { defaultWorkspaceImage, type WorkspaceImage } from "@mend/domain";
 import {
   AgentTurnId,
   ChangeId,
@@ -380,8 +380,18 @@ export const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
   remove: () => Effect.void,
 });
 
+/**
+ * The image engine scenarios launch on unless a test names one: Mend's built-in image without the
+ * agent's screen, which would make a launch on an image not yet answered for try per person first
+ * (`decideHarnessLayout`). A test about screens sets its own.
+ */
+export const imageWithoutScreen: WorkspaceImage = {
+  ...defaultWorkspaceImage,
+  screen: false,
+};
+
 /** Shared settingsLayer fixture for engine scenarios. */
-export const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
+export const settingsLayer = (workspaceImage: WorkspaceImage = imageWithoutScreen) =>
   Layer.succeed(SettingsRepo, {
     // Launches read what the project inherits (its organization's defaults over the instance's),
     // never the instance document alone.
@@ -3751,7 +3761,7 @@ export const setup = (tmp: string, world: World) => {
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "mend-key",
-      workspaceImage: world.newProjectImage.image ?? defaultWorkspaceImage,
+      workspaceImage: world.newProjectImage.image ?? imageWithoutScreen,
       applyDotfiles: true,
       defaultShellProfile: true,
       inheritUserSkills: true,
@@ -3809,7 +3819,7 @@ export const setupSibling = (tmp: string, world: World, name: string, fixtureOri
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "mend-key",
-      workspaceImage: world.newProjectImage.image ?? defaultWorkspaceImage,
+      workspaceImage: world.newProjectImage.image ?? imageWithoutScreen,
       applyDotfiles: true,
       defaultShellProfile: true,
       inheritUserSkills: true,

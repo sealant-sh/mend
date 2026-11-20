@@ -15,6 +15,7 @@ import { type ReactNode, useState } from "react";
 
 import {
   type ExecutorConfigurationDto,
+  type ExecutorMode,
   harnessLabel,
   managedLine,
   SLACK_REMOVAL_FACTS,
@@ -99,7 +100,7 @@ function AppHeader({
   readonly control?: ReactNode;
 }) {
   return (
-    <div className="mt-7 flex items-start gap-3 border-b border-border py-3.5 first:mt-0 max-lg:flex-wrap max-lg:px-4">
+    <div className="mt-10 flex items-start gap-3 border-b border-border py-3.5 first:mt-0 max-lg:flex-wrap max-lg:px-4">
       <span className="mt-0.5 flex size-5 flex-none items-center justify-center text-foreground [&_svg]:size-4.5">
         {mark}
       </span>
@@ -719,6 +720,18 @@ function OwnerExecutor({
   const refresh = useRefresh();
   const manage = useMutation(trpc.executor.manage.mutationOptions({ onSettled: refresh }));
   const [dialog, setDialog] = useState<"mend-run" | "own" | "stop-own" | "remove" | null>(null);
+  // Before anyone sets it up, the choice is the page's own until the action below saves it. Until
+  // someone picks, it is what Mend would use: the Executor it runs, where this server can run one.
+  const [picked, setPicked] = useState<ExecutorMode | null>(null);
+  const choice: ExecutorMode = saved.mendRunAvailable ? (picked ?? "mend-run") : "own";
+  const setUp = saved.mode === null;
+  const [ownUrl, setOwnUrl] = useState("");
+  const setUpOwn = useMutation(
+    trpc.executor.configure.mutationOptions({
+      onSuccess: () => toast.add({ description: "Saved your Executor's address." }),
+      onSettled: refresh,
+    }),
+  );
   const managed = saved.managed;
   const running = saved.mode === "mend-run" && managed?.state === "running";
   const upgrade =
@@ -758,7 +771,23 @@ function OwnerExecutor({
         line={line}
         note={<span>{about}</span>}
         control={
-          saved.mode !== "mend-run" || managed === undefined ? undefined : (
+          setUp ? (
+            choice === "own" ? (
+              <Button
+                type="submit"
+                form={OWN_SETUP_FORM}
+                size={touch(phone)}
+                disabled={setUpOwn.isPending}
+              >
+                {setUpOwn.isPending ? <Spinner aria-hidden /> : null}
+                {setUpOwn.isPending ? "Setting up…" : "Set up Executor"}
+              </Button>
+            ) : (
+              <Button type="button" size={touch(phone)} onClick={() => setDialog("mend-run")}>
+                Set up Executor…
+              </Button>
+            )
+          ) : saved.mode !== "mend-run" || managed === undefined ? undefined : (
             <>
               {upgrade === null ? null : (
                 <Button
@@ -816,10 +845,13 @@ function OwnerExecutor({
         control={
           <Segmented
             aria-label="Who runs Executor"
-            value={saved.mode ?? "none"}
+            value={saved.mode ?? choice}
             size={phone ? "touch" : "default"}
             onValueChange={(value) => {
-              if (value === "mend-run" || value === "own") setDialog(value);
+              if (value !== "mend-run" && value !== "own") return;
+              // Set up, a change of who runs it is said and confirmed in its dialog first.
+              if (setUp) setPicked(value);
+              else if (value !== saved.mode) setDialog(value);
             }}
             options={[
               { value: "mend-run", label: "Mend runs it", disabled: !saved.mendRunAvailable },
@@ -828,6 +860,18 @@ function OwnerExecutor({
           />
         }
       />
+      {setUp && choice === "own" ? (
+        <OwnExecutorSetup
+          url={ownUrl}
+          onUrlChange={setOwnUrl}
+          pending={setUpOwn.isPending}
+          failure={setUpOwn.error}
+          onSubmit={() => {
+            if (ownUrl.trim() === "" || setUpOwn.isPending) return;
+            setUpOwn.mutate({ mode: "own", url: ownUrl.trim() });
+          }}
+        />
+      ) : null}
       {saved.mode === "own" ? (
         <SettingRow
           label="Your Executor's address"
@@ -880,6 +924,62 @@ function OwnerExecutor({
       <StopOwnDialog open={dialog === "stop-own"} onClose={() => setDialog(null)} />
       <RemoveExecutorDialog open={dialog === "remove"} onClose={() => setDialog(null)} />
     </>
+  );
+}
+
+/** The address field before Executor is set up; the header's Set up Executor submits it. */
+const OWN_SETUP_FORM = "executor-own-setup";
+
+function OwnExecutorSetup({
+  url,
+  onUrlChange,
+  pending,
+  failure,
+  onSubmit,
+}: {
+  readonly url: string;
+  readonly onUrlChange: (url: string) => void;
+  readonly pending: boolean;
+  readonly failure: unknown;
+  readonly onSubmit: () => void;
+}) {
+  return (
+    <SettingRow
+      label="Your Executor's address"
+      labelFor="executor-setup-url"
+      layout="stack"
+      description="People consent at your Executor. Mend keeps their grants and relays tools through each session's mend MCP server."
+      note={
+        failure === null ? undefined : (
+          <p role="alert" className="text-destructive">
+            {failureWords(failure, "Mend didn't save the address. Try again.")}
+          </p>
+        )
+      }
+      control={
+        <form
+          id={OWN_SETUP_FORM}
+          noValidate
+          className="w-80 max-lg:w-full"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSubmit();
+          }}
+        >
+          <Input
+            id="executor-setup-url"
+            type="url"
+            value={url}
+            placeholder="https://executor.example.org"
+            autoComplete="off"
+            spellCheck={false}
+            disabled={pending}
+            className="font-mono max-lg:h-11 max-lg:text-base"
+            onChange={(event) => onUrlChange(event.target.value)}
+          />
+        </form>
+      }
+    />
   );
 }
 

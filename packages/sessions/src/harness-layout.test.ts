@@ -406,7 +406,9 @@ describe("the layout a launch runs (docs/adr/0016, decision 14)", () => {
         null,
       ),
     ).not.toBe(key);
-    expect(imageLayoutKeyOf({ ...defaultWorkspaceImage, screen: true }, null)).not.toBe(key);
+    expect(
+      imageLayoutKeyOf({ ...defaultWorkspaceImage, screen: !defaultWorkspaceImage.screen }, null),
+    ).not.toBe(key);
   });
 });
 

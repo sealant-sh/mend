@@ -227,19 +227,31 @@ export function ProjectsPage() {
                 </p>
               </div>
               {entries.length === 0 && cloneEntry === null ? (
-                <p className="py-6 text-prose text-muted-foreground max-lg:px-4">
-                  No project matches.{" "}
-                  <Button
-                    variant="link"
-                    className="text-prose"
-                    onClick={() => {
-                      setQuery("");
-                      setFilter("all");
-                    }}
-                  >
-                    Show all projects
-                  </Button>
-                </p>
+                <Empty className="flex-1">
+                  <EmptyHeader>
+                    <EmptyMedia variant="icon">
+                      <SearchIcon aria-hidden />
+                    </EmptyMedia>
+                    <EmptyTitle>
+                      <h2>No project matches</h2>
+                    </EmptyTitle>
+                    <EmptyDescription>
+                      No project here matches what you searched or picked.
+                    </EmptyDescription>
+                  </EmptyHeader>
+                  <EmptyContent>
+                    <Button
+                      variant="outline"
+                      size={phone ? "touch" : "default"}
+                      onClick={() => {
+                        setQuery("");
+                        setFilter("all");
+                      }}
+                    >
+                      Show all projects
+                    </Button>
+                  </EmptyContent>
+                </Empty>
               ) : (
                 <>
                   <div className="max-lg:hidden">
