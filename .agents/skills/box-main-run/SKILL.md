@@ -53,7 +53,7 @@ git fetch --quiet origin main && git checkout --quiet --detach origin/main && pn
 ## Names
 
 ```sh
-BOAT_COPIES=1                                             # copies that may have Boat (see Lanes)
+BOAT_COPIES=2                                             # copies that may have Boat (see Lanes)
 VMS=~/.local/share/mend-check-vms                         # the master and the run's saved data (box/)
 KIT=~/.local/share/mend-boat-check                        # its checker account: cli/, password
 KIT2=~/.local/share/mend-boat-check-2                     # the second account (fixtures.sh)
@@ -61,9 +61,9 @@ STATE=~/.local/state/mend-main-run                        # state.json, lock/, l
 SHA=$(git rev-parse HEAD); TAG=main-${SHA:0:12}; E=$STATE/runs/$TAG
 ```
 
-- `BOAT_COPIES` is how many of the run's copies may have Boat at once: 1, the owner's setting of 20
-  Nov. Since SLNT-1218 this machine has four Boat slots (`pnpm verify vm list`), shared with other
-  checks; at 2, lane C boots with Boat too (Lanes).
+- `BOAT_COPIES` is how many of the run's copies may have Boat at once: 2, so lanes A and C both boot
+  with Boat (Lanes; SLNT-1223). This machine has four Boat slots (`pnpm verify vm list`, SLNT-1218),
+  shared with other checks. At 1, only lane A has Boat and carries every Boat flow, as on 20 Nov.
 - `$VMS/box` holds the run's saved data: `world.sql`, `world.store.tgz` (the store directories that
   data names), `mend-git.tgz` (the git service's repositories) and `mend-garage.tgz` (the blob
   store, where sessions' captures live), each with the copy before it as `world.prev.sql`,
@@ -91,13 +91,16 @@ with the same data, and nothing one copy does reaches another, so lanes run side
 lane, groups run in the order below.
 
 - **Lane A**, Boat when `BOAT_COPIES` is 1 or more; the refresher, and its data is saved: groups 1,
-  3, 4, 6 and 7, then group 9's Boat flows in group 9's order (`repositories-in-session.add-second`,
-  `references-folders.select-link`, `shared-control.two-people`, `per-person-homes.two-people`).
+  3, 4, 6 and 7.
 - **Lane B**, never Boat: groups 2, 5 and 8.
-- **Lane C**, Boat when `BOAT_COPIES` is 2 or more: group 9's other flows in its order (the three
+- **Lane C**, Boat when `BOAT_COPIES` is 2 or more: group 9 in its order, its Boat flows
+  (`repositories-in-session.add-second`, `references-folders.select-link`,
+  `shared-control.two-people`, `per-person-homes.two-people`) among the others (the three
   `land-change` flows, `organization.visibility-who-sees`, `organization.roles-roundtrip`,
-  `organization.join-refused`, `operator.owner-grant-restore`); with Boat, group 9's Boat flows too,
-  moved from lane A.
+  `organization.join-refused`, `operator.owner-grant-restore`).
+- **Lane C without Boat** (`BOAT_COPIES` below 2, or every Boat slot held by other checks when it
+  booted: its `copy.json` reads `"boat": false`): it runs group 9's other flows, and group 9's Boat
+  flows run on lane A after A's own groups, in group 9's order.
 
 - **Lane A is the run's own.** The flows whose effects the next run reads run there: group 1's
   `server.data-intact`, the turn session the ledger keeps, the worktrees wind-down removes. Its copy
@@ -108,8 +111,10 @@ lane, groups run in the order below.
   checks' (`copies.sh`). A lane with no room is left out and its groups run on lane A after A's own,
   in run order: B's, then C's. `start-session.docker-run` needs a copy without Boat: with lane B
   left out it runs on lane C when C has no Boat, and is `not run · no copy without Boat` otherwise.
-- **More Boat copies.** With `BOAT_COPIES` at 2 or more, lane C boots with Boat and takes group 9's
-  Boat flows from lane A, keeping group 9 in one lane and in its order.
+- **Boat on lane C changes nothing else.** Lane C's copy never lifts the logins' claim, never
+  refreshes a login and is never saved, Boat or not: what its Boat sessions change goes with the
+  copy. Two Boat copies run under the same Boat deployment (preview-builds.md, "Check VMs"), and
+  sealant on each acts only on its own copy's runs.
 
 ## State
 
@@ -267,8 +272,10 @@ Its last line says what happened:
 - `copies a=<slot> [b=<slot>] [c=<slot>]`: those lanes' copies are up. Each lane's copy is in
   `$STATE/lanes/<lane>/copy.json` (`slot`, `url`, `ssh`, `startedAt`, `boat`); record each in the
   ledger's `copies` at once. A lane it left out runs on lane A (Lanes). A lane A with no Boat (its
-  line reads `no Boat`, after 60 minutes of another check holding it) makes every Boat flow
-  `not run · no Boat copy`.
+  line reads `no Boat`, after 60 minutes of another check holding it) makes every Boat flow lane A
+  would run `not run · no Boat copy`. Lane C does not wait for Boat: when every slot is held as it
+  boots, it prints `lane c · no Boat slot free · …` and boots without Boat, and group 9's Boat flows
+  run on lane A (Lanes, "Lane C without Boat").
 - `failed <lane> <what failed>`: `vm up` failed for a reason other than room. Run it once more; a
   second failure is a Fix Now ticket (step 7), and the run ends after step 8 without moving
   `lastCommit`.

@@ -31,9 +31,12 @@ Full CI: run <link> (dispatched by this run, `formal=full`) on <commit:12>, <con
 Check VMs:
 
 - Length: <h> h <m> min from the lock to the next master built (or to the save, with why it was not
-  built). Wait for room: <m> min from the lock to lane A's copy.
+  built). Wait for room: <m> min from the lock to lane A's copy. Flows: <m> min from the first
+  flow's start to the last flow's end (74 min on 20 Nov, every Boat flow on lane A), and each lane's
+  own: A <m>, B <m>, C <m>.
 - Build: preview run <link>, version <version>, <n> min. Copies booted from the master
-  <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>), or the lanes left out.
+  <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>, Boat or no Boat), or the
+  lanes left out.
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
 - Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>); <n> after cut-over.
 - Logins: Codex <refreshed on lane A at <UTC> · held | not due (expires <UTC>) · held>; Claude <…>.

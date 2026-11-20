@@ -9,9 +9,10 @@
 # machine's 1-minute load is at most 24 and fewer than MAX_COPIES (5) copies run here, counting other
 # checks' copies, it boots the next lane's copy with `pnpm verify vm up [--boat]`. The run takes at
 # most 3. Lane A waits up to 60 minutes for Boat while `vm up --boat` refuses (every Boat slot is
-# held by other checks: SLNT-1218), then boots without it. Lanes B and C boot only while there is
-# room for them; a lane with no room by the time lane A is up is left out, and its groups run on
-# lane A (SKILL.md, Lanes).
+# held by other checks: SLNT-1218), then boots without it. Lane C does not wait: with every Boat
+# slot held it boots without Boat at once, and group 9's Boat flows run on lane A. Lanes B and C
+# boot only while there is room for them; a lane with no room by the time lane A is up is left out,
+# and its groups run on lane A (SKILL.md, Lanes).
 #
 # For each lane it boots, it writes ~/.local/state/mend-main-run/lanes/<lane>/copy.json (vm up's
 # copy: slot, url, ssh, startedAt, boat) and prints `lane <lane> · copy <slot> · <url> · boat|no Boat`.
@@ -105,7 +106,16 @@ while (( $(date +%s) < stop )); do
       [[ $live =~ ^[0-9]+$ ]] && (( live < MAX_COPIES )) || break
       with=0
       [[ $lane == c ]] && (( boat >= 2 )) && with=1
-      up "$lane" "$with" || { (( $? == 2 )) && echo "lane $lane · not booted · ${blocked}"; }
+      up "$lane" "$with"
+      rc=$?
+      if (( rc == 1 )); then
+        # Every Boat slot is held by other checks. Lane C boots without Boat rather than wait: group
+        # 9's Boat flows then run on lane A (SKILL.md, Lanes).
+        echo "lane $lane · no Boat slot free · ${blocked}"
+        up "$lane" 0
+        rc=$?
+      fi
+      (( rc == 2 )) && echo "lane $lane · not booted · ${blocked}"
     done
     line="copies a=$(jq -r .slot "$LANES/a/copy.json")"
     for lane in b c; do up_lane "$lane" && line+=" $lane=$(jq -r .slot "$LANES/$lane/copy.json")"; done
