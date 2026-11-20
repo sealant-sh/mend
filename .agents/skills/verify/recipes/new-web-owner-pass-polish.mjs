@@ -425,7 +425,7 @@ export default async ({ page, web, capture, note }) => {
   // The owner turns the organization's Screen off: the next project starts without one, and the
   // project that already existed keeps its own.
   const starting = (await client(async (trpc) => trpc.organization.settings.query(), null))
-    .workspaceImage;
+    .organization.workspaceImage;
   const offSaved = await client(
     async (trpc, image) =>
       trpc.organization.setWorkspaceEnvironment.mutate({ workspaceImage: image }),
