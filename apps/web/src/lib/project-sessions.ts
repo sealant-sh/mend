@@ -1,7 +1,8 @@
+import type { LumpPr, LumpStatus } from "@mend/ui/components/lump";
 import type { StatusTone } from "@mend/ui/components/status";
 
 import type { ProjectDetailDto } from "./api.ts";
-import { type InboxRow, rowStatus } from "./inbox.ts";
+import { type InboxRow, rowLump, rowPr, SESSION_WORDS, statusTone, statusWord } from "./inbox.ts";
 import type { ProjectSessionsSearch } from "./project-sessions-search.ts";
 
 /**
@@ -17,7 +18,13 @@ type DetailSession = ProjectDetailDto["sessions"][number];
 export interface ProjectSessionRow {
   readonly id: string;
   readonly title: string;
-  readonly status: { readonly word: string; readonly tone: StatusTone };
+  /** The word, its tone and the session glyph, as the sidebar row says and draws them. */
+  readonly status: {
+    readonly word: string;
+    readonly tone: StatusTone;
+    readonly lump: LumpStatus;
+    readonly pr: LumpPr;
+  };
   /** Open: running, waiting, or ended with a change to review. Stopped: the rest. */
   readonly open: boolean;
   readonly worktreeId: string;
@@ -38,24 +45,19 @@ export interface ProjectSessionRow {
 
 const ENDED: ReadonlySet<DetailSession["status"]> = new Set(["completed", "failed", "stopped"]);
 
-/** A session's status word when the inbox doesn't carry it: it ended a while ago. */
-const ENDED_WORDS: Readonly<Record<DetailSession["status"], string>> = {
-  starting: "Starting",
-  running: "Running",
-  waiting: "Waiting on you",
-  idle: "Idle",
-  stopping: "Saving",
-  completed: "Completed",
-  failed: "Failed",
-  stopped: "Stopped",
-};
-
-const toneOf = (status: DetailSession["status"], waiting: boolean): StatusTone => {
-  if (waiting || status === "waiting") return "wait";
-  if (status === "failed") return "bad";
-  if (status === "completed") return "ok";
-  if (status === "starting" || status === "running" || status === "stopping") return "run";
-  return "idle";
+/**
+ * The glyph of a session the inbox doesn't carry (it ended a while ago, or the read failed), from
+ * its status alone, as the inbox would draw it with nothing asking.
+ */
+const LONE_LUMPS: Readonly<Record<DetailSession["status"], LumpStatus>> = {
+  starting: "run",
+  running: "run",
+  waiting: "wait",
+  idle: "idle",
+  stopping: "run",
+  completed: "done",
+  failed: "fail",
+  stopped: "stop",
 };
 
 /** What a session is called when nothing names it: its agent and short id. */
@@ -94,7 +96,6 @@ export const projectSessionRows = (
     }>;
   },
   inbox: ReadonlyArray<InboxRow>,
-  now: Date,
 ): ReadonlyArray<ProjectSessionRow> => {
   const inboxOf = new Map(inbox.map((row) => [row.session.id, row]));
   const worktreeOf = new Map(detail.worktrees.map((worktree) => [worktree.id, worktree]));
@@ -103,13 +104,14 @@ export const projectSessionRows = (
     .map((session): ProjectSessionRow => {
       const row = inboxOf.get(session.id);
       const worktree = worktreeOf.get(session.worktreeId);
-      const status =
-        row === undefined
-          ? { word: ENDED_WORDS[session.status], tone: toneOf(session.status, false) }
-          : {
-              word: rowStatus(row, now).word,
-              tone: toneOf(row.session.status, row.group === "waiting"),
-            };
+      // One word per session: the sidebar's row reads the same function (`statusWord`).
+      const lump = row === undefined ? LONE_LUMPS[session.status] : rowLump(row);
+      const status = {
+        word: row === undefined ? SESSION_WORDS[session.status] : statusWord(row).word,
+        tone: statusTone(lump),
+        lump,
+        pr: row === undefined ? ("none" as const) : rowPr(row),
+      };
       return {
         id: session.id,
         title: row?.title ?? fallbackTitle(session),

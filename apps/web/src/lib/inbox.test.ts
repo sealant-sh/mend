@@ -43,6 +43,8 @@ const row = (
     readonly imported?: boolean;
     readonly activity?: SessionInboxRowDto["activity"];
     readonly asks?: ReadonlyArray<string>;
+    readonly turnOpen?: boolean;
+    readonly lastNewAt?: Date | null;
   } = {},
 ): SessionInboxRowDto => ({
   session: {
@@ -79,6 +81,8 @@ const row = (
   worktreeName: null,
   failure: null,
   activity: extra.activity ?? null,
+  ...(extra.turnOpen === undefined ? {} : { turnOpen: extra.turnOpen }),
+  ...(extra.lastNewAt === undefined ? {} : { lastNewAt: extra.lastNewAt }),
   ...(extra.asks === undefined
     ? {}
     : {
@@ -91,6 +95,9 @@ const row = (
         })),
       }),
 });
+
+/** A change with files, for a session that ended. */
+const files = (id: string) => ({ change: { id: `c-${id}`, files: 2 } });
 
 const place = (
   rows: ReadonlyArray<SessionInboxRowDto>,
@@ -122,7 +129,7 @@ describe("the inbox's groups", () => {
     });
   });
 
-  it("puts a finished, stopped or failed session under To review when it changed files, and under Done when it changed none", () => {
+  it("puts an ended session under To review when it changed files or failed, and under Done when it ended well with none", () => {
     expect(
       place([
         row("completed-files", "completed", { change: { id: "c-1", files: 3 } }),
@@ -138,7 +145,8 @@ describe("the inbox's groups", () => {
       "stopped-files": "review",
       "stopped-none": "done",
       "failed-files": "review",
-      "failed-none": "done",
+      // A failure is never filed away unseen.
+      "failed-none": "review",
     });
   });
 
@@ -168,13 +176,31 @@ describe("the inbox's groups", () => {
     ).toEqual({ commented: "done", old: "done", nothing: "done" });
   });
 
-  it("puts an Idle session with changed files under To review, one with none under Done, and one not yet counted under Running", () => {
+  it("keeps a session that replied under Running until it ends, whatever its change, saying Replied", () => {
     const rows = [
       row("changed", "idle", { change: { id: "c-changed", files: 3 } }),
       row("clean", "idle", { change: { id: "c-clean", files: 0 } }),
-      row("uncounted", "idle", { change: { id: "c-uncounted" } }),
+      row("between", "running", { change: { id: "c-between", files: 2 }, turnOpen: false }),
+      row("working", "running", { turnOpen: true }),
     ];
-    expect(place(rows)).toEqual({ changed: "review", clean: "done", uncounted: "running" });
+    expect(place(rows)).toEqual({
+      changed: "running",
+      clean: "running",
+      between: "running",
+      working: "running",
+    });
+    const words = Object.fromEntries(
+      inboxRows({ rows, marks: [], now }).map((each) => [
+        each.session.id,
+        rowStatus(each, now).word,
+      ]),
+    );
+    expect(words).toEqual({
+      changed: "Replied",
+      clean: "Replied",
+      between: "Replied",
+      working: "Running",
+    });
   });
 
   it("keeps a follow-up that wasn't sent under To review, and says so", () => {
@@ -188,6 +214,23 @@ describe("the inbox's groups", () => {
     expect(rowStatus(kept, now).word).toBe("Follow-up not sent");
   });
 
+  it("puts a change away when its newest session is marked done: an older one doesn't take its place", () => {
+    expect(
+      place(
+        [
+          row("older", "completed", {
+            change: { id: "shared", files: 1 },
+            updated: minutesAgo(20),
+          }),
+          row("newer", "completed", { change: { id: "shared", files: 1 }, updated: minutesAgo(2) }),
+        ],
+        {
+          marks: [{ sessionId: "newer", state: "settled", snoozedUntil: null, markedAt: now }],
+        },
+      ),
+    ).toEqual({ newer: "done", older: "done" });
+  });
+
   it("lists one To review row per change, the newest session's", () => {
     expect(
       place([
@@ -197,7 +240,7 @@ describe("the inbox's groups", () => {
     ).toEqual({ newer: "review", older: "done" });
   });
 
-  it("follows the person's marks: done stays done, a snooze holds until its time, a kept session stays to review", () => {
+  it("follows the person's marks once the session has ended: done stays done, a snooze holds until its time, a kept session stays to review", () => {
     const marks: ReadonlyArray<InboxMark> = [
       { sessionId: "done", state: "settled", snoozedUntil: null, markedAt: minutesAgo(1) },
       { sessionId: "later", state: "snoozed", snoozedUntil: minutesAgo(-60), markedAt: now },
@@ -207,19 +250,61 @@ describe("the inbox's groups", () => {
     expect(
       place(
         [
-          row("done", "waiting"),
-          row("later", "running"),
-          row("back", "running"),
+          row("done", "completed", files("done")),
+          row("later", "stopped", files("later")),
+          row("back", "stopped", files("back")),
           row("kept", "stopped"),
         ],
         { marks },
       ),
-    ).toEqual({ done: "done", later: "snoozed", back: "running", kept: "review" });
+    ).toEqual({ done: "done", later: "snoozed", back: "review", kept: "review" });
   });
 
-  it("says when a snoozed row comes back, and that a row marked done was marked by hand", () => {
+  it("puts a running session under Running whatever the person marked, the owner's case", () => {
+    const marks: ReadonlyArray<InboxMark> = [
+      { sessionId: "marked", state: "settled", snoozedUntil: null, markedAt: now },
+      { sessionId: "snoozed", state: "snoozed", snoozedUntil: minutesAgo(-60), markedAt: now },
+    ];
+    expect(place([row("marked", "running"), row("snoozed", "idle")], { marks })).toEqual({
+      marked: "running",
+      snoozed: "running",
+    });
+  });
+
+  it("lets a done or snooze mark lapse once the session runs again or asks something new", () => {
+    const marks: ReadonlyArray<InboxMark> = [
+      { sessionId: "resumed", state: "settled", snoozedUntil: null, markedAt: minutesAgo(20) },
+      {
+        sessionId: "asked",
+        state: "snoozed",
+        snoozedUntil: minutesAgo(-60),
+        markedAt: minutesAgo(20),
+      },
+      {
+        sessionId: "fresh",
+        state: "snoozed",
+        snoozedUntil: minutesAgo(-60),
+        markedAt: minutesAgo(1),
+      },
+    ];
+    expect(
+      place(
+        [
+          // Marked done, then a message resumed it, and it ended again with files.
+          row("resumed", "stopped", { change: { id: "c-r", files: 1 }, lastNewAt: minutesAgo(10) }),
+          // Snoozed, then the agent asked something new.
+          row("asked", "waiting", { lastNewAt: minutesAgo(10) }),
+          // Snoozed after it asked: the snooze holds.
+          row("fresh", "waiting", { lastNewAt: minutesAgo(10) }),
+        ],
+        { marks },
+      ),
+    ).toEqual({ resumed: "review", asked: "waiting", fresh: "snoozed" });
+  });
+
+  it("says when a snoozed row comes back, and what happened on a row marked done", () => {
     const rows = inboxRows({
-      rows: [row("later", "running"), row("tomorrow", "running"), row("done", "waiting")],
+      rows: [row("later", "stopped"), row("tomorrow", "waiting"), row("done", "completed")],
       marks: [
         {
           sessionId: "later",
@@ -244,7 +329,7 @@ describe("the inbox's groups", () => {
     };
     expect(word("later")).toBe("Back today at 18:00");
     expect(word("tomorrow")).toBe("Back tomorrow at 09:00");
-    expect(word("done")).toBe("Marked done");
+    expect(word("done")).toBe("Completed");
   });
 });
 
@@ -349,7 +434,7 @@ describe("a row's words", () => {
       now,
     });
     if (imported === undefined) throw new Error("no row");
-    expect(rowStatus(imported, now).word).toBe("Waiting for a first message");
+    expect(rowStatus(imported, now).word).toBe("Waiting for your first message");
   });
 
   it("says how long ago in the row's short form", () => {

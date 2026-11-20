@@ -1142,6 +1142,7 @@ export const createTenancyWorld = async (
             ),
           ),
         newestItems: () => Effect.succeed([]),
+        inboxTurnFacts: () => Effect.succeed([]),
         listConversationTurns: (sessionId) =>
           Effect.sync(() =>
             [...turns.values()]

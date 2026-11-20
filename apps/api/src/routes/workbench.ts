@@ -2767,6 +2767,13 @@ const withWorkspaceFacts = (rows: ReadonlyArray<Session>, lines: ResourceLines) 
 const withWorkspaceFactsOf = (session: Session, lines: ResourceLines) =>
   withWorkspaceFacts([session], lines).pipe(Effect.map((rows) => rows[0] ?? session));
 
+/** The latest of some times; null when there are none. */
+const newestOf = (times: ReadonlyArray<Date | null>): Date | null =>
+  times.reduce<Date | null>(
+    (latest, time) => (time === null || (latest !== null && latest >= time) ? latest : time),
+    null,
+  );
+
 /**
  * Inbox rows for `sessions`, from Mend's own rows alone: one statement per table for all of them,
  * and nothing from a worktree, a workspace or git. `members` are each worktree's listed sessions,
@@ -2790,13 +2797,14 @@ const inboxRowsOf = (input: {
       launching(session).status === "running" ? [session.id] : [],
     );
     const reader = yield* CurrentUser;
-    const [processes, liveServices, requests, newest, controlAsks] = yield* Effect.all(
+    const [processes, liveServices, requests, newest, controlAsks, turnFacts] = yield* Effect.all(
       [
         (yield* SessionProcessesRepo).listForSessions(sessionIds),
         (yield* ServicesRepo).liveCountsForSessions(sessionIds),
         conversations.oldestPendingRequests(sessionIds),
         conversations.newestItems(running),
         (yield* SessionSharedControlRepo).asksOnOwnSessions(reader.user.id, sessionIds),
+        conversations.inboxTurnFacts(sessionIds),
       ],
       { concurrency: "unbounded" },
     );
@@ -2808,11 +2816,14 @@ const inboxRowsOf = (input: {
     const askOf = new Map(requests.map((request) => [request.sessionId, sessionAsk(request)]));
     const live = new Map<string, number>(liveServices);
     const activityOf = new Map(newest.map((item) => [item.sessionId, agentActivity(item)]));
+    const turnFactsOf = new Map(turnFacts.map((fact) => [fact.sessionId, fact]));
     const importedWaiting = yield* importedWaitingOf(input.sessions);
     return input.sessions.map((session) => {
       const annotation = annotationOf.get(session.id);
       const shown = launching(session);
-      const agent = currentAgentProcess(processesOf.get(session.id) ?? []);
+      const sessionProcesses = processesOf.get(session.id) ?? [];
+      const agent = currentAgentProcess(sessionProcesses);
+      const turns = turnFactsOf.get(session.id);
       const worktree = worktreeOf.get(session.worktreeId);
       const worktreeMembers = members.get(session.worktreeId) ?? [];
       return new SessionInboxRow({
@@ -2846,6 +2857,7 @@ const inboxRowsOf = (input: {
                 liveServices: live.get(session.id) ?? 0,
                 currentAgent: agent === null ? null : { kind: agent.kind },
                 fileCount: annotation.fileCount,
+                pullRequestState: annotation.pullRequest?.state ?? null,
               },
         ask: askOf.get(session.id) ?? null,
         sharedControlAsks: (controlAsks.get(session.id) ?? []).map(
@@ -2853,6 +2865,17 @@ const inboxRowsOf = (input: {
         ),
         failure: shown.status === "failed" ? shown.summary : null,
         activity: shown.status === "running" ? (activityOf.get(session.id) ?? null) : null,
+        // A conversation reads `running` between its turns; anything else running is on one.
+        turnOpen:
+          shown.status === "running" &&
+          (agent?.kind !== "agent-protocol" || turns?.turnOpen === true),
+        lastNewAt: newestOf([
+          turns?.newestAt ?? null,
+          // An agent starting is new too: a launch, or a resume of an ended session.
+          ...sessionProcesses.flatMap((process) =>
+            isAgentProcessKind(process.kind) ? [process.createdAt] : [],
+          ),
+        ]),
       });
     });
   });

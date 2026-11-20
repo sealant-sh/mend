@@ -365,6 +365,7 @@ const makeConversationWorld = () => {
     hasPendingRequests: () => Effect.succeed(false),
     oldestPendingRequests: () => Effect.succeed([]),
     newestItems: () => Effect.succeed([]),
+    inboxTurnFacts: () => Effect.succeed([]),
     historyWindow: () => Effect.die("not in test"),
     turnsInRange: () => Effect.die("not in test"),
     requestsInRange: () => Effect.die("not in test"),

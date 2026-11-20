@@ -64,6 +64,43 @@ export interface StopSubject {
   readonly fileCount: number | null;
 }
 
+/** The session a Stop dialog is about. */
+export type StopTarget = StopSubject & {
+  readonly sessionId: string;
+  readonly title: string;
+  /** The worktree's name, where the files and the change stay. */
+  readonly worktreeName: string;
+};
+
+/** The Stop dialog's subject from an inbox row alone: a sidebar row's Stop session…. */
+export const stopTargetOfRow = (row: {
+  readonly session: {
+    readonly id: string;
+    readonly harness: string;
+    readonly status: SessionStatusDto;
+    readonly branch: string;
+  };
+  readonly title: string;
+  readonly worktreeName: string | null;
+  readonly turnOpen: boolean | null;
+  readonly annotation: {
+    readonly fileCount?: number | null;
+    readonly currentAgent: { readonly kind: string } | null;
+  } | null;
+}): StopTarget => ({
+  sessionId: row.session.id,
+  title: row.title,
+  agent: actorOf(row.session.harness),
+  status: row.session.status,
+  turnRunning:
+    row.session.status === "running" &&
+    row.annotation?.currentAgent?.kind === "agent-protocol" &&
+    row.turnOpen !== false,
+  branch: row.session.branch,
+  worktreeName: row.worktreeName ?? row.session.branch,
+  fileCount: row.annotation?.fileCount ?? null,
+});
+
 /** A sentence part: plain words, or a name set apart (a session's title, a Service, a branch). */
 export type Part =
   | { readonly kind: "text"; readonly text: string }

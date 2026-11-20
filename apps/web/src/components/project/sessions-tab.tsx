@@ -1,4 +1,3 @@
-import { Status } from "@mend/ui/components/status";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import {
   DropdownMenu,
@@ -61,6 +60,7 @@ import { useTRPC } from "#/lib/trpc";
 import { useMinute } from "#/lib/use-inbox";
 
 import { initialsOf } from "../app-sidebar.tsx";
+import { SessionStatus } from "../session-status.tsx";
 import { PhoneSessionActions, SessionRowMenu } from "./session-actions.tsx";
 
 /** One row as the table and the phone list draw it. */
@@ -113,7 +113,6 @@ export function SessionsTab({
           marks: [],
           now,
         }),
-        now,
       ),
     [detail, inboxData, project.id, now],
   );
@@ -363,9 +362,7 @@ function SessionsTable({
         {entries.map(({ row, owner, joinLine }) => (
           <TableRow key={row.id} className={LINK_ROW}>
             <TableCell className={cn(CELL, "pl-0")}>
-              <Status tone={row.status.tone} className="text-row">
-                {row.status.word}
-              </Status>
+              <SessionStatus status={row.status} className="text-row" />
             </TableCell>
             <TableCell className={cn(CELL, "max-w-110")}>
               <Link
@@ -482,9 +479,7 @@ function SessionsList({
               <span className="min-w-0 flex-1 truncate text-lead">
                 <Highlighted value={row.title} query={search.q} />
               </span>
-              <Status tone={row.status.tone} className="shrink-0 text-sm">
-                {row.status.word}
-              </Status>
+              <SessionStatus status={row.status} className="shrink-0 text-sm" />
             </span>
             <span className="flex min-w-0 items-baseline gap-1 truncate text-prose text-muted-foreground">
               {[

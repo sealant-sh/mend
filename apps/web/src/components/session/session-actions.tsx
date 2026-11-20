@@ -48,7 +48,7 @@ import {
   type Sentence,
   stoppedToast,
   type StaysRow,
-  type StopSubject,
+  type StopTarget,
   stopWords,
   whatStays,
 } from "#/lib/session-stop";
@@ -81,13 +81,8 @@ import { useTurnOffItems } from "./shared-control.tsx";
  * (`useRowActions`), so a change shows in the tab and the sidebar at once.
  */
 
-/** The session a Stop dialog is about. */
-export type StopTarget = StopSubject & {
-  readonly sessionId: string;
-  readonly title: string;
-  /** The worktree's name, where the files and the change stay. */
-  readonly worktreeName: string;
-};
+/** The session a Stop dialog is about (`lib/session-stop.ts`). */
+export type { StopTarget };
 
 /** The session a Delete dialog is about, with what stays once it goes. */
 export interface DeleteTarget {
@@ -154,7 +149,8 @@ const useMenuFacts = (sessionId: string, context: SessionMenuContext) => {
   const status = detail?.session.status ?? row?.session.status ?? null;
   return {
     row,
-    actions: row === null ? null : rowActions(row, context.viewerId),
+    // The tab's own Stop session… reads the detail (`stop` below), not the row.
+    actions: row === null ? null : { ...rowActions(row, context.viewerId), stop: false },
     /** "Waiting on you · 4m": the session's status and how long ago it last moved. */
     label:
       status === null

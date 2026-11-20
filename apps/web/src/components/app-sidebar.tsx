@@ -1,5 +1,5 @@
 import { Banner } from "@mend/ui/components/banner";
-import { Lump } from "@mend/ui/components/lump";
+import { Lump, type LumpPr, type LumpStatus } from "@mend/ui/components/lump";
 import { Button } from "@mend/ui/components/ui/button";
 import {
   Collapsible,
@@ -68,6 +68,8 @@ import {
   type QueuedRow,
   railRows,
   readAt,
+  rowLump,
+  rowPr,
   rowStatus,
   sharedWith,
   shownRows,
@@ -76,12 +78,14 @@ import { useServerHost } from "#/lib/online";
 import { isPendingRow } from "#/lib/pending-starts";
 import { rowActions } from "#/lib/row-actions";
 import { useKeys } from "#/lib/search-keys";
-import { lumpStatusOf, sessionLink } from "#/lib/session-sheet";
+import { sessionLink } from "#/lib/session-sheet";
+import { type ShownRow, useSidebarMoves } from "#/lib/sidebar-moves";
 import { inboxFolds } from "#/lib/ui-prefs";
 import { type InboxState, type InboxView } from "#/lib/use-inbox";
 import { useRowActions } from "#/lib/use-row-actions";
 
 import { type Account, AccountMenu } from "./account-menu.tsx";
+import { Changed } from "./changed.tsx";
 import { useOpenSearch } from "./command-palette.tsx";
 import { InboxFilterMenu } from "./inbox-filters.tsx";
 import { OrganizationMenu } from "./organization-menu.tsx";
@@ -383,8 +387,10 @@ function RailSession({
           />
         }
       >
-        {/* The inbox doesn't carry a session's pull request, so the glyph has its shape only. */}
-        <Lump status={lumpStatusOf(row.session.status)} className="size-4" />
+        {/* The same glyph as the row's: its shape the group, its colour the pull request. */}
+        <Changed value={rowLump(row)}>
+          <Lump status={rowLump(row)} pr={rowPr(row)} className="size-4" />
+        </Changed>
       </SidebarMenuButton>
     </SidebarMenuItem>
   );
@@ -649,6 +655,8 @@ function InboxGroups({
   readonly filters: boolean;
 }) {
   const folds = inboxFolds.use();
+  // Rows change group in place, then slide; the moves hold where each is listed meanwhile.
+  const moving = useSidebarMoves(view.groups, folds);
   return (
     <>
       {filters ? (
@@ -671,9 +679,10 @@ function InboxGroups({
               key={group}
               group={group}
               label={label}
-              rows={view.groups[group]}
+              rows={moving.groups[group]}
               queued={queuedIn(view, group)}
               open={folds[group]}
+              lit={moving.litGroups.has(group)}
               onOpenChange={(open) => inboxFolds.set({ ...folds, [group]: open })}
               all={view.all}
               now={view.now}
@@ -698,6 +707,7 @@ function SidebarInboxGroup({
   rows,
   queued,
   open,
+  lit,
   onOpenChange,
   all,
   now,
@@ -706,9 +716,12 @@ function SidebarInboxGroup({
 }: {
   readonly group: InboxGroup;
   readonly label: string;
-  readonly rows: ReadonlyArray<InboxRow>;
+  /** Its rows as they move: rows on their way out and the closing places rows left included. */
+  readonly rows: ReadonlyArray<ShownRow>;
   readonly queued: ReadonlyArray<QueuedRow>;
   readonly open: boolean;
+  /** A row just landed in it while it was folded: its heading lights instead. */
+  readonly lit: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly all: ReadonlyArray<InboxRow>;
   readonly now: Date;
@@ -716,10 +729,32 @@ function SidebarInboxGroup({
   readonly viewerId: string | null;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const listed = rows.filter((entry) => entry.phase !== "leaving");
   // The open session stays listed, wherever it falls in its group.
-  const shown = shownRows(rows, openId, showAll);
-  const more = rows.length - shown.length;
-  const wait = group === "waiting" && rows.length > 0;
+  const kept = new Set(
+    shownRows(
+      listed.map((entry) => entry.row),
+      openId,
+      showAll,
+    ).map((row) => row.session.id),
+  );
+  const shown = rows.filter((entry) => entry.phase === "leaving" || kept.has(entry.row.session.id));
+  const more = listed.length - kept.size;
+  const wait = group === "waiting" && listed.length > 0;
+  // Folded, the group still shows the open session's row, alone under its heading.
+  const openRow = open ? undefined : listed.find((entry) => entry.row.session.id === openId);
+  const item = (entry: ShownRow) => (
+    <InboxRowItem
+      key={entry.phase === "leaving" ? `${entry.row.session.id}:left` : entry.row.session.id}
+      row={entry.row}
+      phase={entry.phase}
+      lit={entry.lit}
+      shared={sharedWith(entry.row, all)}
+      now={now}
+      active={entry.row.session.id === openId}
+      viewerId={viewerId}
+    />
+  );
   return (
     <Collapsible
       open={open}
@@ -733,6 +768,7 @@ function SidebarInboxGroup({
           className={cn(
             "group/fold flex h-8 w-full items-center gap-1.5 rounded-lg pr-2 pl-1 text-left text-row font-semibold text-foreground outline-none focus-visible:ring-3 focus-visible:ring-ring/50",
             HOVER,
+            lit && "animate-row-lit",
           )}
         >
           {open ? (
@@ -747,9 +783,10 @@ function SidebarInboxGroup({
               wait && "text-warning",
             )}
           >
-            {rows.length + queued.length}
+            {listed.length + queued.length}
           </span>
         </CollapsibleTrigger>
+        {openRow === undefined ? null : <SidebarMenu>{item(openRow)}</SidebarMenu>}
         <CollapsibleContent>
           <SidebarGroupContent>
             {queued.length === 0 ? null : (
@@ -759,23 +796,12 @@ function SidebarInboxGroup({
                 ))}
               </SidebarMenu>
             )}
-            {rows.length === 0 && queued.length === 0 ? (
+            {shown.length === 0 && queued.length === 0 ? (
               <p className="py-2.5 pr-2 pl-4 text-row text-muted-foreground">
                 {EMPTY_GROUP[group]}
               </p>
-            ) : rows.length === 0 ? null : (
-              <SidebarMenu>
-                {shown.map((row) => (
-                  <InboxRowItem
-                    key={row.session.id}
-                    row={row}
-                    shared={sharedWith(row, all)}
-                    now={now}
-                    active={row.session.id === openId}
-                    viewerId={viewerId}
-                  />
-                ))}
-              </SidebarMenu>
+            ) : shown.length === 0 ? null : (
+              <SidebarMenu>{shown.map(item)}</SidebarMenu>
             )}
             {more > 0 ? (
               <button
@@ -795,12 +821,16 @@ function SidebarInboxGroup({
 
 const InboxRowItem = memo(function InboxRowItem({
   row,
+  phase,
+  lit,
   shared,
   now,
   active,
   viewerId,
 }: {
   readonly row: InboxRow;
+  readonly phase: ShownRow["phase"];
+  readonly lit: boolean;
   readonly shared: number | null;
   readonly now: Date;
   readonly active: boolean;
@@ -822,9 +852,13 @@ const InboxRowItem = memo(function InboxRowItem({
   const menu = { row, actions, handlers, onRename: startRename };
   // A start still on its way to Mend: nothing on the server to act on yet (SLNT-1196).
   const starting = isPendingRow(row);
+  const leaving = phase === "leaving";
   return (
     <SidebarRow
       link={link}
+      lump={{ status: rowLump(row), pr: rowPr(row) }}
+      phase={phase}
+      lit={lit}
       renaming={
         renaming ? (
           <RenameField
@@ -838,8 +872,10 @@ const InboxRowItem = memo(function InboxRowItem({
         ) : undefined
       }
       onRenameKey={actions.rename && !starting ? startRename : undefined}
-      contextMenu={starting ? undefined : <RowContextMenuContent {...menu} />}
-      actions={starting ? undefined : <RowMenuButton {...menu} />}
+      // The place a row left, closing, is a picture of it with nothing to press; so is a start
+      // still on its way to Mend.
+      contextMenu={starting || leaving ? undefined : <RowContextMenuContent {...menu} />}
+      actions={starting || leaving ? undefined : <RowMenuButton {...menu} />}
       sessionId={row.session.id}
       title={row.title}
       project={row.project.name}
@@ -854,7 +890,7 @@ const InboxRowItem = memo(function InboxRowItem({
           </>
         )
       }
-      active={active}
+      active={active && !leaving}
     />
   );
 });
@@ -880,6 +916,9 @@ export function SidebarRow({
   renaming,
   onRenameKey,
   link,
+  lump,
+  phase = "still",
+  lit = false,
 }: {
   readonly sessionId: string;
   readonly title: string;
@@ -896,18 +935,25 @@ export function SidebarRow({
   /** F2 on the row starts renaming it. */
   readonly onRenameKey?: (() => void) | undefined;
   readonly link?: Ref<HTMLAnchorElement>;
+  /** The session glyph (`sheet-lump`): its shape the session's state, its colour the pull request. */
+  readonly lump?: { readonly status: LumpStatus; readonly pr: LumpPr };
+  /** Moving: `entering` opens its new place, `leaving` closes the old (`lib/sidebar-moves.ts`). */
+  readonly phase?: ShownRow["phase"];
+  /** Just landed here: lit while the fill fades. */
+  readonly lit?: boolean;
 }) {
   const parts = [
     { key: "project", text: project, className: "" },
     { key: "status", text: status, className: failed ? "text-destructive" : "" },
     { key: "age", text: ago, className: "" },
   ].filter((part) => part.text !== "");
+  const leaving = phase === "leaving";
   const body = (
     <>
       <SidebarMenuButton
         isActive={active}
         className={cn(
-          "block h-auto rounded-lg pt-1.5 pr-2 pb-1.75 pl-6 leading-snug font-normal",
+          "relative block h-auto rounded-lg pt-1.5 pr-2 pb-1.75 pl-6 leading-snug font-normal",
           HOVER,
           "data-active:bg-sidebar-accent",
           // Its menu is open: a ring round the row it acts on.
@@ -921,7 +967,8 @@ export function SidebarRow({
           <Link
             {...sessionLink(sessionId)}
             ref={link}
-            data-session-id={sessionId}
+            data-session-id={leaving ? undefined : sessionId}
+            tabIndex={leaving ? -1 : undefined}
             aria-current={active ? "page" : undefined}
             onKeyDown={(event) => {
               if (event.key === "F2" && onRenameKey !== undefined) {
@@ -932,6 +979,11 @@ export function SidebarRow({
           />
         }
       >
+        {lump === undefined ? null : (
+          <Changed value={lump.status} className="absolute top-2.25 left-1.5">
+            <Lump status={lump.status} pr={lump.pr} className="size-3.5" />
+          </Changed>
+        )}
         <span
           className={cn(
             "block truncate text-row text-foreground",
@@ -944,7 +996,13 @@ export function SidebarRow({
           {parts.map((part, index) => (
             <Fragment key={part.key}>
               {index > 0 ? " · " : ""}
-              <span className={part.className}>{part.text}</span>
+              {part.key === "status" ? (
+                <Changed value={part.text} className={part.className}>
+                  {part.text}
+                </Changed>
+              ) : (
+                <span className={part.className}>{part.text}</span>
+              )}
             </Fragment>
           ))}
         </span>
@@ -960,12 +1018,39 @@ export function SidebarRow({
       )}
     </>
   );
+  // Moving, the row's height runs from nothing to its own (or back); the fill fades once it lands.
+  const itemClass = cn(
+    "group/row grid rounded-lg",
+    phase === "entering" && "animate-row-open",
+    leaving && "pointer-events-none animate-row-close",
+    lit && "animate-row-lit",
+  );
+  // `min-w-0`: a grid item is as wide as its longest line otherwise, so a long row runs past the
+  // sidebar instead of truncating, and its focus ring is cut.
+  const content = (
+    <div className={cn("relative min-h-0 min-w-0", phase !== "still" && "overflow-hidden")}>
+      {body}
+    </div>
+  );
   if (contextMenu === undefined || renaming !== undefined)
-    return <SidebarMenuItem className="group/row">{body}</SidebarMenuItem>;
+    return (
+      <SidebarMenuItem
+        className={itemClass}
+        data-row-id={leaving ? undefined : sessionId}
+        aria-hidden={leaving ? true : undefined}
+        inert={leaving}
+      >
+        {content}
+      </SidebarMenuItem>
+    );
   return (
     <ContextMenu>
-      <ContextMenuTrigger render={<SidebarMenuItem className="group/row select-auto" />}>
-        {body}
+      <ContextMenuTrigger
+        render={
+          <SidebarMenuItem className={cn(itemClass, "select-auto")} data-row-id={sessionId} />
+        }
+      >
+        {content}
       </ContextMenuTrigger>
       {contextMenu}
     </ContextMenu>

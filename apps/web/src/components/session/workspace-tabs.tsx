@@ -4,6 +4,7 @@ import { type ReactNode, Suspense } from "react";
 
 import type { SessionInboxRowDto, SessionStatusDto } from "#/lib/api";
 import { conversationQuery, heldConversation } from "#/lib/conversation";
+import { sessionFace } from "#/lib/inbox";
 import { shownStatus } from "#/lib/session-composer";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { lumpPrOf, lumpStatusOf, STATUS_WORDS } from "#/lib/session-sheet";
@@ -54,11 +55,12 @@ export const faceOf = (
   if (session !== null) {
     const row = rows.find((each) => each.session.id === session);
     const status = session === facts.session.id ? facts.session.status : row?.session.status;
+    const face = row === undefined ? null : sessionFace(row, new Date());
     return {
       kind: "session",
-      status: status === undefined ? "idle" : lumpStatusOf(status),
-      pr: session === facts.session.id ? lumpPrOf(facts.detail.landings) : "none",
-      statusWords: status === undefined ? "" : STATUS_WORDS[status],
+      status: face?.lump ?? (status === undefined ? "idle" : lumpStatusOf(status)),
+      pr: session === facts.session.id ? lumpPrOf(facts.detail.landings) : (face?.pr ?? "none"),
+      statusWords: face?.word ?? (status === undefined ? "" : STATUS_WORDS[status]),
       label: session === facts.session.id ? facts.title : (row?.title ?? "Session"),
     };
   }
@@ -83,7 +85,10 @@ const useShownStatus = (sessionId: string, status: SessionStatusDto): SessionSta
   return shownStatus(status, turns.isPending || turns.isError ? undefined : turns.data);
 };
 
-/** Another session's tab: its lump and title, from its detail once read, else its inbox row. */
+/**
+ * Another session's tab: its lump and title. The glyph and word are its inbox row's, as the
+ * sidebar draws them (`sessionFace`); without a row, from its detail once read.
+ */
 function OtherSessionTab({
   tab,
   sessionId,
@@ -99,37 +104,44 @@ function OtherSessionTab({
   const read = useQuery(sessionDetailQuery(trpc, sessionId));
   const detail = read.isPending || read.isError ? null : read.data;
   const status = useShownStatus(sessionId, detail?.session.status ?? row?.session.status ?? "idle");
+  const face = row === undefined ? null : sessionFace(row, new Date());
   return (
     <TileTab
       value={tab}
       kind="session"
-      status={lumpStatusOf(status)}
-      pr={detail === null ? "none" : lumpPrOf(detail.landings)}
-      statusWords={STATUS_WORDS[status]}
+      status={face?.lump ?? lumpStatusOf(status)}
+      pr={detail === null ? (face?.pr ?? "none") : lumpPrOf(detail.landings)}
+      statusWords={face?.word ?? STATUS_WORDS[status]}
       label={row?.title ?? detail?.session.label ?? "Session"}
       {...look}
     />
   );
 }
 
-/** The page's own session's tab, from the detail the route read. */
+/**
+ * The page's own session's tab, from the detail the route read; its glyph and word are its inbox
+ * row's when the inbox carries it, as the sidebar draws them.
+ */
 function OwnSessionTab({
   tab,
   facts,
+  row,
   look,
 }: {
   readonly tab: string;
   readonly facts: SessionFacts;
+  readonly row: SessionInboxRowDto | undefined;
   readonly look: TabLook;
 }) {
   const status = useShownStatus(facts.session.id, facts.session.status);
+  const face = row === undefined ? null : sessionFace(row, new Date());
   return (
     <TileTab
       value={tab}
       kind="session"
-      status={lumpStatusOf(status)}
+      status={face?.lump ?? lumpStatusOf(status)}
       pr={lumpPrOf(facts.detail.landings)}
-      statusWords={STATUS_WORDS[status]}
+      statusWords={face?.word ?? STATUS_WORDS[status]}
       label={facts.title}
       {...look}
     />
@@ -177,7 +189,15 @@ export function WorkspaceTab({
   readonly look: TabLook;
 }) {
   const session = sessionOfTab(tab);
-  if (session === facts.session.id) return <OwnSessionTab tab={tab} facts={facts} look={look} />;
+  if (session === facts.session.id)
+    return (
+      <OwnSessionTab
+        tab={tab}
+        facts={facts}
+        row={rows.find((each) => each.session.id === session)}
+        look={look}
+      />
+    );
   if (session !== null)
     return (
       <OtherSessionTab

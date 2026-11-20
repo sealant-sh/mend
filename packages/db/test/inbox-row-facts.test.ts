@@ -70,6 +70,10 @@ const seed = Effect.gen(function* () {
     VALUES ('t-2', 'between', 'p-2', 1, 'u-1', 'go', 'completed')`;
   yield* sql`INSERT INTO agent_items (id, session_id, process_id, turn_id, seq, provider_item_id, provider_output_process_id, provider_output_seq, provider_event_index, kind, status, title)
     VALUES ('i-done', 'between', 'p-2', 't-2', 1, 'i-done', 'p-2', 1, 0, 'assistant-message', 'completed', null)`;
+  // Its older ask, answered after its turn was sent: the answer is the newest thing it did.
+  yield* sql`UPDATE agent_turns SET created_at = '2026-11-20T10:00:00Z' WHERE id = 't-2'`;
+  yield* sql`INSERT INTO agent_requests (id, session_id, process_id, turn_id, provider_request_id, kind, status, created_at, decided_at)
+    VALUES ('r-2', 'between', 'p-2', 't-2', 'r-2', 'user-input', 'resolved', '2026-11-20T09:59:00Z', '2026-11-20T10:05:00Z')`;
 });
 
 describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktree", () => {
@@ -128,5 +132,26 @@ describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktr
     expect(newest.map(({ sessionId, kind, title }) => ({ sessionId, kind, title }))).toEqual([
       { sessionId: "talks", kind: "command-execution", title: "pnpm test" },
     ]);
+  });
+
+  it("says whether a turn is open and when the newest turn or ask happened, and nothing for a session with neither", async () => {
+    const facts = await withRepos(
+      Effect.gen(function* () {
+        return yield* (yield* AgentConversationRepo).inboxTurnFacts([
+          SessionId.make("talks"),
+          SessionId.make("quiet"),
+          SessionId.make("between"),
+        ]);
+      }),
+    );
+    const byId = new Map(facts.map((fact) => [fact.sessionId, fact]));
+    expect(byId.get(SessionId.make("talks"))?.turnOpen).toBe(true);
+    expect(byId.get(SessionId.make("talks"))?.newestAt).toBeInstanceOf(Date);
+    expect(byId.get(SessionId.make("between"))).toEqual({
+      sessionId: "between",
+      turnOpen: false,
+      newestAt: new Date("2026-11-20T10:05:00Z"),
+    });
+    expect(byId.has(SessionId.make("quiet"))).toBe(false);
   });
 });

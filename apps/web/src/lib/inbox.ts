@@ -1,4 +1,6 @@
 import { REVIEW_WAIT_MS } from "@mend/domain/workbench";
+import type { LumpPr, LumpStatus } from "@mend/ui/components/lump";
+import type { StatusTone } from "@mend/ui/components/status";
 
 import type {
   AgentActivityDto,
@@ -56,6 +58,11 @@ export interface InboxRow {
   /** What a running agent is doing, when the server knows. */
   readonly activity: AgentActivityDto | null;
   /**
+   * Whether a running agent is on a turn; false between a conversation's turns, null from a
+   * server too old to say.
+   */
+  readonly turnOpen: boolean | null;
+  /**
    * The people asking the viewer for shared control of their session, oldest first, by name
    * (null where the roster doesn't know them). Only the owner's row carries them.
    */
@@ -65,13 +72,18 @@ export interface InboxRow {
   readonly snoozedUntil: Date | null;
   /** When the row went to Done: marked done by hand, or when the session ended. */
   readonly doneAt: Date | null;
-  /** In Done because the person marked it done, not because of how the session ended. */
+  /**
+   * In Done because the person marked it done, not because of how the session ended: only the
+   * menu's Mark not done tells the two apart; the row's words say what happened.
+   */
   readonly markedDone: boolean;
 }
 
-const RUNNING: ReadonlySet<InboxSession["status"]> = new Set(["starting", "running", "stopping"]);
-
+/** Ended: the agent exited, failed, or was stopped, and its workspace is gone or going. */
 const ENDED: ReadonlySet<InboxSession["status"]> = new Set(["completed", "stopped", "failed"]);
+
+/** The session is alive: starting, working, asking, between turns, or saving before it goes. */
+export const isAlive = (status: InboxSession["status"]): boolean => !ENDED.has(status);
 
 /**
  * Whether the session's change has files, as the server last counted them; null when it hasn't
@@ -81,30 +93,64 @@ const changedFiles = ({ annotation }: SessionInboxRowDto): boolean | null =>
   annotation?.fileCount == null ? null : annotation.fileCount > 0;
 
 /**
- * A follow-up waits to be sent, or the session ended (however it ended) within `REVIEW_WAIT_MS`
- * and its change has files and no review comment yet. A change whose files weren't counted waits
+ * An ended session waits under To review: a follow-up waits to be sent, or it ended within
+ * `REVIEW_WAIT_MS` with no review comment on its change and either failed (a failure is never
+ * filed away unseen, files or not) or changed files. A change whose files weren't counted waits
  * too: it is never hidden for want of a count. The server lists the same sessions past its cap
  * (`SessionsRepo.listForInbox`), counted or not.
  */
 const endedToReview = (row: SessionInboxRowDto, now: Date): boolean => {
   const { session, annotation } = row;
-  return (
-    annotation !== null &&
-    (annotation.pendingFollowUp ||
-      (ENDED.has(session.status) &&
-        now.getTime() - session.updatedAt.getTime() <= REVIEW_WAIT_MS &&
-        annotation.changeId !== null &&
-        annotation.totalComments === 0 &&
-        changedFiles(row) !== false))
+  if (annotation?.pendingFollowUp === true) return true;
+  if (now.getTime() - session.updatedAt.getTime() > REVIEW_WAIT_MS) return false;
+  if (annotation !== null && annotation.totalComments > 0) return false;
+  if (session.status === "failed") return true;
+  return annotation !== null && annotation.changeId !== null && changedFiles(row) !== false;
+};
+
+/** The agent, an imported conversation or a teammate asks something of the person. */
+const asksYou = (row: SessionInboxRowDto, askers: number): boolean =>
+  row.session.status === "waiting" ||
+  row.session.importedConversationWaiting ||
+  (askers > 0 && isAlive(row.session.status));
+
+/**
+ * When something new last happened, as far as a mark is concerned: the server's `lastNewAt` (an
+ * agent started, a turn was sent, the agent asked or was answered), or a teammate's newest ask
+ * for shared control. Null when nothing has, or the server is older than `lastNewAt`.
+ */
+const newestEvent = (row: SessionInboxRowDto): Date | null =>
+  [
+    row.lastNewAt ?? null,
+    ...(row.sharedControlAsks ?? []).map((ask) => ask.askedAt),
+  ].reduce<Date | null>(
+    (latest, at) => (at === null || (latest !== null && latest >= at) ? latest : at),
+    null,
   );
+
+/**
+ * A done or snooze mark holds only while nothing new has happened since it was made (rule M of
+ * the session states model): comparing the mark's time with the session's newest event, both by
+ * the server's clock, settles a mark that races a new turn without the server deleting it.
+ */
+const holds = (mark: InboxMark | undefined, row: SessionInboxRowDto): mark is InboxMark => {
+  if (mark === undefined) return false;
+  const newest = newestEvent(row);
+  return newest === null || mark.markedAt >= newest;
 };
 
 /**
- * Every session the person can see, in its group, newest activity first.
+ * Every session the person can see, in its group, newest activity first. The groups follow the
+ * session's life, not the agent's turn (Yiannis, 20 Nov 2026):
  *
- * A session that ended, or sits Idle, goes under To review when its change has files and under
- * Done when it has none (Yiannis, 16 Nov 2026). Until the server has counted a change's files, an
- * ended session waits under To review and an Idle one stays under Running, where they were.
+ * - **Running** while the session is alive and asks nothing: starting, working, or finished its
+ *   reply and waiting for the next message. Nothing the person marked overrides it.
+ * - **Waiting on you** while the agent asks (a question, a command, an edit), a teammate asks to
+ *   share control, or an imported conversation waits for its first message. A snooze made after
+ *   the ask holds it in Snoozed until the snooze ends; a new ask brings it back at once.
+ * - Once the session has ended: **Snoozed** while a snooze made since it last ran is on; **Done**
+ *   when marked done since it last ran; **To review** when its change has files nobody reviewed
+ *   yet (or isn't counted, or a follow-up waits), or it failed, one row per change; else **Done**.
  */
 export function inboxRows({
   rows,
@@ -134,35 +180,35 @@ export function inboxRows({
         worktreeName: row.worktreeName ?? null,
         failure: row.failure ?? null,
         activity: row.activity ?? null,
+        // Absent from a server before SLNT-1199: a running session is on a turn.
+        turnOpen: row.turnOpen ?? null,
         // Absent from a server before SLNT-1149: nobody asks.
         askers: (row.sharedControlAsks ?? []).map((ask) => nameOf(ask.userId)),
         snoozedUntil: null,
         doneAt: null,
         markedDone: false,
       };
-      const mark = markOf.get(session.id);
+      const found = markOf.get(session.id);
+      const mark = holds(found, row) ? found : undefined;
+      const snoozedUntil =
+        mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now
+          ? mark.snoozedUntil
+          : null;
+      if (asksYou(row, base.askers.length))
+        return snoozedUntil === null
+          ? { ...base, group: "waiting" }
+          : { ...base, group: "snoozed", snoozedUntil };
+      if (isAlive(session.status)) return { ...base, group: "running" };
+      // One row per change: the worktree's sessions share it, so its newest ended session speaks
+      // for it, whatever that one's mark. Marking it done puts the change away; an older session
+      // of the change doesn't take its place under To review.
+      const change = annotation?.changeId ?? session.id;
+      const speaksForChange = endedToReview(row, now) && !reviewedChanges.has(change);
+      if (speaksForChange) reviewedChanges.add(change);
+      if (snoozedUntil !== null) return { ...base, group: "snoozed", snoozedUntil };
       if (mark?.state === "settled")
         return { ...base, group: "done", doneAt: mark.markedAt, markedDone: true };
-      if (mark?.state === "snoozed" && mark.snoozedUntil !== null && mark.snoozedUntil > now)
-        return { ...base, group: "snoozed", snoozedUntil: mark.snoozedUntil };
-      if (session.status === "waiting") return { ...base, group: "waiting" };
-      // Someone asks the owner for shared control: it waits on them to answer (SLNT-1158).
-      if (base.askers.length > 0 && !ENDED.has(session.status))
-        return { ...base, group: "waiting" };
-      if (session.status === "idle") {
-        const files = changedFiles(row);
-        if (files === null) return { ...base, group: "running" };
-        return files
-          ? { ...base, group: "review" }
-          : { ...base, group: "done", doneAt: session.updatedAt };
-      }
-      if (RUNNING.has(session.status)) return { ...base, group: "running" };
-      // One row per change: the worktree's sessions share it, so only the newest one is listed.
-      const change = annotation?.changeId ?? session.id;
-      if (endedToReview(row, now) && !reviewedChanges.has(change)) {
-        reviewedChanges.add(change);
-        return { ...base, group: "review" };
-      }
+      if (speaksForChange) return { ...base, group: "review" };
       // Kept in the inbox by hand: an ended session waits under To review until marked done.
       if (mark?.state === "inbox") return { ...base, group: "review" };
       return { ...base, group: "done", doneAt: session.settledAt ?? session.updatedAt };
@@ -243,11 +289,15 @@ export const railRows = (
     folds[group] ? shownRows(groups[group], openId, false) : [],
   );
 
-const SESSION_WORDS: Readonly<Record<InboxSession["status"], string>> = {
+/**
+ * A session's status word from its status alone, for a session the inbox doesn't list (the
+ * project page's older sessions). "Replied" is a finished turn with the session still up.
+ */
+export const SESSION_WORDS: Readonly<Record<InboxSession["status"], string>> = {
   starting: "Starting",
   running: "Running",
   waiting: "Waiting on you",
-  idle: "Idle",
+  idle: "Replied",
   // A stopping session's workspace is being saved before it goes (capture-and-save).
   stopping: "Saving",
   completed: "Completed",
@@ -263,19 +313,110 @@ export interface RowStatus {
 
 const plain = (word: string): RowStatus => ({ word, failed: false });
 
-/** What a row says a session is doing, is waiting on, or how it ended. */
-export const rowStatus = (row: InboxRow, now: Date): RowStatus => {
+/** What `statusWord` and `rowLump` read of a row: the session's facts, never the person's marks. */
+export type RowFacts = Pick<
+  InboxRow,
+  "session" | "annotation" | "ask" | "activity" | "turnOpen" | "askers"
+>;
+
+/**
+ * The agent finished its reply and the session is still up, waiting for the next message: a
+ * terminal agent `idle`, or a conversation between turns (it reads `running`).
+ */
+const replied = (row: RowFacts): boolean =>
+  row.session.status === "idle" ||
+  (row.session.status === "running" && row.turnOpen === false && row.activity === null);
+
+/**
+ * What a session is doing, is waiting on, or how it ended, in one word or short phrase: the
+ * sidebar row, the rail's name for it and the project page's table all read it here, so they
+ * never disagree. It reads the session's facts only, never the person's marks: a row someone
+ * marked done says what happened ("Completed", "Replied"), not "Marked done".
+ */
+export const statusWord = (row: RowFacts): RowStatus => {
   const { session } = row;
-  if (row.group === "snoozed") return plain(`Back ${backAt(row.snoozedUntil ?? now, now)}`);
-  if (row.markedDone) return plain("Marked done");
-  if (session.importedConversationWaiting) return plain("Waiting for a first message");
-  if (row.group === "waiting" && session.status !== "waiting" && row.askers.length > 0)
-    return plain(askersWords(row.askers));
-  if (row.group === "waiting") return plain(askWords(row.ask));
-  if (row.group === "review" && row.annotation?.pendingFollowUp === true)
+  if (session.importedConversationWaiting) return plain("Waiting for your first message");
+  if (session.status === "waiting") return plain(askWords(row.ask));
+  if (row.askers.length > 0 && isAlive(session.status)) return plain(askersWords(row.askers));
+  if (session.status === "running" && row.activity !== null)
+    return plain(activityWords(row.activity));
+  if (replied(row)) return plain("Replied");
+  if (ENDED.has(session.status) && row.annotation?.pendingFollowUp === true)
     return plain("Follow-up not sent");
-  if (row.activity !== null) return plain(activityWords(row.activity));
   return { word: SESSION_WORDS[session.status], failed: session.status === "failed" };
+};
+
+/**
+ * What a sidebar row says: when a snoozed row comes back, else the session's own word
+ * (`statusWord`).
+ */
+export const rowStatus = (row: InboxRow, now: Date): RowStatus =>
+  row.group === "snoozed" ? plain(`Back ${backAt(row.snoozedUntil ?? now, now)}`) : statusWord(row);
+
+const ENDED_SHAPES: Readonly<Partial<Record<InboxSession["status"], LumpStatus>>> = {
+  completed: "done",
+  failed: "fail",
+  stopped: "stop",
+};
+
+/**
+ * The session glyph's shape (the lump, canvas guide `sheet-lump`), always in step with the row's
+ * group and words: the kneading shape only in Running while the agent works ("Starting",
+ * "Saving" and every activity), the plain dome there once it replied, the amber point only in
+ * Waiting on you, and how it ended (a check, a flag, a flat stop) once it has. A snoozed session
+ * that still asks rests as the dome: it is put off, not shouting.
+ */
+export const rowLump = (row: RowFacts & Pick<InboxRow, "group">): LumpStatus => {
+  if (row.group === "waiting") return "wait";
+  const ended = ENDED_SHAPES[row.session.status];
+  if (ended !== undefined) return ended;
+  if (row.group === "running") return replied(row) ? "idle" : "run";
+  return "idle";
+};
+
+/** The glyph's colour: the change's newest pull request as `gh` last reported it. */
+export const rowPr = (row: Pick<InboxRow, "annotation">): LumpPr => {
+  switch (row.annotation?.pullRequestState) {
+    case "open":
+      return "open";
+    case "merged":
+      return "merged";
+    case "closed":
+    case null:
+    case undefined:
+      return "none";
+  }
+};
+
+/**
+ * A session's glyph and word from its inbox row alone, placed with no marks (a person's marks are
+ * their inbox's): its tab in the sheet reads them here, so it says what its sidebar row says.
+ */
+export const sessionFace = (
+  row: SessionInboxRowDto,
+  now: Date,
+): { readonly lump: LumpStatus; readonly pr: LumpPr; readonly word: string } | null => {
+  const [placed] = inboxRows({ rows: [row], marks: [], now });
+  return placed === undefined
+    ? null
+    : { lump: rowLump(placed), pr: rowPr(placed), word: statusWord(placed).word };
+};
+
+/** The table's tone for a row's word: amber while it waits on you, red when it failed. */
+export const statusTone = (lump: LumpStatus): StatusTone => {
+  switch (lump) {
+    case "wait":
+      return "wait";
+    case "fail":
+      return "bad";
+    case "done":
+      return "ok";
+    case "run":
+      return "run";
+    case "idle":
+    case "stop":
+      return "idle";
+  }
 };
 
 /** What a running agent is doing, in the sidebar's short words: "Running a command". */
@@ -434,6 +575,8 @@ export interface QueuedRow {
   readonly projectName: string;
   readonly group: "running" | "review";
   readonly status: RowStatus;
+  /** Its glyph: kneading while it waits or starts, the flag once it failed. */
+  readonly lump: LumpStatus;
   readonly failure: { readonly step: "clone" | "start"; readonly message: string } | null;
   /** When it last moved. */
   readonly at: Date;
@@ -459,6 +602,7 @@ export const queuedRows = (queued: ReadonlyArray<QueuedSessionDto>): ReadonlyArr
           ...base,
           group: "review",
           status: { word: "Failed", failed: true },
+          lump: "fail",
           failure:
             row.failure === null
               ? { step: "start", message: "This session did not start." }
@@ -468,6 +612,7 @@ export const queuedRows = (queued: ReadonlyArray<QueuedSessionDto>): ReadonlyArr
         ...base,
         group: "running",
         status: plain(row.state === "waiting" ? "Waiting for the clone" : "Starting"),
+        lump: "run",
         failure: null,
       };
     });

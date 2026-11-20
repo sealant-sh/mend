@@ -1043,6 +1043,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   hasPendingRequests: () => Effect.succeed(false),
   oldestPendingRequests: () => Effect.succeed([]),
   newestItems: () => Effect.succeed([]),
+  inboxTurnFacts: () => Effect.succeed([]),
   historyWindow: () =>
     Effect.succeed({
       items: [],

@@ -2020,6 +2020,31 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/app-sidebar.tsx`, `apps/web/src/components/row-actions.tsx`,
   `apps/web/src/lib/row-link.ts`, `apps/web/src/components/workspace/workspace-header.tsx`
 
+### now-and-sessions.new-web-session-states
+
+- **Map:** now-and-sessions.md `inbox-groups`, `inbox-snooze-settle`, `rail`; start-session.md
+  `session-stop`
+- **Needs:** either; one real codex turn (one-line prompt); CLI and web; `<p>`
+- **Do:** Run the CLI batch `new-web-session-states.json`, then drive the recipe
+  `new-web-session-states`: the batch's live and ended sessions in their groups, the row menu of a
+  Running and a To review row, Stop session… from a Running row (one with no files, one with a
+  file), the project's Sessions tab, and the fixture's agent moves step by step. On the box, also
+  start a codex session from the composer with a one-line prompt and watch its row: working, the
+  turn ending, then Stop session… from its row.
+- **See:** each step's note in the recipe's `steps.log`: a live session under Running with the
+  kneading glyph, the server's `turnOpen` and `lastNewAt` on its row; ended ones under To review
+  (files, or failed) and Done (none); Running rows offer Stop session… and no Mark done or Snooze; a
+  stopped row changes in place, then moves and stays lit; the project table says each row's word
+  with the same glyph. The real turn: Running with what the agent does, still Running saying
+  `Replied` with the dome once the turn ends, and To review or Done after Stop session….
+- **Mode:** `scripted` (recipes/new-web-session-states.mjs) · the real turn by the run's agent
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/lib/inbox.ts`, `apps/web/src/lib/sidebar-moves.ts`,
+  `apps/web/src/lib/row-actions.ts`, `apps/web/src/lib/project-sessions.ts`,
+  `apps/web/src/components/session-status.tsx`, `apps/web/src/components/changed.tsx`,
+  `apps/web/src/components/session/stop-session-host.tsx`
+
 ### attach-resume.boat-stop-resume
 
 - **Map:** start-session.md `session-stop`; attach-resume.md `stop-cli`, `resume-web`

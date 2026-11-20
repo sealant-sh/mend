@@ -40,6 +40,8 @@ import {
   type InboxGroup,
   type InboxRow,
   type QueuedRow,
+  rowLump,
+  rowPr,
   rowStatus,
 } from "#/lib/inbox";
 import { useServerHost } from "#/lib/online";
@@ -47,6 +49,7 @@ import { isPendingRow } from "#/lib/pending-starts";
 import { rowActions } from "#/lib/row-actions";
 import { useSeenAfterIdle } from "#/lib/seen";
 import { askersDetail } from "#/lib/shared-control";
+import { type ShownRow, useSidebarMoves } from "#/lib/sidebar-moves";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { inboxFolds } from "#/lib/ui-prefs";
@@ -244,6 +247,8 @@ function PhoneInboxBody({
 
 function PhoneGroups({ view }: { readonly view: InboxView }) {
   const folds = inboxFolds.use();
+  // Rows move as the sidebar's do (`lib/sidebar-moves.ts`).
+  const moving = useSidebarMoves(view.groups, folds);
   return (
     <nav aria-label="Inbox" className="mt-1">
       {INBOX_GROUPS.map(({ group, label }) => (
@@ -251,9 +256,10 @@ function PhoneGroups({ view }: { readonly view: InboxView }) {
           key={group}
           group={group}
           label={label}
-          rows={view.groups[group]}
+          rows={moving.groups[group]}
           queued={queuedIn(view, group)}
           open={folds[group]}
+          lit={moving.litGroups.has(group)}
           onOpenChange={(open) => inboxFolds.set({ ...folds, [group]: open })}
           now={view.now}
           viewerId={view.viewerId}
@@ -270,29 +276,38 @@ function PhoneGroup({
   rows,
   queued,
   open,
+  lit,
   onOpenChange,
   now,
   viewerId,
 }: {
   readonly group: InboxGroup;
   readonly label: string;
-  readonly rows: ReadonlyArray<InboxRow>;
+  /** Its rows as they move, closing places included. */
+  readonly rows: ReadonlyArray<ShownRow>;
   readonly queued: ReadonlyArray<QueuedRow>;
   readonly open: boolean;
+  /** A row just landed in it while it was folded: its heading lights. */
+  readonly lit: boolean;
   readonly onOpenChange: (open: boolean) => void;
   readonly now: Date;
   readonly viewerId: string;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const shown = showAll ? rows : rows.slice(0, GROUP_ROWS);
-  const more = rows.length - shown.length;
-  const wait = group === "waiting" && rows.length > 0;
+  const listed = rows.filter((entry) => entry.phase !== "leaving");
+  const kept = new Set(
+    (showAll ? listed : listed.slice(0, GROUP_ROWS)).map((entry) => entry.row.session.id),
+  );
+  const shown = rows.filter((entry) => entry.phase === "leaving" || kept.has(entry.row.session.id));
+  const more = listed.length - kept.size;
+  const wait = group === "waiting" && listed.length > 0;
   return (
     <Collapsible open={open} onOpenChange={onOpenChange} render={<section aria-label={label} />}>
       <CollapsibleTrigger
         className={cn(
           "flex h-11 w-full items-center gap-2 border-t border-b border-border pr-4 pl-3.5 text-left text-sm font-semibold outline-none first:border-t-0 focus-visible:bg-muted",
           wait ? "text-warning" : "text-foreground",
+          lit && "animate-row-lit",
         )}
       >
         {open ? (
@@ -307,7 +322,7 @@ function PhoneGroup({
             wait ? "text-warning" : "text-muted-foreground",
           )}
         >
-          {rows.length + queued.length}
+          {listed.length + queued.length}
         </span>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -318,16 +333,25 @@ function PhoneGroup({
             ))}
           </ul>
         )}
-        {rows.length === 0 && queued.length === 0 ? (
+        {shown.length === 0 && queued.length === 0 ? (
           <p className="border-b border-border px-4 pt-2.5 pb-3 text-sm text-muted-foreground">
             {group === "waiting"
               ? "Nothing is waiting on you. When an agent asks a question or wants approval, the session shows here."
               : EMPTY_GROUP[group]}
           </p>
-        ) : rows.length === 0 ? null : (
+        ) : shown.length === 0 ? null : (
           <ul>
-            {shown.map((row) => (
-              <PhoneRow key={row.session.id} row={row} now={now} viewerId={viewerId} />
+            {shown.map((entry) => (
+              <PhoneRow
+                key={
+                  entry.phase === "leaving" ? `${entry.row.session.id}:left` : entry.row.session.id
+                }
+                row={entry.row}
+                phase={entry.phase}
+                lit={entry.lit}
+                now={now}
+                viewerId={viewerId}
+              />
             ))}
           </ul>
         )}
@@ -350,10 +374,14 @@ function PhoneGroup({
 
 function PhoneRow({
   row,
+  phase,
+  lit,
   now,
   viewerId,
 }: {
   readonly row: InboxRow;
+  readonly phase: ShownRow["phase"];
+  readonly lit: boolean;
   readonly now: Date;
   readonly viewerId: string;
 }) {
@@ -383,9 +411,13 @@ function PhoneRow({
       last={last}
       bad={status.failed}
       when={row.group === "snoozed" ? "" : age(new Date(activity(row)), now)}
+      lump={{ status: rowLump(row), pr: rowPr(row) }}
+      phase={phase}
+      lit={lit}
       actions={
-        // A start still on its way to Mend has nothing on the server to act on yet.
-        isPendingRow(row) ? undefined : (
+        // A start still on its way to Mend has nothing on the server to act on yet, and the place
+        // a row left is only a picture of it.
+        isPendingRow(row) || phase === "leaving" ? undefined : (
           <PhoneRowActions row={row} actions={rowActions(row, viewerId)} handlers={handlers} />
         )
       }

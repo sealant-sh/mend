@@ -1460,6 +1460,7 @@ const ADMITTED: Readonly<
       "conversation.oldestPendingRequests",
       "conversation.newestItems",
       "sharedControl.asksOnOwnSessions",
+      "conversation.inboxTurnFacts",
       "importedConversations.undeliveredAmong",
       "engine.launchUnderWay",
     ],
