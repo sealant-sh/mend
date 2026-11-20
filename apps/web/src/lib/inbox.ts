@@ -271,7 +271,7 @@ export const rowStatus = (row: InboxRow, now: Date): RowStatus => {
   if (session.importedConversationWaiting) return plain("Waiting for a first message");
   if (row.group === "waiting" && session.status !== "waiting" && row.askers.length > 0)
     return plain(askersWords(row.askers));
-  if (row.group === "waiting") return plain(askWords(row.ask));
+  if (row.group === "waiting") return plain(askLine(row.ask));
   if (row.group === "review" && row.annotation?.pendingFollowUp === true)
     return plain("Follow-up not sent");
   if (row.activity !== null) return plain(activityWords(row.activity));
@@ -339,6 +339,17 @@ export const askWords = (ask: SessionAskDto | null): string => {
       return "Waiting on you";
   }
 };
+
+/**
+ * Why a waiting session waits, as a list row's second line says it: the command, file or tool the
+ * agent named ("Wants to run pnpm test", "Wants to use Bash"), so a person can tell from the list
+ * whether to open it. A question keeps "Asked a question": its words belong to the conversation.
+ * With nothing named, the sidebar's short words ("Wants to run a command", "Waiting on you").
+ */
+export const askLine = (ask: SessionAskDto | null): string =>
+  ask === null || ask.subject === null || ask.kind === "question" || ask.kind === "decision"
+    ? askWords(ask)
+    : askDetail(ask);
 
 /**
  * Why a waiting session waits, naming what the agent named, for the phone row's second line:

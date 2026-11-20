@@ -1,5 +1,5 @@
 import { fuzzyFilter } from "./fuzzy.ts";
-import type { InboxRow } from "./inbox.ts";
+import { askLine, type InboxRow } from "./inbox.ts";
 import { STATUS_WORDS } from "./session-sheet.ts";
 
 /**
@@ -142,13 +142,16 @@ export const allHits = (results: SearchResults): ReadonlyArray<SearchHit> =>
 export const countWords = (count: number): string =>
   count === 1 ? "1 result" : `${count} results`;
 
-/** A session's status as a result shows it: one word, amber when it waits on you, red if failed. */
+/**
+ * A session's status as a result shows it: a word, amber when it waits on you, red if failed. A
+ * waiting session says what it waits on, as its inbox row does ("Wants to run pnpm test").
+ */
 export const sessionStatus = (
   row: InboxRow,
 ): { readonly word: string; readonly tone: "wait" | "bad" | "idle" } => {
   const { status } = row.session;
   return {
-    word: STATUS_WORDS[status],
+    word: status === "waiting" ? askLine(row.ask) : STATUS_WORDS[status],
     tone: status === "waiting" ? "wait" : status === "failed" ? "bad" : "idle",
   };
 };
