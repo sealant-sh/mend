@@ -2,7 +2,7 @@
   "limits": [
     {
       "id": "boat",
-      "what": "A session that runs on Boat. Neither the verify stack nor a check VM has Boat; the box (VM 131) does, so a box run that needs Boat goes there."
+      "what": "A session that runs on Boat. The verify stack has no Boat. A box run that needs it starts its check VM with pnpm verify vm up --boat (one at a time on this machine), which reaches Boat through this machine's Tailscale Funnel; a Boat session in a project with resources (@db) still needs VM 131."
     },
     {
       "id": "upgrade-real-data",
@@ -15,7 +15,7 @@
     },
     {
       "id": "real-agent-turn",
-      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there. A box run goes to a check VM on this machine (pnpm verify vm up), which holds the daily run's real logins, unless it also needs Boat. A route of the new web app (apps/web) sent here runs from its checkout: pnpm verify drive new-web --box serves it in front of the check VM's or the box's API, so a change that is only apps/web and packages/ui needs no preview deploy (the verify skill, section 9)."
+      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there. A box run goes to a check VM on this machine (pnpm verify vm up), which holds the daily run's real logins (with --boat when it also needs Boat). A route of the new web app (apps/web) sent here runs from its checkout: pnpm verify drive new-web --box serves it in front of the check VM's or the box's API, so a change that is only apps/web and packages/ui needs no preview deploy (the verify skill, section 9)."
     }
   ]
 }

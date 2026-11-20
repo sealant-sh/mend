@@ -187,9 +187,9 @@ judge says so, when the owner asks, or in the scheduled run below.
 install identity and the daily run's data, accounts and agent logins, one per check, so nobody
 waits. `pnpm verify vm up` starts one in about 20 seconds and prints the two exports below;
 `pnpm verify vm down <n>` deletes it when the check ends. `docs/operations/preview-builds.md`
-("Check VMs") says how the master is built and what a copy cannot do. A check that needs Boat still
-goes to VM 131 (SLNT-1215), as do the scheduled run and VM 130 (`alpha.mend.run`); "The box" there
-says how to reach each.
+("Check VMs") says how the master is built and what a copy cannot do. A check that needs Boat starts
+its copy with `pnpm verify vm up --boat`, one at a time on this machine. The scheduled run stays on
+VM 131, and VM 130 (`alpha.mend.run`) is the other server; "The box" there says how to reach each.
 
 Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as root) and
 `MEND_VERIFY_OUTER_URL`, then, in order (on a check VM nobody else holds it, so `prepare` never

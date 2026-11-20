@@ -23,6 +23,7 @@ import { restoreScript, storeLoadScript, sshRunner } from "./box.mjs";
 // overlay of that disk under QEMU/KVM with user-mode networking, on a loopback address of its own,
 // and is deleted by `vm down`. To the box verbs a copy is a box: MEND_VERIFY_BOX_SSH and
 // MEND_VERIFY_OUTER_URL name it, and nobody else holds it.
+// `vm up --boat` adds Boat through this machine's Tailscale Funnel, one copy at a time (SLNT-1215).
 //
 // Everything private (the master, the copies, the box's identity and data, the VMs' ssh key) lives
 // under one directory, mode 0700, outside any checkout: MEND_CHECK_VMS, default
@@ -38,6 +39,11 @@ const WEB_PORT = 3105;
 const SSH_PORT = 2022;
 /** In the VM, the socket proxy that carries QEMU's forward to Mend's loopback port (vm-provision.sh web). */
 const GUEST_WEB_PORT = 13105;
+/** Boat's two endpoints as setup publishes them in the VM, and as QEMU forwards them from the host. */
+const SESSION_PORT = 13106;
+const BLOB_PORT = 13900;
+/** The Funnel ports a Boat copy takes on this machine's tailnet name: session traffic, saved work. */
+export const FUNNEL_PORTS = { session: 8443, blob: 10000 };
 const DISK_SIZE = "160G";
 /** Projects of the box run whose sessions use the workspace images flows need (Ubuntu, Arch). */
 const WARM_PROJECTS = ["boat-check-ubuntu", "boat-check-arch"];
@@ -154,7 +160,7 @@ const qemuArgs = ({ dir, slot, cpus, memory, cache, seedUrl }) => [
   "-drive",
   `file=${join(dir, "disk.qcow2")},if=virtio,format=qcow2,cache=${cache},discard=unmap`,
   "-netdev",
-  `user,id=n0,hostfwd=tcp:${addressOf(slot)}:${SSH_PORT}-:22,hostfwd=tcp:${addressOf(slot)}:${WEB_PORT}-:${GUEST_WEB_PORT}`,
+  `user,id=n0,hostfwd=tcp:${addressOf(slot)}:${SSH_PORT}-:22,hostfwd=tcp:${addressOf(slot)}:${WEB_PORT}-:${GUEST_WEB_PORT},hostfwd=tcp:${addressOf(slot)}:${SESSION_PORT}-:23106,hostfwd=tcp:${addressOf(slot)}:${BLOB_PORT}-:23900`,
   "-device",
   "virtio-net-pci,netdev=n0",
   "-device",
@@ -282,6 +288,196 @@ const keepFailure = (root, slot, dir) => {
   if (out.status === 0) writeFileSync(join(dir, "failure.log"), out.stdout, { mode: 0o600 });
 };
 
+/** This machine's tailnet name, as Funnel serves it, or null without Tailscale. */
+const tailnetName = () => {
+  const status = run("tailscale", ["status", "--json"]);
+  try {
+    return JSON.parse(status.stdout).Self.DNSName.replace(/\.$/, "") || null;
+  } catch {
+    return null;
+  }
+};
+
+/** Where each Funnel port forwards now: { "8443": "127.0.1.1:13106", … }. */
+const funnelTargets = () => {
+  const status = run("tailscale", ["funnel", "status", "--json"]);
+  let config = {};
+  try {
+    config = JSON.parse(status.stdout || "{}");
+  } catch {
+    // No config reads as no forwards.
+  }
+  return Object.fromEntries(
+    Object.entries(config.TCP ?? {}).map(([port, handler]) => [port, handler.TCPForward ?? ""]),
+  );
+};
+
+/**
+ * Takes the two Funnel ports for a copy: refuses when either forwards somewhere else (another copy
+ * holds Boat), then forwards them to the copy's Boat endpoints. Returns an error string or null.
+ */
+const funnelUp = (slot) => {
+  const targets = funnelTargets();
+  const wants = {
+    [FUNNEL_PORTS.session]: `${addressOf(slot)}:${SESSION_PORT}`,
+    [FUNNEL_PORTS.blob]: `${addressOf(slot)}:${BLOB_PORT}`,
+  };
+  for (const [port, target] of Object.entries(wants)) {
+    if (targets[port] && targets[port] !== target)
+      return `Funnel port ${port} forwards to ${targets[port]}: another copy holds Boat (pnpm verify vm list)`;
+  }
+  for (const [port, target] of Object.entries(wants)) {
+    const on = run("tailscale", [
+      "funnel",
+      "--bg",
+      `--tls-terminated-tcp=${port}`,
+      `tcp://${target}`,
+    ]);
+    if (on.code !== 0) return `tailscale funnel ${port}: ${lastLine(on.stderr || on.stdout)}`;
+  }
+  return null;
+};
+
+/**
+ * Takes down the Funnel ports that forward to this copy, and only those. Turning a TCP forward off
+ * leaves its port's "funnel on" flag behind with nothing served; when those flags are all that is
+ * left of this machine's Serve config, the config is reset, so a later `tailscale funnel status`
+ * reads clean. Anything else in it (another server's forwards) is left as it is. Returns the ports.
+ */
+const funnelDown = (slot) => {
+  const ports = Object.entries(funnelTargets())
+    .filter(([, target]) => target.startsWith(`${addressOf(slot)}:`))
+    .flatMap(([port]) =>
+      run("tailscale", ["funnel", `--tls-terminated-tcp=${port}`, "off"]).code === 0 ? [port] : [],
+    );
+  let config = {};
+  try {
+    config = JSON.parse(run("tailscale", ["funnel", "status", "--json"]).stdout || "{}");
+  } catch {
+    return ports;
+  }
+  const ours = new Set(Object.values(FUNNEL_PORTS).map(String));
+  const leftovers = Object.keys(config.AllowFunnel ?? {});
+  if (
+    Object.keys(config).every((key) => key === "AllowFunnel") &&
+    leftovers.length > 0 &&
+    leftovers.every((hostPort) => ours.has(hostPort.split(":").at(-1)))
+  )
+    run("tailscale", ["funnel", "reset"]);
+  return ports;
+};
+
+/**
+ * Boat on a copy (SLNT-1215). The Funnel first, since setup checks both addresses answer. Then setup
+ * with VM 131's own Boat key (<root>/box/boat.key, on stdin) and VM 131's deployment name, which the
+ * loaded data's sealant keeps in `boat_install`; and no resource gateway, whose host id derives from
+ * the identity the box shares, so a copy's gateway would take the box's place. Sharing the name is
+ * what lets a copy reuse the Boat images the box built (their publications are in the loaded data,
+ * their build journals in <root>/box/mend-boat-state.tgz, put into the copy's Boat state volume
+ * here). It is safe because sealant acts only on runs in its own database: every run the loaded data
+ * holds under that name is settled, the box never sees a copy's runs, and `vm down` stops the copy's
+ * Boat sessions so their VMs go. Measured 20 Nov: with a name of its own, the copy's first image
+ * build failed at once (`native-local-io-failed`) and quarantined the image.
+ */
+const boatOn = (root, slot, dir) => {
+  const key = join(paths(root).box, "boat.key");
+  const journals = join(paths(root).box, "mend-boat-state.tgz");
+  for (const file of [key, journals])
+    if (!existsSync(file))
+      return { error: `no ${file}: pnpm verify vm build --from-box copies it from VM 131` };
+  const host = tailnetName();
+  if (host === null) return { error: "no tailnet name: tailscale status --json answered nothing" };
+  const guest = (script, input) =>
+    spawnSync("ssh", ["-o", "BatchMode=yes", ...boxSshArgs(root, slot), script], {
+      ...(input === undefined ? {} : { input }),
+      encoding: "utf8",
+      maxBuffer: 16 * 1024 * 1024,
+    });
+  const deployment = (
+    guest(
+      `docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -c "select deployment_id from boat_install"`,
+    ).stdout ?? ""
+  ).trim();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.:-]{0,127}$/.test(deployment))
+    return { error: "the loaded data names no Boat deployment (sealant's boat_install)" };
+  const funnel = funnelUp(slot);
+  if (funnel) return { error: funnel };
+  const sessionUrl = `https://${host}:${FUNNEL_PORTS.session}`;
+  const blobUrl = `https://${host}:${FUNNEL_PORTS.blob}`;
+  const out = guest(
+    [
+      "mend server setup --offline --session-runtimes docker,boat --session-runtime boat",
+      `--session-endpoint-url ${sessionUrl} --blob-store-public-url ${blobUrl}`,
+      `--boat-deployment-id ${deployment} --no-boat-resources --boat-api-key-stdin 2>&1`,
+    ].join(" "),
+    readFileSync(key, "utf8").trim(),
+  );
+  writeFileSync(join(dir, "boat-setup.log"), `${out.stdout ?? ""}`, { mode: 0o600 });
+  if (out.status !== 0)
+    return { error: `mend server setup with Boat: ${lastLine(out.stdout ?? "")}` };
+  const answered = (out.stdout ?? "")
+    .split("\n")
+    .filter((line) => /Boat VMs reach this server/.test(line));
+  const put = spawnSync(
+    "ssh",
+    [
+      "-o",
+      "BatchMode=yes",
+      ...boxSshArgs(root, slot),
+      `set -e
+umask 077
+cat > /root/main-run/mend-boat-state.tgz
+d=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-boat-state)
+docker stop mend-mend-1 >/dev/null
+rm -f "$d"/native-builds/*.lock
+tar -xzpf /root/main-run/mend-boat-state.tgz --numeric-owner -C "$d"
+docker start mend-mend-1 >/dev/null`,
+    ],
+    { input: readFileSync(journals), maxBuffer: 16 * 1024 * 1024 },
+  );
+  if (put.status !== 0)
+    return { error: `the box's Boat build journals: ${lastLine(String(put.stderr ?? ""))}` };
+  return { sessionUrl, blobUrl, answered, deployment };
+};
+
+/**
+ * Before a Boat copy goes: stops the Boat sessions started on it (by the checker accounts whose CLI
+ * kits are here), then waits until sealant on the copy has every VM it launched deleted or seen gone.
+ * Nothing else would ever remove them: the box knows none of the copy's runs. Returns the VMs left.
+ */
+const stopBoatSessions = async (root, slot, since) => {
+  const cli = join(root, "cli/node_modules/.bin/mend");
+  for (const kit of ["mend-boat-check", "mend-boat-check-2"]) {
+    const config = join(homedir(), ".local/share", kit, "cli");
+    if (!existsSync(config) || !existsSync(cli)) continue;
+    const env = { ...process.env, XDG_CONFIG_HOME: config, MEND_URL: urlOf(slot) };
+    let sessions = [];
+    try {
+      sessions = JSON.parse(run(cli, ["sessions", "--all", "--json"], { env }).stdout).data
+        .sessions;
+    } catch {
+      continue;
+    }
+    for (const session of sessions)
+      if (
+        session.boatKey &&
+        Date.parse(session.createdAt) >= Date.parse(since) &&
+        !["stopped", "completed", "failed", "exited"].includes(session.status)
+      )
+        run(cli, ["stop", session.id], { env, timeout: 120_000 });
+  }
+  const live = () =>
+    sshRunner(boxSshArgs(root, slot))(
+      `docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -c "select coalesce(string_agg(sandbox_id, ' '), '') from boat_runs where sandbox_id is not null and deletion_completed_at is null and absent_at is null and create_issued_at >= '${since}'"`,
+    ).stdout.trim();
+  let left = live();
+  for (let i = 0; i < 40 && left !== ""; i++) {
+    await sleep(3000);
+    left = live();
+  }
+  return left === "" ? [] : left.split(" ");
+};
+
 const step = (id, title, status, detail) => ({ id, title, status, ...(detail ? { detail } : {}) });
 
 /**
@@ -350,6 +546,13 @@ export const vmBuild = async ({
       [
         "mend-ssh.tgz",
         `tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-ssh)" -czf - .`,
+      ],
+      // For `vm up --boat`: the server's own Boat key, and the build journals of the Boat images
+      // the box built, which a copy reuses under the box's deployment name.
+      ["boat.key", "sed -n 's/^SEALANT_BOAT_API_KEY=//p' /root/.config/mend/active/server.env"],
+      [
+        "mend-boat-state.tgz",
+        `tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-boat-state)" -czf - --exclude='*.lock' .`,
       ],
     ]) {
       const out = spawnSync(
@@ -669,7 +872,7 @@ tar -xzpf /root/main-run/mend-ssh.tgz --numeric-owner -C "$s"`);
  * vm up: a fresh copy of the master. It takes the lowest free slot, boots an overlay of the master
  * disk, gives Mend the copy's own address with `mend server setup --url`, and waits for health.
  */
-export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G" }) => {
+export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = false }) => {
   const p = paths(root);
   const started = Date.now();
   if (!existsSync(p.masterMeta))
@@ -685,6 +888,27 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G" }) => {
       next: ["pnpm verify vm build --version <preview> --sha <commit> --cli <version>"],
     };
   const master = JSON.parse(readFileSync(p.masterMeta, "utf8"));
+  if (boat) {
+    // One Boat copy per machine at a time: it takes this machine's two Funnel ports.
+    const held = Object.entries(funnelTargets()).filter(
+      ([port, target]) => Object.values(FUNNEL_PORTS).map(String).includes(port) && target !== "",
+    );
+    if (held.length > 0)
+      return {
+        steps: [
+          step(
+            "boat",
+            "This machine's Funnel ports for Boat",
+            "blocked_by_prerequisite",
+            `Funnel port ${held[0][0]} forwards to ${held[0][1]}: another copy holds Boat, and a machine serves one (pnpm verify vm list)`,
+          ),
+        ],
+        next: [
+          "pnpm verify vm list",
+          "pnpm verify vm up   # without Boat, or once that copy is down",
+        ],
+      };
+  }
   privateDir(p.copies);
   let slot = null;
   for (let candidate = 1; candidate <= SLOTS; candidate++) {
@@ -744,6 +968,28 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G" }) => {
     return fail("url", `mend server setup --url ${url}`, lastLine(setup.stdout));
   const healthy = await waitForHealth(url, 300_000);
   if (!healthy.ok) return fail("health", "Mend answers health", healthy.seen);
+  let boatOn_ = null;
+  if (boat) {
+    const boatAt = Date.now();
+    boatOn_ = boatOn(root, slot, dir);
+    if (boatOn_.error) {
+      funnelDown(slot);
+      return fail("boat", "Boat through this machine's Funnel", boatOn_.error);
+    }
+    const back = await waitForHealth(url, 300_000);
+    if (!back.ok) {
+      funnelDown(slot);
+      return fail("boat", "Boat through this machine's Funnel", `Mend after setup: ${back.seen}`);
+    }
+    steps.push(
+      step(
+        "boat",
+        "Boat through this machine's Funnel",
+        "passed",
+        `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; VM 131's deployment and Boat images; ${boatOn_.answered.length} of 2 answered setup`,
+      ),
+    );
+  }
   const total = seconds(started);
   steps.push(
     step(
@@ -755,7 +1001,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G" }) => {
   );
   writeFileSync(
     join(dir, "copy.json"),
-    `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master }, null, 2)}\n`,
+    `${JSON.stringify({ slot, url, ssh: boxSshArgs(root, slot).join(" "), startedAt: new Date(started).toISOString(), healthySeconds: total, master, boat: boatOn_ ? { session: boatOn_.sessionUrl, blob: boatOn_.blobUrl } : null }, null, 2)}\n`,
     { mode: 0o600 },
   );
   return {
@@ -785,6 +1031,17 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
       steps.push(step(`down-${each}`, `Remove copy ${each}`, "passed", "no such copy"));
       continue;
     }
+    let record = {};
+    try {
+      record = JSON.parse(readFileSync(join(dir, "copy.json"), "utf8"));
+    } catch {
+      // A copy whose start failed: nothing on Boat to stop.
+    }
+    const leftOnBoat =
+      record.boat && qemuPid(dir) !== null
+        ? await stopBoatSessions(root, each, record.startedAt)
+        : [];
+    const funnel = funnelDown(each);
     const stopped = await stopQemu(dir);
     rmSync(dir, { recursive: true, force: true });
     steps.push(
@@ -792,7 +1049,7 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
         `down-${each}`,
         `Remove copy ${each}`,
         "passed",
-        `VM ${stopped}; disk and directory removed`,
+        `VM ${stopped}; disk and directory removed${funnel.length > 0 ? `; Funnel ${funnel.join(" and ")} off` : ""}${leftOnBoat.length > 0 ? `; Boat VMs it launched still there: ${leftOnBoat.join(", ")}` : ""}`,
       ),
     );
   }

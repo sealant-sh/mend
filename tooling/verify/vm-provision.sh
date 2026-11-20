@@ -71,22 +71,30 @@ web)
   # QEMU's user-mode network forwards the host's <copy address>:3105 to this VM's 13105, and setup
   # publishes Mend on 127.0.0.1:3105 only (a loopback --url takes a loopback bind). A systemd socket
   # proxy joins the two, and with <address> also answers on the copy's own address here, so its
-  # APP_URL resolves inside the VM as it does on the host.
-  printf '%s\n' "[Unit]" "Description=Mend's web port for the check VM's forward (SLNT-1214)" \
-    "[Socket]" "ListenStream=13105" "[Install]" "WantedBy=sockets.target" >/etc/systemd/system/mend-web-proxy.socket
-  printf '%s\n' "[Unit]" "Requires=mend-web-proxy.socket" "After=mend-web-proxy.socket" \
-    "[Service]" "ExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:3105" >/etc/systemd/system/mend-web-proxy.service
-  mkdir -p /etc/systemd/system/mend-web-proxy.socket.d
-  if [[ -n ${1:-} ]]; then
-    printf '%s\n' "[Socket]" "ListenStream=$1:3105" >/etc/systemd/system/mend-web-proxy.socket.d/address.conf
-  else
-    rm -f /etc/systemd/system/mend-web-proxy.socket.d/address.conf
-  fi
+  # APP_URL resolves inside the VM as it does on the host. Two more carry the Boat endpoints setup
+  # publishes on loopback with Boat on (session channel 13106, bucket 13900) to 23106 and 23900,
+  # which QEMU forwards from the host for the Funnel (SLNT-1215).
+  proxy() { # <unit> <description> <target> <listen…>
+    local unit=$1 description=$2 target=$3
+    shift 3
+    { printf '%s\n' "[Unit]" "Description=$description" "[Socket]"
+      printf 'ListenStream=%s\n' "$@"
+      printf '%s\n' "[Install]" "WantedBy=sockets.target"; } >"/etc/systemd/system/$unit.socket"
+    printf '%s\n' "[Unit]" "Requires=$unit.socket" "After=$unit.socket" \
+      "[Service]" "ExecStart=/usr/lib/systemd/systemd-socket-proxyd $target" >"/etc/systemd/system/$unit.service"
+  }
+  proxy mend-web-proxy "Mend's web port for the check VM's forward (SLNT-1214)" 127.0.0.1:3105 \
+    13105 ${1:+"$1:3105"}
+  proxy mend-session-proxy "Mend's session endpoint for the Funnel (SLNT-1215)" 127.0.0.1:13106 23106
+  proxy mend-blob-proxy "Mend's bucket for the Funnel (SLNT-1215)" 127.0.0.1:13900 23900
+  rm -rf /etc/systemd/system/mend-web-proxy.socket.d
   systemctl daemon-reload
-  systemctl enable mend-web-proxy.socket >/dev/null 2>&1
-  systemctl stop mend-web-proxy.service >/dev/null 2>&1 || true
-  systemctl restart mend-web-proxy.socket
-  say "web forward on 13105${1:+ and $1:3105}"
+  for unit in mend-web-proxy mend-session-proxy mend-blob-proxy; do
+    systemctl enable "$unit.socket" >/dev/null 2>&1
+    systemctl stop "$unit.service" >/dev/null 2>&1 || true
+    systemctl restart "$unit.socket"
+  done
+  say "web forward on 13105${1:+ and $1:3105}; Boat endpoints on 23106 and 23900"
   ;;
 git)
   # The box run's git service (.agents/skills/box-main-run/fixtures.sh, step 1), on the same bridge
