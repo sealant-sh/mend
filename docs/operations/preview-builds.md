@@ -249,7 +249,7 @@ Limits of a check VM:
   settings. A copy that refreshes spends the refresh token the master, the box run's `world.sql` and
   the other copies hold: each of them is signed out at its own next refresh. Keep a copy for one
   check, rebuild the master from a fresh `world.sql` (`--from-box`) rather than keep one for days,
-  and see SLNT-1214's follow-ups for a login of the copies' own.
+  and SLNT-1217 gives the copies a Codex login of their own.
 - **Memory.** A copy takes about 9 GB of the host's memory once its sessions run.
 
 ## The box
