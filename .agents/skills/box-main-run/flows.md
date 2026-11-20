@@ -399,16 +399,21 @@ flows reuse what earlier ones made:
 - **Map:** exposure.md `exposure-report`, `tenancy-gate`; doctor.md `doctor-web-connection`;
   workspace-images.md `image-instance-default` (read-only); operator.md `org-list`
 - **Needs:** no session; no turn; web; the server's operator and a second account that isn't one
-- **Do:** Drive the recipe `new-web-settings-server`: Server under "Operators of this server" shows
-  the exposure declaration and every gate item with how it was established, with Check again; the
-  version, where the server runs, its store and session channel; the Sealant connection with Check
-  again (Checking… while it runs; connected, key refused, unreachable and not Sealant each say what
-  Mend saw), and the runtimes offered with the server's Boat lines; the starting workspace image
-  with no editor; tenancy, the multi mode gate item by item and every organization with its member
-  and owner counts ("no owner" for an ownerless one). A section whose read fails shows Try again and
-  the rest stand. Old `/settings/instance/*` and `/settings/sealant` land here. Someone who isn't an
-  operator has no Server in the sidebar, is sent to Profile, and the API answers them 404. On the
-  box, the check reads the box's own Sealant.
+- **Do:** Drive the recipe `new-web-settings-server`: Server under "Operators of this server" says
+  what the server is (its address, version, where it runs, and the Sealant connection with Check
+  again, Checking… while it runs), then "Needs you" only when something does (Sealant not connected,
+  the server's Boat key refused or Boat unreachable when Boat is offered, a check not in place on a
+  public server, a gate item missing on a server running several organizations), each with what Mend
+  saw and the fix. Who can reach it shows the declaration and how it is set; on a private server
+  what going public would change and the checks in place are two closed lines, each check with a
+  plain title, its id small beside it, and sentences worded from the case and data the server sends.
+  Where sessions run shows Docker and Boat with Boat's facts as sentences and Check the key now; the
+  starting image named by what it is, its packages closed; the organizations with member and owner
+  counts ("no owner" for an ownerless one), tenancy, and the gate closed the same way; the store and
+  session channel last. A section whose read fails shows Try again and the rest stand. Old
+  `/settings/instance/*` and `/settings/sealant` land here. Someone who isn't an operator has no
+  Server in the sidebar, is sent to Profile, and the API answers them 404. On the box, the check
+  reads the box's own Sealant.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no key, token or
   connection secret in any picture, log or note.
 - **Mode:** `scripted` (recipes/new-web-settings-server.mjs)
@@ -416,7 +421,8 @@ flows reuse what earlier ones made:
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/server-page.tsx`,
   `apps/web/src/routes/_inbox.settings.[server].tsx`, `apps/web/src/lib/server-settings.ts`,
-  `apps/web/src/server/routers/operator.ts`
+  `apps/web/src/server/routers/operator.ts`, `apps/api/src/exposure.ts`, `apps/api/src/tenancy.ts`,
+  `packages/api-contracts/src/operator.ts`
 
 ### organization.new-web-folders
 

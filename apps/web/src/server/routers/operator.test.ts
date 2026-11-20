@@ -114,12 +114,21 @@ describe("operator router", () => {
       "/api/operator/gate": {
         status: 200,
         body: [
-          { id: "https-origin", ok: true, detail: "APP_URL is https.", fix: null },
           {
-            id: "budgets",
+            id: "operator-present",
+            reason: "operators",
+            count: 1,
+            ok: true,
+            detail: "1 operator account(s)",
+            fix: null,
+          },
+          {
+            id: "raw-service-ports",
+            reason: "exposed",
+            addresses: ["0.0.0.0"],
             ok: false,
-            detail: "No organization budget is set.",
-            fix: "Set MEND_BUDGET_ORGANIZATION_TURNS.",
+            detail: "raw service listeners on 0.0.0.0",
+            fix: "unset MEND_SERVICE_HOSTS",
           },
         ],
       },
@@ -132,8 +141,14 @@ describe("operator router", () => {
       result: {
         data: {
           json: [
-            { id: "https-origin", ok: true, fix: null },
-            { id: "budgets", ok: false, fix: "Set MEND_BUDGET_ORGANIZATION_TURNS." },
+            { id: "operator-present", reason: "operators", count: 1, ok: true, fix: null },
+            {
+              id: "raw-service-ports",
+              reason: "exposed",
+              addresses: ["0.0.0.0"],
+              ok: false,
+              fix: "unset MEND_SERVICE_HOSTS",
+            },
           ],
         },
       },

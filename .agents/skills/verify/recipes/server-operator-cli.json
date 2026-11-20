@@ -1,0 +1,10 @@
+[
+  {
+    "name": "01-operator-exposure",
+    "run": ["mend", "operator", "exposure"]
+  },
+  {
+    "name": "02-operator-gate",
+    "run": ["mend", "operator", "gate"]
+  }
+]

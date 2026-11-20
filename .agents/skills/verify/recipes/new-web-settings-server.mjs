@@ -1,24 +1,29 @@
-// Settings → Server in the new web app (route PR 58, SLNT-1173): `/settings/server`, for the
-// server's operators.
+// Settings → Server in the new web app (route PR 58, SLNT-1173; redone in SLNT-1195):
+// `/settings/server`, for the server's operators.
 //
 //   pnpm verify drive new-web --recipe new-web-settings-server
 //
-// Feature ids: exposure.md `exposure-report` (the declaration and every gate item with how it was
-// established) and `tenancy-gate` (the multi mode gate item by item, read-only), doctor.md
-// `doctor-web-connection` (the Sealant connection with Check again), workspace-images.md
-// `image-instance-default` (shown read-only: no editor), operator.md `org-list` (each organization
-// with its member and owner counts; an ownerless one says "no owner").
+// Feature ids: exposure.md `exposure-report` (the declaration, then the checks: on a private server
+// what going public would change and what is in place, closed; on a public one, what isn't in
+// place under "Needs you") and `tenancy-gate` (the multi mode gate the same way, read-only),
+// doctor.md `doctor-web-connection` (the Sealant connection with Check again; not connected, it
+// moves to "Needs you"), workspace-images.md `image-instance-default` (shown read-only: no
+// editor), operator.md `org-list` (each organization with its member and owner counts; an
+// ownerless one says "no owner").
 //
 // What is real and what is rewritten:
-// - Real: everything the stack's operator (its first account) reads: the exposure report, the
-//   machine view, `/health`, the instance settings, the multi mode gate, the organizations, and
-//   the Sealant check as far as this stack's Sealant goes. Real too: the old addresses
-//   (`/settings/instance/*`, `/settings/sealant`) landing here, and a second account that isn't an
-//   operator, which has no Server in its sidebar, is sent to Profile, and gets 404 from the API.
-// - Rewritten in the page (recorded answers, mapped by `apps/web/src/lib/server-settings.test.ts`):
-//   the Sealant check running (held back), refusing the key, unreachable and answering as
-//   something else; a section whose read fails (Try again); the organizations list empty and long;
-//   the whole page loading.
+// - Real: everything the stack's operator (its first account) reads: the exposure report with each
+//   check's case and data, the machine view, `/health`, the instance settings, the multi mode gate,
+//   the organizations, and the Sealant check as far as this stack's Sealant goes. Real too: the old
+//   addresses (`/settings/instance/*`, `/settings/sealant`) landing here, and a second account that
+//   isn't an operator, which has no Server in its sidebar, is sent to Profile, and gets 404 from the
+//   API.
+// - Rewritten in the page (recorded answers, worded by `apps/web/src/lib/server-settings.ts` and
+//   mapped by its test): a server offering Boat with a key of its own (the frames' server), the
+//   Sealant check held back, unreachable, and Boat refusing the server's key ("Needs you"); a public
+//   server on Kubernetes with several organizations and every check in place; the same server
+//   public with the stack's real open checks; a section whose read fails (Try again); the whole
+//   page loading.
 //
 // The recipe removes the member it adds.
 const DESKTOP = { width: 1280, height: 900 };
@@ -30,9 +35,17 @@ const OLD_ADDRESSES = [
   "/settings/instance/defaults",
   "/settings/sealant",
 ];
-const SEALANT_WORDS = /^(Connected|Key refused|Not Sealant|Unreachable)$/;
+const SECTIONS = [
+  "This server",
+  "Who can reach it",
+  "Where sessions run",
+  "Starting workspace image",
+  "Organizations",
+  "Storage and connections",
+];
 
 const visible = (locator) => locator.filter({ visible: true }).first();
+const textOf = (locator) => locator.evaluate((element) => element.textContent ?? "");
 const apiOf = (on) => (method, url, body) =>
   on.evaluate(
     async ({ verb, address, payload }) => {
@@ -62,35 +75,235 @@ const failure = {
     },
   },
 };
-/** A tRPC answer carrying `json`, with superjson's note that `checkedAt` is a date. */
-const sealantAnswer = (connection) => ({
+const minutesAgo = (minutes) => new Date(Date.now() - minutes * 60_000).toISOString();
+
+/** A tRPC answer carrying `json`, with superjson's notes on which fields are dates. */
+const answerOf = (json, dates = []) => ({
   result: {
     data: {
-      json: { ...connection, checkedAt: new Date(Date.now() - 2 * 60_000).toISOString() },
-      meta: { values: { checkedAt: ["Date"] } },
+      json,
+      ...(dates.length === 0
+        ? {}
+        : { meta: { values: Object.fromEntries(dates.map((path) => [path, ["Date"]])) } }),
     },
   },
 });
-const organizationsAnswer = (count) => {
-  const at = new Date(2026, 2, 2).toISOString();
-  const json = Array.from({ length: count }, (_, index) => ({
+
+const sealantAnswer = (connection) =>
+  answerOf({ ...connection, checkedAt: minutesAgo(1) }, ["checkedAt"]);
+
+/** What Boat sends a refused key, as sealant reports it (`key-refused`). */
+const REFUSED = {
+  observed: false,
+  reason: "refused",
+  boat: {
+    kind: "key-refused",
+    retryable: false,
+    operation: "me",
+    status: 401,
+    code: "invalid_api_key",
+    message: "API key is not valid.",
+    requestId: "req_verify1",
+    permission: null,
+    retryAfterSeconds: null,
+    retryAt: null,
+    billingUrl: null,
+  },
+};
+
+/** The permissions Mend asks of every Boat key (`BOAT_KEY_REQUIRED_PERMISSIONS` in @mend/domain). */
+const PERMISSIONS = [
+  "exec",
+  "file.write",
+  "host",
+  "sandbox.create",
+  "sandbox.delete",
+  "sandbox.read",
+  "sandbox.resume",
+  "sandbox.stop",
+  "snapshot.read",
+  "snapshot.write",
+  "account.read",
+];
+
+/** A server Boat key report shaped as sealant answers it; refused, every fact Boat withheld. */
+const keyReport = (refused) => {
+  const report = {
+    observedAt: minutesAgo(240),
+    organization: null,
+    identity: {
+      observed: true,
+      accountId: "acct_verify",
+      login: "northwind-ci",
+      displayName: "Northwind CI",
+      serviceAccount: true,
+      accountStatus: "active",
+    },
+    keyKind: { observed: true, kind: "personal" },
+    wallet: {
+      observed: true,
+      kind: "organization",
+      organizationId: "org_verify",
+      organizationName: "Northwind",
+      role: "admin",
+    },
+    wallets: null,
+    billing: { mode: "pinned", organization: "org_verify" },
+    requiredPermissions: PERMISSIONS,
+    permissions: { observed: true, held: PERMISSIONS, missing: [], limitedToSandboxes: false },
+    expiry: {
+      observed: true,
+      expiresAt: new Date(Date.now() + 200 * 86_400_000).toISOString(),
+      expired: false,
+      expiringSoon: false,
+    },
+    start: {
+      observed: true,
+      canStart: true,
+      blockedReason: null,
+      billingStatus: "active",
+      runningVms: 1,
+      allowedVms: 5,
+    },
+    snapshots: { observed: true, used: 2, included: 10 },
+  };
+  return refused
+    ? {
+        ...report,
+        identity: REFUSED,
+        keyKind: REFUSED,
+        wallet: REFUSED,
+        permissions: REFUSED,
+        expiry: REFUSED,
+        start: REFUSED,
+        snapshots: REFUSED,
+      }
+    : report;
+};
+
+/**
+ * The stack's machine view with Boat offered and the default (the frames' server): both public
+ * addresses answered, the server's own key held (refused, or checked and fine, or none at all),
+ * and Sealant listing Boat with the resource gateway.
+ */
+const withBoat = (stack, { key, docker = true }) => {
+  const json = stack.result.data.json;
+  const machine = {
+    ...json,
+    sessionRuntimes: { offered: docker ? ["docker", "boat"] : ["boat"], default: "boat" },
+    boat: {
+      addresses: [
+        {
+          purpose: "sessions",
+          url: "https://boat.mend.northwind.dev",
+          answer: { answered: true, status: 404 },
+          observedAt: minutesAgo(4),
+        },
+        {
+          purpose: "saved-work",
+          url: "https://saved.mend.northwind.dev",
+          answer: { answered: true, status: 403 },
+          observedAt: minutesAgo(4),
+        },
+      ],
+      serverKey:
+        key === "none"
+          ? { state: "none" }
+          : { state: "held", unreachable: null, report: keyReport(key === "refused") },
+      storedKeys: 1,
+      launch: { state: "listed", observedAt: minutesAgo(4), resourceGateway: true },
+    },
+  };
+  const dates = [
+    ...Object.keys(stack.result.data.meta?.values ?? {}),
+    "boat.addresses.0.observedAt",
+    "boat.addresses.1.observedAt",
+    "boat.launch.observedAt",
+    ...(key === "none"
+      ? []
+      : [
+          "boat.serverKey.report.observedAt",
+          ...(key === "fine" ? ["boat.serverKey.report.expiry.expiresAt"] : []),
+        ]),
+  ];
+  return answerOf(machine, dates);
+};
+
+const exposureItem = (item, established, blocksStart = true) => ({
+  ...item,
+  established,
+  blocksStart,
+  detail: "the command line's sentence",
+  fix: null,
+});
+
+/** A public server with every check in place: what the frames' public server reports. */
+const PUBLIC_IN_PLACE = (version) => ({
+  declared: "public",
+  items: [
+    exposureItem({ id: "https-origin", reason: "all-https", originCount: 1 }, "observed"),
+    exposureItem({ id: "secure-cookies", reason: "secure" }, "observed"),
+    exposureItem({ id: "trusted-proxies", reason: "ranges", rangeCount: 1 }, "observed"),
+    exposureItem({ id: "enrollment-closed", reason: "built-in" }, "carried", false),
+    exposureItem({ id: "tenancy-gate", reason: "complete" }, "observed"),
+    exposureItem({ id: "budgets", reason: "all-set" }, "observed"),
+    exposureItem({ id: "no-bearers-in-urls", reason: "refused" }, "observed"),
+    exposureItem({ id: "browser-headers", reason: "built-in" }, "carried", false),
+    exposureItem({ id: "error-redaction", reason: "redacted" }, "observed"),
+    exposureItem({ id: "executor-channel-transport", reason: "https" }, "observed"),
+    exposureItem({ id: "workspace-ssh", reason: "unpublished" }, "observed"),
+    exposureItem({ id: "core-private", reason: "outside-view", mirrors: [] }, "declared", false),
+    exposureItem({ id: "edge-tls", reason: "outside-view" }, "declared", false),
+    exposureItem({ id: "reassessment", reason: "reviewed", version }, "declared", false),
+  ],
+});
+
+const gateItem = (item) => ({
+  ...item,
+  ok: true,
+  detail: "the command line's sentence",
+  fix: null,
+});
+
+const GATE_IN_PLACE = [
+  gateItem({ id: "cross-organization-authorization", reason: "built-in" }),
+  gateItem({ id: "per-account-resources", reason: "built-in" }),
+  gateItem({ id: "folders-reach-workspaces", reason: "captured" }),
+  gateItem({ id: "source-policy", reason: "tenant" }),
+  gateItem({ id: "source-address-pinning", reason: "tenant" }),
+  gateItem({ id: "transport-bound-to-origin", reason: "bound" }),
+  gateItem({ id: "upload-length-binding", reason: "enforced" }),
+  gateItem({ id: "daemon-declares-sizes", reason: "built-in" }),
+  gateItem({ id: "raw-service-ports", reason: "loopback" }),
+  gateItem({ id: "operator-present", reason: "operators", count: 2 }),
+];
+
+const organizationsAnswer = (list) => {
+  const json = list.map(([name, memberCount, ownerCount, created], index) => ({
     organization: {
       id: `org-verify-${index}`,
-      name: `Verify organization ${String(index + 1).padStart(2, "0")}`,
+      name,
       createdByUserId: null,
-      createdAt: at,
-      updatedAt: at,
+      createdAt: created,
+      updatedAt: created,
     },
-    memberCount: 1 + (index % 7),
-    ownerCount: index % 5 === 4 ? 0 : 1 + (index % 2),
+    memberCount,
+    ownerCount,
   }));
-  const values = {};
-  json.forEach((_, index) => {
-    values[`${index}.organization.createdAt`] = ["Date"];
-    values[`${index}.organization.updatedAt`] = ["Date"];
-  });
-  return { result: { data: { json, ...(count === 0 ? {} : { meta: { values } }) } } };
+  return answerOf(
+    json,
+    json.flatMap((_, index) => [
+      `${index}.organization.createdAt`,
+      `${index}.organization.updatedAt`,
+    ]),
+  );
 };
+
+const THREE_ORGANIZATIONS = [
+  ["Northwind", 4, 2, new Date(2026, 2, 3).toISOString()],
+  ["Acme Labs", 2, 1, new Date(2026, 5, 9).toISOString()],
+  ["Initech", 1, 0, new Date(2026, 10, 2).toISOString()],
+];
 
 export default async ({ page, web, capture, note, typeSecret, registerSecret }) => {
   const settled = () => page.waitForTimeout(500);
@@ -117,10 +330,31 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const navigate = (to) => page.evaluate((href) => window["__TSR_ROUTER__"].navigate({ href }), to);
   const clearCache = () =>
     page.evaluate(() => window["__TSR_ROUTER__"].options.context.queryClient.clear());
+  const top = () =>
+    page.evaluate(() =>
+      document.querySelectorAll(".overflow-y-auto").forEach((element) => element.scrollTo(0, 0)),
+    );
+  /**
+   * The whole page in one picture: the sheet scrolls inside itself, so the window grows to the
+   * sheet's full height for the capture, then goes back.
+   */
   const shot = async (name) => {
     await page.mouse.move(1, 1);
+    await top();
+    const size = page.viewportSize();
+    const tall = await page.evaluate(() =>
+      Math.max(
+        ...[...document.querySelectorAll(".overflow-y-auto")].map(
+          (element) => element.scrollHeight - element.clientHeight,
+        ),
+        0,
+      ),
+    );
+    if (size !== null && tall > 0)
+      await page.setViewportSize({ width: size.width, height: Math.min(size.height + tall, 9000) });
     await settled();
     await capture(name);
+    if (size !== null && tall > 0) await page.setViewportSize(size);
   };
   const paint = async (theme) => {
     await page.evaluate(
@@ -130,24 +364,27 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await settled();
   };
   const section = (name) => visible(page.getByRole("region", { name, exact: true }));
-  /** Answer every call to the named procedures in a batch with `answer(path)`; null keeps it. */
-  const rewrite = (procedures, answer) =>
+  /**
+   * Answer every call to the named procedures in a batch with `answer(path, real)`, where `real` is
+   * what the stack answered; null keeps the stack's answer.
+   */
+  const rewrite = (answers) =>
     page.route("**/trpc/**", async (route) => {
       const paths = pathsOf(route.request());
-      if (!paths.some((path) => procedures.includes(path))) return route.continue();
+      if (!paths.some((path) => path in answers)) return route.continue();
       const response = await route.fetch();
-      const answers = await response.json();
-      const list = Array.isArray(answers) ? answers : [answers];
+      const body = await response.json();
+      const list = Array.isArray(body) ? body : [body];
       const changed = await Promise.all(
         paths.map(async (path, index) =>
-          procedures.includes(path) ? ((await answer(path)) ?? list[index]) : list[index],
+          path in answers ? ((await answers[path](list[index])) ?? list[index]) : list[index],
         ),
       );
       const failed = changed.some((one) => one?.error !== undefined);
       await route.fulfill({
         status: failed ? (paths.length === 1 ? 500 : 207) : response.status(),
         contentType: "application/json",
-        body: JSON.stringify(Array.isArray(answers) ? changed : changed[0]),
+        body: JSON.stringify(Array.isArray(body) ? changed : changed[0]),
       });
     });
   /** Open the page afresh through the router, so rewritten answers reach it. */
@@ -157,6 +394,14 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await heading("Profile");
     await navigate("/settings/server");
     await heading("Server");
+  };
+  /** Open every closed list on the page. */
+  const openAll = async () => {
+    const closed = page.locator('[data-slot="collapsible-trigger"][aria-expanded="false"]');
+    while ((await closed.count()) > 0) {
+      await closed.first().click();
+      await page.waitForTimeout(150);
+    }
   };
   const operator = apiOf(page);
 
@@ -175,49 +420,226 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     .first()
     .textContent();
   expect("the sidebar highlights Server", active?.trim() === "Server", active);
+  for (const name of SECTIONS) await section(name).waitFor();
   const report = await operator("GET", "/api/operator/exposure");
   expect("the exposure report", report.status === 200, report.status);
-  const exposure = section("Address and exposure");
-  const checks = exposure.getByRole("table", { name: "Exposure checks" });
-  await visible(checks).waitFor();
-  const rows = await checks.getByRole("row").count();
-  expect("every exposure item is listed", rows - 1 === report.body.items.length, {
-    rows,
-    items: report.body.items.length,
-  });
+  expect(
+    "every exposure item names its case",
+    report.body.items.every((item) => typeof item.reason === "string"),
+    report.body.items.map((item) => [item.id, item.reason]),
+  );
+  const openChecks = report.body.items.filter((item) => item.established === "open");
   note(
-    `exposure-report: declared ${report.body.declared}, ${report.body.items.length} items, ${report.body.items.filter((item) => item.established === "open").length} open`,
+    `exposure-report: declared ${report.body.declared}, ${report.body.items.length} items, ${openChecks.length} open; cases ${report.body.items.map((item) => `${item.id}=${item.reason}`).join(", ")}`,
+  );
+  const reach = section("Who can reach it");
+  await visible(reach.getByText(/^Mend checked this server /)).waitFor();
+  if (report.body.declared !== "public" && openChecks.length > 0) {
+    await visible(
+      reach.getByText(
+        new RegExp(
+          `^Before this server could go public, (${openChecks.length}|one) things? would have to change\\.$`,
+        ),
+      ),
+    ).waitFor();
+  }
+  const reachText = await textOf(reach);
+  expect(
+    "the checks are closed and no check id is a row's name",
+    !reachText.includes("executor-channel-transport"),
+    reachText,
+  );
+  expect(
+    "nothing needs the operator on a private server with Sealant connected, or Needs you lists why",
+    report.body.declared === "public" ||
+      (await page.getByRole("region", { name: "Needs you", exact: true }).count()) === 0 ||
+      (await operator("GET", "/api/sealant/connection")).body?.status !== "connected",
+    report.body.declared,
+  );
+  note(
+    "who-can-reach-it (real): the declaration with how it is set, the checks closed in two lines",
   );
   const gate = await operator("GET", "/api/operator/gate");
+  expect(
+    "every gate item names its case",
+    gate.body.every((item) => typeof item.reason === "string"),
+    gate.body.map((item) => [item.id, item.reason]),
+  );
+  const missing = gate.body.filter((item) => !item.ok).length;
   const organizations = section("Organizations");
-  await visible(organizations.getByRole("table", { name: "Multi-organization gate" })).waitFor();
+  if (missing > 0)
+    await visible(
+      organizations.getByText(/^Before this server could run several organizations, /),
+    ).waitFor();
   note(
-    `tenancy-gate: ${gate.body.length} items read, ${gate.body.filter((item) => !item.ok).length} not in place; no control`,
+    `tenancy-gate: ${gate.body.length} items read, ${missing} not in place, behind one closed line; cases ${gate.body.map((item) => `${item.id}=${item.reason}`).join(", ")}`,
   );
   const listed = await operator("GET", "/api/operator/organizations");
   for (const summary of listed.body)
     await visible(organizations.getByText(summary.organization.name, { exact: true })).waitFor();
   note(`org-list: ${listed.body.length} organization(s), each with member and owner counts`);
   const image = section("Starting workspace image");
-  await visible(image.getByText("Image", { exact: true })).waitFor();
-  const editors = await image.getByRole("button").count();
+  const editors = await image
+    .getByRole("button")
+    .and(page.locator(':not([data-slot="collapsible-trigger"])'))
+    .count();
   expect("the starting image has no editor", editors === 0, editors);
-  note("image-instance-default: the server's starting image, read-only, no editor");
-  const runtimes = section("Runtimes");
-  await visible(runtimes.getByText(SEALANT_WORDS)).waitFor({ timeout: 60_000 });
+  note("image-instance-default: the server's starting image named by what it is, read-only");
   const real = await operator("GET", "/api/sealant/connection");
   note(`doctor-web-connection (real): this stack's Sealant reads ${real.body.status}`);
-  await shot("server-desktop-light");
-  await paint("dark");
-  await shot("server-desktop-dark");
-  await paint("light");
+  await shot("server-real-desktop-light");
+  await openAll();
+  await visible(reach.getByRole("list", { name: "Checks in place" })).waitFor();
+  note("opened (real): every list opens; each check has a plain title, its id small beside it");
+  await shot("server-real-open-desktop-light");
 
-  // Check again on the real connection: the row shows the new answer.
-  await visible(runtimes.getByRole("button", { name: "Check again" })).click();
-  await visible(runtimes.getByText(SEALANT_WORDS)).waitFor({ timeout: 60_000 });
-  note("Check again asks Sealant again and the row shows the new answer");
+  // --- The frames' server: private, Boat offered with a key of its own, all closed ---------
+  const connected = { status: "connected", baseUrl: "http://sealant:8080", detail: null };
+  await rewrite({
+    "platform.machine": (stack) => withBoat(stack, { key: "fine" }),
+    "platform.sealantConnection": () => sealantAnswer(connected),
+  });
+  await reopen();
+  const thisServer = section("This server");
+  await visible(thisServer.getByText("Connected", { exact: true })).waitFor();
+  const sessions = section("Where sessions run");
+  await visible(sessions.getByText(/^This server has a Boat key of its own\./)).waitFor();
+  await visible(sessions.getByRole("button", { name: "Check the key now" })).waitFor();
+  expect(
+    "nothing needs the operator",
+    (await page.getByRole("region", { name: "Needs you", exact: true }).count()) === 0,
+    "Needs you drawn",
+  );
+  note(
+    "private server, Sealant connected, Boat offered with its key fine (recorded): no Needs you; Boat's facts as sentences",
+  );
+  await shot("server-private-closed-desktop-light");
+  await paint("dark");
+  await shot("server-private-closed-desktop-dark");
+  await paint("light");
+  await openAll();
+  await visible(page.getByText(/^Mend won't start in public until|^None of them stops/)).waitFor();
+  note(
+    "the three lists open: what going public would change (with its first line), in place, the gate",
+  );
+  await shot("server-private-open-desktop-light");
+
+  // --- Sealant checking --------------------------------------------------------------------
+  await page.unroute("**/trpc/**");
+  await rewrite({
+    "platform.machine": (stack) => withBoat(stack, { key: "fine" }),
+    "platform.sealantConnection": async () => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      return sealantAnswer(connected);
+    },
+  });
+  await visible(thisServer.getByRole("button", { name: "Check again" })).click();
+  await visible(thisServer.getByText("Checking…", { exact: true }).first()).waitFor();
+  note("while the check runs (held back 4 s), the row and its button say Checking…");
+  await top();
+  await page.waitForTimeout(300);
+  await capture("server-sealant-checking-desktop-light");
+  await visible(thisServer.getByText("Connected", { exact: true })).waitFor({ timeout: 30_000 });
+  await page.unroute("**/trpc/**");
+
+  // --- Needs you: Sealant unreachable, Boat refusing the server's key ---------------------
+  await rewrite({
+    "platform.machine": (stack) => withBoat(stack, { key: "refused" }),
+    "platform.sealantConnection": () =>
+      sealantAnswer({
+        status: "unreachable",
+        baseUrl: "http://sealant:8080",
+        detail: "connect ECONNREFUSED 172.18.0.4:8080",
+      }),
+  });
+  await reopen();
+  const needs = section("Needs you");
+  await visible(needs.getByText("Sealant can't be reached", { exact: true })).waitFor();
+  await visible(needs.getByText("Boat refused this server's key", { exact: true })).waitFor();
+  await visible(needs.getByRole("button", { name: "Check again" })).waitFor();
+  await visible(needs.getByRole("button", { name: "Check the key now" })).waitFor();
+  expect(
+    "Sealant leaves This server while it isn't connected",
+    (await section("This server").getByText("Sealant", { exact: true }).count()) === 0,
+    "a Sealant row in This server",
+  );
+  await visible(
+    section("Where sessions run").getByText(
+      "Boat refused this server's own key when Sealant last checked it. What to do is under Needs you.",
+    ),
+  ).waitFor();
+  note(
+    "Needs you (recorded): Sealant unreachable with what Mend asked and saw, and Boat refusing the server's key, each with its fix and its check; the Boat row points there",
+  );
+  await shot("server-needs-you-desktop-light");
+  await page.setViewportSize(PHONE);
+  await settled();
+  await shot("server-needs-you-phone-light");
+  await page.setViewportSize(DESKTOP);
+  await page.unroute("**/trpc/**");
+
+  // --- A public server on Kubernetes with several organizations, every check in place -----
+  const health = await operator("GET", "/api/health");
+  const version = health.body?.version ?? "0.36.0";
+  note(`/api/health still counts the exposure checks: ${JSON.stringify(health.body?.exposure)}`);
+  await rewrite({
+    "platform.exposure": () => answerOf(PUBLIC_IN_PLACE(version)),
+    "platform.health": (stack) =>
+      answerOf({ ...stack.result.data.json, tenancy: "multi", deploymentMode: "kubernetes" }),
+    "platform.machine": (stack) => withBoat(stack, { key: "none", docker: false }),
+    "platform.sealantConnection": () => sealantAnswer(connected),
+    "operator.gate": () => answerOf(GATE_IN_PLACE),
+    "operator.organizations": () => organizationsAnswer(THREE_ORGANIZATIONS),
+  });
+  await reopen();
+  const publicReach = section("Who can reach it");
+  await visible(publicReach.getByText("Public", { exact: true })).waitFor();
+  await visible(publicReach.getByText("All 14 checks are in place.", { exact: true })).waitFor();
+  await visible(
+    section("Organizations").getByText(
+      "All 10 things Mend needs to run several organizations are in place.",
+      { exact: true },
+    ),
+  ).waitFor();
+  await visible(
+    section("Organizations").getByText("1 member, no owner", { exact: true }),
+  ).waitFor();
+  await visible(
+    section("Organizations").getByText("Who may create one", { exact: true }),
+  ).waitFor();
+  expect(
+    "nothing needs the operator",
+    (await page.getByRole("region", { name: "Needs you", exact: true }).count()) === 0,
+    "Needs you drawn",
+  );
+  note(
+    "public, Kubernetes, several organizations, every check in place (recorded): one closed line each; Helm named for how it's set; Initech says no owner",
+  );
+  await shot("server-public-several-desktop-light");
+  await page.unroute("**/trpc/**");
+
+  // The same server public with the stack's real checks: every open one needs the operator.
+  if (openChecks.length > 0) {
+    await rewrite({
+      "platform.exposure": (stack) => answerOf({ ...stack.result.data.json, declared: "public" }),
+    });
+    await reopen();
+    const publicNeeds = section("Needs you");
+    await publicNeeds.waitFor();
+    const listedOpen = await publicNeeds.getByRole("listitem").count();
+    expect("each open check needs the operator", listedOpen >= openChecks.length, {
+      listedOpen,
+      open: openChecks.length,
+    });
+    note(
+      `public with the stack's ${openChecks.length} open checks (recorded declaration): each in Needs you`,
+    );
+    await shot("server-public-open-desktop-light");
+    await page.unroute("**/trpc/**");
+  }
 
   // --- The old addresses -------------------------------------------------------------------
+  await reopen();
   for (const address of OLD_ADDRESSES) {
     await navigate(address);
     await page.waitForURL((url) => url.pathname === "/settings/server");
@@ -225,73 +647,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   }
   note(`old addresses land here: ${OLD_ADDRESSES.join(", ")}`);
 
-  // --- The Sealant check: running, and each outcome (recorded answers) ----------------------
-  await rewrite(["platform.sealantConnection"], async () => {
-    await new Promise((resolve) => setTimeout(resolve, 4_000));
-    return null;
-  });
-  await visible(runtimes.getByRole("button", { name: "Check again" })).click();
-  await visible(runtimes.getByText("Checking…", { exact: true })).waitFor();
-  await runtimes.scrollIntoViewIfNeeded();
-  await page.waitForTimeout(400);
-  note("while the check runs (held back 4 s), the row and the button say Checking…");
-  await capture("server-sealant-checking-desktop-light");
-  await visible(runtimes.getByText(SEALANT_WORDS)).waitFor({ timeout: 30_000 });
-  await page.unroute("**/trpc/**");
-
-  const outcomes = [
-    {
-      name: "connected",
-      word: "Connected",
-      connection: { status: "connected", baseUrl: "http://sealant:7400", detail: null },
-    },
-    {
-      name: "refused",
-      word: "Key refused",
-      connection: {
-        status: "unauthorized",
-        baseUrl: "http://sealant:7400",
-        detail: "401 Unauthorized",
-      },
-    },
-    {
-      name: "unreachable",
-      word: "Unreachable",
-      connection: {
-        status: "unreachable",
-        baseUrl: "http://sealant:7400",
-        detail: "connect ECONNREFUSED 10.0.4.12:7400",
-      },
-    },
-    {
-      name: "mismatched",
-      word: "Not Sealant",
-      connection: {
-        status: "mismatched",
-        baseUrl: "http://sealant:7400",
-        detail: "404 Not Found at /v1/workspaces",
-      },
-    },
-  ];
-  for (const outcome of outcomes) {
-    await rewrite(["platform.sealantConnection"], () => sealantAnswer(outcome.connection));
-    await visible(runtimes.getByRole("button", { name: "Check again" })).click();
-    await visible(runtimes.getByText(outcome.word, { exact: true })).waitFor();
-    await runtimes.scrollIntoViewIfNeeded();
-    note(`Sealant ${outcome.connection.status} (recorded) reads "${outcome.word}"`);
-    await shot(`server-sealant-${outcome.name}-desktop-light`);
-    await page.unroute("**/trpc/**");
-  }
-
   // --- A section whose read fails, and Try again -------------------------------------------
-  await rewrite(["operator.organizations"], () => failure);
+  await rewrite({ "operator.organizations": () => failure });
   await reopen();
   const failed = section("Organizations");
   await visible(failed.getByText("This didn't load.", { exact: true })).waitFor();
-  await visible(
-    section("Address and exposure").getByRole("table", { name: "Exposure checks" }),
-  ).waitFor();
-  await failed.scrollIntoViewIfNeeded();
+  await visible(section("Who can reach it").getByText(/^Mend checked this server /)).waitFor();
   note(
     "the organizations read fails (rewritten): its section says so with Try again; the rest stand",
   );
@@ -301,44 +662,25 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await visible(failed.getByRole("list", { name: "Organizations on this server" })).waitFor();
   note("Try again reads the organizations and the list draws");
 
-  // --- The organizations list empty and long (rewritten) -----------------------------------
-  await rewrite(["operator.organizations"], () => organizationsAnswer(0));
-  await reopen();
-  await visible(
-    section("Organizations").getByText("No organizations yet", { exact: true }),
-  ).waitFor();
-  await section("Organizations").scrollIntoViewIfNeeded();
-  note("an empty organizations list (rewritten) says so");
-  await shot("server-organizations-empty-desktop-light");
-  await page.unroute("**/trpc/**");
-
-  await rewrite(["operator.organizations"], () => organizationsAnswer(30));
-  await reopen();
-  const long = section("Organizations").getByRole("list", { name: "Organizations on this server" });
-  await visible(long.getByText("Verify organization 30", { exact: true })).waitFor();
-  await visible(long.getByText("2 members, no owner", { exact: true })).waitFor();
-  await long.getByText("Verify organization 30", { exact: true }).scrollIntoViewIfNeeded();
-  note("a long list (30, rewritten) scrolls in the sheet; an ownerless one says no owner");
-  await shot("server-organizations-long-desktop-light");
-  await page.unroute("**/trpc/**");
-
   // --- The whole page loading --------------------------------------------------------------
-  await rewrite(["platform.exposure"], async () => {
-    await new Promise((resolve) => setTimeout(resolve, 4_000));
-    return null;
+  await rewrite({
+    "platform.exposure": async () => {
+      await new Promise((resolve) => setTimeout(resolve, 4_000));
+      return null;
+    },
   });
   await clearCache();
   await navigate("/settings/profile");
   await heading("Profile");
   void navigate("/settings/server");
-  await visible(page.getByText("Reading the exposure report…", { exact: true })).waitFor();
-  await page.evaluate(() =>
-    document.querySelectorAll(".overflow-y-auto").forEach((element) => element.scrollTo(0, 0)),
-  );
+  await visible(page.getByText("Reading what Mend checked…", { exact: true })).waitFor();
+  await top();
   await page.waitForTimeout(400);
   note("while a section's read runs (held back 4 s), the section says what it is reading");
   await capture("server-loading-desktop-light");
-  await visible(page.getByRole("table", { name: "Exposure checks" })).waitFor({ timeout: 30_000 });
+  await visible(section("Who can reach it").getByText(/^Mend checked this server /)).waitFor({
+    timeout: 30_000,
+  });
   await page.unrouteAll({ behavior: "ignoreErrors" });
 
   // --- Someone who isn't an operator: no Server, refused by address ------------------------
@@ -362,7 +704,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         "a-server-verify-password",
       );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    await memberPage.waitForURL((url) => url.pathname.startsWith("/welcome"));
     memberId = (await apiOf(memberPage)("GET", "/api/organization")).body?.userId ?? null;
     const operatorCookies = await page.context().cookies();
     await page.context().clearCookies();
@@ -397,14 +739,27 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await second.close();
   }
 
-  // --- The phone ---------------------------------------------------------------------------
+  // --- The phone: the frames' server, all closed, light and dark ---------------------------
   await page.setViewportSize(PHONE);
-  await open("/settings/server");
-  await visible(page.getByText("Operators of this server", { exact: true })).waitFor();
-  await visible(section("Runtimes").getByText(SEALANT_WORDS)).waitFor({ timeout: 60_000 });
+  await open("/settings/profile");
+  await rewrite({
+    "platform.machine": (stack) => withBoat(stack, { key: "fine" }),
+    "platform.sealantConnection": () => sealantAnswer(connected),
+  });
+  await reopen();
+  await visible(page.getByRole("button", { name: "Check again" })).waitFor();
+  const buttonHeight = await visible(page.getByRole("button", { name: "Check again" })).evaluate(
+    (element) => element.getBoundingClientRect().height,
+  );
+  expect("a 44px touch target on a phone", buttonHeight >= 44, buttonHeight);
+  const sideways = await page.evaluate(
+    () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
+  );
+  expect("no sideways scroll at 390px", !sideways, sideways);
   for (const theme of ["light", "dark"]) {
     await paint(theme);
-    await shot(`server-phone-${theme}`);
+    await shot(`server-private-closed-phone-${theme}`);
   }
   await paint("light");
+  await page.unrouteAll({ behavior: "ignoreErrors" });
 };

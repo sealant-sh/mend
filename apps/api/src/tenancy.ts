@@ -1,3 +1,4 @@
+import type { MultiModeGateCase } from "@mend/api-contracts";
 import { InstanceRolesRepo, OrganizationsRepo } from "@mend/db";
 import { TenancyMode } from "@mend/domain/workbench";
 import { Config, Effect, Layer, Schema } from "effect";
@@ -71,9 +72,13 @@ export interface TenancyPosture {
   readonly operatorCount?: number;
 }
 
-/** One item of the multi mode gate, as observed on this instance. */
-export interface GateOutcome {
-  readonly id: string;
+/**
+ * One item of the multi mode gate, as observed on this instance: its case (`reason`) and that
+ * case's data, then the sentences `mend operator gate` prints.
+ */
+export type GateOutcome = MultiModeGateCase & GateOutcomeFacts;
+
+interface GateOutcomeFacts {
   readonly ok: boolean;
   /** What was observed, in plain words. */
   readonly detail: string;
@@ -81,8 +86,13 @@ export interface GateOutcome {
   readonly fix: string | null;
 }
 
-const item = (id: string, ok: boolean, detail: string, fix: string): GateOutcome => ({
-  id,
+const item = (
+  gateCase: MultiModeGateCase,
+  ok: boolean,
+  detail: string,
+  fix: string,
+): GateOutcome => ({
+  ...gateCase,
   ok,
   detail,
   fix: ok ? null : fix,
@@ -98,19 +108,22 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
   const exposed = exposedServiceHosts(posture.serviceHosts);
   return [
     item(
-      "cross-organization-authorization",
+      { id: "cross-organization-authorization", reason: "built-in" },
       true,
       "every route is classified and refuses across organizations with zero effects (project-access.test.ts)",
       "",
     ),
     item(
-      "per-account-resources",
+      { id: "per-account-resources", reason: "built-in" },
       true,
       "signers, push devices, notifications and GitHub identity belong to one account",
       "",
     ),
     item(
-      "folders-reach-workspaces",
+      {
+        id: "folders-reach-workspaces",
+        reason: posture.sessionStore === "colocated" ? "colocated" : "captured",
+      },
       true,
       posture.sessionStore === "colocated"
         ? "folders and references are mounted beside each worktree"
@@ -118,13 +131,19 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
       "",
     ),
     item(
-      "source-policy",
+      {
+        id: "source-policy",
+        reason: posture.sourcePolicy === "tenant" ? "tenant" : "operator",
+      },
       posture.sourcePolicy === "tenant",
       `Mend's own git follows the ${posture.sourcePolicy ?? "operator"} source policy`,
       "set MEND_SOURCE_POLICY=tenant",
     ),
     item(
-      "source-address-pinning",
+      {
+        id: "source-address-pinning",
+        reason: posture.sourcePolicy === "tenant" ? "tenant" : "operator",
+      },
       posture.sourcePolicy === "tenant",
       posture.sourcePolicy === "tenant"
         ? "git dials the address the source policy checked, for ssh and HTTPS"
@@ -132,7 +151,10 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
       "set MEND_SOURCE_POLICY=tenant",
     ),
     item(
-      "transport-bound-to-origin",
+      {
+        id: "transport-bound-to-origin",
+        reason: posture.transportBoundToOrigin === false ? "unbound" : "bound",
+      },
       posture.transportBoundToOrigin !== false,
       posture.transportBoundToOrigin === false
         ? "a workspace's git transport may sign against any remote"
@@ -140,7 +162,15 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
       "unset MEND_GIT_TRANSPORT_BIND_ORIGIN",
     ),
     item(
-      "upload-length-binding",
+      {
+        id: "upload-length-binding",
+        reason:
+          posture.captureRequireSizes !== true
+            ? "no-sizes"
+            : posture.blobStore?.startsWith("s3://") === true
+              ? "enforced"
+              : "directory-store",
+      },
       posture.captureRequireSizes === true && posture.blobStore?.startsWith("s3://") === true,
       posture.captureRequireSizes === true
         ? posture.blobStore?.startsWith("s3://") === true
@@ -150,13 +180,15 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
       "set MEND_CAPTURE_REQUIRE_SIZES=true with an S3-compatible MEND_BLOB_STORE",
     ),
     item(
-      "daemon-declares-sizes",
+      { id: "daemon-declares-sizes", reason: "built-in" },
       true,
       "sealantd declares the length of every upload it asks a URL for (sealantd 0.16.0 or newer)",
       "",
     ),
     item(
-      "raw-service-ports",
+      exposed.length === 0
+        ? { id: "raw-service-ports", reason: "loopback" }
+        : { id: "raw-service-ports", reason: "exposed", addresses: exposed },
       exposed.length === 0,
       exposed.length === 0
         ? "raw service listeners stay on loopback"
@@ -164,7 +196,7 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
       "unset MEND_SERVICE_HOSTS",
     ),
     item(
-      "operator-present",
+      { id: "operator-present", reason: "operators", count: posture.operatorCount ?? 0 },
       (posture.operatorCount ?? 0) > 0,
       `${posture.operatorCount ?? 0} operator account(s)`,
       "grant the operator role to an account",

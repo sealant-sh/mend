@@ -157,6 +157,46 @@ describe("the multi mode gate", () => {
     expect(exposedServiceHosts("127.0.0.1, ::1,localhost")).toEqual([]);
   });
 
+  it.each<[string, Partial<TenancyPosture>, Record<string, unknown>]>([
+    ["cross-organization-authorization", {}, { reason: "built-in", ok: true }],
+    ["per-account-resources", {}, { reason: "built-in", ok: true }],
+    ["folders-reach-workspaces", {}, { reason: "captured", ok: true }],
+    ["folders-reach-workspaces", { sessionStore: "colocated" }, { reason: "colocated", ok: true }],
+    ["source-policy", {}, { reason: "tenant", ok: true }],
+    ["source-policy", { sourcePolicy: "operator" }, { reason: "operator", ok: false }],
+    ["source-address-pinning", {}, { reason: "tenant", ok: true }],
+    ["source-address-pinning", { sourcePolicy: "operator" }, { reason: "operator", ok: false }],
+    ["transport-bound-to-origin", {}, { reason: "bound", ok: true }],
+    [
+      "transport-bound-to-origin",
+      { transportBoundToOrigin: false },
+      { reason: "unbound", ok: false },
+    ],
+    ["upload-length-binding", {}, { reason: "enforced", ok: true }],
+    ["upload-length-binding", { captureRequireSizes: false }, { reason: "no-sizes", ok: false }],
+    [
+      "upload-length-binding",
+      { blobStore: "dir:///var/lib/mend/_blobs" },
+      { reason: "directory-store", ok: false },
+    ],
+    ["daemon-declares-sizes", {}, { reason: "built-in", ok: true }],
+    ["raw-service-ports", {}, { reason: "loopback", ok: true }],
+    [
+      "raw-service-ports",
+      { serviceHosts: "127.0.0.1,0.0.0.0,10.0.0.5" },
+      { reason: "exposed", addresses: ["0.0.0.0", "10.0.0.5"], ok: false },
+    ],
+    ["operator-present", {}, { reason: "operators", count: 1, ok: true }],
+    ["operator-present", { operatorCount: 0 }, { reason: "operators", count: 0, ok: false }],
+  ])("names %s's case and its data: %j", (id, change, expected) => {
+    expect(
+      evaluateGate({ ...configured, ...change }).find((outcome) => outcome.id === id),
+    ).toMatchObject({
+      id,
+      ...expected,
+    });
+  });
+
   it("passes with everything configured, and single mode never refuses", () => {
     // The two items that waited on the platform are in: sealantd declares every upload's length
     // (sealantd#82) and lays down the plan's sources beside the worktree (sealantd#83).
