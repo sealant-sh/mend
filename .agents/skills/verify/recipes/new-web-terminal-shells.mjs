@@ -329,7 +329,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await both("shells-crashed");
   await body
     .getByRole("listitem")
-    .filter({ has: crashLine })
+    .filter({ hasText: "Shell 3 exited with code 3." })
     .getByRole("button", { name: "What it printed" })
     .click();
   const output = page.getByRole("dialog", { name: "What Shell 3 printed" });
