@@ -74,6 +74,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       .waitForURL((url) => pattern.test(url.pathname), { timeout: ms })
       .then(() => true)
       .catch(() => false);
+  /** Clicks the middle of `locator` by position, as a person does, whatever covers it. */
+  const clickAt = async (locator) => {
+    const box = await locator.boundingBox();
+    if (box === null) throw new Error("nothing to click");
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+  };
   const parkMouse = () =>
     page.mouse.move(DESKTOP.width - 4, DESKTOP.height - 4);
   /**
@@ -261,7 +267,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await settled();
   await capture("projects-row-hover-light");
   // A click on the row away from the name (its "Visible to" cell).
-  await projectRow.getByRole("cell").nth(1).click();
+  await clickAt(projectRow.getByRole("cell").nth(1));
   expect(
     await reaches(new RegExp(`^/projects/${projectId}`)),
     "a click on the project's row opens it",
@@ -323,7 +329,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     ).length === 0,
     "no focus ring in the project's Sessions table is cut off",
   );
-  await projectSessionRow.getByRole("cell").nth(3).click();
+  await clickAt(projectSessionRow.getByRole("cell").nth(3));
   expect(
     await reaches(new RegExp(`^/sessions/${sessionId}`)),
     "a click on a session's row opens it",
