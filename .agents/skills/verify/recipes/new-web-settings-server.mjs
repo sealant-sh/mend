@@ -547,6 +547,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   // --- A public server on Kubernetes with several organizations, every check in place -----
   const health = await operator("GET", "/api/health");
   const version = health.body?.version ?? "0.36.0";
+  note(`/api/health still counts the exposure checks: ${JSON.stringify(health.body?.exposure)}`);
   await rewrite({
     "platform.exposure": () => answerOf(PUBLIC_IN_PLACE(version)),
     "platform.health": (real) =>
