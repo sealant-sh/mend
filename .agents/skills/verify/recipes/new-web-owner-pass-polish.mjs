@@ -283,7 +283,8 @@ export default async ({ page, web, capture, note }) => {
   await visible(page.getByText(/^Running/)).waitFor();
   await mendRun.click();
   await settled();
-  if ((await page.getByRole("dialog").filter({ visible: true }).count()) > 0)
+  // The toasts are dialogs too; the confirm dialog is the one with its own heading.
+  if (await page.getByRole("heading", { name: /^Let Mend run Executor/ }).isVisible())
     throw new Error("picking the selected option opened a dialog");
   await visible(page.locator('[data-slot="segmented-item"]', { hasText: "Use your own" })).click();
   await heading("Use your own Executor");
