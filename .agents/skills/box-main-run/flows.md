@@ -28,8 +28,8 @@ a fresh `mktemp -d` directory of this run. Web flows run through
 driven by the run's agent from the feature file.
 
 Box facts the flows depend on: the flows run on the run's own data, which every copy boots with, at
-the address the lane's copy serves (`$WEB`, read each run). On a Boat copy (lane A, while
-`BOAT_COPIES` is 1) sessions run on Boat by default, and Docker is offered beside it; on a copy
+the address the lane's copy serves (`$WEB`, read each run). On a Boat copy (lanes A and C, with
+`BOAT_COPIES` at 2) sessions run on Boat by default, and Docker is offered beside it; on a copy
 without Boat they run on Docker. The runtime is chosen per organization and a worktree keeps the
 runtime it was made on, so a worktree the data made on Boat starts no session on a copy without it.
 One organization (Default), single tenancy. Provider logins on 16 Nov: codex and claude connected,
@@ -110,8 +110,9 @@ removes what SKILL.md's ledger says to remove.
 
 Flows are grouped below as the map's README groups features; within a lane they run in this order,
 because later flows reuse what earlier ones made. SKILL.md's Lanes says which lane runs each group:
-A runs 1, 3, 4, 6 and 7 and group 9's Boat flows; B runs 2, 5 and 8; C runs group 9's other flows.
-Each copy has its own data, so a group on one lane never sees what another lane changed.
+A runs 1, 3, 4, 6 and 7; B runs 2, 5 and 8; C runs 9, and when C has no Boat, group 9's Boat flows
+run on A after its own. Each copy has its own data, so a group on one lane never sees what another
+lane changed.
 
 1. `server.data-intact` (before half), `server.upgrade`, `server.data-intact` (after half),
    `server.status-logs`
@@ -2014,16 +2015,22 @@ Each copy has its own data, so a group on one lane never sees what another lane 
   completed change nobody has commented on, and `review-change.web-comments` comments on the run
   session's change before this flow runs
 - **Do:**
-  `M run --project <p> --name main-run-settle-<sha8> -- sh -c 'printf "settle\n" > SETTLE.md'`. On
-  `/`, wait for its row under `Ready to review`, settle it, open `Settled`, and use
-  `Back to the inbox` on it, so the flow ends where it began; narrow the inbox by `<p>` and clear
-  it. Type no prompt. Restore: `M worktrees rm main-run-settle-<sha8> --force --project <p>`.
-- **See:** the `main-run-settle-<sha8>` row under `Ready to review` leaves it and reads
-  `settled just now` under `Settled`, then is back; the project filter shows only `<p>`'s rows; the
-  heading `What should an agent work on?`.
+  `M run --project <p> --name main-run-settle-<sha8> -- sh -c 'printf "settle\n" > SETTLE.md'`;
+  record its session `<id>` from its `watch · <web>/sessions/<id>` line. `--name` names the
+  worktree, not the session, and a session nobody named reads `New session` (SLNT-1211), as do many
+  other rows of the inbox: find this session's row by its link to `/sessions/<id>`, never by its
+  text, and use the controls inside that row. On `/`, wait for that row under `Ready to review`,
+  settle it, open `Settled`, and use `Back to the inbox` on it, so the flow ends where it began;
+  narrow the inbox by `<p>` and clear it. Type no prompt. Restore:
+  `M worktrees rm main-run-settle-<sha8> --force --project <p>`.
+- **See:** the row linking to `/sessions/<id>` under `Ready to review` reads `New session`, not
+  `main-run-settle-<sha8>`; it leaves `Ready to review` and reads `settled just now` under
+  `Settled`, then is back; the project filter shows only `<p>`'s rows; the heading
+  `What should an agent work on?`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/api/src/`
+- **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/api/src/`,
+  `packages/domain/src/workbench/inbox-rules.ts`
 
 ### now-and-sessions.new-web-polish
 
