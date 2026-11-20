@@ -814,6 +814,16 @@ export interface HealthFacts {
   };
 }
 
+const PLATFORM_NAMES: Readonly<Record<string, string>> = {
+  linux: "Linux",
+  darwin: "macOS",
+  win32: "Windows",
+  freebsd: "FreeBSD",
+};
+
+/** The operating system the server runs on, as Node names it (`linux`), in its own name. */
+export const platformName = (platform: string): string => PLATFORM_NAMES[platform] ?? platform;
+
 /** Where the server runs, from `/health`'s deployment mode. */
 export const deploymentLine = (health: HealthFacts, hostname: string | null): string =>
   health.deploymentMode === "kubernetes"

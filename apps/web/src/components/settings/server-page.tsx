@@ -44,6 +44,7 @@ import {
   type NeedsYouWords,
   organizationCounts,
   packagesLine,
+  platformName,
   RUNTIME_NAMES,
   RUNTIME_PLACES,
   RUNTIMES,
@@ -430,7 +431,9 @@ function ThisServerSection({
             <FactRow label="Version" value={data.version} mono under={false} />
             <FactRow
               label="Runs on"
-              description={machine.data?.platform}
+              description={
+                machine.data === undefined ? undefined : platformName(machine.data.platform)
+              }
               value={deploymentLine(data, machine.data?.hostname ?? null)}
             />
           </>

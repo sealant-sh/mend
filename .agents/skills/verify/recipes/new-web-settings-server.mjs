@@ -319,11 +319,27 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     page.evaluate(() =>
       document.querySelectorAll(".overflow-y-auto").forEach((element) => element.scrollTo(0, 0)),
     );
+  /**
+   * The whole page in one picture: the sheet scrolls inside itself, so the window grows to the
+   * sheet's full height for the capture, then goes back.
+   */
   const shot = async (name) => {
     await page.mouse.move(1, 1);
     await top();
+    const size = page.viewportSize();
+    const tall = await page.evaluate(() =>
+      Math.max(
+        ...[...document.querySelectorAll(".overflow-y-auto")].map(
+          (element) => element.scrollHeight - element.clientHeight,
+        ),
+        0,
+      ),
+    );
+    if (size !== null && tall > 0)
+      await page.setViewportSize({ width: size.width, height: Math.min(size.height + tall, 9000) });
     await settled();
     await capture(name);
+    if (size !== null && tall > 0) await page.setViewportSize(size);
   };
   const paint = async (theme) => {
     await page.evaluate(
@@ -448,7 +464,10 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await visible(organizations.getByText(summary.organization.name, { exact: true })).waitFor();
   note(`org-list: ${listed.body.length} organization(s), each with member and owner counts`);
   const image = section("Starting workspace image");
-  const editors = await image.getByRole("button").count();
+  const editors = await image
+    .getByRole("button")
+    .and(page.locator(':not([data-slot="collapsible-trigger"])'))
+    .count();
   expect("the starting image has no editor", editors === 0, editors);
   note("image-instance-default: the server's starting image named by what it is, read-only");
   const real = await operator("GET", "/api/sealant/connection");

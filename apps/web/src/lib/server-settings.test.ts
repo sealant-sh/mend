@@ -22,6 +22,7 @@ import {
   inPlaceLine,
   keyedParts,
   organizationCounts,
+  platformName,
   runSeveralLine,
   runtimeOffer,
   sealantConnected,
@@ -819,6 +820,9 @@ describe("this server and what it offers", () => {
     ).toBe("Over the network, at `https://boat.northwind.dev`");
     expect(changeHow("local")).toBe("run mend server setup on the server");
     expect(changeHow("kubernetes")).toBe("edit your Helm values and upgrade the release");
+    expect(platformName("linux")).toBe("Linux");
+    expect(platformName("darwin")).toBe("macOS");
+    expect(platformName("plan9")).toBe("plan9");
   });
 
   it("says which runtimes are offered and where new organizations start", () => {
