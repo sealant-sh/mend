@@ -23,14 +23,15 @@ a fresh `mktemp -d` directory of this run. Web flows run through
 `.agents/skills/verify/scripts/drive-web.mjs`; `scripted` flows name their recipe, `agent` flows are
 driven by the run's agent from the feature file.
 
-Box facts the flows depend on: sessions run on Boat by default, and Docker is offered beside it; the
-runtime is chosen per organization and a worktree keeps the runtime it was made on. One organization
-(Default), one account, single tenancy. Provider logins on 16 Nov: codex and claude connected,
-GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided.
-Five flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
-`start-session.composer`, `start-session.web-write`, `start-session.web-answer` and
-`send-review-back.deliver`. They use codex: the owner has far more Codex capacity than Claude (17
-Nov).
+Box facts the flows depend on: the flows run on the run's own data, which SKILL.md loads in place of
+the owner's while it holds the box, at the address the box serves (`$WEB`, read each run). Sessions
+run on Boat by default, and Docker is offered beside it; the runtime is chosen per organization and
+a worktree keeps the runtime it was made on. One organization (Default), single tenancy. Provider
+logins on 16 Nov: codex and claude connected, GitHub not. Flows use codex only: the box's Claude
+login stays unused until SLNT-905 is decided. Five flows run a real agent turn, each with one-line
+prompts: `start-session.boat-turn`, `start-session.composer`, `start-session.web-write`,
+`start-session.web-answer` and `send-review-back.deliver`. They use codex: the owner has far more
+Codex capacity than Claude (17 Nov).
 
 For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
 git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
@@ -59,9 +60,10 @@ gap, not a product failure.
 
 ## Fixtures
 
-Made once by hand, kept on the box, and checked by each run before the flow that needs it. A missing
+Made once, kept in the run's data (`/root/main-run/world.sql` on the box, saved by each run) and in
+the box's store and git service, and checked by each run before the flow that needs it. A missing
 fixture makes its flow `not run · fixture <name> missing`; recreate it as written, and only while
-you hold the box (`verify box prepare`).
+you hold the box with the run's data loaded (`verify box prepare --load`).
 
 - **The project** `<p>`: adopted by the owner account from its network origin. `M projects` lists
   it. To recreate: `M adopt <origin> --name boat-check-ubuntu` (adopt-project.md `adopt-cli`).
@@ -2527,8 +2529,8 @@ flows reuse what earlier ones made:
 ### server.upgrade
 
 - **Map:** server.md `server-upgrade`
-- **Needs:** no session; no turn; the box over `MEND_VERIFY_BOX_SSH`; the previous build running
-  with every earlier run's data
+- **Needs:** no session; no turn; the box over `MEND_VERIFY_BOX_SSH`; the run's data loaded, with
+  every earlier run's data in it, and the build the box ran (the owner's) pinned
 - **Do:** SKILL.md step 4: deploy the preview of this commit over the build the box ran.
 - **See:** `$E/server.upgrade/deploy.log` ends `preview-deploy: finished for <version>`;
   `verify box identity` reads `the box runs this head`.
@@ -2543,12 +2545,13 @@ flows reuse what earlier ones made:
 - **Map:** server.md `server-upgrade` (data kept); now-and-sessions.md `sessions-cli`,
   `projects-cli`; review-change.md `review-open`
 - **Needs:** either; no turn; CLI and web; the previous run's session
-- **Do:** Before the deploy, `M projects` and `M sessions --all --project <p> --json` into
-  `before.*`; after it, the same into `after.*`. Then recipe `session-review` with
+- **Do:** `before.*` is the listing the previous run took just before it saved the run's data
+  (SKILL.md, State: `$STATE/listing/`, copied in step 4); after the deploy, `M projects --json` and
+  `M sessions --all --project <p> --json` into `after.*`. Then recipe `session-review` with
   `MAIN_RUN_SESSION` set to the previous run's session.
 - **See:** every project and session id of `before` is in `after` with the same status; the old
   session page loads and its change still shows `MAIN-RUN.md` with `seen`. With no previous run, the
-  listing half alone, and say so.
+  listing half alone, and say so; with no saved listing, the session half alone, and say so.
 - **Mode:** `agent` (its second half runs recipes/session-review.mjs)
 - **Box-only:** `upgrade-real-data`
 - **Sample:** yes

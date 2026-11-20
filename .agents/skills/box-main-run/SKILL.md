@@ -14,6 +14,15 @@ a person: the CLI and browser of the box's checker account, through the flows in
 [flows.md](flows.md). Every author's own run is re-seen here, by an agent that wrote none of it. You
 report and file tickets; you fix nothing.
 
+The box is not the run's own. VM 131 also serves the owner's instance, `mend.yiannisp.dev`, which he
+tests by hand, and it may be wiped at any time (SLNT-1202). So the run brings its own data and takes
+nothing it finds for granted. While it holds the box, it puts the owner's data aside (a dump) and
+loads the run's own: the checker account, the second account, their agent logins and the fixtures,
+as the last run left them. It deploys the preview over that data, and when it is done it saves its
+data again for the next run. Then it puts back the owner's data and the build he was running. In the
+morning the server is what he left. `pnpm verify box prepare --load` and `release --save` do both
+halves.
+
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
 top; report any flow outside it as `not run · not in this run's set`. A flow marked
 `- **Box:** after cut-over` drives the new web app (`apps/web`). A preview of `main`, which this run
@@ -45,7 +54,7 @@ git fetch --quiet origin main && git checkout --quiet --detach origin/main && pn
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41'   # VM 131, mend-boat-preview
-WEB=https://yiannis-k8s-arc.tailc79e49.ts.net             # the box's APP_URL
+WORLD=/root/main-run/world.sql                            # on the box: the run's own data
 KIT=~/.local/share/mend-boat-check                        # its checker account: cli/, password
 KIT2=~/.local/share/mend-boat-check-2                     # the second account (fixtures.sh)
 STATE=~/.local/state/mend-main-run                        # state.json, lock/, runs/<tag>/
@@ -54,9 +63,21 @@ SHA=$(git rev-parse HEAD); TAG=main-${SHA:0:12}; E=$STATE/runs/$TAG
 
 - VM 130 (`alpha.mend.run`) is the owner's live server: nothing here reaches it. The preview
   workflow's `deploy` input targets it; leave that input unset. Push no tag.
-- The checker account (`boat-check@example.test`, owner of Default on the box) is signed in already
-  in `$KIT/cli`. Use that config as it is: never `mend login` or `mend logout`, and never read a
-  token from it. The password file is read only into the private account file of step 4.
+- `WEB`, the box's address, is not a name you set: step 4's `names.sh` reads it from the box (the
+  `APP_URL` of its active generation, `https://mend.yiannisp.dev` on 20 Nov) into
+  `~/.local/state/mend-main-run/web`. Set `WEB=$(cat ~/.local/state/mend-main-run/web)` after it.
+  The tailnet name the box used before answers 502 now that Mend binds loopback behind its edge.
+- The checker account (`boat-check@example.test`, owner of Default in the run's data) is signed in
+  already in `$KIT/cli`, at the box's old address. The wrappers of step 4 set `MEND_URL=$WEB`, so
+  that saved login works at the new address. Use that config as it is: never `mend login` or
+  `mend logout`, and never read a token from it. The login is a device token in the run's data, so
+  it comes back with that data each night. The password file is read only into the private account
+  file of step 4.
+- `$WORLD` lives outside `/root/backups`, so a tidy never takes it, and `release --save` keeps the
+  one before as `/root/main-run/world.prev.sql`. It holds the accounts' agent logins: sealant
+  refreshes those while the run's data is loaded, so only the newest copy can still refresh them.
+  Never load an older copy unless the newest is lost; then expect `reconnect needed` on the agent
+  logins.
 - Never ssh to `acer-laptop`.
 - Run the shell steps in `bash`. zsh does not split an unquoted `$MEND_VERIFY_BOX_SSH` into
   arguments, and it may alias `mend` to another checkout's CLI.
@@ -92,7 +113,13 @@ is the same except when a run checked `main` with an unmerged branch merged in (
 c416f754 with the SLNT-895 stack, deployed as 92eca0b8); then the two differ, by design.
 
 `runs` is newest first and lists only what this skill made and has not removed. Write each field as
-soon as the step that made it succeeds, so a run that dies still leaves its ledger.
+soon as the step that made it succeeds, so a run that dies still leaves its ledger. The ledger's
+names (worktrees, sessions) live in the run's data, so they are there whenever that data is loaded;
+its `dump` is the owner's data as the run found it.
+
+Beside it, `$STATE/listing/` holds the listing of step 6.2, taken just before the run's data was
+saved: `projects.json` and `sessions.json`, with the tag in `tag`. It is flow `server.data-intact`'s
+`before`, because tonight's run deploys over exactly the data that listing read.
 
 ## Limits
 
@@ -103,8 +130,13 @@ soon as the step that made it succeeds, so a run that dies still leaves its ledg
   meets the next day's run, then gives up with one skip line (step 3).
 - **Load.** Nothing touches the box while the 1-minute load average in `/proc/loadavg` is over
   **24**: the wait (step 3) waits it out, and step 4 checks again before the deploy.
-- **The box.** No run while `verify box plan` says another check holds it, a session is live, the
-  box runs a migration `main` lacks, or its disk is short: the wait (step 3) waits all four out.
+- **The box.** No run while `verify box plan --load` says another check holds it, a session is live,
+  or its disk is short, nor within 60 minutes of anyone's last use: a session started or settled, or
+  a workspace container started. The owner tests this server by hand. The wait (step 3) waits all of
+  these out. A hold over 6 hours old has lapsed, by the tooling's rule, whoever made it
+  (`owner-onboarding` on 19 Nov): the run takes the box and writes that hold back at release. The
+  owner's data may run a migration `main` lacks (a build of the new app): that does not hold the run
+  up, because it deploys over its own data, never over his.
 - **Time.** Each step has the cap below. A step past its cap is hung: stop the command it started,
   mark it failed with `hung after <n> min`, and go on to what can still run. At **4 hours** from the
   hold, start nothing new: wind down (step 6) and report what did not run as `not run · run cap`.
@@ -173,9 +205,14 @@ deadline=$(( $(date -d "<the lock's at>" +%s) + 20 * 3600 ))
 
 Its last line says what happened:
 
-- `held <sha> <tag>`: the box is yours. Set `SHA` and `TAG` from it, `E=$STATE/runs/$TAG`, run
+- `held <sha> <tag>`: the box is yours, the owner's data is dumped, and the run's data is loaded
+  (Mend is stopped until the deploy). Set `SHA` and `TAG` from it, `E=$STATE/runs/$TAG`, run
   `pnpm install --frozen-lockfile`, and record `dump` in the ledger from
   `.verify/latest/box-prepare.json`.
+- `failed <what failed>`: the box is held for this run, but its data did not load (a missing
+  `$WORLD`, or data this head cannot deploy over). No flow can run. Release at once, which puts the
+  owner's data and build back (`pnpm verify box release --tag <the tag prepare named> --yes`,
+  without `--save`). File it as Fix Now (step 7), and finish (step 8) without moving `lastCommit`.
 - `again <what blocked>`: a background command's 2-hour limit came first. Start it again with the
   same deadline.
 - `deadline <what blocked>`: 20 hours passed without a free box. End the run with
@@ -212,15 +249,16 @@ Record `cliDir` in the ledger from its result. Then set up this machine's side:
 ```sh
 mkdir -p $E
 .agents/skills/box-main-run/names.sh .verify/box/cli-${SHA:0:12}/*.tgz
+WEB=$(cat ~/.local/state/mend-main-run/web)
 ```
 
-It installs this commit's CLI and writes, at fixed paths under `$STATE`, the names every later
-command uses:
+It reads the box's address into `$STATE/web`, installs this commit's CLI and writes, at fixed paths
+under `$STATE`, the names every later command uses:
 
 | Name          | Path                                   | What it is                                                                          |
 | ------------- | -------------------------------------- | ----------------------------------------------------------------------------------- |
-| `M`           | `~/.local/state/mend-main-run/bin/M`   | mend, signed in as the checker account                                              |
-| `M2`          | `~/.local/state/mend-main-run/bin/M2`  | mend, signed in as the second account                                               |
+| `M`           | `~/.local/state/mend-main-run/bin/M`   | mend, signed in as the checker account, at `$WEB`                                   |
+| `M2`          | `~/.local/state/mend-main-run/bin/M2`  | mend, signed in as the second account, at `$WEB`                                    |
 | `box`         | `~/.local/state/mend-main-run/bin/box` | `box '<command>'` runs it on the box over ssh                                       |
 | `web`, `web2` | `~/.local/state/mend-main-run/bin/web` | `web <out dir> <recipe> [flags]`: the web driver against the box, as either account |
 | `$P`          | `~/.local/state/mend-main-run/private` | mode 700, the two accounts' web sign-in and browser state                           |
@@ -236,20 +274,25 @@ refuses one hidden in `bash -c` or a sourced file, and on 17 Nov that left a wor
 a folder on the box. Give each removal its own command. Where these files write `M`, `M2`, `box` or
 `web`, they mean those paths.
 
-`M doctor` must name `$WEB` as its server before any other `M` command: a different server means
-stop, release, and report the run as not started. Take the `before` listing of flow
-`server.data-intact` now, and read `df -B1 --output=avail /` on the box. Check the load average
-again: over 24, wait in a shell loop that re-reads it every 2 minutes, for up to 30 minutes, then go
-on either way and say so in the report (you hold the box; giving it up costs more than a slow run).
-Then deploy, from the box, with the CLI `box cli` installed:
+Mend is stopped on the run's data until the deploy starts it, so no `M` command answers yet. Copy
+the listing the last run left, `$STATE/listing/`, into `$E/server.data-intact/before/`: it is that
+flow's `before`. With no listing there, its listing half is `not run · no listing saved` (first run
+of this way, 20 Nov). Read `df -B1 --output=avail /` on the box. Check the load average again: over
+24, wait in a shell loop that re-reads it every 2 minutes, for up to 30 minutes, then go on either
+way and say so in the report (you hold the box; giving it up costs more than a slow run). Then
+deploy, from the box, with the CLI `box cli` installed:
 
 ```sh
 ssh $MEND_VERIFY_BOX_SSH "export PATH=/root/box-$TAG-cli/node_modules/.bin:\$PATH; \
   curl -fsSL https://raw.githubusercontent.com/sealant-sh/mend/$SHA/scripts/preview-deploy.sh \
   | timeout 25m bash -s -- <version> $SHA" 2>&1 | tee $E/deploy.log
 pnpm verify box identity --tag $TAG
-pnpm verify health
+pnpm verify health --url $WEB
 ```
+
+The deploy upgrades from the owner's build (the version `prepare` recorded in its hold) over the
+run's data. Then `M doctor` must name `$WEB` as its server before any other `M` command: a different
+server means wind down (step 6) and report the run as not started.
 
 Record `version` and `image` in the ledger once the deploy pulled the image. `identity` must read
 `the box runs this head`; anything else means the flows would test another build: report them all
@@ -331,12 +374,33 @@ flow that needs an earlier flow's session and lacks it is `not run · <flow> fai
 
 ## 6. Wind down
 
+Everything here up to the release runs against the run's data; after the release the server is the
+owner's again, and no `M` command may run.
+
 1. Stop every session this run started that is still live (`M stop <id8>`), and confirm
    `M sessions --project <project> --json` lists none of them.
-2. `pnpm verify box release --tag $TAG --yes`.
-3. Clean up, from the ledger only. Keep `runs[0]` (this run) and `runs[1]`; for every older entry,
-   remove each thing it names, after checking its name has the shape below. A name of any other
-   shape is not this skill's: leave it and say so.
+2. Remove the ledger's worktrees (item 5's table, `worktrees` row; same rules) while the run's data
+   is loaded. Then write the listing for the next run: `M projects --json` and
+   `M sessions --all --project boat-check-ubuntu --json` into `$STATE/listing/projects.json` and
+   `sessions.json`, and `$TAG` into `$STATE/listing/tag`, replacing what was there.
+3. Read `df -B1 --output=avail /` on the box.
+4. Release, which saves the run's data and puts the owner's back:
+
+   ```sh
+   pnpm verify box release --tag $TAG --yes --save /root/main-run/world.sql
+   ```
+
+   Its steps, in order: `save` (Mend stopped, the run's data dumped to `$WORLD`, the one before kept
+   as `world.prev.sql`), `put-back` (the owner's dump restored, the box's `active` generation
+   pointed back at his build and started), `tidy`, and `release` (his lapsed hold written back, or
+   the hold lifted). A failed `save` keeps the old `$WORLD` and still puts his data back: report it,
+   because tomorrow's run then loads data with spent agent logins. A failed `put-back` keeps the
+   hold: put it right by hand (`docs/operations/preview-builds.md`, Deploy), release again, and file
+   Fix Now. It must not wait for the morning.
+
+5. Clean up the rest of the ledger over ssh. Keep `runs[0]` (this run) and `runs[1]`; for every
+   older entry, remove each thing it names, after checking its name has the shape below. A name of
+   any other shape is not this skill's: leave it and say so.
 
    | Field       | Shape it must have                                                                                                                              | Remove with                                         |
    | ----------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------- |
@@ -345,18 +409,21 @@ flow that needs an earlier flow's session and lacks it is `not run · <flow> fai
    | `image`     | `ghcr.io/sealant-sh/mend:<x.y.z>-next.<n>.preview.<n>`                                                                                          | `docker image rm` on the box                        |
    | `worktrees` | `<project>/main-run-<word>-<8 hex>` or `<project>/main-run-<8 hex>`, `<project>` one of `boat-check-ubuntu`, `main-run-land`, `main-run-second` | `M worktrees rm <name> --force --project <project>` |
 
-   Never remove the image `mend-mend-1` runs. A refusal (`image is in use`, a live session) keeps
-   that thing and its ledger entry: say so. Drop an entry once everything it names is gone. Nothing
-   else is deleted: no glob, no prune, nothing another check or the server made (the server's own
-   upgrade backups under `/root/.config/mend/backups` keep the newest two by themselves).
+   The `worktrees` row was done in item 2, while the run's data was loaded. Never remove the image
+   `mend-mend-1` runs. A refusal (`image is in use`, a live session) keeps that thing and its ledger
+   entry: say so. Drop an entry once everything it names is gone. Nothing else is deleted: no glob,
+   no prune, nothing another check or the server made (the server's own upgrade backups under
+   `/root/.config/mend/backups` keep the newest two by themselves).
 
-4. Read `df -B1 --output=avail /` on the box; the report states it beside the figure read before the
-   deploy (step 4).
-5. `rm -rf ~/.local/state/mend-main-run/private` once the evidence scan (step 7) has passed, as one
+6. Read `df -B1 --output=avail /` on the box; the report states it beside the figure read before the
+   deploy (step 4). Check `curl -fsS $WEB/api/health` names the version the hold's `putBack`
+   recorded, and say so in the report.
+7. `rm -rf ~/.local/state/mend-main-run/private` once the evidence scan (step 7) has passed, as one
    plain command.
 
-**Done when** no session of this run is live, the hold is released (or kept for the reason in
-Limits), and every ledger entry older than `runs[1]` is gone or named in the report with why.
+**Done when** no session of this run is live, the run's data is saved, the owner's data and build
+are back, the hold is released (or kept for the reason in Limits), and every ledger entry older than
+`runs[1]` is gone or named in the report with why.
 
 ## 7. Report and tickets
 

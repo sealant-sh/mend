@@ -16,7 +16,8 @@ set -uo pipefail
 flow=${1:-}
 MEND_CLI=${MEND_CLI:-$HOME/.local/state/mend-main-run/cli/node_modules/.bin/mend}
 KIT=${KIT:-$HOME/.local/share/mend-boat-check}
-WEB=${WEB:-https://yiannis-k8s-arc.tailc79e49.ts.net}
+WEB=${WEB:-$(cat "$HOME/.local/state/mend-main-run/web" 2>/dev/null)}   # names.sh reads it from the box
+[[ $WEB == https://* ]] || { echo "cli-reads.sh: no address: set WEB or run names.sh" >&2; exit 2; }
 : "${E:?set E}"
 P=${P:-boat-check-ubuntu}
 dir=$E/$flow
@@ -24,7 +25,7 @@ log=$dir/cli.log
 parts=()
 ok=1
 
-M() { XDG_CONFIG_HOME=$KIT/cli "$MEND_CLI" "$@"; }
+M() { XDG_CONFIG_HOME=$KIT/cli MEND_URL=$WEB "$MEND_CLI" "$@"; }
 
 # run <name> <command...>: runs it, logs it, and keeps its stdout in $out and exit in $code.
 run() {

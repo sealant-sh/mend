@@ -99,6 +99,20 @@ check deployed would apply its migrations again on start, and `mend server upgra
 downgrade, so the next deploy starts it. A restore that fails keeps the hold and says what to put
 right. `--no-restore` leaves the data, for a check whose branch is about to merge.
 
+A check that brings its own data (the daily run of `main`, on a box that also serves someone's own
+instance) uses two more flags. `prepare --load <dump>` takes the dump and the hold as above, then
+loads `<dump>` in place of the box's data and leaves Mend stopped for the deploy. Its hold records
+the generation `/root/.config/mend/active` points at, that build's version, and any lapsed hold it
+replaced. With `--load`, the box's own schema does not hold the check up, since the check never
+deploys over that data; the loaded data's schema is checked once it is in. `release --save <dump>`
+then stops Mend and dumps the data the check ran on to `<dump>`, keeping the previous copy as
+`<name>.prev.sql`. After that it restores the hold's dump, points `active` back at the recorded
+generation and starts it (`mend server start --offline`), checks that version runs, tidies, and
+writes the lapsed hold back. Generations are immutable snapshots, so this restarts exactly the build
+the box ran, which `mend server upgrade` would refuse as a downgrade. A put-back that fails keeps
+the hold. Both paths must be `.sql` files under `/root`; keep them outside `/root/backups`, which a
+tidy prunes.
+
 A restore puts back the databases only. What the check made outside them stays, with no row that
 names it: worktrees and repositories in the `mend-store` volume, captured objects in the
 `mend-garage` bucket, Boat's own state (`mend_mend-boat-state`), and the T3 gateway's and SSH
@@ -206,13 +220,19 @@ on it.
   - 6 vCPU, 8 GB RAM, 116 GB disk, `onboot 1`;
   - sessions run on Boat by default and may run in Docker (`MEND_SESSION_RUNTIMES=docker,boat`,
     `MEND_SESSION_RUNTIME=boat`);
-  - its `APP_URL` is `https://yiannis-k8s-arc.tailc79e49.ts.net`, the Proxmox host's tailnet name;
-    its session endpoint is `https://mend-boat-preview.tailc79e49.ts.net:8443`;
-  - its resolver does not use tailnet DNS, so it cannot resolve its own `APP_URL` by itself, and a
-    deploy's health wait fails. One hosts line fixes that:
-    `100.94.101.28 yiannis-k8s-arc.tailc79e49.ts.net`. cloud-init rewrites `/etc/hosts` on every
-    boot (`manage_etc_hosts`), so the line is in `/etc/cloud/templates/hosts.debian.tmpl` as well as
-    `/etc/hosts`; a backup of each is beside it, `*.before-slnt-892-20261115`;
+  - since 19 Nov 2026 it also serves the owner's own instance, `https://mend.yiannisp.dev`, behind a
+    Caddy edge (`mend-edge-1`), with Mend bound to loopback. He tests builds of the new web app
+    there by hand, and it may be wiped at any time: read what it runs before relying on it. Its
+    `APP_URL` is that address; its session endpoint is still
+    `https://mend-boat-preview.tailc79e49.ts.net:8443`;
+  - its old `APP_URL`, `https://yiannis-k8s-arc.tailc79e49.ts.net` (the Proxmox host's tailnet name,
+    which `tailscale serve` proxies to `10.0.0.41:3105`), answers 502 now that Mend binds loopback.
+    The hosts line that let the box resolve that name,
+    `100.94.101.28 yiannis-k8s-arc.tailc79e49.ts.net`, is still in `/etc/hosts` and
+    `/etc/cloud/templates/hosts.debian.tmpl` (backups `*.before-slnt-892-20261115`);
+  - the daily run of `main` brings its own data (`/root/main-run/world.sql`) with `prepare --load`
+    and `release --save`, as described under [Deploy](#deploy), so the owner's data and build are
+    back when it ends;
   - Docker workspaces on it cannot resolve the `APP_URL` either, which does not matter: a workspace
     reaches the server only through the session endpoint, and `pnpm verify health` says the app-URL
     probe from a workspace does not apply there;

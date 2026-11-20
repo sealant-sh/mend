@@ -229,7 +229,7 @@ preview of its head as above, and drives it the same way.
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41'
-export MEND_VERIFY_OUTER_URL=https://yiannis-k8s-arc.tailc79e49.ts.net   # the box's APP_URL
+export MEND_VERIFY_OUTER_URL=https://mend.yiannisp.dev   # the box's APP_URL (20 Nov; it moves: read it from the box's /root/.config/mend/active/server.env)
 pnpm verify box plan --pr <n>
 pnpm verify box prepare --pr <n> --yes
 pnpm verify drive new-web --box --recipe new-web-<route>

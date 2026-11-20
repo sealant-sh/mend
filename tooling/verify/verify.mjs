@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  DATA_PATH,
   boxCli,
   boxIdentity,
   boxPlan,
@@ -142,6 +143,13 @@ export const parseArgs = (argv) => {
       if (!/^[a-z][a-z0-9-]{0,39}$/.test(value ?? "") || /^(pr\d|sha-)/.test(value))
         throw new UsageError("--tag needs a name such as main-<sha12>, not pr<n> or sha-<sha>");
       options.tag = value;
+    } else if (arg === "--load" || arg === "--save") {
+      const value = argv[++index];
+      if (!DATA_PATH.test(value ?? ""))
+        throw new UsageError(
+          `${arg} needs a .sql path under /root, such as /root/main-run/world.sql`,
+        );
+      options[arg.slice(2)] = value;
     } else if (arg === "--concurrency") {
       const value = Number(argv[++index]);
       if (!Number.isInteger(value) || value < 1)
@@ -176,7 +184,8 @@ const help = () =>
     "Options: --base <ref> (default origin/main), --files <paths…> (plan), --all and",
     "--concurrency <n> (check: turbo tasks and Vitest workers), --full (formal), --markdown (status),",
     "--record <answer.json> and --self (judge), --pr <n> or --body <file> (receipt),",
-    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n> or --tag <name>, --yes and --no-restore (box),",
+    "--ssh <args> or MEND_VERIFY_BOX_SSH, --pr <n> or --tag <name>, --yes, --no-restore, --load <dump>",
+    "(plan, prepare) and --save <dump> (release) (box),",
     "--url, --from,",
     "--expect-version (health), --port, --project, --mend|--sealant|--sealantd <source>,",
     "--expect-mend|sealant|sealantd <sha> (stack), --recipe, --timeout <ms>, --box (drive). Results:",
@@ -301,7 +310,14 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     const sshArgs = options.ssh ?? process.env.MEND_VERIFY_BOX_SSH;
     const ssh = options.sshRunner ?? (sshArgs ? sshRunner(sshArgs.trim().split(/\s+/)) : null);
     const tag = checkTag(options.pr, head, options.tag);
-    const context = { head, ssh, tag, yes: options.yes === true, stamp: stampOf(startedAt) };
+    const context = {
+      head,
+      ssh,
+      tag,
+      yes: options.yes === true,
+      stamp: stampOf(startedAt),
+      ...(options.load === undefined ? {} : { load: options.load }),
+    };
     const { steps, next, ...rest } = {
       plan: () => boxPlan(root, context),
       prepare: () => boxPrepare(root, context),
@@ -312,6 +328,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
           ...context,
           root,
           noRestore: options.noRestore === true,
+          ...(options.save === undefined ? {} : { save: options.save }),
           ...(options.readMain ? { readMain: options.readMain } : {}),
           ...(options.front ? { front: options.front } : {}),
         }),
