@@ -3,10 +3,14 @@ import { describe, expect, it } from "vitest";
 
 import type { SessionProcessDto } from "./api.ts";
 import {
-  runningShellsFact,
+  exitWords,
+  nextShell,
+  openShells,
+  openShellsFact,
   type ShellSession,
   shellAccess,
   shellLine,
+  shellsThatExited,
   workspaceRuns,
   workspaceShells,
 } from "./workspace-shells.ts";
@@ -58,7 +62,10 @@ const session = (id: string, overrides: Partial<ShellSession>): ShellSession => 
   ...overrides,
 });
 
-const NAMES: Readonly<Record<string, string>> = { claude: "Claude Code", codex: "Codex" };
+const NAMES: Readonly<Record<string, string>> = {
+  claude: "Claude Code",
+  codex: "Codex",
+};
 const programName = (harness: string) => NAMES[harness] ?? harness;
 
 describe("a workspace's shells", () => {
@@ -68,12 +75,26 @@ describe("a workspace's shells", () => {
         session("a", {
           harness: "claude",
           processes: [
-            process("p1", "a", { label: "shell 1", createdAt: at(5), runsAs: "ada" }),
-            process("agent", "a", { kind: "agent-pty", harness: "claude", createdAt: at(1) }),
+            process("p1", "a", {
+              label: "shell 1",
+              createdAt: at(5),
+              runsAs: "ada",
+            }),
+            process("agent", "a", {
+              kind: "agent-pty",
+              harness: "claude",
+              createdAt: at(1),
+            }),
           ],
         }),
         session("b", {
-          processes: [process("p2", "b", { label: "shell 1", argv: ["bash"], createdAt: at(3) })],
+          processes: [
+            process("p2", "b", {
+              label: "shell 1",
+              argv: ["bash"],
+              createdAt: at(3),
+            }),
+          ],
         }),
       ],
       programName,
@@ -103,7 +124,11 @@ describe("a workspace's shells", () => {
               exitedAt: at(9),
               createdAt: at(6),
             }),
-            process("closed", "a", { status: "stopped", exitedAt: at(9), createdAt: at(7) }),
+            process("closed", "a", {
+              status: "stopped",
+              exitedAt: at(9),
+              createdAt: at(7),
+            }),
           ],
         }),
       ],
@@ -120,11 +145,21 @@ describe("a workspace's shells", () => {
       [
         session("s", {
           harness: "shell",
-          processes: [process("cmd", "s", { kind: "agent-pty", harness: "shell", argv: ["bash"] })],
+          processes: [
+            process("cmd", "s", {
+              kind: "agent-pty",
+              harness: "shell",
+              argv: ["bash"],
+            }),
+          ],
         }),
         session("c", {
           processes: [
-            process("gone", "c", { kind: "agent-pty", status: "exited", exitedAt: at(4) }),
+            process("gone", "c", {
+              kind: "agent-pty",
+              status: "exited",
+              exitedAt: at(4),
+            }),
           ],
         }),
       ],
@@ -141,12 +176,18 @@ describe("whether the workspace runs", () => {
     expect(workspaceRuns([stopped, session("b", { status: "waiting" })])).toBe(true);
     expect(
       workspaceRuns([
-        session("a", { status: "idle", processes: [process("sh", "a", { status: "running" })] }),
+        session("a", {
+          status: "idle",
+          processes: [process("sh", "a", { status: "running" })],
+        }),
       ]),
     ).toBe(true);
     expect(
       workspaceRuns([
-        session("a", { status: "idle", processes: [process("x", "a", { kind: "screen" })] }),
+        session("a", {
+          status: "idle",
+          processes: [process("x", "a", { kind: "screen" })],
+        }),
       ]),
     ).toBe(false);
   });
@@ -181,33 +222,85 @@ describe("who watches and who types", () => {
   });
 });
 
-const ago = () => "9m";
 const nameOf = (id: string) => (id === "ada" ? "Ada Lovelace" : null);
 
-describe("what a shell's row says", () => {
-  const [running, exited, closed] = workspaceShells(
+const mine = (sessionId: string) => sessionId === "a";
+
+describe("the shells the list holds", () => {
+  const shells = workspaceShells(
     [
       session("a", {
+        harness: "claude",
         processes: [
-          process("r", "a", { runsAs: "ada", createdAt: at(1) }),
-          process("e", "a", { status: "exited", exitCode: 0, exitedAt: at(2), createdAt: at(2) }),
-          process("c", "a", { status: "stopped", exitedAt: at(3), createdAt: at(3) }),
+          process("agent", "a", {
+            kind: "agent-pty",
+            harness: "claude",
+            createdAt: at(0),
+          }),
+          process("r", "a", {
+            label: "shell 1",
+            runsAs: "ada",
+            createdAt: at(1),
+          }),
+          process("e", "a", {
+            label: "shell 2",
+            status: "exited",
+            exitCode: 0,
+            exitedAt: at(4),
+            createdAt: at(2),
+          }),
+          process("x", "a", {
+            label: "shell 3",
+            status: "exited",
+            exitCode: 137,
+            exitedAt: at(4),
+            createdAt: at(3),
+          }),
+          process("c", "a", {
+            status: "stopped",
+            exitedAt: at(4),
+            createdAt: at(4),
+          }),
         ],
+      }),
+      session("b", {
+        ownerUserId: "grace",
+        processes: [process("theirs", "b", {})],
       }),
     ],
     programName,
   );
 
-  it("says what runs, that it runs and as whom, or how it ended and when", () => {
-    expect(running && shellLine(running, nameOf, ago)).toBe("zsh · Running · Ada Lovelace");
-    expect(exited && shellLine(exited, nameOf, ago)).toBe("Exited with code 0 · 9m");
-    expect(closed && shellLine(closed, nameOf, ago)).toBe("Closed · 9m");
+  it("holds the open shells the person may see, and the tab counts exactly those", () => {
+    const open = openShells(shells, mine);
+    expect(open.map((shell) => shell.key)).toEqual(["session:a", "r"]);
+    expect(openShellsFact(open)).toBe("2 shells");
+    expect(openShellsFact(open.slice(1))).toBe("1 shell");
+    expect(openShellsFact([])).toBeUndefined();
   });
 
-  it("counts the shells that run, for the tab", () => {
-    expect(runningShellsFact([running, exited, closed].filter((each) => each !== undefined))).toBe(
-      "1 shell",
+  it("says what runs in a listed shell, and as whom", () => {
+    const running = shells.find((shell) => shell.key === "r");
+    expect(running && shellLine(running, nameOf)).toBe("zsh · Running · Ada Lovelace");
+  });
+
+  it("finds the shells that exited by themselves, with their codes, and not the closed one", () => {
+    const exits = shellsThatExited(["session:a", "r", "e", "x", "c", "gone"], shells);
+    expect(exits).toEqual([
+      { key: "e", name: "Shell 2", processId: "e", exitCode: 0 },
+      { key: "x", name: "Shell 3", processId: "x", exitCode: 137 },
+    ]);
+    expect(exits.map(exitWords)).toEqual(["Shell 2 exited.", "Shell 3 exited with code 137."]);
+    expect(exitWords({ key: "n", name: "Shell 4", processId: "n", exitCode: null })).toBe(
+      "Shell 4 ended.",
     );
-    expect(runningShellsFact([])).toBeUndefined();
+  });
+
+  it("moves to the shell after the one that left, else the one before, else none", () => {
+    expect(nextShell(["a", "b", "c"], "b", ["a", "c"])).toBe("c");
+    expect(nextShell(["a", "b", "c"], "c", ["a", "b"])).toBe("b");
+    expect(nextShell(["a", "b", "c"], "b", ["a"])).toBe("a");
+    expect(nextShell(["a"], "a", [])).toBeNull();
+    expect(nextShell(["a"], "new", ["a"])).toBe("a");
   });
 });

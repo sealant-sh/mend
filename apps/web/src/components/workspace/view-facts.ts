@@ -6,7 +6,7 @@ import { sessionDetailQuery } from "#/lib/session-queries";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 import { previewFact } from "#/lib/workspace-services";
-import { runningShellsFact, shellAccess } from "#/lib/workspace-shells";
+import { openShells, openShellsFact, shellAccess } from "#/lib/workspace-shells";
 
 import type { ViewFacts, ViewPlace } from "./views.tsx";
 import { useShownService, useWorkspaceServices } from "./views/use-workspace-services.ts";
@@ -72,8 +72,8 @@ export const usePreviewFacts = (place: ViewPlace): ViewFacts => {
 };
 
 /**
- * The Terminal tab's and its "+" item's fact: how many shells run ("1 shell") of those the person
- * may see. Nothing until who is looking is known.
+ * The Terminal tab's and its "+" item's fact: how many shells are open ("1 shell"), counted as the
+ * Terminal view's list counts them. Nothing until who is looking is known.
  */
 export const useTerminalFacts = (place: ViewPlace): ViewFacts => {
   const trpc = useTRPC();
@@ -81,7 +81,7 @@ export const useTerminalFacts = (place: ViewPlace): ViewFacts => {
   const { sessions, shells } = useWorkspaceShells(place);
   if (viewer.isPending || viewer.isError) return {};
   const access = shellAccess(sessions, place.sessionId, viewer.data.userId);
-  const fact = runningShellsFact(shells.filter((shell) => access.watches(shell.sessionId)));
+  const fact = openShellsFact(openShells(shells, access.watches));
   return fact === undefined ? {} : { fact };
 };
 

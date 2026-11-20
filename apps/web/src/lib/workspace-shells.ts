@@ -184,31 +184,91 @@ export const shellAccess = (
   };
 };
 
-/** "1 shell", "2 shells": what the Terminal tab and its "+" item say while shells run. */
-export const runningShellsFact = (shells: ReadonlyArray<WorkspaceShell>): string | undefined => {
-  const running = shells.filter((shell) => shell.live && shell.processId !== null).length;
-  if (running === 0) return undefined;
-  return running === 1 ? "1 shell" : `${running} shells`;
+/**
+ * The shells the Terminal view lists: the live ones `watches` lets the person see. A shell that
+ * exits or is closed leaves the list; the tab's count and the list's heading both count these.
+ */
+export const openShells = (
+  shells: ReadonlyArray<WorkspaceShell>,
+  watches: (sessionId: string) => boolean,
+): ReadonlyArray<WorkspaceShell> =>
+  shells.filter((shell) => shell.live && watches(shell.sessionId));
+
+/** "1 shell", "2 shells": what the Terminal tab and its "+" item say while shells are open. */
+export const openShellsFact = (open: ReadonlyArray<WorkspaceShell>): string | undefined => {
+  if (open.length === 0) return undefined;
+  return open.length === 1 ? "1 shell" : `${open.length} shells`;
+};
+
+/** A shell that left the list because it exited by itself, not because someone closed it. */
+export interface ShellExit {
+  readonly key: string;
+  readonly name: string;
+  /** Its process, whose recorded output says what it printed. */
+  readonly processId: string;
+  readonly exitCode: number | null;
+}
+
+/**
+ * The shells listed before (`before`, their keys) that have since exited on their own, as
+ * `shells` (every shell, ended ones included) now has them. A shell someone closed, or one that
+ * is gone from `shells` altogether, isn't one: closing is the person's own doing.
+ */
+export const shellsThatExited = (
+  before: ReadonlyArray<string>,
+  shells: ReadonlyArray<WorkspaceShell>,
+): ReadonlyArray<ShellExit> =>
+  before.flatMap((key): ReadonlyArray<ShellExit> => {
+    const shell = shells.find((each) => each.key === key);
+    if (shell === undefined || shell.live || shell.stopped || shell.processId === null) return [];
+    return [
+      {
+        key,
+        name: shell.name,
+        processId: shell.processId,
+        exitCode: shell.exitCode,
+      },
+    ];
+  });
+
+/**
+ * What the view shows once the shell it showed (`picked`) leaves the list: the shell that came
+ * after it in the list before (`before`), else the one before it, else nothing.
+ */
+export const nextShell = (
+  before: ReadonlyArray<string>,
+  picked: string,
+  now: ReadonlyArray<string>,
+): string | null => {
+  const at = before.indexOf(picked);
+  if (at === -1) return now[0] ?? null;
+  const after = before.slice(at + 1).find((key) => now.includes(key));
+  if (after !== undefined) return after;
+  return before.slice(0, at).findLast((key) => now.includes(key)) ?? null;
 };
 
 /**
- * What a shell's line under its name says: "zsh · Running · Ada Lovelace" while it runs,
- * "Exited with code 0 · 9m" once it ended, "Closed · 9m" when it was stopped.
+ * "Shell 2 exited.", "Shell 2 exited with code 1.": the line where an exit is said. With no code
+ * reported, it only ended.
  */
+export const exitWords = (exit: ShellExit): string =>
+  exit.exitCode === null
+    ? `${exit.name} ended.`
+    : exit.exitCode === 0
+      ? `${exit.name} exited.`
+      : `${exit.name} exited with code ${exit.exitCode}.`;
+
+/**
+ * The directory every shell opens in: the worktree, mounted in the workspace. Mend doesn't see a
+ * shell's own `cd` after that.
+ */
+export const SHELL_DIRECTORY = "/workspace/repo";
+
+/** What a listed shell's line under its name says: "zsh · Running · Ada Lovelace". */
 export const shellLine = (
   shell: WorkspaceShell,
   nameOf: (userId: string) => string | null,
-  ago: (date: Date) => string,
 ): string => {
-  if (shell.live) {
-    const who = shell.runsAs === null ? null : nameOf(shell.runsAs);
-    return [shell.program, "Running", who].filter((part) => part !== null).join(" · ");
-  }
-  const end = shell.endedAt === null ? null : ago(shell.endedAt);
-  const how = shell.stopped
-    ? "Closed"
-    : shell.exitCode === null
-      ? "Ended"
-      : `Exited with code ${shell.exitCode}`;
-  return end === null ? how : `${how} · ${end}`;
+  const who = shell.runsAs === null ? null : nameOf(shell.runsAs);
+  return [shell.program, "Running", who].filter((part) => part !== null).join(" · ");
 };

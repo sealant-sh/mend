@@ -302,6 +302,14 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.stopShell({ params: { id: i.processId } })),
     ),
+  // A live shell's name in lists: 1 to 64 characters, unique among the session's live shells.
+  renameShell: procedure
+    .input(input(Schema.Struct({ processId: SessionProcessId, label: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.renameShell({ params: { id: i.processId }, payload: { label: i.label } }),
+      ),
+    ),
   pages: procedure
     .input(byId)
     .query(({ ctx, input: i }) =>

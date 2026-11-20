@@ -679,13 +679,21 @@ flows reuse what earlier ones made:
   type a command, Ctrl and click a printed link, move the Terminal tab to a tile of its own,
   maximise it, put it under the conversation and back, Close shell…, watch as a member with shared
   control (a fixture), look at 390px, load `/tty-embed` with an upgrade ticket and no cookie, and
-  stop the session. Stop the batch session at the end if the recipe didn't.
+  stop the session. Run the batch again, then drive `new-web-terminal-shells`: two shells, a shell's
+  right-click menu, Rename…, its "…" menu's Copy working directory, `exit` in one shell, `exit 3` in
+  another and its "What it printed", Close shell… on a shell running `sleep 600`, a long press, and
+  390px. Stop the batch sessions at the end if the recipes didn't.
 - **See:** each step's note in the recipe's `steps.log`: the redirect to `/sessions/<id>/terminal`
   with the Terminal tab showing, the command's output read through Copy, the link's new tab, the
   shell's column count falling in half a sheet and rising when maximised with the same terminal
-  element, the closed shell's row, "Only <owner> types here. You're watching.", the ticket trade
-  answering 200 and the socket's first output, and the stopped workspace's line.
-- **Mode:** `scripted` (recipes/new-web-terminal.mjs)
+  element, the closed shell leaving the list, "Only <owner> types here. You're watching.", the
+  ticket trade answering 200 and the socket's first output, and the stopped workspace's line. From
+  the shells recipe: the tab's count and the list's heading equal to its rows at every step, a shell
+  that exits leaving the list with "Shell 2 exited." or "Shell 3 exited with code 3." and the next
+  shell shown, its output in "What it printed", `/workspace/repo` both copied and printed by `pwd`,
+  the confirm before closing, and "No shells are open in this workspace." with New shell once the
+  last one is closed.
+- **Mode:** `scripted` (recipes/new-web-terminal.mjs, recipes/new-web-terminal-shells.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/`, `apps/web/src/components/terminal/`,

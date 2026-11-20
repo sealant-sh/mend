@@ -92,7 +92,7 @@ export function LogBar({
   );
 }
 
-function LogText({
+export function LogText({
   lines,
   name,
   live,
