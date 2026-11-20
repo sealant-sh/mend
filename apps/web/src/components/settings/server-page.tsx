@@ -581,7 +581,7 @@ function Recheck({ which }: { readonly which: "sealant" | "boat-key" }) {
   return which === "sealant" ? (
     <CheckAgain checking={connection.isFetching} onCheck={() => void connection.refetch()} />
   ) : (
-    <CheckBoatKey />
+    <CheckBoatKey compact />
   );
 }
 
@@ -763,8 +763,11 @@ function BoatFacts({ boat }: { readonly boat: NonNullable<MachineDto["boat"]> })
   );
 }
 
-/** Sealant checks the server's own Boat key with Boat now; the machine view, read again, says what it saw. */
-function CheckBoatKey() {
+/**
+ * Sealant checks the server's own Boat key with Boat now; the machine view, read again, says what it
+ * saw. `compact` is the button alone, as "Needs you" carries it beside its status word.
+ */
+function CheckBoatKey({ compact = false }: { readonly compact?: boolean }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const phone = usePhone();
@@ -773,8 +776,19 @@ function CheckBoatKey() {
       onSettled: () => queryClient.invalidateQueries(trpc.platform.machine.pathFilter()),
     }),
   );
+  const failed =
+    checkKey.error === null ? null : (
+      <span role="alert" className="text-row text-destructive">
+        The check didn't run. {failureWords(checkKey.error, "Try again in a moment.")}
+      </span>
+    );
   return (
-    <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5 max-lg:flex-col max-lg:items-stretch">
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-x-3 gap-y-1.5 max-lg:flex-col max-lg:items-stretch",
+        compact ? "max-lg:w-full" : "mt-1.5",
+      )}
+    >
       <Button
         type="button"
         variant="outline"
@@ -784,13 +798,10 @@ function CheckBoatKey() {
       >
         {checkKey.isPending ? "Checking with Boat…" : "Check the key now"}
       </Button>
-      {checkKey.error === null ? (
-        <span className="text-row text-muted-foreground">Sealant also checks it once a day.</span>
-      ) : (
-        <span role="alert" className="text-row text-destructive">
-          The check didn't run. {failureWords(checkKey.error, "Try again in a moment.")}
-        </span>
-      )}
+      {failed ??
+        (compact ? null : (
+          <span className="text-row text-muted-foreground">Sealant also checks it once a day.</span>
+        ))}
     </div>
   );
 }
