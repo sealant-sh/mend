@@ -292,10 +292,10 @@ describe("where opening Mend at / goes", () => {
 
   it("sends someone who closed the tab after Agent login on to the step after it", async () => {
     const quick = () => Promise.resolve({ access: withKey, hasProject: false, ended: false });
-    const full = (namesOrganization: boolean) => () =>
+    const full = (firstAccount: boolean) => () =>
       Promise.resolve({
         access: withKey,
-        namesOrganization,
+        namesOrganization: firstAccount,
         commandLineOwed: false,
         hasProject: false,
         ended: false,

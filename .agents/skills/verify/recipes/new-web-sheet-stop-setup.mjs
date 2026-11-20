@@ -23,6 +23,17 @@ const PHONE = { width: 390, height: 844 };
 const TITLE = "Stop me at once";
 const WORKTREE = "pass-stop";
 
+/** One failed call in a tRPC batch answer. */
+const tRPCError = (call, message) => ({
+  error: {
+    json: {
+      message,
+      code: -32603,
+      data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path: call },
+    },
+  },
+});
+
 export default async ({ page, web, capture: captureOnce, note }) => {
   const out = process.argv[process.argv.indexOf("--out") + 1] ?? "";
   // The driver withholds a picture when the page inserts a subtree while it looks: look again.
@@ -135,15 +146,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
         overlaps,
       };
     });
-  const tRPCError = (path, message) => ({
-    error: {
-      json: {
-        message,
-        code: -32603,
-        data: { code: "INTERNAL_SERVER_ERROR", httpStatus: 500, path },
-      },
-    },
-  });
 
   await page.setViewportSize(DESKTOP);
   await open("/no-such-page");
@@ -245,7 +247,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await page.unroute("**/trpc/**");
 
   // 3. Stop from the sidebar row's menu, with Mend's answer held: the row is Stopped at once.
-  let release = () => undefined;
+  // Replaced by each held stop's own release; nothing to release before the first.
+  let release = () => {
+    note("no stop answer was held");
+  };
   let stopAnswer = "fail";
   await page.route("**/trpc/**", async (route) => {
     const url = new URL(route.request().url());
