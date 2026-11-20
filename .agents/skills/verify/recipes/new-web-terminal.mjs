@@ -3,7 +3,7 @@
 // the session with the Terminal tab focused; New shell opens a shell, a command typed there prints
 // its output, a link in the output opens with Ctrl and a click, the terminal follows its tile's
 // size, its tab moves to another tile and maximises with its connection and scrollback kept, Close
-// shell… stops it, someone with shared control watches and can't type, the phone's width shows the
+// shell… stops it and it leaves the list, someone with shared control watches and can't type, the phone's width shows the
 // picker, and /tty-embed (the phone app's page) attaches with an upgrade ticket. Run the CLI batch
 // first, once per stack: it starts a `sleep` session in the worktree `term-ws`.
 //
@@ -372,25 +372,22 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await stillMarked("back in one tile");
   note(`back in one tile (the lower tile was ${Math.round(lower.height)}px tall)`);
 
-  // Close shell…: the shell stops and its row says so.
+  // Close shell…: the shell stops and leaves the list (SLNT-1197).
   await body.getByRole("button", { name: "Close shell…" }).click();
   const dialog = page.getByRole("dialog", { name: `Close ${shellName}?` });
   await dialog.waitFor();
   await both("terminal-close-dialog");
   await dialog.getByRole("button", { name: "Close shell" }).click();
   await dialog.waitFor({ state: "hidden", timeout: 30_000 });
-  const closedRow = list.getByRole("button", { name: new RegExp(`^${shellName}`) });
   await page.waitForFunction(
     (name) =>
-      [...document.querySelectorAll('nav[aria-label="This workspace\'s shells"] button')].some(
-        (button) =>
-          (button.textContent ?? "").startsWith(name) &&
-          /Closed|Exited|Ended/.test(button.textContent ?? ""),
+      ![...document.querySelectorAll('nav[aria-label="This workspace\'s shells"] button')].some(
+        (button) => (button.textContent ?? "").startsWith(name),
       ),
     shellName,
     { timeout: 30_000 },
   );
-  note(`Close shell: the row reads "${(await closedRow.innerText()).replace(/\n/g, " / ")}"`);
+  note(`Close shell: ${shellName} left the list`);
 
   // A second shell for the watcher and the phone.
   await body.getByRole("button", { name: "New shell" }).click();
@@ -612,7 +609,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     .waitFor({ timeout: 60_000 });
   await body.getByRole("button", { name: "Resume and open a shell" }).waitFor();
   note(
-    "after Stop session: the list says the workspace isn't running, its shells read as ended, and Resume and open a shell is offered",
+    "after Stop session: the view says the workspace isn't running, no shells are listed, and Resume and open a shell is offered",
   );
   await both("terminal-workspace-stopped");
 };
