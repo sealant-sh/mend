@@ -200,9 +200,28 @@ saving, what the teardown leaves, and a retry in the same session:
 
 ## 9. The box, when the judge says so
 
-The box is our preview Mend server. A change goes there when its judge answered `box`, or when the
-owner asks (AGENTS.md, The Box). You run it there yourself, and see what the judge listed. The setup
-is commands:
+The box is a Mend server with the daily run's data and real agent logins. A change goes there when
+its judge answered `box`, or when the owner asks (AGENTS.md, The Box). You run it there yourself,
+and see what the judge listed.
+
+**Start your own box on this machine** unless the check needs Boat: a check VM is a fresh copy of
+the box, nobody else's, deleted when you are done (docs/operations/preview-builds.md, "Check VMs").
+
+```sh
+pnpm verify vm up      # ~20 s; prints the two exports for this copy, as below
+export MEND_VERIFY_BOX_SSH='-F /home/<you>/.local/share/mend-check-vms/ssh_config mend-check-<n>'
+export MEND_VERIFY_OUTER_URL=http://127.0.1.<n>:3105
+# then every command below, unchanged; the checker CLI follows it through MEND_URL
+pnpm verify vm down <n>   # after `box release`: stops the VM and deletes its disk
+```
+
+On a copy, `preview-deploy.sh` runs over ssh as on the box:
+`ssh $MEND_VERIFY_BOX_SSH 'curl -fsSL https://raw.githubusercontent.com/sealant-sh/mend/<sha>/scripts/preview-deploy.sh | bash -s -- <version> <sha>'`.
+Its sessions run in Docker: a worktree the loaded data made on Boat cannot start a session there, so
+make a new one. A copy holds the same Codex login as the box run's data; keep a copy for one check,
+not for days. `pnpm verify vm list` shows what runs; with no master yet, `vm build`
+(preview-builds.md says its arguments) makes one in about ten minutes. A check that needs Boat goes
+to VM 131, with the commands below and its own ssh arguments:
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J root@<proxmox host> root@<box vm>'
@@ -226,6 +245,8 @@ head: `plan` says so in its `front` line. `identity` then passes on that drive, 
 head against the build the box runs now. That build must have the same server source as this head,
 or contain this branch's base. A change that also touches the API or a shared package deploys a
 preview of its head as above, and drives it the same way.
+
+On a check VM, use the two exports `vm up` printed in place of the first two lines below.
 
 ```sh
 export MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41'

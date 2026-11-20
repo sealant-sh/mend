@@ -179,12 +179,21 @@ could defend are genuinely in dispute. Grade what the run finds by Fix Now or Fi
 
 ### The Box
 
-The box is our preview Mend server: VM 131, with Boat set up, or VM 130 (`alpha.mend.run`).
-`docs/operations/preview-builds.md` ("The box") says how to reach each. A change goes there when its
-judge says so, when the owner asks, or in the scheduled run below. Use it as a person would, through
-a `mend` CLI and browser already signed in. Never sign that CLI in or out, and never read its token.
+The box is a Mend server a check runs on as a person would, through a `mend` CLI and browser already
+signed in. Never sign that CLI in or out, and never read its token. A change goes there when its
+judge says so, when the owner asks, or in the scheduled run below.
 
-Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as root), then, in order:
+**A `box` answer runs on a check VM on the dev machine**: a throwaway copy of the box, with VM 131's
+install identity and the daily run's data, accounts and agent logins, one per check, so nobody
+waits. `pnpm verify vm up` starts one in about 20 seconds and prints the two exports below;
+`pnpm verify vm down <n>` deletes it when the check ends. `docs/operations/preview-builds.md`
+("Check VMs") says how the master is built and what a copy cannot do. A check that needs Boat still
+goes to VM 131 (SLNT-1215), as do the scheduled run and VM 130 (`alpha.mend.run`); "The box" there
+says how to reach each.
+
+Name the box with `MEND_VERIFY_BOX_SSH` (the ssh arguments that reach it as root) and
+`MEND_VERIFY_OUTER_URL`, then, in order (on a check VM nobody else holds it, so `prepare` never
+waits):
 
 ```sh
 pnpm verify box plan --pr <n>            # what it runs, whether another check holds it, schema, disk

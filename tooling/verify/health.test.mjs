@@ -139,3 +139,23 @@ test("without the box, its vantages are blocked, not failed, and say how to name
   const noUrl = await health({ from: ["local"], ssh: null, fetchImpl: answering() });
   assert.equal(noUrl.steps[0].status, "blocked_by_prerequisite");
 });
+
+// SLNT-1214: a Docker-only server's session endpoint is its compose name (http://mend:3106), which
+// resolves only on the bundle's network: the workspace probe runs there, as a workspace does.
+test("the workspace probe runs on the bundle's network when the box has it", async () => {
+  const containers = [];
+  const ssh = box({
+    host: () => ({ s: 200, b: body() }),
+    workspace: () => ({ s: 200, b: body() }),
+  });
+  await health({
+    from: VANTAGES,
+    ssh: (script) => {
+      if (script.startsWith("docker run")) containers.push(script);
+      return ssh(script);
+    },
+    fetchImpl: answering(),
+  });
+  assert.equal(containers.length, 1);
+  assert.match(containers[0], /docker network inspect mend_default .*--network mend_default/);
+});

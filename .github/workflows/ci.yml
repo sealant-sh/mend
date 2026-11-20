@@ -146,7 +146,7 @@ jobs:
           tooling/verify/verify.test.mjs tooling/verify/box.test.mjs tooling/verify/stack.test.mjs
           tooling/verify/health.test.mjs tooling/verify/drive.test.mjs
           tooling/verify/formal.test.mjs tooling/verify/gate.test.mjs
-          tooling/verify/box-tidy.test.mjs tooling/verify/ports.test.mjs
+          tooling/verify/box-tidy.test.mjs tooling/verify/ports.test.mjs tooling/verify/vm.test.mjs
       - name: Verify timing analysis against source budgets
         run:
           node --test --test-reporter=spec --test-reporter-destination=stdout
