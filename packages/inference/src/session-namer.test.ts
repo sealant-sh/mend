@@ -137,7 +137,14 @@ describe("SessionNamer", () => {
           maxRounds: 1,
         }),
       );
-      expect(requests[0]?.outputSchema).toBeDefined();
+      // Strict structured output (Codex's) takes only a closed object.
+      expect(requests[0]?.outputSchema).toEqual(
+        expect.objectContaining({
+          type: "object",
+          required: ["label"],
+          additionalProperties: false,
+        }),
+      );
       expect(requests[0]?.prompt).toContain("fix the flaky retry loop");
     });
   });

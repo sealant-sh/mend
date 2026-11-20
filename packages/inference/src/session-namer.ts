@@ -128,7 +128,13 @@ export const SessionNamerLive: Layer.Layer<SessionNamer, Config.ConfigError, Inf
       );
 
       const outputDocument = Schema.toJsonSchemaDocument(NameAnswer);
-      const outputSchema: Record<string, unknown> = { ...outputDocument.schema };
+      // Codex's structured output is strict: it refuses an object schema that allows other keys
+      // ("'additionalProperties' is required to be supplied and to be false"), and every codex-arm
+      // naming pass failed on it (SLNT-1211, seen on the box). Effect writes `true` here.
+      const outputSchema: Record<string, unknown> = {
+        ...outputDocument.schema,
+        additionalProperties: false,
+      };
 
       const name = Effect.fn("SessionNamer.name")(function* (input: SessionNamingInput) {
         const attempt = (arm: { readonly provider: "claude" | "codex"; readonly model: string }) =>
