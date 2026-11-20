@@ -397,9 +397,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await picker.click();
   await menu.waitFor();
   const phoneItems = await menu.getByRole("menuitem").allInnerTexts();
+  // Its layout height: the menu opens with a zoom, which a box measured meanwhile would include.
   const heights = await menu
     .getByRole("menuitem")
-    .evaluateAll((each) => each.map((item) => Math.round(item.getBoundingClientRect().height)));
+    .evaluateAll((each) => each.map((item) => item.offsetHeight));
   note(
     `390px picker items: ${JSON.stringify(phoneItems.map((each) => each.replace(/\n/g, " ")))}; heights ${JSON.stringify(heights)}`,
   );

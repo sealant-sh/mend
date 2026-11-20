@@ -646,13 +646,23 @@ function ShellMenuItems({
           <Item className={size} onClick={actions.rename}>
             <PencilIcon aria-hidden />
             Rename…
-            <Shortcut className={META}>F2</Shortcut>
+            {touch ? null : <Shortcut className={META}>F2</Shortcut>}
           </Item>
         )}
         <Item className={size} onClick={actions.copyDirectory}>
           <CopyIcon aria-hidden />
-          Copy working directory
-          <Shortcut className={META}>{SHELL_DIRECTORY}</Shortcut>
+          {touch ? (
+            // A phone's menu has no room beside the label: the path goes under it.
+            <span className="flex min-w-0 flex-col">
+              Copy working directory
+              <span className="font-mono text-meta text-muted-foreground">{SHELL_DIRECTORY}</span>
+            </span>
+          ) : (
+            <>
+              Copy working directory
+              <Shortcut className={META}>{SHELL_DIRECTORY}</Shortcut>
+            </>
+          )}
         </Item>
       </Group>
       {actions.close === null ? null : (
