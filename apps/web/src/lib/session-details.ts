@@ -103,6 +103,17 @@ export const layoutFallbackLine = (summary: string | null): string | null => {
   return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}.`;
 };
 
+/**
+ * The session's summary without why its workspace takes one person: that is the Details view's to
+ * say (`layoutFallbackLine`), where the workspace is described, not the conversation's
+ * (SLNT-1196). Null when nothing else was said.
+ */
+export const withoutLayoutWords = (summary: string | null): string | null => {
+  if (summary === null) return null;
+  const kept = summary.split(" · ").filter((part) => !part.includes("takes one person"));
+  return kept.length === 0 ? null : kept.join(" · ");
+};
+
 /** What a session's line in "Sessions in this workspace" reads of it. */
 type BylineFacts = Pick<Session, "ownerUserId" | "harness" | "status"> &
   Partial<Pick<Session, "model" | "effort">>;

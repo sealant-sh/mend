@@ -987,6 +987,30 @@ flows reuse what earlier ones made:
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
   `apps/web/src/lib/session-composer.ts`
 
+### start-session.new-web-instant-start
+
+- **Map:** start-session.md `start-composer`; now-and-sessions.md `home-composer`
+- **Needs:** Boat; real turn (codex); web; `<p>`, a worktree in it
+- **Do:** On `/`, write `Reply with the single word ready and change nothing.` and press Enter;
+  while the session starts, send `Then reply with the word again.` from its composer. Then, on
+  `<p>`'s Worktrees tab, open a worktree's "…", New session in this worktree, Codex. Drive the
+  recipe `new-web-instant-start` for the same steps against a stack, with a refused start and the
+  phone width.
+- **See:** the session's page opens at once at `/sessions/starting-…` with the message,
+  `Getting the session ready`, and a Starting row under Running; the composer is open and reads
+  `Codex is starting. What you send now goes to it once it's ready.`, never `runs in a terminal`;
+  the address moves to the session's id in place; the second message waits
+  (`Waits for Codex to start.`) and is sent after the opening turn; the menu's start opens its page
+  at once and shows no red line while it starts; nothing on the page reads `per-person users` or
+  `takes one person`.
+- **Mode:** `agent`
+- **Box:** after cut-over
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/pending-starts.ts`,
+  `apps/web/src/components/new-session/instant-start.ts`,
+  `apps/web/src/components/session/starting-session.tsx`, `apps/web/src/lib/starting-line.ts`,
+  `apps/web/src/lib/project-starts.ts`
+
 ### start-session.web-answer
 
 - **Map:** terminal-agent-waits.md `wait-permission`, `wait-question`, `wait-clears`;

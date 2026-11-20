@@ -538,6 +538,7 @@ import {
   PEOPLE_DIR,
   processUserOf,
   savedDirOf,
+  UNKNOWN_IMAGE_REASON,
 } from "./harness-layout.ts";
 import {
   CODEX_DAEMON_OFF,
@@ -21569,10 +21570,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (setupSkippedFrom !== null) {
           yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
         }
-        // Why this workspace takes one person, when it was not just the flag (docs/adr/0016).
+        // Why this workspace takes one person, when it was not just the flag (docs/adr/0016). An
+        // image still being checked says nothing: that is the start's own business.
         const layoutWords =
           layoutFallback ?? (launchLayout.layout === "shared" ? launchLayout.reason : null);
-        if (layoutWords !== null) {
+        if (layoutWords !== null && layoutWords !== UNKNOWN_IMAGE_REASON) {
           yield* noteLaunchWords(sessionId, layoutWords).pipe(Effect.ignore);
         }
         // Remote-SSH runs as root while the agent runs as the person: said, whatever the reason.

@@ -9,8 +9,10 @@ import { Suspense, useEffect } from "react";
 
 import { RouteErrorScreen } from "#/components/route-screens";
 import { SessionPage, SessionPending } from "#/components/session/session-sheet";
+import { StartingSessionPage } from "#/components/session/starting-session";
 import { checkpointOfHash } from "#/lib/checkpoint-link";
 import { conversationQuery } from "#/lib/conversation";
+import { isDraftId } from "#/lib/pending-starts";
 import { sessionDetailQuery } from "#/lib/session-queries";
 
 interface SessionSearch {
@@ -60,6 +62,8 @@ export const Route = createFileRoute("/_inbox/sessions/$sessionId")({
   // switch never does, and a session nothing read yet shows its inbox row's facts while they
   // arrive.
   loader: async ({ context: { queryClient, trpc, trpcClient }, params }) => {
+    // A start this tab is making has nothing on the server to read yet.
+    if (isDraftId(params.sessionId)) return;
     const firstPaint = Promise.all([
       queryClient.ensureQueryData(sessionDetailQuery(trpc, params.sessionId)),
       queryClient.ensureInfiniteQueryData(conversationQuery(trpc, trpcClient, params.sessionId)),
@@ -81,6 +85,7 @@ function SessionRoute() {
   const view = useParams({ strict: false, select: (params) => params.view });
   const navigate = Route.useNavigate();
   useCheckpointLink(sessionId, view);
+  if (isDraftId(sessionId)) return <StartingSessionPage draftId={sessionId} />;
   return (
     <CatchBoundary getResetKey={() => sessionId} errorComponent={RouteErrorScreen}>
       <Suspense key={sessionId} fallback={<SessionPending sessionId={sessionId} />}>

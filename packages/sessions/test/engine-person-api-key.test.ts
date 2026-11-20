@@ -307,7 +307,13 @@ describe("a Claude key where everyone's logins share one home (docs/adr/0018, de
 const IMAGE = "digest:sha256:img\u0000docker";
 
 /** One fresh Claude session for `user-fixture`, launched `times` over: each launch's error, or null. */
-const launchFresh = (world: Parameters<typeof setup>[1], tmp: string, times: number) =>
+const launchFresh = (
+  world: Parameters<typeof setup>[1],
+  tmp: string,
+  times: number,
+  /** The session line as each launch that started left it. */
+  lines: Array<string | null> = [],
+) =>
   Effect.gen(function* () {
     const project = yield* setup(tmp, world);
     const engine = yield* SessionEngine;
@@ -323,7 +329,10 @@ const launchFresh = (world: Parameters<typeof setup>[1], tmp: string, times: num
     for (let launch = 0; launch < times; launch += 1) {
       const outcome = yield* engine.launch(session.id, ["claude"]).pipe(Effect.result);
       outcomes.push(outcome._tag === "Failure" ? outcome.failure.message : null);
-      if (outcome._tag === "Success") yield* engine.stop(session.id);
+      if (outcome._tag === "Success") {
+        lines.push(world.sessions.get(session.id)?.summary ?? null);
+        yield* engine.stop(session.id);
+      }
     }
     return outcomes;
   });
@@ -418,7 +427,8 @@ describe("a Claude key on an image whose per-person answer is not known yet", ()
     const created: Array<CreateOptions> = [];
     const calls: Array<string> = [];
     const state = makeHarnessLayoutsMemoryState();
-    const outcomes = await withEngine((world, tmp) => launchFresh(world, tmp, 1), {
+    const lines: Array<string | null> = [];
+    const outcomes = await withEngine((world, tmp) => launchFresh(world, tmp, 1, lines), {
       captured: makeMemoryCaptureStore(),
       sealantLayer: launchLayer(created, [], "mend-layout probed\n", false),
       harnessLayout: {
@@ -439,5 +449,9 @@ describe("a Claude key on an image whose per-person answer is not known yet", ()
       }),
     ]);
     expect(state.capabilities.get(IMAGE)?.person).toBe(true);
+    // The check is the start's own business: the session line, which the conversation shows,
+    // doesn't say it (SLNT-1196).
+    expect(lines).toHaveLength(1);
+    expect(lines[0] ?? "").not.toContain("per-person users");
   }, 30_000);
 });

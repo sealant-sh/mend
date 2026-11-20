@@ -11,8 +11,7 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@mend/ui/components/ui/sheet";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import {
   ChevronLeftIcon,
   CopyIcon,
@@ -27,12 +26,10 @@ import { useState } from "react";
 
 import type { ProjectDetailDto } from "#/lib/api";
 import { worktreeChoices, worktreeLiveWords } from "#/lib/project-sessions";
-import { startShell, type ShellTarget } from "#/lib/project-starts";
+import { shellStart, type ShellTarget } from "#/lib/project-starts";
 import { shortOrigin } from "#/lib/projects";
-import { failureWords } from "#/lib/refusal";
-import { sessionLink } from "#/lib/session-sheet";
-import { useTRPC } from "#/lib/trpc";
 
+import { useProjectStart } from "../new-session/instant-start.ts";
 import { SheetHandle, SheetItem, SheetItemBody, sheetItemClass } from "../sheet-item.tsx";
 
 /** What the project's "…" can do; each the page's to carry out. */
@@ -49,22 +46,9 @@ export interface ProjectActions {
  * page. A refusal is said in a toast, since the menu that asked has closed.
  */
 export const useStartShell = (projectId: string) => {
-  const trpc = useTRPC();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (target: ShellTarget) => startShell(target),
-    onSuccess: (sessionId) => {
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      void queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: projectId }));
-      void navigate(sessionLink(sessionId));
-    },
-    onError: (error) =>
-      toast.add({
-        description: `The shell didn't start. ${failureWords(error, "Try again.")}`,
-        priority: "high",
-      }),
-  });
+  const start = useProjectStart(projectId);
+  // The shell's page opens at once; a refusal is said in a toast (SLNT-1196).
+  return (target: ShellTarget) => start(shellStart(target), "The shell didn't start.");
 };
 
 /**
@@ -77,11 +61,8 @@ export function OpenShellMenu({ detail }: { readonly detail: ProjectDetailDto })
   const worktrees = worktreeChoices(detail);
   return (
     <DropdownMenu>
-      <DropdownMenuTrigger
-        disabled={start.isPending}
-        className={buttonVariants({ variant: "outline" })}
-      >
-        {start.isPending ? "Starting a shell…" : "Open shell"}
+      <DropdownMenuTrigger className={buttonVariants({ variant: "outline" })}>
+        Open shell
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width="lg">
         {worktrees.length === 0 ? null : (
@@ -91,7 +72,7 @@ export function OpenShellMenu({ detail }: { readonly detail: ProjectDetailDto })
               {worktrees.map((worktree) => (
                 <DropdownMenuItem
                   key={worktree.id}
-                  onClick={() => start.mutate({ _tag: "worktree", worktreeId: worktree.id })}
+                  onClick={() => start({ _tag: "worktree", worktreeId: worktree.id })}
                 >
                   <span className="min-w-0 flex-1 truncate font-mono text-meta">
                     {worktree.name}
@@ -105,7 +86,7 @@ export function OpenShellMenu({ detail }: { readonly detail: ProjectDetailDto })
             <DropdownMenuSeparator />
           </>
         )}
-        <DropdownMenuItem onClick={() => start.mutate({ _tag: "new", projectId: project.id })}>
+        <DropdownMenuItem onClick={() => start({ _tag: "new", projectId: project.id })}>
           <GitBranchPlusIcon aria-hidden />
           <span className="min-w-0 truncate">
             A new worktree from <span className="font-mono">{project.defaultBranch}</span>
@@ -198,7 +179,6 @@ export function ProjectActionsSheet({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`${project.name} actions`}
-        disabled={start.isPending}
         onClick={() => show(true)}
         className={buttonVariants({ variant: "ghost", size: "icon-touch" })}
       >
@@ -277,16 +257,14 @@ export function ProjectActionsSheet({
                 <SheetItem
                   key={worktree.id}
                   value={worktreeLiveWords(worktree.live)}
-                  onClick={() =>
-                    act(() => start.mutate({ _tag: "worktree", worktreeId: worktree.id }))
-                  }
+                  onClick={() => act(() => start({ _tag: "worktree", worktreeId: worktree.id }))}
                 >
                   <span className="font-mono">{worktree.name}</span>
                 </SheetItem>
               ))}
               <SheetItem
                 icon={<GitBranchPlusIcon aria-hidden />}
-                onClick={() => act(() => start.mutate({ _tag: "new", projectId: project.id }))}
+                onClick={() => act(() => start({ _tag: "new", projectId: project.id }))}
               >
                 A new worktree from <span className="font-mono">{project.defaultBranch}</span>
               </SheetItem>

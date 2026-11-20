@@ -1,4 +1,4 @@
-import { modelPickerFor, type TurnSelection } from "@mend/domain/workbench";
+import { CONVERSATION_HARNESSES, modelPickerFor, type TurnSelection } from "@mend/domain/workbench";
 import { ComposerCard, PromptInput, PromptInputModel } from "@mend/ui/components/prompt-input";
 import { Button } from "@mend/ui/components/ui/button";
 import {
@@ -34,25 +34,31 @@ import {
   type FirstMessageOutcome,
   sendFirstMessage,
 } from "#/lib/first-message";
+import { useOpeningMessage } from "#/lib/opening-messages";
 import {
   draftItems,
+  holdUntilStarted,
   type MessageScope,
   mintMessageKey,
   releaseLoginHold,
   sendMessage,
+  sendWaiting,
   useMessageOwner,
   useOutbox,
 } from "#/lib/outbox";
+import type { PendingStart } from "#/lib/pending-starts";
 import { usePhone } from "#/lib/phone";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import {
   type ComposerMode,
   composerMode,
   currentSelection,
+  heldMessagesFate,
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
 } from "#/lib/session-composer";
+import { harnessName } from "#/lib/session-view";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { executorCallsQuery } from "./executor-calls";
@@ -112,8 +118,37 @@ const lockedWords = (mode: ComposerMode, facts: SessionFacts): string => {
       return `${agent} isn't running. Resume the session to message it.`;
     case "first-message":
     case "conversation":
+    case "starting-conversation":
       return "";
   }
+};
+
+/** The composer's mode for this viewer of this session (`composerMode`). */
+export const sessionComposerMode = (facts: SessionFacts): ComposerMode =>
+  composerMode({
+    session: facts.session,
+    currentAgent: facts.detail.currentAgent,
+    steer: facts.detail.control.steer,
+    agentLive: facts.agentLive,
+  });
+
+/**
+ * What a message held while the session started says under it: that it waits, or, once the
+ * session can't take it, why it wasn't sent.
+ */
+export const heldMessageWords = (
+  facts: SessionFacts,
+  mode: ComposerMode,
+  fate: "wait" | "send" | "stuck",
+): string => {
+  const { agent, session } = facts;
+  // Still waiting, or on its way: the agent may run already, its opening turn not in yet.
+  if (fate !== "stuck") return `Waits for ${agent} to start.`;
+  if (mode._tag === "terminal")
+    return `Not sent. ${agent} runs in a terminal in this session, so type to it there.`;
+  if (mode._tag === "no-control") return "Not sent. You no longer send messages in this session.";
+  if (session.status === "failed") return "Not sent. The session didn't start.";
+  return `Not sent. ${agent} isn't running. Try again resumes it.`;
 };
 
 /**
@@ -143,23 +178,20 @@ export function SessionComposer({
   readonly onStartOwn?: (() => void) | undefined;
 }) {
   const size: Size = usePhone() ? "touch" : "default";
-  const { session, detail } = facts;
-  const mode = composerMode({
-    session,
-    currentAgent: detail.currentAgent,
-    steer: detail.control.steer,
-    agentLive: facts.agentLive,
-  });
+  const { session } = facts;
+  const mode = sessionComposerMode(facts);
   switch (mode._tag) {
     case "first-message":
       return <FirstMessageComposer key={session.id} facts={facts} size={size} />;
     case "conversation":
+    case "starting-conversation":
+      // One composer for both, so what is written while the agent starts stays as it comes up.
       return (
         <MessageComposer
           key={session.id}
           facts={facts}
           conversation={conversation}
-          resumes={mode.resumes}
+          mode={mode}
           size={size}
         />
       );
@@ -380,7 +412,9 @@ function NextTurnMenu({
 
 /**
  * The composer of a conversation: Send starts the next turn, or goes into your own running turn
- * (Steer), and Stop turn stops that turn. The words leave the field the moment they are sent and
+ * (Steer), and Stop turn stops that turn. While the session starts a conversation and its agent
+ * isn't running yet, what is sent waits in the sender's outbox and goes once the agent runs and
+ * its opening turn is in (`heldMessagesFate`). The words leave the field the moment they are sent and
  * show at once as a message in the conversation (`lib/outbox`), so the next one can be written
  * while they are on their way. A pasted or dropped image is stored in the session's workspace and
  * its path goes into the words.
@@ -388,14 +422,16 @@ function NextTurnMenu({
 function MessageComposer({
   facts,
   conversation,
-  resumes,
+  mode,
   size,
 }: {
   readonly facts: SessionFacts;
   readonly conversation: ConversationView | undefined;
-  readonly resumes: boolean;
+  readonly mode: Extract<ComposerMode, { readonly _tag: "conversation" | "starting-conversation" }>;
   readonly size: Size;
 }) {
+  const starting = mode._tag === "starting-conversation";
+  const resumes = mode._tag === "conversation" && mode.resumes;
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const { session, detail, agent } = facts;
@@ -424,6 +460,11 @@ function MessageComposer({
 
   const attachImages = async (images: ReadonlyArray<File>) => {
     if (scope === null || busyAttaching || images.length === 0) return;
+    // An image is stored in the workspace, which doesn't run yet.
+    if (starting) {
+      setAttaching({ failed: `You can attach images once ${agent} runs.` });
+      return;
+    }
     try {
       for (const image of images) {
         setAttaching("uploading");
@@ -454,6 +495,12 @@ function MessageComposer({
       queueMicrotask(() => draft.write({ text: words, key: null }));
       return;
     }
+    if (starting) {
+      // Kept until the agent runs; the message first, then the empty field.
+      holdUntilStarted(scope, words, clientMessageId, { selection: changed });
+      draft.write({ text: "", key: null });
+      return;
+    }
     interrupt.reset();
     // Sent again by hand: a refusal for the sender's login is answered anew.
     releaseLoginHold(scope);
@@ -479,6 +526,23 @@ function MessageComposer({
   useEffect(() => {
     if (loginWorks) sendHeld();
   }, [loginWorks]);
+
+  // What was sent while the session started goes once its agent runs and its opening turn is in.
+  // An effect, since the agent comes up on the server, heard as the session is read again.
+  const openingHeld = useOpeningMessage(session.id) !== null;
+  const fate = heldMessagesFate({
+    mode,
+    status: session.status,
+    turns: conversation?.turns,
+    openingHeld,
+  });
+  const waitingCount = outbox.messages.filter((message) => message.state._tag === "Waiting").length;
+  const releaseWaiting = useEffectEvent(() => {
+    if (scope !== null) void sendWaiting(outbox.courier, scope);
+  });
+  useEffect(() => {
+    if (fate === "send" && waitingCount > 0) releaseWaiting();
+  }, [fate, waitingCount]);
 
   // What the agent waits on the viewer for: its own question or approval first, then an Executor
   // call. The card shows the one that waited longest.
@@ -515,7 +579,7 @@ function MessageComposer({
     value: draft.text,
     onValueChange: (text) => draft.write({ text, key: draft.key }),
     blocked: scope === null || busyAttaching,
-    onAttach: () => files.current?.click(),
+    ...(starting ? {} : { onAttach: () => files.current?.click() }),
     harness: agent,
     ...(selection === null || (session.harness !== "claude" && session.harness !== "codex")
       ? {}
@@ -631,6 +695,10 @@ function MessageComposer({
         <ComposerLine tone="alert">
           The turn didn't stop. {failureWords(interrupt.error, "")} Press Stop turn to try again.
         </ComposerLine>
+      ) : starting ? (
+        <ComposerLine>
+          {agent} is starting. What you send now goes to it once it's ready.
+        </ComposerLine>
       ) : resumes ? (
         <ComposerLine>Sending resumes the session.</ComposerLine>
       ) : null}
@@ -718,6 +786,85 @@ function FirstMessageComposer({
         <ComposerLine tone="alert">{FIRST_MESSAGE_UNCONFIRMED}</ComposerLine>
       ) : (
         <ComposerLine>Sending starts {agent} on the imported conversation.</ComposerLine>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The composer of a session still being made (an instant start, `lib/pending-starts`): it looks
+ * as the session's own will, and what is sent waits in the outbox under the start's address, to
+ * move onto the session once Mend has made it and go once its agent runs. An agent that runs in a
+ * terminal takes nothing here, as on its own page.
+ */
+export function StartingComposer({ start }: { readonly start: PendingStart }) {
+  const size: Size = usePhone() ? "touch" : "default";
+  const agent = harnessName(start.harness);
+  const userId = useMessageOwner();
+  const scope = userId === null ? null : { userId, sessionId: start.draftId };
+  const draft = useMessageDraft(scope);
+  const [keyless, setKeyless] = useState(false);
+  const [picked, setPicked] = useState<TurnSelection | null>(null);
+  const base = start.selection;
+  const selection = picked ?? base;
+  const changed =
+    picked !== null && base !== null && !sameSelection(picked, base) ? picked : undefined;
+  if (!CONVERSATION_HARNESSES.has(start.harness))
+    return (
+      <ComposerCard className="max-lg:max-w-none">
+        <PromptInput
+          state="locked"
+          size={size}
+          notice={`${agent} runs in a terminal in this session. Type to it there.`}
+        />
+      </ComposerCard>
+    );
+  const send = (words: string) => {
+    if (scope === null) return;
+    const clientMessageId = draft.key ?? mintMessageKey();
+    setKeyless(clientMessageId === null);
+    if (clientMessageId === null) {
+      queueMicrotask(() => draft.write({ text: words, key: null }));
+      return;
+    }
+    holdUntilStarted(scope, words, clientMessageId, { selection: changed });
+    draft.write({ text: "", key: null });
+  };
+  return (
+    <div>
+      <ComposerCard className="max-lg:max-w-none">
+        <PromptInput
+          id={messageInputId(start.draftId)}
+          size={size}
+          label={`Message ${agent}`}
+          placeholder={`Message ${agent}`}
+          value={draft.text}
+          onValueChange={(text) => draft.write({ text, key: draft.key })}
+          onSubmit={send}
+          blocked={scope === null}
+          harness={agent}
+          {...(selection === null
+            ? {}
+            : {
+                model: (
+                  <NextTurnMenu
+                    harness={selection.harness}
+                    selection={selection}
+                    onPick={setPicked}
+                    size={size}
+                  />
+                ),
+              })}
+        />
+      </ComposerCard>
+      {keyless ? (
+        <ComposerLine tone="alert">
+          This browser couldn't make a key for the message, so it wasn't sent.
+        </ComposerLine>
+      ) : (
+        <ComposerLine>
+          {agent} is starting. What you send now goes to it once it's ready.
+        </ComposerLine>
       )}
     </div>
   );

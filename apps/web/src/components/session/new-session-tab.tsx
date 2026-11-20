@@ -5,7 +5,7 @@ import {
   DropdownMenuTrigger,
 } from "@mend/ui/components/ui/dropdown-menu";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
-import { Suspense } from "react";
+import { type ReactNode, Suspense } from "react";
 
 import { agentOf } from "#/lib/new-session";
 
@@ -13,6 +13,7 @@ import { JoinLine } from "../new-session/join-line.tsx";
 import { Hint, sendBlocked } from "../new-session/new-session-page.tsx";
 import { AgentMenuItems, agentPickWords } from "../new-session/pickers.tsx";
 import { type ComposerPlace, useComposer } from "../new-session/use-composer.ts";
+import { StartingTab } from "./starting-session.tsx";
 
 /** What the tab says about where the session works, by how many sessions already work there. */
 const whereWords = (others: number): string =>
@@ -22,8 +23,13 @@ const whereWords = (others: number): string =>
       ? "on the same branch as the other session here. Each sees the other's changes."
       : `on the same branch as the ${others} other sessions here. It sees their changes and they see its changes.`;
 
-function Composer({ place, tabId }: { readonly place: ComposerPlace; readonly tabId: string }) {
-  const composer = useComposer(place);
+function Composer({
+  composer,
+  tabId,
+}: {
+  readonly composer: ReturnType<typeof useComposer>;
+  readonly tabId: string;
+}) {
   return (
     <div className="flex flex-col gap-2">
       <ComposerCard className="mx-0 w-full">
@@ -63,6 +69,61 @@ function Composer({ place, tabId }: { readonly place: ComposerPlace; readonly ta
   );
 }
 
+/** What the tab says above its composer: where the session works. */
+function TabIntro({
+  worktreeName,
+  others,
+}: {
+  readonly worktreeName: string;
+  readonly others: number;
+}) {
+  return (
+    <div className="flex flex-col gap-1.5">
+      <h2 className="text-title font-semibold">New session</h2>
+      <p className="text-row text-muted-foreground">
+        It works in the <span className="font-mono text-meta">{worktreeName}</span> worktree,{" "}
+        {whereWords(others)}
+      </p>
+    </div>
+  );
+}
+
+/** The frame the tab's composer sits in, at the foot of the tab. */
+function TabFrame({ children }: { readonly children: ReactNode }) {
+  return (
+    <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto px-4 pt-6 pb-4.5 lg:px-7">
+      <div className="mx-auto flex w-full max-w-conversation flex-col gap-4">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * The tab once its agents and logins are read: the composer, or, from the moment Start is pressed,
+ * the session starting in this tab, which becomes the session's once Mend has made it (SLNT-1196).
+ */
+function TabBody({
+  tabId,
+  worktreeName,
+  others,
+  place,
+}: {
+  readonly tabId: string;
+  readonly worktreeName: string;
+  readonly others: number;
+  readonly place: ComposerPlace;
+}) {
+  const composer = useComposer(place);
+  if (composer.startingIn !== null) return <StartingTab draftId={composer.startingIn} />;
+  return (
+    <TabFrame>
+      <TabIntro worktreeName={worktreeName} others={others} />
+      {/* Someone else's session here: the workspace is shared, and this one runs as you. */}
+      <JoinLine projectId={place.projectId} worktreeId={place.worktree.id} />
+      <Composer composer={composer} tabId={tabId} />
+    </TabFrame>
+  );
+}
+
 /**
  * A New session tab (Doop T22): a session in this workspace, not started yet. Its first message
  * starts it in the workspace's worktree, on the branch the other sessions there share, and the tab
@@ -81,22 +142,16 @@ export function NewSessionTab({
   readonly place: ComposerPlace;
 }) {
   return (
-    <div className="flex min-h-0 flex-1 flex-col justify-end overflow-y-auto px-4 pt-6 pb-4.5 lg:px-7">
-      <div className="mx-auto flex w-full max-w-conversation flex-col gap-4">
-        <div className="flex flex-col gap-1.5">
-          <h2 className="text-title font-semibold">New session</h2>
-          <p className="text-row text-muted-foreground">
-            It works in the <span className="font-mono text-meta">{worktreeName}</span> worktree,{" "}
-            {whereWords(others)}
-          </p>
-        </div>
-        {/* The agents, their logins and the person's last picks are read as the tab opens. */}
-        <Suspense fallback={<Skeleton className="h-28 w-full rounded-xl" />}>
-          {/* Someone else's session here: the workspace is shared, and this one runs as you. */}
-          <JoinLine projectId={place.projectId} worktreeId={place.worktree.id} />
-          <Composer place={place} tabId={tabId} />
-        </Suspense>
-      </div>
-    </div>
+    // The agents, their logins and the person's last picks are read as the tab opens.
+    <Suspense
+      fallback={
+        <TabFrame>
+          <TabIntro worktreeName={worktreeName} others={others} />
+          <Skeleton className="h-28 w-full rounded-xl" />
+        </TabFrame>
+      }
+    >
+      <TabBody tabId={tabId} worktreeName={worktreeName} others={others} place={place} />
+    </Suspense>
   );
 }

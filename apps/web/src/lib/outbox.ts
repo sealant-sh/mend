@@ -24,6 +24,8 @@ import { uuidV4 } from "./uuid.ts";
  * the moment Send is pressed; the server's turn or steer replaces the bubble once it arrives with
  * the same key.
  *
+ * - `Waiting`: sent while the session started, before its agent ran: it waits in this outbox, no
+ *   request made, and goes once the agent runs (`sendWaiting`). The server never saw it.
  * - `Sending`: on its way. Read back after a reload, when nothing in this tab still sends it, it
  *   is `Unconfirmed`.
  * - `Sent`: Mend answered that it took the words; the bubble waits for the turn or steer the
@@ -35,6 +37,7 @@ import { uuidV4 } from "./uuid.ts";
  *   did and the spent key would replay this answer.
  */
 export type OutboxState =
+  | { readonly _tag: "Waiting" }
   | { readonly _tag: "Sending" }
   | {
       readonly _tag: "Sent";
@@ -99,6 +102,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isState = (value: unknown): value is OutboxState => {
   if (!isRecord(value)) return false;
   switch (value["_tag"]) {
+    case "Waiting":
     case "Sending":
     case "Unconfirmed":
       return true;
@@ -500,6 +504,85 @@ export const retryMessage = (
     resuming,
     selection: message.selection,
   });
+};
+
+/**
+ * Keep new words for a session that is starting, until its agent runs: their bubble shows at once,
+ * at the end, saying they wait. Nothing leaves until `sendWaiting`.
+ */
+export const holdUntilStarted = (
+  scope: MessageScope,
+  text: string,
+  clientMessageId: string,
+  { now = new Date(), selection }: Omit<SendOptions, "resuming"> = {},
+) =>
+  writeOutbox(scope, [
+    ...readOutbox(scope),
+    {
+      clientMessageId,
+      text,
+      sentAt: now.toISOString(),
+      state: { _tag: "Waiting" },
+      ...(selection === undefined ? {} : { selection }),
+    },
+  ]);
+
+/** The messages waiting for the session's agent to run, oldest first. */
+export const waitingMessages = (scope: MessageScope): ReadonlyArray<OutboxMessage> =>
+  readOutbox(scope).filter((message) => message.state._tag === "Waiting");
+
+/**
+ * The agent runs: send every waiting message, oldest first, each under its own key. They leave
+ * one at a time in that order (`deliver`), so the agent reads them as they were written.
+ */
+export const sendWaiting = (courier: Courier, scope: MessageScope) =>
+  Promise.all(waitingMessages(scope).map((message) => deliver(courier, scope, message)));
+
+/**
+ * Move what one person wrote to a session that wasn't made yet (a start still on its way, under
+ * the address it was opened at) onto the session Mend made: the outbox and the draft.
+ */
+export const moveMessages = (from: MessageScope, to: MessageScope) => {
+  const messages = readOutbox(from);
+  if (messages.length > 0) {
+    writeOutbox(to, [...readOutbox(to), ...messages]);
+    writeOutbox(from, []);
+  }
+  const before = draftItems(from);
+  const after = draftItems(to);
+  const words = readDraft(before.text);
+  const there = readDraft(after.text);
+  // Beside words already there, they join as part of a new message (as `editMessage` does).
+  writeDrafts([
+    ...(words === ""
+      ? []
+      : there.trim() === ""
+        ? ([
+            [after.text, words],
+            [after.key, readDraft(before.key)],
+          ] as const)
+        : ([
+            [after.text, `${there}\n\n${words}`],
+            [after.key, ""],
+          ] as const)),
+    [before.text, ""],
+    [before.key, ""],
+  ]);
+};
+
+/**
+ * Take back everything one person wrote to a session that won't be made (a refused start): the
+ * messages in its outbox, then the words left in its composer, oldest first. Both are emptied.
+ */
+export const takeWritten = (scope: MessageScope): ReadonlyArray<string> => {
+  const items = draftItems(scope);
+  const written = [...readOutbox(scope).map((message) => message.text), readDraft(items.text)];
+  writeOutbox(scope, []);
+  writeDrafts([
+    [items.text, ""],
+    [items.key, ""],
+  ]);
+  return written.filter((words) => words.trim() !== "");
 };
 
 /** The composer's draft: its words and the key their next send carries (`lib/drafts`). */

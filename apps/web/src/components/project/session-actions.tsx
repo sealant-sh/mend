@@ -14,8 +14,7 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@mend/ui/components/ui/sheet";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { Link, useNavigate } from "@tanstack/react-router";
+import { Link } from "@tanstack/react-router";
 import {
   ChevronLeftIcon,
   EllipsisIcon,
@@ -29,12 +28,11 @@ import { useState } from "react";
 import { copyTextChecked } from "#/lib/clipboard";
 import { AGENTS } from "#/lib/new-session";
 import type { ProjectSessionRow } from "#/lib/project-sessions";
-import { startInWorktree } from "#/lib/project-starts";
-import { failureWords } from "#/lib/refusal";
+import { worktreeStart } from "#/lib/project-starts";
 import { sessionUrl } from "#/lib/row-actions";
 import { sessionLink } from "#/lib/session-sheet";
-import { useTRPC } from "#/lib/trpc";
 
+import { useProjectStart } from "../new-session/instant-start.ts";
 import { SheetHandle, SheetItem } from "../sheet-item.tsx";
 import { useStartShell } from "./project-actions.tsx";
 
@@ -44,22 +42,8 @@ import { useStartShell } from "./project-actions.tsx";
  * something opens it; a refusal is said in a toast, since the menu that asked has closed.
  */
 const useRowStarts = (projectId: string, row: ProjectSessionRow) => {
-  const trpc = useTRPC();
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
-  const session = useMutation({
-    mutationFn: (agent: string) => startInWorktree(row.worktreeId, agent),
-    onSuccess: (sessionId) => {
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-      void queryClient.invalidateQueries(trpc.projects.detail.queryFilter({ id: projectId }));
-      void navigate(sessionLink(sessionId));
-    },
-    onError: (error) =>
-      toast.add({
-        description: `The session didn't start in ${row.worktree}. ${failureWords(error, "Try again.")}`,
-        priority: "high",
-      }),
-  });
+  // The session's page opens at once; a refusal is said in a toast (SLNT-1196).
+  const start = useProjectStart(projectId);
   const shell = useStartShell(projectId);
   const copyLink = () => {
     void copyTextChecked(sessionUrl(window.location.origin, row.id)).then((copied) =>
@@ -74,10 +58,10 @@ const useRowStarts = (projectId: string, row: ProjectSessionRow) => {
     );
   };
   return {
-    startSession: (agent: string) => session.mutate(agent),
-    startShell: () => shell.mutate({ _tag: "worktree", worktreeId: row.worktreeId }),
+    startSession: (agent: string) =>
+      start(worktreeStart(row.worktreeId, agent), `The session didn't start in ${row.worktree}.`),
+    startShell: () => shell({ _tag: "worktree", worktreeId: row.worktreeId }),
     copyLink,
-    starting: session.isPending || shell.isPending,
   };
 };
 
@@ -97,7 +81,6 @@ export function SessionRowMenu({
     <DropdownMenu>
       <DropdownMenuTrigger
         aria-label={`Actions for ${row.title}`}
-        disabled={starts.starting}
         className={cn(buttonVariants({ variant: "ghost", size: "icon" }), "text-muted-foreground")}
       >
         <EllipsisIcon aria-hidden className="size-4" />
@@ -175,7 +158,6 @@ export function PhoneSessionActions({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={`Actions for ${row.title}`}
-        disabled={starts.starting}
         onClick={() => show(true)}
         className={cn(buttonVariants({ variant: "ghost", size: "icon-touch" }), "mt-1.5 mr-1")}
       >

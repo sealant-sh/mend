@@ -9,6 +9,7 @@ import {
   landingLine,
   landingLineFailed,
   layoutFallbackLine,
+  withoutLayoutWords,
   pullRequestOf,
   repositoryRows,
   sessionByline,
@@ -303,5 +304,19 @@ describe("the Repositories group", () => {
       },
       { path: "infra", line: "infra · mend/fix · clone failed", failed: true, changeId: null },
     ]);
+  });
+});
+
+describe("the conversation's summary", () => {
+  it("leaves out why the workspace takes one person, which the Details view says", () => {
+    expect(
+      withoutLayoutWords(
+        "secret file .env not written · this image cannot run per-person users (no sudo), so this workspace takes one person",
+      ),
+    ).toBe("secret file .env not written");
+    expect(
+      withoutLayoutWords("a standby workspace serves this session, and a standby takes one person"),
+    ).toBeNull();
+    expect(withoutLayoutWords(null)).toBeNull();
   });
 });
