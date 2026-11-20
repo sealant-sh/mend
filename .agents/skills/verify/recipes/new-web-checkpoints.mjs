@@ -28,6 +28,13 @@ const REPLIES = [
   "I added a line on partial refunds to NOTES.md.",
 ];
 
+const iso = (ms) => new Date(ms).toISOString();
+const expect = (seen, want, what) => {
+  if (JSON.stringify(seen) !== JSON.stringify(want))
+    throw new Error(`${what}: the conversation reads ${JSON.stringify(seen)}`);
+};
+const lineText = (changed) => `line: Checkpoint · ${changed}`;
+
 /** The one of a locator's matches a person sees: the desktop and phone layouts are both in the page. */
 const visible = (locator) => locator.filter({ visible: true }).first();
 
@@ -107,7 +114,6 @@ export default async ({ page, web, capture, note }) => {
   // One session's conversation: turn k runs inside run k, after its starting checkpoints and before
   // its last one.
   const viewed = found.ids[0];
-  const iso = (ms) => new Date(ms).toISOString();
   const turns = runs.map((taken, index) => {
     const last = taken.at(-1);
     const before = taken.at(-2);
@@ -198,11 +204,6 @@ export default async ({ page, web, capture, note }) => {
     await settled();
     return order();
   };
-  const expect = (seen, want, what) => {
-    if (JSON.stringify(seen) !== JSON.stringify(want))
-      throw new Error(`${what}: the conversation reads ${JSON.stringify(seen)}`);
-  };
-  const lineText = (changed) => `line: Checkpoint · ${changed}`;
 
   // A first prompt that edits files: no line above the message, one after the reply.
   const first = await show(1, runs[0].at(-1).ordinal);
