@@ -206,7 +206,8 @@ and see what the judge listed.
 
 **Start your own box on this machine**: a check VM is a fresh copy of the box, nobody else's,
 deleted when you are done (docs/operations/preview-builds.md, "Check VMs"). A check that needs Boat
-starts it with `pnpm verify vm up --boat`; this machine serves one Boat copy at a time.
+starts it with `pnpm verify vm up --boat`, on one of four Boat slots (`vm list` shows which are
+free).
 
 ```sh
 pnpm verify vm up      # ~20 s; prints the two exports for this copy, as below

@@ -31,7 +31,7 @@ import {
 } from "./result.mjs";
 import { stackDown, stackStatus, stackUp } from "./stack.mjs";
 import { statusSteps, toMarkdown } from "./status.mjs";
-import { vmBuild, vmDown, vmList, vmUp } from "./vm.mjs";
+import { vmBuild, vmDown, vmList, vmSlot, vmUp } from "./vm.mjs";
 
 // `pnpm verify <verb>`: one JSON result per run (TOOLKIT-SPEC.md). Progress goes to stderr; with
 // --json, stdout carries the result and nothing else.
@@ -52,7 +52,7 @@ const VERBS = {
   drive:
     "Run a recipe against web, the new web app (new-web, or --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
-  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy (--boat: Boat through this machine's Funnel), list, down <n>|--all",
+  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy (--boat: on a Boat slot's own Funnel), list, down <n>|--all, slot add|remove <n>",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
 
@@ -60,7 +60,7 @@ const STACK = ["up", "status", "down"];
 
 const BOX = ["plan", "prepare", "cli", "identity", "release"];
 
-const VM = ["build", "up", "down", "list"];
+const VM = ["build", "up", "down", "list", "slot"];
 
 // Verbs the shared contract names that this repo does not have yet: they say so, never pretend.
 // Verbs the shared contract names for the other Sealant repos: here they say so, never pretend.
@@ -374,6 +374,7 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
       up: () => vmUp({ ...sizing, boat: options.boat === true }),
       down: () => vmDown({ slot: options.slot, all: options.all }),
       list: () => vmList({}),
+      slot: () => vmSlot({ action: options.slotAction, slot: options.slot }),
     }[options.subverb]();
     return createResult({ verb: `vm ${options.subverb}`, head, startedAt, steps, next, ...rest });
   }
@@ -527,6 +528,14 @@ export const main = async (argv, root = repoRoot) => {
       return 2;
     }
     options.subverb = words[1];
+    if (words[1] === "slot") {
+      options.slotAction = words[2];
+      if (/^\d+$/.test(words[3] ?? "")) options.slot = Number(words[3]);
+      if (!(words[2] === "add" || (words[2] === "remove" && options.slot !== undefined))) {
+        process.stderr.write("verify vm slot needs: add, or remove <n>\n");
+        return 2;
+      }
+    }
     if (words[1] === "down") {
       if (/^\d+$/.test(words[2] ?? "")) options.slot = Number(words[2]);
       else if (!options.all) {

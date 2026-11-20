@@ -2,7 +2,7 @@
   "limits": [
     {
       "id": "boat",
-      "what": "A session that runs on Boat. The verify stack has no Boat. A box run that needs it starts its check VM with pnpm verify vm up --boat (one at a time on this machine), which reaches Boat through this machine's Tailscale Funnel; a Boat session in a project with resources (@db) still needs VM 131."
+      "what": "A session that runs on Boat. The verify stack has no Boat. A box run that needs it starts its check VM with pnpm verify vm up --boat (four at once, one per Boat slot), which serves its own Tailscale Funnel; a Boat session in a project with resources (@db) still needs VM 131."
     },
     {
       "id": "upgrade-real-data",
