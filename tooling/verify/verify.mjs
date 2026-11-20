@@ -31,6 +31,7 @@ import {
 } from "./result.mjs";
 import { stackDown, stackStatus, stackUp } from "./stack.mjs";
 import { statusSteps, toMarkdown } from "./status.mjs";
+import { vmBuild, vmDown, vmList, vmUp } from "./vm.mjs";
 
 // `pnpm verify <verb>`: one JSON result per run (TOOLKIT-SPEC.md). Progress goes to stderr; with
 // --json, stdout carries the result and nothing else.
@@ -51,12 +52,15 @@ const VERBS = {
   drive:
     "Run a recipe against web, the new web app (new-web, or --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
+  vm: "A throwaway box on this machine per check (KVM): build the master, up a copy, list, down <n>|--all",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
 };
 
 const STACK = ["up", "status", "down"];
 
 const BOX = ["plan", "prepare", "cli", "identity", "release"];
+
+const VM = ["build", "up", "down", "list"];
 
 // Verbs the shared contract names that this repo does not have yet: they say so, never pretend.
 // Verbs the shared contract names for the other Sealant repos: here they say so, never pretend.
@@ -125,6 +129,14 @@ export const parseArgs = (argv) => {
       const value = argv[++index];
       if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a value`);
       options[arg === "--url" ? "url" : "expectVersion"] = value;
+    } else if (["--version", "--sha", "--cli", "--from-box", "--memory"].includes(arg)) {
+      const value = argv[++index];
+      if (!value || value.startsWith("--")) throw new UsageError(`${arg} needs a value`);
+      options[{ "--version": "vmVersion", "--sha": "vmSha", "--cli": "vmCli", "--from-box": "fromBox", "--memory": "memory" }[arg]] = value;
+    } else if (arg === "--cpus") {
+      const value = Number(argv[++index]);
+      if (!Number.isInteger(value) || value < 1) throw new UsageError("--cpus needs a whole number");
+      options.cpus = value;
     } else if (arg === "--from") {
       const value = (argv[++index] ?? "").split(",").filter(Boolean);
       if (value.length === 0 || value.some((from) => !VANTAGES.includes(from)))
@@ -335,6 +347,26 @@ export const runVerb = async (root, verb, options, startedAt = new Date()) => {
     }[options.subverb]();
     return createResult({ verb: `box ${options.subverb}`, head, startedAt, steps, next, ...rest });
   }
+  if (verb === "vm") {
+    const sizing = {
+      ...(options.cpus ? { cpus: options.cpus } : {}),
+      ...(options.memory ? { memory: options.memory } : {}),
+    };
+    const { steps, next, ...rest } = await {
+      build: () =>
+        vmBuild({
+          version: options.vmVersion,
+          sha: options.vmSha,
+          cliVersion: options.vmCli,
+          fromBox: options.fromBox,
+          ...sizing,
+        }),
+      up: () => vmUp(sizing),
+      down: () => vmDown({ slot: options.slot, all: options.all }),
+      list: () => vmList({}),
+    }[options.subverb]();
+    return createResult({ verb: `vm ${options.subverb}`, head, startedAt, steps, next, ...rest });
+  }
   if (verb === "receipt") {
     const pr = options.pr ? (options.readPr ?? readPullRequest)(root, options.pr) : null;
     const { steps, next, receipts } = receiptSteps({
@@ -478,6 +510,20 @@ export const main = async (argv, root = repoRoot) => {
       return 2;
     }
     options.subverb = words[1];
+  }
+  if (verb === "vm") {
+    if (!VM.includes(words[1])) {
+      process.stderr.write(`verify vm needs one of: ${VM.join(", ")}\n`);
+      return 2;
+    }
+    options.subverb = words[1];
+    if (words[1] === "down") {
+      if (/^\d+$/.test(words[2] ?? "")) options.slot = Number(words[2]);
+      else if (!options.all) {
+        process.stderr.write("verify vm down needs a copy's number, or --all\n");
+        return 2;
+      }
+    }
   }
   if (verb === "drive") {
     if (!SURFACES.includes(words[1]) || !options.recipe) {
