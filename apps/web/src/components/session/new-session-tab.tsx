@@ -8,6 +8,7 @@ import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { type ReactNode, Suspense } from "react";
 
 import { agentOf } from "#/lib/new-session";
+import { keepToastsClear } from "#/lib/toast-clearance";
 
 import { JoinLine } from "../new-session/join-line.tsx";
 import { Hint, sendBlocked } from "../new-session/new-session-page.tsx";
@@ -32,7 +33,7 @@ function Composer({
 }) {
   return (
     <div className="flex flex-col gap-2">
-      <ComposerCard className="mx-0 w-full">
+      <ComposerCard ref={keepToastsClear} className="mx-0 w-full">
         <PromptInput
           id={`${tabId}-task`}
           autoFocus

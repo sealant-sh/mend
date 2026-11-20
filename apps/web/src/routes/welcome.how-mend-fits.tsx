@@ -4,6 +4,7 @@ import { HowMendFitsStep } from "#/components/how-mend-fits-step";
 import { accountNameOptions } from "#/lib/auth-client";
 import { screenOf } from "#/lib/how-mend-fits-screen";
 import { rememberStepReached } from "#/lib/setup";
+import { rememberSetupEnded } from "#/lib/setup-skips";
 import { signedInOptions } from "#/lib/sign-in";
 
 /**
@@ -11,6 +12,7 @@ import { signedInOptions } from "#/lib/sign-in";
  * session's page shows and what the sidebar lists (`?screen=1` to `3`). First project's Continue
  * and Skip for now open it; `/welcome` and signing in never do, so someone who finished setup
  * before this step existed isn't sent to it. Anyone may open it; it reads nothing it needs.
+ * Reaching it ends setup in this browser (`rememberSetupEnded`).
  */
 export const Route = createFileRoute("/welcome/how-mend-fits")({
   validateSearch: (search: Record<string, unknown>): { readonly screen?: 1 | 2 | 3 } => {
@@ -28,6 +30,8 @@ export const Route = createFileRoute("/welcome/how-mend-fits")({
       queryClient.ensureQueryData(accountNameOptions()),
     ]);
     rememberStepReached(viewer, "nouns");
+    // Every step the person owed is behind them: opening Mend no longer sends them to setup.
+    rememberSetupEnded(viewer.userId);
   },
   component: HowMendFitsPage,
 });

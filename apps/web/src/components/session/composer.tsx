@@ -59,6 +59,7 @@ import {
   sameSelection,
 } from "#/lib/session-composer";
 import { harnessName } from "#/lib/session-view";
+import { keepToastsClear } from "#/lib/toast-clearance";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 import { executorCallsQuery } from "./executor-calls";
@@ -204,7 +205,7 @@ export function SessionComposer({
           ? waitingRequest(conversation.requests)
           : undefined;
       return (
-        <ComposerCard className="max-lg:max-w-none">
+        <ComposerCard ref={keepToastsClear} className="max-lg:max-w-none">
           {waiting === undefined ? null : (
             <RequestPreview
               request={waiting}
@@ -614,7 +615,7 @@ function MessageComposer({
         void attachImages(images);
       }}
     >
-      <ComposerCard className="max-lg:max-w-none">
+      <ComposerCard ref={keepToastsClear} className="max-lg:max-w-none">
         {waiting !== undefined && askOf(waiting).kind === "question" ? (
           <QuestionComposer
             key={waiting.id}
@@ -759,7 +760,7 @@ function FirstMessageComposer({
   const outcome = start.data ?? null;
   return (
     <div>
-      <ComposerCard className="max-lg:max-w-none">
+      <ComposerCard ref={keepToastsClear} className="max-lg:max-w-none">
         <PromptInput
           id={messageInputId(session.id)}
           size={size}
@@ -811,7 +812,7 @@ export function StartingComposer({ start }: { readonly start: PendingStart }) {
     picked !== null && base !== null && !sameSelection(picked, base) ? picked : undefined;
   if (!CONVERSATION_HARNESSES.has(start.harness))
     return (
-      <ComposerCard className="max-lg:max-w-none">
+      <ComposerCard ref={keepToastsClear} className="max-lg:max-w-none">
         <PromptInput
           state="locked"
           size={size}
@@ -832,7 +833,7 @@ export function StartingComposer({ start }: { readonly start: PendingStart }) {
   };
   return (
     <div>
-      <ComposerCard className="max-lg:max-w-none">
+      <ComposerCard ref={keepToastsClear} className="max-lg:max-w-none">
         <PromptInput
           id={messageInputId(start.draftId)}
           size={size}

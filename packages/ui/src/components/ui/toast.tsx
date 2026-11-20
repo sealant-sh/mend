@@ -30,8 +30,8 @@ function ToastViewport({
   size = "default",
   ...props
 }: ToastPrimitive.Viewport.Props & {
-  // default: centred at the bottom, 24px above the edge. touch (phones): full width less 16px a
-  // side, 52px tall, with a 44px action.
+  // default: the bottom-right corner, 24px from both edges, 416px wide (less on a narrow window).
+  // touch (phones): full width less 16px a side, 52px tall, with a 44px action.
   size?: "default" | "touch";
 }) {
   return (
@@ -39,7 +39,7 @@ function ToastViewport({
       data-slot="toast-viewport"
       data-size={size}
       className={cn(
-        "group/toast-viewport pointer-events-none fixed inset-x-4 z-50 mx-auto w-auto outline-none data-[size=default]:bottom-6 data-[size=default]:max-w-md data-[size=touch]:bottom-4",
+        "group/toast-viewport pointer-events-none fixed z-50 outline-none data-[size=default]:right-6 data-[size=default]:bottom-6 data-[size=default]:w-[min(26rem,calc(100vw-3rem))] data-[size=touch]:inset-x-4 data-[size=touch]:bottom-4",
         className,
       )}
       {...props}

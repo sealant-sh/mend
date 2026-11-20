@@ -13,7 +13,7 @@ import {
 import { Input } from "@mend/ui/components/ui/input";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type QueryClient, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Columns2Icon,
   EllipsisIcon,
@@ -35,6 +35,7 @@ import { Fragment, useState } from "react";
 import { agentIsLive, type SessionDetailDto } from "#/lib/api";
 import { copyTextChecked } from "#/lib/clipboard";
 import { activity, age, type InboxRow } from "#/lib/inbox";
+import { acceptStop, beginStop, type StopKeys, undoStop } from "#/lib/pending-stops";
 import { usePhone } from "#/lib/phone";
 import { failureWords } from "#/lib/refusal";
 import { rowActions } from "#/lib/row-actions";
@@ -48,11 +49,12 @@ import {
   type Sentence,
   stoppedToast,
   type StaysRow,
+  type StopPreview,
   type StopTarget,
   stopWords,
   whatStays,
 } from "#/lib/session-stop";
-import { useTRPC, useTRPCClient } from "#/lib/trpc";
+import { type TrpcClient, type TrpcProxy, useTRPC, useTRPCClient } from "#/lib/trpc";
 import { useRowActions } from "#/lib/use-row-actions";
 
 import { Overlay } from "../projects/overlay.tsx";
@@ -539,6 +541,57 @@ export function Said({ sentence }: { readonly sentence: Sentence }) {
   ));
 }
 
+/** The two reads a stop is laid over (`lib/pending-stops.ts`). */
+const stopKeys = (trpc: TrpcProxy): StopKeys => ({
+  inbox: trpc.sessions.inbox.queryKey(),
+  detail: (id) => trpc.sessions.detail.queryKey({ id }),
+});
+
+/**
+ * Stops the session. It reads as stopped at once wherever it shows (`beginStop`); once Mend
+ * answers, a toast says what happened. A stop that fails puts the session back as it was and says
+ * so in a toast, with Try again. It runs outside any component: the session's tab, and the dialog
+ * in it, leave the sheet the moment the session reads stopped.
+ */
+const sendStop = async (stop: {
+  readonly queryClient: QueryClient;
+  readonly trpc: TrpcProxy;
+  readonly client: TrpcClient;
+  readonly target: StopTarget;
+  readonly preview: StopPreview | null;
+}): Promise<void> => {
+  const { queryClient, trpc, client, target, preview } = stop;
+  beginStop(queryClient, stopKeys(trpc), target.sessionId);
+  try {
+    await client.sessions.stop.mutate({ id: target.sessionId });
+    acceptStop(queryClient, target.sessionId);
+    toast.add({
+      description: stoppedToast(target.title, target.fileCount, preview),
+      priority: "low",
+    });
+  } catch (cause) {
+    // A lost answer says nothing of whether the server took the stop: read the session again,
+    // and say the stop failed only if it still runs.
+    const detail = await client.sessions.detail.query({ id: target.sessionId }).catch(() => null);
+    if (
+      detail !== null &&
+      (detail.session.status === "stopping" || !agentIsLive(detail.session, detail.currentAgent))
+    ) {
+      acceptStop(queryClient, target.sessionId);
+      return;
+    }
+    undoStop(queryClient, target.sessionId);
+    toast.add({
+      description: `"${target.title}" didn't stop. ${failureWords(cause, "Try again.")}`,
+      // Low, so a screen reader can reach Try again (high toasts are read out and gone).
+      priority: "low",
+      actionProps: { children: "Try again", onClick: () => void sendStop(stop) },
+    });
+  } finally {
+    void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+  }
+};
+
 /** The Stop dialog's open state, kept with its target so the dialog can close with its words. */
 export interface StopDialogState {
   readonly open: boolean;
@@ -596,34 +649,12 @@ function StopSessionOverlay({
   });
   const preview = read.isPending || read.isError ? null : read.data;
   const words = stopWords(target, preview, viewerId);
-  const [failure, setFailure] = useState<string | null>(null);
-  const stop = useMutation({
-    mutationFn: () => client.sessions.stop.mutate({ id: target.sessionId }),
-    onMutate: () => setFailure(null),
-    onSuccess: () => {
-      onOpenChange(false);
-      toast.add({
-        description: stoppedToast(target.title, target.fileCount, preview),
-        priority: "low",
-      });
-    },
-    onError: async (cause) => {
-      // A lost answer says nothing of whether the server took the stop: read the session again,
-      // and say the stop failed only if it still runs.
-      const detail = await queryClient
-        .fetchQuery({ ...sessionDetailQuery(trpc, target.sessionId), staleTime: 0, retry: false })
-        .catch(() => null);
-      if (
-        detail !== null &&
-        (detail.session.status === "stopping" || !agentIsLive(detail.session, detail.currentAgent))
-      ) {
-        onOpenChange(false);
-        return;
-      }
-      setFailure(`The session didn't stop. ${failureWords(cause, "Try again.")}`);
-    },
-    onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
-  });
+  // The session reads as stopped the moment Stop is confirmed, everywhere it shows, so the dialog
+  // closes at once; what Mend answers arrives in a toast (`sendStop`).
+  const confirm = () => {
+    onOpenChange(false);
+    void sendStop({ queryClient, trpc, client, target, preview });
+  };
 
   // The desktop's last-session dialog lays out what stops and what is kept; every other case,
   // and the phone, says it in sentences.
@@ -650,9 +681,7 @@ function StopSessionOverlay({
   return (
     <Overlay
       open={open}
-      onOpenChange={(next) => {
-        if (!stop.isPending) onOpenChange(next);
-      }}
+      onOpenChange={onOpenChange}
       title="Stop session?"
       size="md"
       description={phone ? target.title : table ? <Said sentence={words.lead} /> : undefined}
@@ -662,7 +691,6 @@ function StopSessionOverlay({
             type="button"
             variant="outline"
             size={phone ? "touch" : "default"}
-            disabled={stop.isPending}
             onClick={() => onOpenChange(false)}
           >
             Cancel
@@ -671,10 +699,9 @@ function StopSessionOverlay({
             type="button"
             variant="destructive"
             size={phone ? "touch" : "default"}
-            disabled={stop.isPending}
-            onClick={() => stop.mutate()}
+            onClick={confirm}
           >
-            {stop.isPending ? "Stopping…" : "Stop session"}
+            Stop session
           </Button>
         </>
       }
@@ -716,11 +743,6 @@ function StopSessionOverlay({
           </>
         )}
         {checking}
-        {failure === null ? null : (
-          <p role="alert" className="text-destructive">
-            {failure}
-          </p>
-        )}
       </div>
     </Overlay>
   );
