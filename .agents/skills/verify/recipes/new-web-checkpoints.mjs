@@ -295,7 +295,9 @@ export default async ({ page, web, capture, note }) => {
     timeout: 60_000,
   });
   await settled();
-  const range = await visible(page.getByRole("button", { name: /^Checkpoints/ })).innerText();
+  const range = await visible(
+    page.getByRole("button", { name: /^Show changes: Checkpoints/ }),
+  ).innerText();
   const files = await page.getByText("PLAN.md", { exact: true }).count();
   if (files !== 0) throw new Error("the third turn's changes list PLAN.md, which it didn't touch");
   note(
