@@ -701,7 +701,7 @@ function ShellList({
           <span className="sr-only"> open</span>
         </span>
       </div>
-      <ul className="flex min-h-0 flex-col gap-0.5 overflow-y-auto px-2">
+      <ul aria-label="Open shells" className="flex min-h-0 flex-col gap-0.5 overflow-y-auto px-2">
         {shells.map((shell) => (
           <ShellRow
             key={shell.key}

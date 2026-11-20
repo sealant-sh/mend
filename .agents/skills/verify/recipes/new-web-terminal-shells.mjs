@@ -87,11 +87,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   /** The list's shell rows (not their "…" buttons), by name. */
   const rowNames = () =>
     page.evaluate(() =>
-      [
-        ...document.querySelectorAll(
-          'nav[aria-label="This workspace\'s shells"] li > button[type="button"]',
-        ),
-      ].map((button) => button.querySelector("span span")?.textContent ?? ""),
+      [...document.querySelectorAll('ul[aria-label="Open shells"] > li > button')].map(
+        (button) => button.querySelector("span span")?.textContent ?? "",
+      ),
     );
   const row = (name) => list.locator("li").filter({ has: page.getByText(name, { exact: true }) });
   const rowButton = (name) => row(name).locator("xpath=./button").first();
@@ -99,7 +97,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     page.evaluate(
       () =>
         document
-          .querySelector('nav[aria-label="This workspace\'s shells"] button[aria-current="true"]')
+          .querySelector('ul[aria-label="Open shells"] > li > button[aria-current="true"]')
           ?.querySelector("span span")?.textContent ?? null,
     );
   const waitRows = (want, what) =>
@@ -107,9 +105,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
       .waitForFunction(
         (names) => {
           const now = [
-            ...document.querySelectorAll(
-              'nav[aria-label="This workspace\'s shells"] li > button[type="button"]',
-            ),
+            ...document.querySelectorAll('ul[aria-label="Open shells"] > li > button'),
           ].map((button) => button.querySelector("span span")?.textContent ?? "");
           return JSON.stringify(now) === JSON.stringify(names);
         },
@@ -237,8 +233,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // The view opens a shell by itself when none is open; open shells until there are two.
   await page.waitForFunction(
     () =>
-      document.querySelectorAll('nav[aria-label="This workspace\'s shells"] li > button').length >
-        0 ||
+      document.querySelectorAll('ul[aria-label="Open shells"] > li > button').length > 0 ||
       [...document.querySelectorAll("button")].some((button) => button.textContent === "New shell"),
     undefined,
     { timeout: 60_000 },
@@ -248,9 +243,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     const before = (await rowNames()).length;
     await body.getByRole("button", { name: "New shell" }).first().click();
     await page.waitForFunction(
-      (n) =>
-        document.querySelectorAll('nav[aria-label="This workspace\'s shells"] li > button').length >
-        n,
+      (n) => document.querySelectorAll('ul[aria-label="Open shells"] > li > button').length > n,
       before,
       { timeout: 60_000 },
     );
