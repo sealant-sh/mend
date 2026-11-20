@@ -192,11 +192,19 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await open("/");
   expect(path() === "/", "a full load of / opens Mend once setup ended in this browser");
   await page.context().clearCookies({ name: "mend-setup" });
+  // Without the mark, the account's own facts decide. A setup recipe driven before this one can
+  // have made its Mend key, which puts it past setup.
+  const chosen = await client(async (trpc) => {
+    const access = await trpc.git.access.query();
+    return access.mode === "bridge" || access.key.exists;
+  });
   await open("/");
-  note(`a full load of / without the mark went to ${path()}`);
+  note(`a full load of / without the mark went to ${path()} (Git access chosen: ${chosen})`);
   expect(
-    path().startsWith("/welcome/"),
-    "a full load of / opens setup's next step for an account without Git access",
+    chosen ? path() === "/" : /^\/welcome(\/|$)/.test(path()),
+    chosen
+      ? "a full load of / opens Mend for an account with Git access and a project"
+      : "a full load of / opens setup's next step for an account without Git access",
   );
   await capture("setup-resumed-full-load-light");
 
