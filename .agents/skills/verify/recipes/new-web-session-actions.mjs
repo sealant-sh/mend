@@ -151,8 +151,6 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const tabMenu = await menuWords();
   for (const item of [
     "Rename…",
-    "Snooze",
-    "Mark done",
     "Copy link",
     "Split right",
     "Split down",
@@ -161,6 +159,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   ])
     if (!tabMenu.some((text) => text.startsWith(item)))
       throw new Error(`the tab's menu has no ${item}: ${tabMenu.join(" | ")}`);
+  // A running session offers Stop session… and neither Snooze nor Mark done (SLNT-1199: the menu
+  // follows the session's group, the tab's as the sidebar row's).
+  if (tabMenu.some((text) => /^(Snooze|Mark done)/.test(text)))
+    throw new Error(`a running session's tab offers Snooze or Mark done: ${tabMenu.join(" | ")}`);
   if (tabMenu.some((text) => /Copy branch name|Land/.test(text)))
     throw new Error("the tab's menu holds a workspace action");
   note(`tab menu: ${tabMenu.join(" | ")}`);
