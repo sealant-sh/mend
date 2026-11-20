@@ -564,22 +564,24 @@ function ExitLines({
     <ul
       aria-live="polite"
       aria-label="Shells that exited"
-      className="flex flex-col gap-0.5 empty:hidden"
+      className="flex flex-col gap-2 self-stretch empty:hidden"
     >
       {exits.map((exit) => (
-        <li key={exit.key} className="flex items-center gap-1 text-meta text-muted-foreground">
-          <span className="min-w-0 flex-1">{exitWords(exit)}</span>
-          <Button variant="ghost" size={touch ? "touch" : "xs"} onClick={() => onShow(exit)}>
-            What it printed
-          </Button>
-          <Button
-            variant="ghost"
-            size={touch ? "icon-touch" : "icon-xs"}
-            aria-label={`Dismiss the line about ${exit.name}`}
-            onClick={() => onDismiss(exit.key)}
-          >
-            <XIcon aria-hidden />
-          </Button>
+        <li key={exit.key} className="flex flex-col items-start text-meta text-muted-foreground">
+          <span>{exitWords(exit)}</span>
+          <span className="-ml-2 flex">
+            <Button variant="ghost" size={touch ? "touch" : "xs"} onClick={() => onShow(exit)}>
+              What it printed
+            </Button>
+            <Button
+              variant="ghost"
+              size={touch ? "touch" : "xs"}
+              aria-label={`Dismiss the line about ${exit.name}`}
+              onClick={() => onDismiss(exit.key)}
+            >
+              Dismiss
+            </Button>
+          </span>
         </li>
       ))}
     </ul>
@@ -623,7 +625,7 @@ const CONTEXT: MenuParts = {
 };
 
 /** A value on a menu item's right, in plain muted text on one line. */
-const META = "pl-4 font-mono tracking-normal whitespace-nowrap";
+const META = "pl-4 tracking-normal whitespace-nowrap";
 
 /** A shell's actions, the same in its "…" menu, its right-click menu and the phone's picker. */
 function ShellMenuItems({
@@ -651,18 +653,10 @@ function ShellMenuItems({
         )}
         <Item className={size} onClick={actions.copyDirectory}>
           <CopyIcon aria-hidden />
-          {touch ? (
-            // A phone's menu has no room beside the label: the path goes under it.
-            <span className="flex min-w-0 flex-col">
-              Copy working directory
-              <span className="font-mono text-meta text-muted-foreground">{SHELL_DIRECTORY}</span>
-            </span>
-          ) : (
-            <>
-              Copy working directory
-              <Shortcut className={META}>{SHELL_DIRECTORY}</Shortcut>
-            </>
-          )}
+          <span className="flex min-w-0 flex-col">
+            Copy working directory
+            <span className="font-mono text-meta text-muted-foreground">{SHELL_DIRECTORY}</span>
+          </span>
         </Item>
       </Group>
       {actions.close === null ? null : (
