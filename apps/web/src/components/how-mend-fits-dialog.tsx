@@ -1,11 +1,11 @@
 import { Button } from "@mend/ui/components/ui/button";
 import { useMemo, useState } from "react";
 
-import { type FitsScreen, screenTitle } from "#/lib/how-mend-fits";
+import { screenTitle } from "#/lib/how-mend-fits";
 import { fitsDialog } from "#/lib/how-mend-fits-open";
+import { type FitsScreen, screenCount } from "#/lib/how-mend-fits-screen";
 import { usePhone } from "#/lib/phone";
 
-import { screenCount } from "./how-mend-fits-step.tsx";
 import { FitsScreenBody, useFitsNames } from "./how-mend-fits.tsx";
 import { Overlay } from "./projects/overlay.tsx";
 

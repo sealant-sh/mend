@@ -2,7 +2,7 @@ import { createFileRoute } from "@tanstack/react-router";
 
 import { HowMendFitsStep } from "#/components/how-mend-fits-step";
 import { accountNameOptions } from "#/lib/auth-client";
-import { screenOf } from "#/lib/how-mend-fits";
+import { screenOf } from "#/lib/how-mend-fits-screen";
 import { rememberStepReached } from "#/lib/setup";
 import { signedInOptions } from "#/lib/sign-in";
 

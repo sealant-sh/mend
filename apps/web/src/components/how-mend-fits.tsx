@@ -11,7 +11,6 @@ import { type ReactNode, type RefObject, useLayoutEffect, useRef, useState } fro
 import { useAdoptionAttempt } from "#/lib/adoptions";
 import {
   type FitsNames,
-  type FitsScreen,
   GROUP_WORDS,
   nestingCaption,
   nestingIntro,
@@ -25,6 +24,7 @@ import {
   pictureProject,
   sidebarIntro,
 } from "#/lib/how-mend-fits";
+import type { FitsScreen } from "#/lib/how-mend-fits-screen";
 import { useServerHost } from "#/lib/online";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";

@@ -3,7 +3,8 @@ import { cn } from "@mend/ui/lib/utils";
 import { useNavigate } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 
-import { FITS_SCREENS, type FitsScreen, screenTitle } from "#/lib/how-mend-fits";
+import { screenTitle } from "#/lib/how-mend-fits";
+import { type FitsScreen, screenCount } from "#/lib/how-mend-fits-screen";
 import { usePhone } from "#/lib/phone";
 import { rememberNounsEnd } from "#/lib/setup-skips";
 
@@ -74,9 +75,6 @@ export function HowMendFitsStep({ screen }: { readonly screen: FitsScreen }) {
     </SetupFrame>
   );
 }
-
-/** "2 of 3": where a screen sits among the three. */
-export const screenCount = (screen: FitsScreen): string => `${screen} of ${FITS_SCREENS.length}`;
 
 /**
  * The foot of a screen (Doop frames' buttons). On a desktop, under a hairline: Skip for now on the

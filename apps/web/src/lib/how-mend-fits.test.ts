@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
 
+import { screenOf } from "./how-mend-fits-screen.ts";
 import {
   type FitsNames,
   nestingIntro,
   organizationLine,
   pictureProject,
   sampleInboxView,
-  screenOf,
 } from "./how-mend-fits.ts";
 
 const names: FitsNames = {

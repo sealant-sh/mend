@@ -1,6 +1,7 @@
 import { ChangeId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
 
 import type { SessionInboxRowDto } from "./api.ts";
+import type { FitsScreen } from "./how-mend-fits-screen.ts";
 import {
   DEFAULT_INBOX_FILTERS,
   groupRows,
@@ -16,17 +17,6 @@ import type { InboxView } from "./use-inbox.ts";
  * on who is reading, and the sample sessions the pictures show. The pictures are the app's own
  * components drawn with these samples, so they change when the components do.
  */
-
-/** The step's three screens: how the parts nest, inside a session, the sidebar. */
-export type FitsScreen = 1 | 2 | 3;
-
-export const FITS_SCREENS: ReadonlyArray<FitsScreen> = [1, 2, 3];
-
-/** The screen an address asks for (`?screen=2`); the first for anything else. */
-export const screenOf = (value: unknown): FitsScreen => {
-  const number = typeof value === "string" ? Number(value) : value;
-  return number === 2 || number === 3 ? number : 1;
-};
 
 /** What the screens name, from who is reading. */
 export interface FitsNames {
