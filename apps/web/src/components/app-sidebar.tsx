@@ -1025,8 +1025,12 @@ export function SidebarRow({
     leaving && "pointer-events-none animate-row-close",
     lit && "animate-row-lit",
   );
+  // `min-w-0`: a grid item is as wide as its longest line otherwise, so a long row runs past the
+  // sidebar instead of truncating, and its focus ring is cut.
   const content = (
-    <div className={cn("relative min-h-0", phase !== "still" && "overflow-hidden")}>{body}</div>
+    <div className={cn("relative min-h-0 min-w-0", phase !== "still" && "overflow-hidden")}>
+      {body}
+    </div>
   );
   if (contextMenu === undefined || renaming !== undefined)
     return (

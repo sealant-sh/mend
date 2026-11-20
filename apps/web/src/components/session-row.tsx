@@ -54,7 +54,10 @@ export function SessionRow({
       )}
     >
       <div
-        className={cn("relative flex min-h-0 items-start", phase !== "still" && "overflow-hidden")}
+        className={cn(
+          "relative flex min-h-0 min-w-0 items-start",
+          phase !== "still" && "overflow-hidden",
+        )}
       >
         <Link
           {...sessionLink(sessionId)}
