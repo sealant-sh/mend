@@ -10,8 +10,9 @@
 // is sent), `adopt-visibility` (Only you or Everyone in <organization>). `adopt-access` is gone from
 // the web: the frames keep Git access with the person (D11). Also: a clone that fails says why with
 // git's own words, Clone again and Change details; a clone in progress survives a reload; Continue
-// to Mend opens the composer, where a session started while the clone runs waits and then starts;
-// someone who can see a project is sent on to Mend; the phone width; the step failing to load.
+// opens How Mend fits together, whose Skip for now opens the composer, where a session started
+// while the clone runs waits and then starts; someone who can see a project is sent on to How Mend
+// fits together; the phone width; the step failing to load.
 //
 // The stack's account has projects already, and a person who can see one never sees this step.
 // The recipe answers the project list with only the projects it made, so the step shows as it does
@@ -195,18 +196,18 @@ export default async ({ page, web, capture, note }) => {
     await go("/");
   }
 
-  // Someone who can see a project is sent on to Mend.
+  // Someone who can see a project is sent on to the next step, How Mend fits together.
   const seen = (await call("projects.list")).length;
   await go("/welcome/first-project");
-  await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
-  note(`with ${seen} projects in sight, /welcome/first-project went on to /`);
+  await page.waitForURL((url) => url.pathname === "/welcome/how-mend-fits", { timeout: 15_000 });
+  note(`with ${seen} projects in sight, /welcome/first-project went on to /welcome/how-mend-fits`);
 
   // From here the person sees only the projects this drive makes: the step as a new person has it.
   answers = { "projects.list": (list) => (list ?? []).filter((entry) => made(entry.name)) };
   await refresh();
   await go("/welcome/first-project");
   await heading().waitFor();
-  await text("Step 6 of 6").waitFor();
+  await text("Step 6 of 7").waitFor();
   // Neither the account nor the stack's server has a GitHub login: the step shows how to connect
   // one (SLNT-1191), above the repository address.
   await text(/Waiting for GitHub to connect/).waitFor();
@@ -274,9 +275,9 @@ export default async ({ page, web, capture, note }) => {
   await button("Skip for now").waitFor();
   await both("fixture-agent-skipped-desktop");
   await button("Skip for now").click();
-  await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
+  await page.waitForURL((url) => url.pathname === "/welcome/how-mend-fits", { timeout: 15_000 });
   note(
-    "fixture, agent login skipped: the steps read Agent login Skipped; with another member in the organization, Skip for now goes on to /",
+    "fixture, agent login skipped: the steps read Agent login Skipped; with another member in the organization, Skip for now goes on to How Mend fits together",
   );
   delete answers["organization.members"];
   delete answers["platform.sealantIdentity"];
@@ -374,9 +375,13 @@ export default async ({ page, web, capture, note }) => {
   note(
     `adopt-web, adopt-visibility: ${SMALL_REPOSITORY} cloned as ${small} on the step, visible to everyone in ${organization}`,
   );
-  await button("Continue to Mend").click();
+  await button("Continue").click();
+  await page.getByRole("heading", { name: "How Mend fits together", level: 1 }).waitFor();
+  await button("Skip for now").click();
   await page.getByRole("heading", { name: "New session" }).waitFor();
-  note("Continue to Mend after the clone opens the composer");
+  note(
+    "Continue after the clone opens How Mend fits together; Skip for now there opens the composer",
+  );
   // Back to a person with no project, for the clone that runs while they go on.
   await call("projects.remove", { id: smallProject.id }, "mutate");
   await refresh();
@@ -401,7 +406,9 @@ export default async ({ page, web, capture, note }) => {
   note(
     `${BIG_REPOSITORY} cloning as ${big}; after a reload the step still shows the clone running`,
   );
-  await button("Continue to Mend").click();
+  await button("Continue").click();
+  await page.getByRole("heading", { name: "How Mend fits together", level: 1 }).waitFor();
+  await button("Skip for now").click();
   await page.getByRole("heading", { name: "New session" }).waitFor();
   await text(`${big} is still cloning.`).waitFor();
   await capture("composer-cloning-desktop-light");
@@ -417,7 +424,7 @@ export default async ({ page, web, capture, note }) => {
     20,
   );
   note(
-    `Continue to Mend opened the composer on ${big}; it queued ${queued.id} (state ${queued.state})`,
+    `Continue, then Skip for now, opened the composer on ${big}; it queued ${queued.id} (state ${queued.state})`,
   );
   const started = await waitFor(
     "the queued session starting",
@@ -433,8 +440,8 @@ export default async ({ page, web, capture, note }) => {
   await call("sessions.stop", { id: started }, "mutate").catch(() => undefined);
   await refresh();
   await go("/welcome/first-project");
-  await page.waitForURL((url) => url.pathname === "/", { timeout: 15_000 });
-  note(`with ${big} in sight, the step goes on to / again`);
+  await page.waitForURL((url) => url.pathname === "/welcome/how-mend-fits", { timeout: 15_000 });
+  note(`with ${big} in sight, the step goes on to How Mend fits together again`);
 
   // The step failing to load: the route's error screen, and Try again.
   await forgetClone(me.userId);

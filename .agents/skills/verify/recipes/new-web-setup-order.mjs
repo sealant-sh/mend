@@ -1,10 +1,10 @@
 // Setup in the owner's order (SLNT-1191): Account, Command line, Git access, Agent login,
-// Organization, First project for the first account; the same without Organization for someone
+// Organization, First project, How Mend fits together for the first account; the same without Organization for someone
 // who joins from an invitation.
 //
 //   pnpm verify drive new-web --recipe new-web-setup-order
 //
-// - Command line (step 2 of 6): waiting with the install and sign-in commands; Skip for now goes to
+// - Command line (step 2 of 7): waiting with the install and sign-in commands; Skip for now goes to
 //   Git access, where the steps say "Skipped" and the full block shows once; a computer signing in
 //   lands on the open page through the server's `user` event (no reload), as one ticked line;
 //   Continue goes on.
@@ -12,11 +12,11 @@
 //   then connected.
 // - Agent login: Mend's command line once above the tabs, the full block while no computer is
 //   signed in, then one ticked line; each tab holds only its own command.
-// - Organization (step 5 of 6): the name, the runtime choice, a failed save, a real rename, and
+// - Organization (step 5 of 7): the name, the runtime choice, a failed save, a real rename, and
 //   Continue to First project.
 // - First project: no GitHub login, with the connect section; the wait for the list; the list of
 //   the person's own login.
-// - Joining from an invitation: Command line, step 2 of 5, and five steps with no Organization.
+// - Joining from an invitation: Command line, step 2 of 6, and six steps with no Organization.
 // - The owner choice: the login's own account, then each organization; an organization's
 //   repositories, a search within it, and one that shows none.
 // - Tab on the first-account form: Name, Email, Password, Confirm password, the button.
@@ -244,7 +244,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     // ---- Command line, waiting.
     await go("/welcome/command-line");
     await heading("Mend's command line");
-    await text("Step 2 of 6").waitFor({ state: "attached" });
+    await text("Step 2 of 7").waitFor({ state: "attached" });
     const origin = new URL(web).origin;
     const waiting = await commands();
     expect(
@@ -254,9 +254,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     );
     await text(/Waiting for your computer to sign in · \d+s/).waitFor();
     expect("Continue waits", await button("Continue").isDisabled(), "enabled");
-    expect("six steps", (await stepNames()).length === 6, await stepNames());
+    expect("seven steps", (await stepNames()).length === 7, await stepNames());
     note(
-      `/welcome/command-line: 'Mend's command line', step 2 of 6, '${waiting.join("' and '")}' with Copy command, 'Waiting for your computer to sign in · Ns', Continue disabled, Skip for now`,
+      `/welcome/command-line: 'Mend's command line', step 2 of 7, '${waiting.join("' and '")}' with Copy command, 'Waiting for your computer to sign in · Ns', Continue disabled, Skip for now`,
     );
     await all("cli-waiting");
 
@@ -337,9 +337,11 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
       !signedInCommands.some((one) => one.startsWith("mend login") || one.startsWith("npm ")),
       signedInCommands,
     );
-    await text("Without GitHub, you paste a repository's address in the last step.").waitFor();
+    await text(
+      "Without GitHub, you paste a repository's address in the First project step.",
+    ).waitFor();
     note(
-      `Git access: '${computer}' under Command line, one ticked line, 'mend connect github' alone, 'Waiting for GitHub to connect', the note 'Without GitHub, you paste a repository's address in the last step.'`,
+      `Git access: '${computer}' under Command line, one ticked line, 'mend connect github' alone, 'Waiting for GitHub to connect', the note 'Without GitHub, you paste a repository's address in the First project step.'`,
     );
     await all("git-github-waiting");
     const connectedAt = new Date().toISOString();
@@ -369,7 +371,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await readAgain([["devices", "list"]]);
     await go("/welcome/agent-login");
     await heading("Agent login");
-    await text("Step 4 of 6").waitFor({ state: "attached" });
+    await text("Step 4 of 7").waitFor({ state: "attached" });
     const claudeBlock = await commands();
     expect(
       "the full block once, then the tab's own command",
@@ -410,9 +412,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await button("Skip for now").click();
     await page.waitForURL((url) => url.pathname === "/welcome/organization");
 
-    // ---- Organization, step 5 of 6.
+    // ---- Organization, step 5 of 7.
     await heading("Your organization");
-    await text("Step 5 of 6").waitFor({ state: "attached" });
+    await text("Step 5 of 7").waitFor({ state: "attached" });
     const nameField = page.getByLabel("Name", { exact: true });
     expect(
       "the name the server gave it",
@@ -480,7 +482,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     await readAgain([["platform", "sealantIdentity"]]);
     await open("/welcome/first-project");
     await heading("Add a project");
-    await text("Step 6 of 6").waitFor({ state: "attached" });
+    await text("Step 6 of 7").waitFor({ state: "attached" });
     await stepsList().getByText(newName, { exact: true }).waitFor({ state: "attached" });
     await text(/Waiting for GitHub to connect · \d+s/).waitFor();
     await button("Paste a Git URL instead").waitFor();
@@ -618,7 +620,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     );
   }
 
-  // ---- Joining from an invitation: five steps, no Organization.
+  // ---- Joining from an invitation: six steps, no Organization.
   const invitation = await api("POST", "/api/organization/invitations", { role: "member" });
   expect("an invitation", invitation.status === 200, invitation.status);
   registerSecret("setup-order-invitation", invitation.body.token);
@@ -638,7 +640,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   );
   await open("/login");
   await heading("Create the first account");
-  await text("Step 1 of 6").waitFor({ state: "attached" });
+  await text("Step 1 of 7").waitFor({ state: "attached" });
   await text("You name the organization later in setup.").waitFor();
   await page.getByRole("textbox", { name: "Name" }).focus();
   const focused = () =>
@@ -687,15 +689,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   await page.waitForURL((url) => url.pathname === "/welcome/command-line", { timeout: 60_000 });
   await hydrated();
   await heading("Mend's command line");
-  await text("Step 2 of 5").waitFor({ state: "attached" });
+  await text("Step 2 of 6").waitFor({ state: "attached" });
   const joined = await stepNames();
   expect(
-    "five steps and no Organization",
-    joined.length === 5 && !joined.some((one) => one.startsWith("Organization")),
+    "six steps and no Organization",
+    joined.length === 6 && !joined.some((one) => one.startsWith("Organization")),
     joined,
   );
   note(
-    `a person who joined landed on /welcome/command-line: step 2 of 5, steps ${joined.join(" · ")}`,
+    `a person who joined landed on /welcome/command-line: step 2 of 6, steps ${joined.join(" · ")}`,
   );
   await all("join-cli-waiting");
   // The member has no GitHub login and doesn't run the server: the list says to connect one, and

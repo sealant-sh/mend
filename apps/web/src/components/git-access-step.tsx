@@ -112,6 +112,7 @@ export function GitAccessStep() {
       saved={progress.saved}
       skipped={progress.skipped}
       reached={progress.reached}
+      ended={progress.ended}
     >
       <div className="flex flex-col">
         <p className="text-prose text-pretty text-foreground max-lg:text-sm">
@@ -166,7 +167,7 @@ export function GitAccessStep() {
       <SetupActions
         status={
           works && githubConnected === false
-            ? "Without GitHub, you paste a repository's address in the last step."
+            ? "Without GitHub, you paste a repository's address in the First project step."
             : works && access.mode === "mend-key"
               ? "Mend saves your choice as soon as you pick it."
               : continueNote(access, check)

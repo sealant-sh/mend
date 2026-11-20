@@ -41,7 +41,7 @@ import {
   sourceIssue,
 } from "#/lib/projects";
 import { failureWords } from "#/lib/refusal";
-import { firstProjectSkippable, hasAgentLogin } from "#/lib/setup";
+import { firstProjectSkippable, hasAgentLogin, nextStepPage, STEP_PAGES } from "#/lib/setup";
 import { signedInOptions } from "#/lib/sign-in";
 import { useTRPC } from "#/lib/trpc";
 import { type CloneRequest, retryOf, useClone } from "#/lib/use-clone";
@@ -64,10 +64,10 @@ const SEARCH_REST_MS = 250;
 const SHOWN = { desktop: 6, phone: 4 } as const;
 
 /**
- * Setup's last step (Doop "First project · …"): pick one of the repositories the person's GitHub
+ * Setup's First project step (Doop "First project · …"): pick one of the repositories the person's GitHub
  * login can reach (their own connected login, or for the operator of a single-organization
  * server without one, the server's `gh`), or paste any Git address, name the project and say who
- * sees it. Adding it starts the clone on this page; the person may go on to Mend while it runs, and a session
+ * sees it. Adding it starts the clone on this page; the person may go on while it runs, and a session
  * started there waits for the clone (`queuedSessions`). The clone is the Projects page's (it is
  * kept in this browser by `useClone`), so a reload, or Projects, shows the same one.
  */
@@ -98,7 +98,9 @@ export function FirstProjectStep() {
   const skipped = logins !== null && !hasAgentLogin(logins);
   const skippable = firstProjectSkippable(memberCount);
   const organizationName = viewer.organization.name;
-  const home = phone ? "/new" : "/";
+  // How Mend fits together comes next; the clone keeps going while the person reads it.
+  const onward = () =>
+    void navigate({ to: nextStepPage(progress.steps, "project") ?? STEP_PAGES.nouns });
 
   const { attempt, state } = clone;
   const retry = attempt === null ? null : retryOf(attempt);
@@ -111,6 +113,7 @@ export function FirstProjectStep() {
       saved={progress.saved}
       skipped={progress.skipped}
       reached={progress.reached}
+      ended={progress.ended}
     >
       <p className="text-prose text-pretty text-foreground max-lg:text-sm">
         A project is a git repository you add to Mend. Mend clones it onto this server, and sessions
@@ -129,7 +132,7 @@ export function FirstProjectStep() {
           onContinue={() => {
             // A clone that ended is done with; one still running stays, for the composer.
             if (state._tag === "Added") clone.forget();
-            void navigate({ to: home });
+            onward();
           }}
           onRetry={retry === null ? null : () => clone.start(retry)}
           onEdit={() =>
@@ -143,7 +146,7 @@ export function FirstProjectStep() {
           projects={projects}
           organizationName={organizationName}
           phone={phone}
-          onSkip={skippable ? () => void navigate({ to: home }) : null}
+          onSkip={skippable ? onward : null}
           onClone={(request, repository) => {
             setPicked(repository);
             setEditing(null);
@@ -823,7 +826,7 @@ function CloneView({
           }
         >
           <Button size={size} onClick={onContinue}>
-            Continue to Mend
+            Continue
           </Button>
         </SetupActions>
       )}

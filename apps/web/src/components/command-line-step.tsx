@@ -43,6 +43,7 @@ export function CommandLineStep() {
       saved={progress.saved}
       skipped={progress.skipped}
       reached={progress.reached}
+      ended={progress.ended}
     >
       <CommandLineBlock phone={phone} page />
       <SetupActions

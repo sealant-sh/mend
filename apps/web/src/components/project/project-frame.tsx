@@ -139,16 +139,20 @@ export function ProjectFacts({
 }
 
 /** The tabs as links (one page each), with the open one underlined. */
-function TabLine({
+export function TabLine({
   name,
   tabs,
+  current: shown,
   className,
 }: {
   readonly name: string;
   readonly tabs: ReadonlyArray<ProjectTab>;
+  /** The open tab's path, when it isn't the page's own (a picture of the tabs). */
+  readonly current?: string;
   readonly className?: string;
 }) {
-  const pathname = useLocation({ select: (location) => location.pathname.replace(/\/+$/, "") });
+  const location = useLocation({ select: (place) => place.pathname.replace(/\/+$/, "") });
+  const pathname = shown ?? location;
   return (
     <nav aria-label={`${name} project`} className={cn("flex gap-6 overflow-x-auto", className)}>
       {tabs.map((tab) => {

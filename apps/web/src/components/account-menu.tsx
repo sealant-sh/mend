@@ -27,13 +27,15 @@ import {
   ChevronsUpDownIcon,
   CircleUserRoundIcon,
   LogOutIcon,
+  MapIcon,
   SmartphoneIcon,
   SunMoonIcon,
 } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
 
 import { authClient } from "#/lib/auth-client";
 import { exposureDetail, exposureLine } from "#/lib/exposure";
+import { fitsDialog } from "#/lib/how-mend-fits-open";
 import { useServerHost } from "#/lib/online";
 import { setThemePreference, type ThemePreference, useThemePreference } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
@@ -42,7 +44,8 @@ import { SheetHandle, SheetItem, SheetItemBody, sheetItemClass } from "./sheet-i
 
 /**
  * The account menu (Doop "Account menu · Theme open", "Phone · account actions"): who is signed
- * in and how this server is reached, Profile, Pair a phone…, Theme, Docs and Sign out. On the desk
+ * in and how this server is reached, Profile, Pair a phone…, Theme, How Mend fits together (setup's
+ * last step, opened again as a dialog), Docs and Sign out. On the desk
  * it opens from the account row at the foot of the sidebar, or the avatar on its rail; on a phone,
  * from the account row at the top of the Settings tab, as a sheet.
  *
@@ -148,10 +151,14 @@ export function AccountMenu({
   const theme = useThemePreference();
   const signOut = useSignOut();
   const leaving = signOut.isPending || signOut.isSuccess;
+  // The menu item that opens How Mend fits together is gone once it closes: focus goes back to
+  // the trigger.
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const label = account.name === "" ? "Account" : `${account.name}, account`;
   const trigger =
     place === "sidebar" ? (
       <DropdownMenuTrigger
+        ref={triggerRef}
         aria-label={label}
         className="flex w-full min-w-0 items-center gap-2.5 rounded-lg p-2 text-left outline-none hover:bg-background/55 focus-visible:ring-3 focus-visible:ring-ring/50 data-popup-open:bg-background/55"
       >
@@ -167,6 +174,7 @@ export function AccountMenu({
         <TooltipTrigger
           render={
             <DropdownMenuTrigger
+              ref={triggerRef}
               aria-label={label}
               className="mt-1.5 mb-0.5 grid place-items-center rounded-full outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
             />
@@ -180,77 +188,87 @@ export function AccountMenu({
       </Tooltip>
     );
   return (
-    <DropdownMenu>
-      {trigger}
-      <DropdownMenuContent
-        width={place === "sidebar" ? "anchor" : "md"}
-        side={place === "sidebar" ? "top" : "right"}
-        align={place === "sidebar" ? "start" : "end"}
-        sideOffset={place === "sidebar" ? 6 : 8}
-      >
-        <DropdownMenuGroup>
-          <DropdownMenuLabel className="truncate">
-            {[account.name, account.email].filter((part) => part !== "").join(" · ")}
-          </DropdownMenuLabel>
-          <ExposureLine className="truncate px-2 pb-1 font-mono text-2xs text-muted-foreground" />
-        </DropdownMenuGroup>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem render={<Link to="/settings/profile" />}>
-          <CircleUserRoundIcon aria-hidden className="text-muted-foreground" />
-          Profile
-        </DropdownMenuItem>
-        <DropdownMenuItem render={<Link to="/settings/devices" />}>
-          <SmartphoneIcon aria-hidden className="text-muted-foreground" />
-          Pair a phone…
-        </DropdownMenuItem>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <SunMoonIcon aria-hidden className="text-muted-foreground" />
-            <span className="flex-1">Theme</span>
-            <span className="text-meta text-muted-foreground">{themeLabel(theme)}</span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent width="sm" sideOffset={8}>
-            <DropdownMenuRadioGroup
-              value={theme}
-              onValueChange={(value: unknown) => {
-                if (isTheme(value)) setThemePreference(value);
-              }}
-            >
-              {THEMES.map((choice) => (
-                <DropdownMenuRadioItem key={choice.value} value={choice.value} closeOnClick>
-                  {choice.label}
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          render={
-            <a
-              href={DOCS_URL}
-              target="_blank"
-              rel="noreferrer"
-              aria-label="Docs, opens in a new tab"
-            />
-          }
+    <>
+      <DropdownMenu>
+        {trigger}
+        <DropdownMenuContent
+          width={place === "sidebar" ? "anchor" : "md"}
+          side={place === "sidebar" ? "top" : "right"}
+          align={place === "sidebar" ? "start" : "end"}
+          sideOffset={place === "sidebar" ? 6 : 8}
         >
-          <BookOpenIcon aria-hidden className="text-muted-foreground" />
-          <span className="flex-1">Docs</span>
-          <ArrowUpRightIcon aria-hidden className="size-3.5 text-muted-foreground" />
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem closeOnClick={false} disabled={leaving} onClick={() => signOut.mutate()}>
-          <LogOutIcon aria-hidden className="text-muted-foreground" />
-          {leaving ? "Signing out…" : "Sign out"}
-        </DropdownMenuItem>
-        {signOut.isError ? (
-          <p role="alert" className="px-2 pt-0.5 pb-1.5 text-meta text-destructive">
-            {SIGN_OUT_FAILED}
-          </p>
-        ) : null}
-      </DropdownMenuContent>
-    </DropdownMenu>
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="truncate">
+              {[account.name, account.email].filter((part) => part !== "").join(" · ")}
+            </DropdownMenuLabel>
+            <ExposureLine className="truncate px-2 pb-1 font-mono text-2xs text-muted-foreground" />
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem render={<Link to="/settings/profile" />}>
+            <CircleUserRoundIcon aria-hidden className="text-muted-foreground" />
+            Profile
+          </DropdownMenuItem>
+          <DropdownMenuItem render={<Link to="/settings/devices" />}>
+            <SmartphoneIcon aria-hidden className="text-muted-foreground" />
+            Pair a phone…
+          </DropdownMenuItem>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <SunMoonIcon aria-hidden className="text-muted-foreground" />
+              <span className="flex-1">Theme</span>
+              <span className="text-meta text-muted-foreground">{themeLabel(theme)}</span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent width="sm" sideOffset={8}>
+              <DropdownMenuRadioGroup
+                value={theme}
+                onValueChange={(value: unknown) => {
+                  if (isTheme(value)) setThemePreference(value);
+                }}
+              >
+                {THEMES.map((choice) => (
+                  <DropdownMenuRadioItem key={choice.value} value={choice.value} closeOnClick>
+                    {choice.label}
+                  </DropdownMenuRadioItem>
+                ))}
+              </DropdownMenuRadioGroup>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem onClick={() => fitsDialog.open(triggerRef.current)}>
+            <MapIcon aria-hidden className="text-muted-foreground" />
+            How Mend fits together
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            render={
+              <a
+                href={DOCS_URL}
+                target="_blank"
+                rel="noreferrer"
+                aria-label="Docs, opens in a new tab"
+              />
+            }
+          >
+            <BookOpenIcon aria-hidden className="text-muted-foreground" />
+            <span className="flex-1">Docs</span>
+            <ArrowUpRightIcon aria-hidden className="size-3.5 text-muted-foreground" />
+          </DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            closeOnClick={false}
+            disabled={leaving}
+            onClick={() => signOut.mutate()}
+          >
+            <LogOutIcon aria-hidden className="text-muted-foreground" />
+            {leaving ? "Signing out…" : "Sign out"}
+          </DropdownMenuItem>
+          {signOut.isError ? (
+            <p role="alert" className="px-2 pt-0.5 pb-1.5 text-meta text-destructive">
+              {SIGN_OUT_FAILED}
+            </p>
+          ) : null}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
   );
 }
 
@@ -267,6 +285,7 @@ export function PhoneAccountRow({ account }: { readonly account: Account }) {
   const signOut = useSignOut();
   const leaving = signOut.isPending || signOut.isSuccess;
   const [open, setOpen] = useState(false);
+  const row = useRef<HTMLButtonElement>(null);
   const [page, setPage] = useState<PhonePage>("account");
   const show = (next: boolean) => {
     setOpen(next);
@@ -279,6 +298,7 @@ export function PhoneAccountRow({ account }: { readonly account: Account }) {
   return (
     <>
       <button
+        ref={row}
         type="button"
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -320,6 +340,16 @@ export function PhoneAccountRow({ account }: { readonly account: Account }) {
                   onClick={() => setPage("theme")}
                 >
                   Appearance
+                </SheetItem>
+                <SheetItem
+                  icon={<MapIcon aria-hidden />}
+                  chevron
+                  onClick={() => {
+                    setOpen(false);
+                    fitsDialog.open(row.current);
+                  }}
+                >
+                  How Mend fits together
                 </SheetItem>
                 <a
                   role="menuitem"

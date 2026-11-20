@@ -522,10 +522,11 @@ flows reuse what earlier ones made:
 - **Needs:** no session; no turn; web; GitHub reachable from the box
 - **Do:** Drive the recipe `new-web-first-project` (after the composer's CLI batch
   `new-web-composer-setup.json`): setup's First project step sends someone who sees a project on to
-  Mend; with the project list answered without the account's projects, it refuses a local path,
-  reports a clone that fails with Clone again and Change details, clones a small public repository
-  shared with the organization, then clones a big one, keeps it across a reload, and Continue to
-  Mend opens the composer, where a session queued on the clone waits and starts.
+  How Mend fits together; with the project list answered without the account's projects, it refuses
+  a local path, reports a clone that fails with Clone again and Change details, clones a small
+  public repository shared with the organization, then clones a big one, keeps it across a reload,
+  and Continue opens How Mend fits together, whose Skip for now opens the composer, where a session
+  queued on the clone waits and starts.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the session queued on the
   clone starts by itself; every project the recipe made is purged at its end.
 - **Mode:** `scripted` (recipes/new-web-first-project.mjs)
@@ -541,17 +542,17 @@ flows reuse what earlier ones made:
   provider-accounts.md `accounts-list`; adopt-project.md `adopt-web`
 - **Needs:** no session; no turn; web
 - **Do:** Drive the recipe `new-web-setup-order`: setup in the owner's order (SLNT-1191). Command
-  line, step 2 of 6, waits with the install and sign-in commands; Skip for now reaches Git access
+  line, step 2 of 7, waits with the install and sign-in commands; Skip for now reaches Git access
   with "Skipped" under the step and the full block once; a device the server announces with the
   `user` event turns the open page into "Mend's command line is signed in on <computer>." with no
   reload. Git access shows one ticked line and the GitHub account section, waiting then connected.
   Agent login shows Mend's command line once above the tabs, and each tab holds only its own
-  command. Organization, step 5 of 6, reports a failed save, renames, and goes on to First project,
+  command. Organization, step 5 of 7, reports a failed save, renames, and goes on to First project,
   which shows how to connect GitHub with no login, then the person's repositories with an owner
   choice: their own account, then each organization; an organization lists its repositories, search
   looks within it, and one with none says it may need to approve GitHub CLI. Tab on the
   first-account form goes Name, Email, Password, Confirm password, the button. A person who joins
-  lands on Command line, step 2 of 5, with no Organization step. The recipe also times a first
+  lands on Command line, step 2 of 6, with no Organization step. The recipe also times a first
   `/api/github/owners` and `/api/github/repos` as the caller with a fake GitHub login.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the organization's name
   is put back, the minted device revoked and the fake GitHub login removed at the end.
@@ -565,6 +566,33 @@ flows reuse what earlier ones made:
   `apps/web/src/lib/command-line.ts`, `apps/web/src/lib/setup-skips.ts`,
   `apps/web/src/lib/onboarding.ts`, `apps/api/src/github-identity.ts`,
   `apps/api/src/routes/github.ts`
+
+### sign-in.new-web-how-mend-fits
+
+- **Map:** sign-in.md `first-account`
+- **Needs:** no session; no turn; web
+- **Do:** Drive the recipe `new-web-how-mend-fits` (SLNT-1203): setup's last step, How Mend fits
+  together. The first account sees step 7 of 7 with three screens on `?screen=`: how Mend's parts
+  nest (server, organization, project, worktree, session, workspace, change), inside a session, and
+  the sidebar ("The inbox" on a phone). The pictures are the app's own components with sample data;
+  the sidebar picture is the sidebar itself with its five groups. Next, Back and the browser's back
+  move between screens; Skip for now (screens 1 and 2) and Continue to Mend (screen 3) open Mend,
+  and going back to Git access the step reads skipped or done. `/welcome` sends someone who finished
+  setup to Mend, never to this step; First project sends someone who sees a project on to it.
+  Someone who joins sees step 6 of 6 and "You're a member of …". The account menu's "How Mend fits
+  together" opens the same screens in a dialog, Done returns focus to the account row; on a phone,
+  Settings' account sheet opens them as a sheet.
+- **See:** each step's note in the recipe's `steps.log`, and its captures of every screen in light,
+  dark and at 390px, the skipped rail, and the dialog; the recipe clears what it remembered in the
+  browser.
+- **Mode:** `scripted` (recipes/new-web-how-mend-fits.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/how-mend-fits.tsx`,
+  `apps/web/src/components/how-mend-fits-step.tsx`,
+  `apps/web/src/components/how-mend-fits-dialog.tsx`,
+  `apps/web/src/routes/welcome.how-mend-fits.tsx`, `apps/web/src/lib/how-mend-fits.ts`,
+  `apps/web/src/lib/how-mend-fits-open.ts`, `apps/web/src/components/account-menu.tsx`
 
 ### sign-in.new-web-setup-revisit
 

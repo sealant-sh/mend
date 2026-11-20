@@ -8,7 +8,14 @@
 export const MIN_PASSWORD_LENGTH = 8;
 
 /** One of the setup steps a new person goes through before the app opens (the Setup steps). */
-export type SetupStepKey = "account" | "cli" | "git" | "agent" | "organization" | "project";
+export type SetupStepKey =
+  | "account"
+  | "cli"
+  | "git"
+  | "agent"
+  | "organization"
+  | "project"
+  | "nouns";
 
 /** Each step's name beside the sheet. */
 export const SETUP_STEP_NAMES: Readonly<Record<SetupStepKey, string>> = {
@@ -18,19 +25,22 @@ export const SETUP_STEP_NAMES: Readonly<Record<SetupStepKey, string>> = {
   agent: "Agent login",
   organization: "Organization",
   project: "First project",
+  nouns: "How Mend fits together",
 };
 
 /**
  * The steps a person has, in order (the owner's order, 19 Nov 2026). The first account, which
- * owns the server's first organization, names it just before its first project: six steps.
- * Someone who joins from an invitation joins an organization that already has a name: five.
+ * owns the server's first organization, names it just before its first project. Someone who joins
+ * from an invitation joins an organization that already has a name. Both end with How Mend fits
+ * together (SLNT-1203, 20 Nov 2026), which explains what the first project and its sessions are
+ * part of: seven steps, or six.
  */
 export const setupSteps = (namesOrganization: boolean): ReadonlyArray<SetupStepKey> =>
   namesOrganization
-    ? ["account", "cli", "git", "agent", "organization", "project"]
-    : ["account", "cli", "git", "agent", "project"];
+    ? ["account", "cli", "git", "agent", "organization", "project", "nouns"]
+    : ["account", "cli", "git", "agent", "project", "nouns"];
 
-/** "Step 2 of 6": where a step sits among the person's steps. */
+/** "Step 2 of 7": where a step sits among the person's steps. */
 export const stepLine = (steps: ReadonlyArray<SetupStepKey>, step: SetupStepKey): string =>
   `Step ${steps.indexOf(step) + 1} of ${steps.length}`;
 

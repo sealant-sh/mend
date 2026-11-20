@@ -299,7 +299,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await open("/login");
   await heading("Create the first account");
   await page.getByRole("list", { name: "Setup steps" }).waitFor({ state: "attached" });
-  note("a server with no accounts opens on 'Create the first account', step 1 of 6");
+  note("a server with no accounts opens on 'Create the first account', step 1 of 7");
   await captureAll("first-account");
 
   await page.getByRole("textbox", { name: "Name" }).fill("Verify");

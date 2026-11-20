@@ -172,7 +172,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
   await open("/welcome/agent-login");
   await heading("Agent login");
   // The stack's account is the first account: six steps, Agent login the fourth (SLNT-1191).
-  await page.getByText("Step 4 of 6").first().waitFor({ state: "attached" });
+  await page.getByText("Step 4 of 7").first().waitFor({ state: "attached" });
   const steps = page.getByRole("list", { name: "Setup steps" });
   const current = await steps.locator('[aria-current="step"]').textContent();
   if (!current?.includes("Agent login")) throw new Error(`the current step is ${current}`);
@@ -200,7 +200,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret, ac
       throw new Error(`the step says "${banned}"`);
   }
   note(
-    `/welcome/agent-login with no agent login: 'Agent login', step 4 of 6, Claude Code chosen, 'Mend's command line is signed in on …' once above the tabs and 'mend connect claude' with Copy command, 'Waiting for Claude Code to connect · Ns', Continue disabled, Skip for now; no sign-in button, setup token, credentials file or auth.json`,
+    `/welcome/agent-login with no agent login: 'Agent login', step 4 of 7, Claude Code chosen, 'Mend's command line is signed in on …' once above the tabs and 'mend connect claude' with Copy command, 'Waiting for Claude Code to connect · Ns', Continue disabled, Skip for now; no sign-in button, setup token, credentials file or auth.json`,
   );
 
   // The command on the clipboard.

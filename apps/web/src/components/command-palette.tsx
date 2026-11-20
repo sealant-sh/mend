@@ -58,6 +58,16 @@ export const useOpenSearch = (): (() => void) => {
   return open;
 };
 
+/**
+ * For a picture of the sidebar outside the signed-in pages (How Mend fits together): its Search
+ * field, which nobody can press there, opens nothing.
+ */
+export function NoSearch({ children }: { readonly children: ReactNode }) {
+  return <OpenSearch value={opensNothing}>{children}</OpenSearch>;
+}
+
+const opensNothing = () => {};
+
 export function SearchProvider({
   organizationName,
   inbox,

@@ -57,3 +57,28 @@ export const rememberReached = (
     // Not remembered: going back shows the steps after that page as not reached yet.
   }
 };
+
+/**
+ * How the person left How Mend fits together, setup's last step, in this browser: read to the end
+ * or skipped. Nothing on the server depends on it; it only lets the steps beside the sheet say
+ * "Skipped" or tick the step when the person goes back to an earlier one. Storage that can't be
+ * read counts as neither.
+ */
+const nounsKeyOf = (userId: string): string => `mend-setup-nouns:${userId}`;
+
+export const nounsEnd = (userId: string): "seen" | "skipped" | null => {
+  try {
+    const stored = localStorage.getItem(nounsKeyOf(userId));
+    return stored === "seen" || stored === "skipped" ? stored : null;
+  } catch {
+    return null;
+  }
+};
+
+export const rememberNounsEnd = (userId: string, end: "seen" | "skipped"): void => {
+  try {
+    localStorage.setItem(nounsKeyOf(userId), end);
+  } catch {
+    // Not remembered: going back to an earlier step shows this one as where they left off.
+  }
+};

@@ -96,8 +96,11 @@ export function WorkspaceDetails({
   );
 }
 
-/** One group: its heading over its rows, a hairline above every group but the first. */
-function Group({
+/**
+ * One group: its heading over its rows, a hairline above every group but the first. Also the
+ * Workspace group in How Mend fits together's pictures.
+ */
+export function Group({
   title,
   headingRef,
   children,
@@ -117,7 +120,7 @@ function Group({
 }
 
 /** A label and its value: a 136px label column beside the value. */
-function Row({
+export function Row({
   label,
   mono = false,
   children,
@@ -142,7 +145,7 @@ function Row({
   );
 }
 
-function Mono({ children }: { readonly children: ReactNode }) {
+export function Mono({ children }: { readonly children: ReactNode }) {
   return <span className="font-mono text-meta wrap-anywhere">{children}</span>;
 }
 

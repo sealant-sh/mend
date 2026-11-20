@@ -36,6 +36,7 @@ export const SETUP_PATHS = {
   agentLogin: "/welcome/agent-login",
   organization: "/welcome/organization",
   firstProject: "/welcome/first-project",
+  nouns: "/welcome/how-mend-fits",
 } as const;
 
 /**
@@ -50,6 +51,7 @@ export const STEP_PAGES = {
   agent: "/welcome/agent-login",
   organization: "/welcome/organization",
   project: "/welcome/first-project",
+  nouns: "/welcome/how-mend-fits",
 } as const satisfies Readonly<Record<Exclude<SetupStepKey, "account">, string>>;
 
 export type StepPage = (typeof STEP_PAGES)[keyof typeof STEP_PAGES];
@@ -58,8 +60,8 @@ const pageOf = (key: SetupStepKey): StepPage | null => (key === "account" ? null
 
 /**
  * Where a step's Continue (and Skip for now) goes: the next step's own page, whether the person is
- * there for the first time or came back to change something. First project has no next step: it
- * opens Mend itself.
+ * there for the first time or came back to change something. How Mend fits together has no next
+ * step: it opens Mend itself.
  */
 export const nextStepPage = (
   steps: ReadonlyArray<SetupStepKey>,
@@ -99,24 +101,34 @@ export interface RailStep {
 }
 
 /**
+ * How the person left setup's last step, which has no next page to remember them reaching: they
+ * read it to the end (`seen`), skipped it, or neither yet (null).
+ */
+export type LastStepEnd = "seen" | "skipped" | null;
+
+/**
  * The steps beside the sheet. A step is past once it comes before the page the person is on or
  * before the furthest step they reached (`reached`, which this browser remembers), so going back
  * to Git access keeps Agent login and Organization as links. Past steps and the step the person
  * left off at link to their pages; Account, the current step and steps not reached yet don't.
+ * The last step reads done or skipped once the person left it that way (`ended`).
  */
 export const railSteps = ({
   steps,
   step,
   reached,
   skipped,
+  ended = null,
 }: {
   readonly steps: ReadonlyArray<SetupStepKey>;
   readonly step: SetupStepKey;
   readonly reached: SetupStepKey | null;
   readonly skipped: ReadonlyArray<SetupStepKey>;
+  readonly ended?: LastStepEnd;
 }): ReadonlyArray<RailStep> => {
   const current = steps.indexOf(step);
   const furthest = Math.max(current, reached === null ? -1 : steps.indexOf(reached));
+  const last = steps.length - 1;
   return steps.map((key, index) => {
     const state: RailState =
       index === current
@@ -124,7 +136,11 @@ export const railSteps = ({
         : index > furthest
           ? "later"
           : index === furthest
-            ? "left"
+            ? index === last && ended !== null
+              ? ended === "seen"
+                ? "done"
+                : "skipped"
+              : "left"
             : skipped.includes(key)
               ? "skipped"
               : "done";
@@ -182,7 +198,13 @@ export interface SetupObserved {
 }
 
 /** Where setup sends the person: one of its steps' pages, or Mend itself. */
-export type SetupEntry = "command-line" | "git-access" | "organization" | "first-project" | "home";
+export type SetupEntry =
+  | "command-line"
+  | "git-access"
+  | "organization"
+  | "first-project"
+  | "nouns"
+  | "home";
 
 /** The step after Agent login: Organization for the first account, First project for others. */
 const afterAgentLogin = (observed: Pick<SetupObserved, "namesOrganization">): SetupEntry =>
@@ -193,7 +215,9 @@ const afterAgentLogin = (observed: Pick<SetupObserved, "namesOrganization">): Se
  * a member who joins an organization that already has projects still goes through it. With an
  * agent login and no project, the step left is Organization (the first account) or First project;
  * with both, setup is done. It never sends anyone back to Command line: that step's Continue and
- * Skip both lead here.
+ * Skip both lead here. Nor does it send anyone to How Mend fits together, which only First
+ * project's Continue and Skip open (and the account menu, any time), so a person who finished
+ * setup before that step existed is never sent back to it.
  */
 export const welcomeEntry = async (observed: SetupObserved): Promise<SetupEntry> => {
   if (!gitAccessChosen(observed.access)) return "git-access";
@@ -218,13 +242,14 @@ export const signInEntry = async (observed: SetupObserved): Promise<SetupEntry> 
 /**
  * What `/welcome/first-project` does with a person. It comes after Git access; an agent login is
  * not needed, since that step may be skipped. Someone who can already see a project has nothing
- * to add, so a member who joins an organization with a shared project goes on to Mend.
+ * to add, so a member who joins an organization with a shared project goes on to the step after
+ * it, How Mend fits together: only someone walking through setup opens this page.
  */
 export const firstProjectEntry = (
   observed: Pick<SetupObserved, "access" | "hasProject">,
 ): SetupEntry => {
   if (!gitAccessChosen(observed.access)) return "git-access";
-  return observed.hasProject ? "home" : "first-project";
+  return observed.hasProject ? "nouns" : "first-project";
 };
 
 /**
@@ -240,6 +265,7 @@ export const ENTRY_PATHS: Readonly<Record<SetupEntry, string>> = {
   "git-access": SETUP_PATHS.gitAccess,
   organization: SETUP_PATHS.organization,
   "first-project": SETUP_PATHS.firstProject,
+  nouns: SETUP_PATHS.nouns,
   home: "/",
 };
 
