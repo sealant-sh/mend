@@ -444,6 +444,8 @@ export const MendCheckpoint = Schema.Struct({
   ref: Schema.String,
   trigger: Schema.String,
   createdAt: Schema.String,
+  /** The turn whose end it was taken for (SLNT-1263); absent for any other, and from older Mends. */
+  turnId: Schema.optionalKey(Schema.String),
 });
 export type MendCheckpoint = typeof MendCheckpoint.Type;
 

@@ -74,7 +74,20 @@ import {
   withSealantRequestPriority,
 } from "@mend/sealant";
 import { SealantApiError, SealantBudgetExceededError, type InteractiveSession } from "@sealant/sdk";
-import { Cause, Clock, Deferred, Effect, Exit, Fiber, Layer, Schema, Scope, Stream } from "effect";
+import {
+  Cause,
+  Clock,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Option,
+  Schema,
+  Scope,
+  Stream,
+} from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -304,6 +317,14 @@ interface ProviderEventPosition {
 
 type TurnCompleted = Extract<AgentEvent, { readonly _tag: "turn.completed" }>;
 
+/**
+ * How long a message sent as a turn ends waits for that turn's checkpoint (SLNT-1263). The engine
+ * takes it when the turn ends (`onTurnCompleted`): normally a fraction of a second, a capture
+ * flush and a snapshot. Past this the message is sent anyway, and the checkpoint, taken after the
+ * next turn began, says so (`next-turn-started`).
+ */
+const TURN_END_CHECKPOINT_WAIT = Duration.seconds(10);
+
 /** What the harness said about a dispatch's own send while the send's answer was out. */
 interface SendWatch {
   /** Whose login the turn runs on. */
@@ -368,6 +389,12 @@ interface HostedProcess {
   parked: HarnessTurn | null;
   /** Provider turns still making progress; idle background work spends normal allowance. */
   readonly activeTurns: Set<string>;
+  /**
+   * Set while a turn's end is being settled, its checkpoint included (SLNT-1263): a dispatch a new
+   * message starts meanwhile waits for it (`TURN_END_CHECKPOINT_WAIT`), so the checkpoint holds
+   * that turn's files and none of the next turn's.
+   */
+  sealing: Deferred.Deferred<void> | null;
 }
 
 const claimOf = (entry: HostedProcess, attempt: DispatchAttemptId | null): DispatchClaim => ({
@@ -948,6 +975,24 @@ export const ProtocolHostLive: Layer.Layer<
           // yet the harness's present. Waiting inside the permit is safe — the
           // gate resolves from an independent watcher fiber.
           if (entry.gate !== null) yield* Deferred.await(entry.gate);
+          // A turn that just ended is still being settled: its checkpoint is taken before the next
+          // turn reaches the harness, unless that takes longer than the wait (SLNT-1263).
+          const sealing = entry.sealing;
+          if (sealing !== null) {
+            const sealed = yield* Deferred.await(sealing).pipe(
+              Effect.timeoutOption(TURN_END_CHECKPOINT_WAIT),
+            );
+            if (Option.isNone(sealed))
+              yield* Effect.logWarning(
+                "protocol host: the last turn's checkpoint is still being taken · sending the next turn",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: entry.process.sessionId,
+                  processId: entry.process.id,
+                  waitedMs: Duration.toMillis(TURN_END_CHECKPOINT_WAIT),
+                }),
+              );
+          }
           // Drain until one turn is accepted or the queue is empty. A rejected turn (bad model,
           // transient send failure) must not strand the turns queued behind it: nothing else
           // re-enters dispatch until the NEXT accepted turn completes.
@@ -1305,12 +1350,24 @@ export const ProtocolHostLive: Layer.Layer<
           yield* openHarness(entry, harness);
           return;
         }
-        case "turn.completed":
+        case "turn.completed": {
           // The caller that detached the process owns settlement after its output closes.
           if (hosted.get(entry.process.id) !== entry) return;
-          yield* settleCompletion(entry, event);
+          // The turn reads ended before its checkpoint is taken (`onTurnCompleted`): a message
+          // sent in between waits for the checkpoint in `dispatchNext`.
+          const sealed = yield* Deferred.make<void>();
+          entry.sealing = sealed;
+          yield* settleCompletion(entry, event).pipe(
+            Effect.ensuring(
+              Effect.suspend(() => {
+                if (entry.sealing === sealed) entry.sealing = null;
+                return Deferred.succeed(sealed, undefined);
+              }),
+            ),
+          );
           yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
+        }
         case "drain.ended":
           yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
@@ -1683,6 +1740,7 @@ export const ProtocolHostLive: Layer.Layer<
         dispatch: { _tag: "Idle" },
         parked: null,
         activeTurns,
+        sealing: null,
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);

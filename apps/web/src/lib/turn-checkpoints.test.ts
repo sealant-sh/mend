@@ -7,6 +7,7 @@ import {
   type SliceAnswer,
   turnCheckpoints,
   type TurnTimes,
+  unconfirmedWords,
 } from "./turn-checkpoints.ts";
 
 const at = (minute: number) => `2026-11-20T03:${String(minute).padStart(2, "0")}:00.000Z`;
@@ -76,6 +77,31 @@ describe("a turn's checkpoint", () => {
     expect(slices([turn("t-1", 1, 3)], chain)).toEqual([]);
   });
 
+  it("is the one that names the turn, even when it landed after the next turn began", () => {
+    // SLNT-1263: the person sent again as turn 1 ended; turn 1's checkpoint (3) was written after
+    // turn 2 had started. Checkpoint 2 is the session's origin, taken before turn 1 was sent.
+    const chain = [
+      checkpoint(0, 0, null),
+      checkpoint(1, 0),
+      checkpoint(2, 1),
+      { ...checkpoint(3, 5), turnId: "t-1" },
+      { ...checkpoint(4, 8), turnId: "t-2" },
+    ];
+    expect(slices([turn("t-1", 1, 2), turn("t-2", 2, 4)], chain)).toEqual([
+      { turn: "t-1", from: 2, to: 3 },
+      // Turn 2 started where turn 1's checkpoint left the files, though that one landed later.
+      { turn: "t-2", from: 3, to: 4 },
+    ]);
+  });
+
+  it("never takes another turn's named checkpoint by its time", () => {
+    // Turn 1's own checkpoint failed; turn 2's landed in turn 1's window.
+    const chain = [checkpoint(0, 0, null), { ...checkpoint(1, 3), turnId: "t-2" }];
+    expect(slices([turn("t-1", 1, 1), turn("t-2", 2, 4)], chain)).toEqual([
+      { turn: "t-2", from: 0, to: 1 },
+    ]);
+  });
+
   it("isn't drawn while the turn runs", () => {
     const chain = [checkpoint(0, 0, null), checkpoint(1, 2)];
     expect(slices([turn("t-1", 1, 1, "running")], chain)).toEqual([]);
@@ -111,5 +137,21 @@ describe("which turns' checkpoints the conversation shows", () => {
         { status: "success", data: { count: 0, more: true, paths: [] } },
       ]),
     ).toEqual(["2: Checkpoint", "3: Checkpoint"]);
+  });
+});
+
+describe("a checkpoint Mend couldn't confirm", () => {
+  it("says why on its line, and nothing when Mend could", () => {
+    const chain = [
+      checkpoint(0, 0, null),
+      { ...checkpoint(1, 3), turnId: "t-1", unconfirmed: "next-turn-started" },
+    ];
+    const [mark] = checkpointMarks(turnCheckpoints([turn("t-1", 1, 1)], chain, "s-1"), [
+      { status: "success", data: { count: 1, more: false, paths: ["BACK.md"] } },
+    ]);
+    expect(mark?.unconfirmed).toBe("next-turn-started");
+    expect(unconfirmedWords(mark?.unconfirmed ?? null)).toContain("next turn had already started");
+    expect(unconfirmedWords("capture-behind")).toContain("some may be missing");
+    expect(unconfirmedWords(null)).toBeNull();
   });
 });

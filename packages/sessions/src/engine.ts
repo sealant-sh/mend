@@ -169,6 +169,7 @@ import type {
   Checkpoint,
   CheckpointRestore,
   CheckpointTrigger,
+  CheckpointUnconfirmed,
   HotWorkspace,
   PreviewPhase,
   PreviewPreparationHold,
@@ -2205,6 +2206,18 @@ const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
  * head is registered: a full ship of a large small-class delta, not a cadence window.
  */
 const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
+
+/**
+ * A conversation turn's end, as its checkpoint is taken (SLNT-1263): the checkpoint names the turn
+ * and says what Mend can't confirm (`CheckpointUnconfirmed`).
+ */
+interface TurnEnd {
+  readonly turnId: AgentTurnId;
+  /** Flush as a landing does: a Stop's final save is not taken as caught up. */
+  readonly barrier: boolean;
+  /** Whether the session's next turn has been sent; read once the snapshot is taken. */
+  readonly nextSent: Effect.Effect<boolean>;
+}
 /** A status read reads a counter; it never waits on a ship. */
 const CAPTURE_STATUS_TIMEOUT = Duration.seconds(10);
 /**
@@ -9867,6 +9880,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * off until it (`deferToFinal`): no flush is asked for, that one stands for it.
          */
         observedByDrain?: CaptureFlushObservation,
+        /** A conversation turn's end: the checkpoint names the turn, and says what it can't confirm. */
+        turnEnd?: TurnEnd,
       ) {
         const attempt = (
           retry: boolean,
@@ -9890,7 +9905,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     yield* flushLeaseHolder(
                       worktree.id,
                       `checkpoint · ${trigger}`,
-                      requireCaughtUp ? "barrier" : "checkpoint",
+                      requireCaughtUp || turnEnd?.barrier === true ? "barrier" : "checkpoint",
                     ),
                   )
                 : { observed: observedByDrain, source: null };
@@ -9911,6 +9926,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               flushed,
             });
             const captureId = snapshot.captureId ?? null;
+            // A turn's checkpoint says what Mend can't confirm (SLNT-1263): the capture did not
+            // catch up with the disk, or the next turn was sent before the snapshot (read after
+            // it, so a turn sent while it was taken counts too).
+            const unconfirmed: CheckpointUnconfirmed | null =
+              turnEnd === undefined
+                ? null
+                : observed === "incomplete"
+                  ? "capture-behind"
+                  : (yield* turnEnd.nextSent)
+                    ? "next-turn-started"
+                    : null;
             const checkpoint = yield* checkpoints
               .create({
                 worktreeId: worktree.id,
@@ -9923,6 +9949,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 trigger,
                 captureId,
                 source,
+                turnId: turnEnd?.turnId ?? null,
+                unconfirmed,
               })
               .pipe(
                 Effect.catchTag("CheckpointOrdinalTakenError", (taken) =>
@@ -9976,8 +10004,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId | null,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
         observed?: CaptureFlushObservation,
+        turnEnd?: TurnEnd,
       ): Effect.Effect<Checkpoint, SessionRepositoryError> =>
-        takeWorktreeSnapshot(worktree, trigger, sessionId, cursor, false, observed).pipe(
+        takeWorktreeSnapshot(worktree, trigger, sessionId, cursor, false, observed, turnEnd).pipe(
           Effect.map((taken) => taken.checkpoint),
           // Only a landing's snapshot requires the captures caught up.
           Effect.catchTag("CapturesBehindError", (error) => Effect.die(error)),
@@ -9988,10 +10017,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         trigger: CheckpointTrigger,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
         observed?: CaptureFlushObservation,
+        turnEnd?: TurnEnd,
       ) {
         // The FK guarantees the row; a miss here is corruption, not a condition.
         const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
-        return yield* takeWorktreeCheckpoint(worktree, trigger, session.id, cursor, observed);
+        return yield* takeWorktreeCheckpoint(
+          worktree,
+          trigger,
+          session.id,
+          cursor,
+          observed,
+          turnEnd,
+        );
       });
 
       /**
@@ -10007,8 +10044,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         trigger: CheckpointTrigger,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
         observed?: CaptureFlushObservation,
+        turnEnd?: TurnEnd,
       ) =>
-        takeCheckpoint(session, trigger, cursor, observed).pipe(
+        takeCheckpoint(session, trigger, cursor, observed, turnEnd).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: checkpoint failed").pipe(
               Effect.annotateLogs({ sessionId: session.id, trigger, error: String(error) }),
@@ -22461,8 +22499,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         const unavailable = (reason: import("@mend/domain/workbench").BoundaryUnavailableReason) =>
           history.observe({ kind: "unavailable", sessionId: session.id, turnId: turn.id, reason });
+        // The turn's own checkpoint, named for it, and taken whatever the capture says: one Mend
+        // can't confirm holds exactly this turn's files says why (SLNT-1263).
+        const turnEnd = (barrier: boolean): TurnEnd => ({
+          turnId: turn.id,
+          barrier,
+          nextSent: conversations.turnSentAfter(session.id, turn.ordinal),
+        });
         if (native === undefined || cursor.sealantRunId === null) {
-          yield* tryCheckpoint(session, "turn-boundary", cursor);
+          yield* tryCheckpoint(session, "turn-boundary", cursor, undefined, turnEnd(false));
           return yield* unavailable("native_boundary_unknown");
         }
         const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
@@ -22471,7 +22516,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "turn-boundary",
           session.id,
           cursor,
-          true,
+          false,
+          undefined,
+          turnEnd(true),
         ).pipe(
           Effect.catch((error) =>
             unavailable(
@@ -22480,6 +22527,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         if (taken === null) return;
+        // Going back in the conversation to this turn needs its files exactly: a checkpoint Mend
+        // can't confirm stays for review and going back to it, and is no rewind point.
+        if (taken.checkpoint.unconfirmed !== undefined)
+          return yield* unavailable(
+            taken.checkpoint.unconfirmed === "capture-behind"
+              ? "capture_not_caught_up"
+              : "next_turn_started",
+          );
         if (taken.gitHead === null) return yield* unavailable("checkpoint_failed");
         const seed = yield* Effect.gen(function* () {
           if (capture !== null) {

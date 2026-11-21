@@ -1035,6 +1035,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   byLaunchCorrelation: () => Effect.succeed(null),
   byProviderTurnId: () => Effect.succeed(null),
   listTurns: () => Effect.succeed([]),
+  turnSentAfter: () => Effect.succeed(false),
   listConversationTurns: () => Effect.succeed([]),
   admitTurnSteer: () => Effect.die("not in test"),
   steerByClientId: () => Effect.succeed(null),
@@ -1113,6 +1114,13 @@ export const recordedTurnsLayer = (
     listTurns: (sessionId) =>
       beforeList().pipe(
         Effect.andThen(Effect.sync(() => turns.filter((turn) => turn.sessionId === sessionId))),
+      ),
+    turnSentAfter: (sessionId, ordinal) =>
+      Effect.sync(() =>
+        turns.some(
+          (turn) =>
+            turn.sessionId === sessionId && turn.ordinal > ordinal && turn.startedAt !== null,
+        ),
       ),
   });
 
@@ -3684,6 +3692,12 @@ export const checkpointsLayer = (world: World) =>
             ...(input.source === undefined || input.source === null
               ? {}
               : { source: input.source }),
+            ...(input.turnId === undefined || input.turnId === null
+              ? {}
+              : { turnId: input.turnId }),
+            ...(input.unconfirmed === undefined || input.unconfirmed === null
+              ? {}
+              : { unconfirmed: input.unconfirmed }),
           });
           world.checkpoints.push(checkpoint);
           world.checkpointCaptureIds.set(checkpoint.id, input.captureId ?? null);

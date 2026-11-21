@@ -47,6 +47,7 @@ const mark = (ordinal: number, at: string, turnId: string): CheckpointMark => ({
   fromId: null,
   toId: `c-${ordinal}`,
   files: { count: 1, more: false, paths: ["a.ts"] },
+  unconfirmed: null,
 });
 
 const shown = (entries: ReturnType<typeof withCheckpoints>) =>

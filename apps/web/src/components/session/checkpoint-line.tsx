@@ -18,6 +18,7 @@ import {
   checkpointLabel,
   filesChangedWords,
   pathsShown,
+  unconfirmedWords,
 } from "#/lib/turn-checkpoints";
 
 import { GoBackDialog } from "./go-back-dialog";
@@ -60,6 +61,7 @@ export function CheckpointLine({
         };
   const changed = filesChangedWords(mark.files);
   const listed = mark.files === null || changed === null ? null : pathsShown(mark.files);
+  const doubt = unconfirmedWords(mark.unconfirmed);
   return (
     <>
       <ConversationMarker
@@ -109,6 +111,7 @@ export function CheckpointLine({
                       Other sessions work in this worktree too, so this can include their changes.
                     </p>
                   ) : null}
+                  {doubt === null ? null : <p className="text-muted-foreground">{doubt}</p>}
                 </div>
                 <p className="text-pretty whitespace-normal text-muted-foreground">
                   Show changes opens what this turn changed in the Change tab, where you can comment

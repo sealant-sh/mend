@@ -287,4 +287,27 @@ describe("correlating checkpoints with turns", () => {
     );
     assert.isAbove(SHARED_CHAIN_NOTICE.length, 0);
   });
+
+  it("takes the checkpoint that names the turn, even when it landed after the next turn began", () => {
+    // SLNT-1263: the next message was sent as t1 ended; t1's checkpoint was written after t2 began.
+    const turns = [turn("t1", 0, T(10), T(20)), turn("t2", 1, T(21), T(40))];
+    const chain = [
+      checkpoint(0, null, "session-start", T(1)),
+      checkpoint(1, "s", "turn-boundary", T(5)),
+      { ...checkpoint(2, "s", "turn-boundary", T(22)), turnId: "t1" },
+      { ...checkpoint(3, "s", "turn-boundary", T(41)), turnId: "t2" },
+    ];
+    assert.deepStrictEqual(
+      Array.from(turnSlicesOf("s", turns, chain), ([id, slice]) => [
+        id,
+        slice.from?.id ?? "base",
+        slice.to.id,
+      ]),
+      [
+        ["t1", "c1", "c2"],
+        // t2 started where t1's checkpoint left the files, though that one landed later.
+        ["t2", "c2", "c3"],
+      ],
+    );
+  });
 });
