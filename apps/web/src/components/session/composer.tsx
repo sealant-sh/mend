@@ -18,6 +18,7 @@ import {
   type ReactNode,
   useEffect,
   useEffectEvent,
+  useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
@@ -75,6 +76,36 @@ type Size = "default" | "touch";
 
 /** The id of a session's message field, for a message's Edit to move focus into it. */
 export const messageInputId = (sessionId: string) => `message-input-${sessionId}`;
+
+/**
+ * Sessions whose start's page gave way while the person was writing in its field, and when: the
+ * session's own composer takes the focus as it appears, so the keys that follow land in it rather
+ * than nowhere (SLNT-1232). For a moment after, while the page settles (a part of it can be hidden
+ * as it loads, which takes the focus with it), the focus comes back to it whenever it is nowhere.
+ */
+const focusHandedTo = new Map<string, number>();
+const FOCUS_HANDOVER_MS = 3_000;
+
+/** Whether the session's composer holds a hand-over still under way; a spent one is forgotten. */
+const handedFocus = (sessionId: string): boolean => {
+  const at = focusHandedTo.get(sessionId);
+  if (at === undefined) return false;
+  if (performance.now() - at <= FOCUS_HANDOVER_MS) return true;
+  focusHandedTo.delete(sessionId);
+  return false;
+};
+
+/** Focus a session's message field, the caret after what it holds, unless it has the focus. */
+const focusMessageInput = (sessionId: string) => {
+  const field = document.getElementById(messageInputId(sessionId));
+  if (!(field instanceof HTMLTextAreaElement) || document.activeElement === field) return;
+  field.focus();
+  field.setSelectionRange(field.value.length, field.value.length);
+};
+
+/** The focus is nowhere: what had it went away, and nothing the person chose has it. */
+const focusIsNowhere = () =>
+  document.activeElement === null || document.activeElement === document.body;
 
 /** A line under the composer: what is happening, or what went wrong and what to do. */
 function ComposerLine({
@@ -466,6 +497,21 @@ function MessageComposer({
     }),
   );
 
+  // The start's page this one took over from had the person's focus: they carry on writing here,
+  // and while the page settles the focus comes back whenever it is nowhere.
+  useLayoutEffect(() => {
+    if (!handedFocus(session.id)) return;
+    focusMessageInput(session.id);
+    let frame = 0;
+    const keep = () => {
+      if (!handedFocus(session.id)) return;
+      if (focusIsNowhere()) focusMessageInput(session.id);
+      frame = requestAnimationFrame(keep);
+    };
+    frame = requestAnimationFrame(keep);
+    return () => cancelAnimationFrame(frame);
+  }, [session.id]);
+
   const attachImages = async (images: ReadonlyArray<File>) => {
     if (scope === null || busyAttaching || images.length === 0) return;
     // An image is stored in the workspace, which doesn't run yet.
@@ -804,6 +850,17 @@ export function StartingComposer({ start }: { readonly start: PendingStart }) {
   const selection = picked ?? base;
   const changed =
     picked !== null && base !== null && !sameSelection(picked, base) ? picked : undefined;
+  // Giving way to the session's page while the person writes here: its composer takes the focus.
+  // A layout effect's cleanup runs while the field is still in the page, before the new one shows.
+  const { draftId } = start;
+  useLayoutEffect(
+    () => () => {
+      const sessionId = writingAddressOf(draftId);
+      if (sessionId !== draftId && document.activeElement?.id === messageInputId(draftId))
+        focusHandedTo.set(sessionId, performance.now());
+    },
+    [draftId],
+  );
   if (!CONVERSATION_HARNESSES.has(start.harness))
     return (
       <ComposerCard ref={keepToastsClear} className="max-lg:max-w-none">

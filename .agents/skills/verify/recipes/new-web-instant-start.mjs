@@ -144,6 +144,7 @@ export default async ({ page, web, capture, note }) => {
     await route.continue();
   });
   await task().fill(PROMPT);
+  const created = page.waitForResponse((response) => response.url().includes("sessions.create"));
   const pressed = Date.now();
   await task().press("Enter");
   await page.waitForURL(DRAFT);
@@ -167,12 +168,15 @@ export default async ({ page, web, capture, note }) => {
   await both("follow-up-waiting-desktop");
   note("on the start's page the composer is open; a message sent there waits for Codex to start");
 
+  // SLNT-1232: the person writes the next message as Mend answers, so the start's page gives way to
+  // the session's under their keys. What was typed before goes with the words; the keys after land
+  // in the session's field, which takes the focus. Before the fix they went nowhere.
+  await message().click();
+  await created;
+  await page.keyboard.type(HANDOFF, { delay: 60 });
   // Mend answers: the address moves to the session's id, the page stays, the message moves along.
   await page.waitForURL(MADE, { timeout: 60_000 });
-  // SLNT-1232: sent the instant the address moves, while the start's page may still be drawn.
-  // Before the fix it was kept under the start's address: never shown again, never sent.
-  await message().fill(HANDOFF);
-  await message().press("Enter");
+  await page.keyboard.press("Enter");
   const sessionId = new URL(page.url()).pathname.split("/").at(-1);
   made.push(sessionId);
   await page.getByText(PROMPT).filter({ visible: true }).first().waitFor();
