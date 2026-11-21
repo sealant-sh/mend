@@ -27,7 +27,6 @@ the area. The roadmap is in Linear.
 - `apps/vscode`: VS Code extension: open and steer sessions, workspaces over Remote-SSH.
 - `apps/web`: the web app, in the Sheet design on `packages/ui`. It replaced the old app at the
   cut-over (ADR 0027); `pnpm dev` runs it on 3105 with the API.
-- `apps/web-old`: the app `apps/web` replaced. Nothing ships it; it is about to be deleted.
 - `packages/ui-old` is the Evidence Review kit that mobile, marketing and the API's published pages
   still use.
 - `packages/*`: shared libraries: `agent-conversation`, `agent-protocol` (Codex/Claude stdio

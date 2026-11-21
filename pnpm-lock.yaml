@@ -21,15 +21,6 @@ catalogs:
     '@cloudflare/vite-plugin':
       specifier: ^1.30.2
       version: 1.43.0
-    '@dnd-kit/core':
-      specifier: ^6.3.1
-      version: 6.3.1
-    '@dnd-kit/sortable':
-      specifier: ^10.0.0
-      version: 10.0.0
-    '@dnd-kit/utilities':
-      specifier: ^3.2.2
-      version: 3.2.2
     '@effect/platform-node':
       specifier: 4.0.5
       version: 4.0.5
@@ -1156,181 +1147,6 @@ importers:
       vite:
         specifier: catalog:start
         version: 8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)
-      vitest:
-        specifier: 'catalog:'
-        version: 5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
-
-  apps/web-old:
-    dependencies:
-      '@base-ui/react':
-        specifier: 'catalog:'
-        version: 1.7.0(@date-fns/tz@1.5.0)(@types/react@19.2.17)(date-fns@4.4.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/core':
-        specifier: 'catalog:'
-        version: 6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/sortable':
-        specifier: 'catalog:'
-        version: 10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/utilities':
-        specifier: 'catalog:'
-        version: 3.2.2(react@19.2.3)
-      '@fontsource/inter':
-        specifier: 'catalog:'
-        version: 5.2.8
-      '@fontsource/jetbrains-mono':
-        specifier: 'catalog:'
-        version: 5.2.8
-      '@fontsource/space-grotesk':
-        specifier: 'catalog:'
-        version: 5.2.10
-      '@mend/agent-conversation':
-        specifier: workspace:*
-        version: link:../../packages/agent-conversation
-      '@mend/api-contracts':
-        specifier: workspace:*
-        version: link:../../packages/api-contracts
-      '@mend/domain':
-        specifier: workspace:*
-        version: link:../../packages/domain
-      '@mend/network':
-        specifier: workspace:*
-        version: link:../../packages/network
-      '@mend/sealant':
-        specifier: workspace:*
-        version: link:../../packages/sealant
-      '@mend/t3-contracts':
-        specifier: workspace:*
-        version: link:../../packages/t3-contracts
-      '@mend/ui-old':
-        specifier: workspace:*
-        version: link:../../packages/ui-old
-      '@novnc/novnc':
-        specifier: 'catalog:'
-        version: 1.7.0
-      '@pierre/diffs':
-        specifier: 'catalog:'
-        version: 1.3.1(@shikijs/themes@4.4.1)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@tailwindcss/vite':
-        specifier: 'catalog:'
-        version: 4.3.2(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
-      '@tanstack/react-query':
-        specifier: 'catalog:'
-        version: 5.104.4(@types/react@19.2.17)(react@19.2.3)
-      '@tanstack/react-router':
-        specifier: 'catalog:'
-        version: 1.170.45(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@tanstack/react-router-ssr-query':
-        specifier: 'catalog:'
-        version: 1.167.3(@tanstack/query-core@5.104.4)(@tanstack/react-query@5.104.4(@types/react@19.2.17)(react@19.2.3))(@tanstack/react-router@1.170.45(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(@tanstack/router-core@1.171.38)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@tanstack/react-start':
-        specifier: 'catalog:'
-        version: 1.169.3(esbuild@0.28.1)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(rolldown@1.2.14)(rollup@4.62.2)(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
-      '@tanstack/router-plugin':
-        specifier: 'catalog:'
-        version: 1.168.47(@tanstack/react-router@1.170.45(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(esbuild@0.28.1)(rolldown@1.2.14)(rollup@4.62.2)(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
-      '@trpc/client':
-        specifier: 'catalog:'
-        version: 11.18.0(@trpc/server@11.18.0(typescript@7.0.2))(typescript@7.0.2)
-      '@trpc/server':
-        specifier: 'catalog:'
-        version: 11.18.0(typescript@7.0.2)
-      '@trpc/tanstack-react-query':
-        specifier: 'catalog:'
-        version: 11.18.0(@tanstack/react-query@5.104.4(@types/react@19.2.17)(react@19.2.3))(@trpc/client@11.18.0(@trpc/server@11.18.0(typescript@7.0.2))(typescript@7.0.2))(@trpc/server@11.18.0(typescript@7.0.2))(react@19.2.3)(typescript@7.0.2)
-      '@xterm/addon-fit':
-        specifier: ^0.11.0
-        version: 0.11.0
-      '@xterm/xterm':
-        specifier: ^6.0.0
-        version: 6.0.0
-      better-auth:
-        specifier: 'catalog:'
-        version: 1.6.23(@tanstack/react-start@1.169.3(esbuild@0.28.1)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(rolldown@1.2.14)(rollup@4.62.2)(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)))(pg@8.22.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)(vitest@5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)))
-      effect:
-        specifier: 'catalog:'
-        version: 4.0.5
-      ghostty-web:
-        specifier: 'catalog:'
-        version: 0.4.0
-      lucide-react:
-        specifier: 'catalog:'
-        version: 0.545.0(react@19.2.3)
-      nitro:
-        specifier: ^3.0.260610-beta
-        version: 3.0.260610-beta(@azure/identity@4.13.2)(chokidar@5.0.0)(dotenv@16.6.1)(ioredis@5.11.1)(jiti@2.7.0)(lru-cache@11.5.1)(miniflare@4.20260701.0)(rollup@4.62.2)(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))(wrangler@4.107.0)
-      qrcode:
-        specifier: 'catalog:'
-        version: 1.5.4
-      react:
-        specifier: 'catalog:'
-        version: 19.2.3
-      react-dom:
-        specifier: 'catalog:'
-        version: 19.2.3(react@19.2.3)
-      react-markdown:
-        specifier: 'catalog:'
-        version: 10.1.0(@types/react@19.2.17)(react@19.2.3)
-      react-resizable-panels:
-        specifier: 'catalog:'
-        version: 4.12.3(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      remark-gfm:
-        specifier: 'catalog:'
-        version: 4.0.1
-      superjson:
-        specifier: 'catalog:'
-        version: 2.2.6
-      tailwindcss:
-        specifier: 'catalog:'
-        version: 4.3.2
-    devDependencies:
-      '@mend/test-ci':
-        specifier: workspace:*
-        version: link:../../tooling/test-ci
-      '@mend/typescript':
-        specifier: workspace:*
-        version: link:../../tooling/typescript
-      '@types/node':
-        specifier: 'catalog:'
-        version: 22.20.0
-      '@types/qrcode':
-        specifier: 'catalog:'
-        version: 1.5.6
-      '@types/react':
-        specifier: 'catalog:'
-        version: 19.2.17
-      '@types/react-dom':
-        specifier: 'catalog:'
-        version: 19.2.3(@types/react@19.2.17)
-      '@vitejs/plugin-react':
-        specifier: 'catalog:'
-        version: 5.2.0(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
-      esbuild:
-        specifier: 'catalog:'
-        version: 0.28.1
-      fast-check:
-        specifier: 'catalog:'
-        version: 4.8.0
-      jsdom:
-        specifier: 'catalog:'
-        version: 28.1.0(@noble/hashes@2.2.0)
-      nanostores:
-        specifier: ^1.4.0
-        version: 1.4.0
-      rollup-plugin-visualizer:
-        specifier: ^7.1.1
-        version: 7.1.1(rolldown@1.2.14)(rollup@4.62.2)
-      tsx:
-        specifier: 'catalog:'
-        version: 4.23.12
-      typescript:
-        specifier: 'catalog:'
-        version: 7.0.2
-      vite:
-        specifier: catalog:start
-        version: 8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)
-      vite-tsconfig-paths:
-        specifier: 'catalog:'
-        version: 5.1.4(typescript@7.0.2)(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
       vitest:
         specifier: 'catalog:'
         version: 5.0.1(@types/node@22.20.0)(jsdom@28.1.0(@noble/hashes@2.2.0))(vite@8.3.4(@types/node@22.20.0)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
@@ -3296,28 +3112,6 @@ packages:
 
   '@date-fns/tz@1.5.0':
     resolution: {integrity: sha512-lwYN/vDPeNRULcepoE/LO2Pgx+7/RV+S9ARfbc9lr2DtGkOD7pAiruHvbR1RX3Qyf6ja47EWJDMsNK5vK08DJg==}
-
-  '@dnd-kit/accessibility@3.1.1':
-    resolution: {integrity: sha512-2P+YgaXF+gRsIihwwY1gCsQSYnu9Zyj2py8kY5fFvUM1qm2WA2u639R6YNVfU4GWr+ZM5mqEsfHZZLoRONbemw==}
-    peerDependencies:
-      react: '>=16.8.0'
-
-  '@dnd-kit/core@6.3.1':
-    resolution: {integrity: sha512-xkGBRQQab4RLwgXxoqETICr6S5JlogafbhNsidmrkVv2YRs5MLwpjoF2qpiGjQt8S9AoxtIV603s0GIUpY5eYQ==}
-    peerDependencies:
-      react: '>=16.8.0'
-      react-dom: '>=16.8.0'
-
-  '@dnd-kit/sortable@10.0.0':
-    resolution: {integrity: sha512-+xqhmIIzvAYMGfBYYnbKuNicfSsk4RksY2XdmJhT+HAC01nix6fHCztU68jooFiMUB01Ky3F0FyOvhG/BZrWkg==}
-    peerDependencies:
-      '@dnd-kit/core': ^6.3.0
-      react: '>=16.8.0'
-
-  '@dnd-kit/utilities@3.2.2':
-    resolution: {integrity: sha512-+MKAJEOfaBe5SmV6t34p80MMKhjvUz0vRrvVJbPT0WElzaOJ/1xs+D+KDv+tD/NE5ujfrChEcshd4fLn0wpiqg==}
-    peerDependencies:
-      react: '>=16.8.0'
 
   '@effect/platform-node-shared@4.0.5':
     resolution: {integrity: sha512-a8rCdEkfZBGe9C6bsIjxVZuRp73svIyK5IHwHdDAVsvZXjrbkxusfI+rZ8WlX31RP1mKizwI/E72GQTNfdMWHw==}
@@ -7241,12 +7035,6 @@ packages:
     resolution: {integrity: sha512-A9gOqLdi6cV4ibazAjcQufGj0B1y/vDqYrcuP6d/6x8P27gRS8643Dj9o1dEKtB6O7fwxb2FgBmJS2mX7gpvdw==}
     engines: {node: '>=14.6'}
 
-  '@xterm/addon-fit@0.11.0':
-    resolution: {integrity: sha512-jYcgT6xtVYhnhgxh3QgYDnnNMYTcf8ElbxxFzX0IZo+vabQqSPAjC3c1wJrKB5E19VwQei89QCiZZP86DCPF7g==}
-
-  '@xterm/xterm@6.0.0':
-    resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
-
   abbrev@4.0.0:
     resolution: {integrity: sha512-a1wflyaL0tHtJSmLSOVybYhy22vRih4eduhhrkcjgrWGnRfrZtovJ2FRjxuTtkkj47O/baf0R86QU5OuYpz8fA==}
     engines: {node: ^20.17.0 || >=22.9.0}
@@ -9879,10 +9667,6 @@ packages:
   is-hexadecimal@2.0.1:
     resolution: {integrity: sha512-DgZQp241c8oO6cA1SbTEWiXeoxV42vlcJxgH+B3hi1AiqqKruZR3ZGF8In3fj4+/y/7rHvlOZLZtgJ/4ttYGZg==}
 
-  is-in-ssh@1.0.0:
-    resolution: {integrity: sha512-jYa6Q9rH90kR1vKB6NM7qqd1mge3Fx4Dhw5TVlK1MUBqhEOuCagrEHMevNuCcbECmXZ0ThXkRm+Ymr51HwEPAw==}
-    engines: {node: '>=20'}
-
   is-inside-container@1.0.0:
     resolution: {integrity: sha512-KIYLCCJghfHZxqjYBE7rEy0OBuTd5xCHS7tHVgvCLkx7StIoaxwNW3hCALgEUjFfeRk+MG/Qxmp/vtETEF3tRA==}
     engines: {node: '>=14.16'}
@@ -11084,10 +10868,6 @@ packages:
     resolution: {integrity: sha512-YgBpdJHPyQ2UE5x+hlSXcnejzAvD0b22U2OuAP+8OnlJT+PjWPxtgmGqKKc+RgTM63U9gN0YzrYc71R2WT/hTA==}
     engines: {node: '>=18'}
 
-  open@11.0.4:
-    resolution: {integrity: sha512-++Zlftm0kVLPmzC06t6epuWmcRMDbI4z5P3NNX979WA/k23+NtSOynEGzsVfZwguKw2mi5umVgnBlJQMwRz4Pg==}
-    engines: {node: '>=20'}
-
   open@7.4.2:
     resolution: {integrity: sha512-MVHddDVweXZF3awtlAS+6pgKLlm/JgxZ90+/NBurBoQctVOOB/zDdVjcyPzQ+0laDGbsWgrRkflI65sQeOgT9Q==}
     engines: {node: '>=8'}
@@ -11423,10 +11203,6 @@ packages:
     resolution: {integrity: sha512-b9Eb8h2eVqNE8edvKdwqkrY6O7kAwmI8kcnBv1NScolYJbo59XUF0noFq+lxbC1yN20bmC0WBEbDC5H/7ASb0A==}
     engines: {node: '>=14.0.0'}
     hasBin: true
-
-  powershell-utils@0.2.1:
-    resolution: {integrity: sha512-C+y9x90UElAddDZmV4qOx9W53B61PO7cIqWz2dQsWlwswuq4mr8NEwytdGKboYbQlGZ3awrkTeNvcZiZNHnQ8A==}
-    engines: {node: '>=20'}
 
   prebuild-install@7.1.3:
     resolution: {integrity: sha512-8Mf2cbV7x1cXPUILADGI3wuhfqWvtiLA1iclTDbFRZkgRQS0NqsPZphna9V+HyTEadheuPmjaJMsbzKQFOzLug==}
@@ -12041,19 +11817,6 @@ packages:
     engines: {node: ^20.19.0 || >=22.12.0}
     hasBin: true
 
-  rollup-plugin-visualizer@7.1.1:
-    resolution: {integrity: sha512-ThaGiHTU8XW02OkK80TrTHATraJmM9OAduU4otal+7gyXLpYEtmGBLfx5kW+EHvvLwn03YGW2NnwKUIqsYlJAA==}
-    engines: {node: '>=22'}
-    hasBin: true
-    peerDependencies:
-      rolldown: 1.x || ^1.0.0-beta || ^1.0.0-rc
-      rollup: 2.x || 3.x || 4.x
-    peerDependenciesMeta:
-      rolldown:
-        optional: true
-      rollup:
-        optional: true
-
   rollup@4.62.2:
     resolution: {integrity: sha512-RFnrW4lhXA3s3eqHDZvN654g8OTjzRfqpIRJYczCGB6HzphckVAi/Qh4tbPUbRuDi7s1Llv8g/NspLkttY3gTA==}
     engines: {node: '>=18.0.0', npm: '>=8.0.0'}
@@ -12313,10 +12076,6 @@ packages:
 
   source-map@0.7.6:
     resolution: {integrity: sha512-i5uvt8C3ikiWeNZSVZNWcfZPItFQOsYTUAOkcUPGd8DqDy1uOUikjt5dG+uRlwyvR108Fb9DOd4GvXfT0N2/uQ==}
-    engines: {node: '>= 12'}
-
-  source-map@0.8.0:
-    resolution: {integrity: sha512-d8EqvL+k/SOXCreS/SUzg2ciyHqBBLcN/yuRjFsbvVhHTE2pgei7oAhmPM7kWFbkX6OSMQfUq4KbkF3au9lhYQ==}
     engines: {node: '>= 12'}
 
   space-separated-tokens@2.0.2:
@@ -13566,10 +13325,6 @@ packages:
   wsl-utils@0.1.0:
     resolution: {integrity: sha512-h3Fbisa2nKGPxCpm89Hk33lBLsnaGBvctQopaBSOW/uIs6FTe1ATyAnKFJrzVs9vpGdsTe73WF3V4lIsk4Gacw==}
     engines: {node: '>=18'}
-
-  wsl-utils@1.0.1:
-    resolution: {integrity: sha512-c16PKLIRxBYpR3jSWsdS7SFp0COm5SOQdiFjY818dYFHJbMGuLBszpF07LBWmOS1uzrHa9VGdynsEgoeKy0oOQ==}
-    engines: {node: '>=20'}
 
   xcode@3.0.1:
     resolution: {integrity: sha512-kCz5k7J7XbJtjABOvkc5lJmkiDh8VhjVCGNiqdKCscmVpdVUpEAyXv1xmCLkQJ5dsHqx3IPO4XW+NTDhU/fatA==}
@@ -15180,31 +14935,6 @@ snapshots:
   '@ctrl/tinycolor@4.2.0': {}
 
   '@date-fns/tz@1.5.0': {}
-
-  '@dnd-kit/accessibility@3.1.1(react@19.2.3)':
-    dependencies:
-      react: 19.2.3
-      tslib: 2.8.1
-
-  '@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)':
-    dependencies:
-      '@dnd-kit/accessibility': 3.1.1(react@19.2.3)
-      '@dnd-kit/utilities': 3.2.2(react@19.2.3)
-      react: 19.2.3
-      react-dom: 19.2.3(react@19.2.3)
-      tslib: 2.8.1
-
-  '@dnd-kit/sortable@10.0.0(@dnd-kit/core@6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react@19.2.3)':
-    dependencies:
-      '@dnd-kit/core': 6.3.1(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@dnd-kit/utilities': 3.2.2(react@19.2.3)
-      react: 19.2.3
-      tslib: 2.8.1
-
-  '@dnd-kit/utilities@3.2.2(react@19.2.3)':
-    dependencies:
-      react: 19.2.3
-      tslib: 2.8.1
 
   '@effect/platform-node-shared@4.0.5(effect@4.0.5)':
     dependencies:
@@ -19062,10 +18792,6 @@ snapshots:
 
   '@xmldom/xmldom@0.9.10': {}
 
-  '@xterm/addon-fit@0.11.0': {}
-
-  '@xterm/xterm@6.0.0': {}
-
   abbrev@4.0.0: {}
 
   abort-controller@3.0.0:
@@ -22047,8 +21773,6 @@ snapshots:
 
   is-hexadecimal@2.0.1: {}
 
-  is-in-ssh@1.0.0: {}
-
   is-inside-container@1.0.0:
     dependencies:
       is-docker: 3.0.0
@@ -23718,15 +23442,6 @@ snapshots:
       is-inside-container: 1.0.0
       wsl-utils: 0.1.0
 
-  open@11.0.4:
-    dependencies:
-      default-browser: 5.5.1
-      define-lazy-prop: 3.0.0
-      is-in-ssh: 1.0.0
-      is-inside-container: 1.0.0
-      powershell-utils: 0.2.1
-      wsl-utils: 1.0.1
-
   open@7.4.2:
     dependencies:
       is-docker: 2.2.1
@@ -24126,8 +23841,6 @@ snapshots:
     dependencies:
       commander: 9.5.0
     optional: true
-
-  powershell-utils@0.2.1: {}
 
   prebuild-install@7.1.3:
     dependencies:
@@ -24930,16 +24643,6 @@ snapshots:
       '@rolldown/binding-win32-arm64-msvc': 1.2.14
       '@rolldown/binding-win32-x64-msvc': 1.2.14
 
-  rollup-plugin-visualizer@7.1.1(rolldown@1.2.14)(rollup@4.62.2):
-    dependencies:
-      open: 11.0.4
-      picomatch: 4.0.7
-      source-map: 0.8.0
-      yargs: 18.1.0
-    optionalDependencies:
-      rolldown: 1.2.14
-      rollup: 4.62.2
-
   rollup@4.62.2:
     dependencies:
       '@types/estree': 1.0.9
@@ -25306,8 +25009,6 @@ snapshots:
   source-map@0.6.1: {}
 
   source-map@0.7.6: {}
-
-  source-map@0.8.0: {}
 
   space-separated-tokens@2.0.2: {}
 
@@ -26415,11 +26116,6 @@ snapshots:
   wsl-utils@0.1.0:
     dependencies:
       is-wsl: 3.1.1
-
-  wsl-utils@1.0.1:
-    dependencies:
-      is-wsl: 3.1.1
-      powershell-utils: 0.2.1
 
   xcode@3.0.1:
     dependencies:

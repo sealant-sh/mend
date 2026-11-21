@@ -16,7 +16,7 @@ test("web tests release their runner resources before exit", { timeout: 45_000 }
   try {
     const result = spawnSync(
       process.execPath,
-      [vitest, "run", "src/lib/viewer.test.ts", "--reporter=default"],
+      [vitest, "run", "src/lib/fuzzy.test.ts", "--reporter=default"],
       {
         cwd: webRoot,
         env: {
@@ -43,7 +43,7 @@ test("web tests release their runner resources before exit", { timeout: 45_000 }
     assert.ifError(result.error);
     assert.equal(result.signal, null, output);
     assert.equal(result.status, 0, output);
-    assert.match(output, /5 passed/);
+    assert.match(output, /6 passed/);
     assert.doesNotMatch(output, /close timed out|prevents Vite server from exiting/);
   } finally {
     rmSync(home, { recursive: true, force: true });

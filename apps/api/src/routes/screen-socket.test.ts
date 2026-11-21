@@ -877,7 +877,7 @@ describe.skipIf(!dockerReady || !existsSync(chromiumPath))(
     beforeAll(async () => {
       const bundledClient = await build({
         entryPoints: [
-          fileURLToPath(new URL("../../../web-old/src/lib/screen-rtc.ts", import.meta.url)),
+          fileURLToPath(new URL("../../../web/src/lib/screen-rtc.ts", import.meta.url)),
         ],
         bundle: true,
         platform: "browser",

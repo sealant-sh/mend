@@ -234,32 +234,6 @@ test("the Sealant worker runs four launches at once unless the operator says oth
   });
 });
 
-test("the bundle serves apps/web unless a build asks for the old app", async () => {
-  const [dockerfile, supervisor, { webFrontPath }] = await Promise.all([
-    readFile(path.join(root, "Dockerfile"), "utf8"),
-    readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
-    import("./bundle-supervisor.mjs"),
-  ]);
-  // Both stages default to apps/web, so a release build, which passes no MEND_WEB_APP, ships it.
-  assert.equal(dockerfile.match(/^ARG MEND_WEB_APP=web$/gm)?.length, 2);
-  assert.doesNotMatch(dockerfile, /^ARG MEND_WEB_APP=(?!web$)/m);
-  assert.match(dockerfile, /pnpm --filter "@mend\/\$\{MEND_WEB_APP\}" build/);
-  assert.match(
-    dockerfile,
-    /^COPY --from=mend-build \/app\/apps\/\$\{MEND_WEB_APP\}\/\.output \.\/apps\/\$\{MEND_WEB_APP\}\/\.output$/m,
-  );
-  assert.match(dockerfile, /MEND_WEB_APP=\$\{MEND_WEB_APP\}/);
-  assert.match(dockerfile, /dev\.sealant\.mend\.web-app="\$\{MEND_WEB_APP\}"/);
-  assert.match(supervisor, /const webFront = webFrontPath\(process\.env\);/);
-  assert.match(supervisor, /baseSpecification\("mend-web", \["node", webFront\]/);
-
-  assert.equal(webFrontPath({}), "/app/apps/web/.output/front.mjs");
-  assert.equal(webFrontPath({ MEND_WEB_APP: "" }), "/app/apps/web/.output/front.mjs");
-  assert.equal(webFrontPath({ MEND_WEB_APP: "web-old" }), "/app/apps/web-old/.output/front.mjs");
-  assert.equal(webFrontPath({ MEND_WEB_APP: " web " }), "/app/apps/web/.output/front.mjs");
-  assert.throws(() => webFrontPath({ MEND_WEB_APP: "../web" }), /MEND_WEB_APP is "\.\.\/web"/);
-});
-
 test("a preview sealantd image reaches only the Sealant worker, and a release adds nothing", async () => {
   const [dockerfile, supervisor, { previewSealantdEnvironment }] = await Promise.all([
     readFile(path.join(root, "Dockerfile"), "utf8"),

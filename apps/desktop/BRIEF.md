@@ -188,9 +188,9 @@ Shells never appear here. The inbox is about agents that may need you; a shell i
 "Review the change" opens **in the app**, not the browser. Same API the web review uses
 (`/api/changes/:id/diff|comments|stats|tour|passes`), same loop: unified diff with 2px edge marks,
 line comments and change-level comments, read/suggest passes, edit-the-instruction send-back to the
-same session. The web app (`apps/web-old/src/routes/changes.$changeId.tsx`) is the reference
-implementation; port, don't reinvent, and extract shared pieces into a package only when the second
-consumer proves the shape. The desktop review lives at `routes/review.$changeId.$sliceId.tsx`.
+same session. The web app (`apps/web`, its Change view) is the reference implementation; port, don't
+reinvent, and extract shared pieces into a package only when the second consumer proves the shape.
+The desktop review lives at `routes/review.$changeId.$sliceId.tsx`.
 
 ## Landing (docs/adr/0007-landing.md)
 

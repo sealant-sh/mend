@@ -14,21 +14,17 @@ FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
 FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
 
 # Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
-# apps/<web app>/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
+# apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
 # nitro output: no node_modules, no workspace layout, no type stripping. Bundling is also what
 # keeps memory down: Node keeps every loaded module's source resident and evaluates everything a
 # barrel re-exports, so an unbundled server pays for code it never calls.
 FROM node:26-bookworm-slim AS mend-build
-# The web app the bundle serves: `web` (apps/web), which every release ships since the cut-over
-# (ADR 0027); `web-old` (apps/web-old) only while it is still in the tree, so reverting the switch
-# alone puts the image back on it. scripts/bundle-supervisor.mjs starts the front it names.
-ARG MEND_WEB_APP=web
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN npm install --global corepack && corepack enable
 WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @mend/api-server build && pnpm --filter "@mend/${MEND_WEB_APP}" build \
+RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build \
   && pnpm --filter @mend/t3-gateway build
 RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 
@@ -37,7 +33,6 @@ RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 FROM node:26-bookworm-slim AS runtime
 
 ARG MEND_VERSION=dev
-ARG MEND_WEB_APP=web
 # A preview build's sealantd image (by digest), baked into workspace images by the bundled worker;
 # scripts/bundle-supervisor.mjs hands it over. Empty in a release build, which changes nothing.
 ARG MEND_PREVIEW_SEALANTD_IMAGE=""
@@ -59,8 +54,7 @@ LABEL org.opencontainers.image.title="Mend bundle" \
   dev.sealant.mend.previews="tailnet-ports,same-site-domain" \
   dev.sealant.mend.network-guard-image="${MEND_NETWORK_GUARD_IMAGE}" \
   dev.sealant.mend.boat-gateway-image="${MEND_BOAT_GATEWAY_IMAGE}" \
-  dev.sealant.mend.sealant-version="0.40.0-next.929" \
-  dev.sealant.mend.web-app="${MEND_WEB_APP}"
+  dev.sealant.mend.sealant-version="0.40.0-next.929"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root
@@ -74,7 +68,7 @@ COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /
 
 WORKDIR /app
 COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
-COPY --from=mend-build /app/apps/${MEND_WEB_APP}/.output ./apps/${MEND_WEB_APP}/.output
+COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
 # The t3code gateway, bundled with the worker that parses messages for find in a thread, in a root
 # of its own it is confined to (ADR 0012; review 643-1; scripts/t3-gateway-root.sh). It runs only
 # when the operator turned it on, and scripts/bundle-supervisor.mjs starts it there as its own uid
@@ -116,7 +110,6 @@ RUN mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /run/sea
 ENV NODE_ENV=production \
   MEND_VERSION=${MEND_VERSION} \
   MEND_PREVIEW_SEALANTD_IMAGE=${MEND_PREVIEW_SEALANTD_IMAGE} \
-  MEND_WEB_APP=${MEND_WEB_APP} \
   SEALANT_DOCKER_NETWORK_GUARD_IMAGE=${MEND_NETWORK_GUARD_IMAGE} \
   MEND_BOAT_GATEWAY_IMAGE=${MEND_BOAT_GATEWAY_IMAGE} \
   HOME=/var/lib/mend/config \
