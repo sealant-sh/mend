@@ -1066,6 +1066,29 @@ lane changed.
   `apps/web/src/components/session/agent-turn.tsx`, `apps/web/src/lib/text-reveal.ts`,
   `apps/web/src/lib/markdown-blocks.ts`
 
+### start-session.new-web-code-colours
+
+- **Map:** start-session.md `session-page` (an agent's reply, its code blocks in syntax colours),
+  skills.md `skills-web-edit` (a skill's file and its Preview, their code in syntax colours)
+- **Needs:** either; no turn; web and CLI; the project `verify-fixture`
+- **Do:** Run the CLI batch `code-colours-sessions.json`, then drive the recipe `code-colours`. It
+  lays a reply with a TypeScript block, a shell block, a block in an unknown language and one with
+  none over the session's reads, reads each block's colours in light and dark, grows the reply a few
+  lines at a time as a streamed one does, then makes a skill with a TypeScript block in its
+  `SKILL.md` and `scripts/check.sh` beside it, reads both and the editor's Preview, and removes it.
+- **See:** each step's note in the recipe's `steps.log`: `export` in the keyword colour (a different
+  computed colour in dark), the comment muted, the shell block's string in the string colour, and no
+  colours in the other two blocks (the recipe fails otherwise); while the reply grows, every
+  coloured piece of its first line keeps its node and the lines that stream in are coloured; the
+  skill's `await` in the keyword colour with its Markdown text plain, the script's string coloured,
+  and the Preview's block coloured.
+- **Mode:** `scripted` (.agents/skills/verify/recipes/code-colours.mjs)
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/code-text.tsx`, `apps/web/src/lib/code-highlighter.ts`,
+  `apps/web/src/lib/code-theme.ts`, `apps/web/src/lib/code-fences.ts`,
+  `apps/web/src/components/session/rich-text.tsx`, `apps/web/src/components/skills/skill-panel.tsx`,
+  `apps/web/src/components/skills/code-lines.tsx`
+
 ### start-session.new-web-instant-start
 
 - **Map:** start-session.md `start-composer`; now-and-sessions.md `home-composer`
