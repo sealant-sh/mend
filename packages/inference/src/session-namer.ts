@@ -44,7 +44,7 @@ Rules:
 - 2-5 words, lowercase, plain nouns — like "reaper retry storm" or "flaky login test". No title case, no punctuation, no quotes.
 - Name the subject of the work, not the activity ("dark mode toggle", never "fixing the dark mode toggle bug").
 - No verdict or status words (fixed, done, broken); the label describes what the session is about, not how it went.
-- When the messages don't say what the work is about (a greeting, a test message, a stray word), answer an empty label: the session stays unnamed until a later message says. Never answer a stand-in such as "placeholder", "untitled" or "new session", and never the project's name alone.
+- Any request has a subject, coding or not: name it ("tell me a joke about rebase" → "rebase joke"). Only when the messages hold no request at all (a bare greeting, the word test, random characters) answer an empty label; the session stays unnamed until a later message says more. Never answer a stand-in such as "placeholder", "untitled" or "new session", and never the project's name alone.
 - Answer with JSON: {"label": "..."}.`;
 
 /** The labels the instructions give as examples: answered back for a session about none of them, an echo. */
