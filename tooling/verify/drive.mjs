@@ -364,7 +364,12 @@ export const drive = async (
     if (started.code !== 0)
       return finished(surface, found, out, started.code, "drive-desktop.sh start failed");
     try {
-      const result = await web(state.web, ["--cdp", "http://127.0.0.1:9335"]);
+      const result = await web(state.web, [
+        "--cdp",
+        "http://127.0.0.1:9335",
+        "--account",
+        join(state.private, "account.json"),
+      ]);
       return finished(surface, found, out, result.code);
     } finally {
       await exec(join(skill, "drive-desktop.sh"), ["stop"], {

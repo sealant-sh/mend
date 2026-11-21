@@ -93,11 +93,11 @@ if (
   !recipe ||
   !privateDir ||
   !viewportFlag ||
-  (cdp && (state || accountFile)) ||
+  (cdp && state) ||
   (signIn && !accountFile)
 ) {
   process.stderr.write(
-    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--sign-in <url>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] [--cdp <url>] (--cdp takes neither --account nor --state; --sign-in needs --account)\n",
+    "usage: drive-web.mjs --web <url> --out <dir> --recipe <file.mjs> --private <dir> [--account <file>] [--sign-in <url>] [--state <file>] [--timeout <ms>] [--viewport <w>x<h>] [--cdp <url>] (--cdp takes no --state; --sign-in needs --account)\n",
   );
   process.exit(2);
 }
@@ -424,7 +424,7 @@ const typeSecret = async (locator, name, value) => {
 let failed = false;
 try {
   const account = accountFile ? JSON.parse(readFileSync(accountFile, "utf8")) : null;
-  if (account) {
+  if (account && !cdp) {
     await page.goto(new URL("/login", signIn ?? web).href);
     await page.getByRole("button", { name: "Sign in" }).waitFor();
     await page.getByRole("textbox", { name: "Email" }).fill(account.email);
