@@ -220,6 +220,12 @@ const makeConversationWorld = () => {
         ? Effect.fail(new AgentControlJournalError({ message: "journal unavailable", cause: null }))
         : steerStore.recordProtocolControl(id, control),
     listTurns: () => Effect.succeed([...turns.values()]),
+    turnSentAfter: (session, after) =>
+      Effect.succeed(
+        [...turns.values()].some(
+          (turn) => turn.sessionId === session && turn.ordinal > after && turn.startedAt !== null,
+        ),
+      ),
     submitTurn: (_session, _process, input) =>
       admission.beforeAdmit.pipe(
         Effect.andThen(
@@ -1269,6 +1275,89 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
             { _tag: "Turn", reason: "queue-requested" },
           )
           .pipe(Effect.map((receipt) => receipt.explanation));
+
+  /** Attaches Codex with a turn's end that takes as long as `sealed` stays open (its checkpoint). */
+  const attachSealing = (
+    host: ProtocolHost["Service"],
+    pipe: InteractiveSession,
+    ended: Array<string>,
+    sealed: Deferred.Deferred<void>,
+  ) =>
+    host.attach({
+      process: agentProcess,
+      pipe,
+      cwd: "/workspace/repo",
+      permissionMode: "bypass",
+      launchedWithLoginOf: "owner-1",
+      hooks: {
+        onRequestChanged: () => Effect.void,
+        onTurnCompleted: (turn) =>
+          Effect.sync(() => void ended.push(turn.id)).pipe(Effect.andThen(Deferred.await(sealed))),
+      },
+    });
+  const pause = Effect.promise(() => new Promise<void>((resolve) => setTimeout(resolve, 50)));
+
+  it.effect(
+    "sends a message that comes as a turn ends once that turn's checkpoint is taken",
+    () => {
+      const world = makeConversationWorld();
+      const first = world.seed("first");
+      const peer = makePipe(["native", "next"]);
+      const sealed = Effect.runSync(Deferred.make<void>());
+      const ended: Array<string> = [];
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* attachSealing(host, peer.pipe, ended, sealed);
+        yield* waitUntil(() => world.turns.get(first.id)?.providerTurnId === "native");
+        peer.push(nativeCompleted("completed"));
+        yield* waitUntil(() => ended.length === 1);
+        expect(world.turns.get(first.id)?.status).toBe("completed");
+        // The turn reads ended while its checkpoint is still being taken: the person sends again.
+        const second = yield* submit(host, "second").pipe(Effect.exit, Effect.forkChild);
+        yield* waitUntil(() => turnWith(world, "second") !== undefined);
+        yield* pause;
+        expect(turnWith(world, "second")?.status).toBe("queued");
+        expect(startedTexts(peer)).toEqual(["first"]);
+        yield* Deferred.succeed(sealed, undefined);
+        yield* waitUntil(() => turnStarts(peer) === 2);
+        expect(startedTexts(peer)).toEqual(["first", "second"]);
+        yield* Fiber.join(second);
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.effect("sends the next message anyway once a turn's checkpoint takes too long", () => {
+    const world = makeConversationWorld();
+    const first = world.seed("first");
+    const peer = makePipe(["native", "next"]);
+    const sealed = Effect.runSync(Deferred.make<void>());
+    const ended: Array<string> = [];
+    const second = () => turnWith(world, "second");
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      yield* attachSealing(host, peer.pipe, ended, sealed);
+      yield* waitUntil(() => world.turns.get(first.id)?.providerTurnId === "native");
+      peer.push(nativeCompleted("completed"));
+      yield* waitUntil(() => ended.length === 1);
+      const sending = yield* submit(host, "second").pipe(Effect.exit, Effect.forkChild);
+      yield* waitUntil(() => second() !== undefined);
+      yield* TestClock.adjust("9 seconds");
+      yield* pause;
+      expect(second()?.status).toBe("queued");
+      // Past the bound the send goes ahead while the checkpoint is still being taken. (The
+      // clock moves on its own fiber: what it frees runs in real time.)
+      yield* TestClock.adjust("1 second").pipe(Effect.forkChild);
+      yield* waitUntil(() => second()?.status === "running");
+      expect(second()?.startedAt).not.toBeNull();
+      // Codex's answers are read once the turn's end is through.
+      yield* Deferred.succeed(sealed, undefined);
+      yield* waitUntil(() => turnStarts(peer) === 2);
+      expect(startedTexts(peer)).toEqual(["first", "second"]);
+      yield* Fiber.join(sending);
+      yield* host.detach(processId);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
 
   it.effect("retries a budget-refused follow-up without failing or delivering it twice", () => {
     const world = makeConversationWorld();

@@ -1,6 +1,6 @@
 import { Schema } from "effect";
 
-import { CheckpointId, SealantRunId, SessionId, Sha, WorktreeId } from "../ids.ts";
+import { AgentTurnId, CheckpointId, SealantRunId, SessionId, Sha, WorktreeId } from "../ids.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
 
 /** What caused a checkpoint to be taken (plan §5.6 "Checkpoints and slices"). */
@@ -54,6 +54,19 @@ export const checkpointSourceWords = (
   ].join(" · ");
 
 /**
+ * Why Mend can't say a turn's checkpoint holds exactly the files that turn left (SLNT-1263). It is
+ * still taken, and says so:
+ *
+ * - `capture-behind`: the workspace's capture didn't confirm it had saved the disk as the turn
+ *   left it, so the checkpoint holds the newest files Mend had, which may miss the turn's last
+ *   changes.
+ * - `next-turn-started`: the next turn was sent before the checkpoint was taken, so it may hold
+ *   that turn's first changes too.
+ */
+export const CheckpointUnconfirmed = Schema.Literals(["capture-behind", "next-turn-started"]);
+export type CheckpointUnconfirmed = typeof CheckpointUnconfirmed.Type;
+
+/**
  * A cheap snapshot of the worktree — a commit on a hidden ref that never
  * touches the visible branch — stamped with the exact record pointer current when it was
  * taken. The `(ref, sealantRunId, seq)` tuple joins the two truths: git carries what changed, the
@@ -86,4 +99,12 @@ export class Checkpoint extends Schema.Class<Checkpoint>("Checkpoint")({
   createdAt: Timestamp,
   /** Absent when the checkpoint observed the executor itself (`CheckpointSource`). */
   source: Schema.optionalKey(CheckpointSource),
+  /**
+   * The conversation turn whose end this checkpoint was taken for (SLNT-1263): the conversation
+   * puts it after that turn. Absent for every other checkpoint, and for turns' checkpoints taken
+   * before Mend recorded it.
+   */
+  turnId: Schema.optionalKey(AgentTurnId),
+  /** A turn's checkpoint Mend couldn't confirm holds exactly that turn's files; absent when it can. */
+  unconfirmed: Schema.optionalKey(CheckpointUnconfirmed),
 }) {}

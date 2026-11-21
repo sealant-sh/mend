@@ -22,6 +22,10 @@ export interface ChainCheckpoint {
   readonly createdAt: Date | string;
   /** How Mend came to take it; older readers may leave it out. */
   readonly trigger?: string;
+  /** The conversation turn whose end it was taken for (SLNT-1263); absent for any other. */
+  readonly turnId?: string;
+  /** Why Mend can't confirm a turn's checkpoint holds exactly that turn's files. */
+  readonly unconfirmed?: string;
 }
 
 /**
@@ -38,7 +42,11 @@ export interface TurnTimes extends AgentTurnDto {
 /** One ended turn's checkpoint, and the one the worktree stood at when the turn began. */
 export interface TurnCheckpoint {
   readonly turnId: string;
-  /** The last checkpoint this session took from the turn's start until the next turn's. */
+  /**
+   * The checkpoint Mend took when the turn ended, which names the turn; for a turn from before
+   * Mend named them, the last checkpoint this session took from the turn's start until the next
+   * turn's.
+   */
   readonly to: ChainCheckpoint;
   /** The newest checkpoint of the chain, any session's, taken before the turn began. */
   readonly from: ChainCheckpoint | null;
@@ -47,11 +55,14 @@ export interface TurnCheckpoint {
 const millis = (at: Date | string): number => new Date(at).getTime();
 
 /**
- * Each ended turn's checkpoint: the last one this session took between the turn's start and the
- * next turn's (Mend takes one when a turn ends; one taken after it, by a review or by hand, before
- * the next message is the same turn's). It starts from the newest checkpoint of the whole chain
- * taken before the turn began. A turn still running, or one Mend took no checkpoint for, has none.
- * The same rule as the t3code gateway's `turnSlicesOf`.
+ * Each ended turn's checkpoint: the one Mend took when it ended, which names the turn (SLNT-1263).
+ * Times can't say which turn a checkpoint belongs to: one taken as a turn ended can land after the
+ * next turn began. A turn from before Mend named them takes the last checkpoint this session took
+ * between the turn's start and the next turn's, among those that name no turn (one taken after
+ * it, by a review or by hand, before the next message is the same turn's). It starts from the
+ * newest checkpoint of the whole chain taken before the turn began, or the turn before's when that
+ * one landed later. A turn still running, or one Mend took no checkpoint for, has none. The t3code
+ * gateway's `turnSlicesOf` follows the same rule.
  */
 export const turnCheckpoints = (
   turns: ReadonlyArray<TurnTimes>,
@@ -66,18 +77,29 @@ export const turnCheckpoints = (
     const start = startOf(turn);
     const next = sorted[index + 1];
     const end = next === undefined ? Number.POSITIVE_INFINITY : startOf(next);
-    const to = byOrdinal.findLast(
-      (checkpoint) =>
-        checkpoint.ordinal > 0 &&
-        checkpoint.sessionId === sessionId &&
-        !RESTORE_TRIGGERS.has(checkpoint.trigger ?? "") &&
-        millis(checkpoint.createdAt) >= start &&
-        millis(checkpoint.createdAt) < end,
-    );
+    const to =
+      byOrdinal.findLast(
+        (checkpoint) => checkpoint.turnId === turn.id && checkpoint.sessionId === sessionId,
+      ) ??
+      byOrdinal.findLast(
+        (checkpoint) =>
+          checkpoint.ordinal > 0 &&
+          checkpoint.sessionId === sessionId &&
+          checkpoint.turnId === undefined &&
+          !RESTORE_TRIGGERS.has(checkpoint.trigger ?? "") &&
+          millis(checkpoint.createdAt) >= start &&
+          millis(checkpoint.createdAt) < end,
+      );
     if (to === undefined) return [];
+    // Where the turn started: the newest checkpoint taken before it began, or the turn before's,
+    // which can land after this one began.
+    const previous = sorted[index - 1];
     const from =
       byOrdinal.findLast(
-        (checkpoint) => checkpoint.ordinal < to.ordinal && millis(checkpoint.createdAt) < start,
+        (checkpoint) =>
+          checkpoint.ordinal < to.ordinal &&
+          (millis(checkpoint.createdAt) < start ||
+            (previous !== undefined && checkpoint.turnId === previous.id)),
       ) ?? null;
     return [{ turnId: turn.id, to, from }];
   });
@@ -102,6 +124,8 @@ export interface CheckpointMark {
   readonly toId: string;
   /** Null when Mend couldn't say which files changed: the line shows, without a count. */
   readonly files: SliceFiles | null;
+  /** Why Mend can't confirm it holds exactly this turn's files; null when it can. */
+  readonly unconfirmed: string | null;
 }
 
 /** What the conversation knows of one turn's files: still asking, couldn't tell, or the answer. */
@@ -134,9 +158,27 @@ export const checkpointMarks = (
         fromId: turn.from?.id ?? null,
         toId: turn.to.id,
         files,
+        unconfirmed: turn.to.unconfirmed ?? null,
       },
     ];
   });
+
+/**
+ * What the line's details say of a checkpoint Mend couldn't confirm (SLNT-1263); null when it
+ * could. It was still taken: the files it holds are real, only which turn's they are is in doubt.
+ */
+export const unconfirmedWords = (unconfirmed: string | null): string | null => {
+  switch (unconfirmed) {
+    case null:
+      return null;
+    case "next-turn-started":
+      return "The next turn had already started when Mend took this checkpoint, so it can include that turn's first changes.";
+    case "capture-behind":
+      return "The workspace hadn't confirmed it saved this turn's last changes when Mend took this checkpoint, so some may be missing.";
+    default:
+      return "Mend couldn't confirm this checkpoint holds exactly this turn's changes.";
+  }
+};
 
 /** Whether the line knows how many files changed. */
 const counted = (files: SliceFiles | null): files is SliceFiles =>

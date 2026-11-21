@@ -467,6 +467,12 @@ export class AgentConversationRepo extends Context.Service<
       providerTurnId: string,
     ) => Effect.Effect<AgentTurn | null>;
     readonly listTurns: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<AgentTurn>>;
+    /**
+     * Whether a turn of the session after `ordinal` has been taken to be sent (its `started_at`,
+     * which a claim stamps and a put-back clears): a turn's checkpoint taken from here on may hold
+     * that turn's changes too (SLNT-1263).
+     */
+    readonly turnSentAfter: (sessionId: SessionId, ordinal: number) => Effect.Effect<boolean>;
     readonly listConversationTurns: (
       sessionId: SessionId,
     ) => Effect.Effect<ReadonlyArray<ConversationTurn>>;
@@ -1680,6 +1686,25 @@ export const AgentConversationRepoLive: Layer.Layer<
         .orderBy(asc(agentTurns.ordinal))
         .pipe(Effect.orDie);
       return rows.map(toTurn);
+    });
+
+    const turnSentAfter = Effect.fn("AgentConversationRepo.turnSentAfter")(function* (
+      sessionId: SessionId,
+      ordinal: number,
+    ) {
+      const [row] = yield* db
+        .select({ id: agentTurns.id })
+        .from(agentTurns)
+        .where(
+          and(
+            eq(agentTurns.sessionId, sessionId),
+            gt(agentTurns.ordinal, ordinal),
+            isNotNull(agentTurns.startedAt),
+          ),
+        )
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row !== undefined;
     });
 
     /**
@@ -3391,6 +3416,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       byLaunchCorrelation,
       byProviderTurnId,
       listTurns,
+      turnSentAfter,
       listConversationTurns,
       admitTurnSteer,
       steerByClientId,

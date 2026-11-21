@@ -75,6 +75,8 @@ export const BoundaryUnavailableReason = Schema.Literals([
   "native_history_missing",
   "native_boundary_unknown",
   "capture_not_caught_up",
+  // The next turn was sent before this turn's checkpoint was taken (SLNT-1263).
+  "next_turn_started",
   "checkpoint_failed",
   "unsupported_native_format",
 ]);

@@ -1,4 +1,5 @@
 import {
+  type AgentTurnId,
   CheckpointId,
   CheckpointRestoreId,
   type SealantRunId,
@@ -11,6 +12,7 @@ import {
   CheckpointRestore,
   CheckpointSource,
   type CheckpointTrigger,
+  type CheckpointUnconfirmed,
 } from "@mend/domain/workbench";
 import { and, asc, count, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -33,6 +35,10 @@ export interface NewCheckpoint {
   readonly captureId?: string | null;
   /** Taken during a Stop from the Stop's own flush; absent when observed for itself. */
   readonly source?: CheckpointSource | null;
+  /** The conversation turn whose end this checkpoint was taken for (SLNT-1263). */
+  readonly turnId?: AgentTurnId | null;
+  /** Why Mend can't say a turn's checkpoint holds exactly that turn's files. */
+  readonly unconfirmed?: CheckpointUnconfirmed | null;
 }
 
 /** A restore to record: the three checkpoints it names, and the sessions whose agents it tells. */
@@ -149,10 +155,14 @@ const toCheckpoint = ({
   sourceKind,
   sourceCaptureN,
   sourceObservedAt,
+  turnId,
+  unconfirmed,
   ...row
 }: typeof checkpoints.$inferSelect): Checkpoint =>
   new Checkpoint({
     ...row,
+    ...(turnId === null ? {} : { turnId }),
+    ...(unconfirmed === null ? {} : { unconfirmed }),
     ...(sourceKind === null || sourceObservedAt === null
       ? {}
       : {
@@ -222,6 +232,8 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
           sourceKind: checkpoint.source?.kind ?? null,
           sourceCaptureN: checkpoint.source?.captureN ?? null,
           sourceObservedAt: checkpoint.source?.observedAt ?? null,
+          turnId: checkpoint.turnId ?? null,
+          unconfirmed: checkpoint.unconfirmed ?? null,
         })
         .onConflictDoNothing({ target: [checkpoints.worktreeId, checkpoints.ordinal] })
         .returning()

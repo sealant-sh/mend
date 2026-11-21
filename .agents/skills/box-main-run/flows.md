@@ -967,15 +967,21 @@ lane changed.
 - **Needs:** either; real turn (codex); web and CLI; `<p>`
 - **Do:**
   `M codex "Create a file named BACK.md containing the one line: first. Change nothing else." --name main-run-back-<sha8> --project <p> --effort low --detach --conversation --json`,
-  then `M wait <id> --turn --timeout 8m`;
+  then `M wait <id> --turn --timeout 8m`; the moment it returns,
   `M message <id> --queue -- "Replace the line in BACK.md with: second. Change nothing else."` and
-  wait again. On `/sessions/<id>`, send `Run sleep 60 in the shell, then reply done.` and, while
-  that turn works, open the first turn's checkpoint line, choose `Go back to this checkpoint…`, then
-  `Go back`. Wait for the turn, and do the same again. Send
+  wait again. Read each turn's checkpoint, the one that names the turn (`turnId` in
+  `GET /api/sessions/<id>`'s checkpoints), with `M diff <id> --to <its id>`. On `/sessions/<id>`,
+  send `Run sleep 60 in the shell, then reply done.` and, while that turn works, open the first
+  turn's checkpoint line, choose `Go back to this checkpoint…`, then `Go back`. Wait for the turn,
+  and do the same again. Send
   `Before my message, did Mend tell you anything about this worktree's files? Say what in one sentence, then reply with the contents of BACK.md.`
   and wait. Then open the line `Went back to checkpoint N`, choose `Go back to checkpoint M…`, then
   `Go back`; open `/sessions/<id>/change`.
-- **See:** while the turn works, the dialog says
+- **See:** each of the two turns has a checkpoint that names it, neither marked `unconfirmed`, and
+  BACK.md reads `first` at the first turn's and `second` at the second's (SLNT-1263: a turn's
+  checkpoint holds that turn's edits, never the turn before's); the conversation shows a line
+  `Checkpoint · 1 file changed` after each of the two turns, each opening its own turn's checkpoint
+  number; while the turn works, the dialog says
   `An agent in this worktree is working. Stop its turn or wait for it to end, then try again.` and
   nothing changes; after it, the toast
   `Went back to checkpoint N. Your files from before are checkpoint M.` and the line
@@ -987,7 +993,8 @@ lane changed.
 - **Areas:** `apps/web/src/components/session/go-back-dialog.tsx`,
   `apps/web/src/components/session/restore-line.tsx`, `apps/web/src/lib/checkpoint-restores.ts`,
   `packages/sessions/src/checkpoint-restore.ts`,
-  `packages/domain/src/workbench/checkpoint-restore.ts`
+  `packages/domain/src/workbench/checkpoint-restore.ts`,
+  `packages/domain/src/workbench/checkpoint.ts`
 
 ### start-session.composer
 

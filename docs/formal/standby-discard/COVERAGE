@@ -111,7 +111,13 @@
 # an agent's end (harvest, sweep) goes on. It makes no hot-pool, claim, retire, drain or discard
 # call, and changes none of the functions the actions stand for, so no action models it. Full run
 # at 096dbaacad: every row as expected.
-sync 096dbaacad8a8c25167f517e13dacf45652ff361
+# 42cd427e5706 is SLNT-1263 (a turn's checkpoint names its turn), rebased on main at f918758ec
+# (SLNT-1243's squash, which the lines above account for). engine.ts threads a turn's end through
+# takeWorktreeSnapshot (the checkpoint row's turn_id and unconfirmed) and tryCheckpoint, and
+# sealTurnBoundary takes a Codex turn's checkpoint even when the capture did not catch up, marked.
+# None touches drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
+# HotWorkspacesRepo, so no action models it. --quick run at 42cd427e5706: every row as expected.
+sync 42cd427e570671042f8d1193b22183e3ed5d06b5
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

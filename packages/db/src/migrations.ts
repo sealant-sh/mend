@@ -5979,4 +5979,12 @@ export const migrations = {
     yield* sql`CREATE INDEX IF NOT EXISTS checkpoint_restore_notes_session_idx
       ON checkpoint_restore_notes (session_id, carrier)`;
   }),
+  // Which conversation turn a checkpoint ended (SLNT-1263), so the conversation puts it after that
+  // turn rather than guessing from times, and why Mend can't confirm it holds exactly that turn's
+  // files. Both NULL on every row before.
+  "0241_checkpoint_turns": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS turn_id text`;
+    yield* sql`ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS unconfirmed text`;
+  }),
 };

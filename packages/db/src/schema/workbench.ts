@@ -153,6 +153,7 @@ import type {
   CaptureDrainReason,
   CheckpointSourceKind,
   CheckpointTrigger,
+  CheckpointUnconfirmed,
   ClusterBindingKind,
   ContextItem,
   FollowUpStatus,
@@ -3041,6 +3042,14 @@ export const checkpoints = pgTable(
     sourceKind: text().$type<CheckpointSourceKind>(),
     sourceCaptureN: integer(),
     sourceObservedAt: timestamp({ mode: "date", withTimezone: true }),
+    /**
+     * The conversation turn whose end this checkpoint was taken for (SLNT-1263, 0241); NULL for
+     * every other checkpoint. Not a reference: a turn's row may go with its history, the chain
+     * stays.
+     */
+    turnId: text().$type<AgentTurnId>(),
+    /** Why Mend can't say a turn's checkpoint holds exactly that turn's files; NULL when it can. */
+    unconfirmed: text().$type<CheckpointUnconfirmed>(),
   },
   (table) => [
     uniqueIndex("checkpoints_worktree_ordinal_idx").on(table.worktreeId, table.ordinal),

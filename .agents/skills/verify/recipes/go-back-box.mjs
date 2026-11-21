@@ -1,5 +1,6 @@
 // Going back to a checkpoint with a real Codex turn, on the box (SLNT-1259): turns write BACK.md
-// "first", then "second"; going back to the second turn's checkpoint is refused while a third turn
+// "first", then "second", each with its own checkpoint line naming its own turn's checkpoint
+// (SLNT-1263); going back to the second turn's checkpoint is refused while a third turn
 // (writing "third", then sleeping) works, and goes through once it ends; the agent's next turn
 // reads the note Mend sends ahead of the person's words and names the checkpoint, and the line in
 // the conversation undoes it. Run it as the verify skill's section 9 says, under your own hold:
@@ -127,22 +128,50 @@ export default async ({ page, web, capture, note }) => {
   note(`started Codex session ${id} on verify-fixture`);
   try {
     await turnsEnded(1);
+    // Sent as soon as the first turn reads ended: its checkpoint may still be being taken, and
+    // the second turn waits for it (SLNT-1263).
     await send(SECOND);
     await turnsEnded(2);
-    await checkpointLines().first().waitFor({ timeout: 60_000 });
-    const checkpoints = await page.evaluate(async (sessionId) => {
+    // One line after each turn: each turn changed BACK.md.
+    await checkpointLines().nth(1).waitFor({ timeout: 60_000 });
+    const { checkpoints, turns } = await page.evaluate(async (sessionId) => {
       const { trpcClient } = window["__TSR_ROUTER__"].options.context;
       const detail = await trpcClient.sessions.detail.query({ id: sessionId });
-      return detail.checkpoints.map((each) => ({
-        id: each.id,
-        ordinal: each.ordinal,
-        words: `${each.ordinal} ${each.trigger} ${new Date(each.createdAt).toISOString()}`,
-      }));
+      const conversation = await trpcClient.sessions.historyTurns.query({
+        id: sessionId,
+        cursor: null,
+        limit: 50,
+      });
+      return {
+        checkpoints: detail.checkpoints.map((each) => ({
+          id: each.id,
+          ordinal: each.ordinal,
+          turnId: each.turnId ?? null,
+          unconfirmed: each.unconfirmed ?? null,
+          words: `${each.ordinal} ${each.trigger}${each.turnId === undefined ? "" : ` turn ${each.turnId.slice(0, 8)}`}${each.unconfirmed === undefined ? "" : ` (${each.unconfirmed})`} ${new Date(each.createdAt).toISOString()}`,
+        })),
+        turns: conversation.turns.map((turn) => ({ id: turn.id, ordinal: turn.ordinal })),
+      };
     }, id);
     const chain = checkpoints.map((each) => each.words);
     const shownLines = await checkpointLines().count();
     note(
       `two turns ended; the conversation shows ${shownLines} checkpoint line(s); the chain: ${chain.join(", ")}`,
+    );
+    // Each turn's checkpoint names it, and the second turn's changes from the first's are BACK.md.
+    const [firstTurn, secondTurn] = turns.toSorted((a, b) => a.ordinal - b.ordinal);
+    const ownOf = (turn) => checkpoints.findLast((each) => each.turnId === turn?.id);
+    const firstEnd = ownOf(firstTurn);
+    const secondEnd = ownOf(secondTurn);
+    if (firstEnd === undefined || secondEnd === undefined)
+      throw new Error(`a turn's checkpoint doesn't name its turn: ${chain.join(", ")}`);
+    if (firstEnd.unconfirmed !== null || secondEnd.unconfirmed !== null)
+      throw new Error(`a turn's checkpoint is unconfirmed: ${chain.join(", ")}`);
+    const changed = await between((await detailOf(id)).worktreeId, firstEnd.id, secondEnd.id);
+    if (changed.join(",") !== "BACK.md")
+      throw new Error(`between the two turns' checkpoints, the files that changed: ${changed}`);
+    note(
+      `the first turn's checkpoint is ${firstEnd.ordinal}, the second's ${secondEnd.ordinal}; between them only BACK.md changed`,
     );
     // The second turn's line: the last one shown now.
     await openLine(checkpointLines().last());
@@ -153,7 +182,11 @@ export default async ({ page, web, capture, note }) => {
     const ordinal = Number(/Checkpoint (\d+)/.exec(title)?.[1]);
     await page.keyboard.press("Escape");
     await page.mouse.move(0, 0);
-    note(`the second turn's line is checkpoint ${ordinal}`);
+    if (ordinal !== secondEnd.ordinal)
+      throw new Error(
+        `the second turn's line is checkpoint ${ordinal}, not its own ${secondEnd.ordinal}`,
+      );
+    note(`the second turn's line is checkpoint ${ordinal}, the one Mend took when it ended`);
 
     const targetId = checkpoints.find((each) => each.ordinal === ordinal)?.id;
 
@@ -247,15 +280,14 @@ export default async ({ page, web, capture, note }) => {
         .replace(/\s+/g, " ");
     }, "did Mend tell you");
     note(`the person's message reads as typed; Codex replied: "${reply}"`);
-    // Codex reads the note: it names the checkpoint the files went back to. What BACK.md held there
-    // is the checkpoint's own (the files were read back against it above); it is noted, not
-    // assumed: on 21 Nov a turn's checkpoint held the files from before that turn (SLNT-1263).
+    // Codex reads the note: it names the checkpoint the files went back to, and BACK.md as the
+    // second turn left it (SLNT-1263: on 21 Nov a turn's line held the turn before's files).
     if (!reply.includes(`checkpoint ${ordinal}`))
       throw new Error(`Codex's reply doesn't name checkpoint ${ordinal}: "${reply}"`);
     const read = /\b(first|second|third)\b/.exec(reply.split("HEAD").at(-1) ?? reply)?.[1];
-    note(
-      `Codex named checkpoint ${ordinal} from Mend's note, and read BACK.md as "${read ?? "?"}"`,
-    );
+    if (read !== "second")
+      throw new Error(`after going back to the second turn's checkpoint, Codex read "${read}"`);
+    note(`Codex named checkpoint ${ordinal} from Mend's note, and read BACK.md as "${read}"`);
     await shot("go-back-agent-told-box-desktop");
 
     // The line undoes it: the saved checkpoint's files come back.

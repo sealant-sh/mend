@@ -433,6 +433,7 @@ const testLayer = (world: TestWorld) => {
       ),
     byProviderTurnId: () => Effect.succeed(null),
     listTurns: () => Effect.succeed([]),
+    turnSentAfter: () => Effect.succeed(false),
     listConversationTurns: () => Effect.succeed([]),
     admitTurnSteer: () => Effect.die("not in test"),
     steerByClientId: () => Effect.succeed(null),
