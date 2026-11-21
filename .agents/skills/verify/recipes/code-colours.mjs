@@ -402,7 +402,7 @@ export default async ({ page, web, capture, note }) => {
 
     // The editor's Preview of SKILL.md.
     await go(`/skills/${made.skill.id}?edit=1`);
-    await visible(page.getByRole("tab", { name: "Preview" })).click();
+    await visible(page.getByRole("button", { name: "Preview", exact: true })).click();
     await page.waitForFunction(
       () =>
         [...document.querySelectorAll("pre span[style]")].some((span) =>
