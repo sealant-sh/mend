@@ -25,10 +25,11 @@ nothing here touches VM 131 now.
 
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
 top; report any flow outside it as `not run · not in this run's set`. A flow marked
-`- **Box:** after cut-over` drives the new web app (`apps/web`). A preview of `main`, which this run
-deploys, serves today's app until cut-over: report such a flow as `not run · after cut-over`, apart
-from the seen and failed flows. A preview built with `web_app=web` serves the new app, and
-`pnpm verify box plan`'s `flows` line says so: there every flow runs.
+`- **Box:** after cut-over` drives the new web app (`apps/web`). This run builds its preview of
+`main` with `web_app=web`, so the copies serve the new app, as the owner's server does, and
+`pnpm verify box plan`'s `flows` line says every flow runs, those included. A preview built without
+it serves today's app: there, report such a flow as `not run · after cut-over`, apart from the seen
+and failed flows.
 
 ## Who does what
 
@@ -234,7 +235,7 @@ schedule hours late, so the run starts its own.
 
 ```sh
 gh workflow run ci.yml --repo sealant-sh/mend --ref main -f formal=full
-gh workflow run preview.yml --repo sealant-sh/mend --ref main
+gh workflow run preview.yml --repo sealant-sh/mend --ref main -f web_app=web
 gh run list --repo sealant-sh/mend --workflow ci.yml --branch main --event workflow_dispatch \
   --limit 1 --json databaseId,headSha,createdAt,url
 gh run list --repo sealant-sh/mend --workflow preview.yml --branch main --event workflow_dispatch \
