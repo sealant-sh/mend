@@ -25891,11 +25891,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
         yield* refuseIfStoppedDuringLaunch(session.id);
-        return yield* resumeSession(session.id, null, false, {
+        const resumed = yield* resumeSession(session.id, null, false, {
           saved: { kind: "harvested", state: { stateDir, manifest } },
           retainedWorkspace,
           permissionOverride: start.permissionMode,
         });
+        yield* awaitTerminalAt(session.id);
+        return resumed;
       });
 
       const conversationAfterNoTerminal = <E>(

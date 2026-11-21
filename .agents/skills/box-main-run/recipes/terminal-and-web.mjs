@@ -22,6 +22,14 @@ const env = (name, fallback) => {
   return value;
 };
 
+/** The composer answers once React has hydrated its field: typing before that is lost. */
+const hydrated = (page) =>
+  page.waitForFunction(() =>
+    [...document.querySelectorAll("textarea")].some((textarea) =>
+      Object.keys(textarea).some((key) => key.startsWith("__reactProps")),
+    ),
+  );
+
 export default async ({ page, web, capture, note }) => {
   const M = env("MAIN_RUN_M");
   const sha8 = env("MAIN_RUN_SHA8");
@@ -122,6 +130,7 @@ export default async ({ page, web, capture, note }) => {
       .filter({ visible: true })
       .first();
     await field.waitFor({ timeout: 15_000 });
+    await hydrated(page);
     await capture("terminal-turn-in-the-web");
     await field.fill(ask("CHARLIE"));
     await field.press("Enter");
@@ -157,6 +166,7 @@ export default async ({ page, web, capture, note }) => {
       .filter({ visible: true })
       .first();
     await again.waitFor({ timeout: 30_000 });
+    await hydrated(page);
     await again.fill(ask("DELTA"));
     await again.press("Enter");
     await until(

@@ -1,5 +1,6 @@
 import { conversationActivity, isOpenTurn } from "@mend/agent-conversation";
 import {
+  CONVERSATION_HARNESSES,
   AgentItemKind,
   agentActivity,
   launchPhaseOf,
@@ -484,12 +485,17 @@ export function ConversationTile({
     !conversation.hasNextPage,
   );
   // While the session starts, what Mend keeps for the agent (SLNT-1237) is not work it does yet:
-  // the starting line says where the start is.
+  // the starting line says where the start is. A terminal agent works while its hooks report no
+  // wait (SLNT-1235): a message waiting for its terminal is no turn of its own, and one with no
+  // hooks says nothing either way.
   const working =
     conversation.data !== undefined &&
     facts.agentLive &&
     facts.session.status !== "starting" &&
-    conversationActivity(conversation.data) === "working";
+    (facts.session.mode === "terminal"
+      ? CONVERSATION_HARNESSES.has(facts.session.harness) &&
+        facts.detail.currentAgent?.waiting == null
+      : conversationActivity(conversation.data) === "working");
   const failedStart = startFailed(facts);
   // Anyone who steers the session answers what its agent asks (shared control included).
   const canAnswer = facts.detail.control.steer;

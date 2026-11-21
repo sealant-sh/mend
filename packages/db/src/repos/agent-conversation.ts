@@ -3224,10 +3224,21 @@ export const AgentConversationRepoLive: Layer.Layer<
               .orderBy(asc(agentTurns.ordinal));
             const next = open[0];
             if (next === undefined || open.some((turn) => turn.status === "running")) return null;
+            // Typed in now, after whatever the terminal ran while it waited: it reads there too.
+            yield* lockAgentConversation(tx, next.sessionId);
+            const [position] = yield* tx
+              .select({ value: max(agentTurns.ordinal) })
+              .from(agentTurns)
+              .where(eq(agentTurns.sessionId, next.sessionId));
+            const last = position?.value ?? next.ordinal;
             const now = yield* DateTime.nowAsDate;
             const [row] = yield* tx
               .update(agentTurns)
-              .set({ status: "running", startedAt: now })
+              .set({
+                status: "running",
+                startedAt: now,
+                ...(last > next.ordinal ? { ordinal: last + 1 } : {}),
+              })
               .where(and(eq(agentTurns.id, next.id), eq(agentTurns.status, "queued")))
               .returning();
             return row === undefined ? null : toTurn(row);

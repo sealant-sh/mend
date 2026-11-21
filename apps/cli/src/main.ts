@@ -1844,6 +1844,7 @@ const exitAfterSessionEnd = async (
 };
 
 const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "stopped"]);
+const ENDED_BY_ITSELF: ReadonlySet<string> = new Set(["completed", "failed"]);
 
 /**
  * Whether the terminal ended because the session went on as a conversation (SLNT-1235): from the
@@ -1860,10 +1861,12 @@ const continuedAsConversation = async (config: CliConfig, sessionId: string) => 
     // An older server records no mode: nothing to wait for.
     if (detail === null || detail.session.mode === undefined) return false;
     if (detail.session.mode === "conversation") return true;
-    // Ended, or a terminal agent still runs: nothing is switching.
+    // The session ended, or its terminal agent ended by itself (a switch stops it): nothing is
+    // switching. A terminal agent that still reads live may be one the switch is ending.
+    const agent = detail.currentAgent;
     if (
       ENDED_STATUSES.has(detail.session.status) ||
-      agentIsLive(detail.session, detail.currentAgent)
+      (agent !== null && agent.kind === "agent-pty" && ENDED_BY_ITSELF.has(agent.status))
     )
       return false;
     await pause(500);

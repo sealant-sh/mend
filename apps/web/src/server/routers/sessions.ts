@@ -9,6 +9,7 @@ import {
   RenameShellRequest,
   ReplaceWorkspaceRequest,
   RespondAgentRequest,
+  HandoffRequest,
   ResumeRequest,
   SendSessionMessageRequest,
   SessionInboxMarkRequest,
@@ -224,13 +225,14 @@ export const sessionsRouter = router({
    * Continue a session whose agent runs in a terminal as a conversation (SLNT-1235): the same
    * provider session, its terminal's turns already in the conversation. Its owner's alone.
    */
-  continueAsConversation: procedure
-    .input(byId)
-    .mutation(({ ctx, input: i }) =>
-      run(ctx, (api) =>
-        api.sessions.switchMode({ params: { id: i.id }, payload: { to: "protocol" } }),
-      ),
+  continueAsConversation: procedure.input(byId).mutation(({ ctx, input: i }) =>
+    run(ctx, (api) =>
+      api.sessions.switchMode({
+        params: { id: i.id },
+        payload: new HandoffRequest({ to: "protocol" }),
+      }),
     ),
+  ),
   remove: procedure
     .input(byId)
     .mutation(({ ctx, input: i }) =>
