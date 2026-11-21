@@ -673,6 +673,20 @@ describe("the sender's own messages over a conversation read a window at a time"
   });
 });
 
+/** The conversation as rows: a message by its words, an agent block by its items' ids. */
+const order = (view: ConversationView) =>
+  conversationRows(view).map((row) =>
+    row.kind === "you"
+      ? row.text
+      : row.segments.flatMap((segment) =>
+          segment.kind === "steps"
+            ? segment.items.map((each) => each.id)
+            : segment.kind === "text"
+              ? [segment.item.id]
+              : [],
+        ),
+  );
+
 describe("a message sent into a running turn", () => {
   const running = turn("t-1", 1, "running", "2026-11-21T01:25:00.000Z");
   const steer = {
@@ -688,18 +702,6 @@ describe("a message sent into a running turn", () => {
   const before = item("t-1", "command-execution", "2026-11-21T01:25:05.000Z");
   const unread = item("t-1", "command-execution", "2026-11-21T01:25:12.000Z");
   const answer = item("t-1", "assistant-message", "2026-11-21T01:25:20.000Z");
-  const order = (view: ConversationView) =>
-    conversationRows(view).map((row) =>
-      row.kind === "you"
-        ? row.text
-        : row.segments.flatMap((segment) =>
-            segment.kind === "steps"
-              ? segment.items.map((each) => each.id)
-              : segment.kind === "text"
-                ? [segment.item.id]
-                : [],
-          ),
-    );
 
   it("stays last in its turn until the agent takes it, as its bubble showed at Send", () => {
     const view: ConversationView = {

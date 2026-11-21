@@ -16,6 +16,9 @@ const WAITING = "Sent into this turn. Codex reads it when its current step finis
 /** The one of a locator's matches a person sees: the desktop and phone layouts are both in the page. */
 const visible = (locator) => locator.filter({ visible: true }).first();
 
+/** Each thing's place on the page from the top, to read their order. */
+const top = async (locator) => (await locator.boundingBox())?.y ?? Number.NaN;
+
 export default async ({ page, web, capture, note }) => {
   const field = () => visible(page.getByRole("textbox", { name: "Message Codex" }));
   const send = async (words) => {
@@ -40,8 +43,6 @@ export default async ({ page, web, capture, note }) => {
       byline: (await message.locator('[data-slot="message-footer"]').innerText()).trim(),
     };
   };
-  /** Each thing's place on the page from the top, to read their order. */
-  const top = async (locator) => (await locator.boundingBox())?.y ?? Number.NaN;
 
   await page.setViewportSize(DESKTOP);
   await page.goto(`${web}/`);

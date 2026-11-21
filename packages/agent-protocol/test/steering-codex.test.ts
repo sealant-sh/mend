@@ -153,6 +153,21 @@ const steerFrames = (sent: ReadonlyArray<JsonObject>) =>
 
 const STEER_INPUT = { id: "steer-1", expectedTurnId: "turn-1", input: "use the other file" };
 
+/** Codex recording a user message in `threadId`'s turn, under the client id it was sent with. */
+const userMessage = (method: string, threadId: string, id: string, clientId: string | null) => ({
+  method,
+  params: {
+    threadId,
+    turnId: "turn-1",
+    item: {
+      type: "userMessage",
+      id,
+      clientId,
+      content: [{ type: "text", text: "use the other file" }],
+    },
+  },
+});
+
 describe("Codex steering, synthetic", () => {
   it.effect(
     "sends exactly turn/steer with the expected turn, and the steer id as its message id",
@@ -342,24 +357,6 @@ describe("Codex steering, synthetic", () => {
         const codex = yield* startCodex((id, push) => push({ id, result: { turnId: "turn-1" } }));
         yield* codex.session.sendTurn("start");
         yield* codex.session.steer(STEER_INPUT);
-        const userMessage = (
-          method: string,
-          threadId: string,
-          id: string,
-          clientId: string | null,
-        ) => ({
-          method,
-          params: {
-            threadId,
-            turnId: "turn-1",
-            item: {
-              type: "userMessage",
-              id,
-              clientId,
-              content: [{ type: "text", text: "use the other file" }],
-            },
-          },
-        });
         // The turn's own opening message carries no id: it is no steer.
         codex.wire.push(userMessage("item/started", "thread-1", "user-0", null));
         codex.wire.push(userMessage("item/completed", "thread-1", "user-0", null));
