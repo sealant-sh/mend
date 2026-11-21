@@ -47,6 +47,28 @@ describe("how the page's reads go out", () => {
     );
     expect(paths).toContainEqual(["organization.current", "organization.members"]);
   });
+
+  it("sends a start's launch and the message written meanwhile each on its own (SLNT-1237)", async () => {
+    // A launch answers once its agent runs; batched with it, the message waited as long, and went
+    // with the launch's request when its tab closed.
+    const paths = await requests((client) => [
+      client.sessions.launch.mutate({
+        id: "session-1",
+        request: { mode: "protocol", prompt: "Go" },
+      }),
+      client.sessions.sendMessage.mutate({
+        id: "session-1",
+        input: "And then this.",
+        clientMessageId: "00000000-0000-4000-8000-000000000001",
+        resume: true,
+        expectedUserId: "ada",
+      }),
+      client.organization.current.query(),
+    ]);
+    expect(paths).toHaveLength(3);
+    expect(paths).toContainEqual(["sessions.launch"]);
+    expect(paths).toContainEqual(["sessions.sendMessage"]);
+  });
 });
 
 describe("where a read's input travels", () => {

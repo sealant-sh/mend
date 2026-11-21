@@ -79,17 +79,12 @@ export default async ({ page, web, capture, note }) => {
   );
   // The words have left this tab: Mend answered for them, so the line under them no longer reads
   // Sending… (it reads Waits for Codex to start. while Codex starts, nothing once it took them).
-  await page.waitForFunction(
-    (words) =>
-      [...document.querySelectorAll('[data-slot="user-message"]')].some(
-        (message) =>
-          message.textContent?.includes(words) &&
-          message.getClientRects().length > 0 &&
-          !message.textContent.includes("Sending…"),
-      ),
-    SECOND,
-    { timeout: 60_000 },
-  );
+  const answeredBy = Date.now() + 60_000;
+  while ((await byline(page, SECOND)).includes("Sending")) {
+    if (Date.now() > answeredBy)
+      throw new Error("the message sent while it started still reads Sending… after a minute");
+    await page.waitForTimeout(250);
+  }
   note(
     `before the tab closes, the line under the second message reads "${await byline(page, SECOND)}"`,
   );
