@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -48,20 +48,8 @@ const checkpoint = (repo: string): string => {
 
 const run = (repo: string, commit: string, pack: string | null = null) => {
   const [command, ...args] = restoreCheckpointExec({ repository: repo, commit, pack });
-  try {
-    return {
-      exitCode: 0,
-      stdout: execFileSync(command ?? "node", args, { cwd: repo, env }).toString("utf8"),
-      stderr: "",
-    };
-  } catch (error) {
-    const failed = error as { status: number; stdout: Buffer; stderr: Buffer };
-    return {
-      exitCode: failed.status,
-      stdout: failed.stdout.toString("utf8"),
-      stderr: failed.stderr.toString("utf8"),
-    };
-  }
+  const ran = spawnSync(command ?? "node", args, { cwd: repo, env, encoding: "utf8" });
+  return { exitCode: ran.status, stdout: ran.stdout, stderr: ran.stderr };
 };
 
 const fixture = () => {

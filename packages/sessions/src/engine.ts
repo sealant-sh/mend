@@ -3896,6 +3896,9 @@ export class SessionEngine extends Context.Service<
 
 const rollbackRefused = (code: RollbackRefusedError["code"], message: string) =>
   new RollbackRefusedError({ code, message });
+/** Going back to a checkpoint refused before or while it ran, in words a person reads. */
+const restoreRefused = (message: string) =>
+  new WorktreeGitRefused({ code: "unavailable", message });
 
 type SessionEngineRequirements =
   | ResourceRuntime
@@ -26257,8 +26260,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           pullWorktree("/workspace/repo", execute),
         );
 
-      const restoreRefused = (message: string) =>
-        new WorktreeGitRefused({ code: "unavailable", message });
       const restoreCheckpointAsOwner: SessionEngine["Service"]["restoreCheckpoint"] = (
         sessionId,
         checkpointId,

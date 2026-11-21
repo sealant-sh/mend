@@ -18,6 +18,13 @@ const PHONE = { width: 390, height: 844 };
 /** The one of a locator's matches a person sees: the desktop and phone layouts are both in the page. */
 const visible = (locator) => locator.filter({ visible: true }).first();
 
+const expectFiles = (seen, want, what) => {
+  if (JSON.stringify(seen) !== JSON.stringify(want))
+    throw new Error(
+      `${what}: the stack reads ${JSON.stringify(seen)}, not ${JSON.stringify(want)}`,
+    );
+};
+
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
@@ -70,13 +77,6 @@ export default async ({ page, web, capture, note }) => {
       },
       { id: worktreeId, from, to },
     );
-  const expectFiles = (seen, want, what) => {
-    if (JSON.stringify(seen) !== JSON.stringify(want))
-      throw new Error(
-        `${what}: the stack reads ${JSON.stringify(seen)}, not ${JSON.stringify(want)}`,
-      );
-  };
-
   await page.setViewportSize(DESKTOP);
   await open("/no-such-page");
   await page.evaluate(() => localStorage.setItem("mend-theme", "light"));
