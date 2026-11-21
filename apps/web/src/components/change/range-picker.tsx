@@ -11,7 +11,7 @@ import {
 import { Label } from "@mend/ui/components/ui/label";
 import { NativeSelect, NativeSelectOption } from "@mend/ui/components/ui/native-select";
 import { cn } from "@mend/ui/lib/utils";
-import { CheckIcon, ChevronDownIcon, GitCompareArrowsIcon } from "lucide-react";
+import { CheckIcon, ChevronDownIcon, GitCompareArrowsIcon, Undo2Icon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { Overlay } from "#/components/projects/overlay";
@@ -142,7 +142,8 @@ function CompareDialog({
 /**
  * The Change toolbar's range (Doop "Change · checkpoint range picker"): a menu on a wide screen,
  * a sheet titled "Show changes" on a phone. The whole change; since your last review, when you
- * have sent comments on this change; up to any checkpoint; or two checkpoints compared.
+ * have sent comments on this change; up to any checkpoint; or two checkpoints compared. For the
+ * change's owner it also offers going back to a checkpoint (SLNT-1259), which `onGoBack` opens.
  */
 export function RangePicker({
   label,
@@ -153,6 +154,7 @@ export function RangePicker({
   rows,
   onPick,
   onOpen,
+  onGoBack,
 }: {
   readonly label: RangeLabel;
   readonly picked: PickedRange;
@@ -164,6 +166,8 @@ export function RangePicker({
   readonly onPick: (range: ReviewRangeRequest | null) => void;
   /** The list is about to show: a chance to read the checkpoints again. */
   readonly onOpen?: () => void;
+  /** Opens Go back to a checkpoint…; absent for someone who can't. */
+  readonly onGoBack?: () => void;
 }) {
   const phone = usePhone();
   const [sheet, setSheet] = useState(false);
@@ -290,6 +294,20 @@ export function RangePicker({
                 </>,
                 picked.kind === "custom",
               )}
+              {onGoBack === undefined
+                ? null
+                : sheetRow(
+                    "go-back",
+                    () => {
+                      setSheet(false);
+                      onGoBack();
+                    },
+                    <>
+                      <Undo2Icon aria-hidden className="size-4 text-muted-foreground" />
+                      Go back to a checkpoint…
+                    </>,
+                    false,
+                  )}
             </div>
           </div>
         </Overlay>
@@ -359,6 +377,12 @@ export function RangePicker({
             Compare two checkpoints…
             {chosen(picked.kind === "custom")}
           </DropdownMenuItem>
+          {onGoBack === undefined ? null : (
+            <DropdownMenuItem onClick={onGoBack} className="gap-2">
+              <Undo2Icon aria-hidden className="size-4 text-muted-foreground" />
+              Go back to a checkpoint…
+            </DropdownMenuItem>
+          )}
         </DropdownMenuContent>
       </DropdownMenu>
       {compare}

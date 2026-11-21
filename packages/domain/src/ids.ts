@@ -100,6 +100,10 @@ export const encodePreviewLabel = (bytes: Uint8Array): PreviewLabel => {
 export const CheckpointId = Schema.String.pipe(Schema.brand("CheckpointId"));
 export type CheckpointId = typeof CheckpointId.Type;
 
+/** One going-back of a worktree's files to a checkpoint (SLNT-1259). */
+export const CheckpointRestoreId = Schema.String.pipe(Schema.brand("CheckpointRestoreId"));
+export type CheckpointRestoreId = typeof CheckpointRestoreId.Type;
+
 export const ReviewCommentId = Schema.String.pipe(Schema.brand("ReviewCommentId"));
 export type ReviewCommentId = typeof ReviewCommentId.Type;
 

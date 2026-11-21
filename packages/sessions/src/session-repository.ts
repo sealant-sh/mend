@@ -179,6 +179,21 @@ export class SessionRepository extends Context.Service<
        */
       readonly flushed?: boolean;
     }) => Effect.Effect<CheckpointSnapshot, SessionRepositoryError>;
+    /**
+     * Capture mode only: a Git pack of what a workspace needs to read `sha`'s files, everything
+     * reachable from it but not from `have` (the worktree's base, which every workspace of it
+     * holds). Going back to a checkpoint (SLNT-1259) places it in the workspace, because Mend made
+     * the checkpoint on its own side. Absent on the co-located adapter: there the workspace's
+     * repository is the store, which already holds every checkpoint.
+     */
+    readonly packCheckpoint?: (input: {
+      readonly projectId: ProjectId;
+      readonly worktreeId: WorktreeId;
+      /** The capture the checkpoint was observed from; null reads the chain's head. */
+      readonly captureId: string | null;
+      readonly sha: Sha;
+      readonly have: Sha;
+    }) => Effect.Effect<Uint8Array, SessionRepositoryError>;
     /** Pin exact checkpoint objects independently of source deletion, without changing files. */
     readonly retainHistory: (input: {
       readonly id: TurnBoundaryId;

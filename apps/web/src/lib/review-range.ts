@@ -88,6 +88,32 @@ export const checkpointRows = (
               : null,
     }));
 
+/**
+ * The checkpoints the worktree's files can go back to (SLNT-1259), newest first: every one of the
+ * chain, the base included, which puts the files back to where the change starts.
+ */
+export const goBackChoicesOf = (
+  chain: ReadonlyArray<{
+    readonly id: string;
+    readonly ordinal: number;
+    readonly trigger: string;
+    readonly createdAt: Date;
+  }>,
+): ReadonlyArray<{
+  readonly id: string;
+  readonly ordinal: number;
+  readonly words: string;
+  readonly createdAt: Date;
+}> =>
+  chain
+    .toSorted((a, b) => b.ordinal - a.ordinal)
+    .map((checkpoint) => ({
+      id: checkpoint.id,
+      ordinal: checkpoint.ordinal,
+      words: checkpoint.ordinal === 0 ? "Where the change starts" : checkpointWords(checkpoint),
+      createdAt: new Date(checkpoint.createdAt),
+    }));
+
 const baseName = (path: string): string => path.split("/").at(-1) ?? path;
 
 /**

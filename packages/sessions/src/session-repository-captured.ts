@@ -916,6 +916,45 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         return { packs: [retained.key], objectFormat, worktreeTree, indexTree };
       });
 
+    const packCheckpoint: NonNullable<SessionRepository["Service"]["packCheckpoint"]> = (input) =>
+      Effect.gen(function* () {
+        const ready = yield* prepared(
+          input.projectId,
+          input.worktreeId,
+          input.captureId === null ? undefined : { captureId: input.captureId },
+        ).pipe(Effect.mapError((error) => gitFailure("", "pack-checkpoint", error.message)));
+        // The base is in every workspace of the worktree; without it here, pack everything.
+        const haveHere = yield* git(
+          ["cat-file", "-e", `${input.have}^{commit}`],
+          ready.cache.path,
+        ).pipe(
+          Effect.as(true),
+          Effect.catch(() => Effect.succeed(false)),
+        );
+        const objects = yield* git(
+          ["rev-list", "--objects", input.sha, ...(haveHere ? ["--not", input.have] : [])],
+          ready.cache.path,
+        );
+        const staging = path.join(
+          ready.cache.path,
+          "objects",
+          `restore-pack-${crypto.randomUUID()}`,
+        );
+        fs.mkdirSync(staging, { recursive: true });
+        return yield* Effect.gen(function* () {
+          const name = yield* git(
+            ["pack-objects", "-q", path.join(staging, "p")],
+            ready.cache.path,
+            undefined,
+            undefined,
+            `${objects}\n`,
+          );
+          return new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.pack`)));
+        }).pipe(
+          Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
+        );
+      });
+
     const worktreeMount: SessionRepository["Service"]["worktreeMount"] = (projectId) =>
       projects.byId(projectId).pipe(Effect.map(() => undefined));
 
@@ -1000,6 +1039,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       resetWorktree,
       removeWorktreeForce,
       checkpoint,
+      packCheckpoint,
       retainHistory,
       worktreeMount,
     };

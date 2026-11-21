@@ -888,6 +888,8 @@ const CASES: ReadonlyArray<AccessCase> = [
     "/shared-control/people/carol/take-back",
   )("sessions.takeBackSharedControl"),
   session("project-read", "POST", "/checkpoints", { trigger: "user-mark" })("sessions.checkpoint"),
+  // SLNT-1259: anyone who sees the session asks; the engine lets only the change's owner go back.
+  session("project-read", "POST", "/checkpoints/checkpoint/restore")("sessions.restoreCheckpoint"),
   session("steer", "POST", "/launch", { argv: ["codex"] })("sessions.launch"),
   session("project-read", "GET", "/transcript")("sessions.transcript"),
   session("steer", "POST", "/resume", { harness: null })("sessions.resume"),
@@ -1446,6 +1448,7 @@ const ADMITTED: Readonly<
     ],
   },
   "sessions.checkpoint": { status: 500, calls: ["engine.checkpointNow"] },
+  "sessions.restoreCheckpoint": { status: 500, calls: ["engine.restoreCheckpoint"] },
   // The launch effect is built before engine.detach defects; no actual launch ran.
   "sessions.launch": { status: 500, calls: ["engine.launch", "engine.detach"] },
   "sessions.transcript": { status: 500, calls: ["engine.transcript"] },

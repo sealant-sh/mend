@@ -8,7 +8,11 @@ import {
   SessionProcessId,
   Timestamp,
 } from "@mend/domain";
-import { HistoryAdmissionRefusedError, PullRequestState } from "@mend/domain/workbench";
+import {
+  HistoryAdmissionRefusedError,
+  PullRequestState,
+  WorktreeGitRefused,
+} from "@mend/domain/workbench";
 import {
   RollbackRequest,
   RollbackOperation,
@@ -33,6 +37,7 @@ import {
   AgentTurnSteer,
   ConversationTurn,
   Checkpoint,
+  CheckpointRestore,
   ConversationWait,
   ConversationWaitWork,
   FollowUp,
@@ -1268,6 +1273,16 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       payload: CheckpointRequest,
       success: Checkpoint,
       error: [NotFound, StoreFailure, RemovalInProgress],
+    }),
+  )
+  .add(
+    // Going back to a checkpoint (SLNT-1259): the worktree's files go back to how they were
+    // there. The server saves the files first as a checkpoint of their own, and refuses (409)
+    // while an agent in the worktree works. The change's owner only.
+    HttpApiEndpoint.post("restoreCheckpoint", "/sessions/:id/checkpoints/:checkpointId/restore", {
+      params: { id: SessionId, checkpointId: CheckpointId },
+      success: CheckpointRestore,
+      error: [NotFound, WorktreeGitRefused, RemovalInProgress],
     }),
   )
   .add(

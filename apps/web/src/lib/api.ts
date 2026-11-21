@@ -609,6 +609,9 @@ export const setSessionLabel = (id: string, label: string | null) =>
   orLogin(browserTrpcClient().sessions.setLabel.mutate({ id, label }));
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
   orLogin(browserTrpcClient().sessions.checkpoint.mutate({ id, request: { trigger } }));
+/** Put the worktree's files back to a checkpoint (SLNT-1259); the server saves them first. */
+export const restoreCheckpoint = (sessionId: string, checkpointId: string) =>
+  orLogin(browserTrpcClient().sessions.restoreCheckpoint.mutate({ id: sessionId, checkpointId }));
 
 export interface DeliverFollowUpInput {
   readonly reviewSliceId: string;

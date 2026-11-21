@@ -85,6 +85,8 @@ export const TRIGGER_WORDS: Readonly<Record<string, string>> = {
   "review-open": "review opened",
   "user-mark": "marked by hand",
   "proof-capture": "proof captured",
+  "restore-save": "saved before going back",
+  restore: "went back",
 };
 
 const KIND_OF_ITEM: Readonly<Record<string, RecordKind>> = {
