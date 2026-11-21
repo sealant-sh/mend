@@ -1,8 +1,8 @@
-import type { MendBridge } from "../../shared/bridge";
+import type { MendDesktopBridge, MendShellBridge } from "../../shared/bridge.ts";
 
 declare global {
   interface Window {
-    /** The preload bridge — the renderer's only path to the Mend server. */
-    readonly mend: MendBridge;
+    readonly mendDesktop?: MendDesktopBridge;
+    readonly mendShell?: MendShellBridge;
   }
 }

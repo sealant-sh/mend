@@ -7,8 +7,8 @@ import type { Configuration } from "electron-builder";
  * (gitignored).
  *
  * electron-vite bundles every import into out/: main and preload need only
- * electron and node builtins, and the renderer is one Vite build that already
- * holds the vendored ghostty wasm and the fonts under out/renderer/assets. So
+ * electron and node builtins, and the renderer is the Sheet-styled Connect and
+ * Offline shell with its self-hosted fonts under out/renderer/assets. So
  * the package ships no node_modules. package.json lists nothing under
  * `dependencies`, and `beforeBuild` answers false: without it electron-builder
  * finds no dependencies here, falls back to the workspace root and packs the
