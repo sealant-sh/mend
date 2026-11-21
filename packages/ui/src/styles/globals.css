@@ -66,6 +66,10 @@
   --color-removed: var(--removed);
   --color-diff-add: var(--diff-add);
   --color-diff-del: var(--diff-del);
+  --color-syntax-keyword: var(--syntax-keyword);
+  --color-syntax-string: var(--syntax-string);
+  --color-syntax-constant: var(--syntax-constant);
+  --color-syntax-link: var(--syntax-link);
   --color-pr-none: var(--pr-none);
   --color-pr-open: var(--pr-open);
   --color-pr-merged: var(--pr-merged);
@@ -213,6 +217,11 @@
   --removed: #c81e1e;
   --diff-add: rgba(22, 163, 74, 0.075);
   --diff-del: rgba(220, 38, 38, 0.06);
+  /* Code's colours in a diff: muted hues that read at about 5:1 or better on the sheet and on a changed line's tint. */
+  --syntax-keyword: #7a4f33;
+  --syntax-string: #55705e;
+  --syntax-constant: #6f5a8e;
+  --syntax-link: #3b5a92;
   /* The lump's pull-request colours, as the canvas's Tile tab and rail draw them. */
   --pr-none: var(--muted-foreground);
   --pr-open: var(--success);
@@ -278,6 +287,10 @@
   --removed: #ff8a80;
   --diff-add: rgba(74, 222, 128, 0.085);
   --diff-del: rgba(248, 113, 113, 0.09);
+  --syntax-keyword: #c89272;
+  --syntax-string: #7fa78e;
+  --syntax-constant: #a996c9;
+  --syntax-link: #7d9fd6;
   /* The lump's pull-request colours, as the canvas's Tile tab and rail draw them. */
   --pr-none: var(--muted-foreground);
   --pr-open: var(--success);
