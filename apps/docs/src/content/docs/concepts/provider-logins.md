@@ -105,7 +105,8 @@ With `sudo`, anyone working in the workspace can still read those files: see
 ### Only the selected agent's login
 
 To give each Claude or Codex session its own agent's login only, turn on **Give my sessions only the
-selected agent's login** in Settings → Connected accounts, or run:
+selected agent's login** (**Selected agent's login only** on Settings → Agent logins and Git), or
+run:
 
 ```sh
 mend agent-logins selected

@@ -101,8 +101,12 @@ const projectEnvironmentPage = await readFile(
   "utf8",
 );
 assert.ok(
-  projectEnvironmentPage.includes("Configuration"),
-  "Project docs must name the Configuration tab",
+  projectEnvironmentPage.includes("Project settings"),
+  "Project docs must name the Project settings entry",
+);
+assert.ok(
+  !projectEnvironmentPage.includes("Configuration page"),
+  "Project docs must not name the retired Configuration page",
 );
 assert.ok(
   !projectEnvironmentPage.includes("top of Setup"),

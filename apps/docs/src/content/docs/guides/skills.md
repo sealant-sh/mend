@@ -15,7 +15,7 @@ session's workspace, so an agent there has the same skills as the one on your ma
 Mend keeps two libraries:
 
 - **Your library** belongs to your account. Like [dotfiles](/guides/dotfiles/), it follows you into
-  every project. The web app calls these your global skills.
+  every project. The web app calls these your skills.
 - **A project's library** belongs to the project and applies to every session in it, whoever starts
   the session.
 
@@ -55,21 +55,18 @@ List a library with `mend skills`, or `mend skills --project [p]` for a project'
 
 ## Manage skills in the web app
 
-**Skills** in the web app's navigation opens your library. **New skill** asks for a name, a
-description and the `SKILL.md` contents. Opening a skill lets you edit its description and files,
-add a file by its path in the bundle (for example `references/notes.md`), and remove the skill.
+**Skills** in the web app's sidebar opens your library. **New skill** asks for a name, a description
+and the `SKILL.md` contents. Opening a skill lets you edit its description and files, add a file by
+its path in the bundle (for example `references/notes.md`), and remove the skill.
 
-A project's skills live on its **Configuration** page, in the **Skills** section. The section lists
-your global skills and whether each one is **Inherited**, **Overridden here** by a project skill
-with the same name, or **Off**, then the project's own skills with the same controls as your
-library.
+A project's skills live on its **Skills** tab, with the same controls as your library. Every new
+session in the project gets them. Your own skills always follow you into the project's sessions; a
+project skill with the same name as one of yours is used instead of yours there, and the tab says
+so. The web app has no switch to keep your library out of a project. A project switched off earlier,
+from the old web app or the API, still gives its sessions only the project's skills.
 
-**Use global skills** on that section decides whether sessions in the project receive the session
-owner's library. It is on by default. Turned off, sessions in the project receive only the project's
-skills.
-
-Anyone who can see a project can read its skills. Changing them, or the **Use global skills**
-switch, takes an owner or the member who created the project.
+Anyone who can see a project can read its skills. Changing them takes an owner or the member who
+created the project.
 
 ## What a session receives
 

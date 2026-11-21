@@ -42,21 +42,22 @@ server refuses the app's requests (`Origin not allowed`).
 
 ## Pair it
 
-1. On the machine, open the web app's **Settings → Devices** and choose **Pair a phone**, or run
-   `mend pair`. Either shows a code, the server URL, and a QR. A code is good for one device, once,
-   for ten minutes.
+1. On the machine, open the web app's **Settings → Devices and access keys** and find **Pair a
+   phone**, or run `mend pair`. Either shows a code, the server URL, and a QR. A code is good for
+   one device, once, for ten minutes.
 2. In the phone app, choose **Pair with your machine** (on Now, or under Settings). The browser
    cannot scan a QR (`the camera rides the native app — type the code below`), so choose **Type the
    code instead**.
 3. Enter the **Server URL** shown beside the code and the **Pairing code** (`ABCD-EFGH`), then
    **Pair**.
 
-The server mints a token for the phone and lists the device under Settings → Devices, where you
-revoke it. The web build keeps the token in the browser's storage. **Unpair** in the app's Settings
-clears it on the phone, asks the machine to stop sending the phone notifications, and clears the
-ones already delivered; the device stays listed until you revoke it. Pairing with another machine
-does the same for the last one. Settings → **Advanced** takes a server URL and bearer token typed by
-hand instead, such as one from **Mint a token by hand** in the web app.
+The server mints a token for the phone and lists the device under the web app's Settings → Devices
+and access keys, where you revoke it. The web build keeps the token in the browser's storage.
+**Unpair** in the app's Settings clears it on the phone, asks the machine to stop sending the phone
+notifications, and clears the ones already delivered; the device stays listed until you revoke it.
+Pairing with another machine does the same for the last one. Settings → **Advanced** takes a server
+URL and bearer token typed by hand instead, such as one from **Make a token by hand** in the web
+app.
 
 ## What it does
 
@@ -74,11 +75,12 @@ hand instead, such as one from **Mint a token by hand** in the web app.
 - Where the server serves previews on the tailnet or a domain, a session whose worktree has a
   preview the gateway serves gets a `Preview` header action. It opens the preview in the in-app
   browser, signed in as you through a single-use link minted for this phone, so revoking the phone
-  under Settings → Devices ends its sign-in to the preview too. Under the header, `Services` lists
-  each preview's status line, such as `preview · web · answered HTTP 200 · observed 4 s ago`.
-  Previews served at `*.localhost` stay on the Mend machine, so the phone never offers them, and a
-  preview on the tailnet opens only from a phone on the same tailnet. When the in-app browser opens
-  nothing, a line under the header says why.
+  under Settings → Devices and access keys ends its sign-in to the preview too. Under the header,
+  `Services` lists each preview's status line, such as
+  `preview · web · answered HTTP 200 · observed 4 s ago`. Previews served at `*.localhost` stay on
+  the Mend machine, so the phone never offers them, and a preview on the tailnet opens only from a
+  phone on the same tailnet. When the in-app browser opens nothing, a line under the header says
+  why.
 - A Claude workflow shows as a card on the turn that started it while it runs: each phase, each
   agent's state, model, tokens and current tool, and the totals. The turn Claude starts to report it
   reads `the agent continued · …`.

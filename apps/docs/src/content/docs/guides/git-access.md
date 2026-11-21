@@ -10,16 +10,16 @@ sidebar:
 Remote Git operations run on the Mend server. Session workspaces do not receive SSH keys or Git
 credentials.
 
-Your Git access is per user. **Settings → Git access** sets the mode for projects you adopt: **A
-Mend key on your git account** (`mend-key`, the default) or **Your machine's key** (`bridge`).
-`mend keys mode` does the same from the terminal. A project's **Configuration** page can override
-the mode with `mend key` or `bridge`, and `mend adopt --auth` overrides it for one adoption.
+Your Git access is per user. **Git access** on **Settings → Agent logins and Git** sets the mode:
+**Mend key** (`mend-key`, the default) or **Your computer's key** (`bridge`). `mend keys mode` does
+the same from the terminal, and `mend adopt --auth` overrides it for one adoption. The web app has
+no per-project mode; a project mode saved earlier still applies to that project.
 
 ## Your Mend key
 
 Each Mend user has one ed25519 key, generated and held on the server and never copied into a
-workspace or the database. Create it with **Create my Mend key** under Settings → Git access, or
-from the terminal:
+workspace or the database. Create it with **Create key** on Settings → Agent logins and Git, or from
+the terminal:
 
 ```sh
 mend keys init
@@ -54,7 +54,8 @@ older one.
 Git transport bytes travel to the Mend server, while SSH signing requests travel back to the shared
 agent. Hardware-key touch happens on the machine holding the key. While no signer is connected, Git
 for bridge projects does not wait: the base is not fetched, and pushes fail with a message that says
-so. The project's Configuration page shows `signer connected · <machine>` or `no signer connected`.
+so. **Settings → Agent logins and Git** says whether your computer is connected and since when,
+under **Your computer**.
 
 ## No ambient mode
 
@@ -146,7 +147,8 @@ next Git operation without rebuilding the workspace.
 ## Git author
 
 Commits the agent makes in your workspaces name your Git author. Until you set one, it is the name
-and email you registered with. Change it under **Settings → Git author**, or from the terminal:
+and email you registered with. Change it under **Git** on **Settings → Agent logins and Git**
+(**Author name** and **Author email**), or from the terminal:
 
 ```sh
 mend git-author "Anna Example" anna@example.com

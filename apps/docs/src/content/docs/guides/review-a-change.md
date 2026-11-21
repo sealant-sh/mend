@@ -14,12 +14,13 @@ GitHub, [land it](/guides/land-a-change/).
 
 ## Open the review
 
-In the web app, a change's review lives at `/changes/<change-id>`. You reach it from:
+In the web app, a change's review is the **Change** view of its workspace, a tab like the
+conversation. `/changes/<change-id>` and `/sessions/<session-id>/change` open it. You reach it from:
 
-- the session page, through `Review the change`;
-- a worktree's `Review` link on the project page;
-- the `Ready to review` section on Now, which lists completed sessions whose change has no comments
-  and no follow-up in flight, one row per worktree.
+- a session's workspace, by adding the **Change** view from a tile's **+** menu;
+- **Open its change** in a worktree's menu on the project's **Worktrees** tab;
+- the `To review` group in the sidebar, which lists ended sessions whose change has files nobody has
+  reviewed yet, failed sessions, and sessions with a follow-up waiting, one row per change.
 
 In the terminal dashboard (`mend`), select a session and press `v` to review its change in the
 terminal, or `o` to open it in the browser. `mend sessions` prints one line per session with what
@@ -102,10 +103,9 @@ three passes at once.
 
 ### When passes run by themselves
 
-When a session settles (its agent ends or stops), Mend can compose the tour and run the suggestion
-pass so the review opens with them ready. The switches are in the project's setup under
-`Review automation`: `Description & tour`, `Suggest fixes`, and `Name the session`, each `inherit`,
-`on`, or `off`. `inherit` follows the session owner's own switches in their Settings, which start
+When a session ends (its agent ends or stops), Mend can compose the tour and run the suggestion pass
+so the review opens with them ready. The switches are the session owner's own, under **Review** in
+**Settings → Your automation**: **Change description and tour** and **Suggested fixes**. Both start
 on. An empty change queues nothing. A session started from Slack always gets a tour, because the
 tour's summary is the thread's end-of-session reply. `Read this change` only runs when someone asks
 for it.
@@ -113,7 +113,7 @@ for it.
 ### Whose account pays
 
 A pass runs on the connected Claude or Codex subscription of the person who asked for it, never
-another member's and never the operator's. A pass review prep queues when a session settles runs on
+another member's and never the operator's. A pass review prep queues when a session ends runs on
 that session's owner's; the tour a landing asks for runs on the lander's. If you ask while the same
 pass is already queued or running for the change, your request joins it and spends nothing. Without
 a connected account of your own, the pass fails and says so. Mend ships no model keys. See

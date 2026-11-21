@@ -79,9 +79,11 @@ lane. It labels configuration as plaintext and never prints secret values. Clust
 
 ## Edit in the web app
 
-Open the project's **Configuration** page. The Configuration and Secrets sections support create,
-rename, replace, and remove operations. Secret rows only show whether a value is set. Members who do
-not manage the project see a note in place of these sections.
+Open the project's **Variables and secrets** settings page. Its **Environment variables** section
+holds the configuration lane and its **Secrets** section the secrets; both support add, rename,
+replace, and remove, and **Import .env file…** loads a file. Secret rows only show whether a value
+is set. Members who do not manage the project read the page under a line that names who can change
+it.
 
 Renaming a secret without entering another value preserves the stored value. Replacing it writes a
 new encrypted value.
@@ -106,8 +108,8 @@ The boundaries:
   rather than shipping an incomplete environment; remove the bindings to launch on that install.
 
 `mend env show` lists bindings and the service account alongside configuration and secret names. Add
-and remove bindings and set the service account on the Configuration page's **Cluster bindings**
-panel, or from the terminal:
+and remove bindings and set the service account in the **Cluster bindings** section of the same
+page, or from the terminal:
 
 ```sh
 mend env cluster add secret app-env
@@ -155,9 +157,9 @@ Mend rejects names that belong to the platform or can change process startup. Ex
 
 Secrets also refuse the names of provider logins, in any case: `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN` are Claude logins, and `OPENAI_API_KEY` and
-`CODEX_API_KEY` are Codex logins. Connect those in Settings → Connected accounts, so that a project
-secret never decides which login a session spends. `mend env load` and the web app's **Add
-variables** refuse each of these entries and load the rest of the file.
+`CODEX_API_KEY` are Codex logins. Connect those in Settings → Agent logins and Git, so that a
+project secret never decides which login a session spends. `mend env load` and the web app's
+**Import .env file…** refuse each of these entries and load the rest of the file.
 
 A secret stored under one of these names before Mend refused them is kept as it was. Its row in the
 web app and in `mend env show` says so. You can rename it or remove it, but not give it a new value.

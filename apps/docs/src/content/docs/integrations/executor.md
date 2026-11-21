@@ -10,30 +10,31 @@ address.
 
 ## Set the organization's Executor
 
-An organization owner opens the **Executor** row in **Settings → MCP servers** and saves the
+An organization owner opens the **Executor** section of the organization's **Settings →
+Integrations**, sets **Who runs it** to **Use your own**, and saves **Your Executor's address**, the
 Executor's origin, such as `https://executor.example.org`. Both Mend's server and the person's
 browser must reach it. HTTPS is required except for loopback addresses. The Executor must support
 v2's dynamic client registration and OAuth grants.
 
-Members can read these settings. Only owners change the address or link **Mend's member**. Use an
-Executor member made for Mend, not a person's account. Click **Link**, sign in at that Executor, and
-consent twice. The two consents let Mend call tools and use Executor's service API as the same
-member. Executor returns to Mend's configured `APP_URL` after each consent.
+Members can read these settings. Only owners change the address or link **Mend's member**, under
+**Shared account**. Use an Executor member made for Mend, not a person's account. Click **Link**,
+sign in at that Executor, and consent twice. The two consents let Mend call tools and use Executor's
+service API as the same member. Executor returns to Mend's configured `APP_URL` after each consent.
 
 Changing or clearing the address revokes existing grants. Everyone links again at the new address.
 
 ## Let Mend run Executor
 
-In a packaged Docker installation, an owner chooses **Mend runs Executor for this organization** in
-the same settings. Sealant starts one private instance for that organization, with a 1.5 GiB memory
-limit and retained data. No Executor address or page reaches a browser. Mend creates its own member
-and obtains its two grants between servers. Mend adds no services for anyone.
+In a packaged Docker installation, an owner sets **Who runs it** to **Mend runs it** in the same
+section. Sealant starts one private instance for that organization, with a 1.5 GiB memory limit and
+retained data. No Executor address or page reaches a browser. Mend creates its own member and
+obtains its two grants between servers. Mend adds no services for anyone.
 
 The page reports the state Sealant observed and the observation time. **Stop Executor** keeps
-service logins and data. When a Mend release includes a new Executor image, **Back up and upgrade
-Executor** stops it, saves a complete volume backup in Mend's private store, and then starts the new
-image over the retained data. A failed backup leaves Executor stopped and prevents replacement. Keep
-Mend's secrets key and sealant's credentials key through upgrades.
+service logins and data. When a Mend release includes a new Executor image, **Upgrade to
+&lt;version&gt;** stops it, saves a complete volume backup in Mend's private store, and then starts
+the new image over the retained data. A failed backup leaves Executor stopped and prevents
+replacement. Keep Mend's secrets key and sealant's credentials key through upgrades.
 
 **Remove Executor** asks you to confirm that the organization's service logins are deleted. Mend
 stops the instance and asks Sealant to purge its retained volume, sealed environment and private
@@ -54,7 +55,7 @@ that server container. sealant, rather than Mend, creates and guards each instan
 
 ## Link your account
 
-Open **Settings → MCP servers**, open the **Executor** row and click **Link**. For a Mend-run
+Open **Settings → Connected apps** and click **Link** on the **Executor** row. For a Mend-run
 Executor, that one click signs you in and obtains both grants on Mend's server. Your browser stays
 in Mend. Mend sends a verified synthetic address,
 `<account id>@<organization id>.people.mend.invalid`, to this private provider. It keeps your real

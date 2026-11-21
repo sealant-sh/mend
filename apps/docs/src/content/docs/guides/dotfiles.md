@@ -133,10 +133,10 @@ existing snapshot. Files from the snapshot overwrite same-named files supplied b
 
 Use the CLI for nested paths. Browser file selection normally supplies only the selected file name.
 
-## Enable dotfiles for a project
+## Dotfiles in every project
 
-Open the project's **Configuration** page and turn **Dotfiles** on. The switch is per project
-because some repositories need a controlled environment.
+Your dotfiles follow you into every project's sessions. The web app has no project switch for them.
+A project switched off earlier, from the old web app or the API, still skips them.
 
 Dotfiles apply only to managed OS-family images. Mend skips them for custom images, where the base
 image and setup commands own the home environment.
@@ -173,8 +173,8 @@ is skipped and the shell still starts. The plugins are looked up where the Arch,
 Nix packages install them.
 
 The profile applies only to managed OS-family images whose shell is zsh, not to `bash`, `fish` or
-custom images. To turn it off for a project, open its **Configuration** page and turn **Default
-shell profile** off under **Dotfiles**. A workspace that is already running keeps the files it has.
+custom images. The web app has no switch for it; a project that turned it off earlier, from the old
+web app or the API, keeps it off. A workspace that is already running keeps the files it has.
 
 ## Git author and your `.gitconfig`
 

@@ -8,14 +8,15 @@ sidebar:
 ---
 
 A project's setup controls how its future session workspaces launch. Open the project in Mend and
-choose **Configuration** to configure it.
+choose **Project settings**. A project's settings are six pages: **General**, **Workspace**,
+**Services**, **Variables and secrets**, **Folders and references**, and **Only you**.
 
-Configuration joins machine resources and personal identity at session launch:
+The setup joins machine resources and personal identity at session launch:
 
 ```mermaid
 flowchart LR
   image[Workspace image]
-  env[Configuration and secrets]
+  env[Variables and secrets]
   refs[References, folders and linked projects]
   identity[Accounts, Git author and dotfiles]
   recipes[Skills and service recipes]
@@ -28,19 +29,19 @@ flowchart LR
   recipes --> launch
 ```
 
-Changes apply to new workspace launches, including a settled-session resume that needs a fresh
+Changes apply to new workspace launches, including the resume of an ended session that needs a fresh
 workspace. Running workspaces keep the setup they started with.
 
 ## Who can change setup
 
-The project's creator and the organization's owners manage its setup. Other members of a shared
-project see a note in place of the setup panels: "How sessions here launch is set by the project's
-creator or an organization owner. You can start sessions and review changes as it stands."
+The project's creator and the organization's owners manage its setup. Everyone else who can open the
+project reads the same pages, under a line that names who can change them, for example "Ada Lovelace
+can change these settings. You can read them."
 
 ## Visibility
 
-Owners see a **Visibility** section at the top of Configuration. A `private` project is visible only
-to its creator. A `shared` project is visible to every member of the organization, who can start
+Owners set **Visible to** on the project's **General** page. A `private` project is visible only to
+its creator. A `shared` project is visible to every member of the organization, who can start
 sessions in it and review its changes. Making a shared project private drains other members' warm
 workspaces; their running sessions continue until they end. Read
 [Organizations](/organizations/overview/) for roles and shared control.
@@ -53,9 +54,9 @@ the instance's (see
 [Workspace images](/guides/workspace-images/#instance-organization-and-project)). Each change to an
 organization's starting image is recorded in its audit log.
 
-The automation switches (background sessions, description and tour, fix suggestions, session naming,
-landing) are each person's own, set in their Settings. A project that inherits follows the session
-owner's own value; no organization or instance value sits under it.
+The automation switches (description and tour, suggested fixes, automatic landing) are each person's
+own, set in **Settings → Your automation**. They apply in every organization and project; no
+project, organization or instance value sits under them. See [Automation](#automation).
 
 ## Workspace image
 
@@ -64,21 +65,22 @@ OS, login shell, portable package names, and Docker service. Custom images accep
 extra packages, setup commands, and the Docker service switch.
 
 A project starts with a copy of its organization's starting image and keeps its own from then on.
-Read [Workspace images](/guides/workspace-images/) for the exact fields and defaults.
+Set it under **Image** on the project's **Workspace** page. Read
+[Workspace images](/guides/workspace-images/) for the exact fields and defaults.
 
 ## Skills
 
-The **Skills** section decides whether the project's sessions receive your global skill library
-(**Use global skills**) and holds skills that apply only to this project. A project skill with the
-same name as a global one replaces it. Running sessions keep the skills they started with. Read
-[Skills](/guides/skills/) for the library and `mend skills push`.
+The project's **Skills** tab holds skills that apply only to this project. Your own skills always
+follow you into its sessions, and a project skill with the same name as one of yours replaces it.
+Running sessions keep the skills they started with. Read [Skills](/guides/skills/) for the library
+and `mend skills push`.
 
-## Configuration and secrets
+## Variables and secrets
 
-Configuration values and secrets both become environment variables in future workspace processes.
-They differ in storage and display:
+The project's **Variables and secrets** page holds both. Plain values and secrets both become
+environment variables in future workspace processes. They differ in storage and display:
 
-- configuration is stored and displayed as plaintext;
+- plain values are stored and displayed as plaintext;
 - secret values are accepted on write and never returned by the API or CLI;
 - names that look secret are routed to Secrets when importing a `.env` file;
 - URL-shaped names may still contain passwords, so route them explicitly when needed.
@@ -109,27 +111,30 @@ read without widening the reviewable change.
 ## Folders
 
 A folder is a Mend-managed directory that belongs to the organization, for material that does not
-belong in the project repository. Folders are created and filled in Settings. A project selects the
-folders its sessions receive, at:
+belong in the project repository. Folders are created and filled on the organization's **Folders and
+references** settings page. A project selects the folders its sessions receive, on its own **Folders
+and references** page, at:
 
 ```text
 /workspace/home/<name>
 ```
 
-A selected folder is read-only unless you tick **sessions may write** for it. In a captured
+A selected folder is read-only unless you set its access to **Read and write**. In a captured
 workspace (the default store) a folder arrives as a copy, so writes inside a session stay in that
 session's workspace and never change the folder. Read [Folders](/organizations/folders/) for
 creating and filling them.
 
-On a single-tenancy install the operator also sees **Mounted folders**, which maps a path on the
-Mend server's own filesystem into sessions at the same location. A read-write host mount writes to
-that path directly, outside the reviewed change. Captured workspaces do not receive host mounts, and
-nobody but the operator sees the section.
+On a single-tenancy install the operator also manages **Server folders** on that page, which maps a
+path on the Mend server's own filesystem into sessions at the same location. A read-write host mount
+writes to that path directly, outside the reviewed change. Captured workspaces do not receive host
+mounts. Only the operator adds or removes one; others see the section, read-only, once the project
+has one.
 
 ## Linked projects
 
 A linked project is another adopted project in the same organization that this project's sessions
-can work in, read-write, at:
+can work in, read-write. They are listed under **Linked projects** on the project's **General**
+page. Sessions find one at:
 
 ```text
 /workspace/repos/<name>
@@ -142,22 +147,20 @@ projects.
 
 ## Dotfiles
 
-Dotfiles belong to each Mend user. The project's **Dotfiles** switch decides whether sessions apply
-the launching user's dotfiles. A second switch, **Default shell profile**, decides whether Mend
-writes its default zsh profile where the dotfiles left no file.
-
-Managed OS-family images support both. Custom images apply neither because the base image owns its
-environment. Read [Dotfiles](/guides/dotfiles/) for repository and local-sync options and the
-default shell profile.
+Dotfiles belong to each Mend user and follow them into every project's sessions; a project has no
+switch for them. Managed OS-family images apply them. Custom images do not, because the base image
+owns its environment. Read [Dotfiles](/guides/dotfiles/) for repository and local-sync options and
+the default shell profile.
 
 ## Services
 
 A Service is an explicitly declared development process associated with a session. Add recipes to
-`.mend/mend.toml`, add them in the **Services** section of Configuration, or start a command with
-`mend service run`. Mend records each attempt. `mend service run` tunnels the declared port to your
-machine's loopback over an authenticated WebSocket when the CLI points at a non-loopback server URL,
-unless you pass `--no-connect`, and never for UDP. `mend attach`, `mend codex`, and the dashboard
-tunnel an attached session's `--http` and `--https` Services the same way.
+`.mend/mend.toml`, or start a command with `mend service run`. The project's **Services** page shows
+the recipes read-only and says to edit the file. Mend records each attempt. `mend service run`
+tunnels the declared port to your machine's loopback over an authenticated WebSocket when the CLI
+points at a non-loopback server URL, unless you pass `--no-connect`, and never for UDP.
+`mend attach`, `mend codex`, and the dashboard tunnel an attached session's `--http` and `--https`
+Services the same way.
 
 Services do not start or expose themselves automatically. HTTP and HTTPS are separate declarations;
 other transports provide an endpoint to copy rather than a browser action. Read
@@ -165,12 +168,12 @@ other transports provide an endpoint to copy rather than a browser action. Read
 
 ## Hot sessions
 
-A project's hot-session count controls how many standby workspaces Mend keeps ready for each person
-who started a session in the project in the last seven days, for up to four people, most recent
-first. A standby has the project's base and the shared dependency cache for its platform
-materialised, and a workspace built from the current setup fingerprint; a new session claims one of
-its owner's standbys and its worktree is bound at claim. Each ready workspace is a live container on
-the machine, so the count applies per person.
+A project's hot-session count (**Ready workspaces** on its **Workspace** page) controls how many
+standby workspaces Mend keeps ready for each person who started a session in the project in the last
+seven days, for up to four people, most recent first. A standby has the project's base and the
+shared dependency cache for its platform materialised, and a workspace built from the current setup
+fingerprint; a new session claims one of its owner's standbys and its worktree is bound at claim.
+Each ready workspace is a live container on the machine, so the count applies per person.
 
 Changing the image, accounts, dotfiles, folders, or related launch inputs drains incompatible ready
 workspaces and warms replacements. Status such as `2 ready · 1 warming` reports observation, not a
@@ -193,10 +196,10 @@ Automatic install applies in capture mode, and it is on by default. On, Mend pic
 command from the lockfile at the root of the base tree, for example `pnpm install --frozen-lockfile`
 from `pnpm-lock.yaml` or `cargo fetch --locked` from `Cargo.lock`, and runs it before the agent
 starts. An npm project with no lockfile gets `npm install --no-package-lock`, so the install never
-adds a `package-lock.json` to the session's change. The Dependencies card on the Configuration page
-shows the command it detects on origin's default branch as last fetched, the ref a launch bases on;
-it says "not read" when it could not read that tree. A custom command, if you set one, replaces the
-detected one. Mend runs the command in two places, both under its own control:
+adds a `package-lock.json` to the session's change. The **Dependencies** section of the project's
+**Workspace** page shows the command it detects on origin's default branch as last fetched, the ref
+a launch bases on; it says "not read" when it could not read that tree. A custom command, if you set
+one, replaces the detected one. Mend runs the command in two places, both under its own control:
 
 - in a workspace whose captured dependency tree was built for another platform (or that has none
   yet), before the harness starts; the log line names the platform observed and the command;
@@ -250,15 +253,15 @@ the project's own remote host. Each session commits as its owner's Git author. R
 
 ## Automation
 
-Project switches can follow each session owner's own setting (`inherit`) or override it with `on` or
-`off`:
+A project has no automation switches in the web app. Each person sets their own on **Settings → Your
+automation**, and they apply in every project:
 
-- **Review automation**: **Description & tour**, **Suggest fixes**, and **Name the session**. These
-  jobs run after the relevant session event.
-- **Sessions**: **Run sessions in the background**, whether sessions keep running when every client
-  disconnects.
-- **Landing**: **Land when a turn completes**, whether a session pushes its change and opens or
-  updates its pull request after a completed turn that asked for a change. Read
-  [Land a change](/guides/land-a-change/).
+- **Review**: **Change description and tour** and **Suggested fixes**. These jobs run after the
+  relevant session event.
+- **Landing**: **Automatic landing**, whether a session pushes its change and opens or updates its
+  pull request after a completed turn that asked for a change. It sets where the composer starts;
+  you can change it there for one session. Read [Land a change](/guides/land-a-change/).
 
-None of these change the workspace environment.
+A project switch saved earlier, from the old web app or the API, still overrides the person's value
+on the server; the web app no longer shows or changes it. None of these change the workspace
+environment.

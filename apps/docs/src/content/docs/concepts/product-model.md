@@ -55,10 +55,11 @@ A project can also start without a source repository. Created by name, it is pri
 README commit on `main` by its creator, and has no origin. Each person also has one such scratch
 project, made on first use. Today [t3code](/integrations/t3code/) is the client that creates them.
 
-A project also owns the setup used by future workspaces: image, variables, secrets, references,
-folders, Services, dotfile policy, hot-session count, Git access, and automation switches. Its image
-is its own, a copy of its organization's starting image taken when it was created. An automation
-switch the project leaves on inherit follows the session owner's own setting.
+A project also owns the setup used by future workspaces: image, dependency install, ready
+workspaces, variables, secrets, skills, linked projects, and which folders and references its
+sessions receive. Its Services come from `.mend/mend.toml` in the repository. Its image is its own,
+a copy of its organization's starting image taken when it was created. Dotfiles, Git access and the
+automation switches are each person's own and follow them into every project.
 
 ### Worktree
 
