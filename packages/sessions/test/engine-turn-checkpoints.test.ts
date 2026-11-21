@@ -13,31 +13,31 @@ import {
   withEngine,
 } from "./engine/fixture.ts";
 
+/** The recording host, keeping the hooks the engine attached each process with. */
+const hostKeepingHooks = (
+  attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
+  hooks: Array<ProtocolHostHooks>,
+) =>
+  Layer.effect(
+    ProtocolHost,
+    Effect.gen(function* () {
+      const inner = yield* ProtocolHost;
+      return {
+        ...inner,
+        attach: (input) => {
+          hooks.push(input.hooks);
+          return inner.attach(input);
+        },
+      };
+    }),
+  ).pipe(Layer.provide(recordingProtocolHostLayer(attached, [])));
+
 /**
  * A conversation turn's checkpoint (SLNT-1263): taken when the turn ends, it names the turn, so the
  * conversation puts it after that turn and no other, and it says when Mend can't confirm it holds
  * exactly that turn's files.
  */
 describe("a conversation turn's checkpoint", () => {
-  /** The recording host, keeping the hooks the engine attached each process with. */
-  const hostKeepingHooks = (
-    attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
-    hooks: Array<ProtocolHostHooks>,
-  ) =>
-    Layer.effect(
-      ProtocolHost,
-      Effect.gen(function* () {
-        const inner = yield* ProtocolHost;
-        return {
-          ...inner,
-          attach: (input) => {
-            hooks.push(input.hooks);
-            return inner.attach(input);
-          },
-        };
-      }),
-    ).pipe(Layer.provide(recordingProtocolHostLayer(attached, [])));
-
   /** Starts a Codex conversation, ends `turn` as Codex would, and returns the chain. */
   const endTurn = (turnsOf: (process: SessionProcess) => ReadonlyArray<AgentTurn>) => {
     const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];

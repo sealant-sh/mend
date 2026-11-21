@@ -220,11 +220,10 @@ const makeConversationWorld = () => {
         ? Effect.fail(new AgentControlJournalError({ message: "journal unavailable", cause: null }))
         : steerStore.recordProtocolControl(id, control),
     listTurns: () => Effect.succeed([...turns.values()]),
-    turnSentAfter: (sessionId, ordinal) =>
+    turnSentAfter: (session, after) =>
       Effect.succeed(
         [...turns.values()].some(
-          (turn) =>
-            turn.sessionId === sessionId && turn.ordinal > ordinal && turn.startedAt !== null,
+          (turn) => turn.sessionId === session && turn.ordinal > after && turn.startedAt !== null,
         ),
       ),
     submitTurn: (_session, _process, input) =>
