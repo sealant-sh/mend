@@ -448,9 +448,12 @@ export default async ({ page, web, capture, note }) => {
     const LIVE = new Set(["starting", "running", "waiting", "idle", "stopping"]);
     let quiet = 0;
     let installs = 0;
-    const waitUntil = Date.now() + 180_000;
+    // On the box each install ends in about 15 s. On a stack, a workspace's own Docker service
+    // never comes up in the nested Docker, so each install's launch fails after about 3.5 minutes,
+    // and the installs run one after another.
+    const waitUntil = Date.now() + 720_000;
     while (quiet < 3) {
-      expect("the automatic installs end within 3 minutes", Date.now() < waitUntil, installs);
+      expect("the automatic installs end within 12 minutes", Date.now() < waitUntil, installs);
       const read = await detail(project.id);
       installs = read.worktrees.length;
       quiet = read.sessions.some((session) => LIVE.has(session.status)) ? 0 : quiet + 1;
