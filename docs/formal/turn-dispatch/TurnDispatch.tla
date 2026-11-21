@@ -14,7 +14,8 @@ CONSTANTS
   Turns,     \* the person's messages, as agent turns of one process
   OwnTurns,  \* turns Codex starts on its own (a goal, its queue, the mailbox)
   NoId,      \* no provider turn id, no turn
-  Mutants    \* a set of names: each breaks one check or order of the code (check.sh)
+  Mutants,   \* a set of names: each breaks one check or order of the code (check.sh)
+  Starts     \* TRUE: the conversation starts with no process hosted, messages wait (SLNT-1237)
 
 \* Codex names each turn it runs: a message's n-th take, or one of its own.
 Ids == (Turns \cup OwnTurns) \X {1, 2}
@@ -29,6 +30,13 @@ VARIABLES
   status,     \* status
   ptid,       \* provider_turn_id
   holder,     \* dispatch_attempt_id: "cur" is the live dispatch's own attempt, "old" any other
+  placed,     \* process_id is the process's; FALSE: a waiting turn, queued for the session (SLNT-1237)
+  \* the start: the session's conversation starts with no process hosted (SLNT-1237)
+  attached,   \* the launch's process has been hosted (hosted.set in attachInternal)
+  took,       \* that process has taken the waiting turns (takeWaitingTurns at attach)
+  launchEnded, \* the launch failed before its process was hosted
+  settled,    \* the session settled (settledAt): no waiting turn is admitted after
+  wsend,      \* a waiting send per message: idle | read (saw no process) | admitted | done
   \* the dispatcher (dispatchOne under the process's dispatch permit) and its DispatchPhase
   pc,         \* idle | claimed | ready (Writing, before the write) | out | result | applying | end
   dt,         \* the turn it claimed
@@ -61,10 +69,12 @@ VARIABLES
   stopSaw,    \* a Stop read the message queued (cleared by a retry's requeue)
   badWrite    \* a message was written after a Stop saw it queued, or after the adapter closed
 
-vars == <<status, ptid, holder, pc, dt, started, held, result, resId, toApply, live, closed,
+vars == <<status, ptid, holder, placed, attached, took, launchEnded, settled, wsend, pc, dt,
+          started, held, result, resId, toApply, live, closed,
           inFlight, pending, acur, rehydrated, replay, creq, ccur, ownUsed, intr, out, sp, ss, restarted, retried,
           accepts, stopSaw, badWrite>>
 turnVars == <<status, ptid, holder>>
+startVars == <<placed, attached, took, launchEnded, settled, wsend>>
 dispVars == <<pc, dt, started, held, result, resId, toApply>>
 hostVars == <<live, closed, inFlight, pending, acur, rehydrated, replay>>
 codexVars == <<creq, ccur, ownUsed, intr, out>>
@@ -77,6 +87,9 @@ TypeOK ==
   /\ status \in [Turns -> Statuses]
   /\ ptid \in [Turns -> Ids \cup {NoId}]
   /\ holder \in [Turns -> {"none", "cur", "old"}]
+  /\ placed \in [Turns -> BOOLEAN]
+  /\ attached \in BOOLEAN /\ took \in BOOLEAN /\ launchEnded \in BOOLEAN /\ settled \in BOOLEAN
+  /\ wsend \in [Turns -> {"idle", "read", "admitted", "done"}]
   /\ pc \in {"idle", "claimed", "ready", "out", "result", "applying", "end"}
   /\ dt \in Turns \cup {NoId}
   /\ started \in Ids \cup {NoId}
@@ -94,7 +107,7 @@ TypeOK ==
   /\ intr \subseteq Ids
   /\ out \in Seq(Msgs)
   /\ sp \in [Turns -> {"idle", "q", "r", "done"}]
-  /\ ss \in {"no", "detached", "done"}
+  /\ ss \in {"no", "asked", "detached", "done"}
   /\ restarted \in BOOLEAN /\ retried \in [Turns -> BOOLEAN]
   /\ accepts \in [Turns -> 0..2] /\ stopSaw \in [Turns -> BOOLEAN] /\ badWrite \in BOOLEAN
 
@@ -102,9 +115,12 @@ Init ==
   /\ status = [t \in Turns |-> "none"]
   /\ ptid = [t \in Turns |-> NoId]
   /\ holder = [t \in Turns |-> "none"]
+  /\ placed = [t \in Turns |-> FALSE]
+  /\ attached = ~Starts /\ took = ~Starts /\ launchEnded = FALSE /\ settled = FALSE
+  /\ wsend = [t \in Turns |-> "idle"]
   /\ pc = "idle" /\ dt = NoId /\ started = NoId /\ held = {} /\ result = "none"
   /\ resId = NoId /\ toApply = {}
-  /\ live = TRUE /\ closed = FALSE /\ inFlight = FALSE /\ pending = NoId /\ acur = NoId
+  /\ live = ~Starts /\ closed = FALSE /\ inFlight = FALSE /\ pending = NoId /\ acur = NoId
   /\ rehydrated = FALSE /\ replay = 0
   /\ creq = <<>> /\ ccur = NoId /\ ownUsed = {} /\ intr = {} /\ out = <<>>
   /\ sp = [t \in Turns |-> "idle"] /\ ss = "no" /\ restarted = FALSE
@@ -141,24 +157,94 @@ CompleteTurn(id, st) == status' = [u \in Turns |-> IF ptid[u] = id THEN st ELSE 
 Writing == pc \in {"ready", "out", "result"}
 
 -----------------------------------------------------------------------------
-(* The person's send: submitTurn, refused once the conversation is stopped *)
+(* The person's send to a hosted process: submitTurn or admitTurnMessage *)
+(* on the process placeTurn read, refused once the conversation is stopped *)
 (* (lockOpenConversation).                                                 *)
 Submit(t) ==
-  /\ status[t] = "none" /\ ss = "no"
+  /\ status[t] = "none" /\ ss = "no" /\ live /\ wsend[t] = "idle"
   /\ status' = [status EXCEPT ![t] = "queued"]
-  /\ UNCHANGED <<ptid, holder, dispVars, hostVars, codexVars, otherVars, ghostVars>>
+  /\ placed' = [placed EXCEPT ![t] = TRUE]
+  /\ wsend' = [wsend EXCEPT ![t] = "done"]
+  /\ UNCHANGED <<ptid, holder, attached, took, launchEnded, settled, dispVars, hostVars,
+                 codexVars, otherVars, ghostVars>>
+
+(* A send while the conversation starts (SLNT-1237), in three steps as     *)
+(* sendTurnMessage awaits them. WRead: placeTurn found no hosted process,  *)
+(* and the engine read the conversation as starting (conversationStartsFor:*)
+(* no Stop under way).                                                     *)
+WRead(t) ==
+  /\ status[t] = "none" /\ wsend[t] = "idle" /\ ss = "no" /\ ~live /\ ~launchEnded
+  /\ wsend' = [wsend EXCEPT ![t] = "read"]
+  /\ UNCHANGED <<turnVars, placed, attached, took, launchEnded, settled, dispVars, hostVars,
+                 codexVars, otherVars, ghostVars>>
+
+(* WAdmit: admitTurnMessage(input, null): one transaction under the        *)
+(* conversation's lock, admitted only while the session reads starting     *)
+(* (readsStarting), so never once it settled.                              *)
+WAdmit(t) ==
+  /\ wsend[t] = "read"
+  /\ IF settled
+       THEN wsend' = [wsend EXCEPT ![t] = "done"] /\ UNCHANGED <<status, placed>>
+       ELSE /\ status' = [status EXCEPT ![t] = "queued"]
+            /\ placed' = [placed EXCEPT ![t] = FALSE]
+            /\ wsend' = [wsend EXCEPT ![t] = "admitted"]
+  /\ UNCHANGED <<ptid, holder, attached, took, launchEnded, settled, dispVars, hostVars,
+                 codexVars, otherVars, ghostVars>>
+
+\* takeWaitingTurns: every waiting turn still queued moves onto the process, in one statement.
+TakeWaiting ==
+  placed' = [u \in Turns |-> IF status[u] = "queued" /\ ~placed[u] THEN TRUE ELSE placed[u]]
+
+(* WTake: waitForStart's own hand-over: a process hosted since its read    *)
+(* takes what waits now. With the "no-own-take" mutant it does not.        *)
+WTake(t) ==
+  /\ wsend[t] = "admitted"
+  /\ wsend' = [wsend EXCEPT ![t] = "done"]
+  /\ IF live /\ ~M("no-own-take") THEN TakeWaiting ELSE UNCHANGED placed
+  /\ UNCHANGED <<turnVars, attached, took, launchEnded, settled, dispVars, hostVars, codexVars,
+                 otherVars, ghostVars>>
+
+(* The launch's process is hosted: hosted.set, then (ATake) the waiting    *)
+(* turns move onto it before it dispatches (attachInternal). A launch that *)
+(* read the session's Stop before its agent started never attaches         *)
+(* (refuseIfStoppedDuringLaunch); one whose agent started first does, and  *)
+(* the Stop's detach ends it.                                              *)
+Attach ==
+  /\ ~attached /\ ~launchEnded /\ ss \in {"no", "asked"}
+  /\ attached' = TRUE /\ live' = TRUE
+  /\ UNCHANGED <<turnVars, placed, took, launchEnded, settled, wsend, dispVars, closed,
+                 inFlight, pending, acur, rehydrated, replay, codexVars, otherVars, ghostVars>>
+
+ATake ==
+  /\ attached /\ ~took
+  /\ took' = TRUE
+  /\ IF M("attach-no-take") THEN UNCHANGED placed ELSE TakeWaiting
+  /\ UNCHANGED <<turnVars, attached, launchEnded, settled, wsend, dispVars, hostVars, codexVars,
+                 otherVars, ghostVars>>
+
+(* The launch fails before its process is hosted: the session settles      *)
+(* failed, and its waiting turns end failed (endWaitingOfSettled; the      *)
+(* API's settleUnlaunched).                                                *)
+LaunchFails ==
+  /\ ~attached /\ ~launchEnded /\ ss = "no"
+  /\ launchEnded' = TRUE /\ settled' = TRUE
+  /\ status' = [u \in Turns |-> IF status[u] = "queued" /\ ~placed[u] THEN "failed" ELSE status[u]]
+  /\ UNCHANGED <<ptid, holder, placed, attached, took, wsend, dispVars, hostVars, codexVars,
+                 otherVars, ghostVars>>
 
 (* A retry: submitTurn again with the same launchCorrelationId requeues a  *)
 (* failed or cancelled row with no provider turn id (same process).        *)
 Retry(t) ==
   /\ \A u \in Turns : ~retried[u]   \* bound: one retry per behaviour
-  /\ ss = "no"
+  /\ ss = "no" /\ live /\ ~settled
   /\ ptid[t] = NoId /\ status[t] \in {"failed", "cancelled"}
   /\ status' = [status EXCEPT ![t] = "queued"]
+  /\ placed' = [placed EXCEPT ![t] = TRUE]
   /\ retried' = [retried EXCEPT ![t] = TRUE]
   /\ sp' = [sp EXCEPT ![t] = "idle"]
   /\ stopSaw' = [stopSaw EXCEPT ![t] = FALSE]
-  /\ UNCHANGED <<ptid, holder, dispVars, hostVars, codexVars, ss, restarted, accepts, badWrite>>
+  /\ UNCHANGED <<ptid, holder, attached, took, launchEnded, settled, wsend, dispVars, hostVars,
+                 codexVars, ss, restarted, accepts, badWrite>>
 
 -----------------------------------------------------------------------------
 (* The dispatcher: dispatchOne.                                            *)
@@ -169,11 +255,11 @@ DClaim ==
   /\ replay = 0   \* dispatchNext awaits entry.gate: the replay reached its high water
   /\ ~\E u \in Turns : status[u] = "running"
   /\ \E t \in Turns :
-       /\ status[t] = "queued"
+       /\ status[t] = "queued" /\ placed[t]
        /\ status' = [status EXCEPT ![t] = "running"]
        /\ holder' = [holder EXCEPT ![t] = "cur"]
        /\ pc' = "claimed" /\ dt' = t
-  /\ UNCHANGED <<ptid, started, held, result, resId, toApply, hostVars, codexVars, otherVars,
+  /\ UNCHANGED <<startVars, ptid, started, held, result, resId, toApply, hostVars, codexVars, otherVars,
                  ghostVars>>
 
 \* "A stop that began meanwhile puts back what was claimed": the host check, then Writing.
@@ -182,7 +268,7 @@ DCheck ==
   /\ IF live
        THEN pc' = "ready" /\ UNCHANGED <<status, ptid>>
        ELSE Release("queued", NoId) /\ pc' = "end"
-  /\ UNCHANGED <<holder, dt, started, held, result, resId, toApply, hostVars, codexVars,
+  /\ UNCHANGED <<startVars, holder, dt, started, held, result, resId, toApply, hostVars, codexVars,
                  otherVars, ghostVars>>
 
 \* adapter.sendTurn: nothing is written once the adapter closed (not-written); else turn/start.
@@ -195,14 +281,14 @@ DWrite ==
             /\ inFlight' = TRUE /\ pending' = dt /\ pc' = "out"
             /\ badWrite' = (badWrite \/ closed \/ stopSaw[dt])
             /\ UNCHANGED result
-  /\ UNCHANGED <<turnVars, dt, started, held, resId, toApply, live, closed, acur, rehydrated, replay,
+  /\ UNCHANGED <<startVars, turnVars, dt, started, held, resId, toApply, live, closed, acur, rehydrated, replay,
                  ccur, ownUsed, intr, out, otherVars, accepts, stopSaw>>
 
 \* The call fails uncertain: no answer within 60 s, or the output ended or the adapter closed.
 DTimeout ==
   /\ pc = "out"
   /\ result' = "uncertain" /\ pc' = "result" /\ inFlight' = FALSE /\ pending' = NoId
-  /\ UNCHANGED <<turnVars, dt, started, held, resId, toApply, live, closed, acur, rehydrated, replay,
+  /\ UNCHANGED <<startVars, turnVars, dt, started, held, resId, toApply, live, closed, acur, rehydrated, replay,
                  codexVars, otherVars, ghostVars>>
 
 \* finishSend's bind (retried until it lands, so one step), then the interrupt when it bound
@@ -231,7 +317,7 @@ DSettle ==
             \* uncertain with nothing started: failed TURN_DELIVERY_UNCONFIRMED
             /\ IF M("putback-uncertain") THEN Release("queued", NoId) ELSE Release("failed", NoId)
             /\ pc' = "end" /\ UNCHANGED <<held, toApply, intr>>
-  /\ UNCHANGED <<holder, dt, started, result, resId, hostVars, creq, ccur, ownUsed, out,
+  /\ UNCHANGED <<startVars, holder, dt, started, result, resId, hostVars, creq, ccur, ownUsed, out,
                  otherVars, ghostVars>>
 
 \* finishSend: applyCompletion of each own held end.
@@ -241,7 +327,7 @@ DApply ==
        THEN pc' = "end" /\ UNCHANGED <<status, toApply>>
        ELSE \E e \in toApply : CompleteTurn(e.id, e.st) /\ toApply' = toApply \ {e}
                                /\ UNCHANGED pc
-  /\ UNCHANGED <<ptid, holder, dt, started, held, result, resId, hostVars, codexVars, otherVars,
+  /\ UNCHANGED <<startVars, ptid, holder, dt, started, held, result, resId, hostVars, codexVars, otherVars,
                  ghostVars>>
 
 \* Effect.ensuring: the phase goes Idle and the attempt leaves liveAttempts.
@@ -250,7 +336,7 @@ DEnd ==
   /\ holder' = [u \in Turns |-> IF holder[u] = "cur" THEN "old" ELSE holder[u]]
   /\ pc' = "idle" /\ dt' = NoId /\ started' = NoId /\ held' = {} /\ result' = "none"
   /\ resId' = NoId /\ toApply' = {}
-  /\ UNCHANGED <<status, ptid, hostVars, codexVars, otherVars, ghostVars>>
+  /\ UNCHANGED <<startVars, status, ptid, hostVars, codexVars, otherVars, ghostVars>>
 
 -----------------------------------------------------------------------------
 (* The host reads Codex's output, one message at a time, in order: the     *)
@@ -293,7 +379,7 @@ Read ==
                  ELSE UNCHANGED <<status, ptid, started, held, pc, result, resId, inFlight,
                                   pending, acur>>
   /\ replay' = IF replay > 0 THEN replay - 1 ELSE 0
-  /\ UNCHANGED <<holder, dt, toApply, live, closed, rehydrated, creq, ccur, ownUsed, intr,
+  /\ UNCHANGED <<startVars, holder, dt, toApply, live, closed, rehydrated, creq, ccur, ownUsed, intr,
                  otherVars, ghostVars>>
 
 -----------------------------------------------------------------------------
@@ -311,14 +397,14 @@ CAccept ==
         /\ accepts' = [accepts EXCEPT ![t] = @ + 1]
         /\ \/ out' = out \o <<s, a>>
            \/ out' = out \o <<a, s>>
-  /\ UNCHANGED <<turnVars, dispVars, hostVars, ownUsed, intr, otherVars, stopSaw, badWrite>>
+  /\ UNCHANGED <<startVars, turnVars, dispVars, hostVars, ownUsed, intr, otherVars, stopSaw, badWrite>>
 
 \* Codex refuses a turn/start.
 CReject ==
   /\ ~closed /\ creq /= <<>>
   /\ creq' = Tail(creq)
   /\ out' = Append(out, [k |-> "answer", t |-> Head(creq), id |-> NoId, st |-> "rejected"])
-  /\ UNCHANGED <<turnVars, dispVars, hostVars, ccur, ownUsed, intr, otherVars, ghostVars>>
+  /\ UNCHANGED <<startVars, turnVars, dispVars, hostVars, ccur, ownUsed, intr, otherVars, ghostVars>>
 
 \* Codex starts a turn of its own.
 COwn ==
@@ -327,7 +413,7 @@ COwn ==
        /\ ownUsed' = ownUsed \cup {o}
        /\ ccur' = <<o, 1>>
        /\ out' = Append(out, [k |-> "started", t |-> NoId, id |-> <<o, 1>>, st |-> "none"])
-  /\ UNCHANGED <<turnVars, dispVars, hostVars, creq, intr, otherVars, ghostVars>>
+  /\ UNCHANGED <<startVars, turnVars, dispVars, hostVars, creq, intr, otherVars, ghostVars>>
 
 \* Codex's turn ends, by itself or on a turn/interrupt for it.
 CEnd ==
@@ -338,7 +424,7 @@ CEnd ==
         /\ out' = Append(out, [k |-> "completed", t |-> NoId, id |-> ccur, st |-> "interrupted"])
         /\ intr' = intr \ {ccur}
   /\ ccur' = NoId
-  /\ UNCHANGED <<turnVars, dispVars, hostVars, creq, ownUsed, otherVars, ghostVars>>
+  /\ UNCHANGED <<startVars, turnVars, dispVars, hostVars, creq, ownUsed, otherVars, ghostVars>>
 
 -----------------------------------------------------------------------------
 (* Stop on one message: interruptTurn reads the row, then acts on what it  *)
@@ -354,7 +440,7 @@ SRead(t) ==
                                          [] OTHER -> "done"]
             /\ UNCHANGED status
   /\ stopSaw' = [stopSaw EXCEPT ![t] = (status[t] = "queued")]
-  /\ UNCHANGED <<ptid, holder, dispVars, hostVars, codexVars, ss, restarted, retried, accepts,
+  /\ UNCHANGED <<startVars, ptid, holder, dispVars, hostVars, codexVars, ss, restarted, retried, accepts,
                  badWrite>>
 
 \* queued: cancelOpenForTurn (WHERE status = 'queued'). running: adapter.interrupt(), which asks
@@ -367,23 +453,45 @@ SAct(t) ==
        ELSE /\ intr' = IF live /\ acur /= NoId THEN intr \cup {acur} ELSE intr
             /\ UNCHANGED status
   /\ sp' = [sp EXCEPT ![t] = "done"]
-  /\ UNCHANGED <<ptid, holder, dispVars, hostVars, creq, ccur, ownUsed, out, ss, restarted,
+  /\ UNCHANGED <<startVars, ptid, holder, dispVars, hostVars, creq, ccur, ownUsed, out, ss, restarted,
                  retried, ghostVars>>
 
-(* Session Stop: detach (the entry leaves hosted, the adapter closes), then *)
-(* cancelOpenForProcess (WHERE status IN ('queued', 'running')).            *)
+(* Session Stop. StopAsk: its entry ends the waiting turns, cancelled     *)
+(* (endWaitingTurns, SLNT-1237); a Stop reads them queued. Then detach     *)
+(* (the entry leaves hosted, the adapter closes), or nothing to detach     *)
+(* while no process is hosted, then cancelOpenForProcess (WHERE status IN  *)
+(* ('queued', 'running'), the process's own rows), then the settle, which  *)
+(* ends any waiting turn admitted since (endWaitingOfSettled).             *)
+StopAsk ==
+  /\ ss = "no" /\ ~launchEnded
+  /\ ss' = "asked"
+  /\ status' = [u \in Turns |-> IF status[u] = "queued" /\ ~placed[u] THEN "cancelled"
+                                 ELSE status[u]]
+  /\ stopSaw' = [u \in Turns |-> stopSaw[u] \/ (status[u] = "queued" /\ ~placed[u])]
+  /\ UNCHANGED <<ptid, holder, startVars, dispVars, hostVars, codexVars, sp, restarted, retried,
+                 accepts, badWrite>>
+
 StopDetach ==
-  /\ ss = "no" /\ live
+  /\ ss = "asked"
   /\ ss' = "detached" /\ live' = FALSE /\ closed' = TRUE
-  /\ UNCHANGED <<turnVars, dispVars, inFlight, pending, acur, rehydrated, replay, codexVars, sp,
-                 restarted, retried, ghostVars>>
+  /\ UNCHANGED <<turnVars, startVars, dispVars, inFlight, pending, acur, rehydrated, replay,
+                 codexVars, sp, restarted, retried, ghostVars>>
 
 StopCancel ==
   /\ ss = "detached"
   /\ ss' = "done"
-  /\ status' = [u \in Turns |-> IF status[u] \in {"queued", "running"} THEN "cancelled"
+  /\ status' = [u \in Turns |-> IF placed[u] /\ status[u] \in {"queued", "running"} THEN "cancelled"
                                  ELSE status[u]]
-  /\ UNCHANGED <<ptid, holder, dispVars, hostVars, codexVars, sp, restarted, retried, ghostVars>>
+  /\ UNCHANGED <<ptid, holder, startVars, dispVars, hostVars, codexVars, sp, restarted, retried,
+                 ghostVars>>
+
+Settle ==
+  /\ ss = "done" /\ ~settled
+  /\ settled' = TRUE
+  /\ status' = [u \in Turns |-> IF status[u] = "queued" /\ ~placed[u] THEN "cancelled"
+                                 ELSE status[u]]
+  /\ UNCHANGED <<ptid, holder, placed, attached, took, launchEnded, wsend, dispVars, hostVars,
+                 codexVars, otherVars, ghostVars>>
 
 (* A Mend restart with Codex's pipe surviving: the dispatch, its held ends *)
 (* and in-flight Stops are gone; rehydrate fails each running turn with no *)
@@ -400,15 +508,17 @@ Restart ==
   /\ inFlight' = FALSE /\ pending' = NoId /\ acur' = ccur /\ rehydrated' = TRUE
   /\ replay' = Len(out)
   /\ sp' = [u \in Turns |-> IF sp[u] \in {"q", "r"} THEN "done" ELSE sp[u]]
-  /\ UNCHANGED <<ptid, live, closed, codexVars, ss, retried, ghostVars>>
+  /\ UNCHANGED <<startVars, ptid, live, closed, codexVars, ss, retried, ghostVars>>
 
 -----------------------------------------------------------------------------
 Next ==
-  \/ \E t \in Turns : Submit(t) \/ Retry(t) \/ SRead(t) \/ SAct(t)
+  \/ \E t \in Turns : Submit(t) \/ WRead(t) \/ WAdmit(t) \/ WTake(t) \/ Retry(t) \/ SRead(t)
+                       \/ SAct(t)
+  \/ Attach \/ ATake \/ LaunchFails
   \/ DClaim \/ DCheck \/ DWrite \/ DTimeout \/ DSettle \/ DApply \/ DEnd
   \/ Read
   \/ CAccept \/ CReject \/ COwn \/ CEnd
-  \/ StopDetach \/ StopCancel \/ Restart
+  \/ StopAsk \/ StopDetach \/ StopCancel \/ Settle \/ Restart
 
 Spec == Init /\ [][Next]_vars
 
@@ -424,5 +534,15 @@ StoppedNeverStarts == ~badWrite
 
 \* A rejected message never reads completed: a message reads completed only if Codex took it.
 CompletedOnlyIfTaken == \A t \in Turns : status[t] = "completed" => accepts[t] >= 1
+
+\* No message is stranded (SLNT-1237): a turn waits for a process only until the one that comes
+\* up has taken what waits, or, for a message admitted after that, until its own send hands it
+\* over; a session that settled ends what waits, and a stopped one ends it at its settle.
+NeverStranded ==
+  \A t \in Turns :
+    (status[t] = "queued" /\ ~placed[t]) =>
+      \/ wsend[t] = "admitted"
+      \/ (~took /\ ~settled)
+      \/ (ss /= "no" /\ ~settled)
 
 =============================================================================

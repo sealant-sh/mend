@@ -361,6 +361,9 @@ const startWorld = (
             note(`conversations.listTurns:${sessionId}`).pipe(
               Effect.as(Array.from({ length: options.turns ?? 0 }, () => earlierTurn)),
             ),
+          // A start that fails ends what waited for its agent (SLNT-1237).
+          endWaitingTurns: (sessionId, end) =>
+            note(`conversations.endWaitingTurns:${sessionId}:${end.status}`).pipe(Effect.as(0)),
         }),
         Layer.mock(JobRunner, {
           enqueue: (job) =>

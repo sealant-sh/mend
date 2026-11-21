@@ -58,6 +58,28 @@ export const importedTurnProcessIdOf = (sessionId: SessionId): SessionProcessId 
   SessionProcessId.make(`imported:${sessionId}`);
 
 /**
+ * The process a waiting turn names (SLNT-1237): a message sent while the session's conversation
+ * starts, before any agent process of it is hosted. It is queued for the session, and the process
+ * that comes up takes it, in order; no process row carries this id.
+ */
+export const waitingTurnProcessIdOf = (sessionId: SessionId): SessionProcessId =>
+  SessionProcessId.make(`waiting:${sessionId}`);
+
+/** Whether a turn waits for its session's agent to come up (`waitingTurnProcessIdOf`). */
+export const isWaitingTurn = (turn: {
+  readonly sessionId: SessionId;
+  readonly processId: SessionProcessId;
+}): boolean => turn.processId === waitingTurnProcessIdOf(turn.sessionId);
+
+/** What a waiting turn says once the session's start failed before any process took it. */
+export const WAITING_TURN_NOT_STARTED = "Not sent. The session didn't start.";
+/** What one says once the session was stopped before its agent took it. */
+export const WAITING_TURN_STOPPED = "Not sent. The session was stopped before its agent started.";
+/** What one says once the session's agent started in a terminal instead. */
+export const WAITING_TURN_IN_TERMINAL =
+  "Not sent. The agent started in a terminal in this session, so type to it there.";
+
+/**
  * Whose login a turn ran on (docs/adr/0013-whoever-sends-a-turn-pays.md, "Every turn records its
  * payer"): the person, and the connected account as sealant reported it, with the account's name as
  * it was then. Each part is null when Mend cannot say it.

@@ -18,7 +18,8 @@ import { takesFirstMessage } from "./first-message.ts";
  *   message brings it back;
  * - `terminal`: the agent runs in a terminal, which takes the words instead;
  * - `starting-conversation`: the session is starting a conversation and its agent isn't running
- *   yet: messages wait in the sender's outbox and go once it runs (`releasesHeld`);
+ *   yet: messages go to Mend, which keeps them for the agent and sends them once it runs
+ *   (SLNT-1237);
  * - `starting`: nothing can take a message until the agent runs;
  * - `not-running`: the agent isn't running and a message can't bring it back here;
  * - `no-control`: the viewer doesn't steer this session.
@@ -74,41 +75,6 @@ export const composerMode = ({
   )
     return { _tag: "conversation", resumes: true };
   return { _tag: "not-running" };
-};
-
-/**
- * What becomes of messages held while the session started (`starting-conversation`), now:
- * - `wait`: the agent isn't running yet;
- * - `send`: it runs as a conversation, and its opening turn is in, so they go after it;
- * - `stuck`: it can't take them now (it runs in a terminal, didn't start, stopped, or the viewer
- *   lost control): each says so, with Try again and Edit.
- */
-export const heldMessagesFate = ({
-  mode,
-  status,
-  turns,
-  openingHeld,
-}: {
-  readonly mode: ComposerMode;
-  readonly status: SessionStatusDto;
-  /** The conversation's turns; undefined while it is read. */
-  readonly turns: ReadonlyArray<unknown> | undefined;
-  /** This tab holds the message the session was started with, not yet in its conversation. */
-  readonly openingHeld: boolean;
-}): "wait" | "send" | "stuck" => {
-  switch (mode._tag) {
-    case "starting-conversation":
-      return "wait";
-    case "conversation":
-      // The agent ran and stopped before they went: Try again resumes it, as any send does.
-      if (mode.resumes) return "stuck";
-      // The opening turn goes in just after the agent runs: a held message sent before it would
-      // become the first turn. With no opening held here, the start reading as started will do.
-      if (turns === undefined) return "wait";
-      return turns.length > 0 || (!openingHeld && status !== "starting") ? "send" : "wait";
-    default:
-      return "stuck";
-  }
 };
 
 /** Who a turn is: the person who sent it, else whose login it runs on (the server's rule). */

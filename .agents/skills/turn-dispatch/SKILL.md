@@ -22,14 +22,15 @@ says, and keep it true to the code.
 Diff the covered code from the sync commit to your tree:
 
 ```sh
-git diff --stat 6c5c39774e -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts
-git diff 6c5c39774e -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts | grep -nE '^[-+].*(claimNextTurn|bindOwnSend|putBackOwn|failOwn|releaseOwn|completeTurn|failTurn|failUnconfirmedTurn|cancelOpenFor|withdrawUntakenTurn|requeueQueuedTurns|launchCorrelationId|dispatchOne|finishSend|settleCompletion|applyCompletion|turn\.started|interruptTurn|rehydrate|sendInFlight|currentTurnId|ownTurn|turn/start|turn/interrupt|certainty|detach)'
+git diff --stat 5e97ae3e2e -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts
+git diff 5e97ae3e2e -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts | grep -nE '^[-+].*(claimNextTurn|bindOwnSend|putBackOwn|failOwn|releaseOwn|completeTurn|failTurn|failUnconfirmedTurn|cancelOpenFor|withdrawUntakenTurn|requeueQueuedTurns|takeWaitingTurns|endWaitingTurns|queueOpeningTurn|launchCorrelationId|dispatchOne|finishSend|settleCompletion|applyCompletion|turn\.started|interruptTurn|rehydrate|sendInFlight|currentTurnId|ownTurn|turn/start|turn/interrupt|certainty|detach)'
 ```
 
 Then check `packages/sessions/src/engine.ts` by name, since it is not in `COVERAGE`. Look for a
 change to the session Stop's order (`protocolHost.detach`, then
 `conversations.cancelOpenForProcess`) or to a caller of `submitTurn` with a correlation id
-(`launchFollowUp`, the opening prompt).
+(`launchFollowUp`, the opening prompt), to `launchProtocol`'s opening turn (`queueOpeningTurn`), and
+to the waiting turns' ends (`stop`, `endWaitingOfSettled`, the terminal `launch`).
 
 Done when you can name, for each hunk inside a function the coverage record lists, the model action
 it changes, or say why it changes none.
@@ -61,6 +62,9 @@ The rows:
   action constraint from `MCTurnDispatch.tla`, and hold.
 - `fix-sketch-*` rows change the code the way the ticket suggests, and hold.
 - `mutant-*` rows each break one check or one order of the code, and are expected to be violated.
+- `start-*` rows (SLNT-1237) start the conversation with no process hosted (`Starts = TRUE`), so a
+  message waits on the server; they and `mutant-no-own-take` / `mutant-attach-no-take` check
+  `NeverStranded`.
 
 Done when the full run exits 0, or every `NOT AS EXPECTED` row is classified by step 3.
 
@@ -100,28 +104,32 @@ the code's guards allow it, and the value it acts on was read where and when the
 
 ## Coverage record
 
-| Model action                         | Code it stands for                                                                                                                                               |
-| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Submit`                             | `AgentConversationRepo.submitTurn`, new row; refused by `lockOpenConversation` once the conversation is stopped                                                  |
-| `Retry`                              | `submitTurn` with an existing `launchCorrelationId`: requeues a failed or cancelled row with no provider turn id (callers: `launchFollowUp`, the opening prompt) |
-| `DClaim`                             | `dispatchNext`'s `entry.gate`, then `dispatchOne`: `claimNextTurn` (no running turn on the process, a queued one becomes running with the attempt)               |
-| `DCheck`                             | `dispatchOne`: `hosted.get(…) !== entry \|\| entry.stopping` puts back, else the `Writing` phase                                                                 |
-| `DWrite`                             | `CodexAdapter.sendTurn`: not-written once closed, else `sendInFlight = true` and the `turn/start` call                                                           |
-| `DTimeout`                           | the call's 60 s timeout, output ended or close: `AgentTurnDeliveryError` with certainty `uncertain`                                                              |
-| `DSettle`, `FinishBind`, `DApply`    | `dispatchOne`'s outcome branches; `finishSend` (`bindOwnSend` with `replacing`, `adapter.interrupt()` when nothing bound, then the held own ends)                |
-| `DEnd`                               | `dispatchOne`'s `Effect.ensuring`: phase `Idle`, attempt out of `liveAttempts`                                                                                   |
-| `Release`                            | `putBackOwn` / `failOwn` (`releaseOwn`: `heldBy`, `status = 'running'`, `unsentOrBoundTo(bound)`, providerTurnId cleared)                                        |
-| `Bindable`                           | `bindOwnSend`'s WHERE                                                                                                                                            |
-| `CompleteTurn`                       | `completeTurn` (WHERE provider turn id only), from `applyCompletion`                                                                                             |
-| `Read`                               | the Codex adapter's `handleNotification` (`turn/started`'s `ownTurn`, `turn/completed`) and call answers; the host's `turn.started` bind and `settleCompletion`  |
-| `CAccept`, `CReject`, `COwn`, `CEnd` | Codex app-server: takes, refuses or ignores `turn/start`; starts its own turn; ends a turn, or on `turn/interrupt`                                               |
-| `SRead`, `SAct`                      | `ProtocolHost.interruptTurn`: `byTurnId`, then `cancelOpenForTurn` (WHERE status = 'queued') or `adapter.interrupt()`                                            |
-| `StopDetach`, `StopCancel`           | the session Stop in `engine.ts`: `protocolHost.detach`, then `conversations.cancelOpenForProcess`                                                                |
-| `Restart`                            | a Mend restart; `ProtocolHost.rehydrate` (`failUnconfirmedTurn` on running turns with no provider turn id) and the adapter's `options.rehydrate`                 |
+| Model action                         | Code it stands for                                                                                                                                                                                                                        |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Submit`                             | `AgentConversationRepo.submitTurn`, new row; refused by `lockOpenConversation` once the conversation is stopped                                                                                                                           |
+| `WRead`, `WAdmit`, `WTake`           | `ProtocolHost.sendTurnMessage` with `starting` (the engine's `conversationStartsFor`): no hosted process read, then `admitTurnMessage(input, null)` under `readsStarting`, then `waitForStart`'s hand-over (`takeWaitingTurns`, dispatch) |
+| `Attach`, `ATake`                    | `attachInternal`: `hosted.set`, then `takeWaitingTurns` before anything dispatches                                                                                                                                                        |
+| `LaunchFails`                        | a launch that fails before its process is hosted: the settle ends waiting turns `failed` (`endWaitingOfSettled`, the API's `settleUnlaunched`)                                                                                            |
+| `StopAsk`, `Settle`                  | the session Stop's entry (`endWaitingTurns` cancelled) and its settle (`endWaitingOfSettled`)                                                                                                                                             |
+| `Retry`                              | `submitTurn` with an existing `launchCorrelationId`: requeues a failed or cancelled row with no provider turn id (callers: `launchFollowUp`, the opening prompt)                                                                          |
+| `DClaim`                             | `dispatchNext`'s `entry.gate`, then `dispatchOne`: `claimNextTurn` (no running turn on the process, a queued one becomes running with the attempt)                                                                                        |
+| `DCheck`                             | `dispatchOne`: `hosted.get(…) !== entry \|\| entry.stopping` puts back, else the `Writing` phase                                                                                                                                          |
+| `DWrite`                             | `CodexAdapter.sendTurn`: not-written once closed, else `sendInFlight = true` and the `turn/start` call                                                                                                                                    |
+| `DTimeout`                           | the call's 60 s timeout, output ended or close: `AgentTurnDeliveryError` with certainty `uncertain`                                                                                                                                       |
+| `DSettle`, `FinishBind`, `DApply`    | `dispatchOne`'s outcome branches; `finishSend` (`bindOwnSend` with `replacing`, `adapter.interrupt()` when nothing bound, then the held own ends)                                                                                         |
+| `DEnd`                               | `dispatchOne`'s `Effect.ensuring`: phase `Idle`, attempt out of `liveAttempts`                                                                                                                                                            |
+| `Release`                            | `putBackOwn` / `failOwn` (`releaseOwn`: `heldBy`, `status = 'running'`, `unsentOrBoundTo(bound)`, providerTurnId cleared)                                                                                                                 |
+| `Bindable`                           | `bindOwnSend`'s WHERE                                                                                                                                                                                                                     |
+| `CompleteTurn`                       | `completeTurn` (WHERE provider turn id only), from `applyCompletion`                                                                                                                                                                      |
+| `Read`                               | the Codex adapter's `handleNotification` (`turn/started`'s `ownTurn`, `turn/completed`) and call answers; the host's `turn.started` bind and `settleCompletion`                                                                           |
+| `CAccept`, `CReject`, `COwn`, `CEnd` | Codex app-server: takes, refuses or ignores `turn/start`; starts its own turn; ends a turn, or on `turn/interrupt`                                                                                                                        |
+| `SRead`, `SAct`                      | `ProtocolHost.interruptTurn`: `byTurnId`, then `cancelOpenForTurn` (WHERE status = 'queued') or `adapter.interrupt()`                                                                                                                     |
+| `StopDetach`, `StopCancel`           | the session Stop in `engine.ts`: `protocolHost.detach`, then `conversations.cancelOpenForProcess` (the process's own rows)                                                                                                                |
+| `Restart`                            | a Mend restart; `ProtocolHost.rehydrate` (`failUnconfirmedTurn` on running turns with no provider turn id) and the adapter's `options.rehydrate`                                                                                          |
 
-**Sync commit: `6c5c39774e`** (2026-11-16, SLNT-895: imported turns land through the backfill's
-insert, which writes no status or provider turn id the model tracks; full TLC run, every row as
-expected). Written at `163a84a967` for SLNT-1017. The model was confirmed to describe the recorded
+**Sync commit: `5e97ae3e2e`** (2026-11-21, SLNT-1237: the start and its waiting turns; full tlx run
+at its first commit, `4681d853dc`, every row as expected). Before it `6c5c39774e` (2026-11-16,
+SLNT-895). Written at `163a84a967` for SLNT-1017. The model was confirmed to describe the recorded
 code at this commit by a full TLC run. Move it forward only after step 1 finds every change to that
 code since then accounted for in the model, and a full `check.sh` run ends with every row as
 expected. The sync line in `COVERAGE` is where it moves.

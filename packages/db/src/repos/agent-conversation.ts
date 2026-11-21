@@ -30,6 +30,7 @@ import {
   AgentRequest,
   AgentTurn,
   importedTurnProcessIdOf,
+  waitingTurnProcessIdOf,
   AgentTurnSteer,
   AgentTurnSteerDelivery,
   AgentProtocolControl,
@@ -388,14 +389,52 @@ export class AgentConversationRepo extends Context.Service<
       | AgentTurnNotFoundError
       | TurnSteerForbiddenError
     >;
+    /**
+     * A message as a turn queued on `processId`, or, with null, as a waiting turn (SLNT-1237):
+     * queued for the session while its conversation starts, before any agent process of it is
+     * hosted, and taken by the one that comes up (`takeWaitingTurns`). A waiting turn is admitted
+     * only while the session reads `starting`; otherwise `SessionStoppingError`.
+     */
     readonly admitTurnMessage: (
       input: SendMessageInput,
-      processId: SessionProcessId,
+      processId: SessionProcessId | null,
       reason: MessageTurnReason,
     ) => Effect.Effect<
       MessageAdmission<TurnMessage>,
       MessageKeyConflictError | SessionStoppingError | HistoryAdmissionRefusedError
     >;
+    /**
+     * A launch's first message, recorded as the session's opening turn the moment the launch is
+     * admitted (SLNT-1237): a waiting turn under the launch's correlation id, which the launch's
+     * own submit with that id finds later (`submitTurn`). The turn the id already names when there
+     * is one; null, and nothing written, when the session doesn't read `starting` (a resume of a
+     * settled session submits its opening turn once its agent runs, as before).
+     */
+    readonly queueOpeningTurn: (
+      sessionId: SessionId,
+      input: string,
+      author: string | null,
+      launchCorrelationId: string,
+    ) => Effect.Effect<AgentTurn | null, HistoryAdmissionRefusedError>;
+    /** Every waiting turn of the session moves onto `to`, still queued, in order; how many. */
+    readonly takeWaitingTurns: (
+      sessionId: SessionId,
+      to: SessionProcessId,
+    ) => Effect.Effect<number>;
+    /**
+     * Every waiting turn of the session ends, `cancelled` or `failed`, with `error` saying why:
+     * the session settled, was stopped, or started in a terminal before any process took them.
+     */
+    readonly endWaitingTurns: (
+      sessionId: SessionId,
+      end: { readonly status: "cancelled" | "failed"; readonly error: string },
+    ) => Effect.Effect<number>;
+    /** A waiting turn's launch correlation id becomes `to`: a relaunch minted a fresh one. */
+    readonly rekeyWaitingTurn: (
+      sessionId: SessionId,
+      from: string,
+      to: string,
+    ) => Effect.Effect<void>;
     /** Cancels a message's turn that no process took; true when it did. */
     readonly withdrawMessageTurn: (
       id: AgentTurnId,
@@ -710,7 +749,11 @@ const toSteer = (row: typeof agentTurnSteers.$inferSelect): AgentTurnSteer =>
 export const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
   new AgentTurn({
     ...row,
-    processId: row.processId ?? importedTurnProcessIdOf(row.sessionId),
+    processId:
+      row.processId ??
+      (row.imported
+        ? importedTurnProcessIdOf(row.sessionId)
+        : waitingTurnProcessIdOf(row.sessionId)),
     mergeBack: Schema.decodeUnknownSync(Schema.Array(MergeBackContext))(row.mergeBack),
     selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
     memoryLimit: decodeMemoryLimit(row.memoryLimit),
@@ -937,6 +980,38 @@ const lockOpenConversation = Effect.fn("AgentConversationRepo.lockOpenConversati
   return stopping === undefined;
 });
 
+/**
+ * Whether the session reads `starting` and nothing has settled or idle-stopped it: the only time
+ * a waiting turn is admitted (SLNT-1237). Read under the conversation's lock, which `settle`'s end
+ * of the waiting turns takes too, so a waiting turn is either admitted before they end or refused.
+ */
+const readsStarting = Effect.fn("AgentConversationRepo.readsStarting")(function* (
+  tx: ConversationTx,
+  sessionId: SessionId,
+) {
+  const [starting] = yield* tx
+    .select({ id: agentSessions.id })
+    .from(agentSessions)
+    .where(
+      and(
+        eq(agentSessions.id, sessionId),
+        eq(agentSessions.status, "starting"),
+        isNull(agentSessions.settledAt),
+        isNull(agentSessions.idleStoppedAt),
+      ),
+    );
+  return starting !== undefined;
+});
+
+/** A waiting turn of the session: queued for it, no process holds it, not imported (SLNT-1237). */
+const waitingTurnsOf = (sessionId: SessionId) =>
+  and(
+    eq(agentTurns.sessionId, sessionId),
+    isNull(agentTurns.processId),
+    eq(agentTurns.imported, false),
+    eq(agentTurns.status, "queued"),
+  );
+
 const admittedSelection = Effect.fn("AgentConversationRepo.admittedSelection")(function* (
   tx: ConversationTx,
   sessionId: SessionId,
@@ -960,7 +1035,8 @@ const insertQueuedTurn = Effect.fn("AgentConversationRepo.insertQueuedTurn")(fun
   tx: ConversationTx,
   turn: {
     readonly sessionId: SessionId;
-    readonly processId: SessionProcessId;
+    /** Null: a waiting turn, queued for the session before any process of it is hosted. */
+    readonly processId: SessionProcessId | null;
     readonly input: string;
     readonly author: string | null;
     readonly launchCorrelationId: string | null;
@@ -1281,7 +1357,7 @@ export const AgentConversationRepoLive: Layer.Layer<
 
     const admitTurnMessage = Effect.fn("AgentConversationRepo.admitTurnMessage")(function* (
       input: SendMessageInput,
-      processId: SessionProcessId,
+      processId: SessionProcessId | null,
       reason: MessageTurnReason,
     ) {
       const messageId = SessionMessageId.make(crypto.randomUUID());
@@ -1290,7 +1366,10 @@ export const AgentConversationRepoLive: Layer.Layer<
           Effect.gen(function* () {
             const replay = yield* replayUnderLock(tx, input);
             if (replay !== null) return replay;
-            if (!(yield* lockOpenConversation(tx, input.sessionId, input.historyPosition)))
+            if (
+              !(yield* lockOpenConversation(tx, input.sessionId, input.historyPosition)) ||
+              (processId === null && !(yield* readsStarting(tx, input.sessionId)))
+            )
               return yield* new SessionStoppingError({
                 sessionId: input.sessionId,
               });
@@ -1324,6 +1403,105 @@ export const AgentConversationRepoLive: Layer.Layer<
       const withdrawn = yield* withdrawUntakenTurn(db, id, processId).pipe(Effect.orDie);
       if (withdrawn !== null) yield* notify(withdrawn.sessionId);
       return withdrawn !== null;
+    });
+
+    const queueOpeningTurn = Effect.fn("AgentConversationRepo.queueOpeningTurn")(function* (
+      sessionId: SessionId,
+      input: string,
+      author: string | null,
+      launchCorrelationId: string,
+    ) {
+      const queued = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            if (
+              !(yield* lockOpenConversation(tx, sessionId)) ||
+              !(yield* readsStarting(tx, sessionId))
+            )
+              return null;
+            const [existing] = yield* tx
+              .select()
+              .from(agentTurns)
+              .where(
+                and(
+                  eq(agentTurns.sessionId, sessionId),
+                  eq(agentTurns.launchCorrelationId, launchCorrelationId),
+                ),
+              )
+              .limit(1);
+            if (existing !== undefined) return { turn: toTurn(existing), created: false };
+            const turn = yield* insertQueuedTurn(tx, {
+              sessionId,
+              processId: null,
+              input,
+              author,
+              launchCorrelationId,
+            });
+            return { turn, created: true };
+          }),
+        )
+        .pipe(
+          Effect.catchTag("EffectDrizzleQueryError", Effect.die),
+          Effect.catchTag("SqlError", Effect.die),
+        );
+      if (queued === null) return null;
+      if (queued.created) yield* notify(sessionId);
+      return queued.turn;
+    });
+
+    const takeWaitingTurns = Effect.fn("AgentConversationRepo.takeWaitingTurns")(function* (
+      sessionId: SessionId,
+      to: SessionProcessId,
+    ) {
+      const rows = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockAgentConversation(tx, sessionId);
+            // A history operation fences the conversation: nothing moves while it runs, as for
+            // `requeueQueuedTurns`.
+            if ((yield* historyAdmission(tx, sessionId))[0]?.fence != null) return [];
+            return yield* tx
+              .update(agentTurns)
+              .set({ processId: to })
+              .where(and(waitingTurnsOf(sessionId), isNull(agentTurns.withdrawnHistoryRevision)))
+              .returning({ id: agentTurns.id });
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (rows.length > 0) yield* notify(sessionId);
+      return rows.length;
+    });
+
+    const endWaitingTurns = Effect.fn("AgentConversationRepo.endWaitingTurns")(function* (
+      sessionId: SessionId,
+      end: { readonly status: "cancelled" | "failed"; readonly error: string },
+    ) {
+      const rows = yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* lockAgentConversation(tx, sessionId);
+            return yield* tx
+              .update(agentTurns)
+              .set({ status: end.status, error: end.error, endedAt: yield* DateTime.nowAsDate })
+              .where(waitingTurnsOf(sessionId))
+              .returning({ id: agentTurns.id });
+          }),
+        )
+        .pipe(Effect.orDie);
+      if (rows.length > 0) yield* notify(sessionId);
+      return rows.length;
+    });
+
+    const rekeyWaitingTurn = Effect.fn("AgentConversationRepo.rekeyWaitingTurn")(function* (
+      sessionId: SessionId,
+      from: string,
+      to: string,
+    ) {
+      yield* db
+        .update(agentTurns)
+        .set({ launchCorrelationId: to })
+        .where(and(waitingTurnsOf(sessionId), eq(agentTurns.launchCorrelationId, from)))
+        .pipe(Effect.orDie);
     });
 
     const submitTurn = Effect.fn("AgentConversationRepo.submitTurn")(function* (
@@ -2870,8 +3048,10 @@ export const AgentConversationRepoLive: Layer.Layer<
       turnId: AgentTurnId,
     ) {
       const rows = yield* cancelOpenTurnRows(db, [turnId]);
-      const first = rows[0];
-      if (first !== undefined) yield* notify(first.sessionId);
+      // Readers hear of the turn itself too: a waiting turn has no process whose hooks say so
+      // (SLNT-1237), and it may have no request to cancel.
+      const sessionId = rows[0]?.sessionId ?? (yield* byTurnId(turnId))?.sessionId;
+      if (sessionId !== undefined) yield* notify(sessionId);
     });
 
     /**
@@ -3065,6 +3245,10 @@ export const AgentConversationRepoLive: Layer.Layer<
       messageById,
       admitSteerMessage,
       admitTurnMessage,
+      queueOpeningTurn,
+      takeWaitingTurns,
+      endWaitingTurns,
+      rekeyWaitingTurn,
       withdrawMessageTurn,
       submitTurn,
       byTurnId,

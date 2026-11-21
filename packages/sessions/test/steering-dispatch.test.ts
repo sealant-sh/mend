@@ -185,6 +185,8 @@ const conversationWorld = () => {
             update(turn.id, { processId: to });
         }
       }),
+    // Nothing waits for a first process here: every conversation has one (SLNT-1237).
+    takeWaitingTurns: () => Effect.succeed(0),
     resolveProviderRequest: () => Effect.void,
     // What a rehydrate reads: nothing pending, no cursor yet.
     listRequests: () => Effect.succeed([]),

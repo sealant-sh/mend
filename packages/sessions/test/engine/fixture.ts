@@ -1088,6 +1088,10 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   backfillConversation: () => Effect.succeed(0),
   resetSendingResponses: () => Effect.void,
   requeueQueuedTurns: () => Effect.void,
+  queueOpeningTurn: () => Effect.succeed(null),
+  takeWaitingTurns: () => Effect.succeed(0),
+  endWaitingTurns: () => Effect.succeed(0),
+  rekeyWaitingTurn: () => Effect.void,
   protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
   saveProtocolCursor: () => Effect.void,
 };

@@ -150,6 +150,74 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
     );
   }, 60_000);
 
+  it("keeps a start's opening turn and a message sent while it starts, then sends both in order", async () => {
+    const peer = makePipe(["native-opening", "native-next"]);
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const conversations = yield* AgentConversationRepo;
+        const host = yield* ProtocolHost;
+        const sessionId = SessionId.make("sess-start");
+        const processId = SessionProcessId.make("p-start");
+        // SLNT-1237: a start the server knows of before any agent process of it exists.
+        yield* sql`INSERT INTO agent_sessions (id,project_id,worktree_id,owner_user_id,harness,worktree,branch,base_sha,status)
+          VALUES (${sessionId},'proj-1','wt-1','user-1','codex','fixture','mend/fixture',${"a".repeat(40)},'starting')`;
+        const opening = yield* conversations.queueOpeningTurn(
+          sessionId,
+          "Fix the login page.",
+          "user-1",
+          "opening:start",
+        );
+        const next = { ...request(sessionId), input: MessageInput.make("Then add a test.") };
+        const receipt = yield* host.sendMessage(
+          next,
+          { _tag: "Turn", reason: "no-own-running-turn" },
+          true,
+        );
+        expect(receipt).toMatchObject({ _tag: "Turn", turn: { status: "queued" } });
+        // Read again, as a reload would: both are the session's, in order, before its agent runs.
+        expect((yield* conversations.listTurns(sessionId)).map((turn) => turn.input)).toEqual([
+          "Fix the login page.",
+          "Then add a test.",
+        ]);
+        expect(peer.written.filter((frame) => frame.method === "turn/start")).toHaveLength(0);
+        yield* sql`INSERT INTO session_processes (id,session_id,sealant_workspace_id,kind,harness,status)
+          VALUES (${processId},${sessionId},'ws-1','agent-protocol','codex','running')`;
+        const process = yield* (yield* SessionProcessesRepo).byId(processId);
+        if (process === null) return yield* Effect.die("missing process");
+        yield* host.attach({
+          process,
+          pipe: peer.pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          launchedWithLoginOf: "user-1",
+          hooks: { onRequestChanged: () => Effect.void, onTurnCompleted: () => Effect.void },
+        });
+        // The launch's own submit of its opening turn moves nothing more.
+        const submitted = yield* host.submitTurn(
+          sessionId,
+          "Fix the login page.",
+          "user-1",
+          "opening:start",
+        );
+        expect(submitted.id).toBe(opening?.id);
+        const starts = () =>
+          peer.written
+            .filter((frame) => frame.method === "turn/start")
+            .map((frame) => frame.params?.input?.[0]?.text);
+        expect(starts()).toEqual(["Fix the login page."]);
+        peer.push({
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { id: "native-opening", status: "completed" } },
+        });
+        for (let tries = 0; starts().length < 2 && tries < 200; tries++)
+          yield* Effect.sleep("10 millis");
+        expect(starts()).toEqual(["Fix the login page.", "Then add a test."]);
+        yield* host.detach(processId);
+      }),
+    );
+  });
+
   it("still dispatches the turn it admitted to an idle conversation", async () => {
     const peer = makePipe(["native"]);
     await run(

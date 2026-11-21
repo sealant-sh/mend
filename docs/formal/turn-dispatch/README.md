@@ -18,6 +18,7 @@ the commit it was last confirmed at) are the project skill
 | `AtMostOnce`           | Codex takes a message's input at most once.                                                                                                       | The agent does the work twice: two commits, two pushes, two replies. |
 | `StoppedNeverStarts`   | Once a Stop has found a message queued, the message is never written to Codex. Nothing is written once the session's Stop has closed the adapter. | The agent acts on a message the person stopped.                      |
 | `CompletedOnlyIfTaken` | A message reads completed only if Codex took it. A rejected or lost message never reads completed.                                                | The person reads "completed" for words the agent never saw.          |
+| `NeverStranded`        | A message sent while the conversation starts waits only until the process that comes up takes it, or until the session settles and ends it.       | The message sits on the server and never reaches the agent.          |
 
 The code and its tests claim all three: the dispatcher puts a turn back only when it is certain
 nothing was written; a Stop cancels a queued turn; and the tests "never completes a rejected message
@@ -86,6 +87,20 @@ the ticket's fix (only Codex's answer binds, and an uncertain send fails) and ho
 Without the retry (`code-at-most-once-no-retry`) the property holds: the dispatcher puts a turn back
 only when the send was certainly not written.
 
+### The start (SLNT-1237)
+
+A conversation's first message, and any sent while it starts, are kept on the server before any
+process is hosted: a _waiting_ turn, queued for the session with no process. The process that comes
+up takes them as it is hosted (`ATake`, before it dispatches). A send that read no hosted process
+can store its turn just after that take, so it hands its own turn over (`WTake`). The session's Stop
+ends what waits at its entry and again at its settle; a launch that fails ends it when the session
+settles failed.
+
+Rows `start-never-stranded` and `start-stopped-never-starts` check this with the conversation
+starting unhosted (`Starts = TRUE`), with no restart and no retry. Both hold. `mutant-no-own-take`
+(the send does not hand over) and `mutant-attach-no-take` (the process takes nothing) break
+`NeverStranded`: each shows a message stranded on the server.
+
 ## Run it
 
 ```sh
@@ -104,28 +119,34 @@ expected to hold uses every core; `MEND_FORMAL_WORKERS` caps that on a shared ma
 
 ### Last full run
 
-tlx at `59d4fa0666`, 4 workers, 2026-11-17 (SLNT-1081). Every row was as expected: the verdict and
-the distinct-state count TLC reached on every row, at both bounds. The full bounds took 53 seconds,
-the largest row being `fix-sketch-slnt-466` (24,417,284 distinct states, 23 s); `--quick` took about
-2 seconds. TLC on CI's four cores (run
-[43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641), `b192d2e2`, the same
-model) took about 6½ minutes for the full bounds, that row 145 s.
+tlx at `59d4fa0666`, 4 workers, 2026-11-21 (SLNT-1237). Every row was as expected: the verdict and
+the distinct-state count on every row, at both bounds. The full bounds took about 100 seconds, the
+largest row being `fix-sketch-slnt-466` (41,244,564 distinct states, 42 s); `--quick` took about 5
+seconds. The start's variables grew every row's count, the start rows included.
+
+Before that, 2026-11-17 (SLNT-1081): 53 seconds, `fix-sketch-slnt-466` at 24,417,284 states. TLC on
+CI's four cores (run [43887573641](https://github.com/sealant-sh/mend/actions/runs/43887573641),
+`b192d2e2`, the same model) took about 6½ minutes for the full bounds, that row 145 s.
 
 ## The rows
 
-| Row                               | Breaks or restricts                                       | Expected                        |
-| --------------------------------- | --------------------------------------------------------- | ------------------------------- |
-| `code-at-most-once`               | the code                                                  | violated (SLNT-1022)            |
-| `code-at-most-once-no-retry`      | no retry                                                  | holds                           |
-| `mutant-putback-uncertain`        | an uncertain send is put back instead of failed; no retry | violated                        |
-| `code-stopped-never-starts`       | the code                                                  | violated (SLNT-1021)            |
-| `fix-sketch-atomic-stop`          | Stop's read and cancel are one statement                  | holds                           |
-| `mutant-write-after-close`        | that, and `sendTurn` writes after `close()`               | violated                        |
-| `code-completed-only-if-taken`    | the code                                                  | violated (SLNT-466)             |
-| `code-timeout-slnt-466`           | no restart, no retry: the ticket's schedule               | violated (SLNT-466)             |
-| `code-no-other-turn-seen-in-send` | no other turn's `turn/started` read while Writing         | holds                           |
-| `fix-sketch-slnt-466`             | only Codex's answer binds; an uncertain send fails        | holds                           |
-| `mutant-end-to-claim`             | an end that matches no row is applied to the claim        | violated, under the restriction |
+| Row                               | Breaks or restricts                                                   | Expected                        |
+| --------------------------------- | --------------------------------------------------------------------- | ------------------------------- |
+| `code-at-most-once`               | the code                                                              | violated (SLNT-1022)            |
+| `code-at-most-once-no-retry`      | no retry                                                              | holds                           |
+| `mutant-putback-uncertain`        | an uncertain send is put back instead of failed; no retry             | violated                        |
+| `code-stopped-never-starts`       | the code                                                              | violated (SLNT-1021)            |
+| `fix-sketch-atomic-stop`          | Stop's read and cancel are one statement                              | holds                           |
+| `mutant-write-after-close`        | that, and `sendTurn` writes after `close()`                           | violated                        |
+| `code-completed-only-if-taken`    | the code                                                              | violated (SLNT-466)             |
+| `code-timeout-slnt-466`           | no restart, no retry: the ticket's schedule                           | violated (SLNT-466)             |
+| `code-no-other-turn-seen-in-send` | no other turn's `turn/started` read while Writing                     | holds                           |
+| `fix-sketch-slnt-466`             | only Codex's answer binds; an uncertain send fails                    | holds                           |
+| `mutant-end-to-claim`             | an end that matches no row is applied to the claim                    | violated, under the restriction |
+| `start-never-stranded`            | starts unhosted; no restart, no retry (`NeverStranded`, `AtMostOnce`) | holds                           |
+| `start-stopped-never-starts`      | starts unhosted, atomic Stop; no restart, no retry                    | holds                           |
+| `mutant-no-own-take`              | a waiting send never hands its turn over                              | violated `NeverStranded`        |
+| `mutant-attach-no-take`           | the hosted process takes no waiting turn                              | violated `NeverStranded`        |
 
 When one of the findings is fixed, its `code-*` row should start to hold. Change its expected
 outcome and count in `ROWS` in the same pull request as the fix.
@@ -139,7 +160,8 @@ each action, and the skill's coverage record maps them.
 
 **Actors:**
 
-- the person's send;
+- the person's send, to a hosted process or, while the conversation starts, as a waiting turn;
+- the launch: its process is hosted and takes what waits, or the launch fails first;
 - the dispatcher, which runs `dispatchOne` under the process's dispatch permit, so one at a time;
 - the host reading Codex's output in order;
 - Codex: it takes, refuses or never answers a `turn/start`, starts turns of its own, and ends turns
@@ -172,7 +194,11 @@ explored, with symmetry over the messages. `--quick` uses one message.
 - shared steering's hand-over (`stopping`, `failWaiting`);
 - the history-rollback fence;
 - Claude;
-- several processes per session, and the relaunch requeue to a new process;
+- several processes per session, and the relaunch requeue to a new process (the start's one process
+  is in);
+- a launch that attaches after the Stop found nothing to detach: the model assumes the launch read
+  the Stop before its agent started (`refuseIfStoppedDuringLaunch`); one that did not is stopped
+  again as it ends;
 - a defect mid-dispatch (`leaveNothingStuck`);
 - the budget-refusal retry, which comes before anything is written.
 

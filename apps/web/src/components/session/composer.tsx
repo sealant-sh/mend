@@ -37,7 +37,8 @@ import {
 } from "#/lib/first-message";
 import {
   draftItems,
-  holdUntilStarted,
+  holdForStart,
+  makeCourier,
   type MessageScope,
   mintMessageKey,
   releaseLoginHold,
@@ -160,25 +161,6 @@ export const sessionComposerMode = (facts: SessionFacts): ComposerMode =>
     steer: facts.detail.control.steer,
     agentLive: facts.agentLive,
   });
-
-/**
- * What a message held while the session started says under it: that it waits, or, once the
- * session can't take it, why it wasn't sent.
- */
-export const heldMessageWords = (
-  facts: SessionFacts,
-  mode: ComposerMode,
-  fate: "wait" | "send" | "stuck",
-): string => {
-  const { agent, session } = facts;
-  // Still waiting, or on its way: the agent may run already, its opening turn not in yet.
-  if (fate !== "stuck") return `Waits for ${agent} to start.`;
-  if (mode._tag === "terminal")
-    return `Not sent. ${agent} runs in a terminal in this session, so type to it there.`;
-  if (mode._tag === "no-control") return "Not sent. You no longer send messages in this session.";
-  if (session.status === "failed") return "Not sent. The session didn't start.";
-  return `Not sent. ${agent} isn't running. Try again resumes it.`;
-};
 
 /**
  * What sits under a session's conversation, in its footer (Doop "Write while it works", "Stop
@@ -451,9 +433,9 @@ function NextTurnMenu({
 /**
  * The composer of a conversation: Send starts the next turn, or goes into your own running turn
  * (Steer), and Stop turn stops that turn. While the session starts a conversation and its agent
- * isn't running yet, what is sent waits in the sender's outbox, and the frame around every page
- * sends it once the agent runs and its opening turn is in (`HeldMessagesCourier`), whether or not
- * this page is still open. The words leave the field the moment they are sent and
+ * isn't running yet, what is sent goes to Mend all the same, which keeps it for the agent and
+ * sends it after the opening turn once the agent runs (SLNT-1237), whether or not this page is
+ * still open, on this device or any other. The words leave the field the moment they are sent and
  * show at once as a message in the conversation (`lib/outbox`), so the next one can be written
  * while they are on their way. A pasted or dropped image is stored in the session's workspace and
  * its path goes into the words.
@@ -547,12 +529,6 @@ function MessageComposer({
     if (clientMessageId === null) {
       // The field empties as it sends; with nothing sent, the words go back.
       queueMicrotask(() => draft.write({ text: words, key: null }));
-      return;
-    }
-    if (starting) {
-      // Kept until the agent runs; the message first, then the empty field.
-      holdUntilStarted(scope, words, clientMessageId, { selection: changed });
-      draft.write({ text: "", key: null });
       return;
     }
     interrupt.reset();
@@ -830,14 +806,18 @@ function FirstMessageComposer({
 
 /**
  * The composer of a session still being made (an instant start, `lib/pending-starts`): it looks
- * as the session's own will, and what is sent waits in the outbox, to go once its agent runs:
- * under the start's address until Mend has made the session, which takes it all, then under the
- * session's own, while this page stays on screen until the session's is read. An agent that runs
- * in a terminal takes nothing here, as on its own page.
+ * as the session's own will. What is sent before Mend has made the session waits under the start's
+ * address for that moment and goes with the session (`startInstantly`); once Mend has made it, it
+ * goes to the session at once, as on the session's own page, while this page stays on screen until
+ * the session's is read. Mend keeps it for the agent either way (SLNT-1237). An agent that runs in
+ * a terminal takes nothing here, as on its own page.
  */
 export function StartingComposer({ start }: { readonly start: PendingStart }) {
   const size: Size = usePhone() ? "touch" : "default";
   const agent = harnessName(start.harness);
+  const trpc = useTRPC();
+  const trpcClient = useTRPCClient();
+  const queryClient = useQueryClient();
   const userId = useMessageOwner();
   const scope = userId === null ? null : { userId, sessionId: start.sessionId ?? start.draftId };
   // Written where the start stands when the words are written, which may be ahead of this draw.
@@ -880,7 +860,18 @@ export function StartingComposer({ start }: { readonly start: PendingStart }) {
       queueMicrotask(() => draft.write({ text: words, key: null }));
       return;
     }
-    holdUntilStarted(at, words, clientMessageId, { selection: changed });
+    // Mend has made the session: the words go to it now, and it keeps them for the agent
+    // (SLNT-1237). Before that they wait in this tab for the moment until it has.
+    if (at.sessionId === start.draftId)
+      holdForStart(at, words, clientMessageId, { selection: changed });
+    else
+      void sendMessage(
+        makeCourier(queryClient, trpcClient, trpc, at.sessionId),
+        at,
+        words,
+        clientMessageId,
+        { selection: changed },
+      );
     draft.write({ text: "", key: null });
   };
   return (

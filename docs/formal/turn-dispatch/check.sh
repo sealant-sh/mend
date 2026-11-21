@@ -41,18 +41,27 @@ TLA2TOOLS_SHA256=936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e8
 # state; a row expected to fail runs on one worker and stops at the same shortest trace every time.
 # When a change to the model moves a count, take the new one from a run of this script, full and
 # --quick. tlx and TLC reached every count here alike (README.md, "tlx and TLC").
+#
+# An eighth field, TRUE, runs a row with the conversation starting unhosted (`Starts`, SLNT-1237):
+# messages sent before its first process is hosted wait on the server, and that process takes them.
+# Rows without it start hosted, as before; the `start-*` rows and their mutants check the start
+# with no restart and no retry, which keeps them small, and every finding row stays where it was.
 ROWS=(
-  "code-at-most-once|{}|AtMostOnce||violated AtMostOnce|45175|18663"
-  "code-at-most-once-no-retry|{}|AtMostOnce|NoRetry|holds|686605|32583"
-  "mutant-putback-uncertain|{\"putback-uncertain\"}|AtMostOnce|NoRetry|violated AtMostOnce|49785|19625"
-  "code-stopped-never-starts|{}|StoppedNeverStarts||violated StoppedNeverStarts|178|129"
-  "fix-sketch-atomic-stop|{\"stop-atomic\"}|StoppedNeverStarts||holds|16187486|392855"
-  "mutant-write-after-close|{\"stop-atomic\", \"write-after-close\"}|StoppedNeverStarts||violated StoppedNeverStarts|230|154"
-  "code-completed-only-if-taken|{}|CompletedOnlyIfTaken||violated CompletedOnlyIfTaken|6409|3208"
-  "code-timeout-slnt-466|{}|CompletedOnlyIfTaken|NoRestartNoRetry|violated CompletedOnlyIfTaken|4126|2327"
-  "code-no-other-turn-seen-in-send|{}|CompletedOnlyIfTaken|NoOtherTurnSeenDuringSend|holds|17030751|659645"
-  "fix-sketch-slnt-466|{\"answer-binds-only\"}|CompletedOnlyIfTaken||holds|24417284|782585"
-  "mutant-end-to-claim|{\"end-to-claim\"}|CompletedOnlyIfTaken|NoOtherTurnSeenDuringSend|violated CompletedOnlyIfTaken|1440|829"
+  "code-at-most-once|{}|AtMostOnce||violated AtMostOnce|49092|20970"
+  "code-at-most-once-no-retry|{}|AtMostOnce|NoRetry|holds|1153667|54853"
+  "mutant-putback-uncertain|{\"putback-uncertain\"}|AtMostOnce|NoRetry|violated AtMostOnce|56596|23113"
+  "code-stopped-never-starts|{}|StoppedNeverStarts||violated StoppedNeverStarts|182|133"
+  "fix-sketch-atomic-stop|{\"stop-atomic\"}|StoppedNeverStarts||holds|27206293|661848"
+  "mutant-write-after-close|{\"stop-atomic\", \"write-after-close\"}|StoppedNeverStarts||violated StoppedNeverStarts|543|340"
+  "code-completed-only-if-taken|{}|CompletedOnlyIfTaken||violated CompletedOnlyIfTaken|6633|3395"
+  "code-timeout-slnt-466|{}|CompletedOnlyIfTaken|NoRestartNoRetry|violated CompletedOnlyIfTaken|4446|2541"
+  "code-no-other-turn-seen-in-send|{}|CompletedOnlyIfTaken|NoOtherTurnSeenDuringSend|holds|28635553|1110619"
+  "fix-sketch-slnt-466|{\"answer-binds-only\"}|CompletedOnlyIfTaken||holds|41244564|1325217"
+  "mutant-end-to-claim|{\"end-to-claim\"}|CompletedOnlyIfTaken|NoOtherTurnSeenDuringSend|violated CompletedOnlyIfTaken|1455|852"
+  "start-never-stranded|{}|NeverStranded AtMostOnce|NoRestartNoRetry|holds|3836932|74610|TRUE"
+  "start-stopped-never-starts|{\"stop-atomic\"}|StoppedNeverStarts|NoRestartNoRetry|holds|2657823|52239|TRUE"
+  "mutant-no-own-take|{\"no-own-take\"}|NeverStranded|NoRestartNoRetry|violated NeverStranded|225|129|TRUE"
+  "mutant-attach-no-take|{\"attach-no-take\"}|NeverStranded|NoRestartNoRetry|violated NeverStranded|145|105|TRUE"
 )
 
 # The help is the comment block at the top of this file.
@@ -166,7 +175,7 @@ progress() {
 }
 
 run_row() {
-  local name=$1 mutant=$2 invariants=$3 constraint=$4 expected=$5 pinned=$6
+  local name=$1 mutant=$2 invariants=$3 constraint=$4 expected=$5 pinned=$6 starts=$7
   local cfg="$scratch/$name.cfg" log="$scratch/$name.out"
   {
     echo "CONSTANTS"
@@ -174,6 +183,7 @@ run_row() {
     echo "  OwnTurns = $own"
     echo "  NoId = NoId"
     echo "  Mutants = $mutant"
+    echo "  Starts = $starts"
     echo "SPECIFICATION Spec"
     echo "INVARIANT TypeOK"
     for inv in $invariants; do echo "INVARIANT $inv"; done
@@ -220,12 +230,13 @@ echo "$header · Turns = $turns · OwnTurns = $own · $(git -C "$root" rev-parse
 failed=0
 matched=0
 for row in "${ROWS[@]}"; do
-  IFS='|' read -r name mutant invariants constraint expected full_states quick_states <<<"$row"
+  IFS='|' read -r name mutant invariants constraint expected full_states quick_states starts <<<"$row"
+  [[ -n "$starts" ]] || starts=FALSE
   [[ -n "$only" && "$name" != "$only" ]] && continue
   matched=1
   pinned=$full_states
   [[ $quick -eq 1 ]] && pinned=$quick_states
-  run_row "$name" "$mutant" "$invariants" "$constraint" "$expected" "$pinned" || failed=1
+  run_row "$name" "$mutant" "$invariants" "$constraint" "$expected" "$pinned" "$starts" || failed=1
 done
 if [[ $matched -eq 0 ]]; then
   echo "check.sh: no row named $only; rows are:" >&2

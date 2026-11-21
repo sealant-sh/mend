@@ -4,7 +4,7 @@ import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 
 import { conversationQuery } from "#/lib/conversation";
-import { holdOpeningMessage } from "#/lib/opening-messages";
+import { makeCourier, sendHeld } from "#/lib/outbox";
 import { newDraftId, type RefusedStart } from "#/lib/pending-starts";
 import type { ProjectStart } from "#/lib/project-starts";
 import { sessionDetailQuery } from "#/lib/session-queries";
@@ -16,8 +16,12 @@ import { useTRPC, useTRPCClient } from "#/lib/trpc";
 /** What a start says of itself; who starts it and its id are the hook's. */
 export type StartRequest = Omit<InstantStart, "draftId" | "userId" | "now">;
 
-/** What every place a start shows in shares: the reads, the held message, the cache. */
-const useStartCommon = (): Pick<StartPlace, "prefetch" | "holdOpening" | "moved"> & {
+/** How often, and how many times, a start's page reads its conversation for the first message. */
+const OPENING_READ_MS = 250;
+const OPENING_READS = 12;
+
+/** What every place a start shows in shares: the reads, what was written, the cache. */
+const useStartCommon = (): Pick<StartPlace, "prefetch" | "sendWritten" | "moved"> & {
   readonly userId: string;
 } => {
   const trpc = useTRPC();
@@ -27,12 +31,26 @@ const useStartCommon = (): Pick<StartPlace, "prefetch" | "holdOpening" | "moved"
   const viewer = useSuspenseQuery(signedInOptions(trpc)).data;
   return {
     userId: viewer.userId,
-    prefetch: (sessionId) =>
-      Promise.all([
+    prefetch: async (sessionId, opening) => {
+      const conversation = conversationQuery(trpc, trpcClient, sessionId);
+      await Promise.all([
         queryClient.ensureQueryData(sessionDetailQuery(trpc, sessionId)),
-        queryClient.ensureInfiniteQueryData(conversationQuery(trpc, trpcClient, sessionId)),
-      ]),
-    holdOpening: holdOpeningMessage,
+        queryClient.ensureInfiniteQueryData(conversation),
+      ]);
+      // The launch records the first message as it is admitted, a moment after the session is
+      // made: until the conversation holds it, the start's page, which shows it, stays.
+      if (!opening) return;
+      for (let read = 0; read < OPENING_READS; read++) {
+        const held = queryClient.getQueryData(conversation.queryKey);
+        if (held?.pages.some((page) => page.turns.length > 0) === true) return;
+        await new Promise((resolve) => setTimeout(resolve, OPENING_READ_MS));
+        await queryClient.refetchQueries({ queryKey: conversation.queryKey, exact: true });
+      }
+    },
+    sendWritten: (sessionId, written) => {
+      const courier = makeCourier(queryClient, trpcClient, trpc, sessionId);
+      void sendHeld(courier, { userId: viewer.userId, sessionId }, written);
+    },
     moved: () => {
       void queryClient.invalidateQueries(trpc.sessions.pathFilter());
       void queryClient.invalidateQueries(trpc.projects.pathFilter());

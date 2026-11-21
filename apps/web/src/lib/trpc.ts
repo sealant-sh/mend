@@ -22,9 +22,17 @@ import { signInPath } from "./sign-in.ts";
  * Calls that go out alone, never in a batch: a batch answers when its slowest call does, so one
  * that reads a worktree (`sessions.recipes`, and `changes.stats` for an inbox row's `+N −M`; seconds
  * on a heavy one or a busy server) would hold back the viewer, the composer and every other quick
- * read beside it.
+ * read beside it. A launch answers once its agent runs, or after 30 s (`sessions.launch`), and a
+ * message's answer is what its bubble waits on (`sessions.sendMessage`): a start fires both at once,
+ * and batched, the message read `Sending…` for the whole launch and went with the launch's request
+ * when its tab closed (SLNT-1237).
  */
-export const UNBATCHED_PATHS: ReadonlySet<string> = new Set(["sessions.recipes", "changes.stats"]);
+export const UNBATCHED_PATHS: ReadonlySet<string> = new Set([
+  "sessions.recipes",
+  "changes.stats",
+  "sessions.launch",
+  "sessions.sendMessage",
+]);
 
 type TrpcFetch = NonNullable<Parameters<typeof httpLink>[0]["fetch"]>;
 

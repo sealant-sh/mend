@@ -20,14 +20,13 @@ import { cn } from "@mend/ui/lib/utils";
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { Schema } from "effect";
 import { CircleAlertIcon, ClockIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
-import { useLayoutEffect, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import type { TranscriptEventDto } from "#/lib/api";
 import { type ConversationView, conversationQuery, heldConversation } from "#/lib/conversation";
 import { conversationBody, type ConversationRow, workingOn } from "#/lib/conversation-rows";
 import { activityDetail } from "#/lib/inbox";
 import { landingMarks } from "#/lib/landing";
-import { releaseOpeningMessage, useOpeningMessage } from "#/lib/opening-messages";
 import {
   editMessage,
   type OutboxMessage,
@@ -35,7 +34,7 @@ import {
   UNCONFIRMED,
   useOutbox,
 } from "#/lib/outbox";
-import { heldMessagesFate, steerNote } from "#/lib/session-composer";
+import { steerNote } from "#/lib/session-composer";
 import { withoutLayoutWords } from "#/lib/session-details";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
 import { SESSION_STALE_MS } from "#/lib/session-queries";
@@ -49,7 +48,7 @@ import { checkpointMarks, sharedWorktree, turnCheckpoints } from "#/lib/turn-che
 import { initialsOf } from "../app-sidebar.tsx";
 import { AgentTurn, type PagesById } from "./agent-turn";
 import { CheckpointLine } from "./checkpoint-line";
-import { heldMessageWords, messageInputId, SessionComposer, sessionComposerMode } from "./composer";
+import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
 import { PageEvent } from "./page-view";
 import { RequestLine } from "./request-card";
@@ -107,14 +106,9 @@ function MendLines({ facts }: { readonly facts: SessionFacts }) {
   );
 }
 
-/**
- * What a message of the person's own still in their outbox says of where it stands. `held` is what
- * one kept while the session started says (`heldMessageWords`).
- */
-const outboxNote = (message: OutboxMessage, held: string): string | null => {
+/** What a message of the person's own still in their outbox says of where it stands. */
+const outboxNote = (message: OutboxMessage): string | null => {
   switch (message.state._tag) {
-    case "Waiting":
-      return held;
     case "Sending":
       // A stopped session takes the words once Mend has resumed it.
       return message.resuming === true ? "Resuming the session…" : "Sending…";
@@ -153,14 +147,20 @@ const noteOf = (
   row: Extract<ConversationRow, { readonly kind: "you" }>,
   conversation: ConversationView | undefined,
   now: Date,
-  held: string,
 ): { readonly byline: ReactNode; readonly note: string | null; readonly pending: boolean } => {
   const byline = bylineOf(facts, row.author, messageTime(new Date(row.at), now));
   if (row.outbox !== null) {
-    const note = outboxNote(row.outbox, held);
+    const note = outboxNote(row.outbox);
     return { byline, note, pending: row.outbox.state._tag !== "Sent" };
   }
-  if (row.steer === null) return { byline, note: null, pending: false };
+  if (row.steer === null) {
+    // Mend keeps what was sent while the session starts for its agent (SLNT-1237): it says so
+    // until the agent takes it. One the start never got to says why in its turn, below it.
+    const turn = conversation?.turns.find((each) => each.id === row.turnId);
+    if (turn?.status === "queued" && facts.session.status === "starting")
+      return { byline, note: `Waits for ${facts.agent} to start.`, pending: true };
+    return { byline, note: null, pending: false };
+  }
   const turn = conversation?.turns.find((each) => each.id === row.steer?.turnId);
   const steer = steerNote(row.steer, facts.agent, turn !== undefined && isOpenTurn(turn));
   return { byline, note: steer.words, pending: steer.pending };
@@ -232,13 +232,7 @@ export function YouMessage({
       <span className="flex flex-col items-end gap-1">
         {byline === "" ? null : <span>{byline}</span>}
         {note === null ? null : (
-          <span
-            className={cn(
-              "text-right",
-              (stuck?.state._tag === "NotSent" || stuck?.state._tag === "Waiting") &&
-                "text-destructive",
-            )}
-          >
+          <span className={cn("text-right", stuck?.state._tag === "NotSent" && "text-destructive")}>
             {pending && stuck === null ? (
               <ClockIcon aria-hidden className="mr-1.5 inline size-3.5 align-middle" />
             ) : null}
@@ -261,29 +255,10 @@ export function YouMessage({
 }
 
 /**
- * The start of a session, until its agent's first words arrive (Doop "Starting failed"): the
- * message it was started with (`StartingOpening`), anything sent since, then where the start has
- * got to (`StartingLine`). A start that failed says so in the banner above instead.
+ * Where a session's start has got to, under what was sent to it (Doop "Starting failed"): its first
+ * message and anything sent since are the server's own turns from the moment Mend took the start
+ * (SLNT-1237). A start that failed says so in the banner above as well.
  */
-function StartingOpening({
-  facts,
-  opening,
-}: {
-  readonly facts: SessionFacts;
-  readonly opening: ReturnType<typeof useOpeningMessage>;
-}) {
-  if (opening === null) return null;
-  if (facts.session.status !== "starting" && !startFailed(facts)) return null;
-  return (
-    <ConversationItem messageId="opening">
-      <YouMessage
-        text={opening.text}
-        byline={bylineOf(facts, facts.viewerId, messageTime(new Date(opening.sentAt), new Date()))}
-      />
-    </ConversationItem>
-  );
-}
-
 function StartingLine({ facts }: { readonly facts: SessionFacts }) {
   const failed = startFailed(facts);
   const starting = facts.session.status === "starting";
@@ -563,7 +538,6 @@ export function ConversationTile({
     ...conversationQuery(trpc, client, facts.session.id),
     select: (data) => heldConversation(data.pages),
   });
-  const opening = useOpeningMessage(facts.session.id);
   const pages = usePages(facts.session.id);
   const outbox = useOutbox(facts.session.id);
   // A conversation reads its turns, even before the first; only a terminal agent's session reads
@@ -581,19 +555,6 @@ export function ConversationTile({
   );
   // The conversation holds a message of its own (one still in the outbox isn't the server's).
   const held = body.rows.some((row) => row.kind !== "you" || row.outbox === null);
-  const mode = sessionComposerMode(facts);
-  const heldFate = heldMessagesFate({
-    mode,
-    status: facts.session.status,
-    turns: conversation.data?.turns,
-    openingHeld: opening !== null,
-  });
-  const heldWords = heldMessageWords(facts, mode, heldFate);
-  const heldStuck = heldFate === "stuck";
-  // Once the conversation holds a message, the one this tab held for the start is in it.
-  useLayoutEffect(() => {
-    if (held && opening !== null) releaseOpeningMessage(facts.session.id);
-  }, [held, opening, facts.session.id]);
   const readOlder = () => {
     if (conversation.hasNextPage && !conversation.isFetchingNextPage)
       void conversation.fetchNextPage();
@@ -643,9 +604,12 @@ export function ConversationTile({
     markers,
     !conversation.hasNextPage,
   );
+  // While the session starts, what Mend keeps for the agent (SLNT-1237) is not work it does yet:
+  // the starting line says where the start is.
   const working =
     conversation.data !== undefined &&
     facts.agentLive &&
+    facts.session.status !== "starting" &&
     conversationActivity(conversation.data) === "working";
   const failedStart = startFailed(facts);
   // Anyone who steers the session answers what its agent asks (shared control included).
@@ -720,7 +684,6 @@ export function ConversationTile({
             </div>
           </ConversationItem>
         ) : null}
-        {held ? null : <StartingOpening facts={facts} opening={opening} />}
         {body.list === "transcript" ? <TranscriptMessages facts={facts} /> : null}
         {body.list === "protocol"
           ? entries.map((placed) => {
@@ -764,12 +727,11 @@ export function ConversationTile({
                   <YouMessage
                     text={entry.row.text}
                     sessionId={facts.session.id}
-                    {...noteOf(facts, entry.row, conversation.data, now, heldWords)}
+                    {...noteOf(facts, entry.row, conversation.data, now)}
                     stuck={
                       entry.row.outbox !== null &&
                       (entry.row.outbox.state._tag === "NotSent" ||
-                        entry.row.outbox.state._tag === "Unconfirmed" ||
-                        (entry.row.outbox.state._tag === "Waiting" && heldStuck))
+                        entry.row.outbox.state._tag === "Unconfirmed")
                         ? entry.row.outbox
                         : null
                     }
@@ -789,7 +751,7 @@ export function ConversationTile({
               );
             })
           : null}
-        {held ? null : <StartingLine facts={facts} />}
+        <StartingLine facts={facts} />
         {body.list === "protocol" ? <WaitingLine facts={facts} /> : null}
         {body.list === "protocol" && working && conversation.data !== undefined ? (
           <LiveLine facts={facts} item={workingOn(conversation.data)} />
