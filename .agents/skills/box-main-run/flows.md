@@ -1040,8 +1040,9 @@ lane changed.
 - **Do:** On `/`, write `Reply with the single word ready and change nothing.` and press Enter;
   while the session starts, send `Then reply with the word again.` from its composer. Then, on
   `<p>`'s Worktrees tab, open a worktree's "…", New session in this worktree, Codex, and once it has
-  started send `tell me a joke` from its composer. Drive the recipe `new-web-instant-start` for the
-  same steps against a stack, with a refused start and the phone width.
+  started send `hi` from its composer, wait a minute, then send `tell me a joke`. Drive the recipe
+  `new-web-instant-start` for the same steps against a stack, with a refused start and the phone
+  width.
 - **See:** the session's page opens at once at `/sessions/starting-…` with the message,
   `Getting the session ready`, and a Starting row under Running; the composer is open and reads
   `Codex is starting. What you send now goes to it once it's ready.`, never `runs in a terminal`;
@@ -1050,8 +1051,10 @@ lane changed.
   at once and shows no red line while it starts; nothing on the page reads `per-person users` or
   `takes one person`. The session started from the worktree's menu, with no message, reads
   `New session` in its row, its tab and the project's Sessions table, never the worktree's name or
-  its other session's name; once sent `tell me a joke` it reads `tell me a joke` at once, and within
-  about a minute a name Mend made from it, different from the worktree's other session.
+  its other session's name; once sent `hi` it reads `hi`, and a minute later still `hi`, never
+  `placeholder`, `untitled`, `new session` or the project's name as a name (SLNT-1230); once sent
+  `tell me a joke` within about a minute it reads a name Mend made from the joke, different from the
+  worktree's other session.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
