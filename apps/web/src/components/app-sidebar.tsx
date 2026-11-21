@@ -140,6 +140,47 @@ const RAIL_HANDLE = cn(
   "hover:after:bg-muted-foreground/45",
 );
 
+/** How far a press on the edge may travel the other way and still count. */
+const EDGE_SLACK_PX = 8;
+
+/**
+ * The sidebar's edge (`RAIL_HANDLE`): a press on it folds the sidebar to its rail, or opens the
+ * rail again, wherever the pointer is let go. The edge shows a resize cursor, so people drag it as
+ * often as they click it; a drag ended off the edge made no click, and the sidebar stayed open
+ * (SLNT-1229). A drag the other way, wider while open or narrower while folded, does nothing.
+ */
+function SidebarEdge() {
+  const { state, toggleSidebar } = useSidebar();
+  const pressedAt = useRef<number | null>(null);
+  return (
+    <SidebarRail
+      className={RAIL_HANDLE}
+      onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        // No focus ring left on the edge, and no text selected on the way.
+        event.preventDefault();
+        event.currentTarget.setPointerCapture(event.pointerId);
+        pressedAt.current = event.clientX;
+      }}
+      onPointerUp={(event) => {
+        const from = pressedAt.current;
+        pressedAt.current = null;
+        if (from === null) return;
+        const moved = event.clientX - from;
+        const otherWay = state === "expanded" ? moved > EDGE_SLACK_PX : moved < -EDGE_SLACK_PX;
+        if (!otherWay) toggleSidebar();
+      }}
+      onPointerCancel={() => {
+        pressedAt.current = null;
+      }}
+      // A pointer's press has already acted; a click with no pointer (assistive tech) still does.
+      onClick={(event) => {
+        if (event.detail === 0) toggleSidebar();
+      }}
+    />
+  );
+}
+
 /**
  * Room for a focus ring inside a list that scrolls: a scroller clips what is drawn outside its
  * box, and a row's ring is drawn just outside the row. The padding gives the ring that room at
@@ -201,7 +242,7 @@ export function AppSidebar({
           openId={openId}
         />
       )}
-      <SidebarRail className={RAIL_HANDLE} />
+      <SidebarEdge />
     </Sidebar>
   );
 }

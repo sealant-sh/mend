@@ -62,7 +62,7 @@ export function PhoneTabStrip({
           onScroll={(event: UIEvent<HTMLDivElement>) =>
             setOverflow(overflowOf(event.currentTarget))
           }
-          className="h-full min-w-0 flex-1 items-stretch justify-start gap-0.5 overflow-x-auto rounded-none p-0 pr-1 pl-1.5 [scrollbar-width:none] group-data-horizontal/tabs:h-full"
+          className="h-full min-w-0 flex-1 items-stretch justify-start scroll-strip gap-0.5 rounded-none p-0 pr-1 pl-1.5 group-data-horizontal/tabs:h-full"
         >
           {tabs.map((entry) => (
             <Fragment key={entry.value}>{entry.tab}</Fragment>

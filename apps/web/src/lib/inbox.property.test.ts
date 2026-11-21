@@ -43,16 +43,19 @@ const STATUSES = [
   "stopped",
 ] as const satisfies ReadonlyArray<SessionInboxRowDto["session"]["status"]>;
 
+/** What the agent is doing on its turn, if anything. */
+const doing = fc.option(
+  fc.record({
+    kind: fc.constantFrom("command", "edit", "thinking", "writing"),
+    subject: fc.constant(null),
+  }),
+  { nil: null },
+);
+
 const facts = fc.record({
   status: fc.constantFrom(...STATUSES),
   turnOpen: fc.option(fc.boolean(), { nil: undefined }),
-  activity: fc.option(
-    fc.record({
-      kind: fc.constantFrom("command", "edit", "thinking", "writing"),
-      subject: fc.constant(null),
-    }),
-    { nil: null },
-  ),
+  activity: doing,
   ask: fc.option(
     fc.record({ kind: fc.constantFrom("question", "command", "edit"), subject: fc.constant(null) }),
     { nil: null },
@@ -72,6 +75,8 @@ const facts = fc.record({
     }),
     { nil: null },
   ),
+  // A small pool, so sessions are sometimes made in the same minute.
+  createdAt: fc.integer({ min: -12, max: -10 }).map((days) => at(days * 24 * 60)),
   updatedAt: past,
   lastNewAt: fc.option(fc.option(past, { nil: null }), { nil: undefined }),
   label: fc.option(fc.string({ maxLength: 8 }), { nil: null }),
@@ -102,7 +107,7 @@ const rowOf = (id: string, f: Facts): SessionInboxRowDto => ({
     sharedControlUserIds: [],
     startedAt: at(-11 * 24 * 60),
     settledAt: isAlive(f.status) ? null : f.updatedAt,
-    createdAt: at(-11 * 24 * 60),
+    createdAt: f.createdAt,
     updatedAt: f.updatedAt,
     importedConversationWaiting: f.imported,
   },
@@ -391,6 +396,47 @@ describe("the session states model, as properties", () => {
           if (is === "review") expect(["review", "snoozed"]).toContain(was);
         }
       }),
+      RUNS,
+    );
+  });
+
+  it("keeps Running in the order its sessions were made, newest first, whatever they do meanwhile", () => {
+    const running = (rows: ReadonlyArray<SessionInboxRowDto>, marks: ReadonlyArray<InboxMark>) =>
+      groupRows(inboxRows({ rows, marks, now })).running.map((row) => row.session);
+    const live = fc.record({
+      status: fc.constantFrom("starting", "running", "idle", "stopping"),
+      activity: doing,
+      turnOpen: fc.option(fc.boolean(), { nil: undefined }),
+      updatedAt: past,
+    });
+    fc.assert(
+      fc.property(
+        inbox,
+        fc.array(live, { minLength: 8, maxLength: 8 }),
+        ({ rows, marks }, news) => {
+          // Every running session moves on: a new status, activity or turn, and a new updatedAt.
+          const moved = rows.map((row, index) => {
+            const next = news[index];
+            if (next === undefined || !isAlive(row.session.status) || asks(row)) return row;
+            return {
+              ...row,
+              activity: next.activity,
+              ...(next.turnOpen === undefined ? {} : { turnOpen: next.turnOpen }),
+              session: { ...row.session, status: next.status, updatedAt: next.updatedAt },
+            };
+          });
+          const before = running(rows, marks);
+          const after = running(moved, marks);
+          expect(after.map((session) => session.id)).toEqual(before.map((session) => session.id));
+          for (const [index, session] of after.entries()) {
+            const older = after[index + 1];
+            if (older === undefined) continue;
+            expect(session.createdAt.getTime()).toBeGreaterThanOrEqual(older.createdAt.getTime());
+            if (session.createdAt.getTime() === older.createdAt.getTime())
+              expect(session.id < older.id).toBe(true);
+          }
+        },
+      ),
       RUNS,
     );
   });

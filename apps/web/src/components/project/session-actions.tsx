@@ -14,13 +14,11 @@ import {
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@mend/ui/components/ui/sheet";
 import { toast } from "@mend/ui/components/ui/toast";
 import { cn } from "@mend/ui/lib/utils";
-import { Link } from "@tanstack/react-router";
 import {
   ChevronLeftIcon,
   EllipsisIcon,
   LinkIcon,
   MessageSquarePlusIcon,
-  SquareArrowOutUpRightIcon,
   SquareTerminalIcon,
 } from "lucide-react";
 import { useState } from "react";
@@ -30,7 +28,6 @@ import { AGENTS } from "#/lib/new-session";
 import type { ProjectSessionRow } from "#/lib/project-sessions";
 import { worktreeStart } from "#/lib/project-starts";
 import { sessionUrl } from "#/lib/row-actions";
-import { sessionLink } from "#/lib/session-sheet";
 
 import { useProjectStart } from "../new-session/instant-start.ts";
 import { SheetHandle, SheetItem } from "../sheet-item.tsx";
@@ -86,10 +83,6 @@ export function SessionRowMenu({
         <EllipsisIcon aria-hidden className="size-4" />
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" width="lg">
-        <DropdownMenuItem render={<Link {...sessionLink(row.id)} />}>
-          <SquareArrowOutUpRightIcon aria-hidden />
-          Open session
-        </DropdownMenuItem>
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <MessageSquarePlusIcon aria-hidden />

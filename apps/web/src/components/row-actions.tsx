@@ -30,7 +30,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   AlarmClockIcon,
   AlarmClockOffIcon,
-  ArrowUpRightIcon,
   CalendarIcon,
   CheckCheckIcon,
   ChevronLeftIcon,
@@ -45,7 +44,6 @@ import { type ComponentType, type ReactNode, useRef, useState } from "react";
 
 import { whenAhead, type InboxRow } from "#/lib/inbox";
 import { type RowActions, snoozeChoices } from "#/lib/row-actions";
-import { sessionLink } from "#/lib/session-sheet";
 import type { RowActionHandlers } from "#/lib/use-row-actions";
 
 import { SheetHandle, SheetItem } from "./sheet-item.tsx";
@@ -117,8 +115,8 @@ export const projectLink = (row: InboxRow) =>
   ({ to: "/projects/$projectId", params: { projectId: row.project.id } }) as const;
 
 /**
- * The desk's menu items, in the frame's order: open the session, open its project, snooze, mark
- * done, stop, rename, copy link.
+ * The desk's menu items: open its project, snooze, mark done, stop, rename, copy link. No Open
+ * session: a click on the row opens it (the owner, 21 Nov 2026).
  */
 function RowMenuItems({
   parts,
@@ -132,11 +130,6 @@ function RowMenuItems({
   return (
     <Group>
       <Label className="truncate">{row.title}</Label>
-      <Item onClick={() => void navigate(sessionLink(row.session.id))}>
-        <ArrowUpRightIcon aria-hidden />
-        Open session
-        <Shortcut className={META}>↵</Shortcut>
-      </Item>
       <Item onClick={() => void navigate(projectLink(row))}>
         <FolderIcon aria-hidden />
         Open project

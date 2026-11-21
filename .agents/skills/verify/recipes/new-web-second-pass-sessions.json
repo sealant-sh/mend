@@ -1,0 +1,38 @@
+[
+  {
+    "name": "01-older",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "second-pass-older",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "02-newer",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "second-pass-newer",
+      "--detach",
+      "--json",
+      "--",
+      "sleep",
+      "7200"
+    ]
+  },
+  {
+    "name": "03-list",
+    "run": ["mend", "sessions", "--project", "verify-fixture", "--all"]
+  }
+]

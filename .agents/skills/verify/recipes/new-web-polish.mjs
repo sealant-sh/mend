@@ -306,14 +306,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     "no focus ring in the app sidebar is cut off",
   );
   await sessionRow().click({ button: "right" });
-  await page.getByRole("menuitem", { name: /^Open session/ }).waitFor();
+  await page.getByRole("menuitem", { name: /^Open project/ }).waitFor();
   const names = await menuNames();
   note(`the row's right-click menu reads ${names.join(" | ")}`);
-  const openAt = names.findIndex((name) => name.startsWith("Open session"));
-  expect(
-    names[openAt + 1]?.startsWith("Open project") === true,
-    "Open project follows Open session",
-  );
+  // No Open session: a click on the row opens it (SLNT-1229).
+  expect(names[0]?.startsWith("Open project") === true, "Open project comes first");
+  expect(!names.some((name) => name.startsWith("Open session")), "the menu has no Open session");
   await both("row-menu");
   const openProject = page.getByRole("menuitem", { name: /^Open project/ });
   if ((await openProject.count()) > 0) {
@@ -329,10 +327,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await inbox()
     .getByRole("button", { name: `Actions for ${SESSION}` })
     .click();
-  await page.getByRole("menuitem", { name: /^Open session/ }).waitFor();
+  await page.getByRole("menuitem", { name: /^Open project/ }).waitFor();
   expect(
-    (await menuNames()).some((name) => name.startsWith("Open project")),
-    'the row\'s "…" has Open project',
+    !(await menuNames()).some((name) => name.startsWith("Open session")),
+    'the row\'s "…" has Open project and no Open session',
   );
   await page.keyboard.press("Escape");
 
