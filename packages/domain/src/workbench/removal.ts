@@ -569,12 +569,31 @@ const projectClause = (blocker: RemovalBlocker): string => {
 };
 
 /**
- * The steps a refused project removal names. A worktree whose workspace is still saving or
- * ending (`Saving`) needs time, not a stop: its session may have ended already (SLNT-1243).
+ * What a blocker asks of the person before the project can go: `act` (stop, land or remove
+ * something), `wait` for a workspace still saving or ending (`Saving`: its session may have ended
+ * already, SLNT-1243), or only `retry`, for a read that failed or another removal under way.
  */
+const projectStepOf = (blocker: RemovalBlocker): "act" | "wait" | "retry" => {
+  switch (blocker._tag) {
+    case "Saving":
+      return "wait";
+    case "Unlanded":
+      return blocker.standing._tag === "unread" || blocker.standing._tag === "origin-unchecked"
+        ? "retry"
+        : "act";
+    case "RemovalUnderway":
+      return blocker.stopped === null ? "retry" : "act";
+    default:
+      return "act";
+  }
+};
+
+/** The steps a refused project removal names, from what its blockers ask (`projectStepOf`). */
 const projectSteps = (blockers: ReadonlyArray<RemovalBlocker>, audience: RefusalAudience) => {
-  const waits = blockers.some((blocker) => blocker._tag === "Saving");
-  const acts = blockers.some((blocker) => blocker._tag !== "Saving");
+  const steps = new Set(blockers.map(projectStepOf));
+  const waits = steps.has("wait");
+  const acts = steps.has("act");
+  if (!acts && !waits) return "remove the project again in a moment.";
   const act =
     audience === "in-mend"
       ? "stop, land or remove those first"

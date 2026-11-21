@@ -2016,7 +2016,8 @@ lane changed.
   the command is kept; `None ready yet` at 1 and `Off` at 0; on the box, a real project's ready
   workspaces reading `starting` after an image save. `install-then-remove`: on the box, one or more
   `install · mend` worktrees, none live, then `<name> was removed` and the project under Removed
-  projects; a refusal (`executor not ended`, a session to stop) fails the flow, with its words and
+  projects; a refusal that asks only to try again is retried once and noted, and any other
+  (`executor not ended`, a session to stop) fails the flow, with its words and
   `workspace-install-then-remove-refused`. The cleanup line says whether the server removed and
   purged the project.
 - **Mode:** `scripted` (recipes/project-workspace.mjs)

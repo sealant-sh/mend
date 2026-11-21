@@ -470,7 +470,19 @@ export default async ({ page, web, capture, note }) => {
       .getByRole("region", { name: /Notifications/ })
       .getByText(`${name} was removed. You can restore it here.`);
     await removedToast.or(removalRefused).first().waitFor({ timeout: 60_000 });
-    if (await removalRefused.isVisible()) {
+    // A refusal that asks only to try again (a read that failed, another removal under way) is
+    // what a person meets and retries once, a moment later. Any other refusal fails the flow.
+    if (
+      (await removalRefused.isVisible()) &&
+      (await removalRefused.innerText()).endsWith("remove the project again in a moment.")
+    ) {
+      note(`install-then-remove: asked to try again · ${await removalRefused.innerText()}`);
+      await page.waitForTimeout(5_000);
+      await removeDialog.getByRole("button", { name: "Remove project", exact: true }).click();
+      await removedToast.or(removalRefused).first().waitFor({ timeout: 60_000 });
+      await page.waitForTimeout(1_000);
+    }
+    if ((await removalRefused.isVisible()) && !(await removedToast.isVisible())) {
       await shot("workspace-install-then-remove-refused");
       throw new Error(`install-then-remove: refused · ${await removalRefused.innerText()}`);
     }

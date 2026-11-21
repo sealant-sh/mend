@@ -523,6 +523,24 @@ describe("projectRefusalWords", () => {
       "not removed · Kostas's session in api-v2 is live · wt-c3ef6682 is executor not ended · 1 session · stop, land or remove those first, wait for the workspaces to save and end, then remove the project again.",
     );
   });
+
+  it("asks only to try again when a read failed or another removal is under way", () => {
+    const unread: RemovalBlocker = {
+      _tag: "Unlanded",
+      worktreeId: WorktreeId.make("w-4"),
+      worktreeName: "wt-c7e525ee",
+      owner: anna,
+      standing: { _tag: "unread", reason: "the capture head could not be read" },
+    };
+    expect(
+      projectRefusalWords([unread, { _tag: "RemovalUnderway", stopped: null }], "in-mend"),
+    ).toBe(
+      "not removed · wt-c7e525ee holds Anna's change, which Mend could not read · another removal of this project or one of its worktrees is under way · remove the project again in a moment.",
+    );
+    expect(
+      projectRefusalWords([unread, { ...unread, standing: neverLanded }], "in-mend"),
+    ).toContain("· stop, land or remove those first, then remove the project again.");
+  });
 });
 
 describe("owner words", () => {
