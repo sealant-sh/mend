@@ -784,7 +784,7 @@ test("PRs have exact history; pushes to main, manual and nightly events retain t
   );
   assert.match(scope.run, /else\s+node scripts\/ci-scope.mjs --all/);
   assert.doesNotMatch(scope.run, /merge.group/i);
-  for (const name of ["web-old", "marketing", "desktop"]) {
+  for (const name of ["web", "marketing", "desktop"]) {
     const config = JSON.parse(
       readFileSync(new URL(`../apps/${name}/turbo.json`, import.meta.url), "utf8"),
     );
@@ -1529,42 +1529,11 @@ test("only a dispatch with runner: box selects the box, and nothing selects Blac
   for (const runner of written) assert.ok(hosted(runner), `preview.yml writes ${runner}`);
 });
 
-test("a preview serves apps/web unless its dispatch asks for the old app", () => {
+test("a preview has no choice of web app: it serves apps/web, as a release does", () => {
   const preview = parse(readFileSync(new URL(".github/workflows/preview.yml", root), "utf8"));
-  const input = preview.on.workflow_dispatch.inputs.web_app;
-  assert.equal(input.default, "web");
-  assert.deepEqual(input.options, ["web", "web-old"]);
+  assert.equal(preview.on.workflow_dispatch.inputs.web_app, undefined);
   const step = preview.jobs.mend.steps.find((candidate) => candidate.id === "args");
-  assert.equal(step.env.WEB_APP, "${{ inputs.web_app }}");
-  // The step as the runner runs it, for each choice: only `web-old` adds a build argument.
-  const buildArgs = (webApp) => {
-    const directory = mkdtempSync(join(tmpdir(), "preview-args-"));
-    try {
-      const output = join(directory, "output");
-      const result = spawnSync("bash", ["-c", step.run], {
-        env: {
-          PATH: process.env.PATH,
-          GITHUB_OUTPUT: output,
-          GITHUB_SHA: "a".repeat(40),
-          VERSION: "0.0.0-next.1.preview.1",
-          SEALANT_SHA: "",
-          SEALANTD_SHA: "",
-          WEB_APP: webApp,
-        },
-        encoding: "utf8",
-      });
-      assert.equal(result.status, 0, result.stderr);
-      const written = readFileSync(output, "utf8");
-      return written.slice(
-        written.indexOf("build_args<<ARGS\n") + "build_args<<ARGS\n".length,
-        written.indexOf("ARGS\nlabels"),
-      );
-    } finally {
-      rmSync(directory, { recursive: true, force: true });
-    }
-  };
-  assert.equal(buildArgs("web"), "MEND_VERSION=0.0.0-next.1.preview.1\n");
-  assert.equal(buildArgs("web-old"), "MEND_VERSION=0.0.0-next.1.preview.1\nMEND_WEB_APP=web-old\n");
+  assert.doesNotMatch(step.run, /MEND_WEB_APP/);
 });
 
 test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatched to it", () => {

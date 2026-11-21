@@ -13,7 +13,7 @@
     "lint": "OXLINT_TSGOLINT_PATH=../../node_modules/.bin/tsrs-lint oxlint --type-aware .",
     "preview": "vite preview",
     "start": "node --experimental-strip-types src/entry/main.ts",
-    "test": "vitest run --passWithNoTests",
+    "test": "vitest run --passWithNoTests && node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=../../scripts/ci-node-reporter.mjs --test-reporter-destination=stderr --test-reporter=../../scripts/ci-test-report.mjs --test-reporter-destination=stdout scripts/test-lifecycle.integration.mjs",
     "typecheck": "tsrs -p tsconfig.json --noEmit --checkers 1"
   },
   "dependencies": {

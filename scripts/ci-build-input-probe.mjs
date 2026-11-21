@@ -35,11 +35,9 @@ const nitroAssetMap = (text) =>
 
 /** Output fields that change on every build, by path: each normalizer touches only its field. */
 export const VOLATILE = [
-  // Both web apps, the old one and the new one built beside it, are Nitro builds.
-  ...["apps/web-old", "apps/web"].flatMap((app) => [
-    { glob: `${app}/.output/nitro.json`, normalize: nitroBuildTime },
-    { glob: `${app}/.output/server/index.mjs`, normalize: nitroAssetMap },
-  ]),
+  // The web app is a Nitro build.
+  { glob: "apps/web/.output/nitro.json", normalize: nitroBuildTime },
+  { glob: "apps/web/.output/server/index.mjs", normalize: nitroAssetMap },
   {
     // TanStack Router's dehydrated matches carry the time they were rendered.
     glob: "apps/marketing/dist/**/*.html",

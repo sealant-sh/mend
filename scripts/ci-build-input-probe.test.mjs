@@ -166,7 +166,7 @@ process.exit(run.status ?? 1);
 });
 
 const webBuildWritingAssetMap = (text) => ({
-  dir: "apps/web-old",
+  dir: "apps/web",
   build: `const fs=require("node:fs");fs.mkdirSync(".output/server",{recursive:true});fs.writeFileSync(".output/server/index.mjs",${JSON.stringify(text)}.replace("<now>",new Date().toISOString()));\n`,
 });
 
@@ -186,13 +186,13 @@ test("a volatile rule that matches nothing fails by name instead of blaming the 
     ),
   });
   assert.deepEqual(result.violations, [
-    "the volatile rule for apps/web-old/.output/server/index.mjs matched nothing in apps/web-old/.output/server/index.mjs",
+    "the volatile rule for apps/web/.output/server/index.mjs matched nothing in apps/web/.output/server/index.mjs",
   ]);
 });
 
 test("each known volatile field normalizes alone, and nothing else does", () => {
   const rule = (file) => VOLATILE.find((candidate) => candidate.glob === file).normalize;
-  const nitro = rule("apps/web-old/.output/nitro.json");
+  const nitro = rule("apps/web/.output/nitro.json");
   assert.equal(
     nitro('{\n  "date": "2026-10-15T10:28:56.328Z",\n  "preset": "a"\n}'),
     nitro('{\n  "date": "2026-10-16T11:00:00.000Z",\n  "preset": "a"\n}'),
@@ -201,7 +201,7 @@ test("each known volatile field normalizes alone, and nothing else does", () => 
     nitro('{\n  "date": "x",\n  "preset": "a"\n}'),
     nitro('{\n  "date": "x",\n  "preset": "b"\n}'),
   );
-  const server = rule("apps/web-old/.output/server/index.mjs");
+  const server = rule("apps/web/.output/server/index.mjs");
   const entry = (name, mtime, size) =>
     `\t"/assets/${name}": {\n\t\t"type": "text/javascript",\n\t\t"mtime": "${mtime}",\n\t\t"size": ${size}\n\t}`;
   const assets = (...entries) =>

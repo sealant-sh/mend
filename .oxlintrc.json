@@ -236,7 +236,7 @@
     },
     {
       // The web app, its UI kit, and the desktop Connect/Offline shell on Sheet are held to the
-      // rules below; the old app and kit, marketing and mobile are not.
+      // rules below; the old kit, marketing and mobile are not.
       // tooling/oxlint-plugin-mend/README.md says what each mend/ rule flags and allows. New code
       // passes them without disable comments.
       "files": [
@@ -367,8 +367,8 @@
                 "message": "Import primitives from @mend/ui, which themes them to the design; never from Base UI or Radix directly."
               },
               {
-                "regex": "(^|/)(web-old|ui-old)(/|$)",
-                "message": "The new web app never imports the old app or kit. Copy what a route needs, with its tests."
+                "regex": "(^|/)ui-old(/|$)",
+                "message": "The web app never imports the old kit. Build what you need in @mend/ui."
               }
             ]
           }
@@ -389,11 +389,7 @@
               },
               {
                 "name": "@mend/ui-old",
-                "message": "The new web app never imports the old kit. Build what you need in @mend/ui."
-              },
-              {
-                "name": "@mend/web-old",
-                "message": "The new web app never imports the old one. Copy what a route needs, with its tests."
+                "message": "The web app never imports the old kit. Build what you need in @mend/ui."
               }
             ],
             "patterns": [
@@ -402,8 +398,8 @@
                 "message": "Import primitives from @mend/ui, which themes them to the design; never from Base UI or Radix directly."
               },
               {
-                "regex": "(^|/)(web-old|ui-old)(/|$)",
-                "message": "The new web app never imports the old app or kit. Copy what a route needs, with its tests."
+                "regex": "(^|/)ui-old(/|$)",
+                "message": "The web app never imports the old kit. Build what you need in @mend/ui."
               }
             ]
           }
@@ -468,7 +464,7 @@
                 "message": "The kit knows nothing of Mend's data. Take what a component shows as props."
               },
               {
-                "regex": "(^|/)(apps/|web-old(/|$)|ui-old(/|$))",
+                "regex": "(^|/)(apps/|ui-old(/|$))",
                 "message": "The kit imports nothing from an app or the old kit."
               }
             ]

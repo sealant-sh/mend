@@ -150,21 +150,6 @@ export const sessionTitleFrom = (
 ): string => session.label ?? messageTitle(firstMessage) ?? UNNAMED_SESSION_TITLE;
 
 /**
- * The old web app's fallback title (`apps/web-old`, frozen until cut-over): its label, else its
- * worktree's name (`worktreeTitle`); `session <id>` when its worktree is unknown. The server and
- * the new web app call a session by `sessionTitleFrom`, which never borrows the worktree's name.
- */
-export const sessionTitle = (
-  session: { readonly id: string; readonly label: string | null },
-  worktree: { readonly name: string } | undefined,
-  members: ReadonlyArray<{ readonly id: string; readonly label: string | null }>,
-): string => {
-  if (session.label !== null) return session.label;
-  if (worktree === undefined) return `session ${session.id.slice(0, 8)}`;
-  return worktreeTitle(worktree, members);
-};
-
-/**
  * A worktree's name as lists show it: its own; a worktree Mend named itself (`wt-…`) by its first
  * labelled session's label, else by its first session's id. `members` are the worktree's
  * sessions, newest first.

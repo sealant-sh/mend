@@ -22,16 +22,6 @@ on:
         required: false
         type: string
         default: ""
-      web_app:
-        description:
-          "The web app the preview serves: web, as every release since the cut-over (ADR 0027);
-          web-old, the app it replaced, while it is still in the tree"
-        required: true
-        type: choice
-        default: web
-        options:
-          - web
-          - web-old
       platforms:
         description: "Image platforms"
         required: true
@@ -356,7 +346,6 @@ jobs:
           SSH_GATEWAY_IMAGE: ${{ needs.core-images.outputs.ssh_gateway }}
           BOAT_GATEWAY_IMAGE: ${{ needs.core-images.outputs.boat_gateway }}
           SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
-          WEB_APP: ${{ inputs.web_app }}
         run: |
           set -euo pipefail
           # Without a sealant ref the Dockerfile's pinned sealant digests stay; without a sealantd ref
@@ -371,9 +360,6 @@ jobs:
               echo "MEND_BOAT_GATEWAY_IMAGE=$BOAT_GATEWAY_IMAGE"
             fi
             if [[ -n $SEALANTD_SHA ]]; then echo "MEND_PREVIEW_SEALANTD_IMAGE=$SEALANTD_IMAGE"; fi
-            # Only a preview that asks for the old web app passes this; the Dockerfile's default is
-            # apps/web, which every release ships.
-            if [[ $WEB_APP != web ]]; then echo "MEND_WEB_APP=$WEB_APP"; fi
             echo "ARGS"
             echo "labels<<LABELS"
             echo "org.opencontainers.image.revision=$GITHUB_SHA"
@@ -455,7 +441,6 @@ jobs:
           BOAT_GATEWAY_IMAGE: ${{ needs.core-images.outputs.boat_gateway }}
           SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
           PLATFORMS: ${{ inputs.platforms }}
-          WEB_APP: ${{ inputs.web_app }}
           OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
@@ -477,7 +462,7 @@ jobs:
               echo "| sealant-sh/sealantd | pinned by sealant | | the worker's default |"
             fi
             echo
-            echo "Platforms: \`$PLATFORMS\`. Web app: \`apps/$WEB_APP\`. No packaged acceptance ran for this preview."
+            echo "Platforms: \`$PLATFORMS\`. No packaged acceptance ran for this preview."
             echo
             echo "Deploy on the box, as root, with the \`mend\` CLI installed:"
             echo

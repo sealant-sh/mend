@@ -160,10 +160,7 @@ to check VMs) filled its disk with old previews (SLNT-1251).
 
 ### The web app
 
-A preview image serves `apps/web`, as every release does since the cut-over (ADR 0027). While
-`apps/web-old` is still in the tree, a dispatch can ask for it with `-f web_app=web-old`: that image
-builds the old app, its `dev.sealant.mend.web-app` label reads `web-old`, and the bundle supervisor
-starts the old app's front on 3105 instead.
+A preview image serves `apps/web`, as every release does since the cut-over (ADR 0027).
 
 A change that is only `apps/web` and `packages/ui` can be checked on the box from its author's
 checkout instead, and nothing on the box changes for it. `pnpm verify drive web --box` runs

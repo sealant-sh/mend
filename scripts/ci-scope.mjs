@@ -107,7 +107,7 @@ export const extras = (paths) => {
       scope.mobile = true;
       scope.packaging = true;
     } else if (
-      /^(apps\/(api|cli|desktop|t3-gateway|vscode|web|web-old|docs|marketing)|deploy)\//.test(path)
+      /^(apps\/(api|cli|desktop|t3-gateway|vscode|web|docs|marketing)|deploy)\//.test(path)
     ) {
       scope.packaging = true;
     } else if (!path.startsWith("docs/")) {

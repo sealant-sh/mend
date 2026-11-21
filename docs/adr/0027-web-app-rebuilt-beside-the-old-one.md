@@ -93,7 +93,9 @@ switch is one stack of PRs (SLNT-1253), each revertible alone:
    `apps/web`, whose front answers on 3105 again. The public docs and glossary describe it.
 2. The verify stack's `web` surface is the new app, and the box flows no longer split at cut-over.
 3. `apps/web-old` is deleted at once, not a release later as first planned; until then, reverting
-   the switch alone put every image back on the old app.
+   the switch alone put every image back on the old app. The bundle image and previews no longer
+   take a choice of web app (`MEND_WEB_APP`, preview's `web_app`): the way back is reverting this
+   stack.
 
 `packages/ui-old` stays: mobile, marketing and the API's published and preview start pages still use
 it. The desktop app no longer does; it became a shell over `apps/web` (#1924).

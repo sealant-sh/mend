@@ -321,7 +321,7 @@ test("the warning catches plain imports and literal paths, and exempts tests", (
   }
   for (const [path, text] of [
     ["apps/api/src/a.ts", 'import { a } from "@mend/sessions"; import "./testing/view.ts";'],
-    ["apps/web-old/src/a.ts", 'const note = "packages/db/src/testing.ts packages/db/tests.ts";'],
+    ["apps/web/src/a.ts", 'const note = "packages/db/src/testing.ts packages/db/tests.ts";'],
     ["packages/domain/src/a.ts", "if (/^url\\./iu.test(entry.key)) return;"],
     [
       "packages/t3-contracts/t3code.pin.json",
@@ -343,7 +343,7 @@ test("the warning catches plain imports and literal paths, and exempts tests", (
   }
   for (const path of [
     "apps/cli/test-fixtures/server.mjs",
-    "apps/web-old/vite.config.ts",
+    "apps/web/vite.config.ts",
     "Dockerfile",
   ]) {
     assert.ok(!outOfScope.some(([skip]) => skip(path)), path);
