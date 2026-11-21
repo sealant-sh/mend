@@ -14,7 +14,7 @@ import {
 const input = {
   harness: "claude",
   projectName: "mend",
-  firstUserTurn: "fix the flaky retry loop in the workspace reaper",
+  messages: ["fix the flaky retry loop in the workspace reaper"],
 };
 
 /** Runs the namer against a scripted provider; each call shifts the next scripted outcome. */
@@ -68,7 +68,7 @@ describe("SessionNamer", () => {
       return Effect.gen(function* () {
         yield* nameWith([Effect.succeed({ label: "name" })], requests, {
           ...input,
-          firstUserTurn: "p".repeat(promptLength),
+          messages: ["p".repeat(promptLength)],
           assistantReply: "r".repeat(replyLength),
         });
         expect(requests[0]?.prompt).toBe(
@@ -188,11 +188,81 @@ describe("SessionNamer", () => {
     });
   });
 
-  it.effect("fails rather than writing an empty label", () => {
+  it.effect("names nothing when the model answers an empty label", () => {
     const requests: Array<InferenceRequest> = [];
     return Effect.gen(function* () {
-      const error = yield* Effect.flip(nameWith([Effect.succeed({ label: '  ""  ' })], requests));
-      expect(error.message).toContain("empty");
+      expect(yield* nameWith([Effect.succeed({ label: '  ""  ' })], requests)).toBeNull();
+      expect(requests).toHaveLength(1);
+    });
+  });
+
+  // SLNT-1230: a session on the owner's server was named "placeholder" by the model.
+  for (const standIn of [
+    "placeholder",
+    "Untitled Session",
+    "up-main session",
+    "up-main placeholder input",
+    "test session",
+    "reaper retry storm",
+  ]) {
+    it.effect(`names nothing when the model answers the stand-in "${standIn}"`, () => {
+      const requests: Array<InferenceRequest> = [];
+      return Effect.gen(function* () {
+        const label = yield* nameWith([Effect.succeed({ label: standIn })], requests, {
+          harness: "claude",
+          projectName: "up-main",
+          messages: ["asdf"],
+        });
+        expect(label).toBeNull();
+      });
+    });
+  }
+
+  it.effect("keeps a label that names the work beside a stand-in word or the project", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      const label = yield* nameWith([Effect.succeed({ label: "up-main login test" })], requests, {
+        harness: "claude",
+        projectName: "up-main",
+        messages: ["the login test fails on ci"],
+      });
+      expect(label).toBe("up-main login test");
+    });
+  });
+
+  it.effect("keeps an example label when the messages are about it", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      const label = yield* nameWith([Effect.succeed({ label: "dark mode toggle" })], requests, {
+        ...input,
+        messages: ["the dark mode toggle forgets its state on reload"],
+      });
+      expect(label).toBe("dark mode toggle");
+    });
+  });
+
+  for (const messages of [["hi"], ["Hello there!", "test"], ["."], ["   "], ["123"]]) {
+    it.effect(`asks no model to name the small talk ${JSON.stringify(messages)}`, () => {
+      const requests: Array<InferenceRequest> = [];
+      return Effect.gen(function* () {
+        expect(yield* nameWith([], requests, { ...input, messages })).toBeNull();
+        expect(requests).toEqual([]);
+      });
+    });
+  }
+
+  it.effect("names from the later message after a first one that names nothing", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      const label = yield* nameWith([Effect.succeed({ label: "login redirect loop" })], requests, {
+        ...input,
+        messages: ["hi", "the login page redirects to itself forever"],
+      });
+      expect(label).toBe("login redirect loop");
+      expect(requests[0]?.prompt).toBe(
+        "Project: mend. Harness: claude.\n\nThe session's first messages, oldest first:\n" +
+          "1. hi\n\n2. the login page redirects to itself forever",
+      );
     });
   });
 });

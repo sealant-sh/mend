@@ -8,10 +8,16 @@ import {
   WorktreeId,
 } from "@mend/domain";
 import { Project, Session, withLandingGuard } from "@mend/domain/workbench";
-import { NameSessionJob, SessionNamer, type SessionNamingInput } from "@mend/inference";
+import {
+  InferenceProvider,
+  NameSessionJob,
+  SessionNamer,
+  SessionNamerLive,
+  type SessionNamingInput,
+} from "@mend/inference";
 import { type JobSpec, JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
-import { Effect, Exit, Layer } from "effect";
+import { ConfigProvider, Effect, Exit, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
@@ -43,11 +49,14 @@ const unnamed = (harness: string, settledAt: Date | null = null) =>
 
 /**
  * A naming pass's world: the session, what Mend recorded of the messages it was sent, and its
- * transcript, which is empty here as it was on the owner's server (SLNT-1211).
+ * transcript, which is empty here as it was on the owner's server (SLNT-1211). Unless `namer`
+ * replaces it, the namer answers "hyprland joke", or nothing to name yet for messages that are all
+ * "hi".
  */
 const world = (options: {
   readonly session: Session;
   readonly recorded: ReadonlyArray<string>;
+  readonly namer?: Layer.Layer<SessionNamer>;
 }) => {
   const named: Array<SessionNamingInput> = [];
   const labels: Array<string> = [];
@@ -61,25 +70,31 @@ const world = (options: {
       forPerson: () => Effect.succeed(new MendSettings(defaultSettings)),
     }),
     Layer.mock(AgentConversationRepo, {
-      firstMessages: (sessionIds) =>
-        Effect.succeed(
-          options.recorded
-            .slice(0, 1)
-            .flatMap((input) =>
-              sessionIds.includes(SESSION) ? [{ sessionId: SESSION, input }] : [],
-            ),
-        ),
+      openingMessages: (sessionId, count) =>
+        Effect.succeed(sessionId === SESSION ? options.recorded.slice(0, count) : []),
     }),
     Layer.mock(SessionEngine, {
       launchUnderWay: () => false,
       transcript: () => Effect.succeed({ sourceHarness: options.session.harness, events: [] }),
     }),
-    Layer.mock(SessionNamer, {
-      name: (input) => Effect.sync(() => named.push(input)).pipe(Effect.as("hyprland joke")),
-    }),
+    options.namer ??
+      Layer.mock(SessionNamer, {
+        name: (input) =>
+          Effect.sync(() => named.push(input)).pipe(
+            Effect.as(input.messages.some((message) => message !== "hi") ? "hyprland joke" : null),
+          ),
+      }),
   );
   return { named, labels, layer };
 };
+
+/** The live namer on a model that answers `label` whatever it is asked. */
+const modelAnswering = (label: string) =>
+  SessionNamerLive.pipe(
+    Layer.provide(Layer.succeed(InferenceProvider, { respond: () => Effect.succeed({ label }) })),
+    Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({}))),
+    Layer.orDie,
+  );
 
 describe("naming a session from its first message", () => {
   it("names a session started bare from the first message Mend recorded, though its transcript has none", async () => {
@@ -92,7 +107,7 @@ describe("naming a session from its first message", () => {
       nameSession(new NameSessionJob({ sessionId: SESSION })).pipe(Effect.provide(naming.layer)),
     );
     expect(naming.named).toEqual([
-      { harness: "claude", projectName: "dots", firstUserTurn: "tell me a joke" },
+      { harness: "claude", projectName: "dots", messages: ["tell me a joke", "another one"] },
     ]);
     expect(naming.labels).toEqual(["hyprland joke"]);
   });
@@ -102,7 +117,7 @@ describe("naming a session from its first message", () => {
     await Effect.runPromise(
       nameSession(new NameSessionJob({ sessionId: SESSION })).pipe(Effect.provide(naming.layer)),
     );
-    expect(naming.named.map((input) => input.firstUserTurn)).toEqual(["fix the login loop"]);
+    expect(naming.named.map((input) => input.messages)).toEqual([["fix the login loop"]]);
   });
 
   it("names from the prompt the job carries before anything Mend recorded", async () => {
@@ -112,7 +127,39 @@ describe("naming a session from its first message", () => {
         new NameSessionJob({ sessionId: SESSION, firstUserTurn: "the launch prompt" }),
       ).pipe(Effect.provide(naming.layer)),
     );
-    expect(naming.named.map((input) => input.firstUserTurn)).toEqual(["the launch prompt"]);
+    expect(naming.named.map((input) => input.messages)).toEqual([["the launch prompt"]]);
+  });
+
+  // SLNT-1230: a Claude session on the owner's server, started with a first message that named no
+  // work, was labelled "placeholder" by the model two seconds after it was made.
+  it("never writes the model's stand-in, and waits for a later message (the job retries)", async () => {
+    const naming = world({
+      session: unnamed("claude"),
+      recorded: ["asdf"],
+      namer: modelAnswering("placeholder"),
+    });
+    const exit = await Effect.runPromiseExit(
+      nameSession(new NameSessionJob({ sessionId: SESSION, firstUserTurn: "asdf" })).pipe(
+        Effect.provide(naming.layer),
+      ),
+    );
+    expect(naming.labels).toEqual([]);
+    expect(Exit.hasDies(exit)).toBe(true);
+  });
+
+  it("names a session from its next message once the first named nothing", async () => {
+    const first = world({ session: unnamed("opencode"), recorded: ["hi"] });
+    await Effect.runPromise(
+      nameSession(new NameSessionJob({ sessionId: SESSION })).pipe(Effect.provide(first.layer)),
+    );
+    expect(first.labels).toEqual([]);
+
+    const next = world({ session: unnamed("opencode"), recorded: ["hi", "tell me a joke"] });
+    await Effect.runPromise(
+      nameSession(new NameSessionJob({ sessionId: SESSION })).pipe(Effect.provide(next.layer)),
+    );
+    expect(next.named.map((input) => input.messages)).toEqual([["hi", "tell me a joke"]]);
+    expect(next.labels).toEqual(["hyprland joke"]);
   });
 
   it("waits on the transcript (the job retries) for a session nobody sent a message through Mend", async () => {

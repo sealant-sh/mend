@@ -1157,6 +1157,19 @@ export const createTenancyWorld = async (
               return first === undefined ? [] : [{ sessionId, input: first.input }];
             }),
           ),
+        openingMessages: (sessionId, count) =>
+          Effect.sync(() =>
+            [...turns.values()]
+              .filter(
+                (turn) =>
+                  turn.sessionId === sessionId &&
+                  turn.origin === "request" &&
+                  turn.withdrawnHistoryRevision === null,
+              )
+              .toSorted((a, b) => a.ordinal - b.ordinal)
+              .slice(0, count)
+              .map((turn) => turn.input),
+          ),
         listConversationTurns: (sessionId) =>
           Effect.sync(() =>
             [...turns.values()]

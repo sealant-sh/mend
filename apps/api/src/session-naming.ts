@@ -1,7 +1,12 @@
 import { AgentConversationRepo, ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
 import type { SessionId } from "@mend/domain";
 import { requestOfTurn, resolveAutomation } from "@mend/domain/workbench";
-import { type NameSessionJob, SessionNamer, withoutFirstPrompt } from "@mend/inference";
+import {
+  type NameSessionJob,
+  SessionNamer,
+  type SessionNamingInput,
+  withoutFirstPrompt,
+} from "@mend/inference";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
 import { Cause, Effect } from "effect";
@@ -10,22 +15,32 @@ import { Cause, Effect } from "effect";
 const NAMEABLE_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
 
 /**
- * The first message the session was sent, as Mend recorded it: the first turn Mend sent it, without
- * what Mend added (the landing guard). Null for a session nobody sent a message through Mend (a
- * terminal session typed into), whose first prompt only its transcript holds.
+ * How many of the person's first messages the namer reads: past a first "hi" or "test" to the
+ * message that says what the work is, without reading a long conversation.
  */
-const firstPromptFromRecord = Effect.fn("firstPromptFromRecord")(function* (sessionId: SessionId) {
-  const [first] = yield* (yield* AgentConversationRepo).firstMessages([sessionId]);
-  const text = first === undefined ? "" : requestOfTurn(first.input).trim();
-  return text === "" ? null : text;
-});
+const OPENING_MESSAGES = 3;
 
 /**
- * The first prompt from the harness's own transcript, for a session Mend sent nothing: retried
- * (the job dies into its retry) until the person types it, and given up once the session settled
- * without one.
+ * The first messages the session was sent, as Mend recorded them: the first turns Mend sent it,
+ * without what Mend added (the landing guard). Empty for a session nobody sent a message through
+ * Mend (a terminal session typed into), whose first prompts only its transcript holds.
  */
-const firstPromptFromTranscript = Effect.fn("firstPromptFromTranscript")(function* (
+const openingMessagesFromRecord = Effect.fn("openingMessagesFromRecord")(function* (
+  sessionId: SessionId,
+) {
+  const inputs = yield* (yield* AgentConversationRepo).openingMessages(sessionId, OPENING_MESSAGES);
+  return inputs.map((input) => requestOfTurn(input).trim()).filter((text) => text !== "");
+});
+
+/** Retryable by design: the job dies into its retry and reads the transcript again. */
+const awaitTranscript = (why: string) => Effect.die(new Error(`${why} — retrying`));
+
+/**
+ * The first prompts from the harness's own transcript, with the agent's first reply: null once the
+ * session settled without one. While it can still get one, the job dies into its retry until the
+ * person types it.
+ */
+const openingMessagesFromTranscript = Effect.fn("openingMessagesFromTranscript")(function* (
   job: NameSessionJob,
   session: { readonly settledAt: Date | null },
 ) {
@@ -34,29 +49,30 @@ const firstPromptFromTranscript = Effect.fn("firstPromptFromTranscript")(functio
     .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
   const events = transcript?.events ?? [];
   const firstUserAt = events.findIndex((event) => event.kind === "user");
-  const firstUser = firstUserAt === -1 ? undefined : events[firstUserAt];
-  if (firstUser === undefined || firstUser.kind !== "user") {
+  const messages = events
+    .flatMap((event) => (event.kind === "user" ? [event.text] : []))
+    .slice(0, OPENING_MESSAGES);
+  if (messages.length === 0) {
     // A settled session gets no first prompt any more: it stays unnamed, and the job ends
     // here instead of retrying for an hour into the dead letter.
     if (withoutFirstPrompt(session) === "leave-unnamed") return null;
-    // Retryable by design: the user has not typed the first prompt yet.
-    return yield* Effect.die(new Error("no first prompt in the transcript yet — retrying"));
+    return yield* awaitTranscript("no first prompt in the transcript yet");
   }
   const reply = events
     .slice(firstUserAt + 1)
     .find((event): event is typeof event & { kind: "assistant" } => event.kind === "assistant");
-  return {
-    firstUserTurn: firstUser.text,
-    ...(reply === undefined ? {} : { assistantReply: reply.text }),
-  };
+  return { messages, ...(reply === undefined ? {} : { assistantReply: reply.text }) };
 });
 
 /**
- * The `name-session` job's pass. The first prompt comes from the job (a composed start), else from
- * Mend's own record of the first message sent (a session started bare, then sent a message from a
- * composer, the CLI or VS Code), else from the harness's transcript (a terminal session typed
- * into). Every no-name outcome besides "no prompt yet" is a quiet success: a renamed or deleted
- * session, a switched-off cascade, an unparseable harness on the transcript path.
+ * The `name-session` job's pass. The first messages come from the job (a composed start's prompt),
+ * else from Mend's own record of the messages sent (a session started bare, then sent a message
+ * from a composer, the CLI or VS Code), else from the harness's transcript (a terminal session
+ * typed into). Messages that don't say what the work is yet ("hi", or the model answering a
+ * stand-in such as "placeholder", SLNT-1230) name nothing: the session stays unnamed until a later
+ * message, which queues the namer again (`nameOnMessage`), or the transcript, which the job retries
+ * on, says more. Every other no-name outcome is a quiet success: a renamed or deleted session, a
+ * switched-off cascade, an unparseable harness on the transcript path.
  */
 export const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJob) {
   const sessions = yield* SessionsRepo;
@@ -65,11 +81,12 @@ export const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJ
     .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
   if (session === null || session.label !== null) return;
   const inlinePrompt = job.firstUserTurn?.trim() ?? "";
-  const firstPrompt =
-    inlinePrompt === "" ? yield* firstPromptFromRecord(job.sessionId) : inlinePrompt;
+  const seen =
+    inlinePrompt === "" ? yield* openingMessagesFromRecord(job.sessionId) : [inlinePrompt];
   // The harness gate guards only transcript parsing: a prompt Mend saw names any harness,
   // opencode and shell included.
-  if (firstPrompt === null && !NAMEABLE_HARNESSES.has(session.harness)) return;
+  const readsTranscript = NAMEABLE_HARNESSES.has(session.harness);
+  if (seen.length === 0 && !readsTranscript) return;
   const project = yield* (yield* ProjectsRepo)
     .byId(session.projectId)
     .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
@@ -81,28 +98,37 @@ export const nameSession = Effect.fn("nameSession")(function* (job: NameSessionJ
   );
   if (!resolveAutomation(project.autoName, settings.autoName)) return;
 
-  const turns =
-    firstPrompt === null
-      ? yield* firstPromptFromTranscript(job, session)
-      : { firstUserTurn: firstPrompt };
-  if (turns === null) {
-    yield* Effect.logInfo("session left unnamed · it settled without a first prompt").pipe(
+  const namer = yield* SessionNamer;
+  const named = (turns: Omit<SessionNamingInput, "harness" | "projectName">) =>
+    namer.name({ harness: session.harness, projectName: project.name, ...turns });
+  const write = Effect.fn("nameSession.write")(function* (label: string) {
+    const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
+    yield* Effect.annotateLogs(Effect.logInfo("session named"), {
+      sessionId: job.sessionId,
+      label,
+      wrote,
+    });
+  });
+  const leaveUnnamed = (why: string) =>
+    Effect.logInfo(`session left unnamed · ${why}`).pipe(
       Effect.annotateLogs({ sessionId: job.sessionId, status: session.status }),
     );
-    return;
+
+  if (seen.length > 0) {
+    const label = yield* named({ messages: seen });
+    if (label !== null) return yield* write(label);
+    // What Mend saw names nothing yet. The next message it is sent queues the namer again; a
+    // terminal the person types into is read below, retried until it says more.
+    if (!readsTranscript) return yield* leaveUnnamed("its first messages name no subject yet");
   }
 
-  const label = yield* (yield* SessionNamer).name({
-    harness: session.harness,
-    projectName: project.name,
-    ...turns,
-  });
-  const wrote = yield* sessions.setLabelIfUnset(job.sessionId, label);
-  yield* Effect.annotateLogs(Effect.logInfo("session named"), {
-    sessionId: job.sessionId,
-    label,
-    wrote,
-  });
+  const turns = yield* openingMessagesFromTranscript(job, session);
+  if (turns === null) return yield* leaveUnnamed("it settled without a first prompt");
+  const label = yield* named(turns);
+  if (label !== null) return yield* write(label);
+  if (withoutFirstPrompt(session) === "leave-unnamed")
+    return yield* leaveUnnamed("it settled before its messages named a subject");
+  return yield* awaitTranscript("the first prompts name no subject yet");
 });
 
 /**

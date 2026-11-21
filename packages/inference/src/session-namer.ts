@@ -38,17 +38,131 @@ export class NameSessionJob extends Schema.Class<NameSessionJob>("NameSessionJob
 const CLAUDE_NAMING_MODEL = "claude-haiku-4-5";
 const CODEX_NAMING_MODEL = "gpt-5.6-luna";
 
-const SYSTEM = `You name coding sessions. Given the session's first prompt, answer with a short label a developer can pick out of a list of sessions.
+const SYSTEM = `You name coding sessions. Given the session's first messages, answer with a short label a developer can pick out of a list of sessions.
 
 Rules:
 - 2-5 words, lowercase, plain nouns — like "reaper retry storm" or "flaky login test". No title case, no punctuation, no quotes.
 - Name the subject of the work, not the activity ("dark mode toggle", never "fixing the dark mode toggle bug").
 - No verdict or status words (fixed, done, broken); the label describes what the session is about, not how it went.
+- When the messages don't say what the work is about (a greeting, a test message, a stray word), answer an empty label: the session stays unnamed until a later message says. Never answer a stand-in such as "placeholder", "untitled" or "new session", and never the project's name alone.
 - Answer with JSON: {"label": "..."}.`;
+
+/** The labels the instructions give as examples: answered back for a session about none of them, an echo. */
+const EXAMPLE_LABELS: ReadonlyArray<string> = [
+  "reaper retry storm",
+  "flaky login test",
+  "dark mode toggle",
+];
+
+/**
+ * Words that say nothing about the work: a label made only of these and the project's name is a
+ * stand-in ("placeholder", "up-main session", "test session"), never a name. A real label keeps at
+ * least one word outside them ("flaky login test" keeps "flaky" and "login").
+ */
+const STAND_IN_WORDS: ReadonlySet<string> = new Set([
+  "placeholder",
+  "untitled",
+  "unnamed",
+  "unknown",
+  "new",
+  "session",
+  "sessions",
+  "chat",
+  "conversation",
+  "exchange",
+  "greeting",
+  "greetings",
+  "hello",
+  "hi",
+  "hey",
+  "test",
+  "testing",
+  "general",
+  "misc",
+  "miscellaneous",
+  "work",
+  "project",
+  "task",
+  "input",
+  "message",
+  "prompt",
+  "question",
+  "request",
+  "help",
+  "empty",
+  "none",
+  "default",
+  "sample",
+  "example",
+  "temp",
+  "tbd",
+]);
+
+/**
+ * Words a first message can be made of without saying what the work is: a person's "hi", "test" or
+ * "ok". A message of only these (or of no words at all) gives the namer nothing to name, so Mend
+ * doesn't ask a model to invent one.
+ */
+const SMALL_TALK: ReadonlySet<string> = new Set([
+  "hi",
+  "hello",
+  "hey",
+  "yo",
+  "hiya",
+  "howdy",
+  "sup",
+  "test",
+  "testing",
+  "ping",
+  "ok",
+  "okay",
+  "k",
+  "yes",
+  "no",
+  "thanks",
+  "thx",
+  "please",
+  "there",
+  "claude",
+  "codex",
+  "good",
+  "morning",
+  "afternoon",
+  "evening",
+]);
+
+/** The words of `text`, lowercase: runs of letters and digits. */
+const wordsOf = (text: string): ReadonlyArray<string> =>
+  text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
+
+/**
+ * Whether a message says anything to name a session after: a word that holds a letter and isn't
+ * small talk. "hi", "test", "." and "123" don't; "asdf" does, and the model answers it.
+ */
+export const saysSomething = (message: string): boolean =>
+  wordsOf(message).some((word) => /\p{L}/u.test(word) && !SMALL_TALK.has(word));
+
+/**
+ * Whether a normalized label is a stand-in rather than a name: only stand-in words and the
+ * project's name ("placeholder", "up-main session"), or one of the instructions' own examples that
+ * shares no word with the messages (the model echoing its prompt).
+ */
+export const isStandIn = (
+  label: string,
+  context: { readonly projectName: string; readonly messages: ReadonlyArray<string> },
+): boolean => {
+  const project = new Set(wordsOf(context.projectName));
+  const subject = wordsOf(label).filter((word) => !STAND_IN_WORDS.has(word) && !project.has(word));
+  if (subject.length === 0) return true;
+  if (!EXAMPLE_LABELS.includes(label)) return false;
+  const said = new Set(context.messages.flatMap(wordsOf));
+  return !subject.some((word) => said.has(word));
+};
 
 const NameAnswer = Schema.Struct({ label: Schema.String });
 
 const MAX_LABEL_LENGTH = 60;
+/** What of the person's messages the model reads, all of them together. */
 const MAX_PROMPT_CHARS = 2_000;
 const MAX_REPLY_CHARS = 1_000;
 
@@ -58,7 +172,7 @@ const truncate = (text: string, limit: number): string =>
 /**
  * Boundary enforcement, not prompt hope: whatever the model answers is
  * normalized to the house label style — trimmed, unquoted, single-spaced,
- * lowercase, capped. An empty result is a pass failure, never a blank label.
+ * lowercase, capped. An empty result is undefined: never a blank label.
  */
 export const normalizeLabel = (raw: string): string | undefined => {
   const collapsed = raw
@@ -88,30 +202,46 @@ const isUnusableAccountError = (error: InferenceError): boolean =>
 export interface SessionNamingInput {
   readonly harness: string;
   readonly projectName: string;
-  /** The session's first user turn, from the harness's native transcript. */
-  readonly firstUserTurn: string;
+  /**
+   * The person's first messages to the session, oldest first: the first alone when it says what
+   * the work is, the next few too when it was a "hi".
+   */
+  readonly messages: ReadonlyArray<string>;
   /** The first assistant reply, when one exists yet — context, not required. */
   readonly assistantReply?: string;
 }
 
+const messagesBlock = (messages: ReadonlyArray<string>): string =>
+  messages.length === 1
+    ? `The session's first prompt:\n${truncate(messages[0] ?? "", MAX_PROMPT_CHARS)}`
+    : `The session's first messages, oldest first:\n${truncate(
+        messages.map((message, at) => `${at + 1}. ${message}`).join("\n\n"),
+        MAX_PROMPT_CHARS,
+      )}`;
+
 const prompt = (input: SessionNamingInput) =>
   [
     `Project: ${input.projectName}. Harness: ${input.harness}.`,
-    `The session's first prompt:\n${truncate(input.firstUserTurn, MAX_PROMPT_CHARS)}`,
+    messagesBlock(input.messages),
     ...(input.assistantReply === undefined
       ? []
       : [`The agent's first reply began:\n${truncate(input.assistantReply, MAX_REPLY_CHARS)}`]),
   ].join("\n\n");
 
 /**
- * Names a session from its first prompt — the `name-session` job's pass. Runs
+ * Names a session from its first messages — the `name-session` job's pass. Runs
  * on the cheap model of whichever subscription the user has: claude first,
  * codex when no usable claude account exists.
  */
 export class SessionNamer extends Context.Service<
   SessionNamer,
   {
-    readonly name: (input: SessionNamingInput) => Effect.Effect<string, InferenceError>;
+    /**
+     * The session's label, or null when its messages don't say what the work is yet: messages of
+     * small talk only (no model call), the model's empty answer, or a stand-in it answered
+     * ("placeholder", SLNT-1230). Null is never written; the caller waits for a later message.
+     */
+    readonly name: (input: SessionNamingInput) => Effect.Effect<string | null, InferenceError>;
   }
 >()("@mend/inference/SessionNamer") {}
 
@@ -137,6 +267,7 @@ export const SessionNamerLive: Layer.Layer<SessionNamer, Config.ConfigError, Inf
       };
 
       const name = Effect.fn("SessionNamer.name")(function* (input: SessionNamingInput) {
+        if (!input.messages.some(saysSomething)) return null;
         const attempt = (arm: { readonly provider: "claude" | "codex"; readonly model: string }) =>
           provider.respond({
             context: "session-naming",
@@ -166,12 +297,14 @@ export const SessionNamerLive: Layer.Layer<SessionNamer, Config.ConfigError, Inf
           ),
         );
 
+        // Empty: the model's own "nothing to name yet".
         const label = normalizeLabel(decoded.label);
-        if (label === undefined) {
-          return yield* new InferenceError({
-            message: "the session name came back empty after normalization",
-            cause: null,
-          });
+        if (label === undefined) return null;
+        if (isStandIn(label, input)) {
+          yield* Effect.logInfo("session namer answered a stand-in · not written").pipe(
+            Effect.annotateLogs({ label }),
+          );
+          return null;
         }
         return label;
       });

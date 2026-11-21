@@ -367,6 +367,7 @@ const makeConversationWorld = () => {
     newestItems: () => Effect.succeed([]),
     inboxTurnFacts: () => Effect.succeed([]),
     firstMessages: () => Effect.succeed([]),
+    openingMessages: () => Effect.succeed([]),
     historyWindow: () => Effect.die("not in test"),
     turnsInRange: () => Effect.die("not in test"),
     requestsInRange: () => Effect.die("not in test"),
