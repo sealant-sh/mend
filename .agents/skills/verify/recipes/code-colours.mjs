@@ -242,6 +242,13 @@ export default async ({ page, web, capture, note }) => {
   const plainNone = (await coloursIn(noneBlock)).length;
   if (plainUnknown !== 0 || plainNone !== 0)
     throw new Error(`a block that should stay plain has colours: ${plainUnknown}, ${plainNone}`);
+  // Inline code in a sentence stays as it was: no colours.
+  const inline = await page
+    .locator("p > code")
+    .filter({ hasText: "withRetry" })
+    .first()
+    .evaluate((element) => element.querySelectorAll("span[style]").length);
+  if (inline !== 0) throw new Error(`the inline \`withRetry\` has ${inline} coloured pieces`);
   note(
     `conversation-ts: ${ts.length} coloured pieces; "export" ${keyword[2]} (${keyword[1]}), the comment ${comment[2]}`,
   );
