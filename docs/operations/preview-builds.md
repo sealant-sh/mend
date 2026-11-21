@@ -145,6 +145,19 @@ Before an upgrade it counts the sessions that have not settled, in the bundled P
 when any is live, and also when it cannot read the count; `PREVIEW_DEPLOY_EVEN_IF_LIVE=1` upgrades
 anyway.
 
+Once deployed, it tidies the box, by the choice `pnpm verify box release` makes
+(`tooling/verify/box-tidy.mjs`, run with the box's `node`: from the checkout beside the script, or
+fetched from `<sha>` when the script is piped in). It removes Mend preview images older than the
+newest three, untagged images that nothing uses or pins, build cache unused for two days and dumps
+in `/root/backups` beyond the newest ten. It keeps the image it just deployed, any image a container
+uses (running or stopped, so every live session's), the images a kept Mend image pins and every
+workspace image, which sealant's worker reaps itself. It removes nothing while a check holds the box
+(`box prepare`), whose release tidies instead, and re-checks the hold just before removing. It ends
+with one `preview-deploy: tidy: …` line naming what went and free space before and after. A tidy
+that cannot run or fails leaves the deploy as it stood; `PREVIEW_DEPLOY_TIDY=0` skips it. Until 21
+Nov 2026 only a release tidied, so a box that took deploys and no checks (VM 131 since checks moved
+to check VMs) filled its disk with old previews (SLNT-1251).
+
 ### The new web app
 
 A preview image serves the old web app (`apps/web-old`) until cut-over (ADR 0027), and so does every
@@ -216,12 +229,16 @@ master (20 Nov) had no blob store: VM 131's Garage volume holds the owner's data
 so it was not copied, and a change made on VM 131 shows `its capture manifest could not be read` on
 a copy. Changes made on copies since keep theirs. A save that fails anywhere leaves the directory as
 it was. It refuses data carrying a Mend migration `origin/main` lacks. The run then builds the
-master with `vm build` and no `--from-box`, from those files and its own preview, once no copy runs:
-a build replaces the disk every copy is backed by, refuses while any runs, and leaves no master
-until it ends. `--from-box` copies the data from VM 131 (`identity.env`,
-`/root/main-run/world.{sql,store.tgz}`, `/srv/mend-git`, the two volumes) instead. Do not use it
-after 20 Nov 2026: VM 131's copy of the run's data stopped there, and its agent logins have been
-spent since (below).
+master with `vm build` and no `--from-box`, from those files and its own preview, while other
+checks' copies run (SLNT-1249). The build boots its own disk in `master-build/` and, once it is
+sealed, renames it over `master/disk.qcow2`. A copy already running keeps the disk it opened at
+start (its QEMU holds the file; nothing reopens it by path) until `vm down`, and `vm list` marks it
+`on the master before`; a copy started after the rename boots the new master. Every master boots
+with one host key, `key/host_ed25519`, which cloud-init writes, so `known_hosts` reaches a copy of
+either. A build that fails leaves the master before in place, and only one build runs at a time.
+`--from-box` copies the data from VM 131 (`identity.env`, `/root/main-run/world.{sql,store.tgz}`,
+`/srv/mend-git`, the two volumes) instead. Do not use it after 20 Nov 2026: VM 131's copy of the
+run's data stopped there, and its agent logins have been spent since (below).
 
 **A copy** is a qcow2 overlay of the master with QEMU's user-mode network, 6 vCPU and 8 GB as VM 131
 has, on a loopback address of its own, `127.0.1.<n>`: web on `3105`, ssh on `2022` as root with the
@@ -266,12 +283,17 @@ Limits of a check VM:
   Docker stay as they are), and serves its own Funnel on 8443 (session traffic) and 10000 (saved
   work) to Mend on its loopback. `mend server setup` then turns Boat on with VM 131's own Boat key
   (`--boat-api-key-stdin`), new sessions on Boat and no resource gateway, and `vm up` waits until
-  the copy's Funnel answers. Nothing touches this machine's own Funnel or Serve config. Four slots
-  have joined, so four Boat copies can run at once; `vm list` shows each slot, who holds it and when
-  its node key expires. Measured on 20 Nov: `vm up --boat` 60 s to a healthy Mend with Boat; two
-  Boat copies each ran a real Codex turn at once; the stop took 13 s and the resume, on a new Boat
-  VM, 2 s to running; `vm down`, which stops the copy's Boat sessions and waits for their VMs to go,
-  took 85 s.
+  the copy's Funnel answers, first from inside the copy, then from outside the tailnet as a Boat VM
+  reaches it (SLNT-1228): the name's public A records from public resolvers (Tailscale's Funnel
+  relays), and both ports asked through a relay address with the name as SNI. This machine's own
+  resolver answers with the tailnet address, which never goes through Funnel. Any HTTP status is an
+  answer; with none in 90 s `vm up` fails, naming each port's last result, and a new copy
+  (`vm down`, then `vm up --boat`) is the remedy. Nothing touches this machine's own Funnel or Serve
+  config. Four slots have joined, so four Boat copies can run at once; `vm list` shows each slot,
+  who holds it and when its node key expires. Measured on 20 Nov: `vm up --boat` 60 s to a healthy
+  Mend with Boat; two Boat copies each ran a real Codex turn at once; the stop took 13 s and the
+  resume, on a new Boat VM, 2 s to running; `vm down`, which stops the copy's Boat sessions and
+  waits for their VMs to go, took 85 s.
 - **One copy per slot.** A claim file names the copy that holds a slot, written aside and linked
   into place so that two copies starting at once take different slots, and never removed unless it
   is still the stale one read (its copy gone, five minutes after the claim). QEMU's own write lock
@@ -342,8 +364,9 @@ on it.
 - **VM 130, `mend`** (`10.0.0.40`), the server at `alpha.mend.run`:
   - Ubuntu 24.04, 12 vCPU, 400 GB disk, `onboot 1`; 32 GB RAM from its next stop and start (40 GB
     until then);
-  - every preview deploy leaves a 4 GB `all.sql` in a new `/root/preview-backup.*` directory and its
-    image in Docker, and nothing removes either: prune them when the disk fills;
+  - every preview deploy leaves a 4 GB `all.sql` in a new `/root/preview-backup.*` directory, which
+    nothing removes: prune them when the disk fills (the deploy's tidy removes old preview images,
+    not these);
   - Docker with `"shutdown-timeout": 3600` in `daemon.json`;
   - Node in `/opt/node`;
   - cloud-init `ssh_deletekeys: false`, so a hard reset keeps the pinned host key.

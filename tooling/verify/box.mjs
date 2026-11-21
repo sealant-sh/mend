@@ -6,10 +6,12 @@ import { migrationNames } from "../../scripts/mend-migrations.mjs";
 import { describeFront, endFrontRun, frontOnly, readFrontRun } from "./box-front.mjs";
 import {
   HOLD,
+  HOLD_HOURS,
   LIST_BOX,
   chooseTidy,
   deployNeeds,
   describeTidy,
+  goneOf,
   describeUsage,
   parseListing,
   parseTidyRun,
@@ -29,8 +31,6 @@ import { boxFlows, loadFlows, webAppOf } from "./flows.mjs";
 //
 // The box is named by MEND_VERIFY_BOX_SSH (or --ssh): the ssh arguments that reach it as root, such
 // as `-J root@<proxmox host> root@<vm>`. preview-builds.md, "The box", says what is on it.
-
-const HOLD_HOURS = 6;
 
 /** The installed server's pointer to its generation, an immutable snapshot of its configuration. */
 const CONFIG = "/root/.config/mend";
@@ -234,11 +234,7 @@ const runTidy = (ssh, { hold, tag }) => {
       after: listing.free,
     };
   const run = parseTidyRun(ssh(tidyScript(choice, tag)).stdout, listing);
-  const gone = {
-    images: choice.images.filter((image) => run.removed.images.includes(image.ref)),
-    cache: (listing.cache ?? []).filter((record) => run.removed.cache.includes(record.id)),
-    dumps: choice.dumps.filter((dump) => run.removed.dumps.includes(dump.path)),
-  };
+  const gone = goneOf(choice, run, listing);
   const ok = run.refused === null && run.failed.length === 0 && run.after !== null;
   return {
     step: {

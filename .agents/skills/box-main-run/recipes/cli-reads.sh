@@ -55,6 +55,10 @@ case $flow in
     part "✓ sealant · connected" has '^✓ sealant +connected'
     part "✓ codex · connected" has '^✓ codex +connected'
     part "no line marked ✗" lacks '^✗'
+    part "github connected or not connected" has '^. github +(connected|not connected)'
+    # The checker's Claude login is refused, left so by the owner (SLNT-1219).
+    part "claude connected, not connected, or refused by the provider" \
+      has '^. claude +(connected|not connected|reconnect needed · the provider refused the login)'
     parts+=("recorded · $(grep -E '^. (claude|github) ' <<<"$out" | tr -s ' ' | paste -sd ';' -)")
     ;;
   cli.version)

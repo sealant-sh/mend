@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { Resolver } from "node:dns/promises";
 import {
   existsSync,
   linkSync,
@@ -455,6 +456,89 @@ docker start mend-mend-1 >/dev/null`,
     certSeen,
   };
 };
+
+/** Public resolvers: this machine's own resolver answers a tailnet name with its tailnet address. */
+const PUBLIC_DNS = ["1.1.1.1", "8.8.8.8"];
+
+/**
+ * Whether the copy's Funnel answers from outside the tailnet (SLNT-1228), as a Boat VM reaches it:
+ * the name's public A records (Tailscale's Funnel relays), and each Funnel port asked through a relay
+ * address with the name as SNI. The check inside the copy (tailnet-wait) resolves the name to its
+ * tailnet address and never goes through Funnel, so it passed on 20 Nov while every relay took the
+ * TCP connection and then hung the TLS handshake. Any HTTP status counts as an answer. Asks again
+ * every 3 s until `timeoutMs`; resolves { ok, detail }.
+ */
+export const funnelFromOutside = async (
+  dnsName,
+  { timeoutMs = 90_000, probe = curlThrough, resolve = publicA } = {},
+) => {
+  const started = Date.now();
+  const answered = {};
+  const last = {};
+  let addresses = [];
+  while (true) {
+    try {
+      addresses = await resolve(dnsName);
+    } catch (error) {
+      last.dns = `no public A record (${error.code ?? error.message})`;
+    }
+    for (const port of Object.values(FUNNEL_PORTS)) {
+      if (answered[port]) continue;
+      for (const address of addresses) {
+        const code = probe(dnsName, port, address);
+        last[port] = `${address}: ${code === "000" ? "no HTTP answer in 5 s" : code}`;
+        if (/^[1-5]\d\d$/.test(code)) {
+          answered[port] = `${port} answered ${code} through ${address}`;
+          break;
+        }
+      }
+    }
+    const after = Math.round((Date.now() - started) / 1000);
+    if (Object.values(FUNNEL_PORTS).every((port) => answered[port]))
+      return {
+        ok: true,
+        detail: `from outside the tailnet: ${Object.values(answered).join(", ")} after ${after}s`,
+      };
+    if (Date.now() - started >= timeoutMs) {
+      const ports = Object.values(FUNNEL_PORTS).map(
+        (port) => answered[port] ?? `${port} last ${last[port] ?? last.dns ?? "not asked"}`,
+      );
+      const records = addresses.length > 0 ? ` (public A records ${addresses.join(", ")})` : "";
+      return {
+        ok: false,
+        detail: `the copy's Funnel did not answer from outside the tailnet in ${after}s: ${ports.join(", ")}${records}. The tailnet sees it, Boat VMs would not: take another copy (vm down, then vm up --boat)`,
+      };
+    }
+    await new Promise((done) => setTimeout(done, 3000));
+  }
+};
+
+const publicA = (name) => {
+  const resolver = new Resolver({ timeout: 3000, tries: 2 });
+  resolver.setServers(PUBLIC_DNS);
+  return resolver.resolve4(name);
+};
+
+/** One HTTPS request to `name:port` through `address`, with the name as SNI: its status, or 000. */
+const curlThrough = (name, port, address) =>
+  (
+    spawnSync(
+      "curl",
+      [
+        "-s",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "-m",
+        "5",
+        "--resolve",
+        `${name}:${port}:${address}`,
+        `https://${name}:${port}/`,
+      ],
+      { encoding: "utf8" },
+    ).stdout ?? ""
+  ).trim() || "000";
 
 /**
  * Before a Boat copy goes: stops the Boat sessions started on it (by the checker accounts whose CLI
