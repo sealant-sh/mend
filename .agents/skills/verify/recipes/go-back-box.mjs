@@ -142,10 +142,9 @@ export default async ({ page, web, capture, note }) => {
       .innerText();
     const ordinal = Number(/Checkpoint (\d+)/.exec(title)?.[1]);
     await page.keyboard.press("Escape");
-    const turnTwoLine = () =>
-      visible(
-        page.locator(`#checkpoint-${ordinal}`).getByRole("button", { name: /^Checkpoint · / }),
-      );
+    await page.mouse.move(0, 0);
+    // Lines only follow later turns, so the second turn's keeps its place.
+    const turnTwoLine = () => checkpointLines().nth(shownLines - 1);
     note(`the second turn's line is checkpoint ${ordinal}`);
 
     // While a turn works, going back is refused and nothing changes.
