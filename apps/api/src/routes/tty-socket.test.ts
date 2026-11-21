@@ -250,6 +250,8 @@ const startServer = async (
     }),
     Layer.mock(SessionEngine, {
       launchUnderWay: () => false,
+      // The owner's terminal on a terminal agent (SLNT-1235): counted while the socket is open.
+      terminalClient: () => Effect.void,
       personTyped: (processId) =>
         Effect.sync(() => {
           typed.push(processId);

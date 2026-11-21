@@ -7,6 +7,8 @@ import {
   canToggleSharedControl,
   canTypeInTerminal,
   sharesControl,
+  runsInTerminal,
+  canRelaunchIn,
   startsInTerminal,
   terminalOwnerOnlyLine,
   terminalReadOnlyLine,
@@ -72,6 +74,17 @@ describe("steering a visible session (docs/adr/0003)", () => {
     expect(terminalReadOnlyLine("Alice")).toBe(
       "This session runs in a terminal. Only Alice types here; they can continue it as a conversation.",
     );
+  });
+
+  it("reads the session's recorded mode, never its newest agent process (SLNT-1235)", () => {
+    expect(runsInTerminal("conversation")).toBe(false);
+    expect(runsInTerminal("conversation", true)).toBe(true);
+    expect(runsInTerminal("terminal")).toBe(true);
+    expect(runsInTerminal(null)).toBe(true);
+    const steerer = { steer: true, terminalInput: false };
+    expect(canRelaunchIn(steerer, "conversation")).toBe(true);
+    expect(canRelaunchIn(steerer, "terminal")).toBe(false);
+    expect(canRelaunchIn({ steer: true, terminalInput: true }, "terminal")).toBe(true);
   });
 
   it("a resume or a send-back starts a terminal unless it continues a conversation (docs/adr/0013)", () => {

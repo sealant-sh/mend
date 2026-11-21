@@ -124,8 +124,9 @@ lane changed.
    `start-session.web-answer`, `review-change.web-comments`, `land-change.panel-read`,
    `pull-change.boat-run`, `attach-resume.rename-web`, `tui.dashboard`
 5. `start-session.docker-run`
-6. `start-session.boat-live`, `attach-resume.attach-detach`, `session-shell.live-shell`,
-   `shared-control.refuse-script`, `services.cli-run`, `capture-and-save.live-stop`
+6. `start-session.boat-live`, `attach-resume.attach-detach`, `attach-resume.terminal-and-web`,
+   `session-shell.live-shell`, `shared-control.refuse-script`, `services.cli-run`,
+   `capture-and-save.live-stop`
 7. `worktrees.web-create-remove`, `handoff.held`, `now-and-sessions.inbox-settle`,
    `now-and-sessions.cli-lists`
 8. The rest, in any order: `adopt-project.*`, `sign-in.fresh-browser`, `pairing-devices.mint-read`,
@@ -2287,6 +2288,30 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/cli/src/`, `apps/api/src/`, `packages/sessions/`
+
+### attach-resume.terminal-and-web
+
+- **Map:** attach-resume.md `attach-cli`, `terminal-and-web`
+- **Needs:** either; real turns (codex); CLI in tmux and the new web app; `<p>`
+- **Do:** Run the recipe with `MAIN_RUN_M=<M> MAIN_RUN_SHA8=<sha8> MAIN_RUN_PROJECT=<p>` through
+  `pnpm verify drive new-web --box --recipe .agents/skills/box-main-run/recipes/terminal-and-web.mjs --timeout 900000`:
+  it serves the new web app from the commit under test in front of the lane's copy, so it runs
+  before cut-over too. It starts a Codex conversation from the CLI (ALPHA), takes it over with
+  `M attach` in tmux and types a turn into Codex's TUI (BRAVO), opens the session in the web and
+  sends a turn from its composer (CHARLIE), closes the terminal and waits, sends one more from the
+  web (DELTA), then starts a session in a terminal with `M codex` (FOXTROT). It stops both sessions
+  and its tmux server however it ends.
+- **See:** each step's note in `steps.log`: BRAVO's question and answer in the web within 45 s of
+  the page opening, ALPHA once, no "AGENTS.md instructions" message and no lock line, the field
+  `Message Codex`; CHARLIE answered in the web and typed into the still-attached terminal; within
+  the grace plus two minutes of the terminal closing, the line "Continued as a conversation after
+  the terminal closed", then DELTA answered with every earlier turn shown once; FOXTROT on the
+  terminal session's page within 45 s. On a build before SLNT-1235 it fails at BRAVO in the web.
+- **Mode:** `scripted` (recipes/terminal-and-web.mjs)
+- **Box-only:** `real-agent-turn`
+- **Areas:** `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
+  `apps/web/src/components/session/`, `apps/cli/src/`, `packages/sessions/`,
+  `packages/agent-protocol/`, `apps/api/src/routes/workbench.ts`, `apps/api/src/routes/tty.ts`
 
 ### attach-resume.rename-web
 

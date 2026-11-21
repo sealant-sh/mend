@@ -14,6 +14,7 @@ import {
   LockIcon,
   MessageSquareIcon,
   ToggleLeftIcon,
+  SquareTerminalIcon,
   UserXIcon,
   UsersIcon,
 } from "lucide-react";
@@ -77,6 +78,7 @@ const MARKER_ICONS: Readonly<Record<ControlMarker["icon"], ReactNode>> = {
   hand: <HandIcon aria-hidden className="size-3.5 shrink-0" />,
   shared: <UsersIcon aria-hidden className="size-3.5 shrink-0" />,
   off: <UserXIcon aria-hidden className="size-3.5 shrink-0" />,
+  terminal: <SquareTerminalIcon aria-hidden className="size-3.5 shrink-0" />,
 };
 
 /** A shared control marker's line in the conversation: its icon, what happened and when. */

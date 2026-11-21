@@ -1,5 +1,5 @@
 import {
-  canRelaunchSession,
+  canRelaunchIn,
   noReviewFollowUpLine,
   takesReviewFollowUp,
   terminalOwnerOnlyLine,
@@ -249,8 +249,7 @@ export type SendRule = { readonly can: true } | { readonly can: false; readonly 
 export const sendRuleOf = (
   detail: {
     readonly control: Pick<SessionDetailDto["control"], "steer" | "terminalInput">;
-    readonly currentAgent: { readonly kind: string } | null;
-    readonly session: Pick<SessionDetailDto["session"], "harness">;
+    readonly session: Pick<SessionDetailDto["session"], "harness" | "mode">;
   },
   ownerName: string | null,
 ): SendRule => {
@@ -264,7 +263,7 @@ export const sendRuleOf = (
       can: false,
       why: `Comments stay here. ${noReviewFollowUpLine(detail.session.harness)}`,
     };
-  if (!canRelaunchSession(detail.control, detail.currentAgent?.kind ?? null))
+  if (!canRelaunchIn(detail.control, detail.session.mode))
     return {
       can: false,
       why: `Comments stay here. ${terminalOwnerOnlyLine(ownerName ?? "its owner", "send-back")}`,

@@ -2,7 +2,8 @@ import { type AgentTurnSteerDto, isOpenTurn } from "@mend/agent-conversation";
 import {
   CONVERSATION_HARNESSES,
   type PermissionMode,
-  startsInTerminal,
+  runsInTerminal,
+  type SessionMode,
   takesReviewFollowUp,
   type TurnSelection,
 } from "@mend/domain/workbench";
@@ -16,6 +17,8 @@ import { takesFirstMessage } from "./first-message.ts";
  * - `first-message`: an imported conversation waits for its first message, which starts the agent;
  * - `conversation`: messages go to the agent; `resumes` when the session is stopped and the next
  *   message brings it back;
+ * - `to-terminal`: the agent runs in a terminal and the viewer is the one who types there: messages
+ *   are typed into it at its next turn boundary, and wait until then (SLNT-1235);
  * - `terminal`: the agent runs in a terminal, which takes the words instead;
  * - `starting-conversation`: the session is starting a conversation and its agent isn't running
  *   yet: messages go to Mend, which keeps them for the agent and sends them once it runs
@@ -23,10 +26,14 @@ import { takesFirstMessage } from "./first-message.ts";
  * - `starting`: nothing can take a message until the agent runs;
  * - `not-running`: the agent isn't running and a message can't bring it back here;
  * - `no-control`: the viewer doesn't steer this session.
+ *
+ * How the agent runs is the session's recorded mode (`SessionMode`), never read off its newest
+ * agent process: a session no agent was launched in yet has none.
  */
 export type ComposerMode =
   | { readonly _tag: "first-message" }
   | { readonly _tag: "conversation"; readonly resumes: boolean }
+  | { readonly _tag: "to-terminal" }
   | { readonly _tag: "terminal" }
   | { readonly _tag: "starting-conversation" }
   | { readonly _tag: "starting" }
@@ -37,38 +44,43 @@ export const composerMode = ({
   session,
   currentAgent,
   steer,
+  terminalInput,
   agentLive,
 }: {
   readonly session: {
     readonly status: SessionStatusDto;
     readonly harness: string;
     readonly importedConversationWaiting: boolean;
+    readonly mode?: SessionMode | null | undefined;
   };
   readonly currentAgent: { readonly kind: string } | null;
   /** The server's word on whether this viewer sends the session turns. */
   readonly steer: boolean;
+  /** The server's word on whether this viewer types in the session's terminal (its owner). */
+  readonly terminalInput: boolean;
   /** The agent runs now; a shell keeping the workspace up doesn't count. */
   readonly agentLive: boolean;
 }): ComposerMode => {
   if (!steer) return { _tag: "no-control" };
   if (takesFirstMessage(session, currentAgent, steer)) return { _tag: "first-message" };
-  const kind = currentAgent?.kind ?? null;
-  // A start before its agent process exists says nothing of how the agent runs: the server keeps
-  // no launch mode until then. Claude Code and Codex are what the web starts as conversations, so
-  // their composer takes messages that wait for the agent; any other agent runs in a terminal.
+  // The owner's composer types into a Claude Code or Codex terminal; anyone else's, and any other
+  // agent's, says to type there.
+  const inTerminal: ComposerMode =
+    terminalInput && CONVERSATION_HARNESSES.has(session.harness)
+      ? { _tag: "to-terminal" }
+      : { _tag: "terminal" };
   if (session.status === "starting" && currentAgent === null)
-    return CONVERSATION_HARNESSES.has(session.harness)
+    return session.mode === "conversation"
       ? { _tag: "starting-conversation" }
       : agentLive
-        ? { _tag: "terminal" }
+        ? inTerminal
         : { _tag: "starting" };
   if (agentLive)
-    return startsInTerminal(kind) ? { _tag: "terminal" } : { _tag: "conversation", resumes: false };
-  // A stopped conversation the next message brings back: its agent ran as a conversation, on an
-  // agent's harness, and the session isn't starting or saving.
+    return runsInTerminal(session.mode) ? inTerminal : { _tag: "conversation", resumes: false };
+  // A stopped conversation the next message brings back: it ran as a conversation, on an agent's
+  // harness, and the session isn't starting or saving.
   if (
-    currentAgent !== null &&
-    !startsInTerminal(kind) &&
+    !runsInTerminal(session.mode) &&
     takesReviewFollowUp(session.harness) &&
     session.status !== "starting" &&
     session.status !== "stopping"
@@ -76,6 +88,22 @@ export const composerMode = ({
     return { _tag: "conversation", resumes: true };
   return { _tag: "not-running" };
 };
+
+/**
+ * Why the viewer's message waits for the agent's terminal rather than being typed there now
+ * (SLNT-1235, the server's `terminalHoldOf`): the agent is in a turn, it asks something there, or
+ * its turn ended and someone typed there without sending it. `waiting` is the kind of the terminal
+ * agent's recorded wait, null while it works.
+ */
+export const terminalWaitWords = (
+  agent: string,
+  waiting: "permission" | "question" | "prompt" | null,
+): string =>
+  waiting === null
+    ? `Waits for ${agent} to finish its turn in the terminal, then goes there.`
+    : waiting !== "prompt"
+      ? `Waits while ${agent} asks something in the terminal. Answer it there, and this goes next.`
+      : "Waits: something is typed in the terminal and not sent. Send or clear it there, and this goes next.";
 
 /** Who a turn is: the person who sent it, else whose login it runs on (the server's rule). */
 const senderOf = (turn: TurnView): string | null => turn.author ?? turn.billedUserId ?? null;

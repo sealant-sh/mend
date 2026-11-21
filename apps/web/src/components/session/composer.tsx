@@ -1,4 +1,9 @@
-import { CONVERSATION_HARNESSES, modelPickerFor, type TurnSelection } from "@mend/domain/workbench";
+import {
+  CONVERSATION_HARNESSES,
+  modelPickerFor,
+  terminalReadOnlyLine,
+  type TurnSelection,
+} from "@mend/domain/workbench";
 import { ComposerCard, PromptInput, PromptInputModel } from "@mend/ui/components/prompt-input";
 import { Button } from "@mend/ui/components/ui/button";
 import {
@@ -56,6 +61,7 @@ import {
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
+  terminalWaitWords,
 } from "#/lib/session-composer";
 import { harnessName } from "#/lib/session-view";
 import { keepToastsClear } from "#/lib/toast-clearance";
@@ -140,14 +146,19 @@ const lockedWords = (mode: ComposerMode, facts: SessionFacts): string => {
         ? `Only the session's owner can send messages in this session.`
         : `Only ${owner} can send messages in this session.`;
     }
-    case "terminal":
+    case "terminal": {
+      // Only the owner types in a session's terminal (docs/adr/0013); anyone else watches it.
+      if (!facts.detail.control.terminalInput && session.ownerUserId !== null)
+        return terminalReadOnlyLine(facts.nameOf(session.ownerUserId) ?? "its owner");
       return `${agent} runs in a terminal in this session. Type to it there.`;
+    }
     case "starting":
       return `${agent} is starting. You can message it once it runs.`;
     case "not-running":
       return `${agent} isn't running. Resume the session to message it.`;
     case "first-message":
     case "conversation":
+    case "to-terminal":
     case "starting-conversation":
       return "";
   }
@@ -159,6 +170,7 @@ export const sessionComposerMode = (facts: SessionFacts): ComposerMode =>
     session: facts.session,
     currentAgent: facts.detail.currentAgent,
     steer: facts.detail.control.steer,
+    terminalInput: facts.detail.control.terminalInput,
     agentLive: facts.agentLive,
   });
 
@@ -195,8 +207,9 @@ export function SessionComposer({
     case "first-message":
       return <FirstMessageComposer key={session.id} facts={facts} size={size} />;
     case "conversation":
+    case "to-terminal":
     case "starting-conversation":
-      // One composer for both, so what is written while the agent starts stays as it comes up.
+      // One composer for all three, so what is written while the agent starts stays as it comes up.
       return (
         <MessageComposer
           key={session.id}
@@ -448,10 +461,15 @@ function MessageComposer({
 }: {
   readonly facts: SessionFacts;
   readonly conversation: ConversationView | undefined;
-  readonly mode: Extract<ComposerMode, { readonly _tag: "conversation" | "starting-conversation" }>;
+  readonly mode: Extract<
+    ComposerMode,
+    { readonly _tag: "conversation" | "to-terminal" | "starting-conversation" }
+  >;
   readonly size: Size;
 }) {
   const starting = mode._tag === "starting-conversation";
+  // The words are typed into the agent's terminal (SLNT-1235): no model, image or Stop turn there.
+  const toTerminal = mode._tag === "to-terminal";
   const resumes = mode._tag === "conversation" && mode.resumes;
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -575,8 +593,12 @@ function MessageComposer({
       : undefined;
 
   const stopped = turns.at(-1)?.status === "interrupted";
-  const placeholder =
-    own !== null
+  // A message of the viewer's that waits for the terminal, and why (SLNT-1235).
+  const waitsForTerminal =
+    toTerminal && turns.some((turn) => turn.status === "queued" && turn.author === facts.viewerId);
+  const placeholder = toTerminal
+    ? `Message ${agent} in its terminal`
+    : own !== null
       ? `Message ${agent}. It reads this at its next step.`
       : other !== null
         ? `Message ${agent}. It waits for ${facts.nameOf(other.author ?? "") ?? "the other person"}'s turn to finish.`
@@ -592,9 +614,11 @@ function MessageComposer({
     value: draft.text,
     onValueChange: (text) => draft.write({ text, key: draft.key }),
     blocked: scope === null || busyAttaching,
-    ...(starting ? {} : { onAttach: () => files.current?.click() }),
+    ...(starting || toTerminal ? {} : { onAttach: () => files.current?.click() }),
     harness: agent,
-    ...(selection === null || (session.harness !== "claude" && session.harness !== "codex")
+    ...(toTerminal ||
+    selection === null ||
+    (session.harness !== "claude" && session.harness !== "codex")
       ? {}
       : {
           model: (
@@ -668,7 +692,7 @@ function MessageComposer({
             )}
             <PromptInput
               {...prompt}
-              state={own === null ? "default" : "running"}
+              state={own === null || toTerminal ? "default" : "running"}
               placeholder={placeholder}
               onSubmit={send}
               onSteer={send}
@@ -714,6 +738,14 @@ function MessageComposer({
         </ComposerLine>
       ) : resumes ? (
         <ComposerLine>Sending resumes the session.</ComposerLine>
+      ) : waitsForTerminal ? (
+        <ComposerLine>
+          {terminalWaitWords(agent, detail.currentAgent?.waiting?.kind ?? null)}
+        </ComposerLine>
+      ) : toTerminal ? (
+        <ComposerLine>
+          {agent} runs in a terminal. What you send is typed there when its turn ends.
+        </ComposerLine>
       ) : null}
       {outbox.inMemoryOnly ? (
         <ComposerLine tone="alert">

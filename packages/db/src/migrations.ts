@@ -5904,4 +5904,34 @@ export const migrations = {
         OR (NOT imported AND (process_id IS NOT NULL OR status IN ('queued', 'cancelled', 'failed')))
       )`;
   }),
+  // How a session's agent runs, recorded instead of read off its newest agent process; and the
+  // line its conversation shows when a closed terminal hands it back (SLNT-1235).
+  "0238_session_mode": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      ALTER TABLE agent_sessions
+        ADD COLUMN IF NOT EXISTS mode text CHECK (mode IN ('conversation', 'terminal'))`;
+    yield* sql`
+      UPDATE agent_sessions AS s
+         SET mode = CASE p.kind WHEN 'agent-protocol' THEN 'conversation' ELSE 'terminal' END
+        FROM (
+          SELECT DISTINCT ON (session_id) session_id, kind
+            FROM session_processes
+           WHERE kind IN ('agent-protocol', 'agent-pty', 'agent-external')
+           ORDER BY session_id, created_at DESC, id DESC
+        ) AS p
+       WHERE p.session_id = s.id AND s.mode IS NULL`;
+    yield* sql`
+      ALTER TABLE session_control_events
+        DROP CONSTRAINT IF EXISTS session_control_events_kind_check`;
+    yield* sql`
+      ALTER TABLE session_control_events
+        ADD CONSTRAINT session_control_events_kind_check CHECK (kind IN (
+          'interrupt', 'terminal-attach', 'terminal-watch', 'shell-open', 'stop', 'services-stop',
+          'idle-stop', 'shared-control-on', 'shared-control-off', 'discard-unsaved-stop',
+          'shared-control-ask', 'shared-control-withdraw', 'shared-control-grant',
+          'shared-control-decline', 'shared-control-take-back', 'continued-after-terminal',
+          'terminal-unsent-left'
+        ))`;
+  }),
 };

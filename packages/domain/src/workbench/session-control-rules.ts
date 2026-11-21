@@ -1,4 +1,5 @@
 import type { OrganizationRole } from "./organization.ts";
+import type { SessionMode } from "./session.ts";
 
 // Who may steer a session and type in its terminal: plain rules, free of Effect, so a client that
 // checks them loads no Schema (`./session-control.ts` holds the Schemas and re-exports these).
@@ -85,6 +86,24 @@ export const canRelaunchSession = (
   harnessChanges = false,
 ): boolean =>
   control.steer && (control.terminalInput || !startsInTerminal(agentKind, harnessChanges));
+
+/**
+ * `startsInTerminal` over the session's recorded mode (`SessionMode`, SLNT-1235): only a
+ * conversation on the same harness comes back as one; a terminal, or a session no agent was ever
+ * launched in, opens a terminal. The readers that have the mode use this; `startsInTerminal`
+ * stays for clients that do not read it yet.
+ */
+export const runsInTerminal = (
+  mode: SessionMode | null | undefined,
+  harnessChanges = false,
+): boolean => mode !== "conversation" || harnessChanges;
+
+/** `canRelaunchSession` over the session's recorded mode (SLNT-1235). */
+export const canRelaunchIn = (
+  control: { readonly steer: boolean; readonly terminalInput: boolean },
+  mode: SessionMode | null | undefined,
+  harnessChanges = false,
+): boolean => control.steer && (control.terminalInput || !runsInTerminal(mode, harnessChanges));
 
 /** What a terminal session's owner alone does, beyond typing in it (docs/adr/0013). */
 export type TerminalOwnerAct = "resume" | "send-back";

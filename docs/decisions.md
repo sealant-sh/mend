@@ -13,6 +13,22 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-21: one session from its terminal and the web; a session records its mode.** Yiannis, on
+  SLNT-1235, after a session taken over with `mend attach` locked the web and hid what was typed in
+  the terminal: "all three sound good but in addition to the convo auto turning to a convo after the
+  terminal is closed". A session records how its agent runs, `conversation` or `terminal`, written
+  when an agent starts and at every switch; every reader asks it, never the newest agent process.
+  The conversation has one source in both modes: a terminal agent's finished turns are read from its
+  own transcript, in its person's home, at each `Stop` and land as turn rows, the owner's
+  (docs/adr/0013), so the web no longer reads a terminal's transcript. The owner's composer types
+  into a Claude Code or Codex terminal as a bracketed paste, only at a turn boundary and only when
+  nothing was typed there since, else the message waits as a turn and says why; anyone else still
+  reads "Only <owner> types here". The session menu offers the owner Continue as a conversation. A
+  session taken over from a conversation goes back to being one 45 s after its last terminal closes,
+  only at a turn boundary, never ending a turn, with the line "Continued as a conversation after the
+  terminal closed" (and one more when words typed there were left unsent). A session started in a
+  terminal stays one: running with nobody attached is normal for it.
+
 - **2026-11-20: several organizations on one Mend are one business, and multi is the default.**
   Yiannis: "Ok let's change the default will be multi orgs and only operators can make more", then
   "Multiple orgs still assume one business entity here" (SLNT-1220). A fresh `mend server setup` or

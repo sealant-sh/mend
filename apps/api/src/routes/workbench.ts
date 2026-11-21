@@ -190,7 +190,7 @@ import {
   gitAuthorIssue,
   normalizeGitAuthor,
   resolveLaunchOptions,
-  startsInTerminal,
+  runsInTerminal,
   type Project,
   type Worktree,
   Session,
@@ -490,10 +490,12 @@ const resumingInto = <A, E, R>(
   attempt.pipe(
     Effect.catchIf(notLive, (refused) =>
       Effect.gen(function* () {
-        const agent = currentAgentProcess(
-          yield* (yield* SessionProcessesRepo).listForSession(sessionId),
+        // The session's recorded mode (SLNT-1235): a terminal is typed to, never resumed for this.
+        const mode = (yield* (yield* SessionsRepo).byId(sessionId).pipe(Effect.option)).pipe(
+          Option.map((session) => session.mode),
+          Option.getOrNull,
         );
-        if (startsInTerminal(agent?.kind ?? null, false)) return yield* Effect.fail(refused);
+        if (runsInTerminal(mode)) return yield* Effect.fail(refused);
         const engine = yield* SessionEngine;
         const joined = yield* resumeAgent(sessionId, null, false).pipe(
           Effect.as(false),
@@ -2846,6 +2848,7 @@ const inboxRowsOf = (input: {
           label: shown.label,
           branch: shown.branch,
           status: shown.status,
+          mode: shown.mode ?? null,
           ownerUserId: shown.ownerUserId,
           sharedControlEnabledAt: shown.sharedControlEnabledAt,
           sharedControlUserIds: shown.sharedControlUserIds,
@@ -4384,6 +4387,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         const session = yield* steering.owned(params.id);
+        const caller = yield* CurrentUser;
         const engine = yield* SessionEngine;
         // A switch to a conversation continues the same session: a model or effort it names
         // wins, else the ones the session was started with, else the harness's default; the engine
@@ -4409,7 +4413,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
                 ? {}
                 : { permissionMode: payload.permissionMode }),
             },
-            null,
+            // The words a switch opens with are its caller's turn (SLNT-1235).
+            caller.user.id,
           )
           .pipe(
             Effect.catchTag("SessionNotFoundError", () =>
@@ -4471,14 +4476,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         // A resume relaunches the agent the session ended. Only a conversation on the same
         // harness comes back as one; anything else opens a terminal, on a prompt Mend distils when
         // the harness changes, and a terminal is the owner's (docs/adr/0013), as the engine decides.
-        const agent = currentAgentProcess(
-          yield* (yield* SessionProcessesRepo).listForSession(session.id),
-        );
         if (
-          startsInTerminal(
-            agent?.kind ?? null,
-            (payload.harness ?? session.harness) !== session.harness,
-          )
+          runsInTerminal(session.mode, (payload.harness ?? session.harness) !== session.harness)
         ) {
           yield* requireOwnerRuns(session, "terminal");
         }
@@ -4513,10 +4512,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const session = yield* steering.session(params.id);
         // A conversation takes the reviewer's follow-up as a turn. Any other session starts its
         // terminal with it, which is typing there: the owner's alone (docs/adr/0013).
-        const agent = currentAgentProcess(
-          yield* (yield* SessionProcessesRepo).listForSession(session.id),
-        );
-        if (startsInTerminal(agent?.kind ?? null)) yield* requireOwnerRuns(session, "terminal");
+        if (runsInTerminal(session.mode)) yield* requireOwnerRuns(session, "terminal");
         const caller = yield* CurrentUser;
         const delivery = yield* FollowUpDelivery;
         return yield* delivery

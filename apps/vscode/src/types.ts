@@ -58,6 +58,8 @@ export interface Session {
   /** The Sealant run recording it now: what a review's evidence cites. Older servers omit it. */
   readonly sealantRunId?: string;
   readonly harness: string;
+  /** How its agent runs (SLNT-1235); null before any launch; absent from older servers. */
+  readonly mode?: "conversation" | "terminal" | null;
   /** The model the session was started with (docs/models-audit.md); null when not recorded. */
   readonly model: string | null;
   readonly label: string | null;

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { startsInTerminal } from "@mend/domain/workbench";
+import { runsInTerminal, startsInTerminal } from "@mend/domain/workbench";
 import * as vscode from "vscode";
 
 import type { EventPointer, MendClient } from "../client.js";
@@ -1293,7 +1293,11 @@ export class ReviewStore implements vscode.Disposable {
           viewer,
           ownerName: members.find((member) => member.userId === owner)?.name ?? "its owner",
           agent: liveAgent(detail, viewer),
-          startsTerminal: startsInTerminal(detail.currentAgent?.kind ?? null),
+          // The recorded mode (SLNT-1235); an older server sends none, read as before.
+          startsTerminal:
+            detail.session.mode === undefined
+              ? startsInTerminal(detail.currentAgent?.kind ?? null)
+              : runsInTerminal(detail.session.mode),
         },
         readAt: new Date().toISOString(),
       },

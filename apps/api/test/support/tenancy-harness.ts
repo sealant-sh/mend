@@ -685,6 +685,10 @@ export const createTenancyWorld = async (
         argv: ["codex", "app-server"],
       }),
     );
+    // Its newest agent is a conversation, so the session records that mode (SLNT-1235).
+    const aliceSession = sessions.get(sharedA.session);
+    if (aliceSession !== undefined)
+      sessions.set(sharedA.session, new Session({ ...aliceSession, mode: "conversation" }));
   }
   if (aliceProcess !== undefined) {
     processes.set(

@@ -45,6 +45,7 @@ import {
   ServiceRecipe,
   ServiceView,
   Session,
+  SessionMode,
   AgentActivity,
   SessionAsk,
   SessionControlEvent,
@@ -503,6 +504,8 @@ export const SessionInboxSession = Schema.Struct({
   label: Session.fields.label,
   branch: Session.fields.branch,
   status: Session.fields.status,
+  /** How its agent runs (SLNT-1235); null before any launch; absent from older servers. */
+  mode: Schema.optionalKey(Schema.NullOr(SessionMode)),
   ownerUserId: Session.fields.ownerUserId,
   sharedControlEnabledAt: Schema.NullOr(Timestamp),
   sharedControlUserIds: Session.fields.sharedControlUserIds,

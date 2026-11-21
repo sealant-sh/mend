@@ -30,6 +30,13 @@ attached to a remote server, the session's browser Services are tunneled to this
 - `attach-tunnels` tunnels the session's `--http`/`--https` Services while attached to a remote
   server (`--no-tunnel` opts out).
 - `attach-image-paste` sends an image from this machine's clipboard with `Ctrl+V`.
+- `terminal-and-web` drives one session from its terminal and from the web (SLNT-1235): a turn typed
+  in the terminal shows in the web's conversation once it ends; the owner's composer types the next
+  one into the terminal at its turn boundary, waiting while a turn runs or a line is half-typed
+  there; the session menu's `Continue as a conversation` switches it by hand; and a session taken
+  over from a conversation goes back to being one about 45 s after its last terminal closes, at a
+  turn boundary, with the line "Continued as a conversation after the terminal closed". A session
+  started in a terminal stays one. Driven by flows.md's `attach-resume.terminal-and-web`.
 
 ## How to get to it (user POV)
 

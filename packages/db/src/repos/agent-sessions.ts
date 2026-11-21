@@ -28,6 +28,7 @@ import {
   REVIEW_WAIT_MS,
   type SessionReferenceMount,
   type SessionStatus,
+  type SessionMode,
   withUnsavedAnswer,
 } from "@mend/domain/workbench";
 import {
@@ -386,6 +387,11 @@ export class SessionsRepo extends Context.Service<
     /** Settled sessions the boot sweep has not classified yet, oldest first, bounded. */
     readonly listSettledUnclassified: (limit: number) => Effect.Effect<ReadonlyArray<Session>>;
     readonly setProviderSessionId: (id: SessionId, providerId: string) => Effect.Effect<void>;
+    /**
+     * How the session's agent runs (SLNT-1235): written when a launch starts and at every
+     * switch between conversation and terminal.
+     */
+    readonly setMode: (id: SessionId, mode: SessionMode) => Effect.Effect<void>;
     /** Mode-switch backfill bookkeeping — not part of the Session surface. */
     readonly nativeIngestCursor: (id: SessionId) => Effect.Effect<NativeIngestCursor | null>;
     readonly setNativeIngestCursor: (
@@ -1412,6 +1418,21 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .limit(1)
           .pipe(Effect.orDie);
         return row?.nativeIngestCursor ?? null;
+      });
+
+      const setMode = Effect.fn("SessionsRepo.setMode")(function* (
+        id: SessionId,
+        mode: SessionMode,
+      ) {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({ mode, updatedAt: yield* DateTime.nowAsDate })
+          .where(and(eq(agentSessions.id, id), sql`${agentSessions.mode} IS DISTINCT FROM ${mode}`))
+          .returning({ projectId: agentSessions.projectId })
+          .pipe(Effect.orDie);
+        const row = rows[0];
+        if (row !== undefined)
+          yield* notifyEvent(pg, { type: "session", sessionId: id, projectId: row.projectId });
       });
 
       const setNativeIngestCursor = Effect.fn("SessionsRepo.setNativeIngestCursor")(function* (
@@ -2623,6 +2644,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         listSettledUnclassified,
         setProviderSessionId,
         nativeIngestCursor,
+        setMode,
         setNativeIngestCursor,
         setReferenceMounts,
         setExtraMounts,

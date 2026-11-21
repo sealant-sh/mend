@@ -607,6 +607,42 @@ export const readHarnessFileScript = (mountPath: string = HARNESS_HOME_MOUNT_PAT
   physicalRootFunction(mountPath) +
   'physical_root "$rel" || { echo "a symlink is on the way to $1" >&2; exit 4; }; cat "$R/$rel"';
 
+/** Where a live agent's own transcript is under `$HOME`, by its provider session id. */
+const TRANSCRIPT_BY_ID: Readonly<Record<string, (id: string) => string>> = {
+  claude: (id) => `"$HOME"/.claude/projects/*/${id}.jsonl`,
+  codex: (id) => `"$HOME"/.codex/sessions/*/*/*/rollout-*-${id}.jsonl`,
+};
+
+/**
+ * Read a live agent's own transcript (SLNT-1235), the one lookup for every harness: the file named
+ * by its provider session id when the harness names its files so, else the harness's newest
+ * (`latest`, its `latestTranscript`); under `home` when given (a person's passwd home, the agent
+ * running as them) or the caller's `$HOME`; read as `readHarnessFileScript` reads, never through a
+ * link but the relocation's own (`mountPath`: the person's saved directory, or the harness home).
+ * Exit 3 when there is none. Null for an id or home that is not plain.
+ */
+export const readLiveTranscriptScript = (input: {
+  readonly harness: string;
+  readonly providerSessionId: string | null;
+  readonly latest: string;
+  readonly home: string | null;
+  readonly mountPath: string;
+}): string | null => {
+  const byId = TRANSCRIPT_BY_ID[input.harness];
+  const id = input.providerSessionId;
+  if (id !== null && !/^[A-Za-z0-9-]+$/.test(id)) return null;
+  if (input.home !== null && !/^\/home\/[a-z0-9_-]+$/.test(input.home)) return null;
+  if (!/^\/[A-Za-z0-9_./-]+$/.test(input.mountPath)) return null;
+  const locate =
+    byId !== undefined && id !== null ? `ls -t ${byId(id)} 2>/dev/null | head -1` : input.latest;
+  return (
+    (input.home === null ? "" : `HOME=${input.home}; export HOME; `) +
+    `F=$(${locate}); F=$(printf '%s' "$F" | head -1); ` +
+    '[ -n "$F" ] || exit 3; set -- "$F"; ' +
+    readHarnessFileScript(input.mountPath)
+  );
+};
+
 /**
  * Login files a capture made before the platform left them out may still hold, under the harness
  * home: opencode's MCP server logins (`mcp-auth.json`, until sealantd#136). Capture mode's

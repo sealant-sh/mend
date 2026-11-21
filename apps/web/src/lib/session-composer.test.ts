@@ -43,15 +43,44 @@ const session = {
   status: "running" as const,
   harness: "claude",
   importedConversationWaiting: false,
+  mode: "conversation" as "conversation" | "terminal" | null,
 };
+const terminal = { ...session, mode: "terminal" as const };
 
 describe("the composer under a session's conversation", () => {
   it.each([
-    ["a live conversation takes messages", session, "agent-protocol", true, true, "conversation"],
     [
-      "a live terminal agent takes words in its terminal",
+      "a live conversation takes messages",
       session,
+      "agent-protocol",
+      true,
+      false,
+      true,
+      "conversation",
+    ],
+    [
+      "the owner's composer types into a live terminal (SLNT-1235)",
+      terminal,
       "agent-pty",
+      true,
+      true,
+      true,
+      "to-terminal",
+    ],
+    [
+      "anyone else is told to type in the terminal",
+      terminal,
+      "agent-pty",
+      true,
+      false,
+      true,
+      "terminal",
+    ],
+    [
+      "a terminal agent with no conversation of its own takes words only in its terminal",
+      { ...terminal, harness: "pi" },
+      "agent-pty",
+      true,
       true,
       true,
       "terminal",
@@ -62,12 +91,14 @@ describe("the composer under a session's conversation", () => {
       "agent-protocol",
       true,
       false,
+      false,
       "conversation",
     ],
     [
       "a stopped terminal session can't take one here",
-      { ...session, status: "stopped" as const },
+      { ...terminal, status: "stopped" as const },
       "agent-pty",
+      true,
       true,
       false,
       "not-running",
@@ -77,53 +108,56 @@ describe("the composer under a session's conversation", () => {
       session,
       "agent-protocol",
       false,
+      false,
       true,
       "no-control",
     ],
     [
       "an imported conversation waits for its first message",
-      { ...session, status: "idle" as const, importedConversationWaiting: true },
+      { ...session, status: "idle" as const, importedConversationWaiting: true, mode: null },
       null,
       true,
+      false,
       false,
       "first-message",
     ],
     [
-      "a terminal agent's session that isn't live yet waits for it",
-      { ...session, harness: "pi", status: "starting" as const },
+      "a session no agent was launched in yet waits for one",
+      { ...session, harness: "pi", status: "starting" as const, mode: null },
       null,
       true,
       false,
+      false,
       "starting",
     ],
-  ] as const)("%s", (_what, at, kind, steer, agentLive, mode) => {
+  ] as const)("%s", (_what, at, kind, steer, terminalInput, agentLive, mode) => {
     expect(
       composerMode({
         session: at,
         currentAgent: kind === null ? null : { kind },
         steer,
+        terminalInput,
         agentLive,
       })._tag,
     ).toBe(mode);
   });
 
   it.each([
-    ["Claude Code", "claude", "starting-conversation"],
-    ["Codex", "codex", "starting-conversation"],
-    ["pi", "pi", "terminal"],
-    ["a shell", "shell", "terminal"],
+    ["a conversation", "conversation", "starting-conversation"],
+    ["a terminal", "terminal", "to-terminal"],
+    ["no mode yet", null, "starting"],
   ] as const)(
-    "reads a starting %s session with no agent yet by what the web starts it as",
-    (_agent, harness, mode) => {
-      // The session reads live while it starts; no agent process says how the agent will run.
+    "reads a starting session with no agent yet by its recorded mode: %s (SLNT-1235)",
+    (_what, mode, expected) => {
       expect(
         composerMode({
-          session: { ...session, harness, status: "starting" },
+          session: { ...session, status: "starting", mode },
           currentAgent: null,
           steer: true,
-          agentLive: true,
+          terminalInput: true,
+          agentLive: mode !== null,
         })._tag,
-      ).toBe(mode);
+      ).toBe(expected);
     },
   );
 
@@ -133,6 +167,7 @@ describe("the composer under a session's conversation", () => {
         session: { ...session, status: "starting" },
         currentAgent: null,
         steer: false,
+        terminalInput: false,
         agentLive: true,
       })._tag,
     ).toBe("no-control");
@@ -144,6 +179,7 @@ describe("the composer under a session's conversation", () => {
         session: { ...session, status: "stopped" },
         currentAgent: { kind: "agent-protocol" },
         steer: true,
+        terminalInput: false,
         agentLive: false,
       }),
     ).toEqual({ _tag: "conversation", resumes: true });

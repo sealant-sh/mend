@@ -170,6 +170,27 @@ export const agentWaitStatus = (wait: AgentWait): "waiting" | "idle" =>
 export const keyAnswers = (wait: AgentWait | null, typedAt: Date): wait is AgentWait =>
   wait !== null && agentWaitStatus(wait) === "waiting" && wait.since.getTime() <= typedAt.getTime();
 
+/**
+ * Why a message for a terminal agent waits rather than being typed into its terminal now
+ * (SLNT-1235), or null when it can go:
+ * - `working`: the agent is in a turn;
+ * - `asking`: it waits on a permission or a question in the terminal;
+ * - `typed`: its turn ended, but someone typed in the terminal since and has not sent it, so the
+ *   message would join their half-typed line.
+ *
+ * `typedAt` is the newest key typed there; a client that cannot see keys passes null, and reads a
+ * message that still waits at a finished turn as `typed`.
+ */
+export type TerminalHold = "working" | "asking" | "typed";
+export const terminalHoldOf = (wait: AgentWait | null, typedAt: Date | null): TerminalHold | null =>
+  wait === null
+    ? "working"
+    : wait.kind !== "prompt"
+      ? "asking"
+      : typedAt !== null && typedAt.getTime() > wait.since.getTime()
+        ? "typed"
+        : null;
+
 export const agentWaitWords = (harness: string, wait: AgentWait): string => {
   switch (wait.kind) {
     case "permission":

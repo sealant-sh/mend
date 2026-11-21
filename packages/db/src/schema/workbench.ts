@@ -195,6 +195,7 @@ import type {
   SessionOrigin,
   SessionPurpose,
   SessionStatus,
+  SessionMode,
   SlackProjectSource,
   SlackSessionState,
   TurnLanding,
@@ -1947,6 +1948,8 @@ export const agentSessions = pgTable(
     workspaceTtlRenewalError: text(),
     /** Mode-switch backfill bookkeeping: how far the native transcript is ingested. */
     nativeIngestCursor: jsonb().$type<NativeIngestCursor | null>(),
+    /** How the session's agent runs (SLNT-1235, `SessionMode`); null before any launch. */
+    mode: text().$type<SessionMode>(),
     // The image this session actually launched with — stamped at launch, never rewritten by a
     // later project-setting change. NULL for sessions from before the column (or not launched).
     workspaceImage: jsonbOf(WorkspaceImage),

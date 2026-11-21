@@ -247,6 +247,158 @@ describe("backfillFromNative · codex", () => {
   });
 });
 
+/** A user item as Codex 0.160 writes it: its AGENTS.md envelope and environment as two parts. */
+const codexSetupItem = {
+  type: "response_item",
+  payload: {
+    type: "message",
+    role: "user",
+    content: [
+      {
+        type: "input_text",
+        text: "# AGENTS.md instructions\n\n<INSTRUCTIONS>\nMend's contract\n</INSTRUCTIONS>",
+      },
+      {
+        type: "input_text",
+        text: "<environment_context>\n  <cwd>/workspace/repo</cwd>\n</environment_context>",
+      },
+    ],
+  },
+};
+const codexUser = (text: string) => ({
+  type: "response_item",
+  payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+});
+const codexReply = (text: string) => ({
+  type: "response_item",
+  payload: { type: "message", role: "assistant", content: [{ type: "output_text", text }] },
+});
+const codexDone = { type: "event_msg", payload: { type: "task_complete" } };
+
+describe("backfillFromNative · codex 0.160 (SLNT-1235)", () => {
+  it("never makes the setup item, envelope and environment in one, a message", () => {
+    const rollout = jsonl([
+      { type: "session_meta", payload: { id: "t" } },
+      codexSetupItem,
+      codexUser("Reply with ALPHA"),
+      codexReply("ALPHA"),
+      codexDone,
+    ]);
+    expect(backfillFromNative("codex", "t", rollout, null)?.turns.map((t) => t.input)).toEqual([
+      "Reply with ALPHA",
+    ]);
+  });
+
+  it("keeps the words a person sent beside a part Codex added", () => {
+    const rollout = jsonl([
+      {
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            { type: "input_text", text: "<environment_context>x</environment_context>" },
+            { type: "input_text", text: "fix it" },
+          ],
+        },
+      },
+    ]);
+    expect(backfillFromNative("codex", "t", rollout, null)?.turns.map((t) => t.input)).toEqual([
+      "fix it",
+    ]);
+  });
+
+  it("past the protocol harvest's stamp, only the terminal's turn lands", () => {
+    const protocolEra = [
+      { type: "session_meta", payload: { id: "t" } },
+      codexSetupItem,
+      codexUser("Reply with ALPHA"),
+      codexReply("ALPHA"),
+      codexDone,
+    ];
+    const stamp = cursorAtEndOf("codex", "t", jsonl(protocolEra));
+    const later = jsonl([
+      ...protocolEra,
+      codexUser("Reply with BRAVO"),
+      codexReply("BRAVO"),
+      codexDone,
+    ]);
+    const landed = backfillFromNative("codex", "t", later, stamp);
+    expect(landed?.turns.map((t) => [t.providerTurnId, t.input])).toEqual([
+      ["native:user:3", "Reply with BRAVO"],
+    ]);
+  });
+});
+
+const claudeUser = (uuid: string, content: string) => ({
+  type: "user",
+  uuid,
+  message: { role: "user", content },
+});
+const claudeReply = (uuid: string, id: string, stopReason: string, text: string) => ({
+  type: "assistant",
+  uuid,
+  message: { id, stop_reason: stopReason, content: [{ type: "text", text }] },
+});
+
+describe("backfillFromNative · finished turns only, for a live terminal agent", () => {
+  it("codex: a turn without its task_complete waits, and lands whole once it has one", () => {
+    const head = [codexUser("first"), codexReply("one"), codexDone, codexUser("second")];
+    const reading = backfillFromNative("codex", "t", jsonl(head), null, { finishedOnly: true });
+    expect(reading?.turns.map((t) => t.input)).toEqual(["first"]);
+    expect(reading?.cursor.lineCount).toBe(3);
+    const done = jsonl([...head, codexReply("two"), codexDone]);
+    const next = backfillFromNative("codex", "t", done, reading?.cursor ?? null, {
+      finishedOnly: true,
+    });
+    expect(next?.turns.map((t) => [t.input, t.items.map((item) => item.text)])).toEqual([
+      ["second", ["two"]],
+    ]);
+    expect(next?.cursor.lineCount).toBe(6);
+  });
+
+  it("codex: a turn the person stopped is finished", () => {
+    const rollout = jsonl([
+      codexUser("go"),
+      { type: "event_msg", payload: { type: "turn_aborted" } },
+    ]);
+    expect(
+      backfillFromNative("codex", "t", rollout, null, { finishedOnly: true })?.turns.map(
+        (t) => t.input,
+      ),
+    ).toEqual(["go"]);
+  });
+
+  it("claude: a turn whose reply still calls a tool waits; its end_turn lands it", () => {
+    const head = [
+      claudeUser("u1", "first"),
+      claudeReply("a1", "m1", "end_turn", "one"),
+      claudeUser("u2", "second"),
+      claudeReply("a2", "m2", "tool_use", "looking"),
+    ];
+    const reading = backfillFromNative("claude", "s", jsonl(head), null, { finishedOnly: true });
+    expect(reading?.turns.map((t) => t.input)).toEqual(["first"]);
+    expect(reading?.cursor.lastEntryUuid).toBe("a1");
+    const done = jsonl([...head, claudeReply("a3", "m3", "end_turn", "two")]);
+    const next = backfillFromNative("claude", "s", done, reading?.cursor ?? null, {
+      finishedOnly: true,
+    });
+    expect(next?.turns.map((t) => [t.providerTurnId, t.input])).toEqual([["native:u2", "second"]]);
+    expect(next?.cursor.lastEntryUuid).toBe("a3");
+  });
+
+  it("claude: a stopped turn is finished, and its stop line opens no turn", () => {
+    const transcript = jsonl([
+      claudeUser("u1", "go"),
+      claudeReply("a1", "m1", "tool_use", "working"),
+      claudeUser("u2", "[Request interrupted by user]"),
+    ]);
+    const reading = backfillFromNative("claude", "s", transcript, null, { finishedOnly: true });
+    expect(reading?.turns.map((t) => t.input)).toEqual(["go"]);
+    expect(reading?.cursor.lastEntryUuid).toBe("u2");
+  });
+});
+
 describe("cursorAtEndOf", () => {
   it("marks the whole transcript ingested, for the protocol-harvest stamp", () => {
     expect(cursorAtEndOf("claude", "sess-1", claudeTranscript)).toEqual({
