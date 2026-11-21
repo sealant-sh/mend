@@ -1027,16 +1027,41 @@ lane changed.
   the turn (Codex 0.160.1 records it within a second, while `sleep 45` still runs; the model reads
   it in its next request); from then, while the turn still runs, it reads as any sent message
   (solid, nothing under it but who and when), sits below the step Codex had started when it was sent
-  and above what Codex did after taking it, and starts no turn of its own (the recipe
-  `new-web-steer-taken-box` drives this part alone); after `Stop turn` that turn reads
-  `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab reads
-  Idle.
+  and above what Codex did after taking it, and starts no turn of its own
+  (`start-session.new-web-steer-taken` drives this part with a recipe); after `Stop turn` that turn
+  reads `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab
+  reads Idle.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
   `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
   `apps/web/src/components/session/conversation-tile.tsx`
+
+### start-session.new-web-steer-taken
+
+- **Map:** start-session.md `session-page`
+- **Needs:** real turn (codex); web; the project `verify-fixture`
+- **Do:** Drive the recipe `new-web-steer-taken-box` (`pnpm verify drive new-web --box`): it starts
+  a Codex session in `verify-fixture` from the New session composer, asks it to run `sleep 30`, then
+  `sleep 40`, then reply `slept`, and once Codex runs `sleep 30`, sends
+  `When you reply, add the word steered after slept.` from the composer (its button reads Steer).
+  Stop the session with `M stop <id8>` once it ends.
+- **See:** the second message shows in the conversation at once. Until Codex takes it, it is dashed
+  with `Sent into this turn. Codex reads it when its current step finishes.` under it (Codex 0.160.1
+  takes it within a second, so the page may not get to show this). While turn 2 still runs (Stop
+  turn shown) it is solid with only `You · <time>` under it. It sits below the `sleep 30` step and
+  above `sleep 40`, Codex replies `slept steered`, no turn starts for it, and after the turn ends
+  and after a reload it stays solid with nothing under it but who and when. It fails (SLNT-1234) if
+  the message still reads as waiting when turn 2 ends, or reads `Codex read this during its turn`:
+  the recipe stops with "the message read as waiting until turn 2 ended".
+- **Mode:** `scripted` (recipes/new-web-steer-taken-box.mjs)
+- **Box:** after cut-over
+- **Box-only:** `real-agent-turn`
+- **Areas:** `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
+  `apps/web/src/components/session/conversation-tile.tsx`,
+  `packages/agent-conversation/src/feed.ts`, `packages/agent-protocol/src/codex.ts`,
+  `packages/agent-protocol/src/claude-turn.ts`
 
 ### start-session.new-web-streaming
 

@@ -120,9 +120,15 @@ export default async ({ page, web, capture, note }) => {
   note(
     `${Math.round((Date.now() - sentAt) / 1000)}s later the message is solid; the line under it reads "${taken.byline}"; turn 2 still running: ${stillRunning}`,
   );
+  if (!stillRunning) {
+    // SLNT-1234: the message kept reading as waiting until its turn ended, long after Codex took it.
+    await capture("steer-waiting-until-turn-ended-desktop-light");
+    throw new Error(
+      `the message read as waiting until turn 2 ended, though Codex took it at once; now it reads "${taken.byline}"`,
+    );
+  }
   if (taken.byline.includes("Sent into this turn") || taken.byline.includes("read this during"))
     throw new Error(`a taken message still reads "${taken.byline}"`);
-  if (!stillRunning) throw new Error("turn 2 ended before the check could see it running");
   await capture("steer-taken-turn-running-desktop-light");
   await page.setViewportSize(PHONE);
   await page.waitForTimeout(500);
