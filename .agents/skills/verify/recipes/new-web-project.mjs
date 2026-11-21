@@ -23,6 +23,9 @@ const BIG_REPOSITORY = "https://github.com/godotengine/godot.git";
 
 const visible = (locator) => locator.filter({ visible: true }).first();
 
+/** The request that makes and launches a session (SLNT-1239), alone or in a tRPC batch. */
+const starts = (url) => /\/trpc\/(?:[^?]*,)?sessions\.start(?=[,?]|$)/.test(url.href);
+
 export default async ({ page, web, capture, note }) => {
   const settled = () => page.waitForTimeout(500);
   const setTheme = async (theme) => {
@@ -146,7 +149,10 @@ export default async ({ page, web, capture, note }) => {
   // worktree but not the title.
   const runningRow = table
     .getByRole("row")
-    .filter({ has: page.getByRole("cell", { name: "project-running run", exact: true }) });
+    // By its worktree's cell: an unnamed `mend run` session reads New session since SLNT-1230.
+    .filter({ has: page.getByRole("cell", { name: "project-running", exact: true }) })
+    .filter({ has: page.getByRole("cell", { name: "Running", exact: true }) })
+    .first();
   await runningRow.waitFor();
   note(
     `project-page: /projects/${fixture.id} shows verify-fixture, the tabs ${(await nav.innerText()).replace(/\s+/g, " ")}, and the facts ${facts.replace(/\s+/g, " ")}`,
@@ -255,7 +261,7 @@ export default async ({ page, web, capture, note }) => {
   if (path() !== `/projects/${fixture.id}`) throw new Error(`setup-session went to ${page.url()}`);
   await dialog().getByRole("radio", { name: /Codex/ }).waitFor();
   note(`/projects/${fixture.id}/setup-session redirects to ${page.url()} with the dialog open`);
-  await page.route("**/trpc/sessions.create**", async (route) => {
+  await page.route(starts, async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 3_000));
     await route.continue();
   });
@@ -263,7 +269,7 @@ export default async ({ page, web, capture, note }) => {
   await dialog().getByRole("button", { name: "Starting…" }).waitFor();
   await capture("setup-starting-desktop-light");
   const setupSession = await landedOnSession("Start setup session");
-  await page.unroute("**/trpc/sessions.create**");
+  await page.unroute(starts);
   const setupRead = await call("sessions.detail", { id: setupSession }).catch(() => null);
   note(
     `Start setup session opened /sessions/${setupSession}${setupRead === null ? "" : `, purpose ${setupRead.session?.purpose ?? "?"}`}`,

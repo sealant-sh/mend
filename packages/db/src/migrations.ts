@@ -5934,4 +5934,20 @@ export const migrations = {
           'terminal-unsent-left'
         ))`;
   }),
+  // A start the browser names by a key it chose (SLNT-1239): one request makes the session and
+  // launches it, and a page reloaded during the start reads the key back to find the session, or
+  // why there is none. Kept a week, like a queued session's.
+  "0239_session_starts": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS session_starts (
+      owner_user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      key text NOT NULL,
+      session_id text REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      failure text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (owner_user_id, key),
+      CONSTRAINT session_starts_one_end_check CHECK (session_id IS NULL OR failure IS NULL)
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS session_starts_created_idx ON session_starts (created_at)`;
+  }),
 };

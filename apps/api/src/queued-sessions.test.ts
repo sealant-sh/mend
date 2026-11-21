@@ -103,6 +103,8 @@ const makeProcess = async (options: { readonly refuseCreate?: boolean } = {}) =>
       const sessions = yield* SessionsRepo;
       const sql = yield* SqlClient.SqlClient;
       return {
+        createInWorktreeAs: () => Effect.die("queued sessions never start in a worktree"),
+        settleUnlaunched: () => Effect.void,
         createAs: (actor, projectId, input) =>
           Effect.gen(function* () {
             if (options.refuseCreate === true)

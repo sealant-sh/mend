@@ -103,6 +103,7 @@ import { ResourcesGroupLive } from "./resources.ts";
 import { SavedLayoutsGroupLive } from "./saved-layouts.ts";
 import { ScreensGroupLive } from "./screens.ts";
 import { SecretFilesGroupLive } from "./secret-files.ts";
+import { SessionStartsGroupLive } from "./session-starts.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import { SlackGroupLive } from "./slack.ts";
 import { UpgradeTicketExchangeGroupLive, UpgradeTicketsGroupLive } from "./upgrade-tickets.ts";
@@ -862,6 +863,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
     Layer.mergeAll(
       SessionsGroupLive,
       QueuedSessionsGroupLive,
+      SessionStartsGroupLive,
       PagesGroupLive,
       PageViewGroupLive,
       ProofArtifactsGroupLive,

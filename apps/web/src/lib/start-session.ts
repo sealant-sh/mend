@@ -1,6 +1,6 @@
 import type { TurnSelection } from "@mend/domain/workbench";
 
-import type { SessionDto } from "./api.ts";
+import type { SessionDto, SessionStartReadDto, StartTarget } from "./api.ts";
 import { launchFields, type StartSpec, type WorktreeTarget } from "./new-session.ts";
 import {
   type MessageScope,
@@ -9,66 +9,36 @@ import {
   readOutbox,
   takeWritten,
 } from "./outbox.ts";
-import { beginStart, endStart, type RefusedStart, startCreated } from "./pending-starts.ts";
+import {
+  beginStart,
+  endStart,
+  keyOfDraft,
+  type PendingStart,
+  type RefusedStart,
+  restoreStart,
+  startCreated,
+} from "./pending-starts.ts";
 import { failureWords } from "./refusal.ts";
 
-/** The server calls a start makes; the browser's are in `api.ts`. */
+/** The server call a start makes; the browser's is `startSessionNow` in `api.ts`. */
 export interface StartCalls {
-  /** A new worktree from the project's default branch, with the session in it. */
-  readonly create: (
-    projectId: string,
-    agent: string,
-    autoLand: boolean | null,
+  /**
+   * Make the session and launch its agent, in one request named by `key` (SLNT-1239): once it
+   * has left, Mend does both whatever becomes of this page.
+   */
+  readonly start: (
+    key: string,
+    target: StartTarget,
+    harness: string,
+    launch: ReturnType<typeof launchFields>,
   ) => Promise<Pick<SessionDto, "id">>;
-  /** A new session in an existing worktree. */
-  readonly createInWorktree: (
-    worktreeId: string,
-    agent: string,
-    autoLand: boolean | null,
-  ) => Promise<Pick<SessionDto, "id">>;
-  readonly launch: (
-    sessionId: string,
-    agent: string,
-    fields: ReturnType<typeof launchFields>,
-  ) => Promise<unknown>;
 }
 
-/** Make the session, in a new worktree or the one picked; answers its id. */
-const makeSession = async (
-  calls: StartCalls,
-  projectId: string,
-  target: WorktreeTarget,
-  spec: StartSpec,
-): Promise<string> =>
-  (target._tag === "new"
-    ? await calls.create(projectId, spec.agent, spec.autoLand)
-    : await calls.createInWorktree(target.id, spec.agent, spec.autoLand)
-  ).id;
-
-/**
- * Start the session's agent on the first message. Not awaited: a launch that fails is the session
- * page's to show (the session records it).
- */
-const launchMade = (calls: StartCalls, sessionId: string, spec: StartSpec) => {
-  void calls.launch(sessionId, spec.agent, launchFields(spec)).catch(() => undefined);
-};
-
-/**
- * Start a session: make it, in a new worktree or the one picked, then start its agent on the
- * first message. Answers the session's id once it exists; the agent keeps starting after that, and
- * a launch that fails is the session page's to show (the session records it), so it is not
- * awaited here. A failure to make the session is the caller's to show.
- */
-export const startSession = async (
-  calls: StartCalls,
-  projectId: string,
-  target: WorktreeTarget,
-  spec: StartSpec,
-): Promise<string> => {
-  const sessionId = await makeSession(calls, projectId, target, spec);
-  launchMade(calls, sessionId, spec);
-  return sessionId;
-};
+/** Where a composer's start makes its session: a new worktree, or the one picked. */
+const targetOf = (projectId: string, target: WorktreeTarget, spec: StartSpec): StartTarget =>
+  target._tag === "new"
+    ? { _tag: "project", projectId, autoLand: spec.autoLand }
+    : { _tag: "worktree", worktreeId: target.id, autoLand: spec.autoLand };
 
 /** Where an instant start shows, and what it does around the server. */
 export interface StartPlace {
@@ -98,10 +68,11 @@ export interface InstantStart {
   /** The first message; empty for a start with none (a menu's, a setup session's). */
   readonly prompt: string;
   readonly selection: TurnSelection | null;
-  /** Make the session; answers its id. */
-  readonly make: () => Promise<string>;
-  /** Start its agent. Not awaited: a launch that fails is the session's page to show. */
-  readonly launch: (sessionId: string) => Promise<unknown>;
+  /**
+   * Make the session and launch its agent, in one request named by `key`; answers the session's
+   * id. A launch that fails is the session's page to show (the session records it).
+   */
+  readonly start: (key: string) => Promise<string>;
   /** What a refusal says first: "The session didn't start." unless the start says otherwise. */
   readonly failure?: string;
   readonly now?: Date;
@@ -135,13 +106,53 @@ export const composerStart = (
   projectId: string,
   target: WorktreeTarget,
   spec: StartSpec,
-): Pick<InstantStart, "harness" | "prompt" | "selection" | "make" | "launch"> => ({
+): Pick<InstantStart, "harness" | "prompt" | "selection" | "start"> => ({
   harness: spec.agent,
   prompt: spec.prompt,
   selection: selectionOf(spec),
-  make: () => makeSession(calls, projectId, target, spec),
-  launch: (sessionId) => calls.launch(sessionId, spec.agent, launchFields(spec)),
+  start: async (key) =>
+    (await calls.start(key, targetOf(projectId, target, spec), spec.agent, launchFields(spec))).id,
 });
+
+/** A start that made no session: it goes, and the person gets back every word written for it. */
+const refuseStart = (
+  place: Pick<StartPlace, "refuse">,
+  start: Pick<PendingStart, "draftId" | "userId" | "prompt">,
+  words: string,
+) => {
+  const draft: MessageScope = { userId: start.userId, sessionId: start.draftId };
+  const written = [start.prompt, ...takeWritten(draft)];
+  endStart(start.draftId);
+  place.refuse({
+    draftId: start.draftId,
+    prompt: written.filter((each) => each.trim() !== "").join("\n\n"),
+    words,
+  });
+};
+
+/**
+ * Mend made the start's session, and launches it (SLNT-1239): what was written meanwhile goes
+ * after the first message, which the launch records, and the session takes the start's place once
+ * its page is read.
+ */
+const settleStart = async (
+  place: StartPlace,
+  start: Pick<PendingStart, "draftId" | "userId" | "prompt">,
+  sessionId: string,
+) => {
+  const draft: MessageScope = { userId: start.userId, sessionId: start.draftId };
+  // What was written so far moves onto the session, and from the same moment the start's page
+  // writes there (`writingAddressOf`), before anything is awaited: the page stays on screen while
+  // the session's is read, and words written meanwhile were left under the start's address,
+  // never shown or sent again (SLNT-1232).
+  const written = readOutbox(draft);
+  moveMessages(draft, { userId: start.userId, sessionId });
+  startCreated(start.draftId, sessionId);
+  if (written.length > 0) place.sendWritten(sessionId, written);
+  place.moved();
+  await place.prefetch(sessionId, start.prompt.trim() !== "").catch(() => undefined);
+  place.settle(sessionId);
+};
 
 /**
  * Start a session without waiting for Mend (SLNT-1196), from wherever one starts. Its page opens
@@ -153,7 +164,6 @@ export const composerStart = (
  */
 export const startInstantly = async (place: StartPlace, start: InstantStart): Promise<void> => {
   const sentAt = start.now ?? new Date();
-  const draft: MessageScope = { userId: start.userId, sessionId: start.draftId };
   beginStart({
     draftId: start.draftId,
     userId: start.userId,
@@ -166,29 +176,71 @@ export const startInstantly = async (place: StartPlace, start: InstantStart): Pr
   place.show(start.draftId);
   let sessionId: string;
   try {
-    sessionId = await start.make();
+    sessionId = await start.start(keyOfDraft(start.draftId));
   } catch (cause) {
-    const written = [start.prompt, ...takeWritten(draft)];
-    endStart(start.draftId);
-    place.refuse({
-      draftId: start.draftId,
-      prompt: written.filter((words) => words.trim() !== "").join("\n\n"),
-      words: refusalWords(start.failure ?? "The session didn't start.", cause),
-    });
+    refuseStart(place, start, refusalWords(start.failure ?? "The session didn't start.", cause));
     return;
   }
-  // The launch records the first message as the session's opening turn (SLNT-1237); what was
-  // written meanwhile goes to Mend right behind it, which keeps it for the agent's first process.
-  void start.launch(sessionId).catch(() => undefined);
-  // What was written so far moves onto the session, and from the same moment the start's page
-  // writes there (`writingAddressOf`), before anything is awaited: the page stays on screen while
-  // the session's is read, and words written meanwhile were left under the start's address,
-  // never shown or sent again (SLNT-1232).
-  const written = readOutbox(draft);
-  moveMessages(draft, { userId: start.userId, sessionId });
-  startCreated(start.draftId, sessionId);
-  if (written.length > 0) place.sendWritten(sessionId, written);
-  place.moved();
-  await place.prefetch(sessionId, start.prompt.trim() !== "").catch(() => undefined);
-  place.settle(sessionId);
+  await settleStart(place, start, sessionId);
+};
+
+/** How often a page reloaded during a start reads it, and how long Mend may not know its key. */
+export const RECOVERY_READ_MS = 500;
+export const RECOVERY_UNKNOWN_MS = 20_000;
+/** How long Mend may take to make the session once it has the start. */
+export const RECOVERY_MAKING_MS = 120_000;
+
+/** What a start reloaded before Mend answered says when Mend never got it. */
+export const START_NEVER_ARRIVED =
+  "The session didn't start: the page reloaded before Mend got the start. Start it again.";
+/** What it says when Mend is still making the session after `RECOVERY_MAKING_MS`. */
+export const START_STILL_MAKING =
+  "Mend is still making this session. It shows in your sessions once it's made.";
+
+/** How a recovery reads Mend and waits; the browser's, or a test's. */
+export interface RecoveryReads {
+  readonly read: (key: string) => Promise<SessionStartReadDto>;
+  readonly wait: (ms: number) => Promise<void>;
+  readonly now: () => number;
+}
+
+/**
+ * A start this tab kept from before a reload (SLNT-1239): its page shows again, and Mend is read by
+ * the start's key until it says which session it made, then that session takes the start's place
+ * as if Mend had answered the page. A start Mend refused, or never got, ends as a refused start
+ * does: the composer takes back every word, with the reason.
+ */
+export const recoverStart = async (
+  place: StartPlace,
+  start: PendingStart,
+  reads: RecoveryReads,
+): Promise<void> => {
+  restoreStart(start);
+  if (start.sessionId !== null) {
+    await settleStart(place, start, start.sessionId);
+    return;
+  }
+  const key = keyOfDraft(start.draftId);
+  const from = reads.now();
+  for (;;) {
+    const answer = await reads.read(key).catch(() => null);
+    if (answer?.state === "made" && answer.sessionId !== null) {
+      await settleStart(place, start, answer.sessionId);
+      return;
+    }
+    if (answer?.state === "failed") {
+      refuseStart(place, start, `The session didn't start. ${answer.failure ?? "Try again."}`);
+      return;
+    }
+    const waited = reads.now() - from;
+    if (answer?.state !== "making" && waited > RECOVERY_UNKNOWN_MS) {
+      refuseStart(place, start, START_NEVER_ARRIVED);
+      return;
+    }
+    if (waited > RECOVERY_MAKING_MS) {
+      refuseStart(place, start, START_STILL_MAKING);
+      return;
+    }
+    await reads.wait(RECOVERY_READ_MS);
+  }
 };

@@ -63,6 +63,7 @@ import {
   NotificationSettingsRepoLive,
   SessionInboxMarksRepoLive,
   QueuedSessionsRepoLive,
+  SessionStartsRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
   SettleSettingsRepoLive,
@@ -352,6 +353,7 @@ import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { serverImageArchitecture } from "./services/workspace-environment.ts";
 import { nameSession } from "./session-naming.ts";
 import { SessionStartLive } from "./session-start.ts";
+import { SessionStartsLive } from "./session-starts.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
 import { SlackReportEventsLive } from "./slack-report-events.ts";
 import { SlackRunnerLive } from "./slack-runner.ts";
@@ -452,6 +454,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   NotificationSettingsRepoLive,
   SessionInboxMarksRepoLive,
   QueuedSessionsRepoLive,
+  SessionStartsRepoLive,
   UserAgentLoginsRepoLive,
   MessageSettingsRepoLive,
   SettleSettingsRepoLive,
@@ -685,6 +688,9 @@ const ServerLive = Layer.unwrap(
       // Sessions started while their project still clones wait on this process's adoptions, and
       // start through the same SessionStart as every other session.
       Layer.provide(QueuedSessionsLive.pipe(Layer.provide(SessionStartLive))),
+      // A start from a client makes and launches its session in one request, past the request
+      // (SLNT-1239), through the same SessionStart.
+      Layer.provide(SessionStartsLive.pipe(Layer.provide(SessionStartLive))),
       // The adoptions this process runs, read while they clone (GET /adoptions/:id).
       Layer.provide(AdoptionsLive),
       // Who may watch a screen, and which viewers are open: one for the routes and the socket.

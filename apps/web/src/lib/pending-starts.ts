@@ -1,6 +1,6 @@
 import { ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import { messageTitle, type TurnSelection, UNNAMED_SESSION_TITLE } from "@mend/domain/workbench";
-import { useSyncExternalStore } from "react";
+import { useMemo, useSyncExternalStore } from "react";
 
 import type { SessionInboxRowDto } from "./api.ts";
 
@@ -8,7 +8,8 @@ import type { SessionInboxRowDto } from "./api.ts";
  * A session this tab is starting, from the moment Start is pressed until Mend has made it. Its
  * page opens at once at `/sessions/<draftId>`, with the person's words, and the sidebar lists it
  * as a starting session; once Mend answers, the session it made takes the same place and the
- * address moves to its id. Tab memory only: a reload shows what the server holds.
+ * address moves to its id. Kept in the tab's sessionStorage too, so a page reloaded before Mend
+ * answered finds the start again by its key (`keyOfDraft`, SLNT-1239).
  */
 export interface PendingStart {
   readonly draftId: string;
@@ -43,7 +44,29 @@ const EMPTY: State = { starts: [], refused: null };
 let state = EMPTY;
 const listeners = new Set<() => void>();
 
+/** Where the tab keeps its starts across a reload. */
+const STORED_STARTS = "mend-pending-starts";
+
+/** A start as sessionStorage holds it: its time as text. */
+interface StoredStart extends Omit<PendingStart, "sentAt"> {
+  readonly sentAt: string;
+}
+
+const store = (starts: ReadonlyArray<PendingStart>) => {
+  try {
+    if (starts.length === 0) sessionStorage.removeItem(STORED_STARTS);
+    else
+      sessionStorage.setItem(
+        STORED_STARTS,
+        JSON.stringify(starts.map((start) => ({ ...start, sentAt: start.sentAt.toISOString() }))),
+      );
+  } catch {
+    // No storage (a private window, the server): a reload then shows what the server holds.
+  }
+};
+
 const set = (next: State) => {
+  if (next.starts !== state.starts) store(next.starts);
   state = next;
   for (const listener of listeners) listener();
 };
@@ -62,6 +85,72 @@ export const newDraftId = (uuid: string): string => `${DRAFT_PREFIX}${uuid}`;
 
 /** Whether an address's session id is a start this tab made, not a session. */
 export const isDraftId = (id: string): boolean => id.startsWith(DRAFT_PREFIX);
+
+/** The key Mend knows a start by (`POST /session-starts`): the uuid in its draft id. */
+export const keyOfDraft = (draftId: string): string => draftId.slice(DRAFT_PREFIX.length);
+
+/** The raw starts the tab kept, as text: a stable value for `useSyncExternalStore`. */
+const storedText = (): string | null => {
+  try {
+    return sessionStorage.getItem(STORED_STARTS);
+  } catch {
+    return null;
+  }
+};
+
+const isText = (record: object, key: string): boolean =>
+  key in record && typeof Reflect.get(record, key) === "string";
+
+/** What this module wrote: anything else in the slot (an older shape, a hand edit) is no start. */
+const isStoredStart = (value: unknown): value is StoredStart => {
+  if (typeof value !== "object" || value === null) return false;
+  const project: unknown = Reflect.get(value, "project");
+  const sessionId: unknown = Reflect.get(value, "sessionId");
+  const selection: unknown = Reflect.get(value, "selection");
+  return (
+    ["draftId", "userId", "harness", "prompt", "sentAt"].every((key) => isText(value, key)) &&
+    typeof project === "object" &&
+    project !== null &&
+    isText(project, "id") &&
+    isText(project, "name") &&
+    (sessionId === null || typeof sessionId === "string") &&
+    (selection === null || typeof selection === "object")
+  );
+};
+
+/** The start the tab kept under `draftId`, from `storedText`'s text; null when it kept none. */
+export const storedStartIn = (text: string | null, draftId: string): PendingStart | null => {
+  if (text === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const found = parsed.find(
+    (value): value is StoredStart => isStoredStart(value) && value.draftId === draftId,
+  );
+  return found === undefined ? null : { ...found, sentAt: new Date(found.sentAt) };
+};
+
+/**
+ * The start this tab kept under `draftId` before a reload; null when it kept none, and undefined
+ * while the page is drawn on the server, which can't know.
+ */
+export const useStoredStart = (draftId: string): PendingStart | null | undefined => {
+  const text = useSyncExternalStore(subscribe, storedText, () => undefined);
+  return useMemo(
+    () => (text === undefined ? undefined : storedStartIn(text, draftId)),
+    [text, draftId],
+  );
+};
+
+/** A start kept from before a reload is this tab's again: its page and its row show. */
+export const restoreStart = (start: PendingStart) => {
+  if (state.starts.some((each) => each.draftId === start.draftId)) return;
+  set({ ...state, starts: [...state.starts, start] });
+};
 
 /**
  * Whether an inbox row is a start of this tab's (`pendingRow`), not yet the server's: it has no

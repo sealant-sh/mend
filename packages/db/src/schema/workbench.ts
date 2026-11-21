@@ -1053,6 +1053,28 @@ export const queuedSessions = pgTable(
 );
 
 /**
+ * A start the browser names by a key it chose (SLNT-1239): claimed before the session is made, then
+ * `session_id` once it is, or `failure` with Mend's sentence when it could not be. A page reloaded
+ * during the start reads it back by its key. The owner FK (CASCADE) is declared in the migration.
+ */
+export const sessionStarts = pgTable(
+  "session_starts",
+  {
+    ownerUserId: text().notNull(),
+    key: text().notNull(),
+    sessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    failure: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.ownerUserId, table.key] }),
+    index("session_starts_created_idx").on(table.createdAt),
+  ],
+);
+
+/**
  * Which of each person's own logins their Claude and Codex sessions receive
  * (packages/domain/src/workbench/agent-logins.ts). No row = every login they have connected.
  */

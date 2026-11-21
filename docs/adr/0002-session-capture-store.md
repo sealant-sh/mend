@@ -369,6 +369,21 @@ launch slot is held until the launch ends, not until the answer. Mend infers "bu
 the platform reports: no executor 20 s after the create was accepted. SDK 0.38.0 reports no build
 state (`0dd4b4bf:PLATFORM-FEEDBACK.md` 2026-09-30).
 
+### A start makes and launches in one request (amended 2026-11-21)
+
+The web app started a session with two requests: `POST /projects/:id/sessions`, then, once that
+answered, `POST /sessions/:id/launch`. A tab closed or reloaded between the two left a session made
+and never launched, reading `starting` for good with no first message (SLNT-1239). The web app now
+sends one, `POST /session-starts`, with the session, its launch and a key it chose. Mend makes the
+session and launches it in one piece of work in the engine's lifetime, as every launch verb runs, so
+a client that goes away once the request has left cuts neither half. The request answers once the
+session is made and its launch is admitted (the first message is in its conversation then), or the
+launch has ended, or 30 s have passed. Mend keeps the key with the session it made, or with the
+reason it made none, for a week: a page reloaded before the answer reads `GET /session-starts/:id`
+and lands on the session. A launch refused once the session is made settles it `failed` with the
+reason. The same key sent again makes no second session. The two older requests stay for the CLI and
+the other clients.
+
 ### Stop drains, then terminates
 
 Amended 2026-09-27. Nothing an executor holds is lost to a stop Mend asks for: no compute holding a

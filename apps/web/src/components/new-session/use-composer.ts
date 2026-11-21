@@ -3,14 +3,7 @@ import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tansta
 import { useEffect, useState } from "react";
 
 import { adoptionProgressOptions, clonePercent, useAdoptionAttempt } from "#/lib/adoptions";
-import {
-  createSession,
-  createSessionInWorktree,
-  launchSessionStart,
-  type ProjectDto,
-  queueSession,
-  type SessionDefaultsDto,
-} from "#/lib/api";
+import { startSessionNow, type ProjectDto, queueSession, type SessionDefaultsDto } from "#/lib/api";
 import {
   type Agent,
   AGENTS,
@@ -37,9 +30,7 @@ import { usePageStart, useTabStart } from "./instant-start.ts";
 
 /** The browser's server calls for a start. */
 const BROWSER_CALLS: StartCalls = {
-  create: (projectId, agent, autoLand) => createSession(projectId, agent, null, null, autoLand),
-  createInWorktree: createSessionInWorktree,
-  launch: launchSessionStart,
+  start: startSessionNow,
 };
 
 /** A choice kept for one project or one agent: picking another starts the choice again. */

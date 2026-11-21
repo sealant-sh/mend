@@ -14,6 +14,7 @@ import {
   SendSessionMessageRequest,
   SessionInboxMarkRequest,
   SharedControlRequest,
+  StartSessionRequest,
 } from "@mend/api-contracts";
 import { AgentRequestId, AgentTurnId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
 import { TRPCError } from "@trpc/server";
@@ -84,6 +85,16 @@ export const sessionsRouter = router({
     .input(input(Schema.Struct({ projectId: ProjectId, session: NewWorkbenchSession })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.create({ params: { id: i.projectId }, payload: i.session })),
+    ),
+  // Make a session and launch it in one request, named by the browser's key (SLNT-1239).
+  start: procedure
+    .input(input(StartSessionRequest))
+    .mutation(({ ctx, input: i }) => run(ctx, (api) => api.sessionStarts.start({ payload: i }))),
+  /** A start by its key: what a page reloaded before Mend answered reads. */
+  started: procedure
+    .input(input(Schema.Struct({ key: Schema.String })))
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessionStarts.read({ params: { id: i.key } })),
     ),
   launch: procedure
     .input(input(Schema.Struct({ id: SessionId, request: LaunchRequest })))

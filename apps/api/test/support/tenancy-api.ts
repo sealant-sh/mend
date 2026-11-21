@@ -230,6 +230,7 @@ import { ScreenWatchLive } from "../../src/screen-watch.ts";
 import { DopplerApi } from "../../src/services/doppler.ts";
 import { GithubApi } from "../../src/services/github-api.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
+import { SessionStarts } from "../../src/session-starts.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { SshKeyRevoker } from "../../src/ssh-key-revocation.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
@@ -1260,6 +1261,7 @@ export const createTenancyApi = async (
     AdoptionsLive,
     // Their routes only forward to the service, which queued-sessions.test.ts runs on Postgres.
     Layer.mock(QueuedSessions, {}),
+    Layer.mock(SessionStarts, {}),
     RemovalLive,
     options.terminalProjects === undefined
       ? TerminalProjectsLive
