@@ -15,9 +15,11 @@
 //
 // Turn 2 streams as this machine sees it; turn 3 with 100ms more latency on every request, as
 // for someone reading from far away; in turn 4 the reader scrolls up mid-reply, stays where they
-// scrolled, then scrolls back to the end and follows again. The samples, the reads and the frames
-// go to STREAM_OUT (a fresh temporary folder when unset), never into the drive's evidence; the
-// notes say what each turn showed.
+// scrolled, then scrolls back to the end and follows again. Turn 5 is captured mid-reply and
+// finished, and the session is then reopened: every reply shows whole at once, in light and dark,
+// at desktop and phone width. The samples, the reads and the frames go to STREAM_OUT (a fresh
+// temporary folder when unset), never into the drive's evidence; the notes say what each turn
+// showed.
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -126,7 +128,7 @@ const summary = (samples) => {
   };
 };
 
-export default async ({ page, web, note }) => {
+export default async ({ page, web, capture, note }) => {
   const out = process.env.STREAM_OUT ?? mkdtempSync(join(tmpdir(), "mend-streaming-"));
   mkdirSync(out, { recursive: true });
   note(`samples, reads and screencast frames go outside the evidence, to ${out}`);
@@ -269,4 +271,58 @@ export default async ({ page, web, note }) => {
   note(
     `turn 4: scrolled up to ${s.up.top} (${s.up.fromEnd}px from the end); 3s later at ${s.later.top} (${s.later.fromEnd}px from the end); back at the end ${s.back.fromEnd}px from it, and 3s later ${s.following.fromEnd}px from it`,
   );
+
+  // What a person sees: a reply mid-stream, then the same reply finished. Captured in a turn of
+  // its own, after the measured ones, as a capture holds the page for a moment.
+  await field().fill(LONG("how a bloom filter works"));
+  await page.keyboard.press("Enter");
+  await stopTurn().waitFor({ timeout: TURN_MS });
+  await page.waitForFunction(
+    () =>
+      [...document.querySelectorAll('[data-slot="message-header"]')].some(
+        (each) =>
+          each.textContent?.startsWith("Codex · turn 5") &&
+          (each.closest('[data-slot="message-content"]')?.textContent?.length ?? 0) > 900,
+      ),
+    null,
+    { timeout: TURN_MS },
+  );
+  await capture("reply-streaming-desktop-light");
+  await turnOver();
+  await page.waitForTimeout(2_000);
+  await capture("reply-finished-desktop-light");
+
+  // Reopened, every reply shows whole at once: no text grows and nothing is marked as streaming.
+  await page.reload();
+  const reopened = await page.evaluate(async () => {
+    const lengths = [];
+    const from = performance.now();
+    let streaming = 0;
+    while (performance.now() - from < 8_000) {
+      const header = [...document.querySelectorAll('[data-slot="message-header"]')].find((each) =>
+        each.textContent?.startsWith("Codex · turn 2"),
+      );
+      if (header !== undefined) {
+        lengths.push(header.closest('[data-slot="message-content"]')?.textContent?.length ?? 0);
+        streaming = Math.max(streaming, document.querySelectorAll("[data-streaming]").length);
+        if (lengths.length >= 90) break;
+      }
+      await new Promise((done) => requestAnimationFrame(done));
+    }
+    return { first: lengths[0] ?? 0, last: lengths.at(-1) ?? 0, frames: lengths.length, streaming };
+  });
+  note(
+    `reopened: turn 2's reply read ${reopened.first} characters on its first frame and ${reopened.last} ${reopened.frames} frames later; ${reopened.streaming} blocks marked as streaming`,
+  );
+  await capture("reopened-desktop-light");
+  await page.evaluate(() => localStorage.removeItem("mend-theme"));
+  await page.emulateMedia({ colorScheme: "dark" });
+  await page.waitForTimeout(500);
+  await capture("reopened-desktop-dark");
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(500);
+  await capture("reopened-phone-dark");
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.waitForTimeout(500);
+  await capture("reopened-phone-light");
 };
