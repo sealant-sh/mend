@@ -38,7 +38,7 @@ const startSampling = (ordinal) => {
     (each) => each.getClientRects().length > 0,
   );
   const state = { samples: [], frames: [], adds: 0, removes: 0, chars: 0, running: true };
-  window.__stream = state;
+  window.mendStream = state;
   const header = `Codex · turn ${ordinal}`;
   const reply = () => {
     for (const each of viewport.querySelectorAll('[data-slot="message-header"]'))
@@ -94,10 +94,13 @@ const startSampling = (ordinal) => {
 };
 
 const stopSampling = () => {
-  const state = window.__stream;
+  const state = window.mendStream;
   state.stop();
   return { samples: state.samples, frames: state.frames, origin: performance.timeOrigin };
 };
+
+/** The value a fraction `q` of the way up an ascending list. */
+const quantile = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
 
 /** What a turn's samples say, in numbers a note can carry. */
 const summary = (samples) => {
@@ -107,22 +110,21 @@ const summary = (samples) => {
     if (step > 0) grew.push({ t: samples[at].t, step });
   }
   if (grew.length < 2) return { updates: grew.length };
-  const steps = grew.map((each) => each.step).sort((a, b) => a - b);
+  const steps = grew.map((each) => each.step).toSorted((a, b) => a - b);
   const gaps = grew
     .slice(1)
     .map((each, at) => each.t - grew[at].t)
-    .sort((a, b) => a - b);
-  const pick = (sorted, q) => sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * q))];
+    .toSorted((a, b) => a - b);
   const span = grew.at(-1).t - grew[0].t;
   return {
     chars: samples.at(-1).len,
     updates: grew.length,
     framesInSpan: samples.filter((each) => each.t >= grew[0].t && each.t <= grew.at(-1).t).length,
     spanMs: Math.round(span),
-    stepChars: { median: pick(steps, 0.5), p90: pick(steps, 0.9), max: steps.at(-1) },
+    stepChars: { median: quantile(steps, 0.5), p90: quantile(steps, 0.9), max: steps.at(-1) },
     gapMs: {
-      median: Math.round(pick(gaps, 0.5)),
-      p90: Math.round(pick(gaps, 0.9)),
+      median: Math.round(quantile(gaps, 0.5)),
+      p90: Math.round(quantile(gaps, 0.9)),
       max: Math.round(gaps.at(-1)),
     },
   };
@@ -244,7 +246,7 @@ export default async ({ page, web, capture, note }) => {
   // The reader scrolls up mid-reply: the thread stays where they put it while the reply grows,
   // then follows again once they are back at the end.
   const scrollTest = async (viewport) => {
-    await page.waitForFunction(() => (window.__stream?.samples.at(-1)?.len ?? 0) > 600, null, {
+    await page.waitForFunction(() => (window.mendStream?.samples.at(-1)?.len ?? 0) > 600, null, {
       timeout: TURN_MS,
     });
     const box = await viewport.boundingBox();
