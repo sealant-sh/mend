@@ -1,5 +1,6 @@
 import {
   Dialog,
+  DialogBody,
   DialogContent,
   DialogDescription,
   DialogHeader,
@@ -21,8 +22,11 @@ import { usePhone } from "#/lib/phone";
 /**
  * A dialog on a wide screen and a sheet from the bottom on a phone (Doop "Dialog" and "Phone
  * sheet"), with the same title, words, body and buttons. `size` is the dialog's width: `sm` for a
- * confirmation, `md` for a form, `lg` for a long form that scrolls inside the dialog. `finalFocus` is where focus goes when it closes, for a dialog
- * opened from a menu item that is gone by then.
+ * confirmation, `md` for a form, `lg` for a long form. Neither is ever taller than the window: the
+ * title and the buttons stay put and the body scrolls between them (SLNT-1242). A list in the body
+ * that should scroll on its own, keeping what is under it in view, takes `min-h-0
+ * overflow-y-auto`. `finalFocus` is where focus goes when it closes, for a dialog opened from a
+ * menu item that is gone by then.
  */
 export function Overlay({
   open,
@@ -74,20 +78,13 @@ export function Overlay({
     );
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent
-        size={size}
-        finalFocus={finalFocus}
-        className={cn(
-          size !== "sm" && "gap-5",
-          size === "lg" && "max-h-[calc(100dvh-3rem)] overflow-y-auto",
-        )}
-      >
+      <DialogContent size={size} finalFocus={finalFocus} className={cn(size !== "sm" && "gap-5")}>
         <DialogHeader className="pr-8">
           <DialogTitle>{title}</DialogTitle>
           {description === undefined ? null : <DialogDescription>{description}</DialogDescription>}
         </DialogHeader>
         {children === undefined || children === null ? null : (
-          <div className="flex min-w-0 flex-col gap-4">{children}</div>
+          <DialogBody className="min-w-0">{children}</DialogBody>
         )}
         {/* Sheet's dialog ends with its buttons on the sheet itself, with no band under them. */}
         {footer === null ? null : <div className="flex justify-end gap-2.5 pt-1">{footer}</div>}

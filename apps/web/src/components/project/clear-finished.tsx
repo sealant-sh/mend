@@ -104,7 +104,7 @@ export function ClearFinished({
         </>
       }
     >
-      <ul aria-label="Finished worktrees" className="border-y">
+      <ul aria-label="Finished worktrees" className="min-h-0 overflow-y-auto border-y">
         {finished.map((row) => (
           <li
             key={row.worktree.id}

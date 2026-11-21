@@ -33,6 +33,11 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
   );
 }
 
+/**
+ * The dialog itself: never taller than the window. Its header and footer keep their height and a
+ * `DialogBody` between them scrolls, so the title and the buttons stay on screen however long the
+ * body grows. Content with no `DialogBody` scrolls with the whole dialog.
+ */
 function DialogContent({
   className,
   children,
@@ -51,7 +56,7 @@ function DialogContent({
         data-slot="dialog-content"
         data-size={size}
         className={cn(
-          "fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover px-6 pt-[22px] pb-5 text-sm text-popover-foreground shadow-pop ring-1 ring-foreground/10 duration-100 outline-none data-[size=lg]:sm:max-w-[780px] data-[size=md]:sm:max-w-[560px] data-[size=sm]:sm:max-w-[460px] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
+          "fixed top-1/2 left-1/2 z-50 flex max-h-[calc(100dvh-2rem)] w-full max-w-[calc(100%-2rem)] flex-col overflow-y-auto -translate-x-1/2 -translate-y-1/2 gap-4 rounded-xl bg-popover px-6 pt-[22px] pb-5 text-sm text-popover-foreground shadow-pop ring-1 ring-foreground/10 duration-100 outline-none data-[size=lg]:sm:max-w-[780px] data-[size=md]:sm:max-w-[560px] data-[size=sm]:sm:max-w-[460px] data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95",
           className,
         )}
         {...props}
@@ -80,6 +85,24 @@ function DialogContent({
 function DialogHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div data-slot="dialog-header" className={cn("flex flex-col gap-1", className)} {...props} />
+  );
+}
+
+/**
+ * What sits between a dialog's header and its footer. It takes what height is left and scrolls.
+ * A list inside it that should scroll on its own, with words or an alert under it kept in view,
+ * takes `min-h-0 overflow-y-auto`.
+ */
+function DialogBody({ className, ...props }: React.ComponentProps<"div">) {
+  return (
+    <div
+      data-slot="dialog-body"
+      className={cn(
+        "-mx-6 -my-1 flex min-h-0 flex-col gap-4 overflow-y-auto overscroll-contain px-6 py-1",
+        className,
+      )}
+      {...props}
+    />
   );
 }
 
@@ -133,6 +156,7 @@ function DialogDescription({ className, ...props }: DialogPrimitive.Description.
 
 export {
   Dialog,
+  DialogBody,
   DialogClose,
   DialogContent,
   DialogDescription,
