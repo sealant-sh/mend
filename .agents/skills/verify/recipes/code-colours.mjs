@@ -62,6 +62,18 @@ const partial = (cut) =>
       .join("\n"),
   ].join("\n\n");
 
+/** The colour of each coloured piece of a code block: its text, its style, and as drawn. */
+const coloursIn = (block) =>
+  block.evaluate((element) =>
+    [...element.querySelectorAll("span[style]")].map((span) => [
+      span.textContent,
+      span.style.color,
+      getComputedStyle(span).color,
+    ]),
+  );
+/** The first coloured piece holding `words`. */
+const find = (pieces, words) => pieces.find(([text]) => text.includes(words));
+
 const visible = (locator) => locator.filter({ visible: true }).first();
 
 const skillMd = (name) =>
@@ -124,15 +136,6 @@ export default async ({ page, web, capture, note }) => {
       window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries({
         queryKey: [["sessions"]],
       }),
-    );
-  /** The colour of each coloured piece of a code block, by its text, from the page. */
-  const coloursIn = (block) =>
-    block.evaluate((element) =>
-      [...element.querySelectorAll("span[style]")].map((span) => [
-        span.textContent,
-        span.style.color,
-        getComputedStyle(span).color,
-      ]),
     );
 
   await page.setViewportSize(DESKTOP);
@@ -231,7 +234,6 @@ export default async ({ page, web, capture, note }) => {
   );
   const ts = await coloursIn(tsBlock);
   const sh = await coloursIn(shBlock);
-  const find = (pieces, words) => pieces.find(([text]) => text.includes(words));
   const keyword = find(ts, "export");
   const comment = find(ts, "Give up");
   const string = find(sh, "Retry checkout calls");
@@ -263,15 +265,7 @@ export default async ({ page, web, capture, note }) => {
   await settled();
   await both("fixture-conversation");
   await setTheme("dark");
-  const darkKeyword = await tsBlock.evaluate((element) =>
-    [...element.querySelectorAll("span[style]")].find((span) => span.textContent.includes("export"))
-      ? getComputedStyle(
-          [...element.querySelectorAll("span[style]")].find((span) =>
-            span.textContent.includes("export"),
-          ),
-        ).color
-      : "",
-  );
+  const darkKeyword = find(await coloursIn(tsBlock), "export")?.[2] ?? "";
   await setTheme("light");
   if (darkKeyword === keyword[2])
     throw new Error(`the keyword is ${darkKeyword} in light and dark`);
