@@ -24,15 +24,18 @@ start)
   export MEND_VERIFY_PRIVATE
   node "$here/guard/policy.mjs" target "$web" || exit 97
   mkdir -p "$side/config" "$side/user-data" && chmod 700 "$side"
-  Xvfb "$display" -screen 0 1440x900x24 -nolisten tcp > /dev/null 2>&1 &
+  Xvfb "$display" -screen 0 1440x900x24 -nolisten tcp < /dev/null > /dev/null 2>&1 &
   echo $! > "$pids"
   sleep 1
-  (cd "$app" && env -u MEND_TOKEN -u MEND_URL -u MEND_DESKTOP_SERVER_URL -u MEND_DESKTOP_START_AT \
-    -u WAYLAND_DISPLAY -u ELECTRON_OZONE_PLATFORM_HINT -u ELECTRON_RUN_AS_NODE \
-    DISPLAY="$display" XDG_CONFIG_HOME="$side/config" MEND_USER_DATA="$side/user-data" \
-    ./node_modules/.bin/electron . --remote-debugging-port="$port" --ozone-platform=x11 \
-    > "$side/desktop.log" 2>&1 &
-   echo $! >> "$pids")
+  (
+    cd "$app"
+    env -u MEND_TOKEN -u MEND_URL -u MEND_DESKTOP_SERVER_URL -u MEND_DESKTOP_START_AT \
+      -u WAYLAND_DISPLAY -u ELECTRON_OZONE_PLATFORM_HINT -u ELECTRON_RUN_AS_NODE \
+      DISPLAY="$display" XDG_CONFIG_HOME="$side/config" MEND_USER_DATA="$side/user-data" \
+      ./node_modules/.bin/electron . --remote-debugging-port="$port" --ozone-platform=x11 \
+      < /dev/null > "$side/desktop.log" 2>&1 &
+    echo $! >> "$pids"
+  )
   i=0
   until curl -fsS "http://127.0.0.1:$port/json/version" > /dev/null 2>&1; do
     i=$((i + 1)); [ "$i" -gt 60 ] && { echo "drive-desktop: no CDP on :$port after 60 s; see $side/desktop.log" >&2; exit 1; }
