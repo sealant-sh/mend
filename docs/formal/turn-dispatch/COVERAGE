@@ -32,7 +32,9 @@
 # memory limit during it) and nothing else, and toTurn decodes that column. Neither writes a turn's
 # status or provider turn id, nor claims, binds, completes or cancels one, so no action models it.
 # Full run at 61bf84dcb8: every row as expected.
-sync 61bf84dcb876afec3092b06fae9d472c6306a029
+# cb5993b958 is the same SLNT-1233 commit rebased on main at 6d443dff6, whose two new commits
+# changed no covered file: the covered code is 61bf84dcb8's, which the full run above checked.
+sync cb5993b95885c57e868d13de47eff7c14e3f8264
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
