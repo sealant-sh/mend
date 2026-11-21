@@ -130,13 +130,16 @@ export default async ({ page, web, capture, note }) => {
     await send(SECOND);
     await turnsEnded(2);
     await checkpointLines().first().waitFor({ timeout: 60_000 });
-    const chain = await page.evaluate(async (sessionId) => {
+    const checkpoints = await page.evaluate(async (sessionId) => {
       const { trpcClient } = window["__TSR_ROUTER__"].options.context;
       const detail = await trpcClient.sessions.detail.query({ id: sessionId });
-      return detail.checkpoints.map(
-        (each) => `${each.ordinal} ${each.trigger} ${new Date(each.createdAt).toISOString()}`,
-      );
+      return detail.checkpoints.map((each) => ({
+        id: each.id,
+        ordinal: each.ordinal,
+        words: `${each.ordinal} ${each.trigger} ${new Date(each.createdAt).toISOString()}`,
+      }));
     }, id);
+    const chain = checkpoints.map((each) => each.words);
     const shownLines = await checkpointLines().count();
     note(
       `two turns ended; the conversation shows ${shownLines} checkpoint line(s); the chain: ${chain.join(", ")}`,
@@ -150,29 +153,17 @@ export default async ({ page, web, capture, note }) => {
     const ordinal = Number(/Checkpoint (\d+)/.exec(title)?.[1]);
     await page.keyboard.press("Escape");
     await page.mouse.move(0, 0);
-    /** Opens the details of the line whose checkpoint is `ordinal`, whatever its place. */
-    const openTurnTwoLine = async () => {
-      for (let index = 0; index < (await checkpointLines().count()); index++) {
-        await openLine(checkpointLines().nth(index));
-        const named = await details()
-          .getByText(/^Checkpoint \d+/)
-          .first()
-          .innerText();
-        if (named.startsWith(`Checkpoint ${ordinal}`)) return;
-        await page.keyboard.press("Escape");
-        await page.mouse.move(0, 0);
-      }
-      throw new Error(`no checkpoint line opens checkpoint ${ordinal}`);
-    };
     note(`the second turn's line is checkpoint ${ordinal}`);
 
-    // While a turn works, going back is refused and nothing changes.
+    const targetId = checkpoints.find((each) => each.ordinal === ordinal)?.id;
+
+    // While a turn works, going back from a checkpoint line is refused and nothing changes.
     await send(SLOW);
     await visible(page.getByRole("button", { name: "Stop turn" })).waitFor({ timeout: 120_000 });
-    await openTurnTwoLine();
+    await openLine(checkpointLines().last());
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     const confirm = () =>
-      visible(page.getByRole("dialog").filter({ hasText: "Go back to checkpoint" }));
+      visible(page.getByRole("dialog").filter({ hasText: /Go back to (a )?checkpoint/ }));
     await confirm().getByRole("button", { name: "Go back", exact: true }).click();
     await confirm().getByText(BUSY).waitFor({ timeout: 60_000 });
     note(`going back while the third turn works reads: "${BUSY}"`);
@@ -182,14 +173,20 @@ export default async ({ page, web, capture, note }) => {
     await confirm().getByRole("button", { name: "Cancel" }).click();
     await turnsEnded(3);
 
-    // Once it ends, going back goes through.
-    note(
-      `after the third turn the conversation shows ${await checkpointLines().count()} checkpoint line(s)`,
-    );
-    await openTurnTwoLine();
+    // Once it ends, going back goes through; from the Change tab's range picker here, by the
+    // second turn's checkpoint (the conversation's lines follow SLNT-1200's turn windows).
+    await page.goto(`${web}/sessions/${id}/change`);
+    await visible(page.getByRole("button", { name: /^Show changes:/ })).waitFor({
+      timeout: 90_000,
+    });
+    await settled();
+    await visible(page.getByRole("button", { name: /^Show changes:/ })).click();
+    await page.getByRole("menuitem", { name: "Go back to a checkpoint…" }).click();
+    await confirm().getByRole("combobox").selectOption(targetId);
+    await confirm()
+      .getByText(`go back to how they were at checkpoint ${ordinal}`, { exact: false })
+      .waitFor();
     const target = `Checkpoint ${ordinal}`;
-    await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
-    await confirm().getByText(`Go back to checkpoint ${ordinal}?`).waitFor();
     await shot("go-back-confirm-box-desktop");
     await confirm().getByRole("button", { name: "Go back", exact: true }).click();
     const toast = page.getByText(`Went back to checkpoint ${ordinal}.`, { exact: false });
@@ -207,6 +204,8 @@ export default async ({ page, web, capture, note }) => {
     note(
       `the files at checkpoint ${restore.result.ordinal} match ${restore.target.ordinal}; Mend saved them first as ${restore.saved.ordinal}`,
     );
+    await page.goto(`${web}/sessions/${id}`);
+    await composerReady();
     const line = () =>
       visible(page.getByRole("button", { name: `Went back to checkpoint ${ordinal}` }));
     await line().waitFor({ timeout: 30_000 });
