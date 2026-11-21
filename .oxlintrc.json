@@ -235,21 +235,13 @@
       }
     },
     {
-      "files": ["apps/desktop/src/renderer/src/terminal/ghostty/**"],
-      "rules": {
-        "unicorn/consistent-function-scoping": "off",
-        "no-underscore-dangle": "off",
-        "promise/always-return": "off",
-        "promise/no-nesting": "off",
-        "import/no-cycle": "off"
-      }
-    },
-    {
-      // The web app and its UI kit, rebuilt on the Sheet design, are held to the rules below; the
-      // old app and kit, desktop, marketing and mobile are not. tooling/oxlint-plugin-mend/README.md
-      // says what each mend/ rule flags and allows. New code passes them without disable comments.
+      // The web app, its UI kit, and the desktop Connect/Offline shell on Sheet are held to the
+      // rules below; the old app and kit, marketing and mobile are not.
+      // tooling/oxlint-plugin-mend/README.md says what each mend/ rule flags and allows. New code
+      // passes them without disable comments.
       "files": [
         "apps/web/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
+        "apps/desktop/src/renderer/**/*.{ts,tsx,mts,cts,js,mjs,cjs}",
         "packages/ui/**/*.{ts,tsx,mts,cts,js,mjs,cjs}"
       ],
       "plugins": ["typescript", "import", "promise", "node", "unicorn", "react", "jsx-a11y"],

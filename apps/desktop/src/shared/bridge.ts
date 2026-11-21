@@ -1,134 +1,88 @@
 /**
- * The contract between the renderer and the main process — the ONLY way the
- * page reaches the Mend server. Main holds the server URL and the bearer
- * (the same `cli.json` that `mend login` writes, so one sign-in serves the
- * CLI and the desktop); the renderer asks for requests by path, never by URL.
+ * Contract shared by main, preload, and the local Connect/Offline shell.
  *
- * HTTP rides IPC (Node's fetch has no CORS to negotiate). The workbench event
- * stream is read in main and relayed as `onEvent`. The terminal is the one
- * held duplex the renderer opens itself: a WebSocket to `/api/tty`, the same
- * data plane the CLI uses, carrying a single-use upgrade ticket main mints.
+ * Remote Mend web pages receive only `window.mendDesktop` (and only on the main frame of the
+ * configured server origin). The local Connect/Offline shell additionally receives
+ * `window.mendShell` so it can probe and switch servers.
  */
 
-export interface ConnectionInfo {
-  /** Server base URL, e.g. http://localhost:3105. Empty when unconfigured. */
-  readonly url: string;
-  /** Whether a bearer is on file — never the bearer itself. */
-  readonly signedIn: boolean;
-  /** Where the credential lives, for the connect screen to name it. */
-  readonly configPath: string;
+export type DesktopPlatform = "darwin" | "linux" | "win32";
+
+export type DesktopMenuAction = "new-session" | "open-settings" | "close-tab" | "switch-server";
+
+export type ShellMode = "connect" | "offline";
+
+export interface ShellState {
+  readonly mode: ShellMode;
+  readonly platform: DesktopPlatform;
+  /** The server currently configured, or the one that failed to load when in offline mode. */
+  readonly serverUrl: string | null;
+  /** Pre-filled suggestion on first launch (e.g. from the CLI's config, read-only). */
+  readonly suggestedUrl: string | null;
+  readonly recentServers: ReadonlyArray<string>;
+  /** True when the user opened the server switcher from an already-connected server. */
+  readonly canCancelSwitch: boolean;
+  /** Plain-English reason why the server could not be reached, when in offline mode. */
+  readonly offlineReason: string | null;
+  /** True while main is polling `/api/health` in the background. */
+  readonly reconnecting: boolean;
 }
 
-export interface ApiRequest {
-  readonly method: "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE";
-  readonly path: string;
-  readonly body?: unknown;
-}
-
-export interface ApiResponse {
-  readonly status: number;
-  readonly ok: boolean;
-  /** JSON when the server sent JSON; raw text otherwise; null on empty. */
-  readonly body: unknown;
-}
-
-/** An authorize request is open: the human approves `code` at `authorizeUrl` in a browser. */
-export type AuthorizeOpened =
-  | {
-      readonly ok: true;
-      /** The server URL as normalized for dialing. */
-      readonly url: string;
-      readonly code: string;
-      readonly authorizeUrl: string;
-      /** Estimated request expiry on this machine's clock; the server judges approval. */
-      readonly expiresAt: string;
-    }
+export type ConnectResult =
+  | { readonly ok: true; readonly url: string }
   | { readonly ok: false; readonly reason: string };
 
-/** The request's decision. Approved means saved: this machine is now a listed device. */
-export type AuthorizeResult =
-  | {
-      readonly ok: true;
-      readonly url: string;
-      readonly email: string;
-      readonly deviceName: string;
-    }
-  | { readonly ok: false; readonly reason: string };
+export interface DesktopBootstrap {
+  readonly kind: "shell" | "server" | "untrusted";
+  readonly platform: DesktopPlatform;
+  readonly version: string;
+  readonly serverUrl: string | null;
+  readonly fullScreen: boolean;
+}
 
 /**
- * What signing out did on the server. The file's token is removed in every case but
- * `environment`: MEND_TOKEN supplies the token then, and nothing is changed.
+ * Capability surface exposed as `window.mendDesktop` on trusted main frames (the active Mend
+ * server and the local shell). `apps/web` detects Electron by checking `window.mendDesktop`.
  */
-export interface SignOutResult {
-  readonly revoke: "revoked" | "not-revoked" | "no-device" | "environment";
+export interface MendDesktopBridge {
+  readonly platform: DesktopPlatform;
+  readonly version: string;
+  readonly serverUrl: string | null;
+  readonly isFullScreen: () => boolean;
+  readonly onFullScreenChange: (listener: (fullScreen: boolean) => void) => () => void;
+  readonly getZoomFactor: () => number;
+  readonly setBadgeCount: (count: number) => Promise<void>;
+  readonly switchServer: () => Promise<void>;
+  readonly openExternal: (url: string) => Promise<boolean>;
+  readonly onMenuAction: (listener: (action: DesktopMenuAction) => void) => () => void;
 }
 
-/** One line from `/api/events` (plan §9.4 — payloads are pointers). */
-export interface WorkbenchEvent {
-  readonly type: string;
-  readonly projectId?: string;
-  readonly sessionId?: string;
-  readonly changeId?: string;
-  readonly sequence?: string;
-  readonly line?: string;
-}
-
-export type EventsState = "connecting" | "live" | "reconnecting" | "unauthorized" | "off";
-
-export type TtyTarget =
-  | { readonly kind: "session"; readonly id: string }
-  | { readonly kind: "process"; readonly id: string };
-
-export interface MendBridge {
-  readonly platform: "darwin" | "linux" | "win32";
-  readonly connection: {
-    readonly get: () => Promise<ConnectionInfo>;
-    /** Open an authorize request and send the browser to it (`mend login`'s walk). */
-    readonly authorize: (url: string) => Promise<AuthorizeOpened>;
-    /** Resolves when the open request is approved, denied, expired or cancelled. */
-    readonly awaitAuthorize: () => Promise<AuthorizeResult>;
-    readonly cancelAuthorize: () => Promise<void>;
-    readonly setToken: (input: { readonly url: string; readonly token: string }) => Promise<void>;
-    /** Revokes this machine's device on the server when it is one, then forgets the token. */
-    readonly signOut: () => Promise<SignOutResult>;
-    /** Fires after any change to the connection (sign-in, sign-out, file edit). */
-    readonly onChange: (listener: (info: ConnectionInfo) => void) => () => void;
-  };
-  readonly api: {
-    readonly request: (input: ApiRequest) => Promise<ApiResponse>;
-  };
-  readonly tty: {
-    /** A ready-to-open WebSocket URL for the target, replaying from `from`. */
-    readonly url: (target: TtyTarget, from: string) => Promise<string>;
-  };
-  readonly events: {
-    readonly onEvent: (listener: (event: WorkbenchEvent) => void) => () => void;
-    readonly onState: (listener: (state: EventsState) => void) => () => void;
-  };
-  readonly shell: {
-    readonly openExternal: (url: string) => Promise<void>;
-  };
-  readonly window: {
-    readonly minimize: () => void;
-    readonly toggleMaximize: () => void;
-    readonly close: () => void;
-  };
+/**
+ * Local-only capability surface exposed as `window.mendShell` on the built-in Connect and Offline
+ * screens. Never exposed to remote origins.
+ */
+export interface MendShellBridge {
+  readonly getState: () => Promise<ShellState>;
+  readonly onStateChange: (listener: (state: ShellState) => void) => () => void;
+  readonly connect: (rawUrl: string) => Promise<ConnectResult>;
+  readonly retry: () => Promise<ConnectResult>;
+  readonly removeRecent: (url: string) => Promise<ShellState>;
+  readonly cancelSwitch: () => Promise<void>;
 }
 
 export const IPC = {
-  connectionGet: "mend:connection:get",
-  connectionAuthorize: "mend:connection:authorize",
-  connectionAwaitAuthorize: "mend:connection:await-authorize",
-  connectionCancelAuthorize: "mend:connection:cancel-authorize",
-  connectionSetToken: "mend:connection:set-token",
-  connectionSignOut: "mend:connection:sign-out",
-  connectionChanged: "mend:connection:changed",
-  apiRequest: "mend:api:request",
-  ttyUrl: "mend:tty:url",
-  event: "mend:events:event",
-  eventsState: "mend:events:state",
-  openExternal: "mend:shell:open-external",
-  windowMinimize: "mend:window:minimize",
-  windowToggleMaximize: "mend:window:toggle-maximize",
-  windowClose: "mend:window:close",
+  bootstrap: "mend:desktop:bootstrap",
+  getFullScreen: "mend:desktop:get-full-screen",
+  fullScreenChanged: "mend:desktop:full-screen-changed",
+  setBadgeCount: "mend:desktop:set-badge-count",
+  switchServer: "mend:desktop:switch-server",
+  openExternal: "mend:desktop:open-external",
+  menuAction: "mend:desktop:menu-action",
+
+  shellGetState: "mend:shell:get-state",
+  shellStateChanged: "mend:shell:state-changed",
+  shellConnect: "mend:shell:connect",
+  shellRetry: "mend:shell:retry",
+  shellRemoveRecent: "mend:shell:remove-recent",
+  shellCancelSwitch: "mend:shell:cancel-switch",
 } as const;
