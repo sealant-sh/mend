@@ -1,13 +1,20 @@
 import { isRemovalFenced } from "@mend/db";
 import { Session } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
+import { it } from "@mend/test-ci/effect-vitest";
 import type { CreateOptions } from "@sealant/sdk";
 import { Deferred, Effect, Exit, Fiber } from "effect";
-import { describe, expect, it } from "vitest";
+import { describe, expect } from "vitest";
 
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 import { launchOnce } from "./engine/capture-fixture.ts";
-import { sealantLaunchLayer, setup, withEngine } from "./engine/fixture.ts";
+import { makeEngineClock } from "./engine/clock-fixture.ts";
+import {
+  sealantLaunchLayer,
+  setup,
+  withEngine,
+  withPreparedEngineEffect,
+} from "./engine/fixture.ts";
 
 /**
  * What a worktree removal counts as still saving (`SessionEngine.captureHolds`, docs/adr/0007
@@ -114,6 +121,72 @@ describe("new work in a session a removal has marked", () => {
       { sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned) },
     );
   });
+});
+
+describe("a session that ends while a removal marks it", () => {
+  it.effect(
+    "still ends its workspace: the checkpoint the mark refuses is not taken, and the rest of the end goes on",
+    () =>
+      Effect.gen(function* () {
+        // Check VM, preview 292, 21 Nov 2026 (SLNT-1243): an automatic install's shell exited
+        // while a project removal held its mark. The end's checkpoint was refused, and that
+        // refusal ended the rest of the end with it: the workspace was never stopped, so every
+        // later removal of the project was refused as `executor not ended`.
+        const created: CreateOptions[] = [];
+        const clock = yield* makeEngineClock(["processes", "sessions", "checkpoints"]);
+        const stopped = clock.watched<string>();
+        const { ptyStates } = clock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, _tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "shell",
+                label: "install · mend",
+                name: null,
+                ownerUserId: "user-fixture",
+                start: { kind: "base", base: null },
+              });
+              yield* engine.launch(session.id, ["sh", "-lc", "true"]);
+              const agent = [...world.processes.values()].find(
+                (process) => process.kind === "agent-pty",
+              );
+              if (agent === undefined || agent.sealantSessionId === null) {
+                return yield* Effect.die("the launch recorded no agent PTY");
+              }
+              const checkpointsBefore = world.checkpoints.length;
+              world.removalMarkedSessions.add(session.id);
+              ptyStates.set(agent.sealantSessionId, {
+                status: "exited",
+                exitCode: 0,
+                outputHighWater: 0n,
+              });
+              yield* clock.nextLook(agent.sealantSessionId, () => true);
+              yield* clock.untilChanged(
+                () => stopped.length > 0,
+                "the end's sweep stops the workspace nothing holds",
+              );
+              expect(stopped).toEqual(["workspace-1"]);
+              expect(world.sessions.get(session.id)?.status).toBe("completed");
+              expect(world.checkpoints).toHaveLength(checkpointsBefore);
+            }),
+          {
+            prepareWorld: clock.prepareWorld,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              stopped,
+              undefined,
+              undefined,
+              undefined,
+              ptyStates,
+            ),
+          },
+        );
+      }),
+  );
 });
 
 /** A platform that holds every workspace create until `proceed`, saying when one is `reached`. */

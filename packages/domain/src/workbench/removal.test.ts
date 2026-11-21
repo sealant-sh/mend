@@ -494,6 +494,35 @@ describe("projectRefusalWords", () => {
       "Mend kept this project. Kostas's session in api-v2 is live. fix-auth holds Anna's change, which is not on origin. Stop, land or remove those in Mend, then remove the project again.",
     );
   });
+
+  // SLNT-1243: an install session that had ended held the removal as `executor not ended`, and the
+  // words told the person to stop it, which Mend then refused.
+  it("asks to wait, never to stop, when only a workspace still saving or ending holds it", () => {
+    const ending: RemovalBlocker = {
+      _tag: "Saving",
+      worktreeId: WorktreeId.make("w-3"),
+      worktreeName: "wt-c3ef6682",
+      holds: [{ sessionId: SessionId.make("s-3"), kind: "executor", via: "own" }],
+    };
+    expect(projectRefusalWords([ending], "in-mend")).toBe(
+      "not removed · wt-c3ef6682 is executor not ended · 1 session · wait for those workspaces to save and end, then remove the project again.",
+    );
+    expect(projectRefusalWords([ending], "outside-mend")).toBe(
+      "Mend kept this project. wt-c3ef6682 is executor not ended · 1 session. Wait for those workspaces to save and end, then remove the project again.",
+    );
+    const live: RemovalBlocker = {
+      _tag: "SessionLive",
+      worktreeId: WorktreeId.make("w-2"),
+      worktreeName: "api-v2",
+      sessionId: SessionId.make("s-9"),
+      owner: kostas,
+      role: "inhabitant",
+      activity: "live",
+    };
+    expect(projectRefusalWords([live, ending], "in-mend")).toBe(
+      "not removed · Kostas's session in api-v2 is live · wt-c3ef6682 is executor not ended · 1 session · stop, land or remove those first, wait for the workspaces to save and end, then remove the project again.",
+    );
+  });
 });
 
 describe("owner words", () => {
