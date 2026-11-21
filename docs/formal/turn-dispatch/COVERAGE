@@ -47,7 +47,16 @@
 # and when the opening turn is written, not any turn's status or provider turn id, or any hot-pool,
 # claim, retire, drain or discard call, so no action models them. --quick run at 5e97ae3e2e: every row
 # as expected.
-sync 5e97ae3e2e18d2c0d75d4ee531a436b4e8691cde
+# ffe6f9f15a is the SLNT-1235 branch rebased on main at 78bfb09e7 (SLNT-1237's squash, which the
+# lines above account for). agent-conversation.ts: landHistoryTurns lands a terminal's finished
+# turns, and binds one onto the row of a message the composer typed into that terminal (a turn on
+# the terminal's agent-pty process with no provider turn id); startTerminalTurn, which also moves
+# that turn to the conversation's end, requeueTerminalTurn and settleTerminalTurns move only such
+# terminal turns. No protocol host dispatches a terminal process's turns; one still queued when
+# the session switches back to a conversation moves onto the new process through the protocol
+# host's takeQueuedTurns, as any queued turn of an earlier process does. No action changes. Full
+# run at ffe6f9f15a: every row as expected.
+sync ffe6f9f15a3981a670f328f50a9cabe9dc351d2f
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
