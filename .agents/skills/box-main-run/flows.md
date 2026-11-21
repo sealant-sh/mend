@@ -2443,6 +2443,27 @@ lane changed.
   `apps/web/src/routes/_inbox.projects.$projectId.worktrees.tsx`,
   `apps/web/src/lib/project-worktrees.ts`, `apps/web/src/lib/worktree-removal.ts`
 
+### worktrees.new-web-long-dialogs
+
+- **Map:** worktrees.md `worktrees-clear-settled`; services.md (the fixed preview address)
+- **Needs:** no turn; web; `verify-fixture`
+- **Do:** Drive the recipe `new-web-long-dialogs`. It makes worktrees in `verify-fixture` until it
+  has 80, with no sessions, then opens Clear finished… on the project's Worktrees tab and Change
+  worktree… on its Services settings (with the preview read rewritten to declare a fixed preview),
+  each at 1280 × 900 and at 390 × 844, and cancels each. Clear finished is never confirmed. It
+  removes the worktrees it made.
+- **See:** in each dialog, and in the phone sheet, the title and the buttons are on screen and the
+  confirm button can be clicked; the list of worktrees scrolls inside the dialog down to its last
+  row, and the words under the list stay in view. It fails (SLNT-1242) on a build whose dialog had
+  no maximum height: the recipe stops with "runs past the window".
+- **Mode:** `scripted` (recipes/new-web-long-dialogs.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `packages/ui/src/components/ui/dialog.tsx`,
+  `apps/web/src/components/projects/overlay.tsx`,
+  `apps/web/src/components/project/clear-finished.tsx`,
+  `apps/web/src/components/settings/project-services-page.tsx`
+
 ### resources.new-web-resources
 
 - **Map:** ADR 0019 resources, as the new web app's Resources tab shows them (no feature file): the

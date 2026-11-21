@@ -288,7 +288,9 @@ function ChangeWorktree({
         onValueChange={(value: unknown) => {
           if (typeof value === "string") setPicked(value);
         }}
-        className="gap-0 border-y border-border"
+        // Scrolls inside the dialog (SLNT-1242); each row keeps its full height (a grid row could
+        // otherwise shrink to a phone row's 44 px minimum to make room).
+        className="min-h-0 auto-rows-max gap-0 overflow-y-auto border-y border-border"
       >
         {choices.map((entry) => {
           const value = entry.kind === "default" ? "default" : entry.id;

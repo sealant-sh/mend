@@ -81,6 +81,7 @@ import {
 } from "@mend/ui/components/ui/context-menu";
 import {
   Dialog,
+  DialogBody,
   DialogClose,
   DialogContent,
   DialogDescription,
@@ -315,6 +316,36 @@ function DialogDemo() {
           </DialogContent>
         </Dialog>
       ))}
+      {/* A long list: the dialog stays inside the window, the list scrolls, the note stays. */}
+      <Dialog defaultOpen={open === "dialog-long"}>
+        <DialogTrigger render={<Button variant="secondary" />}>Dialog with 80 rows</DialogTrigger>
+        <DialogContent size="md">
+          <DialogHeader>
+            <DialogTitle>Clear finished worktrees?</DialogTitle>
+            <DialogDescription>
+              Mend removes the worktrees where no session is running or saving.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogBody>
+            <ul aria-label="Finished worktrees" className="min-h-0 overflow-y-auto border-y">
+              {Array.from({ length: 80 }, (_, at) => (
+                <li
+                  key={at}
+                  className="flex justify-between gap-6 border-b py-2.5 font-mono text-meta last:border-b-0"
+                >
+                  <span>worktree-{String(at + 1).padStart(2, "0")}</span>
+                  <span className="font-sans text-muted-foreground">No sessions yet</span>
+                </li>
+              ))}
+            </ul>
+            <p className="text-muted-foreground">A worktree whose change was never landed stays.</p>
+          </DialogBody>
+          <DialogFooter>
+            <DialogClose render={<Button variant="secondary" />}>Cancel</DialogClose>
+            <Button variant="destructive">Clear finished worktrees</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AlertDialog defaultOpen={open === "alert-dialog"}>
         <AlertDialogTrigger render={<Button variant="destructive" />}>
           Stop session…
