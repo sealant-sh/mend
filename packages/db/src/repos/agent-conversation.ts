@@ -435,6 +435,15 @@ export class AgentConversationRepo extends Context.Service<
       id: AgentTurnSteerId,
       delivery: Exclude<AgentTurnSteerDelivery, { readonly _tag: "Sending" | "Queued" }>,
     ) => Effect.Effect<AgentTurnSteer>;
+    /**
+     * The agent took a steer into its turn, as the process's harness showed it: stamps when, once.
+     * A steer that went as a next turn or wasn't sent is never taken; one of another process isn't
+     * this process's to stamp. Null when nothing changed.
+     */
+    readonly markTurnSteerTaken: (
+      id: AgentTurnSteerId,
+      processId: SessionProcessId,
+    ) => Effect.Effect<AgentTurnSteer | null>;
     readonly queueTurnSteer: (
       id: AgentTurnSteerId,
       processId: SessionProcessId | null,
@@ -1579,6 +1588,29 @@ export const AgentConversationRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("steer disappeared");
       return toSteer(row);
+    });
+
+    const markTurnSteerTaken = Effect.fn("AgentConversationRepo.markTurnSteerTaken")(function* (
+      id: AgentTurnSteerId,
+      processId: SessionProcessId,
+    ) {
+      const now = yield* DateTime.nowAsDate;
+      const [changed] = yield* db
+        .update(agentTurnSteers)
+        .set({ takenAt: now, updatedAt: now })
+        .where(
+          and(
+            eq(agentTurnSteers.id, id),
+            eq(agentTurnSteers.processId, processId),
+            isNull(agentTurnSteers.takenAt),
+            sql`${agentTurnSteers.delivery}->>'_tag' IN ('Sending', 'Accepted', 'Unknown')`,
+          ),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      if (changed === undefined) return null;
+      yield* notify(changed.sessionId);
+      return toSteer(changed);
     });
 
     const queueTurnSteer = Effect.fn("AgentConversationRepo.queueTurnSteer")(function* (
@@ -3017,6 +3049,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       admitTurnSteer,
       steerByClientId,
       settleTurnSteer,
+      markTurnSteerTaken,
       queueTurnSteer,
       withdrawTurnSteer,
       recoverSendingSteers,

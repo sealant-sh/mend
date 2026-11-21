@@ -83,19 +83,25 @@ if (scenario === "hang") {
       id: steer.id,
       params: {
         threadId: "thread-owned",
+        clientUserMessageId: "6f1d2c3b-9a8e-4f70-8d61-5c4b3a291807",
         input: [{ type: "text", text: "steer fixture" }],
         expectedTurnId: "turn-1",
       },
     });
     emit({ id: steer.id, result: { turnId: "turn-1" } });
-    emit({
-      method: "item/completed",
-      params: {
-        threadId: "thread-owned",
-        turnId: "turn-1",
-        item: { id: "steer-echo", type: "userMessage", clientId: null, content: [] },
+    // Codex records the steer's words under the id it was sent with when the turn takes them.
+    const echo = {
+      threadId: "thread-owned",
+      turnId: "turn-1",
+      item: {
+        id: "steer-echo",
+        type: "userMessage",
+        clientId: steer.params.clientUserMessageId,
+        content: [],
       },
-    });
+    };
+    emit({ method: "item/started", params: echo });
+    emit({ method: "item/completed", params: echo });
     emit({
       method: "item/completed",
       params: {

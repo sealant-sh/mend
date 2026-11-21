@@ -672,3 +672,65 @@ describe("the sender's own messages over a conversation read a window at a time"
     ]);
   });
 });
+
+/** The conversation as rows: a message by its words, an agent block by its items' ids. */
+const order = (view: ConversationView) =>
+  conversationRows(view).map((row) =>
+    row.kind === "you"
+      ? row.text
+      : row.segments.flatMap((segment) =>
+          segment.kind === "steps"
+            ? segment.items.map((each) => each.id)
+            : segment.kind === "text"
+              ? [segment.item.id]
+              : [],
+        ),
+  );
+
+describe("a message sent into a running turn", () => {
+  const running = turn("t-1", 1, "running", "2026-11-21T01:25:00.000Z");
+  const steer = {
+    id: "st-1",
+    turnId: "t-1",
+    ordinal: 1,
+    author: "alice",
+    input: "start skyflow",
+    createdAt: "2026-11-21T01:25:10.000Z",
+    delivery: { _tag: "Accepted", evidence: "provider-acknowledged" } as const,
+  };
+  // Started before the message, started after it but before the agent read it, and after.
+  const before = item("t-1", "command-execution", "2026-11-21T01:25:05.000Z");
+  const unread = item("t-1", "command-execution", "2026-11-21T01:25:12.000Z");
+  const answer = item("t-1", "assistant-message", "2026-11-21T01:25:20.000Z");
+
+  it("stays last in its turn until the agent takes it, as its bubble showed at Send", () => {
+    const view: ConversationView = {
+      turns: [{ ...running, steers: [{ ...steer, takenAt: null }] }],
+      items: [before, unread],
+      requests: [],
+    };
+    expect(order(view)).toEqual(["ask 1", [before.id, unread.id], "start skyflow"]);
+  });
+
+  it("sits where the agent took it: what it did before reading stays above", () => {
+    const view: ConversationView = {
+      turns: [{ ...running, steers: [{ ...steer, takenAt: "2026-11-21T01:25:15.000Z" }] }],
+      items: [before, unread, answer],
+      requests: [],
+    };
+    expect(order(view)).toEqual(["ask 1", [before.id, unread.id], "start skyflow", [answer.id]]);
+  });
+
+  it("sits where it was sent once its turn ended with no report that the agent took it", () => {
+    const ended = turn("t-1", 1, "completed", "2026-11-21T01:25:00.000Z");
+    // A finished turn folds its steps away, so its replies show where the message sits.
+    const first = item("t-1", "assistant-message", before.createdAt);
+    const second = item("t-1", "assistant-message", unread.createdAt);
+    const view: ConversationView = {
+      turns: [{ ...ended, steers: [steer] }],
+      items: [first, second, answer],
+      requests: [],
+    };
+    expect(order(view)).toEqual(["ask 1", [first.id], "start skyflow", [second.id, answer.id]]);
+  });
+});

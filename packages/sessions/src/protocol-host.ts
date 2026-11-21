@@ -22,6 +22,7 @@ import {
   McpAppsRepo,
 } from "@mend/db";
 import {
+  AgentTurnSteerId,
   DispatchAttemptId,
   type AgentItemId,
   type AgentTurnId,
@@ -1289,6 +1290,13 @@ export const ProtocolHostLive: Layer.Layer<
         case "drain.ended":
           yield* forkSealantBackground(dispatchNext(entry), scope);
           return;
+        case "steer.taken": {
+          // The id comes back from the harness: one that isn't a steer id is no steer of Mend's.
+          const steerId = Schema.decodeUnknownOption(AgentTurnSteerId)(event.steerId);
+          if (steerId._tag === "Some")
+            yield* conversations.markTurnSteerTaken(steerId.value, entry.process.id);
+          return;
+        }
         case "item.updated": {
           const turn = yield* lookupTurn(entry.process.sessionId, event.item.providerTurnId);
           // A background task outlives the turn that started it and keeps reporting there.

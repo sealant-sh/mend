@@ -2305,6 +2305,8 @@ export const agentTurnSteers = pgTable(
       .$type<AgentTurnId>()
       .references(() => agentTurns.id),
     clientSteerId: uuid(),
+    /** When the agent took the words into its turn (migration 0235); null until it did. */
+    takenAt: timestamp({ mode: "date", withTimezone: true }),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },

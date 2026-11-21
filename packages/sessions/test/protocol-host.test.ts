@@ -2559,6 +2559,7 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
           threadId: "thread-1",
+          clientUserMessageId: receipt.id,
           expectedTurnId: "native",
           input: [{ type: "text", text: input.input }],
         });
@@ -2568,8 +2569,34 @@ describe.each(["turn", "message"] as const)("ProtocolHost through %s", (via) => 
           billedUserId: "owner-1",
           input: "start",
         });
+        // Codex takes the words at its next step, recording them under the steer's id.
+        expect(receipt.takenAt).toBeNull();
+        const saved = () =>
+          world.steerStore
+            .listConversationTurns(sessionId)
+            .pipe(Effect.map((all) => all.flatMap((each) => each.steers)[0]));
+        peer.push({
+          method: "item/started",
+          params: {
+            threadId: "thread-1",
+            turnId: "native",
+            item: {
+              type: "userMessage",
+              id: "user-steer",
+              clientId: receipt.id,
+              content: [{ type: "text", text: input.input }],
+            },
+          },
+        });
+        let taken = yield* saved();
+        for (let tries = 0; taken?.takenAt == null && tries < 1000; tries += 1) {
+          yield* Effect.yieldNow;
+          taken = yield* saved();
+        }
+        expect(taken?.takenAt).toBeInstanceOf(Date);
+        expect(taken?.delivery).toEqual(receipt.delivery);
         yield* host.detach(processId);
-        expect(yield* sendSteer(host, input)).toEqual(receipt);
+        expect((yield* sendSteer(host, input)).id).toEqual(receipt.id);
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
   );

@@ -74,6 +74,8 @@ export type ClaudeTurnEffect =
       readonly cause: "sent" | "harness" | "replay";
     }
   | { readonly _tag: "SegmentClosed"; readonly turnId: string }
+  /** Claude opened the continuation a steer asked for: it reads the steer's words now. */
+  | { readonly _tag: "SteerTaken"; readonly turnId: string; readonly steerId: string }
   | { readonly _tag: "DrainEnded" }
   | {
       readonly _tag: "TurnCompleted";
@@ -252,7 +254,7 @@ const foldTurn = (state: ClaudeTurns, input: ClaudeTurnInput): ClaudeTurnFold =>
             ...state,
             turn: { _tag: "Running", turnId: turn.turnId, segments: turn.segments },
           },
-          effects: [],
+          effects: [{ _tag: "SteerTaken", turnId: turn.turnId, steerId: turn.controlId }],
         };
       }
       if ((turn._tag !== "Idle" && turn._tag !== "Draining") || input.harnessTurnId === null) {

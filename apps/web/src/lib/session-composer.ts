@@ -1,4 +1,4 @@
-import { type AgentSteerDeliveryDto, isOpenTurn } from "@mend/agent-conversation";
+import { type AgentTurnSteerDto, isOpenTurn } from "@mend/agent-conversation";
 import {
   CONVERSATION_HARNESSES,
   type PermissionMode,
@@ -183,27 +183,27 @@ export const shownStatus = (
 
 /**
  * What the byline under a message sent into a running turn says of it: that it went into the
- * turn and when the agent reads it, that it read it, or why it didn't get there. `turnOpen` is
- * whether that turn still runs.
+ * turn and when the agent reads it, nothing once the agent took it (it reads as any sent message),
+ * or why it didn't get there. `turnOpen` is whether that turn still runs.
  */
 export const steerNote = (
-  delivery: AgentSteerDeliveryDto,
+  steer: Pick<AgentTurnSteerDto, "delivery" | "takenAt">,
   agent: string,
   turnOpen: boolean,
-): { readonly words: string; readonly pending: boolean } => {
+): { readonly words: string | null; readonly pending: boolean } => {
+  const { delivery } = steer;
+  const waiting = {
+    words: `Sent into this turn. ${agent} reads it when its current step finishes.`,
+    pending: true,
+  };
+  // The harness showed the agent taking the words: whatever the send's own answer said.
+  if (steer.takenAt != null && delivery._tag !== "Queued" && delivery._tag !== "NotSent")
+    return { words: null, pending: false };
   switch (delivery._tag) {
     case "Sending":
-      return {
-        words: `Sent into this turn. ${agent} reads it when its current step finishes.`,
-        pending: true,
-      };
+      return waiting;
     case "Accepted":
-      return turnOpen
-        ? {
-            words: `Sent into this turn. ${agent} reads it when its current step finishes.`,
-            pending: true,
-          }
-        : { words: `${agent} read this during its turn`, pending: false };
+      return turnOpen ? waiting : { words: `${agent} read this during its turn`, pending: false };
     case "Queued":
       return { words: "The turn ended first. This goes as the next turn.", pending: false };
     case "NotSent":

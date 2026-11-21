@@ -32,6 +32,7 @@ type SteerMethods = Pick<
   | "admitTurnSteer"
   | "steerByClientId"
   | "settleTurnSteer"
+  | "markTurnSteerTaken"
   | "queueTurnSteer"
   | "withdrawTurnSteer"
   | "recoverSendingSteers"
@@ -225,6 +226,21 @@ export const makeSteerStore = (
         const settled = new AgentTurnSteer({ ...steer, delivery, updatedAt: new Date() });
         steers.set(id, settled);
         return settled;
+      }),
+    markTurnSteerTaken: (id, processId) =>
+      Effect.sync(() => {
+        const steer = steers.get(id);
+        if (
+          steer === undefined ||
+          steer.processId !== processId ||
+          steer.takenAt !== null ||
+          steer.delivery._tag === "Queued" ||
+          steer.delivery._tag === "NotSent"
+        )
+          return null;
+        const taken = new AgentTurnSteer({ ...steer, takenAt: new Date(), updatedAt: new Date() });
+        steers.set(id, taken);
+        return taken;
       }),
     queueTurnSteer: (id, processId, reason) =>
       Effect.suspend(() => {
