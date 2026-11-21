@@ -9,10 +9,16 @@
 // Feature ids: start-session.md start-composer (the instant start) and session-conversation.md
 // send-follow-up (a message written while the session starts). The stack's Codex login is fake, so
 // the agent starts and its first call fails later: enough for it to run and take the message.
+//
+// SLNT-1232: a message sent the instant the address moves to the session's id is the session's,
+// and what waits goes once the agent runs though the person has gone to another page meanwhile.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 const PROMPT = "Change nothing. Reply with done.";
 const FOLLOW_UP = "Then list the top-level folders.";
+const HANDOFF = "And say which one holds the tests.";
+/** How long the recipe holds the agent's launch, so the person leaves while messages wait. */
+const LAUNCH_HELD_MS = 10_000;
 const DRAFT = /\/sessions\/starting-[^/]+$/;
 const MADE = /\/sessions\/(?!starting-)[^/]+$/;
 
@@ -129,12 +135,16 @@ export default async ({ page, web, capture, note }) => {
 
   // start-composer: Start opens the session's page at once, the message on it, the row in Running.
   // The recipe holds Mend's answer 3 s, as a slow server would, to see the page before it.
+  // It also holds the agent's launch 10 s, so the session is still starting when the person leaves.
   await page.route("**/trpc/**", async (route) => {
-    if (route.request().url().includes("sessions.create"))
-      await new Promise((resolve) => setTimeout(resolve, 3_000));
+    const url = route.request().url();
+    if (url.includes("sessions.create")) await new Promise((resolve) => setTimeout(resolve, 3_000));
+    if (url.includes("sessions.launch"))
+      await new Promise((resolve) => setTimeout(resolve, LAUNCH_HELD_MS));
     await route.continue();
   });
   await task().fill(PROMPT);
+  const created = page.waitForResponse((response) => response.url().includes("sessions.create"));
   const pressed = Date.now();
   await task().press("Enter");
   await page.waitForURL(DRAFT);
@@ -158,19 +168,26 @@ export default async ({ page, web, capture, note }) => {
   await both("follow-up-waiting-desktop");
   note("on the start's page the composer is open; a message sent there waits for Codex to start");
 
+  // SLNT-1232: the person writes the next message as Mend answers, so the start's page gives way to
+  // the session's under their keys. What was typed before goes with the words; the keys after land
+  // in the session's field, which takes the focus. Before the fix they went nowhere.
+  await message().click();
+  await created;
+  await page.keyboard.type(HANDOFF, { delay: 60 });
   // Mend answers: the address moves to the session's id, the page stays, the message moves along.
   await page.waitForURL(MADE, { timeout: 60_000 });
-  await page.unroute("**/trpc/**");
+  await page.keyboard.press("Enter");
   const sessionId = new URL(page.url()).pathname.split("/").at(-1);
   made.push(sessionId);
   await page.getByText(PROMPT).filter({ visible: true }).first().waitFor();
   await page.getByText(FOLLOW_UP).filter({ visible: true }).first().waitFor();
+  await page.getByText(HANDOFF).filter({ visible: true }).first().waitFor();
   await inbox.locator(`[data-session-id="${sessionId}"]`).first().waitFor();
   if ((await inbox.locator(`[data-session-id="${draftId}"]`).count()) !== 0)
     throw new Error("the start's own row is still listed beside the session's");
   const history = await page.evaluate(() => window.history.length);
   note(
-    `Mend made ${sessionId}: the address moved to /sessions/${sessionId} in place (history ${history}), the message and the waiting one stayed, one row in Running`,
+    `Mend made ${sessionId}: the address moved to /sessions/${sessionId} in place (history ${history}), the message and the waiting one stayed, one row in Running; the message sent as the address moved shows too`,
   );
 
   // Item 1: while the session starts, the composer takes messages, never the terminal lock.
@@ -183,32 +200,63 @@ export default async ({ page, web, capture, note }) => {
     note(`the session reads ${detail.session.status}; its composer is open and says so`);
   } else note(`the session already read ${detail.session.status} when its page settled`);
 
-  // Once Codex runs and its opening turn is in, the waiting message goes after it.
-  // The server holds it as a turn after the opening one (or a steer into it): proof it was sent.
+  // SLNT-1232: the person goes to another page while both messages wait (the launch is held).
+  const waitingWhenLeft = await page
+    .getByText("Waits for Codex to start.")
+    .filter({ visible: true })
+    .count();
+  const leftAt = (await trpc("sessions.detail", { id: sessionId })).session.status;
+  await page.evaluate(() => window["__TSR_ROUTER__"].navigate({ to: "/projects" }));
+  await page.waitForURL(/\/projects$/);
+  note(
+    `left for /projects with the session ${leftAt} and ${waitingWhenLeft} message(s) reading "Waits for Codex to start."`,
+  );
+
+  // Once Codex runs and its opening turn is in, the waiting messages go after it, in order, with
+  // the session's page closed. The server holds each as a turn after the opening one (or a steer
+  // into it): proof it was sent.
   let held = { turns: [] };
-  for (let wait = 0; wait < 120; wait += 1) {
-    held = await trpc("sessions.historyTurns", { id: sessionId, cursor: null, limit: 50 });
-    if (inputsOf(held).some((input) => input.includes(FOLLOW_UP))) break;
-    if ((await text(/^Not sent\./).count()) > 0)
-      throw new Error(`the waiting message reads ${await text(/^Not sent\./).innerText()}`);
+  const sentBoth = () =>
+    [FOLLOW_UP, HANDOFF].every((words) => inputsOf(held).some((input) => input.includes(words)));
+  for (let wait = 0; wait < 120 && !sentBoth(); wait += 1) {
     await page.waitForTimeout(2_000);
+    held = await trpc("sessions.historyTurns", { id: sessionId, cursor: null, limit: 50 });
   }
+  await page.unroute("**/trpc/**");
   const inputs = inputsOf(held);
-  if (!inputs.some((input) => input.includes(FOLLOW_UP)))
+  if (!sentBoth())
     throw new Error(
-      `the server holds no turn or steer with the message: ${JSON.stringify(inputs)}`,
+      `with the page closed, the server holds no turn or steer with each message: ${JSON.stringify(inputs)}`,
     );
+  const order = [PROMPT, FOLLOW_UP, HANDOFF].map((words) =>
+    inputs.findIndex((input) => input.includes(words)),
+  );
+  if (!(order[0] === 0 && order[0] < order[1] && order[1] < order[2]))
+    throw new Error(`the messages did not reach the session in order: ${JSON.stringify(inputs)}`);
+  note(`while away on /projects, both waiting messages went, in order: ${JSON.stringify(inputs)}`);
+
+  // Back on the session: both read as sent, none waits and none reads Not sent.
+  await open(`/sessions/${sessionId}`);
+  await page.getByText(HANDOFF).filter({ visible: true }).first().waitFor();
   await text("Waits for Codex to start.").waitFor({ state: "hidden", timeout: 30_000 });
-  if (!(held.turns[0]?.input ?? "").includes(PROMPT))
-    throw new Error(`the first turn is not the opening one: ${JSON.stringify(inputs)}`);
+  if ((await text(/^Not sent\./).count()) > 0)
+    throw new Error(`a waiting message reads ${await text(/^Not sent\./).innerText()}`);
   await settled();
   await both("follow-up-sent-desktop");
-  note(
-    `Codex ran: the waiting message was sent after the opening turn; the server holds ${JSON.stringify(inputs)}`,
-  );
+  note("back on the session: the opening message, then both sent after it; nothing waits");
 
   // From a worktree's menu: the same instant start, and nothing red while the session gets ready.
   const fixture = (await trpc("projects.list")).find((each) => each.name === "verify-fixture");
+  // The CLI batch makes this worktree on a stack; a server without it (a check VM) gets it here.
+  await page.evaluate(async (projectId) => {
+    const client = window["__TSR_ROUTER__"].options.context.trpcClient;
+    const listed = JSON.stringify(await client.worktrees.list.query({ projectId }));
+    if (!listed.includes('"composer-existing"'))
+      await client.worktrees.create.mutate({
+        projectId,
+        worktree: { name: "composer-existing", base: null },
+      });
+  }, fixture.id);
   await open(`/projects/${fixture.id}/worktrees`);
   const actions = page
     .getByRole("button", { name: "Actions for composer-existing" })

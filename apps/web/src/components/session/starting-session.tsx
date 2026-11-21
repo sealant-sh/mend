@@ -91,7 +91,8 @@ export function StartingTab({ draftId }: { readonly draftId: string }) {
 /** The thread: the first message, what was sent since, and where the start has got to. */
 function StartingThread({ start }: { readonly start: PendingStart }) {
   const agent = harnessName(start.harness);
-  const outbox = useOutbox(start.draftId);
+  // Under the session's own address once Mend has made it, where the composer writes from then on.
+  const outbox = useOutbox(start.sessionId ?? start.draftId);
   const now = new Date();
   return (
     <div className="flex min-h-0 flex-1 flex-col">

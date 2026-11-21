@@ -8,6 +8,7 @@ import { HowMendFitsDialog } from "#/components/how-mend-fits-dialog";
 import { SwitchedToast } from "#/components/organization-menu";
 import { PhoneInbox } from "#/components/phone-inbox";
 import { InSheet } from "#/components/route-screens";
+import { HeldMessagesCourier } from "#/components/session/held-messages";
 import { StopSessionHost } from "#/components/session/stop-session-host";
 import { SettingsSidebar } from "#/components/settings/settings-sidebar";
 import { Toaster } from "#/components/toaster";
@@ -116,6 +117,8 @@ function InboxLayout() {
       </SearchProvider>
       <Toaster />
       <SwitchedToast />
+      {/* What was sent while a session started goes once its agent runs, whatever page is open. */}
+      <HeldMessagesCourier />
       {/* How Mend fits together, opened again from the account menu. */}
       <HowMendFitsDialog />
     </SidebarProvider>
