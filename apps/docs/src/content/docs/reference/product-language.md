@@ -65,8 +65,8 @@ Write these group names for the web app. Do not write "Now", "Needs you", "Ready
 
 ## Settings
 
-Every setting has one home and is read only from there. Nothing inherits: no project, organization
-or server value fills in one a person left unset.
+Every setting has one home, and the web app shows and changes it only there. Settings offers no
+Inherit choice.
 
 | Home             | Pages                                                                                                                         |
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
