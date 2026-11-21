@@ -108,3 +108,6 @@ path packages/sessions/src/capture-channel.ts
 # build when its cache has none.
 budget-quick 5
 budget-full 25
+# At bc6a43b874 the closed terminal's grace runs from when its last terminal closed. Full run at
+# bc6a43b874: every row as expected.
+sync bc6a43b874f66fabfbfe474bf2932eb71295037e
