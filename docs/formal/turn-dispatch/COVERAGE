@@ -39,7 +39,15 @@
 # (admitTurnMessage with no process, takeWaitingTurns at attachInternal and in waitForStart,
 # endWaitingTurns, queueOpeningTurn, rekeyWaitingTurn) and cancelOpenForTurn's notify. Full run at
 # 4681d853dc: every row as expected, counts as ROWS pins.
-sync 4681d853dcc5273dbb2aa29b6ac8459f5999d8a6
+# 5e97ae3e2e is the same SLNT-1237 branch rebased on main at 06865437d0 (SLNT-1233's squash, which
+# the lines above account for), with three more commits:
+# the web sends a launch and its messages on their own requests, and launchProtocol marks its
+# conversation as starting before it awaits anything while sendMessage's conversationStartsFor
+# waits for a launch under way that has not marked it yet. These move only in-memory bookkeeping
+# and when the opening turn is written, not any turn's status or provider turn id, or any hot-pool,
+# claim, retire, drain or discard call, so no action models them. --quick run at 5e97ae3e2e: every row
+# as expected.
+sync 5e97ae3e2e18d2c0d75d4ee531a436b4e8691cde
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
