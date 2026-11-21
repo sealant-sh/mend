@@ -83,6 +83,16 @@ export const startCreated = (draftId: string, sessionId: string) =>
     ),
   });
 
+/**
+ * The address what the person writes on a start's page goes under: the session Mend made for it
+ * once it answered, else the start's own. Read when the words are written, not when the page was
+ * last drawn: a start's page stays on screen while the session's page is read, and words written
+ * there after `startInstantly` moved the rest onto the session must reach the session too
+ * (SLNT-1232).
+ */
+export const writingAddressOf = (draftId: string): string =>
+  state.starts.find((start) => start.draftId === draftId)?.sessionId ?? draftId;
+
 /** Mend refused the start: it goes, page and row. */
 export const endStart = (draftId: string) =>
   set({ ...state, starts: state.starts.filter((start) => start.draftId !== draftId) });

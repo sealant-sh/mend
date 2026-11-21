@@ -34,7 +34,6 @@ import {
   type FirstMessageOutcome,
   sendFirstMessage,
 } from "#/lib/first-message";
-import { useOpeningMessage } from "#/lib/opening-messages";
 import {
   draftItems,
   holdUntilStarted,
@@ -42,18 +41,16 @@ import {
   mintMessageKey,
   releaseLoginHold,
   sendMessage,
-  sendWaiting,
   useMessageOwner,
   useOutbox,
 } from "#/lib/outbox";
-import type { PendingStart } from "#/lib/pending-starts";
+import { type PendingStart, writingAddressOf } from "#/lib/pending-starts";
 import { usePhone } from "#/lib/phone";
 import { failureWords, refusalTagOf } from "#/lib/refusal";
 import {
   type ComposerMode,
   composerMode,
   currentSelection,
-  heldMessagesFate,
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
@@ -273,8 +270,15 @@ const base64Of = async (file: File): Promise<string> => {
 
 type Attaching = "idle" | "uploading" | "resuming" | { readonly failed: string };
 
-/** The words being written, kept per account and session (`lib/drafts`), and the key they go under. */
-const useMessageDraft = (scope: MessageScope | null) => {
+/**
+ * The words being written, kept per account and session (`lib/drafts`), and the key they go under.
+ * `writingTo` names where a write goes when it happens, when that can move before the page draws
+ * again (a start's page, once Mend has made its session); by default, where the words are read.
+ */
+const useMessageDraft = (
+  scope: MessageScope | null,
+  writingTo: () => MessageScope | null = () => scope,
+) => {
   const items = scope === null ? null : draftItems(scope);
   const text = useSyncExternalStore(
     subscribeDrafts,
@@ -287,11 +291,13 @@ const useMessageDraft = (scope: MessageScope | null) => {
     () => "",
   );
   const write = (next: { readonly text: string; readonly key: string | null }) => {
-    if (items !== null)
-      writeDrafts([
-        [items.text, next.text],
-        [items.key, next.key ?? ""],
-      ]);
+    const at = writingTo();
+    if (at === null) return;
+    const into = draftItems(at);
+    writeDrafts([
+      [into.text, next.text],
+      [into.key, next.key ?? ""],
+    ]);
   };
   return { text, key: key === "" ? null : key, write };
 };
@@ -414,8 +420,9 @@ function NextTurnMenu({
 /**
  * The composer of a conversation: Send starts the next turn, or goes into your own running turn
  * (Steer), and Stop turn stops that turn. While the session starts a conversation and its agent
- * isn't running yet, what is sent waits in the sender's outbox and goes once the agent runs and
- * its opening turn is in (`heldMessagesFate`). The words leave the field the moment they are sent and
+ * isn't running yet, what is sent waits in the sender's outbox, and the frame around every page
+ * sends it once the agent runs and its opening turn is in (`HeldMessagesCourier`), whether or not
+ * this page is still open. The words leave the field the moment they are sent and
  * show at once as a message in the conversation (`lib/outbox`), so the next one can be written
  * while they are on their way. A pasted or dropped image is stored in the session's workspace and
  * its path goes into the words.
@@ -527,23 +534,6 @@ function MessageComposer({
   useEffect(() => {
     if (loginWorks) sendHeld();
   }, [loginWorks]);
-
-  // What was sent while the session started goes once its agent runs and its opening turn is in.
-  // An effect, since the agent comes up on the server, heard as the session is read again.
-  const openingHeld = useOpeningMessage(session.id) !== null;
-  const fate = heldMessagesFate({
-    mode,
-    status: session.status,
-    turns: conversation?.turns,
-    openingHeld,
-  });
-  const waitingCount = outbox.messages.filter((message) => message.state._tag === "Waiting").length;
-  const releaseWaiting = useEffectEvent(() => {
-    if (scope !== null) void sendWaiting(outbox.courier, scope);
-  });
-  useEffect(() => {
-    if (fate === "send" && waitingCount > 0) releaseWaiting();
-  }, [fate, waitingCount]);
 
   // What the agent waits on the viewer for: its own question or approval first, then an Executor
   // call. The card shows the one that waited longest.
@@ -794,16 +784,20 @@ function FirstMessageComposer({
 
 /**
  * The composer of a session still being made (an instant start, `lib/pending-starts`): it looks
- * as the session's own will, and what is sent waits in the outbox under the start's address, to
- * move onto the session once Mend has made it and go once its agent runs. An agent that runs in a
- * terminal takes nothing here, as on its own page.
+ * as the session's own will, and what is sent waits in the outbox, to go once its agent runs:
+ * under the start's address until Mend has made the session, which takes it all, then under the
+ * session's own, while this page stays on screen until the session's is read. An agent that runs
+ * in a terminal takes nothing here, as on its own page.
  */
 export function StartingComposer({ start }: { readonly start: PendingStart }) {
   const size: Size = usePhone() ? "touch" : "default";
   const agent = harnessName(start.harness);
   const userId = useMessageOwner();
-  const scope = userId === null ? null : { userId, sessionId: start.draftId };
-  const draft = useMessageDraft(scope);
+  const scope = userId === null ? null : { userId, sessionId: start.sessionId ?? start.draftId };
+  // Written where the start stands when the words are written, which may be ahead of this draw.
+  const writing = (): MessageScope | null =>
+    userId === null ? null : { userId, sessionId: writingAddressOf(start.draftId) };
+  const draft = useMessageDraft(scope, writing);
   const [keyless, setKeyless] = useState(false);
   const [picked, setPicked] = useState<TurnSelection | null>(null);
   const base = start.selection;
@@ -821,14 +815,15 @@ export function StartingComposer({ start }: { readonly start: PendingStart }) {
       </ComposerCard>
     );
   const send = (words: string) => {
-    if (scope === null) return;
+    const at = writing();
+    if (at === null) return;
     const clientMessageId = draft.key ?? mintMessageKey();
     setKeyless(clientMessageId === null);
     if (clientMessageId === null) {
       queueMicrotask(() => draft.write({ text: words, key: null }));
       return;
     }
-    holdUntilStarted(scope, words, clientMessageId, { selection: changed });
+    holdUntilStarted(at, words, clientMessageId, { selection: changed });
     draft.write({ text: "", key: null });
   };
   return (

@@ -169,9 +169,13 @@ export const startInstantly = async (place: StartPlace, start: InstantStart): Pr
   }
   void start.launch(sessionId).catch(() => undefined);
   if (start.prompt.trim() !== "") place.holdOpening(sessionId, start.prompt, sentAt);
+  // What was written so far moves onto the session, and from the same moment the start's page
+  // writes there (`writingAddressOf`), before anything is awaited: the page stays on screen while
+  // the session's is read, and words written meanwhile were left under the start's address,
+  // never shown or sent again (SLNT-1232).
+  moveMessages(draft, { userId: start.userId, sessionId });
   startCreated(start.draftId, sessionId);
   place.moved();
   await place.prefetch(sessionId).catch(() => undefined);
-  moveMessages(draft, { userId: start.userId, sessionId });
   place.settle(sessionId);
 };

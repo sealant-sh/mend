@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { SessionId, WorktreeId } from "@mend/domain";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionInboxRowDto } from "./api.ts";
 import { readDraft, writeDrafts } from "./drafts.ts";
@@ -13,6 +13,7 @@ import {
   type RefusedStart,
   startTitle,
   withPendingStarts,
+  writingAddressOf,
 } from "./pending-starts.ts";
 import {
   composerStart,
@@ -50,6 +51,15 @@ const deferred = () => {
     resolve: (made: Made) => hands.ok?.(made),
     reject: (cause: unknown) => hands.fail?.(cause),
   };
+};
+
+/** A read that answers when told to. */
+const gate = () => {
+  const hands: { open?: () => void } = {};
+  const promise = new Promise<void>((open) => {
+    hands.open = open;
+  });
+  return { promise, open: () => hands.open?.() };
 };
 
 /** Where the start shows: what it did there, in order, and what it was refused with. */
@@ -90,6 +100,9 @@ const start = (made: Promise<Made>, launched: Array<string> = []) => ({
   ...composerStart(callsWith(made, launched), "p-1", { _tag: "new" }, spec),
 });
 
+/** Where the start's composer writes, read at the moment of writing, as it does. */
+const onStartPage = () => ({ userId: "ada", sessionId: writingAddressOf("starting-hand") });
+
 describe("an instant start", () => {
   it("shows before Mend answers, then settles on the session it made once its page is read", async () => {
     const made = deferred();
@@ -120,6 +133,35 @@ describe("an instant start", () => {
       "And the tests.",
     ]);
     expect(readOutbox({ userId: "ada", sessionId: "starting-1" })).toEqual([]);
+  });
+
+  it("gives the session what is written on the start's page after Mend answered (SLNT-1232)", async () => {
+    // The session's page is read slowly, so the start's page stays on screen meanwhile.
+    const reading = gate();
+    const { place } = placeOf();
+    const launched: Array<string> = [];
+    const started = startInstantly(
+      { ...place, prefetch: () => reading.promise },
+      {
+        ...start(Promise.resolve({ id: SessionId.make("s-hand") }), launched),
+        draftId: "starting-hand",
+      },
+    );
+    // Mend has answered and the agent is launching: the session's page is being read now.
+    await vi.waitFor(() => expect(launched).toEqual(["s-hand"]));
+    holdUntilStarted(onStartPage(), "Also the README.", "k-1");
+    writeDrafts([[draftItems(onStartPage()).text, "Half a thought"]]);
+    reading.open();
+    await started;
+    // Settled, but the start's page may still be drawn until the session's page replaces it.
+    holdUntilStarted(onStartPage(), "And the tests.", "k-2");
+    const session = { userId: "ada", sessionId: "s-hand" };
+    expect(waitingMessages(session).map((m) => m.text)).toEqual([
+      "Also the README.",
+      "And the tests.",
+    ]);
+    expect(readDraft(draftItems(session).text)).toBe("Half a thought");
+    expect(readOutbox({ userId: "ada", sessionId: "starting-hand" })).toEqual([]);
   });
 
   it("holds no first message for a start that has none (a menu's)", async () => {

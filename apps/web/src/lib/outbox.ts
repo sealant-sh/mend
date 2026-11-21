@@ -532,6 +532,26 @@ export const waitingMessages = (scope: MessageScope): ReadonlyArray<OutboxMessag
   readOutbox(scope).filter((message) => message.state._tag === "Waiting");
 
 /**
+ * The sessions one person has messages waiting for in this tab, as their ids, space-separated in
+ * a stable order: the same text while the set is the same, for `useSyncExternalStore`. It may
+ * name a start's own address (`lib/pending-starts`), for the start's page alone to read.
+ */
+export const waitingSessions = (userId: string): string => {
+  const prefix = `${userId}.`;
+  const suffix = ".outbox";
+  const keys = new Set(
+    [...draftKeys(), ...inMemory.keys()].filter(
+      (key) => key.startsWith(prefix) && key.endsWith(suffix),
+    ),
+  );
+  return [...keys]
+    .filter((key) => readStoredOutbox(key).some((message) => message.state._tag === "Waiting"))
+    .map((key) => key.slice(prefix.length, -suffix.length))
+    .toSorted()
+    .join(" ");
+};
+
+/**
  * The agent runs: send every waiting message, oldest first, each under its own key. They leave
  * one at a time in that order (`deliver`), so the agent reads them as they were written.
  */

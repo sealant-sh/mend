@@ -1060,28 +1060,31 @@ lane changed.
 - **Map:** start-session.md `start-composer`; now-and-sessions.md `home-composer`
 - **Needs:** Boat; real turn (codex); web; `<p>`, a worktree in it
 - **Do:** On `/`, write `Reply with the single word ready and change nothing.` and press Enter;
-  while the session starts, send `Then reply with the word again.` from its composer. Then, on
-  `<p>`'s Worktrees tab, open a worktree's "…", New session in this worktree, Codex, and once it has
-  started send `hi` from its composer, wait a minute, then send `tell me a joke`. Drive the recipe
-  `new-web-instant-start` for the same steps against a stack, with a refused start and the phone
-  width.
+  while the session starts, send `Then reply with the word again.` from its composer, and the moment
+  the address moves to the session's id send `And say done.`; then, while it still reads Starting,
+  go to Projects and wait there a minute before coming back. Then, on `<p>`'s Worktrees tab, open a
+  worktree's "…", New session in this worktree, Codex, and once it has started send `hi` from its
+  composer, wait a minute, then send `tell me a joke`. Drive the recipe `new-web-instant-start` for
+  the same steps against a stack, with a refused start and the phone width.
 - **See:** the session's page opens at once at `/sessions/starting-…` with the message,
   `Getting the session ready`, and a Starting row under Running; the composer is open and reads
   `Codex is starting. What you send now goes to it once it's ready.`, never `runs in a terminal`;
-  the address moves to the session's id in place; the second message waits
-  (`Waits for Codex to start.`) and is sent after the opening turn; the menu's start opens its page
-  at once and shows no red line while it starts; nothing on the page reads `per-person users` or
-  `takes one person`. The session started from the worktree's menu, with no message, reads
-  `New session` in its row, its tab and the project's Sessions table, never the worktree's name or
-  its other session's name; once sent `hi` it reads `hi`, and a minute later still `hi`, never
-  `placeholder`, `untitled`, `new session` or the project's name as a name (SLNT-1230); once sent
-  `tell me a joke` within about a minute it reads a name Mend made from the joke, different from the
-  worktree's other session.
+  the address moves to the session's id in place; the second and third messages wait
+  (`Waits for Codex to start.`) and both are sent after the opening turn, in order, while you are on
+  Projects (back on the session, Codex has answered all three and nothing reads
+  `Waits for Codex to start.` or `Not sent`); the menu's start opens its page at once and shows no
+  red line while it starts; nothing on the page reads `per-person users` or `takes one person`. The
+  session started from the worktree's menu, with no message, reads `New session` in its row, its tab
+  and the project's Sessions table, never the worktree's name or its other session's name; once sent
+  `hi` it reads `hi`, and a minute later still `hi`, never `placeholder`, `untitled`, `new session`
+  or the project's name as a name (SLNT-1230); once sent `tell me a joke` within about a minute it
+  reads a name Mend made from the joke, different from the worktree's other session.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/pending-starts.ts`,
   `apps/web/src/components/new-session/instant-start.ts`,
+  `apps/web/src/components/session/held-messages.tsx`,
   `apps/web/src/components/session/starting-session.tsx`, `apps/web/src/lib/starting-line.ts`,
   `apps/web/src/lib/project-starts.ts`, `apps/web/src/lib/session-title.ts`,
   `apps/api/src/session-naming.ts`
