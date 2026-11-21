@@ -129,28 +129,25 @@ Preconditions:
 
 ## Gotchas
 
-- The project's image is edited in place in the `Image` section of the Settings → Workspace sub-tab
-  (`apps/web-old/src/components/project/settings/workspace-image.tsx`); the steps here that open
-  `Edit…`, `Save override` and `Use default` describe the older Setup-tab panel and need a rewrite
-  against that section. Its save bar and `reset` were not driven on the box. The organization's
-  `Workspace environment · <organization>` line (`<os> · <n> packages · from the instance`) is from
-  `apps/web-old/src/components/settings/environment-organization.tsx`; the box run of 17 Nov looked
-  for it on Defaults and did not read it.
-- Both editors have a Docker service switch (`role="switch"`, named `Docker service` by its label):
-  the project's `Workspace image` panel since mend#663
-  (`apps/web-old/src/routes/projects.$projectId.setup.tsx:375-386`), and Settings. The live pass
-  (2026-10-10) ran before mend#663, when the project editor had none.
+- In the web app the project's image is on its `Workspace` settings page
+  (`apps/web/src/components/settings/project-workspace-page.tsx`, `recipes/project-workspace.mjs`),
+  and the organization's on Settings → Organization → Workspace image
+  (`apps/web/src/components/settings/workspace-image-page.tsx`,
+  `recipes/settings-workspace-image.mjs`): the sections `Starting image` and `Workspace features`,
+  the controls `Image`, `Operating system`, `Shell` and `Package to add`, and the list `Packages`.
+  The steps here that open `Edit…`, `Save override` and `Use default` describe the old app's
+  Setup-tab panel and need a rewrite against those pages.
+- The old app's editors each had a Docker service switch (`Docker service`, since mend#663). The
+  live pass (2026-10-10) ran before mend#663, when the project editor had none.
 - No choice button exposes its state: the mode, OS and shell buttons in both editors have no
   `aria-pressed`, so a snapshot cannot say which is chosen. Read the saved summary line instead.
-- The Settings Docker toggle is a `switch` named `Docker service`
-  (`apps/web-old/src/components/workspace-environment-editor.tsx:250-261`); before mend#663 it was
-  named only by its state, `Enabled` or `Disabled`, as the live pass saw. The Settings OS buttons'
-  names include their description (`Arch Rolling packages; Mend’s default.`); match `/^Arch/`.
-- The Settings editor uses fixed element ids for `Base image`, `Setup commands` and `Packages`
-  (`workspace-environment-editor.tsx:164`, `188`, `271`). An operator who is also the owner sees two
-  editors on `/settings` once the organization has its own image, and the second editor's labels
-  then point at the first editor's fields. Scope by panel and use `getByRole("textbox")` inside it,
-  and treat a label-based miss as this finding.
+- The old app's Settings Docker toggle was named only by its state, `Enabled` or `Disabled`, before
+  mend#663, as the live pass saw. Its OS buttons' names included their description
+  (`Arch Rolling packages; Mend’s default.`); in the web app the OS is the control
+  `Operating system`.
+- The old app's Settings editor used fixed element ids, so with two editors on one page the second's
+  labels pointed at the first's fields. The web app has one editor per page; scope by its section
+  all the same.
 - The project editor checks package syntax only on the server; the Settings editors refuse bad
   syntax before saving (`Unsupported package syntax: <entry>`).
 - A managed OS-family definition stores each package as the catalog id it resolved to, so an alias

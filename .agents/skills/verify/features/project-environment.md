@@ -144,10 +144,11 @@ Preconditions:
 - The Setup sections are `section` elements without `aria-labelledby`, so none has the region role.
   Scope by their `h2` heading as above. Every panel has its own `Save`, `Cancel` and `Remove`, and
   the composer's `Save` changes its name with the row count (`Save`, `Save 2`, …).
-- The `Sensitive` switch is named `Sensitive` by its label
-  (`apps/web-old/src/routes/projects.$projectId.setup.tsx:1568-1580`); before mend#663 its name was
-  its state text, `Enabled` or `Disabled`, as the live pass saw. The page has a second switch since
-  then, `Docker service` in `Workspace image`: scope to the section, as above.
+- The `Sensitive` switch was named `Sensitive` by its label in the old app's Setup page; before
+  mend#663 its name was its state text, `Enabled` or `Disabled`, as the live pass saw. In the web
+  app variables and secrets are on the project's `Variables and secrets` page
+  (`apps/web/src/components/settings/project-secrets-page.tsx`, its composer's rules in
+  `apps/web/src/lib/env-composer.ts`), driven by `recipes/project-secrets.mjs`.
 - Composer values and the secret editor's `Value`/`New value` are password inputs until revealed, so
   they have no `textbox` role. Use `getByLabel("Value 1", { exact: true })`, not
   `getByRole("textbox")`. The configuration editor's `Value` is a textarea and is a textbox.

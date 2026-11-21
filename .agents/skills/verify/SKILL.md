@@ -87,10 +87,9 @@ what they would see if it did not work. It also names the flow of the daily box 
 - `noFlow`: no flow can show it. It is refused for a change inside some flow's Areas, or under
   `apps/web/` or `packages/ui/`, unless it names a row of flows.md's Not on the box table.
 
-A change only to the new web app, which the box does not serve until cut-over, names the flow for
-the same feature, and the receipt reads "on the box after cut-over". A route that no flow covers
-adds one marked `- **Box:** after cut-over`. Tests, docs and CI owe no judgement, so they name no
-flow.
+Every flow runs on every box, so a change to the web app names its flow like any other change. A
+route that no flow covers adds one. Tests, docs and CI owe no judgement, so they name no flow. A
+receipt recorded before cut-over may read "on the box after cut-over"; nothing writes that now.
 
 `--record` refuses an answer that is not in that shape, a flow id flows.md does not have, and a
 `local` answer for a file only the box can show. The receipt (`pnpm verify status --markdown`)
@@ -133,9 +132,8 @@ The feature map, `features/` beside this file (`features/README.md` its index), 
 what to do on each surface and what proves it. Drive a recipe with the surface's own driver:
 
 ```sh
-pnpm verify drive web --recipe web-projects        # a checked-in recipe, or a path to yours
+pnpm verify drive web --recipe shell               # a checked-in recipe, or a path to yours
 pnpm verify drive <desktop|mobile-web|vscode|t3> --recipe <name|path>
-pnpm verify drive new-web --recipe new-web-shell   # the new web app (apps/web), beside the stack
 pnpm verify drive cli --recipe <steps.json>        # a CLI batch: steps.mjs runs it on the stack
 pnpm verify drive tui --recipe <name>              # records drive-tui.sh's captures in <evidence>/<name>/tui
 ```
@@ -153,17 +151,13 @@ tree and every capture is newer than that build, so build again after each commi
   [references/surfaces.md](references/surfaces.md).
 - VS Code, which runs against a world of its own: [references/vscode.md](references/vscode.md).
 
-The new web app (`apps/web`, rebuilt one route at a time) is not in the stack's image.
-`drive new-web` serves it from this checkout with `vite dev` in front of the stack, signs in on the
-stack's own sign-in page (the session cookie is for `localhost` on any port), and drives a free
-`http://localhost:<port>`, printed in the drive result. Vite also gets a free port. Set
-`MEND_VERIFY_NEW_WEB_PORT` and/or `MEND_VERIFY_NEW_WEB_VITE_PORT` to pin either port. The drive
-stops its servers on completion, failure or interrupt. Separate checkouts can drive at once; give
-each stack a different tunnel with `verify stack up --port <port>`. A route PR copies
-`recipes/new-web-shell.mjs`: open the route, capture it in light and dark at desktop and 390px, and
-force its failure the way that recipe does. On your own machine, `pnpm dev:web` runs it on 3115
-beside `pnpm dev`; add `http://localhost:3115` to `MEND_ALLOWED_ORIGINS` in the root `.env`, and
-sign in through the old app on 3105.
+`drive web` drives the web app (`apps/web`) as the stack's image serves it, through the stack's
+tunnel: what is proved is what ships. The driver signs in on the app's own `/login` as the stack's
+first account, then runs the recipe. Separate checkouts can drive at once; give each stack a
+different tunnel with `verify stack up --port <port>`. A route PR copies `recipes/shell.mjs`: open
+the route, capture it in light and dark at desktop and 390px, and force its failure the way that
+recipe does. `drive new-web`, and a recipe named `new-web-<name>`, the names from before cut-over,
+are read as `drive web` and `<name>`.
 
 Capture the inner record (sessions, the session page) before step 8: it goes with the stack.
 
@@ -240,14 +234,15 @@ pnpm verify box release --pr <n> --yes
 A check with no PR names itself with `--tag <name>` in place of `--pr <n>`; the scheduled run of
 `main` (`.agents/skills/box-main-run/`) holds its own copies as `main-<sha12>`.
 
-**A route of the new web app on the box.** The box's image serves only the old app until cut-over.
-`drive new-web --box` serves the new app from this checkout, behind the same proxy as on a stack, in
-front of the box's API. It signs in on the new app's own `/login` as the box's checker account. When
-the change's product source is only `apps/web` and `packages/ui`, the box needs no preview of this
-head: `plan` says so in its `front` line. `identity` then passes on that drive, made from this clean
-head against the build the box runs now. That build must have the same server source as this head,
-or contain this branch's base. A change that also touches the API or a shared package deploys a
-preview of its head as above, and drives it the same way.
+**A route of the web app on the box.** `drive web --box` serves the web app from this checkout with
+`vite dev`, behind a proxy on a free `http://localhost:<port>`, in front of the box's API. Vite also
+gets a free port; set `MEND_VERIFY_WEB_PORT` and/or `MEND_VERIFY_WEB_VITE_PORT` to pin either. The
+drive stops its servers on completion, failure or interrupt. It signs in on the app's own `/login`
+as the box's checker account. When the change's product source is only `apps/web` and `packages/ui`,
+the box needs no preview of this head: `plan` says so in its `front` line. `identity` then passes on
+that drive, made from this clean head against the build the box runs now. That build must have the
+same server source as this head, or contain this branch's base. A change that also touches the API
+or a shared package deploys a preview of its head as above, and drives it the same way.
 
 On a check VM, use the two exports `vm up` printed in place of the first two lines below.
 
@@ -256,7 +251,7 @@ export MEND_VERIFY_BOX_SSH='-J mendbox root@10.0.0.41'
 export MEND_VERIFY_OUTER_URL=https://mend.yiannisp.dev   # the box's APP_URL (20 Nov; it moves: read it from the box's /root/.config/mend/active/server.env)
 pnpm verify box plan --pr <n>
 pnpm verify box prepare --pr <n> --yes
-pnpm verify drive new-web --box --recipe new-web-<route>
+pnpm verify drive web --box --recipe <route>
 pnpm verify box identity
 pnpm verify evidence
 pnpm verify box release --pr <n> --yes   # also scans the drive's evidence and removes its sign-in

@@ -5,19 +5,18 @@ import { basename, join } from "node:path";
 
 import { changedFiles, filesOwing, loadMap } from "./plan.mjs";
 
-// The new web app on the box (SLNT-1120). The box's preview image serves only the old app until
-// cut-over (ADR 0027), so `verify drive new-web --box` serves the new app from this checkout with
-// `vite dev`, behind the local proxy a stack drive uses, in front of the box's API: the proxy gives
-// every /api request the box's own Origin, so the box's allowed origins stay as they are, and the
-// session cookie the box sets is for the host the browser used (localhost). Nothing on the box
-// changes.
+// The web app on the box (SLNT-1120). A change that is only the web app needs no preview of its
+// own: `verify drive web --box` serves the app from this checkout with `vite dev`, behind the local
+// proxy a stack drive uses, in front of the box's API: the proxy gives every /api request the
+// box's own Origin, so the box's allowed origins stay as they are, and the session cookie the box
+// sets is for the host the browser used (localhost). Nothing on the box changes.
 //
 // This module holds what the drive, `verify evidence` and the box verbs share: which paths the
 // checkout serves (FRONT), the box run's local record (.verify/box/front.json, with its private
 // directory of credentials and its evidence directory), and whether a change is the front's alone,
 // which is when `box identity` accepts a box that does not run this head.
 
-/** What `drive new-web --box` serves from the checkout: the new app and the kit only it uses. */
+/** What `drive web --box` serves from the checkout: the web app and the kit only it uses. */
 export const FRONT = ["apps/web/", "packages/ui/"];
 
 const inFront = (file) => FRONT.some((prefix) => file.startsWith(prefix));
@@ -57,7 +56,7 @@ export const parseFront = (text) => {
 
 const recordPath = (root) => join(root, ".verify/box/front.json");
 
-/** The box run of the new app this checkout recorded, or null. */
+/** The box run of the web app this checkout recorded, or null. */
 export const readFrontRun = (root) =>
   existsSync(recordPath(root)) ? JSON.parse(readFileSync(recordPath(root), "utf8")) : null;
 
@@ -155,10 +154,10 @@ export const describeFront = (found, revision) => {
   if (!found.front)
     return found.product.length === 0
       ? "this change has no product source"
-      : `this change's product source reaches past the new app (${found.outside.slice(0, 3).join(", ")}${found.outside.length > 3 ? ", …" : ""}): the box must run a preview of this head`;
+      : `this change's product source reaches past the web app (${found.outside.slice(0, 3).join(", ")}${found.outside.length > 3 ? ", …" : ""}): the box must run a preview of this head`;
   return (
     {
-      same: `the box runs ${at}, whose server source is this head's outside the new app`,
+      same: `the box runs ${at}, whose server source is this head's outside the web app`,
       later: `the box runs ${at}, which has this branch's base in its history`,
       other: `the box runs ${at}, whose server source differs from this branch's base (${found.differs?.slice(0, 3).join(", ")}${(found.differs?.length ?? 0) > 3 ? ", …" : ""}): deploy a preview of main or of this head`,
     }[found.server] ?? "the box reports no revision"

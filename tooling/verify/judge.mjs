@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, matchesGlob, relative } from "node:path";
 
-import { FLOWS_PATH, flowsThrough, inNewWeb, loadFlows } from "./flows.mjs";
+import { FLOWS_PATH, flowsThrough, inWebApp, loadFlows } from "./flows.mjs";
 import { filesOwing, loadMap } from "./plan.mjs";
 
 // `verify judge`: how a feature is proved is decided by an agent that did not write it. No list of
@@ -15,7 +15,7 @@ import { filesOwing, loadMap } from "./plan.mjs";
 // (`.agents/skills/box-main-run/flows.md`), so every feature PR leaves the run a flow to drive
 // (SLNT-1050): `flows`, the usual answer; `newFlow`, when no flow reaches it, which is refused
 // until the change adds its flow; or `noFlow`, which a change inside some flow's Areas, or in the
-// new web app, can only give for a feature the Not on the box table lists.
+// web app, can only give for a feature the Not on the box table lists.
 
 export const loadLimits = (root) =>
   JSON.parse(readFileSync(join(root, "tooling/verify/local-stack-limits.json"), "utf8")).limits;
@@ -102,15 +102,13 @@ export const briefFor = ({ head, files, limits, floor, flows = [], notOnTheBox =
     "",
     "1. `flows`: a flow whose See line shows what this change does, or whose Areas hold the files",
     "   it changes, so the run would catch it going wrong. A refactor or a fix names the flow that",
-    "   passes through it. A change to `apps/web/` or `packages/ui/`, the new web app the preview",
-    "   does not serve yet, names the flow for the same feature in the web app served today: it",
-    "   drives the new one after cut-over.",
+    "   passes through it.",
     "2. `newFlow`: what a person can now do or see that no flow's See line reaches, in one",
     "   sentence. The change then has to add that flow before it can be recorded.",
     "3. `noFlow`, only when neither applies: a client the preview cannot drive (name its row of",
     "   the Not on the box table in `notOnTheBox`), or code no person meets through Mend at all.",
-    "   Say which in `reason`. It is refused for a change inside some flow's Areas, or in the new",
-    "   web app, unless it names a Not on the box row.",
+    "   Say which in `reason`. It is refused for a change inside some flow's Areas, or in the web",
+    "   app (`apps/web/`, `packages/ui/`), unless it names a Not on the box row.",
     "",
     `Flows at this commit: ${ticks(flows.map((flow) => flow.id))}.`,
     "",
@@ -142,7 +140,7 @@ export const flowErrors = (answer, { flows = [], notOnTheBox = [], files = [], s
   if (answer.newFlow != null)
     return isText(answer.newFlow)
       ? [
-          `the judge says no flow covers this change (${answer.newFlow.trim()}): add its flow to ${FLOWS_PATH} in this change, marked \`- **Box:** after cut-over\` when only the new web app has it, and judge the new commit`,
+          `the judge says no flow covers this change (${answer.newFlow.trim()}): add its flow to ${FLOWS_PATH} in this change, and judge the new commit`,
         ]
       : ["newFlow says in one sentence what no flow covers"];
   if (answer.flows != null) {
@@ -171,10 +169,10 @@ export const flowErrors = (answer, { flows = [], notOnTheBox = [], files = [], s
     errors.push(
       `noFlow is refused: this change is inside the Areas of ${crossed.length} flow${crossed.length === 1 ? "" : "s"} (${listed(crossed)}); name the one that shows it, or the Not on the box row in notOnTheBox`,
     );
-  const web = files.filter(inNewWeb);
+  const web = files.filter(inWebApp);
   if (web.length > 0)
     errors.push(
-      `noFlow is refused for the new web app (${listed(web)}): name the flow for the same feature, which drives it after cut-over, or answer newFlow`,
+      `noFlow is refused for the web app (${listed(web)}): name the flow for the same feature, or answer newFlow`,
     );
   return errors;
 };
@@ -218,7 +216,10 @@ export const readJudgement = (root, head) => {
 const whereWords = (judgement) =>
   judgement.where === "box" ? `the box (${judgement.limit})` : "a local stack";
 
-/** The flow part of a judgement, in words; empty for one recorded before flows were named. */
+/**
+ * The flow part of a judgement, in words; empty for one recorded before flows were named. A
+ * judgement recorded before cut-over (SLNT-1253) may say its flows show on the box only after it.
+ */
 export const flowWords = (judgement) => {
   if (Array.isArray(judgement.flows))
     return `${judgement.flows.length === 1 ? "flow" : "flows"} ${judgement.flows.join(", ")}${
@@ -237,8 +238,8 @@ export const judgementLine = (judgement) => {
   }: ${judgement.reason}${flow === "" ? "" : ` Box run: ${flow}.`}`;
 };
 
-/** The flow fields a judgement keeps, and whether the box shows them only after cut-over. */
-const flowOf = (answer, { flows, owing }) => {
+/** The flow fields a judgement keeps. */
+const flowOf = (answer) => {
   if (answer.noFlow != null)
     return {
       noFlow: {
@@ -246,11 +247,7 @@ const flowOf = (answer, { flows, owing }) => {
         reason: answer.noFlow.reason.trim(),
       },
     };
-  const named = answer.flows.map((id) => id.trim());
-  const later =
-    (owing.length > 0 && owing.every(inNewWeb)) ||
-    named.every((id) => flows.find((flow) => flow.id === id)?.afterCutOver);
-  return { flows: named, ...(later ? { flowsOnTheBox: "after cut-over" } : {}) };
+  return { flows: answer.flows.map((id) => id.trim()) };
 };
 
 export const judge = (root, { head, files, owed, record, self }) => {
@@ -303,7 +300,7 @@ export const judge = (root, { head, files, owed, record, self }) => {
     mustSee: answer.mustSee.map((line) => line.trim()),
     ifBroken: answer.ifBroken.trim(),
     judgedBy: self ? "self" : "agent",
-    ...flowOf(answer, { flows, owing }),
+    ...flowOf(answer),
   };
   writeFileSync(join(dir, "answer.json"), `${JSON.stringify(judgement, null, 2)}\n`);
   return step("passed", judgementLine(judgement), {

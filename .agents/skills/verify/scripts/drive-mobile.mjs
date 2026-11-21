@@ -33,8 +33,8 @@
 // port, the server it fronts, `bound: true`), which is what lets drive-web.mjs drive
 // http://127.0.0.1:<port>; the record goes when the proxy ends.
 //
-// --client new-web serves the new web app (apps/web, rebuilt beside the old one) the same way:
-// `vite dev` in <app> on <expo-port> in place of Expo, recorded in new-web.json. The app's own
+// --client web serves the web app (apps/web) the same way:
+// `vite dev` in <app> on <expo-port> in place of Expo, recorded in web.json. The app's own
 // server calls the API through this proxy too (MEND_API_URL), so its calls reach the stack with the
 // stack's Origin, and it takes the browser's origin as its own (APP_URL). Open it by
 // http://localhost:<port>: the session cookie the stack's sign-in page sets is for localhost, on
@@ -49,8 +49,8 @@ import tls from "node:tls";
 
 import {
   MOBILE_RECORD,
-  NEW_WEB_RECORD,
   Refused,
+  WEB_RECORD,
   allowedTargets,
   checkTarget,
   identityOf,
@@ -68,9 +68,9 @@ const webFlag = flag("web") ?? (outerMode ? process.env.MEND_VERIFY_OUTER_URL : 
 const port = Number(flag("port"));
 const expoPort = Number(flag("expo-port") ?? "8081");
 const log = flag("log");
-if (!app || !webFlag || !port || !log || !["mobile", "new-web"].includes(client)) {
+if (!app || !webFlag || !port || !log || !["mobile", "web"].includes(client)) {
   process.stderr.write(
-    "usage: drive-mobile.mjs --app <dir> (--web <url> | --outer) --port <port> [--expo-port <port>] [--client mobile|new-web] --log <file>\n",
+    "usage: drive-mobile.mjs --app <dir> (--web <url> | --outer) --port <port> [--expo-port <port>] [--client mobile|web] --log <file>\n",
   );
   process.exit(2);
 }
@@ -101,7 +101,7 @@ const servername = net.isIP(web.hostname) === 0 ? web.hostname : undefined;
 
 const out = openSync(log, "a");
 const expo =
-  client === "new-web"
+  client === "web"
     ? spawn(
         "pnpm",
         ["exec", "vite", "dev", "--strictPort", "--host", "127.0.0.1", "--port", String(expoPort)],
@@ -124,10 +124,7 @@ const expo =
         stdio: ["ignore", out, out],
         env: { ...process.env, CI: "1", BROWSER: "none" },
       });
-const record = join(
-  process.env.MEND_VERIFY_PRIVATE,
-  client === "new-web" ? NEW_WEB_RECORD : MOBILE_RECORD,
-);
+const record = join(process.env.MEND_VERIFY_PRIVATE, client === "web" ? WEB_RECORD : MOBILE_RECORD);
 const end = () => {
   rmSync(record, { force: true });
   expo.kill("SIGTERM");
@@ -234,7 +231,7 @@ const server = http.createServer((req, res) => {
   );
   upstream.on("error", () => {
     process.stdout.write(
-      `drive-mobile: ${target.api ? "the stack" : client === "new-web" ? "Vite" : "Expo"} refused ${req.method} ${req.url?.split("?")[0]}\n`,
+      `drive-mobile: ${target.api ? "the stack" : client === "web" ? "Vite" : "Expo"} refused ${req.method} ${req.url?.split("?")[0]}\n`,
     );
     if (!res.headersSent) res.writeHead(502);
     res.end();
@@ -278,6 +275,6 @@ server.listen(port, "127.0.0.1", () => {
     { mode: 0o600 },
   );
   process.stdout.write(
-    `drive-mobile · app and stack on http://127.0.0.1:${port} · ${client === "new-web" ? "Vite" : "Expo"} on :${expoPort} · API to ${web.origin}\n`,
+    `drive-mobile · app and stack on http://127.0.0.1:${port} · ${client === "web" ? "Vite" : "Expo"} on :${expoPort} · API to ${web.origin}\n`,
   );
 });

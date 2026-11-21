@@ -160,12 +160,13 @@ Preconditions:
 - `Adopt a repository` names a link in the first-run checklist and the expanded rail, and a button
   on the Projects page. Ask for the role as well as the name.
 - The `Adopt` button's name is a prefix of `Adopt a repository`. Pass `exact: true`.
-- The panel is a `dialog` named `Adopt a repository`
-  (`apps/web-old/src/components/projects-index/adopt-dialog.tsx`). While the `Repository` combobox's
-  list is open, the box's ARIA snapshot (17 Nov) held only the combobox, its status and `Dismiss`:
-  the refusal line and `Adopt` were in the screenshot, not the snapshot. The refusal line is the
-  form's `role="alert"` paragraph in source; that it is exposed as an alert once the list closes is
-  not confirmed by a capture.
+- In the web app the panel is the dialog `Add project`, its address field `Repository address` on
+  the tab `From a Git URL` (`apps/web/src/components/projects/add-project.tsx`, driven by
+  `recipes/projects.mjs`); the rest of this paragraph is what the old app's `Adopt a repository`
+  dialog did. While the `Repository` combobox's list is open, the box's ARIA snapshot (17 Nov) held
+  only the combobox, its status and `Dismiss`: the refusal line and `Adopt` were in the screenshot,
+  not the snapshot. The refusal line is the form's `role="alert"` paragraph in source; that it is
+  exposed as an alert once the list closes is not confirmed by a capture.
 - The handles of the steps after the refusal (`Name`, `Git access`, `Visible to`, the adopted state)
   come from source, not from a box capture: the box flow adopts nothing.
 - A project's directory row is a table `row` whose name is the whole row; the link inside its first

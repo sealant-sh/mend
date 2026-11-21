@@ -6,7 +6,7 @@
 // match nothing else.
 //
 //   MAIN_RUN_M=<the checker's mend> MAIN_RUN_SHA8=<sha8> MAIN_RUN_PROJECT=<project> \
-//     pnpm verify drive new-web --box --recipe .agents/skills/box-main-run/recipes/terminal-and-web.mjs \
+//     pnpm verify drive web --box --recipe .agents/skills/box-main-run/recipes/terminal-and-web.mjs \
 //     --timeout 900000
 //
 // MAIN_RUN_PROJECT defaults to boat-check-ubuntu; on a copy without Boat name a Docker project

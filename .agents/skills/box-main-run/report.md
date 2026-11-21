@@ -38,7 +38,7 @@ Check VMs:
   <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>, Boat or no Boat), or the
   lanes left out.
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
-- Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>); <n> after cut-over.
+- Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>).
 - Logins: Codex <refreshed on lane A at <UTC> · held | not due (expires <UTC>) · held>; Claude <…>.
   While Claude's reads `invalid · refused`:
   `Claude refused by the provider, left so by the owner's choice (SLNT-1219)`, and nothing filed for

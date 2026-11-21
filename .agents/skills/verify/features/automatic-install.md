@@ -74,10 +74,11 @@ Preconditions:
 
 - On the box (17 Nov) the section read the switch `Automatic install` checked, the textbox
   `Custom command` and `no lockfile recognised on origin/master · detected again at launch`. The
-  `Save`, `reset` and off-state wording here is from
-  `apps/web-old/src/components/project/settings/workspace.tsx`, not confirmed by a capture. The
-  switch's checked state is read as `aria-checked` on the assumption that the kit `SwitchRow` is a
-  `role="switch"` (the snapshot shows `switch "Automatic install" [checked]`).
+  `Save`, `reset` and off-state wording here was the old app's, not confirmed by a capture. The web
+  app's switch `Automatic install` and its custom command are on the project's Workspace page
+  (`apps/web/src/components/settings/project-workspace-page.tsx`, `recipes/project-workspace.mjs`).
+  The switch's checked state is read as `aria-checked` on the assumption that the kit `SwitchRow` is
+  a `role="switch"` (the snapshot shows `switch "Automatic install" [checked]`).
 - On a co-located server the section reads
   `Capture mode only. Sessions here run beside the store, where a worktree keeps its own dependencies, so Mend runs no install. The setting is kept for capture mode.`
   and the switch changes nothing a session can observe. Report the in-session steps unreachable

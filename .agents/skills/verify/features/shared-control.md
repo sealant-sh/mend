@@ -196,8 +196,9 @@ Preconditions:
   paragraph under it starts
   `On lets everyone who can see this project send turns, answer approvals and interrupt.` before the
   layout's line, and ends
-  `They can read the terminal; only you type in it. Every action is recorded with who sent it.`
-  (`apps/web-old/src/components/session/shared-control.tsx`; seen on the box on 17 Nov). A
+  `They can read the terminal; only you type in it. Every action is recorded with who sent it.` (the
+  old app's words, seen on the box on 17 Nov; the web app's are in
+  `apps/web/src/components/session/shared-control.tsx`, driven by `recipes/shared-control.mjs`). A
   phone-width page hides `Share`; `More session actions` holds it there (`header.tsx`).
 - The web page has no box to send a turn. A steered turn comes from a conversation session on the
   desktop or the phone, from Slack, or as review comments sent back

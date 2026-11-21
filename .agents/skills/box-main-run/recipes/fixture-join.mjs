@@ -22,7 +22,7 @@ export default async ({ page, capture, note, typeSecret }) => {
   await page.getByRole("textbox", { name: "Name" }).fill(name);
   await page.getByRole("textbox", { name: "Email" }).fill(email);
   await typeSecret(page.getByLabel("Password", { exact: true }), "second-password", password);
-  await typeSecret(page.getByLabel("Password, again"), "second-password", password);
+  await typeSecret(page.getByLabel("Confirm password"), "second-password", password);
   await page.getByRole("button", { name: "Create account and join" }).click();
   await page.waitForURL(/\/welcome/);
   note(`joined as ${email}`);

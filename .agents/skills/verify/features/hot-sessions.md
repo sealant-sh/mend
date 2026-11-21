@@ -85,14 +85,15 @@ Preconditions:
 - The section is `Ready workspaces` on the Settings → Workspace sub-tab, not `Hot sessions` on the
   Setup tab. The box (17 Nov) showed its count `0`, the status `off` and
   `One fewer: Ready workspaces` disabled; the raised-count words (`<n> ready now`, `<n> warming`,
-  `<n> failed`, `none ready yet`) and the upper bound are from
-  `apps/web-old/src/components/project/settings/workspace.tsx`, not confirmed by a capture.
+  `<n> failed`, `none ready yet`) and the upper bound were the old app's, not confirmed by a
+  capture. The web app's section is `Ready workspaces` on the project's Workspace page
+  (`apps/web/src/components/settings/project-workspace-page.tsx`), its buttons in the group
+  `Ready workspaces per…`.
 - The status is the signed-in person's own standbys only. Another person's pool, and their failures,
   never show. A count above `0` with no session started by this person in the last week stays
   `none ready yet`.
-- The count is a plain number between the buttons, with no label or live region
-  (`apps/web-old/src/components/project-setup.tsx:308-310`); the status line is plain text, not a
-  `status` role. Read both by text, scoped to the section.
+- Read the count and the status line by text, scoped to the section: in the old app neither had a
+  label, live region or `status` role, and the web app's have not been re-read since cut-over.
 - A new session can claim a standby for a new or existing worktree, including one with captures. It
   needs a ready standby for that owner matching the current launch inputs, and the owner must still
   have permission to run in the project. Another person's standby is never used. In capture mode, a

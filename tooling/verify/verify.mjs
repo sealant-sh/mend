@@ -50,7 +50,7 @@ const VERBS = {
   health: "From where the server is and is not reachable: --from local,host,workspace",
   stack: "A Mend stack in an outer session, ready when usable: up, status, down",
   drive:
-    "Run a recipe against web, the new web app (new-web, or --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
+    "Run a recipe against web (the web app from this checkout; --box: against the box's API), desktop, mobile-web, vscode or t3, a CLI batch (cli), or record drive-tui.sh's captures (tui): --recipe <name|path>",
   evidence: "Gather this head's drives, scan them for secrets, write the verdict file",
   vm: "A throwaway box on this machine per check (KVM): build the master, up a copy (--boat: on a Boat slot's own Funnel), list, down <n>|--all, slot add|remove <n>, save <n> (a copy's data becomes the next master's)",
   formal: "Run the models whose COVERAGE the diff touches (--all, --full), guard and report drift",
@@ -553,11 +553,21 @@ export const main = async (argv, root = repoRoot) => {
     }
   }
   if (verb === "drive") {
-    if (!SURFACES.includes(words[1]) || !options.recipe) {
+    // `new-web` and its `new-web-<name>` recipes are the names the web app's surface had while it
+    // was rebuilt beside the old app (SLNT-1253): read them as web and <name>.
+    const surface = words[1] === "new-web" ? "web" : words[1];
+    if (!SURFACES.includes(surface) || !options.recipe) {
       process.stderr.write(`verify drive <${SURFACES.join("|")}> --recipe <name|path>\n`);
       return 2;
     }
-    options.subverb = words[1];
+    if (words[1] === "new-web") process.stderr.write("verify drive new-web is now drive web\n");
+    if (
+      surface === "web" &&
+      /^new-web-[^/]+$/.test(options.recipe) &&
+      !options.recipe.endsWith(".mjs")
+    )
+      options.recipe = options.recipe.slice("new-web-".length);
+    options.subverb = surface;
   }
   if (verb === "receipt" && (options.pr === undefined) === (options.body === undefined)) {
     process.stderr.write("verify receipt needs one of --pr <n> or --body <file>\n");

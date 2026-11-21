@@ -24,8 +24,8 @@
 //   `typeSecret`. The password itself never reaches the recipe. Without --account it is null.
 // --account signs in at /login with the stack's first account (handover.mjs's account.json),
 // typing its password the same way. --sign-in names the server whose /login it uses, when the page
-// under --web has none of its own (the new web app, which signs in through its stack's: the session
-// cookie is for the host, on any port); it must be this run's tunnel. --state keeps the signed-in
+// under --web has none of its own (the session cookie is for the host, on any port); it must be
+// this run's tunnel. --state keeps the signed-in
 // browser between runs. Both hold credentials: keep them in the private directory, never under
 // --out.
 //
@@ -434,20 +434,9 @@ try {
       account.password,
     );
     await page.getByRole("button", { name: "Sign in" }).click();
+    // An account's first sign-in may land on /welcome, its Git access step, which an account with
+    // no Git access stays on: the recipe goes where it needs from there.
     await page.waitForURL((url) => url.pathname !== "/login");
-    // An account's first sign-in may ask how it reaches its repositories first. The old app's
-    // welcome has Continue to Mend; the new app's /welcome is its Git access step, which an
-    // account with no Git access stays on: the recipe goes where it needs from there.
-    if (new URL(page.url()).pathname === "/welcome") {
-      const onward = page.getByRole("button", { name: "Continue to Mend" });
-      if (
-        await onward.waitFor({ timeout: 5_000 }).then(
-          () => true,
-          () => false,
-        )
-      )
-        await onward.click();
-    }
     note(`signed in as the stack's first account (${account.email})`);
     // The new app opens setup at `/` for someone who hasn't finished it (SLNT-1210), and the
     // stack's account has a project but no Git access. It stands for a person using Mend, so this

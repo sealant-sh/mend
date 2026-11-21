@@ -125,10 +125,9 @@ Preconditions:
   submit. Recipe rows are plain `div`s with no list role. Scope a row by its name and its button:
   `page.locator("div").filter({ has: page.getByText("verify-proj", { exact: true }) }).filter({ has: page.getByRole("button", { name: "Run", exact: true }) }).last()`.
   `Shadowed` is plain text, not a status.
-- The Setup `Services` form has no labels: its inputs are named only by placeholders
-  (`apps/web-old/src/components/project-setup.tsx:964-982`); only `Browser behavior` and `udp` have
-  names. The placeholder `pnpm dev (empty = adopt a listening port)` is the same text the session
-  card's run form uses.
+- The old app's Setup `Services` form, with inputs named only by placeholders, went with it. The web
+  app's project Services page is `apps/web/src/components/settings/project-services-page.tsx`
+  (`recipes/project-services.mjs` drives it).
 - The shorthand `mend service <name>` cannot reach a recipe named like a `service` verb (`run`,
   `add`, `init`, `connect`, `list`, `logs`, `restart`, `stop`). Use `mend service run <name>`.
 - With no session argument the CLI takes the one live session, or opens a picker with several. Pass

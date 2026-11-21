@@ -45,7 +45,7 @@ const fixture = (t) => {
     copyFileSync(join(repo, path), join(root, path));
   }
   write(".gitignore", ".verify/\n");
-  write("apps/web-old/src/routes/a.tsx", "export const a = 1;\n");
+  write("apps/web/src/routes/a.tsx", "export const a = 1;\n");
   git("init", "-b", "main");
   git("add", "-A");
   git("commit", "-m", "base");
@@ -98,7 +98,7 @@ const pr = ({ body = "", sha, labels = [], ref = "work", login = "someone" }) =>
 
 test("a PR that owes a run passes only with a receipt for its product change, judged and run", async (t) => {
   const { root, base, commit, receipt } = fixture(t);
-  const first = commit("apps/web-old/src/routes/a.tsx", "export const a = 2;\n");
+  const first = commit("apps/web/src/routes/a.tsx", "export const a = 2;\n");
   const gate = (body, headSha) =>
     evaluate(root, { pr: pr({ body, sha: headSha }), headSha, baseSha: base });
 
@@ -124,16 +124,16 @@ test("a PR that owes a run passes only with a receipt for its product change, ju
   assert.match(before.summary, /judged before the judge named a flow/);
 
   // A push of tests and docs keeps the product change, so the earlier receipt still counts.
-  const tested = commit("apps/web-old/src/routes/a.test.tsx");
+  const tested = commit("apps/web/src/routes/a.test.tsx");
   commit("docs/notes.md");
-  const docs = commit("apps/web-old/README.md");
+  const docs = commit("apps/web/README.md");
   assert.notEqual(docs, tested);
   const kept = gate(body, docs);
   assert.equal(kept.passed, true);
   assert.match(kept.summary, /same product change as the head/);
 
   // A push that changes product source needs a receipt of its own.
-  const changed = commit("apps/web-old/src/routes/b.tsx");
+  const changed = commit("apps/web/src/routes/b.tsx");
   const stale = gate(body, changed);
   assert.equal(stale.passed, false);
   assert.match(stale.summary, /product-source change differs/);

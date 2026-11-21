@@ -251,7 +251,7 @@ export MEND_VERIFY_OUTER_URL=http://127.0.1.<n>:3105
 ```
 
 (`vm up` prints both, with the home directory spelled out.) `box plan`, `prepare`, `cli`, `identity`
-and `release`, `health`, `drive new-web --box` and a deploy with `preview-deploy.sh` run there
+and `release`, `health`, `drive web --box` and a deploy with `preview-deploy.sh` run there
 unchanged. No other check holds a copy, so a hold is always free, and `release` matters only for its
 evidence scan: `vm down` deletes the copy. The checker's CLI follows the copy through `MEND_URL`, as
 on the box.
