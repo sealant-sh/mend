@@ -312,7 +312,7 @@ describe("the editor's preview", () => {
           { start: 11, text: "Open it." },
         ],
       },
-      { start: 13, kind: "code", text: "pnpm dev" },
+      { start: 13, kind: "code", language: "sh", text: "pnpm dev" },
     ]);
   });
 });

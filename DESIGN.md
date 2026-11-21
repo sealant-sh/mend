@@ -94,7 +94,7 @@ dark, and name its one role here.
 | `success`                                        | Green: the icon of a success Banner or Inline alert. A status word is never green                                      |
 | `added`, `removed`                               | Diff counts and the marks on changed lines                                                                             |
 | `diff-add`, `diff-del`                           | The faint ground of an added or removed line. Never a saturated block                                                  |
-| `syntax-*`: keyword, string, constant, link      | Code's keywords, strings, constants and URLs in a diff. Its other text is `foreground`                                 |
+| `syntax-*`: keyword, string, constant, link      | Code's keywords, strings, constants and URLs, in a diff or a code block. Its other text is `foreground`                |
 | `pr-none`, `pr-open`, `pr-merged`, `pr-conflict` | The lump glyph's colour: the session's pull request                                                                    |
 | `underline`                                      | The grey underline of an unfocused tile's active tab                                                                   |
 | `claude`, `mark`, `mark-foreground`              | The Claude harness mark, and the organization's mark in the sidebar                                                    |

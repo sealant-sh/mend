@@ -1,5 +1,6 @@
 import { cn } from "@mend/ui/lib/utils";
 
+import { CodeText } from "#/components/code-text";
 import { type PreviewBlock, previewBlocks } from "#/lib/skills";
 
 /**
@@ -117,7 +118,7 @@ function Block({ block }: { readonly block: PreviewBlock }) {
     case "code":
       return (
         <pre className="overflow-x-auto rounded-lg bg-muted px-3 py-2 font-mono text-meta">
-          {block.text}
+          <CodeText code={block.text} language={block.language} />
         </pre>
       );
     case "paragraph":

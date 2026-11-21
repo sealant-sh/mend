@@ -3,10 +3,15 @@ import { memo } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+import { CodeText } from "#/components/code-text";
 import { markdownBlocks } from "#/lib/markdown-blocks";
 import { useRevealedText } from "#/lib/text-reveal";
 
 const plugins = [remarkGfm];
+
+/** A fenced block's language, from the class Markdown gives its code (`language-ts`); null for none. */
+const fenceLanguage = (className: string | undefined): string | null =>
+  /(?:^|\s)language-(\S+)/.exec(className ?? "")?.[1] ?? null;
 
 const components: Components = {
   a: ({ children, href, title }) => (
@@ -25,16 +30,24 @@ const components: Components = {
       {children}
     </pre>
   ),
-  code: ({ children, className }) => (
-    <code
-      className={cn(
-        "rounded-sm bg-muted px-1.25 py-px font-mono text-meta text-foreground",
-        className,
-      )}
-    >
-      {children}
-    </code>
-  ),
+  code: ({ children, className }) => {
+    const language = fenceLanguage(className);
+    return (
+      <code
+        className={cn(
+          "rounded-sm bg-muted px-1.25 py-px font-mono text-meta text-foreground",
+          className,
+        )}
+      >
+        {language !== null && typeof children === "string" ? (
+          // A block's code ends with a newline that shows as nothing.
+          <CodeText code={children.replace(/\n$/, "")} language={language} />
+        ) : (
+          children
+        )}
+      </code>
+    );
+  },
   table: ({ children }) => (
     <div className="min-w-0 overflow-x-auto rounded-lg border">
       <table className="w-full border-collapse text-left text-row [&_td]:px-3 [&_td]:py-2 [&_th]:bg-muted [&_th]:px-3 [&_th]:py-2 [&_th]:font-medium [&_thead]:border-b [&_tr+tr]:border-t">

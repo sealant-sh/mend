@@ -6,9 +6,11 @@ import { cn } from "@mend/ui/lib/utils";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { CircleAlertIcon, EllipsisIcon, PencilIcon, Trash2Icon, XIcon } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 
+import { CodeText } from "#/components/code-text";
 import type { SkillDetailDto } from "#/lib/api";
+import { filePieces } from "#/lib/code-fences";
 import {
   canChangeSkills,
   projectPanelWhen,
@@ -273,7 +275,13 @@ function SkillReader({
             {shown.contents === "" ? (
               <span className="font-sans text-muted-foreground">This file is empty.</span>
             ) : (
-              shown.contents
+              filePieces(shown.path, shown.contents).map((piece) =>
+                piece.kind === "text" ? (
+                  <Fragment key={piece.start}>{piece.text}</Fragment>
+                ) : (
+                  <CodeText key={piece.start} code={piece.text} language={piece.language} />
+                ),
+              )
             )}
           </pre>
         )}

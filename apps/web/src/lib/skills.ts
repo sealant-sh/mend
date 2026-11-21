@@ -10,6 +10,7 @@ import {
   validateSkillName,
 } from "@mend/domain/workbench";
 
+import { fenceInfoLanguage } from "./code-fences.ts";
 import type { SkillSearch } from "./skill-search.ts";
 
 /**
@@ -385,7 +386,7 @@ export type PreviewBlock = { readonly start: number } & (
       readonly ordered: boolean;
       readonly items: ReadonlyArray<{ readonly start: number; readonly text: string }>;
     }
-  | { readonly kind: "code"; readonly text: string }
+  | { readonly kind: "code"; readonly language: string; readonly text: string }
   | { readonly kind: "paragraph"; readonly text: string }
 );
 
@@ -429,7 +430,12 @@ export const previewBlocks = (source: string): ReadonlyArray<PreviewBlock> => {
         body.push(lines[index] ?? "");
         index += 1;
       }
-      blocks.push({ start, kind: "code", text: body.join("\n") });
+      blocks.push({
+        start,
+        kind: "code",
+        language: fenceInfoLanguage(line.trim().slice(3)),
+        text: body.join("\n"),
+      });
       index += 1;
       continue;
     }
