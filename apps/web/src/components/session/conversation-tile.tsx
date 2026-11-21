@@ -155,12 +155,10 @@ const noteOf = (
   }
   if (row.steer === null) {
     // Mend keeps what was sent while the session starts for its agent (SLNT-1237): it says so
-    // until the agent takes it, and why it never went when the start didn't get that far.
+    // until the agent takes it. One the start never got to says why in its turn, below it.
     const turn = conversation?.turns.find((each) => each.id === row.turnId);
     if (turn?.status === "queued" && facts.session.status === "starting")
       return { byline, note: `Waits for ${facts.agent} to start.`, pending: true };
-    if (turn !== undefined && turn.startedAt === null && turn.error !== null && !isOpenTurn(turn))
-      return { byline, note: turn.error, pending: false };
     return { byline, note: null, pending: false };
   }
   const turn = conversation?.turns.find((each) => each.id === row.steer?.turnId);
@@ -606,9 +604,12 @@ export function ConversationTile({
     markers,
     !conversation.hasNextPage,
   );
+  // While the session starts, what Mend keeps for the agent (SLNT-1237) is not work it does yet:
+  // the starting line says where the start is.
   const working =
     conversation.data !== undefined &&
     facts.agentLive &&
+    facts.session.status !== "starting" &&
     conversationActivity(conversation.data) === "working";
   const failedStart = startFailed(facts);
   // Anyone who steers the session answers what its agent asks (shared control included).
