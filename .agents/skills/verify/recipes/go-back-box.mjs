@@ -150,14 +150,26 @@ export default async ({ page, web, capture, note }) => {
     const ordinal = Number(/Checkpoint (\d+)/.exec(title)?.[1]);
     await page.keyboard.press("Escape");
     await page.mouse.move(0, 0);
-    // Lines only follow later turns, so the second turn's keeps its place.
-    const turnTwoLine = () => checkpointLines().nth(shownLines - 1);
+    /** Opens the details of the line whose checkpoint is `ordinal`, whatever its place. */
+    const openTurnTwoLine = async () => {
+      for (let index = 0; index < (await checkpointLines().count()); index++) {
+        await openLine(checkpointLines().nth(index));
+        const named = await details()
+          .getByText(/^Checkpoint \d+/)
+          .first()
+          .innerText();
+        if (named.startsWith(`Checkpoint ${ordinal}`)) return;
+        await page.keyboard.press("Escape");
+        await page.mouse.move(0, 0);
+      }
+      throw new Error(`no checkpoint line opens checkpoint ${ordinal}`);
+    };
     note(`the second turn's line is checkpoint ${ordinal}`);
 
     // While a turn works, going back is refused and nothing changes.
     await send(SLOW);
     await visible(page.getByRole("button", { name: "Stop turn" })).waitFor({ timeout: 120_000 });
-    await openLine(turnTwoLine());
+    await openTurnTwoLine();
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     const confirm = () =>
       visible(page.getByRole("dialog").filter({ hasText: "Go back to checkpoint" }));
@@ -171,8 +183,11 @@ export default async ({ page, web, capture, note }) => {
     await turnsEnded(3);
 
     // Once it ends, going back goes through.
-    const target = await turnTwoLine().innerText();
-    await openLine(turnTwoLine());
+    note(
+      `after the third turn the conversation shows ${await checkpointLines().count()} checkpoint line(s)`,
+    );
+    await openTurnTwoLine();
+    const target = `Checkpoint ${ordinal}`;
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     await confirm().getByText(`Go back to checkpoint ${ordinal}?`).waitFor();
     await shot("go-back-confirm-box-desktop");
