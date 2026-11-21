@@ -29417,6 +29417,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const terminalClients = new Map<string, number>();
       /** Terminal agents whose terminal closed, going back to a conversation once their turn ends. */
       const returnsPending = new Set<string>();
+      /** When each terminal agent's last open terminal closed: the grace runs from there. */
+      const terminalClosedAt = new Map<string, number>();
 
       /**
        * A message from the composer, typed into the terminal agent's TUI (SLNT-1235): the oldest
@@ -29472,6 +29474,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           returnsPending.delete(processId);
           return;
         }
+        // A terminal closed within the grace: its own timer comes back for it once the grace is
+        // over, so a timer armed earlier (at the takeover, or after a restart) never cuts it short.
+        const closedAt = terminalClosedAt.get(processId);
+        if (
+          closedAt !== undefined &&
+          clock.currentTimeMillisUnsafe() - closedAt < Duration.toMillis(TERMINAL_RETURN_GRACE)
+        )
+          return;
         const agent = yield* processes.byId(processId);
         if (
           agent === null ||
@@ -29556,6 +29566,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         Effect.acquireRelease(
           Effect.sync(() => {
             terminalClients.set(processId, (terminalClients.get(processId) ?? 0) + 1);
+            terminalClosedAt.delete(processId);
             returnsPending.delete(processId);
           }),
           () =>
@@ -29566,6 +29577,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 return Effect.void;
               }
               terminalClients.delete(processId);
+              terminalClosedAt.set(processId, clock.currentTimeMillisUnsafe());
               return Effect.asVoid(returnLater(processId));
             }),
         );
