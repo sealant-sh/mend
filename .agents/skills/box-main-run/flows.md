@@ -1063,6 +1063,29 @@ lane changed.
   `packages/agent-conversation/src/feed.ts`, `packages/agent-protocol/src/codex.ts`,
   `packages/agent-protocol/src/claude-turn.ts`
 
+### start-session.memory-limit
+
+- **Map:** start-session.md `session-memory-limit`
+- **Needs:** real turn (codex); web; the project `verify-fixture`; a copy without Boat (its sessions
+  run on Docker)
+- **Do:** Drive the recipe `new-web-memory-limit-box` (`pnpm verify drive new-web --box`): it starts
+  a Codex session in `verify-fixture` that replies `ready`, then a second one told to run
+  `head -c 4608M /dev/zero | tail | wc -c` once and reply `finished`, then sends the first one
+  `Reply with the single word pong, and nothing else.` Stop both with `M stop <id8>` once it ends.
+- **See:** the command is stopped inside its workspace (a copy has 8 GB, so the workspace's limit is
+  a little under 4 GiB and the command holds 4.5 GiB). Under that turn:
+  `The workspace hit its memory limit` and
+  `The workspace reached its memory limit of <n> GiB, and the kernel stopped a process in it, most likely a command Codex ran. Codex is still running.`,
+  once, and still once after a reload. `/api/health` answers 200 throughout, and the first session
+  answers `pong` with no such line. It fails (SLNT-1233) on a build whose workspaces have no memory
+  limit, or that says nothing when one is reached: the recipe stops with "nothing says the workspace
+  hit its memory limit".
+- **Mode:** `scripted` (recipes/new-web-memory-limit-box.mjs)
+- **Box:** after cut-over
+- **Box-only:** `real-agent-turn`
+- **Areas:** `packages/sessions/src/workspace-memory.ts`,
+  `packages/domain/src/workbench/memory-limit.ts`, `apps/web/src/components/session/agent-turn.tsx`
+
 ### start-session.new-web-streaming
 
 - **Map:** start-session.md `session-page`
@@ -3002,7 +3025,7 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | per-person-homes        | `layout-opt-out`, `no-way-back`, `layout-fallback`, `waiting-line`, `retirement` (in workspace-replace)                                                                                                                 | the first two restart the server with `MEND_HARNESS_LAYOUT=shared`; the fallback needs an image that cannot run per person; the waiting line needs a steered turn |
 | operator                | `org-create` (an actual create), `reset-link` (a real link)                                                                                                                                                             | multi tenancy; a reset link nothing revokes                                                                                                                       |
 | exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                  | each restarts the server with changed exposure variables                                                                                                          |
-| server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`                                                   | changes the box's install; the map drives them on a disposable host                                                                                               |
+| server                  | `server-setup`, `server-repair`, `server-exposure-flags`, `server-edge`, `server-posture`, `server-offline`, `server-lifecycle`, `server-next-channel`, `server-lock`, `server-workspace-memory`                        | changes the box's install; the map drives them on a disposable host                                                                                               |
 | uninstall               | all                                                                                                                                                                                                                     | a regression would remove the box's server or the sign-in the run may never touch                                                                                 |
 | cli                     | `help-index`, `help-page`, `help-group`, `help-alias`, `man-page`, `usage-errors`, `unknown-command`, `completions`, `bare-mend`, `qr`                                                                                  | never call the server: `help.test.ts` and `main.test.ts` cover them; `qr` is in pairing-devices                                                                   |
 | tui                     | `tui-new-worktree`, `tui-new-session`, `tui-attach`, `tui-auto-attach`, `tui-resume`, `tui-rename`, `tui-stop`, `tui-remove`, `tui-refresh`, `tui-snake`, `tui-adopt`, `tui-tunnels`, `tui-layout`, `tui-screen-mode`   | a local stack shows them; each new one leaves sessions                                                                                                            |

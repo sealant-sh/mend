@@ -11,6 +11,7 @@ import {
 import { Timestamp } from "../timestamp.ts";
 import { UnreachableCause } from "./endpoint-unreachable.ts";
 import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
+import { MemoryLimitHit } from "./memory-limit.ts";
 import { MergeBackContext } from "./merge-back-context.ts";
 import { NativeHistoryObservation } from "./native-history.ts";
 import { TurnSelection } from "./turn-selection.ts";
@@ -159,6 +160,14 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
    * the login reads it, from their own login.
    */
   unreachable: Schema.NullOr(UnreachableCause).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The workspace reached its memory limit during this turn and the kernel stopped a process in
+   * it (SLNT-1233); null otherwise.
+   */
+  memoryLimit: Schema.NullOr(MemoryLimitHit).pipe(
     Schema.withDecodingDefaultKey(Effect.succeed(null)),
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),

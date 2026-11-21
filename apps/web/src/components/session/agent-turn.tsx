@@ -36,6 +36,7 @@ import {
   defaultEndpointHost,
   type Segment,
   turnEnd,
+  type TurnNext,
   turnLasted,
 } from "#/lib/conversation-rows";
 import { messageTime } from "#/lib/session-sheet";
@@ -325,12 +326,40 @@ function TurnStopped({ row, facts }: { readonly row: AgentRow; readonly facts: S
   );
 }
 
+/**
+ * The workspace reached its memory limit during the turn (SLNT-1233): what the kernel stopped,
+ * and, when that was the agent, how to go on.
+ */
+function TurnMemoryLimit({
+  words,
+  next,
+}: {
+  readonly words: string;
+  readonly next: TurnNext | null;
+}) {
+  return (
+    <div className="mt-2 flex flex-col gap-3 border-t pt-4">
+      <p className="flex items-center gap-2 font-semibold text-foreground">
+        <CircleAlertIcon aria-hidden className="size-4 shrink-0 text-destructive" />
+        The workspace hit its memory limit
+      </p>
+      <p className="text-prose text-foreground">
+        {next === "send-again" ? `${words} Send a message to start it again.` : words}
+      </p>
+    </div>
+  );
+}
+
 /** Why a turn didn't finish as asked, in the agent's own words, and what to do next. */
 function TurnEnd({ row, facts }: { readonly row: AgentRow; readonly facts: SessionFacts }) {
   const end = turnEnd(row, useUnreachableHost(row, facts));
   const turn = row.turn;
   if (end === null || turn === null) return null;
-  if (turn.status === "interrupted") return <TurnStopped row={row} facts={facts} />;
+  if (turn.status === "interrupted" && (turn.memoryLimit ?? null) === null) {
+    return <TurnStopped row={row} facts={facts} />;
+  }
+  if ((turn.memoryLimit ?? null) !== null)
+    return <TurnMemoryLimit words={end.words} next={end.next} />;
   const { agent } = facts;
   const unreachable = (turn.unreachable ?? null) !== null;
   const title =

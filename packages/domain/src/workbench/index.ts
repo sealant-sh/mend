@@ -48,6 +48,7 @@ export * from "./connected-credential.ts";
 export * from "./default-login.ts";
 export * from "./login-words.ts";
 export * from "./endpoint-unreachable.ts";
+export * from "./memory-limit.ts";
 export * from "./duration.ts";
 export * from "./context.ts";
 export * from "./dotenv.ts";

@@ -1050,6 +1050,7 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   setTurnPayer: () => Effect.die("not in test"),
   failTurn: () => Effect.die("not in test"),
   failUnconfirmedTurn: () => Effect.die("not in test"),
+  setTurnMemoryLimit: () => Effect.die("not in test"),
   setTurnIntent: () => Effect.die("not in test"),
   claimTurnLanding: () => Effect.die("not in test"),
   decideTurnLanding: () => Effect.die("not in test"),
@@ -2890,6 +2891,8 @@ export const sessionsLayer = (world: World) => {
   };
   /** A stop's asked-for summary, per session (`stop_summary`): not on the Session row. */
   const stopSummaries = new Map<SessionId, string>();
+  /** Each workspace's out-of-memory kills already said, as `SessionsRepo.noteMemoryKills`. */
+  const memoryKillsSeen = new Map<string, number>();
   return Layer.succeed(SessionsRepo, {
     create: (input: NewSession) =>
       Effect.sync(() => {
@@ -3096,6 +3099,13 @@ export const sessionsLayer = (world: World) => {
     touchTerminal: () => Effect.void,
     terminalActivity: () => Effect.succeed(new Map()),
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
+    noteMemoryKills: (_id, workspaceId, kills) =>
+      Effect.sync(() => {
+        const seen = memoryKillsSeen.get(workspaceId) ?? 0;
+        if (kills <= seen) return false;
+        memoryKillsSeen.set(workspaceId, kills);
+        return true;
+      }),
     restate: (id, outcome, summary) =>
       Effect.sync(() => {
         if (world.sessions.get(id)?.settledAt != null) update(id, { status: outcome, summary });

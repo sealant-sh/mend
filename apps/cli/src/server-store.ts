@@ -46,6 +46,8 @@ export interface ServerFiles {
   readonly mirrors?: string;
   /** compose.workspace-images.yaml: how many workspace images the bundled worker keeps. */
   readonly workspaceImages?: string;
+  /** compose.workspace-memory.yaml: the memory limits of each session's workspace. */
+  readonly workspaceMemory?: string;
   /** npm-mirror.conf: the npm mirror's nginx configuration, mounted read-only. */
   readonly npmMirrorConf?: string;
   /** docker-mirror-guard.sh: the Docker mirror's entrypoint, which bounds its cache. */
@@ -247,6 +249,7 @@ const optionalFileKeys = [
   "caddyfile",
   "mirrors",
   "workspaceImages",
+  "workspaceMemory",
   "npmMirrorConf",
   "dockerMirrorGuard",
   "t3Gateway",
@@ -270,6 +273,7 @@ const fileNames = {
   caddyfile: "Caddyfile",
   mirrors: "compose.mirrors.yaml",
   workspaceImages: "compose.workspace-images.yaml",
+  workspaceMemory: "compose.workspace-memory.yaml",
   npmMirrorConf: "npm-mirror.conf",
   dockerMirrorGuard: "docker-mirror-guard.sh",
   t3Gateway: "compose.t3.yaml",
@@ -304,6 +308,7 @@ const fileModes: Readonly<Record<(typeof fileKeys | typeof optionalFileKeys)[num
   caddyfile: 0o644,
   mirrors: 0o600,
   workspaceImages: 0o600,
+  workspaceMemory: 0o600,
   npmMirrorConf: 0o644,
   dockerMirrorGuard: 0o644,
   t3Gateway: 0o600,
@@ -494,6 +499,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
   const caddyfile = optional("caddyfile");
   const mirrors = optional("mirrors");
   const workspaceImages = optional("workspaceImages");
+  const workspaceMemory = optional("workspaceMemory");
   const npmMirrorConf = optional("npmMirrorConf");
   const dockerMirrorGuard = optional("dockerMirrorGuard");
   const t3Gateway = optional("t3Gateway");
@@ -516,6 +522,7 @@ const readActive = (paths: StorePaths): ServerGeneration | null => {
     ...(caddyfile === undefined ? {} : { caddyfile }),
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
+    ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
     ...(npmMirrorConf === undefined ? {} : { npmMirrorConf }),
     ...(dockerMirrorGuard === undefined ? {} : { dockerMirrorGuard }),
     ...(t3Gateway === undefined ? {} : { t3Gateway }),

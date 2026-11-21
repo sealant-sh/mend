@@ -356,6 +356,41 @@ describe("a turn that did not finish as asked", () => {
     });
   });
 
+  it("says the workspace hit its memory limit under the turn, completed or withdrawn", () => {
+    const hit = { limitBytes: 4 * 1024 ** 3, agent: "Claude Code" } as const;
+    const completed: ConversationView = {
+      turns: [
+        {
+          ...turn("t-1", 1, "completed", "2026-11-02T10:00:00.000Z"),
+          memoryLimit: { ...hit, stopped: "process" },
+        },
+      ],
+      items: [item("t-1", "assistant-message", "2026-11-02T10:00:01.000Z")],
+      requests: [],
+    };
+    const [row] = agentRows(completed);
+    expect(row?.kind === "agent" ? turnEnd(row) : null).toEqual({
+      words:
+        "The workspace reached its memory limit of 4 GiB, and the kernel stopped a process in it, most likely a command Claude Code ran. Claude Code is still running.",
+      next: null,
+    });
+    const withdrawn: ConversationView = {
+      turns: [
+        {
+          ...turn("t-1", 1, "cancelled", "2026-11-02T10:00:00.000Z"),
+          memoryLimit: { ...hit, stopped: "agent" },
+        },
+      ],
+      items: [],
+      requests: [],
+    };
+    const [stopped] = agentRows(withdrawn);
+    expect(stopped?.kind === "agent" ? turnEnd(stopped) : null).toEqual({
+      words: "The workspace reached its memory limit of 4 GiB, and the kernel stopped Claude Code.",
+      next: "send-again",
+    });
+  });
+
   it("points at adding credit when the login's account ran out", () => {
     const conversation: ConversationView = {
       turns: [

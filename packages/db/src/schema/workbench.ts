@@ -88,7 +88,12 @@ import {
   InheritedHistory,
   NativeHistorySeed,
 } from "@mend/domain/workbench";
-import type { BoatKeyChoice, ServiceDependency, UnreachableCause } from "@mend/domain/workbench";
+import type {
+  BoatKeyChoice,
+  MemoryLimitHit,
+  ServiceDependency,
+  UnreachableCause,
+} from "@mend/domain/workbench";
 import type { ResourceLoadPhase } from "@mend/domain/workbench";
 import type {
   ExecutorCallOutcome,
@@ -2258,6 +2263,8 @@ export const agentTurns = pgTable(
     billedAccountName: text(),
     // Why a turn on a login with an endpoint could not connect (0211, docs/adr/0018 decision 11).
     unreachable: text().$type<UnreachableCause>(),
+    // The workspace reached its memory limit during the turn (0236, SLNT-1233).
+    memoryLimit: jsonb().$type<MemoryLimitHit>(),
     // The dispatch that claimed the turn (0168): only it moves the turn while it is unsent.
     dispatchAttemptId: uuid().$type<DispatchAttemptId>(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
@@ -2278,6 +2285,24 @@ export const agentTurns = pgTable(
     index("agent_turns_session_created_idx").on(table.sessionId, table.ordinal),
     index("agent_turns_process_status_idx").on(table.processId, table.status, table.ordinal),
   ],
+);
+
+/**
+ * How many of a workspace's out-of-memory kills Mend has said in its session (0236, SLNT-1233):
+ * the workspace's own count only grows, so a look that reads more says the difference once.
+ */
+export const workspaceMemoryKills = pgTable(
+  "workspace_memory_kills",
+  {
+    sealantWorkspaceId: text().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    kills: integer().notNull(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("workspace_memory_kills_session_idx").on(table.sessionId)],
 );
 
 export const agentTurnSteers = pgTable(
