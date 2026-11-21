@@ -177,4 +177,23 @@ describe.skipIf(postgres.skip)("what an inbox row knows without reading a worktr
       { sessionId: "talks", input: "go" },
     ]);
   });
+
+  it("reads a session's first messages Mend sent, oldest first and up to the count, not a turn the harness opened", async () => {
+    const opening = await withRepos(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // After the harness's own turn (ordinal 0) and "go", two more, written out of order.
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, author, input, status)
+          VALUES ('t-1-third', 'talks', 'p-1', 4, 'u-1', 'and the tests', 'completed')`;
+        yield* sql`INSERT INTO agent_turns (id, session_id, process_id, ordinal, author, input, status)
+          VALUES ('t-1-second', 'talks', 'p-1', 3, 'u-1', 'fix the login loop', 'completed')`;
+        const conversations = yield* AgentConversationRepo;
+        return {
+          two: yield* conversations.openingMessages(SessionId.make("talks"), 2),
+          none: yield* conversations.openingMessages(SessionId.make("quiet"), 2),
+        };
+      }),
+    );
+    expect(opening).toEqual({ two: ["go", "fix the login loop"], none: [] });
+  });
 });

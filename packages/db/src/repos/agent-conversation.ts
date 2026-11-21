@@ -623,6 +623,15 @@ export class AgentConversationRepo extends Context.Service<
       sessionIds: ReadonlyArray<SessionId>,
     ) => Effect.Effect<ReadonlyArray<FirstMessage>>;
     /**
+     * The inputs of the first `count` messages Mend sent one session, oldest first, by the same
+     * rule as `firstMessages`: turns Mend sent, still in its history. The namer reads past a first
+     * message that names nothing ("hi") to the one that does.
+     */
+    readonly openingMessages: (
+      sessionId: SessionId,
+      count: number,
+    ) => Effect.Effect<ReadonlyArray<string>>;
+    /**
      * The background tasks one agent process reported (`task` items): how many still run, and
      * when any last changed.
      */
@@ -2593,6 +2602,26 @@ export const AgentConversationRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
+    const openingMessages = Effect.fn("AgentConversationRepo.openingMessages")(function* (
+      sessionId: SessionId,
+      count: number,
+    ) {
+      const rows = yield* db
+        .select({ input: agentTurns.input })
+        .from(agentTurns)
+        .where(
+          and(
+            eq(agentTurns.sessionId, sessionId),
+            eq(agentTurns.origin, "request"),
+            isNull(agentTurns.withdrawnHistoryRevision),
+          ),
+        )
+        .orderBy(asc(agentTurns.ordinal))
+        .limit(count)
+        .pipe(Effect.orDie);
+      return rows.map((row) => row.input);
+    });
+
     const inboxTurnFacts = Effect.fn("AgentConversationRepo.inboxTurnFacts")(function* (
       sessionIds: ReadonlyArray<SessionId>,
     ) {
@@ -3022,6 +3051,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       newestItems,
       inboxTurnFacts,
       firstMessages,
+      openingMessages,
       hasPendingRequests,
       prepareRequestResponse,
       completeRequestResponse,
