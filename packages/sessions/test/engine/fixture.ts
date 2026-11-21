@@ -1086,6 +1086,9 @@ export const agentConversationStub: AgentConversationRepo["Service"] = {
   cancelOpenForTurn: () => Effect.void,
   cancelOpenForProcess: () => Effect.void,
   backfillConversation: () => Effect.succeed(0),
+  startTerminalTurn: () => Effect.succeed(null),
+  requeueTerminalTurn: () => Effect.void,
+  settleTerminalTurns: () => Effect.void,
   resetSendingResponses: () => Effect.void,
   requeueQueuedTurns: () => Effect.void,
   queueOpeningTurn: () => Effect.succeed(null),
@@ -3062,6 +3065,7 @@ export const sessionsLayer = (world: World) => {
             : {}),
         }),
       ),
+    setMode: (id, mode) => Effect.sync(() => update(id, { mode })),
     nativeIngestCursor: () => Effect.succeed(null),
     setNativeIngestCursor: () => Effect.void,
     saveLastSeenSequence: (id, sequence) =>

@@ -72,6 +72,15 @@ export const SessionStatus = Schema.Literals([
 export type SessionStatus = typeof SessionStatus.Type;
 
 /**
+ * How the session's agent runs (SLNT-1235): `conversation`, Mend driving it turn by turn, or
+ * `terminal`, its own TUI in a terminal. Written when a launch starts and at every switch between
+ * the two, by hand or when a closed terminal hands the session back; null for a session no agent
+ * was ever launched in. Every reader asks this, never the newest agent process.
+ */
+export const SessionMode = Schema.Literals(["conversation", "terminal"]);
+export type SessionMode = typeof SessionMode.Type;
+
+/**
  * Why a launch over the attempt its client saw was refused `SessionMovedOn` (SLNT-167): another
  * launch held the gate, the agent is live, an agent ran that the client did not see, or the
  * session settled since.
@@ -412,6 +421,11 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   status: SessionStatus,
+  /**
+   * How its agent runs (`SessionMode`); null before any launch. Absent from older servers, and from
+   * a session a client built itself: read as null.
+   */
+  mode: Schema.optionalKey(Schema.NullOr(SessionMode)),
   /**
    * Where the session's latest write of a live status (`starting`, `running`, `waiting`) falls, in
    * one sequence shared by every session (`SessionsRepo.liveMarkNow`). A reader that sees a higher

@@ -80,6 +80,7 @@ import {
   type PreReleaseMigrationRecord,
   type ScreenDisplaysFullError,
   type RetirementStopRecord,
+  SessionControlEventsRepo,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -184,6 +185,7 @@ import type {
   SessionProcess,
   SessionRun,
   SessionStatus,
+  SessionMode,
   Worktree,
 } from "@mend/domain/workbench";
 import {
@@ -252,6 +254,8 @@ import {
   keyAnswers,
   liveTerminalAgentsOf,
   nextAgentWait,
+  AgentWait,
+  terminalHoldOf,
   currentAgentProcess,
   foldSessionLiveness,
   holdsWorkspace,
@@ -579,6 +583,7 @@ import {
   parseCarriedTranscripts,
   nativeResumeArgv,
   readHarnessFileScript,
+  readLiveTranscriptScript,
   relocateHarnessHomeScript,
   type HarnessStateManifest,
   type LocatedHarnessState,
@@ -1189,6 +1194,13 @@ interface LaunchPlan {
   readonly protocolAuthor: string | null;
 }
 
+/**
+ * The mode a launch puts the session in (SLNT-1235): a conversation when it starts one, a
+ * terminal for any other agent launch; null for a launch that only holds the workspace.
+ */
+const launchModeOf = (plan: LaunchPlan): SessionMode | null =>
+  plan.role !== "agent" ? null : plan.protocolStart !== null ? "conversation" : "terminal";
+
 /** An agent launch of `argv`, with whatever else of its terms the caller knows. */
 const agentLaunch = (
   argv: ReadonlyArray<string>,
@@ -1436,6 +1448,46 @@ const AGENT_HOOK_NO_OPS_PER_MINUTE = 600;
  * then counts as overtaken by those changes.
  */
 const AGENT_WAIT_MOVE_ATTEMPTS = 3;
+
+/**
+ * How long after a terminal agent's `Stop` its transcript is read again (SLNT-1235): the harness
+ * may write the turn's last line just after the hook runs, and a turn is landed only once whole.
+ */
+const TERMINAL_INGEST_SETTLE = Duration.seconds(3);
+
+/** The harnesses whose terminal turns Mend reads into the conversation: the ones it can switch. */
+const TERMINAL_TRANSCRIPT_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+
+/**
+ * How long a session taken over in a terminal waits, once no terminal is open on it, before it
+ * goes back to being a conversation (SLNT-1235). Long enough that a dropped connection the CLI
+ * opens again, or a detach and a quick `mend attach`, never restarts the agent; short enough that
+ * a person who closed the terminal and opened the web finds the composer back within a minute.
+ */
+const TERMINAL_RETURN_GRACE = Duration.seconds(45);
+
+/**
+ * Between the words pasted into a terminal and the Enter that sends them: a TUI reads an Enter that
+ * comes right after text as more of the paste (Codex's TUI did, at 0.160), so it waits a moment.
+ */
+const TERMINAL_ENTER_AFTER = Duration.millis(500);
+
+/**
+ * Whether the session was a conversation before this terminal agent took it over (SLNT-1235): the
+ * agent before it ran as one. A session started in a terminal is never moved behind anyone's back.
+ */
+const tookOverConversation = (rows: ReadonlyArray<SessionProcess>, agent: SessionProcess) => {
+  const agents = agentProcessesOf(rows);
+  const at = agents.findIndex((row) => row.id === agent.id);
+  return at > 0 && agents[at - 1]?.kind === "agent-protocol";
+};
+
+/**
+ * The owner's words as a bracketed paste (SLNT-1235): one block the TUI takes as typed text, never
+ * as keys. An escape inside could end the paste early, so none is kept.
+ */
+const terminalPaste = (words: string): string =>
+  `\x1b[200~${words.replaceAll("\x1b", "")}\x1b[201~`;
 
 /** A failure's own words, for a session line. */
 const causeWords = (cause: Cause.Cause<unknown>): string => {
@@ -3418,6 +3470,14 @@ export class SessionEngine extends Context.Service<
      * (`keyAnswers`). A wait that opened after the key stays. Keys in a shell clear nothing.
      */
     readonly personTyped: (processId: SessionProcessId, typedAt: Date) => Effect.Effect<boolean>;
+    /**
+     * One of the owner's terminals open on a terminal agent, while the scope lasts (SLNT-1235).
+     * Once the last one closes, a session taken over from a conversation goes back to being one
+     * after a grace, at a turn boundary.
+     */
+    readonly terminalClient: (
+      processId: SessionProcessId,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     /**
      * Adopt an already-listening workspace port as a Service
      * (docs/SESSION-SERVICES.md): bind a host listener on the private
@@ -11592,6 +11652,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const native = yield* io("read-transcript", transcriptPath, () =>
           fs.readFile(transcriptPath, "utf8"),
         );
+        // As the exec harvest does: a protocol process's transcript is all durable turns already,
+        // so a later switch from a terminal lands only the terminal's own (SLNT-1235: without it,
+        // a capture-mode switch landed the conversation's turns a second time).
+        if (agent.kind === "agent-protocol" && providerSessionId !== null && native !== "") {
+          const endCursor = cursorAtEndOf(harness, providerSessionId, native);
+          if (endCursor !== null) yield* sessions.setNativeIngestCursor(session.id, endCursor);
+        }
         const canonical =
           native === "" ? null : ingestNativeSession(harness, native, "/workspace/repo");
         if (canonical !== null) {
@@ -12905,7 +12972,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     ? protocolHost
                         .detach(ended.id)
                         .pipe(Effect.andThen(conversations.cancelOpenForProcess(ended.id)))
-                    : Effect.void,
+                    : ended.kind === "agent-pty"
+                      ? conversations.settleTerminalTurns(ended.id)
+                      : Effect.void,
               },
             ).pipe(
               Effect.asVoid,
@@ -21578,6 +21647,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }),
           )
           .pipe(Effect.onError(() => releaseTake));
+        // The session runs this way from here on (SLNT-1235): its agent has started.
+        const startedMode = launchModeOf(plan);
+        if (startedMode !== null) yield* sessions.setMode(sessionId, startedMode);
         if (inConversation !== null && inConversation.fence !== null) {
           yield* bindConversationProcess(launchedProcess, inConversation.fence).pipe(
             Effect.tapError(() =>
@@ -22730,6 +22802,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             cause: null,
           });
         }
+        // A conversation from here on (SLNT-1235): a page that opens it while it starts reads so.
+        yield* sessions.setMode(sessionId, "conversation");
         const previous = currentAgentProcess(rows);
         // A continuation that names neither a model nor an effort (a resume, a stopped session's
         // follow-up) runs on what the session was started with (docs/models-audit.md); a start
@@ -23119,6 +23193,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   message: "Shared control is off, so only the session's owner sends it turns.",
                 });
               const attempt = Effect.gen(function* () {
+                // The agent runs in a terminal: the words are typed into it (SLNT-1235).
+                const terminal = yield* sendTerminalMessage(session, input);
+                if (terminal !== null) return terminal;
                 const settings = yield* messageSettings.forUser(input.sender);
                 const turns = yield* conversations.openTurns(input.sessionId);
                 const choice = yield* chooseMessageDelivery(input, settings, turns);
@@ -23345,14 +23422,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const shape = HARNESS_STATE[harness];
         let native: string | null = null;
         if (shape !== undefined && agent !== null && isLiveProcess(agent)) {
-          native = yield* Effect.gen(function* () {
-            const workspace = yield* sealant.getWorkspace(agent.sealantWorkspaceId);
-            const located = yield* sealant.exec(workspace, ["sh", "-c", shape.latestTranscript]);
-            const file = located.stdout.trim().split("\n")[0] ?? "";
-            if (located.exitCode !== 0 || file === "") return null;
-            const read = yield* sealant.exec(workspace, ["cat", file]);
-            return read.exitCode === 0 && read.stdout !== "" ? read.stdout : null;
-          }).pipe(Effect.catch(() => Effect.succeed(null)));
+          // The agent's own transcript, as its person (SLNT-1235): the newest file under root's
+          // home was nothing of an agent running as its person.
+          native = yield* liveTranscriptOf(agent).pipe(Effect.catch(() => Effect.succeed(null)));
         }
         if (native === null) {
           const project = yield* projects
@@ -24244,6 +24316,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               }),
             )
             .pipe(Effect.onError(() => releaseRetainedTake));
+          // The session runs this way from here on (SLNT-1235): its agent has started.
+          const startedMode = launchModeOf(plan);
+          if (startedMode !== null) yield* sessions.setMode(sessionId, startedMode);
           if (inConversation !== null && inConversation.fence !== null) {
             yield* bindConversationProcess(agentProcess, inConversation.fence).pipe(
               Effect.tapError((error) =>
@@ -24519,8 +24594,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         }
         const rows = yield* processes.listForSession(sessionId);
-        const priorAgent = currentAgentProcess(rows);
-        if (priorAgent?.kind === "agent-protocol") {
+        // The session's recorded mode says how it comes back (SLNT-1235).
+        if (session.mode === "conversation") {
           return yield* launchProtocol(
             sessionId,
             // No permission mode named: the relaunch keeps the one recorded (`launchProtocol`).
@@ -24649,8 +24724,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const target = harness ?? session.harness;
         const rows = yield* processes.listForSession(sessionId);
-        const priorAgent = currentAgentProcess(rows);
-        if (!forcePty && priorAgent?.kind === "agent-protocol" && target === session.harness) {
+        // The session's recorded mode says how it comes back (SLNT-1235).
+        if (!forcePty && session.mode === "conversation" && target === session.harness) {
           return yield* launchProtocol(
             sessionId,
             // No permission mode named: the relaunch keeps the one recorded (`launchProtocol`).
@@ -25914,7 +25989,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             retainedWorkspace,
           );
         }
-        return yield* resumeSession(sessionId, null, false, {
+        const resumed = yield* resumeSession(sessionId, null, false, {
           saved: { kind: "latest" },
           retainedWorkspace,
           permissionOverride: start.permissionMode,
@@ -25931,6 +26006,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           ),
         );
+        yield* awaitTerminalAt(sessionId);
+        return resumed;
+      });
+
+      /**
+       * A conversation reopened as a terminal (SLNT-1235) resumes with no prompt, so its agent
+       * waits at its prompt, though no turn's end said so: the composer's words can go at once.
+       * If no terminal is ever open on it, it goes back to a conversation after the grace.
+       */
+      const awaitTerminalAt = Effect.fn("SessionEngine.awaitTerminalAt")(function* (
+        sessionId: SessionId,
+      ) {
+        const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
+        if (agent === null || agent.kind !== "agent-pty" || !isLiveProcess(agent)) return;
+        const now = new Date(clock.currentTimeMillisUnsafe());
+        if (agent.waiting === null) {
+          const prompt = new AgentWait({ kind: "prompt", tool: null, since: now });
+          if (yield* processes.setWaiting(agent.id, sessionId, null, prompt))
+            yield* reconcileSession(sessionId, { sweep: false }).pipe(Effect.ignore);
+        }
+        yield* returnLater(agent.id);
       });
 
       const workspaceForSupportingProcess = Effect.fn(
@@ -29209,6 +29305,333 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return view;
         });
 
+      /**
+       * A live terminal agent's own transcript, read in its workspace (SLNT-1235). An agent runs
+       * as its person's own user (docs/adr/0016), so the file is read as them, under their home:
+       * a read as root looked in `/root` and found nothing of a running agent. An executor from
+       * before per-person homes keeps it under root's home, which is read when the person's holds
+       * none. Null when there is no transcript, or it could not be read.
+       */
+      const liveTranscriptOf = Effect.fn("SessionEngine.liveTranscriptOf")(function* (
+        agent: SessionProcess,
+      ) {
+        const harness = agent.harness;
+        const shape = harness === null ? undefined : HARNESS_STATE[harness];
+        if (harness === null || shape === undefined) return null;
+        const person =
+          agent.runsAs === null
+            ? null
+            : ((yield* harnessLayouts.identitiesOf([agent.runsAs]))[0] ?? null);
+        const workspace = yield* sealant.getWorkspace(agent.sealantWorkspaceId);
+        const scriptFor = (home: string | null, mountPath: string) =>
+          readLiveTranscriptScript({
+            harness,
+            providerSessionId: agent.providerSessionId,
+            latest: shape.latestTranscript,
+            home,
+            mountPath,
+          });
+        const attempts = [
+          ...(person === null
+            ? []
+            : [
+                {
+                  script: scriptFor(
+                    linuxHomeOf(person),
+                    savedDirOf(HARNESS_HOME_MOUNT_PATH, person.accountId),
+                  ),
+                  options: { user: processUserOf(person) },
+                },
+              ]),
+          { script: scriptFor(null, HARNESS_HOME_MOUNT_PATH), options: undefined },
+        ];
+        for (const attempt of attempts) {
+          if (attempt.script === null) return null;
+          const read = yield* sealant.exec(
+            workspace,
+            ["sh", "-c", attempt.script],
+            attempt.options,
+          );
+          if (read.exitCode === 0 && read.stdout !== "") return read.stdout;
+        }
+        return null;
+      });
+
+      /**
+       * A live terminal agent's finished turns, landed in the session's conversation (SLNT-1235):
+       * read from its own transcript past the session's ingest cursor, through the same mapping a
+       * mode switch backfills with, so the web shows a turn typed in the terminal once it ends.
+       * Only the owner types in a terminal (docs/adr/0013), so the turns are theirs. One read at a
+       * time per session; the turn ids make a repeat land nothing.
+       */
+      const terminalIngestLocks = new Map<string, Semaphore.Semaphore>();
+      const ingestTerminalTurns = Effect.fn("SessionEngine.ingestTerminalTurns")(function* (
+        processId: SessionProcessId,
+      ) {
+        const agent = yield* processes.byId(processId);
+        if (agent === null || agent.kind !== "agent-pty" || agent.providerSessionId === null) {
+          return 0;
+        }
+        const harness = agent.harness;
+        const providerSessionId = agent.providerSessionId;
+        if (harness !== "claude" && harness !== "codex") return 0;
+        const existing = terminalIngestLocks.get(agent.sessionId);
+        const lock = existing ?? Semaphore.makeUnsafe(1);
+        if (existing === undefined) terminalIngestLocks.set(agent.sessionId, lock);
+        return yield* lock.withPermit(
+          Effect.gen(function* () {
+            const native = yield* liveTranscriptOf(agent);
+            if (native === null) return 0;
+            const cursor = yield* sessions.nativeIngestCursor(agent.sessionId);
+            const parsed = backfillFromNative(harness, providerSessionId, native, cursor, {
+              finishedOnly: true,
+            });
+            if (parsed === null) return 0;
+            const session = yield* sessions.byId(agent.sessionId);
+            const author = agent.runsAs ?? session.ownerUserId;
+            const landed = yield* conversations.backfillConversation(
+              agent.sessionId,
+              agent.id,
+              parsed.turns.map((turn) => ({ ...turn, author })),
+            );
+            yield* sessions.setNativeIngestCursor(agent.sessionId, parsed.cursor);
+            if (landed > 0) {
+              yield* Effect.logInfo("session engine: terminal turns landed").pipe(
+                Effect.annotateLogs({ sessionId: agent.sessionId, processId, turns: landed }),
+              );
+            }
+            return landed;
+          }),
+        );
+      });
+
+      // ── One session from its terminal and its conversation (SLNT-1235) ──────────────
+      const controlEventsRepo = Option.getOrUndefined(
+        yield* Effect.serviceOption(SessionControlEventsRepo),
+      );
+      /** The newest key typed into each terminal agent's terminal, as `personTyped` saw it. */
+      const terminalTypedAt = new Map<string, Date>();
+      /** How many of its owner's attachments each terminal agent's terminal has open now. */
+      const terminalClients = new Map<string, number>();
+      /** Terminal agents whose terminal closed, going back to a conversation once their turn ends. */
+      const returnsPending = new Set<string>();
+
+      /**
+       * A message from the composer, typed into the terminal agent's TUI (SLNT-1235): the oldest
+       * one waiting goes once the agent's turn has ended and nobody has typed there since
+       * (`terminalHoldOf`); until then it waits as a queued turn, and the conversation says why.
+       */
+      const deliverTerminalTurns = Effect.fn("SessionEngine.deliverTerminalTurns")(function* (
+        processId: SessionProcessId,
+      ) {
+        const agent = yield* processes.byId(processId);
+        if (agent === null || agent.kind !== "agent-pty" || !isLiveProcess(agent)) return;
+        if (agent.sealantSessionId === null) return;
+        // Messages that waited for an earlier terminal agent of the session wait for this one.
+        const waitingElsewhere = new Set(
+          (yield* conversations.openTurns(agent.sessionId))
+            .filter((turn) => turn.status === "queued" && turn.processId !== agent.id)
+            .map((turn) => turn.processId),
+        );
+        for (const from of waitingElsewhere)
+          yield* conversations.requeueQueuedTurns(from, agent.id);
+        if (terminalHoldOf(agent.waiting, terminalTypedAt.get(agent.id) ?? null) !== null) return;
+        const turn = yield* conversations.startTerminalTurn(agent.id);
+        if (turn === null) return;
+        const ptyId = agent.sealantSessionId;
+        const typed = yield* Effect.gen(function* () {
+          const workspace = yield* sealant.getWorkspace(agent.sealantWorkspaceId);
+          const pty = yield* sealant.getSession(workspace, ptyId);
+          yield* Effect.tryPromise(() => pty.send(terminalPaste(turn.input)));
+          yield* Effect.sleep(TERMINAL_ENTER_AFTER);
+          yield* Effect.tryPromise(() => pty.send("\r"));
+        }).pipe(Effect.exit);
+        if (Exit.isFailure(typed)) {
+          yield* conversations.requeueTerminalTurn(turn.id);
+          yield* Effect.logWarning(
+            "session engine: a message was not typed into the terminal",
+          ).pipe(
+            Effect.annotateLogs({ processId, turnId: turn.id, cause: Cause.pretty(typed.cause) }),
+          );
+        }
+      });
+
+      /**
+       * A session taken over in a terminal goes back to being a conversation once no terminal is
+       * open on it (SLNT-1235): only past the grace, only at a turn boundary, never while the
+       * agent asks something in the terminal, and only for a session that was a conversation
+       * before the takeover. A turn still running is waited for (`returnsPending`), never ended.
+       * Words typed there and not sent are lost with the TUI; the conversation says so.
+       */
+      const returnToConversation = Effect.fn("SessionEngine.returnToConversation")(function* (
+        processId: SessionProcessId,
+      ) {
+        if ((terminalClients.get(processId) ?? 0) > 0) {
+          returnsPending.delete(processId);
+          return;
+        }
+        const agent = yield* processes.byId(processId);
+        if (
+          agent === null ||
+          agent.kind !== "agent-pty" ||
+          !isLiveProcess(agent) ||
+          agent.harness === null ||
+          !TERMINAL_TRANSCRIPT_HARNESSES.has(agent.harness)
+        ) {
+          returnsPending.delete(processId);
+          return;
+        }
+        const rows = yield* processes.listForSession(agent.sessionId);
+        if (!tookOverConversation(rows, agent)) {
+          returnsPending.delete(processId);
+          return;
+        }
+        if (agent.waiting === null || agent.waiting.kind !== "prompt") {
+          returnsPending.add(processId);
+          return;
+        }
+        returnsPending.delete(processId);
+        const unsent = terminalHoldOf(agent.waiting, terminalTypedAt.get(agent.id) ?? null);
+        const session = yield* sessions.byId(agent.sessionId);
+        yield* owned(session.id)(
+          Effect.gen(function* () {
+            // Every finished turn is in the conversation before the terminal agent ends.
+            yield* ingestTerminalTurns(agent.id).pipe(Effect.ignore);
+            yield* switchMode(
+              session.id,
+              "protocol",
+              {
+                mode: "protocol",
+                ...(session.model === null ? {} : { model: session.model }),
+                ...(session.effort === null ? {} : { effort: session.effort }),
+              },
+              null,
+            );
+          }),
+        );
+        const owner = agent.runsAs ?? session.ownerUserId;
+        if (owner !== null && controlEventsRepo !== undefined) {
+          yield* controlEventsRepo.record({
+            sessionId: session.id,
+            actorUserId: owner,
+            kind: "continued-after-terminal",
+            refId: agent.id,
+          });
+          if (unsent === "typed")
+            yield* controlEventsRepo.record({
+              sessionId: session.id,
+              actorUserId: owner,
+              kind: "terminal-unsent-left",
+              refId: agent.id,
+            });
+        }
+        yield* Effect.logInfo(
+          "session engine: continued as a conversation after the terminal closed",
+        ).pipe(
+          Effect.annotateLogs({ sessionId: session.id, processId, unsent: unsent === "typed" }),
+        );
+      });
+
+      const returnLater = (processId: SessionProcessId): Effect.Effect<void> =>
+        Effect.asVoid(
+          detach(
+            Effect.sleep(TERMINAL_RETURN_GRACE).pipe(
+              Effect.andThen(returnToConversation(processId)),
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  "session engine: the session did not go back to a conversation",
+                ).pipe(Effect.annotateLogs({ processId, cause: Cause.pretty(cause) })),
+              ),
+            ),
+          ),
+        );
+
+      /**
+       * One of the owner's terminals open on a terminal agent, for as long as the scope lasts
+       * (the terminal route's socket). The last one to close starts the grace.
+       */
+      const terminalClient = (processId: SessionProcessId) =>
+        Effect.acquireRelease(
+          Effect.sync(() => {
+            terminalClients.set(processId, (terminalClients.get(processId) ?? 0) + 1);
+            returnsPending.delete(processId);
+          }),
+          () =>
+            Effect.suspend(() => {
+              const left = (terminalClients.get(processId) ?? 1) - 1;
+              if (left > 0) {
+                terminalClients.set(processId, left);
+                return Effect.void;
+              }
+              terminalClients.delete(processId);
+              return Effect.asVoid(returnLater(processId));
+            }),
+        );
+
+      /**
+       * After a terminal agent's turn ends and lands: a session whose terminal closed goes back
+       * to a conversation, which takes any message still waiting; otherwise the next message
+       * waiting for the terminal is typed into it.
+       */
+      const afterTerminalTurn = (processId: SessionProcessId) =>
+        Effect.suspend(() =>
+          returnsPending.has(processId)
+            ? returnToConversation(processId)
+            : deliverTerminalTurns(processId),
+        ).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: after a terminal turn").pipe(
+              Effect.annotateLogs({ processId, cause: Cause.pretty(cause) }),
+            ),
+          ),
+        );
+
+      /**
+       * A message for a session whose agent runs in a terminal (SLNT-1235): only its owner types
+       * there (docs/adr/0013), so only they send it; it waits as a turn on the terminal agent and
+       * is typed into the TUI at its next turn boundary. Null when the agent is not a terminal one.
+       */
+      const sendTerminalMessage = Effect.fn("SessionEngine.sendTerminalMessage")(function* (
+        session: Session,
+        input: SendMessageInput,
+      ) {
+        const agent = currentAgentProcess(yield* processes.listForSession(session.id));
+        if (
+          agent === null ||
+          agent.kind !== "agent-pty" ||
+          !isLiveProcess(agent) ||
+          agent.harness === null ||
+          !TERMINAL_TRANSCRIPT_HARNESSES.has(agent.harness)
+        )
+          return null;
+        const owner = agent.runsAs ?? session.ownerUserId;
+        if (input.sender !== owner) {
+          const name = yield* namesFor(session.id).pipe(
+            Effect.map((nameOf) => (owner === null ? "its owner" : nameOf(owner))),
+            Effect.orElseSucceed(() => "its owner"),
+          );
+          return yield* new SessionTurnRefusedError({
+            sessionId: session.id,
+            message: `This session runs in a terminal. Only ${name} types here; they can continue it as a conversation.`,
+          });
+        }
+        const admitted = yield* conversations
+          .admitTurnMessage(input, agent.id, "no-own-running-turn")
+          .pipe(
+            Effect.catchTag("SessionStoppingError", () =>
+              Effect.fail(
+                new SessionTurnRefusedError({
+                  sessionId: session.id,
+                  message: "The session is stopping, so it takes no message now.",
+                }),
+              ),
+            ),
+          );
+        if (admitted._tag === "Replay") return admitted.result;
+        yield* deliverTerminalTurns(agent.id);
+        return yield* conversations.messageById(admitted.result.messageId);
+      });
+
       const agentWaitChanges = makeWindowLimiter();
       const agentHookNoOps = makeWindowLimiter();
       const noOp = (
@@ -29248,6 +29671,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return noOp(sessionId, "other-process");
           }
           const agent = target.process;
+          // A finished turn lands in the conversation (SLNT-1235), off the hook's path. The
+          // harness may write its last line just after the hook, so it is read again shortly.
+          if (report.event === "Stop" && attempt === 0) {
+            const ingest = ingestTerminalTurns(agent.id).pipe(
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session engine: terminal turns not landed").pipe(
+                  Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                ),
+              ),
+            );
+            yield* detach(
+              ingest.pipe(
+                Effect.andThen(Effect.sleep(TERMINAL_INGEST_SETTLE)),
+                Effect.andThen(ingest),
+                Effect.andThen(afterTerminalTurn(agent.id)),
+              ),
+            );
+          }
           const signal = agentSignalOf(report);
           if (signal === null) {
             return target._tag === "claim" ? "ignored" : noOp(sessionId, "ignored");
@@ -29276,6 +29717,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         processId: SessionProcessId,
         typedAt: Date,
       ) {
+        // A line typed and not sent holds a message from the composer (SLNT-1235).
+        const before = terminalTypedAt.get(processId);
+        if (before === undefined || before.getTime() < typedAt.getTime())
+          terminalTypedAt.set(processId, typedAt);
         const process = yield* processes.byId(processId);
         if (
           process === null ||
@@ -32218,6 +32663,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Fibers in the engine's lifetime (`SessionEngine.detach`); they inherit the principal. */
       const detach = <A, E>(effect: Effect.Effect<A, E>) => forkSealantBackground(effect, scope);
+      // After a restart no terminal is open on anything yet (SLNT-1235): every session taken over
+      // from a conversation whose terminal stays closed past the grace goes back to being one.
+      yield* detach(
+        Effect.sleep(TERMINAL_RETURN_GRACE).pipe(
+          Effect.andThen(processes.listLive()),
+          Effect.flatMap((live) =>
+            Effect.forEach(
+              live.filter((process) => process.kind === "agent-pty"),
+              (process) => returnToConversation(process.id).pipe(Effect.ignore),
+              { discard: true },
+            ),
+          ),
+        ),
+      );
       /**
        * A launch verb, run detached and joined: the caller waits for it as before, but a caller
        * interrupted meanwhile (an HTTP client that gave up, a phone app sent to the background)
@@ -32393,6 +32852,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopShell: (processId) =>
           ownedByProcess(processId)(stopShell(processId)).pipe(withInteractiveSealant),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
+        terminalClient,
         personTyped: (processId, typedAt) =>
           Effect.gen(function* () {
             const process = yield* processes.byId(processId);

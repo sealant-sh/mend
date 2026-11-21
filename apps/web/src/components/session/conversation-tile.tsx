@@ -1,28 +1,23 @@
 import { conversationActivity, isOpenTurn } from "@mend/agent-conversation";
 import {
   AgentItemKind,
-  CONVERSATION_HARNESSES,
   agentActivity,
   launchPhaseOf,
   preReleaseMemoryLine,
-  startsInTerminal,
   withoutLaunchPhase,
 } from "@mend/domain/workbench";
 import { Banner } from "@mend/ui/components/banner";
 import { Conversation, ConversationItem } from "@mend/ui/components/conversation";
 import { ConversationMarker } from "@mend/ui/components/conversation-marker";
-import { TraceRow } from "@mend/ui/components/trace-row";
 import { Avatar, AvatarFallback } from "@mend/ui/components/ui/avatar";
 import { Button } from "@mend/ui/components/ui/button";
-import { Message, MessageContent, MessageHeader } from "@mend/ui/components/ui/message";
 import { UserMessage } from "@mend/ui/components/user-message";
 import { cn } from "@mend/ui/lib/utils";
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { Schema } from "effect";
-import { CircleAlertIcon, ClockIcon, SquareTerminalIcon, WrenchIcon } from "lucide-react";
+import { CircleAlertIcon, ClockIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { TranscriptEventDto } from "#/lib/api";
 import { type ConversationView, conversationQuery, heldConversation } from "#/lib/conversation";
 import { conversationBody, type ConversationRow, workingOn } from "#/lib/conversation-rows";
 import { activityDetail } from "#/lib/inbox";
@@ -38,7 +33,6 @@ import { steerNote } from "#/lib/session-composer";
 import { withoutLayoutWords } from "#/lib/session-details";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
 import { SESSION_STALE_MS } from "#/lib/session-queries";
-import { noRunWords } from "#/lib/session-record";
 import { messageTime, withCheckpoints, withLandings } from "#/lib/session-sheet";
 import { controlMarkers, withMarkers } from "#/lib/shared-control";
 import { startingLine } from "#/lib/starting-line";
@@ -50,9 +44,7 @@ import { AgentTurn, type PagesById } from "./agent-turn";
 import { CheckpointLine } from "./checkpoint-line";
 import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
-import { PageEvent } from "./page-view";
 import { RequestLine } from "./request-card";
-import { RichText } from "./rich-text";
 import type { SessionFacts } from "./session-facts";
 import { SessionNotices } from "./session-notices";
 import { ControlMarkerLabel, LoginBand, SharedControlBands, WaitingLine } from "./shared-control";
@@ -370,41 +362,6 @@ function LiveLine({
   );
 }
 
-type TranscriptEvent = { readonly key: string; readonly event: TranscriptEventDto };
-
-type TranscriptGroup =
-  | { readonly kind: "you"; readonly key: string; readonly text: string }
-  | {
-      readonly kind: "agent";
-      readonly key: string;
-      readonly events: ReadonlyArray<TranscriptEvent>;
-    };
-
-/**
- * The record's events as messages: each person's line, then everything the agent did after it.
- * The record holds no ids; each message and event is keyed by its place in the record, which only
- * grows at its end.
- */
-const transcriptGroups = (
-  events: ReadonlyArray<TranscriptEventDto>,
-): ReadonlyArray<TranscriptGroup> => {
-  const groups: Array<TranscriptGroup> = [];
-  let agent: Array<TranscriptEvent> = [];
-  const flush = () => {
-    if (agent.length > 0)
-      groups.push({ kind: "agent", key: `record:${groups.length}`, events: agent });
-    agent = [];
-  };
-  events.forEach((event, at) => {
-    if (event.kind === "user" && event.text !== null) {
-      flush();
-      groups.push({ kind: "you", key: `record:${groups.length}`, text: event.text });
-    } else if (event.kind !== "reasoning") agent.push({ key: `event:${at}`, event });
-  });
-  flush();
-  return groups;
-};
-
 /** A line of Mend's in the thread, muted: a notice, a read on its way, nothing to show. */
 function Note({ id, children }: { readonly id: string; readonly children: ReactNode }) {
   return (
@@ -426,88 +383,17 @@ const usePages = (sessionId: string): PagesById => {
 };
 
 /**
- * A terminal session's conversation, read from its durable record: what the agent and the person
- * said, and the commands it ran. The record carries no clock times.
+ * What a session whose agent runs in a terminal says while its conversation holds nothing yet
+ * (SLNT-1235): each of its turns lands here, as turn rows, once it ends.
  */
-function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
-  const trpc = useTRPC();
-  const recorded = facts.session.sealantRunId !== null;
-  const transcript = useQuery({
-    ...trpc.sessions.transcript.queryOptions({ id: facts.session.id }),
-    enabled: recorded,
-    // A terminal session's record moves without an event that marks it stale: read it while it runs.
-    refetchInterval: facts.agentLive ? 2_000 : false,
-  });
-  if (!recorded)
-    return facts.session.status === "starting" || startFailed(facts) ? null : (
-      <Note id="no-record">
-        {facts.agentLive
-          ? "The workspace is starting. The conversation shows here once the agent runs."
-          : noRunWords(facts.session.status).note}
-      </Note>
-    );
-  if (transcript.isPending)
-    return (
-      <ConversationItem messageId="reading-record">
-        <p role="status" className="text-row text-muted-foreground">
-          Reading the record…
-        </p>
-      </ConversationItem>
-    );
-  if (transcript.isError)
-    return (
-      <ConversationItem messageId="record-failed">
-        <div role="alert" className="flex flex-wrap items-center gap-2 text-row text-destructive">
-          The record didn't load. It stays on the platform.
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="max-lg:h-11"
-            onClick={() => void transcript.refetch()}
-          >
-            Try again
-          </Button>
-        </div>
-      </ConversationItem>
-    );
-  const groups = transcriptGroups(transcript.data.events);
-  if (groups.length === 0)
-    return (
-      <Note id="record-empty">
-        {facts.agentLive
-          ? "Nothing said yet."
-          : "No conversation recorded. The session's terminal and change show what it did."}
-      </Note>
-    );
-  return groups.map((group) =>
-    group.kind === "you" ? (
-      <ConversationItem key={group.key} messageId={group.key}>
-        <YouMessage text={group.text} byline="" />
-      </ConversationItem>
-    ) : (
-      <ConversationItem key={group.key} messageId={group.key}>
-        <Message>
-          <MessageContent className="gap-3">
-            <MessageHeader className="px-0 text-meta font-normal">{facts.agent}</MessageHeader>
-            {group.events.map(({ key, event }) =>
-              event.kind === "assistant" && event.text !== null ? (
-                <RichText key={key} text={event.text} />
-              ) : event.kind === "page" && event.page !== undefined ? (
-                <PageEvent key={key} page={event.page} />
-              ) : event.kind === "tool" ? (
-                <TraceRow
-                  key={key}
-                  icon={event.command === null ? <WrenchIcon /> : <SquareTerminalIcon />}
-                  title={event.command === null ? (event.name ?? "Tool") : "Ran"}
-                  {...(event.command === null ? {} : { code: event.command })}
-                />
-              ) : null,
-            )}
-          </MessageContent>
-        </Message>
-      </ConversationItem>
-    ),
+function TerminalNote({ facts }: { readonly facts: SessionFacts }) {
+  if (facts.session.mode !== "terminal" || facts.session.status === "starting") return null;
+  return (
+    <Note id="terminal-note">
+      {facts.agentLive
+        ? `${facts.agent} runs in a terminal. Each turn shows here once it ends.`
+        : "No conversation recorded. The session's terminal and change show what it did."}
+    </Note>
   );
 }
 
@@ -515,7 +401,7 @@ function TranscriptMessages({ facts }: { readonly facts: SessionFacts }) {
  * The session's conversation, the body of its tab (Doop "The turn completes"): what was asked,
  * what the agent wrote and did, the checkpoints between, and what it is doing now. A protocol
  * session reads its turns and items, a window at a time, newest first, and reads the window before
- * as the reader nears the top; a terminal session reads its record. New messages arrive through
+ * as the reader nears the top; a terminal's turns land there too, once each ends. New messages arrive through
  * the tab's event stream, and the thread follows them while the reader is at its end.
  *
  * Its footer is the composer (`SessionComposer`): the person's messages show in the thread the
@@ -540,18 +426,11 @@ export function ConversationTile({
   });
   const pages = usePages(facts.session.id);
   const outbox = useOutbox(facts.session.id);
-  // A conversation reads its turns, even before the first; only a terminal agent's session reads
-  // its record. Before any agent runs, the agents the web starts as conversations are read as one.
-  const currentAgent = facts.detail.currentAgent;
-  const terminal =
-    currentAgent === null
-      ? !CONVERSATION_HARNESSES.has(facts.session.harness)
-      : startsInTerminal(currentAgent.kind);
+  // One source in both modes (SLNT-1235): a terminal's turns land as turn rows once each ends.
   const body = conversationBody(
     { status: conversation.status, data: conversation.data },
     outbox.messages,
     facts.viewerId,
-    terminal,
   );
   // The conversation holds a message of its own (one still in the outbox isn't the server's).
   const held = body.rows.some((row) => row.kind !== "you" || row.outbox === null);
@@ -684,7 +563,7 @@ export function ConversationTile({
             </div>
           </ConversationItem>
         ) : null}
-        {body.list === "transcript" ? <TranscriptMessages facts={facts} /> : null}
+        {body.list === "protocol" && body.rows.length === 0 ? <TerminalNote facts={facts} /> : null}
         {body.list === "protocol"
           ? entries.map((placed) => {
               if (placed.kind === "marker")

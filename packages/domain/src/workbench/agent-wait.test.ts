@@ -11,6 +11,7 @@ import {
   agentWaitWords,
   keyAnswers,
   nextAgentWait,
+  terminalHoldOf,
 } from "./agent-wait.ts";
 
 const report = (
@@ -225,5 +226,25 @@ describe("AGENT_HOOKS", () => {
       const events = hooks.map((hook) => hook.event);
       expect(new Set(events).size).toBe(events.length);
     }
+  });
+});
+
+describe("terminalHoldOf (SLNT-1235)", () => {
+  const prompt = new AgentWait({ kind: "prompt", tool: null, since: at(1_000) });
+  it("goes at a finished turn nobody typed into since", () => {
+    expect(terminalHoldOf(prompt, null)).toBeNull();
+    expect(terminalHoldOf(prompt, at(999))).toBeNull();
+  });
+  it("waits while the agent works, or asks in the terminal", () => {
+    expect(terminalHoldOf(null, null)).toBe("working");
+    expect(
+      terminalHoldOf(new AgentWait({ kind: "permission", tool: "Bash", since: at(1) }), null),
+    ).toBe("asking");
+    expect(
+      terminalHoldOf(new AgentWait({ kind: "question", tool: null, since: at(1) }), null),
+    ).toBe("asking");
+  });
+  it("waits behind a line someone typed after the turn ended", () => {
+    expect(terminalHoldOf(prompt, at(1_001))).toBe("typed");
   });
 });

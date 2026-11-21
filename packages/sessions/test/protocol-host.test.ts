@@ -404,6 +404,9 @@ const makeConversationWorld = () => {
       }),
     protocolCursor: () => Effect.succeed({ nextSequence: 0n }),
     backfillConversation: () => Effect.succeed(0),
+    startTerminalTurn: () => Effect.succeed(null),
+    requeueTerminalTurn: () => Effect.void,
+    settleTerminalTurns: () => Effect.void,
     resetSendingResponses: () => Effect.void,
     requeueQueuedTurns: (from, to) =>
       Effect.sync(() => {
@@ -513,6 +516,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   setStatus: () => Effect.void,
   nativeIngestCursor: () => Effect.succeed(null),
   setNativeIngestCursor: () => Effect.void,
+  setMode: () => Effect.void,
   saveLastSeenSequence: () => Effect.void,
   notifyProgress: () => Effect.void,
   settle: () => Effect.die("not in test"),

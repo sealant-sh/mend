@@ -441,6 +441,12 @@ describe("what a harness writes into its conversation as setup", () => {
     expect(isHarnessSetupMessage(`\n${injected}\n`)).toBe(true);
   });
 
+  it("reads Codex 0.160's envelope, whose header names no directory, as setup", () => {
+    const bare = injected.replace(" for /workspace/repo", "");
+    expect(isHarnessSetupMessage(bare)).toBe(true);
+    expect(isHarnessSetupMessage(`${bare}\n\nPlease review these instructions.`)).toBe(false);
+  });
+
   it.each([
     ["a pasted block with a request after it", `${injected}\n\nPlease review these instructions.`],
     ["a request before a pasted block", `Is this right?\n\n${injected}`],

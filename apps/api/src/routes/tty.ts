@@ -345,6 +345,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
             );
             const frames = makeFrameGuard(budgets.limits.frameBytes, write);
             const agentProcessId = target.terminalAgentId;
+            // The owner's terminal open on a terminal agent (SLNT-1235): once the last one
+            // closes, a session taken over from a conversation goes back to being one.
+            if (agentProcessId !== null && typing) yield* engine.terminalClient(agentProcessId);
             // The terminal idle stop's clock on Boat (`terminalIdleReading`): stamped on attach,
             // every minute while the client stays, on typing at most every few seconds, and when
             // it leaves. A stamp that fails is skipped; the next one lands.

@@ -439,7 +439,7 @@ export interface ControlEventView {
 export interface ControlMarker {
   readonly key: string;
   readonly at: string;
-  readonly icon: "hand" | "shared" | "off";
+  readonly icon: "hand" | "shared" | "off" | "terminal";
   readonly label: string;
 }
 
@@ -513,6 +513,22 @@ export const controlMarkers = (
         break;
       case "shared-control-off":
         markers.push({ ...base, icon: "off", label: `${actor} turned off shared control` });
+        break;
+      // Mend's own (SLNT-1235): a session taken over in a terminal went back to being a
+      // conversation once no terminal was open on it.
+      case "continued-after-terminal":
+        markers.push({
+          ...base,
+          icon: "terminal",
+          label: "Continued as a conversation after the terminal closed",
+        });
+        break;
+      case "terminal-unsent-left":
+        markers.push({
+          ...base,
+          icon: "terminal",
+          label: "Words typed in the terminal and not sent were left there",
+        });
         break;
       default:
         break;

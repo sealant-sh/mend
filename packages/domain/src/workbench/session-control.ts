@@ -19,6 +19,11 @@ export * from "./session-control-rules.ts";
  * (docs/adr/0026, decision 7): the actor did it, and `refId` names the person it concerned (the
  * one who asked, or whose grant was taken back). `shared-control-on` and `shared-control-off`
  * stay the switch for everyone; `off` also ends every grant.
+ * `continued-after-terminal` is Mend's own (SLNT-1235): a session taken over in a terminal went
+ * back to being a conversation once no terminal was open on it, at a turn boundary; the actor is
+ * the session's owner, whose terminal it was, and `refId` the terminal agent that ended.
+ * `terminal-unsent-left` goes beside it when someone had typed in that terminal and not sent it:
+ * those words were left behind.
  */
 export const SessionControlKind = Schema.Literals([
   "interrupt",
@@ -36,6 +41,8 @@ export const SessionControlKind = Schema.Literals([
   "shared-control-grant",
   "shared-control-decline",
   "shared-control-take-back",
+  "continued-after-terminal",
+  "terminal-unsent-left",
 ]);
 export type SessionControlKind = typeof SessionControlKind.Type;
 

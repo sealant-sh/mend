@@ -543,16 +543,8 @@ describe("the conversation while its history is read", () => {
 
 describe("a conversation before its first turn", () => {
   const empty = { turns: [], items: [], requests: [], next: null, feed: 0 };
-  it("is an empty conversation, never a terminal's record to read", () => {
-    expect(conversationBody({ status: "success", data: empty }, [], "alice", false).list).toBe(
-      "protocol",
-    );
-  });
-
-  it("reads a terminal agent's record when nothing was said as a conversation", () => {
-    expect(conversationBody({ status: "success", data: empty }, [], "alice").list).toBe(
-      "transcript",
-    );
+  it("is an empty conversation in either mode: a terminal's turns land as turn rows (SLNT-1235)", () => {
+    expect(conversationBody({ status: "success", data: empty }, [], "alice").list).toBe("protocol");
   });
 });
 

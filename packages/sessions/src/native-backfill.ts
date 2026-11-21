@@ -44,6 +44,16 @@ export interface NativeBackfillResult {
   readonly cursor: NativeIngestCursor;
 }
 
+/**
+ * `finishedOnly`: a live terminal agent's transcript, read while it runs (SLNT-1235). Only turns
+ * the harness finished land, and the cursor stops after the last of them, so a turn read while it
+ * is still being written lands whole on a later read, never cut short for good. A mode switch
+ * reads an agent that has ended, so every turn it holds lands.
+ */
+export interface NativeBackfillOptions {
+  readonly finishedOnly?: boolean;
+}
+
 type JsonObject = Readonly<Record<string, unknown>>;
 
 const isObject = (value: unknown): value is JsonObject =>
@@ -101,10 +111,14 @@ const noteMendResult = (
   if (answered !== null) open.items[at] = answered;
 };
 
+/** Claude's line for a turn the person stopped: it ends that turn and opens none. */
+const CLAUDE_INTERRUPTED = "[Request interrupted by user";
+
 const backfillClaude = (
   providerSessionId: string,
   jsonl: string,
   cursor: NativeIngestCursor | null,
+  options: NativeBackfillOptions,
 ): NativeBackfillResult => {
   const boundary = cursor?.lastEntryUuid ?? null;
   const entries: Array<JsonObject> = [];
@@ -135,9 +149,20 @@ const backfillClaude = (
 
   const turns: BackfillTurnInput[] = [];
   let open: OpenTurn | null = null;
+  // The last entry of the newest turn known finished, and how many turns had landed then.
+  let finishedUuid: string | null = boundary;
+  let finishedTurns = 0;
+  let openFinished = false;
+  let latestUuid: string | null = boundary;
   const close = () => {
     if (open !== null && (open.input !== "" || open.items.length > 0)) turns.push(open);
     open = null;
+  };
+  // A turn is finished once a later one starts, once the person stopped it, or once its newest
+  // reply stops for any reason but a tool call. `through` is its last entry.
+  const markFinished = (through: string | null) => {
+    finishedUuid = through;
+    finishedTurns = turns.length + (open === null ? 0 : 1);
   };
   // The live adapter's identity scheme: block ids come from the wire when the
   // block carries one; text/thinking blocks fall back to the message id plus
@@ -154,6 +179,8 @@ const backfillClaude = (
     if (entry["isMeta"] === true || entry["isSidechain"] === true) continue;
     const type = stringField(entry, "type");
     const message = entry["message"];
+    const before = latestUuid;
+    if (uuid !== null) latestUuid = uuid;
     if (type === "user") {
       const content = isObject(message) ? message["content"] : null;
       if (Array.isArray(content)) {
@@ -173,7 +200,14 @@ const backfillClaude = (
         }
       }
       const text = textOf(content).trim();
+      if (text.startsWith(CLAUDE_INTERRUPTED)) {
+        if (open !== null) markFinished(latestUuid);
+        openFinished = false;
+        continue;
+      }
       if (text === "" || text.startsWith("<command-")) continue;
+      if (open !== null) markFinished(before);
+      openFinished = false;
       close();
       ordinal += 1;
       open = {
@@ -185,6 +219,8 @@ const backfillClaude = (
     }
     if (type !== "assistant" || !isObject(message)) continue;
     if (open === null) continue; // history that precedes any user turn — nothing to attach to
+    const stopReason = stringField(message, "stop_reason");
+    openFinished = stopReason !== null && stopReason !== "tool_use";
     const content = message["content"];
     if (!Array.isArray(content)) continue;
     const messageId = stringField(message, "id");
@@ -225,14 +261,39 @@ const backfillClaude = (
       );
     }
   }
+  if (open !== null && openFinished) markFinished(latestUuid);
   close();
-  return { turns, cursor: nextCursor };
+  if (options.finishedOnly !== true) return { turns, cursor: nextCursor };
+  return {
+    turns: turns.slice(0, finishedTurns),
+    cursor: { providerSessionId, lastEntryUuid: finishedUuid, lineCount: entries.length },
+  };
+};
+
+/**
+ * The text a Codex user item says, without the parts Codex adds itself: its environment block
+ * and any other `<…>` wrapper, and its AGENTS.md envelope. Codex 0.160 sends the envelope and the
+ * environment block as two parts of one item, which read as one message when joined.
+ */
+const codexPersonText = (content: unknown): string => {
+  if (!Array.isArray(content)) return textOf(content).trim();
+  return content
+    .flatMap((part) => {
+      const type = stringField(part, "type");
+      const text = stringField(part, "text")?.trim() ?? "";
+      if (text === "" || (type !== "text" && type !== "input_text" && type !== "output_text"))
+        return [];
+      return text.startsWith("<") || isHarnessSetupMessage(text) ? [] : [text];
+    })
+    .join("\n")
+    .trim();
 };
 
 const backfillCodex = (
   providerSessionId: string,
   jsonl: string,
   cursor: NativeIngestCursor | null,
+  options: NativeBackfillOptions,
 ): NativeBackfillResult => {
   const lines = jsonl.split("\n").filter((line) => line.trim() !== "");
   const skip = cursor?.lineCount ?? 0;
@@ -254,6 +315,9 @@ const backfillCodex = (
     open = null;
   };
   let userOrdinal = 0;
+  // The line after the newest finished turn, and how many turns had landed then.
+  let finishedLines = skip;
+  let finishedTurns = 0;
   for (const [index, line] of lines.entries()) {
     let entry: JsonObject;
     try {
@@ -263,16 +327,25 @@ const backfillCodex = (
     } catch {
       continue;
     }
+    // Codex ends every turn, done or stopped, with one of these.
+    if (entry["type"] === "event_msg" && isObject(entry["payload"]) && index >= skip) {
+      const event = stringField(entry["payload"], "type");
+      if (event === "task_complete" || event === "turn_aborted") {
+        finishedLines = index + 1;
+        finishedTurns = turns.length + (open === null ? 0 : 1);
+      }
+      continue;
+    }
     if (entry["type"] !== "response_item" || !isObject(entry["payload"])) continue;
     const payload = entry["payload"];
     const payloadType = stringField(payload, "type");
     if (payloadType === "message" && stringField(payload, "role") === "user") {
       userOrdinal += 1; // count from file start — the id must be stable across pickups
       if (index < skip) continue;
-      const text = textOf(payload["content"]).trim();
       // Codex writes its environment and instruction blocks as user items, its AGENTS.md one
-      // as a whole "# AGENTS.md instructions for …" envelope: keep real turns only.
-      if (text === "" || text.startsWith("<") || isHarnessSetupMessage(text)) continue;
+      // as a whole "# AGENTS.md instructions …" envelope: keep real turns only.
+      const text = codexPersonText(payload["content"]);
+      if (text === "") continue;
       close();
       open = { providerTurnId: `native:user:${userOrdinal}`, input: text, items: [] };
       continue;
@@ -338,7 +411,11 @@ const backfillCodex = (
     }
   }
   close();
-  return { turns, cursor: nextCursor };
+  if (options.finishedOnly !== true) return { turns, cursor: nextCursor };
+  return {
+    turns: turns.slice(0, finishedTurns),
+    cursor: { providerSessionId, lastEntryUuid: null, lineCount: finishedLines },
+  };
 };
 
 /**
@@ -350,11 +427,12 @@ export const backfillFromNative = (
   providerSessionId: string,
   nativeJsonl: string,
   cursor: NativeIngestCursor | null,
+  options: NativeBackfillOptions = {},
 ): NativeBackfillResult | null =>
   harness === "claude"
-    ? backfillClaude(providerSessionId, nativeJsonl, cursor)
+    ? backfillClaude(providerSessionId, nativeJsonl, cursor, options)
     : harness === "codex"
-      ? backfillCodex(providerSessionId, nativeJsonl, cursor)
+      ? backfillCodex(providerSessionId, nativeJsonl, cursor, options)
       : null;
 
 /**

@@ -220,9 +220,12 @@ describe("pages in a live and a settled transcript", () => {
             return {
               ...base,
               getWorkspace: () => Effect.succeed(fakeWorkspace("ws-pages")),
+              // The one live read (SLNT-1235): a script that finds the agent's own transcript and
+              // reads it in one exec.
               exec: (_workspace, argv) =>
                 Effect.sync(() => {
-                  if (argv[0] !== "cat") return execAnswer("/home/mend/transcript.jsonl");
+                  if (argv[0] !== "sh" || !(argv[2] ?? "").includes('set -- "$F"'))
+                    return execAnswer("");
                   liveReads += 1;
                   return execAnswer(liveNative);
                 }),

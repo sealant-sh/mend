@@ -396,6 +396,8 @@ interface SessionDto extends SessionCaptureLike {
   readonly baseSha: string;
   readonly baseRef: string | null;
   readonly status: string;
+  /** How its agent runs (SLNT-1235); null before any launch; absent from older servers. */
+  readonly mode?: "conversation" | "terminal" | null;
   readonly summary: string | null;
   /** It waits for its first message over an imported conversation; absent from older servers. */
   readonly importedConversationWaiting?: boolean;
@@ -1292,7 +1294,7 @@ const launch = async (
   say("");
   attachOwnsSignals = true;
   await attachOrExit(config, session.id, session.harness, lifecycle, tunnels);
-  exitAfterSessionEnd(config, session.id);
+  await exitAfterSessionEnd(config, session.id, false);
 };
 
 /**
@@ -1824,11 +1826,49 @@ const attachWithTunnels = (
 ): Promise<AttachResult> => (tunnels === null ? work() : tunnels.attached(work));
 
 /** Return terminal control as soon as the terminal reports the observed end. */
-const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
+const exitAfterSessionEnd = async (
+  config: CliConfig,
+  sessionId: string,
+  /** False after a harness this CLI just launched in a terminal: it never was a conversation. */
+  mayHaveContinued = true,
+): Promise<never> => {
+  const continued = mayHaveContinued && (await continuedAsConversation(config, sessionId));
   say("");
-  say(`${green("✓")} session ended`);
+  say(
+    continued
+      ? `${green("✓")} continued as a conversation · message it from the web, or with mend message ${sessionId.slice(0, 8)}`
+      : `${green("✓")} session ended`,
+  );
   say(`${cobalt("  review")} · ${config.url}/sessions/${sessionId}`);
   process.exit(0);
+};
+
+const ENDED_STATUSES: ReadonlySet<string> = new Set(["completed", "failed", "stopped"]);
+
+/**
+ * Whether the terminal ended because the session went on as a conversation (SLNT-1235): from the
+ * web's Continue as a conversation, or once the terminal closed. The switch records the new mode
+ * a moment after the terminal ends, so the session is read again for a few seconds until it says.
+ */
+const continuedAsConversation = async (config: CliConfig, sessionId: string) => {
+  for (let read = 0; read < 20; read++) {
+    const detail = await request<SessionDetailLiteDto>(
+      config,
+      "GET",
+      `/sessions/${sessionId}`,
+    ).catch(() => null);
+    // An older server records no mode: nothing to wait for.
+    if (detail === null || detail.session.mode === undefined) return false;
+    if (detail.session.mode === "conversation") return true;
+    // Ended, or a terminal agent still runs: nothing is switching.
+    if (
+      ENDED_STATUSES.has(detail.session.status) ||
+      agentIsLive(detail.session, detail.currentAgent)
+    )
+      return false;
+    await pause(500);
+  }
+  return false;
 };
 
 /** Reattach a terminal to a running session (full scrollback replay, then live). */
@@ -5675,7 +5715,7 @@ const continueSession = async (config: CliConfig, args: ReadonlyArray<string>) =
   say(`${cobalt("  watch")} · ${config.url}/sessions/${session.id}`);
   say("");
   await attachOrExit(config, session.id, session.harness);
-  exitAfterSessionEnd(config, session.id);
+  await exitAfterSessionEnd(config, session.id);
 };
 
 // ─── resume: rejoin a session — same worktree, restored harness state ───────
@@ -5748,7 +5788,7 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
   say(`${green("✓ recording")} · same worktree, conversation restored${detachHint()}`);
   say("");
   await attachOrExit(config, match.id, withHarness ?? match.harness);
-  exitAfterSessionEnd(config, match.id);
+  await exitAfterSessionEnd(config, match.id);
 };
 
 // ─── rejoin: one entrypoint for an outer multiplexer ────────────────────────
@@ -5871,7 +5911,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     );
   }
   await finishAttach(config, session.id, attached);
-  exitAfterSessionEnd(config, session.id);
+  await exitAfterSessionEnd(config, session.id);
 };
 
 // ─── projects · sessions: the workbench at a glance ─────────────────────────

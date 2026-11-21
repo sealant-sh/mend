@@ -1,3 +1,4 @@
+import { CONVERSATION_HARNESSES } from "@mend/domain/workbench";
 import { InlineAlert } from "@mend/ui/components/banner";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { ContextMenuContent } from "@mend/ui/components/ui/context-menu";
@@ -22,6 +23,7 @@ import {
   GitPullRequestIcon,
   LinkIcon,
   Maximize2Icon,
+  MessageSquareIcon,
   PencilIcon,
   Rows2Icon,
   SquareIcon,
@@ -183,7 +185,41 @@ const useMenuFacts = (sessionId: string, context: SessionMenuContext) => {
         ? deleteTargetOf(detail, row)
         : null,
     title: sessionTitleOf(row, detail?.session.label),
+    // Its owner continues a Claude Code or Codex session that runs in a terminal as a
+    // conversation (SLNT-1235, docs/adr/0013), the same conversation, here and now.
+    continues:
+      detail !== null &&
+      detail.control.own &&
+      detail.session.mode === "terminal" &&
+      CONVERSATION_HARNESSES.has(detail.session.harness) &&
+      detail.session.status !== "starting" &&
+      detail.session.status !== "stopping",
   };
+};
+
+/**
+ * Continue a terminal session as a conversation, from a menu: the menu is gone by the time it
+ * answers, so the outcome is said in a toast.
+ */
+const useContinueAsConversation = () => {
+  const trpc = useTRPC();
+  const client = useTRPCClient();
+  const queryClient = useQueryClient();
+  return (sessionId: string) =>
+    void client.sessions.continueAsConversation
+      .mutate({ id: sessionId })
+      .then(() =>
+        toast.add({ description: "The session continues as a conversation.", priority: "low" }),
+      )
+      .catch((cause: unknown) =>
+        toast.add({
+          title: "The session still runs in its terminal.",
+          description: failureWords(cause, "Try again."),
+          type: "error",
+          priority: "high",
+        }),
+      )
+      .finally(() => void queryClient.invalidateQueries(trpc.sessions.pathFilter()));
 };
 
 /**
@@ -209,6 +245,7 @@ function SessionMenuItems({
   const facts = useMenuFacts(sessionId, context);
   const { row, actions, stop, remove } = facts;
   const turnOff = useTurnOffItems(sessionId);
+  const continueAsConversation = useContinueAsConversation();
   const tiles = [
     where === "tab" && layout.onSplit !== undefined
       ? [
@@ -264,6 +301,15 @@ function SessionMenuItems({
           <Group>{tiles}</Group>
         </>
       )}
+      {facts.continues ? (
+        <>
+          <Separator />
+          <Item onClick={() => continueAsConversation(sessionId)}>
+            <MessageSquareIcon aria-hidden />
+            Continue as a conversation
+          </Item>
+        </>
+      ) : null}
       {turnOff.length === 0 ? null : (
         <>
           <Separator />

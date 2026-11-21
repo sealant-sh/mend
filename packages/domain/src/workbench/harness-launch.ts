@@ -469,13 +469,13 @@ export class ProtocolHarnessUnsupportedError extends Error {
 }
 
 /**
- * Codex's injected AGENTS.md message, whole: the header naming the directory, then the file in
- * one `<INSTRUCTIONS>` block, and nothing after it. Codex writes it into the conversation as a user
- * message with no mark of its own (the rollout carries no provenance for it), so it is told apart
- * by its complete shape only, never by how it starts.
+ * Codex's injected AGENTS.md message, whole: the header, naming the directory before Codex 0.160
+ * and bare since, then the file in one `<INSTRUCTIONS>` block, and nothing after it. Codex writes it
+ * into the conversation as a user message with no mark of its own (the rollout carries no
+ * provenance for it), so it is told apart by its complete shape only, never by how it starts.
  */
 const AGENTS_ENVELOPE =
-  /^# AGENTS\.md instructions for [^\n]+\n\n<INSTRUCTIONS>\n[\s\S]*\n<\/INSTRUCTIONS>$/;
+  /^# AGENTS\.md instructions(?: for [^\n]+)?\n\n<INSTRUCTIONS>\n[\s\S]*\n<\/INSTRUCTIONS>$/;
 
 /**
  * Whether a user message is exactly the setup Codex injects (the AGENTS.md Mend lays into the

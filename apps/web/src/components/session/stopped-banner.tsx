@@ -1,4 +1,4 @@
-import { canRelaunchSession, terminalOwnerOnlyLine } from "@mend/domain/workbench";
+import { canRelaunchIn, terminalOwnerOnlyLine } from "@mend/domain/workbench";
 import { Banner } from "@mend/ui/components/banner";
 import { ConversationItem } from "@mend/ui/components/conversation";
 import { Button } from "@mend/ui/components/ui/button";
@@ -51,11 +51,7 @@ export function StoppedBanner({ facts }: { readonly facts: SessionFacts }) {
     onSettled: () => queryClient.invalidateQueries(trpc.sessions.pathFilter()),
   });
   if (session.status !== "stopped") return null;
-  const resumes = canRelaunchSession(
-    detail.control,
-    detail.currentAgent?.kind ?? null,
-    how.harness !== null,
-  );
+  const resumes = canRelaunchIn(detail.control, session.mode, how.harness !== null);
   const ownerOnly =
     !resumes && detail.control.steer && !detail.control.own
       ? terminalOwnerOnlyLine(

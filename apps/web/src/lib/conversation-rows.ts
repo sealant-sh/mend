@@ -367,28 +367,20 @@ export const conversationBody = (
   },
   outbox: ReadonlyArray<OutboxMessage>,
   author: string,
-  /**
-   * Whether the session's agent runs in a terminal, whose record holds its conversation; false
-   * for a conversation, which never reads the record, even before its first turn (SLNT-1196).
-   */
-  terminal = true,
 ): {
   readonly notice: "reading" | "failed" | null;
-  /** The protocol rows, a terminal session's record, or nothing yet. */
-  readonly list: "protocol" | "transcript" | null;
+  /**
+   * The turn rows, in both modes (SLNT-1235: a terminal's turns land as turn rows once each
+   * ends), or nothing yet.
+   */
+  readonly list: "protocol" | null;
   readonly rows: ReadonlyArray<ConversationRow>;
 } => {
   const held = history.data ?? EMPTY_HISTORY;
   const protocol = held.turns.length > 0 || outbox.length > 0;
   return {
     notice: history.status === "pending" ? "reading" : history.status === "error" ? "failed" : null,
-    list: protocol
-      ? "protocol"
-      : history.data === undefined
-        ? null
-        : terminal
-          ? "transcript"
-          : "protocol",
+    list: protocol || history.data !== undefined ? "protocol" : null,
     rows: withOutbox(conversationRows(held), held, outbox, author),
   };
 };

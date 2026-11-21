@@ -60,11 +60,13 @@ const detail = (over: {
   readonly steer?: boolean;
   readonly terminalInput?: boolean;
   readonly harness?: string;
-  readonly agentKind?: string | null;
+  readonly mode?: "conversation" | "terminal" | null;
 }): Parameters<typeof sendRuleOf>[0] => ({
   control: { steer: over.steer ?? true, terminalInput: over.terminalInput ?? true },
-  currentAgent: over.agentKind === null ? null : { kind: over.agentKind ?? "agent-protocol" },
-  session: { harness: over.harness ?? "claude" },
+  session: {
+    harness: over.harness ?? "claude",
+    mode: over.mode === undefined ? "conversation" : over.mode,
+  },
 });
 
 const pass = (over: Partial<PassFacts>): PassFacts => ({
@@ -207,10 +209,7 @@ describe("who sends", () => {
   });
 
   it("keeps a terminal agent's send to its owner", () => {
-    const rule = sendRuleOf(
-      detail({ terminalInput: false, agentKind: "agent-pty" }),
-      "Grace Hopper",
-    );
+    const rule = sendRuleOf(detail({ terminalInput: false, mode: "terminal" }), "Grace Hopper");
     expect(rule.can ? "" : rule.why).toContain("Only Grace Hopper sends comments to it");
   });
 });
