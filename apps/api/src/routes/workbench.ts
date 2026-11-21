@@ -248,6 +248,7 @@ import { Clock, Context, DateTime, Duration, Effect, Option, Result, Schema } fr
 import { HttpApiBuilder } from "effect/http-api";
 
 import { ProjectAccess, signInOf } from "../access.ts";
+import { importAdoptedProjectSkills } from "../adoption-skills.ts";
 import { type AdoptionReporter, Adoptions } from "../adoptions.ts";
 import { Budgets } from "../budgets.ts";
 import { GithubIdentity, HOST_GH_RESERVED } from "../github-identity.ts";
@@ -787,7 +788,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               ),
             );
             report.recording();
-            return yield* projects
+            const created = yield* projects
               .create({
                 id,
                 organizationId,
@@ -811,6 +812,18 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
                     .pipe(Effect.andThen(Effect.fail(nameTaken))),
                 ),
               );
+            yield* importAdoptedProjectSkills({
+              projectId: created.id,
+              storePath: created.storePath,
+              headSha: adopted.headSha,
+            }).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("Adopted project skills import failed; keeping project").pipe(
+                  Effect.annotateLogs({ projectId: created.id, error: String(error) }),
+                ),
+              ),
+            );
+            return created;
           });
         if (payload.adoptionId === undefined)
           return yield* adopt({ store: () => undefined, recording: () => undefined });

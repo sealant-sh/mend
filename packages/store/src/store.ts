@@ -1137,6 +1137,36 @@ export const processStatePathOf = (storePath: string, sessionId: string, process
 export const harnessHomePathOf = (storePath: string, sessionId: string) =>
   path.join(sessionStatePathOf(storePath, sessionId), "harness-home");
 
+/** One regular blob returned by `Store.listSubtreeBlobs`. */
+export interface SubtreeBlobEntry {
+  readonly path: string;
+  readonly size: number;
+}
+
+/**
+ * Parse NUL-separated `git ls-tree -r -l -z` output, keeping regular blobs (`100644` / `100755`)
+ * up to `limit` and dropping symlinks (`120000`) and submodules (`160000`).
+ */
+export const parseSubtreeBlobListing = (
+  out: string,
+  limit: number,
+): ReadonlyArray<SubtreeBlobEntry> => {
+  if (limit <= 0 || out === "") return [];
+  const entries: Array<SubtreeBlobEntry> = [];
+  for (const record of out.split("\0")) {
+    if (record === "") continue;
+    const tab = record.indexOf("\t");
+    if (tab === -1) continue;
+    const [mode, type, , sizeText] = record.slice(0, tab).trim().split(/\s+/);
+    if ((mode !== "100644" && mode !== "100755") || type !== "blob") continue;
+    const size = Number(sizeText);
+    if (!Number.isSafeInteger(size) || size < 0) continue;
+    entries.push({ path: record.slice(tab + 1), size });
+    if (entries.length >= limit) break;
+  }
+  return entries;
+};
+
 /**
  * The central repository store (plan §5.2, §8.1.A): bare clone per project,
  * one git worktree per session, checkpoints as commits on hidden refs that
@@ -1385,6 +1415,16 @@ export class Store extends Context.Service<
       limit: number,
       after?: string,
     ) => Effect.Effect<FileListing, GitError>;
+    /**
+     * Regular blob entries under `prefix` in one commit's tree (`ls-tree -r -l -z <rev> -- <prefix>`),
+     * excluding symlinks and submodules, up to `limit`.
+     */
+    readonly listSubtreeBlobs: (
+      dir: string,
+      rev: string,
+      prefix: string,
+      limit: number,
+    ) => Effect.Effect<ReadonlyArray<SubtreeBlobEntry>, GitError>;
     /**
      * The entries at the root of one commit's tree (`ls-tree`, not recursive), a directory with
      * a trailing `/`: what a project holds at a glance, without walking a large repository.
@@ -2609,6 +2649,20 @@ export class Store extends Context.Service<
         return capListing(out.split("\0"), limit, after);
       });
 
+      const listSubtreeBlobs = Effect.fn("Store.listSubtreeBlobs")(function* (
+        dir: string,
+        rev: string,
+        prefix: string,
+        limit: number,
+      ) {
+        if (!isWorktreeRelativePath(prefix) || limit <= 0) return [];
+        const out = yield* git(
+          ["--literal-pathspecs", "ls-tree", "-r", "-l", "-z", rev, "--", prefix],
+          dir,
+        );
+        return parseSubtreeBlobListing(out, limit);
+      });
+
       const listTopLevel = Effect.fn("Store.listTopLevel")(function* (
         dir: string,
         ref: string,
@@ -2777,6 +2831,7 @@ export class Store extends Context.Service<
         openRawWorktreeFile,
         grep,
         listTreeFiles,
+        listSubtreeBlobs,
         listTopLevel,
       };
     }),
