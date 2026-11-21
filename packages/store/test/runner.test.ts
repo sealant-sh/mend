@@ -3,7 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect, Layer, Result } from "effect";
+import { Effect, Layer, Ref, Result } from "effect";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
@@ -296,6 +296,55 @@ describe("GitOpsRunner", () => {
     expect(result.afterSecond).toEqual([firstView, secondView]);
     expect(result.afterFirst).toEqual([secondView, firstView]);
   });
+
+  // SLNT-1264: opening a review forks the change's file count (an ensure) and reads its diff in
+  // the same cache at once. HEAD rewritten in place reads as empty for a moment, git then finds
+  // no repository and `git diff` falls back to comparing files: "error: Could not access '<sha>'".
+  it("SLNT-1264: a read never sees the cache as no repository while a sibling ensure rewrites it", async () => {
+    const packed = packRepo(repo, captureKeys("wt-race", 1), ["refs/heads/main"]);
+    const manifest = buildManifest({
+      worktreeId: "wt-race",
+      n: 1,
+      parent: null,
+      epoch: 1,
+      git: gitSection([packed.key], { "refs/heads/main": mainSha }, "refs/heads/main"),
+    }).manifest;
+    const expected = sh(repo, ["diff", "--find-renames", baseSha, mainSha]);
+    const reads = 120;
+    const result = await run(
+      Effect.gen(function* () {
+        yield* upload(packed.objects);
+        const runner = yield* GitOpsRunner;
+        const cache = yield* runner.ensure({ projectId: "proj-race", manifest, storeRefs: {} });
+        const done = yield* Ref.make(false);
+        const ensures = yield* Ref.make(0);
+        const ensureLoop = Effect.gen(function* () {
+          while (!(yield* Ref.get(done))) {
+            yield* runner.ensure({ projectId: "proj-race", manifest, storeRefs: {} });
+            yield* Ref.update(ensures, (n) => n + 1);
+          }
+        });
+        const readLoop = Effect.forEach(
+          Array.from({ length: reads }),
+          () => runner.diffRange(cache, baseSha, mainSha).pipe(Effect.result),
+          { concurrency: 4 },
+        ).pipe(Effect.ensuring(Ref.set(done, true)));
+        const [diffs] = yield* Effect.all([readLoop, ensureLoop], { concurrency: 2 });
+        return { diffs, ensures: yield* Ref.get(ensures) };
+      }),
+    );
+    // The sibling really ran beside the reads; otherwise this proves nothing.
+    expect(result.ensures).toBeGreaterThan(reads / 4);
+    const failures = result.diffs.flatMap((diff) =>
+      Result.isFailure(diff)
+        ? [diff.failure._tag === "GitError" ? diff.failure.stderr.trim() : diff.failure._tag]
+        : [],
+    );
+    expect(failures).toEqual([]);
+    expect(result.diffs.every((diff) => Result.isSuccess(diff) && diff.success === expected)).toBe(
+      true,
+    );
+  }, 60_000);
 
   it("lists captured branches with no default for detached HEAD and permits an empty branch view", async () => {
     const packed = packRepo(repo, captureKeys("wt-detached", 1), [featSha]);
