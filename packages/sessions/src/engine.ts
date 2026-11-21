@@ -22778,39 +22778,41 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const openingInput = start.prompt?.trim() ?? "";
         const correlation =
           launchCorrelationId ?? (openingInput === "" ? null : `opening:${crypto.randomUUID()}`);
-        if (launchCorrelationId === null && correlation !== null) {
-          yield* conversations
-            .queueOpeningTurn(sessionId, openingInput, author, correlation)
-            .pipe(Effect.catchTag("HistoryAdmissionRefusedError", () => Effect.succeed(null)));
-        }
-        // A fresh-workspace relaunch must carry the harvested state with it: the composed
-        // argv resumes by provider id, and without the restored transcript the harness
-        // refuses the resume ("No conversation found"). A first launch (no prior protocol
-        // process) keeps the explicit null, which skips the read and stays hot-claimable.
-        const located =
-          providerSessionId === undefined || binding !== null
-            ? null
-            : yield* harnessStateFor(session).pipe(
-                Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
-              );
-        const launchPlan = agentLaunch(composed, {
-          launchCorrelationId: correlation,
-          resumeId: providerSessionId ?? null,
-          protocolStart: start,
-          protocolAuthor: author,
-        });
-        const launchFresh = () => launchInternal(sessionId, { ...launchPlan, state: located });
-        const retainCurrentWorkspace =
-          !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session, handedOver));
-        // Messages sent from here until its process is hosted wait for it (`sendMessage`).
+        // Messages sent from here until its process is hosted wait for it (`sendMessage`), the
+        // opening turn written first; set before anything this launch awaits can fail, and cleared
+        // however it ends.
         conversationStarting.add(sessionId);
-        return yield* (
-          retainCurrentWorkspace
+        return yield* Effect.gen(function* () {
+          if (launchCorrelationId === null && correlation !== null) {
+            yield* conversations
+              .queueOpeningTurn(sessionId, openingInput, author, correlation)
+              .pipe(Effect.catchTag("HistoryAdmissionRefusedError", () => Effect.succeed(null)));
+          }
+          // A fresh-workspace relaunch must carry the harvested state with it: the composed
+          // argv resumes by provider id, and without the restored transcript the harness
+          // refuses the resume ("No conversation found"). A first launch (no prior protocol
+          // process) keeps the explicit null, which skips the read and stays hot-claimable.
+          const located =
+            providerSessionId === undefined || binding !== null
+              ? null
+              : yield* harnessStateFor(session).pipe(
+                  Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
+                );
+          const launchPlan = agentLaunch(composed, {
+            launchCorrelationId: correlation,
+            resumeId: providerSessionId ?? null,
+            protocolStart: start,
+            protocolAuthor: author,
+          });
+          const launchFresh = () => launchInternal(sessionId, { ...launchPlan, state: located });
+          const retainCurrentWorkspace =
+            !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session, handedOver));
+          return yield* retainCurrentWorkspace
             ? launchInRetainedWorkspace(sessionId, launchPlan).pipe(
                 Effect.catchTag("SessionNotLiveError", launchFresh),
               )
-            : launchFresh()
-        ).pipe(Effect.ensuring(Effect.sync(() => conversationStarting.delete(sessionId))));
+            : launchFresh();
+        }).pipe(Effect.ensuring(Effect.sync(() => conversationStarting.delete(sessionId))));
       });
 
       /** A person's own login, as sealant said it stood within the last minute: active only. */
@@ -23069,17 +23071,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           )
             return false;
           if (conversationStarting.has(session.id)) return true;
+          // An agent ran in it, and nothing launches it now: not a start.
           if (
-            launchGate.underWay(session.id) ||
+            !launchGate.underWay(session.id) &&
             (yield* processes.listForSession(session.id)).length > 0
           )
             return false;
+          // A launch is on its way: the start's, which may not be admitted yet, or one admitted
+          // that has not written its opening turn yet. Wait for it to say it is a conversation.
           const deadline = clock.currentTimeMillisUnsafe() + OPENING_WAIT_MS;
           while (
             !conversationStarting.has(session.id) &&
             clock.currentTimeMillisUnsafe() < deadline
           )
             yield* Effect.sleep("50 millis");
+          // None came: the message waits for whichever launch does. One under way that never said
+          // it is a conversation (a terminal's, a hold's) takes none.
           return (
             !stopped() && (conversationStarting.has(session.id) || !launchGate.underWay(session.id))
           );

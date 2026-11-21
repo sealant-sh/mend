@@ -7,7 +7,7 @@ import { PhoneTabStrip } from "#/components/workspace/phone-tab-strip";
 import { Tile } from "#/components/workspace/tile";
 import { TileTab } from "#/components/workspace/tile-tab";
 import { WorkspaceHeader } from "#/components/workspace/workspace-header";
-import { useOutbox } from "#/lib/outbox";
+import { type OutboxMessage, UNCONFIRMED, useOutbox } from "#/lib/outbox";
 import { type PendingStart, startTitle, usePendingStart } from "#/lib/pending-starts";
 import { lumpStatusOf, messageTime, STATUS_WORDS } from "#/lib/session-sheet";
 import { harnessName } from "#/lib/session-view";
@@ -82,6 +82,23 @@ function StartingSheet({ start }: { readonly start: PendingStart }) {
   );
 }
 
+/**
+ * Where a message written on a start's page stands: on its way until Mend has it, then kept by Mend
+ * for the agent (SLNT-1237), which only then outlives this tab.
+ */
+const startingNote = (message: OutboxMessage, agent: string): string => {
+  switch (message.state._tag) {
+    case "Sending":
+      return "Sending…";
+    case "Sent":
+      return `Waits for ${agent} to start.`;
+    case "Unconfirmed":
+      return UNCONFIRMED;
+    case "NotSent":
+      return message.state.words;
+  }
+};
+
 /** A start in a workspace's New session tab: the thread, until the session takes the tab. */
 export function StartingTab({ draftId }: { readonly draftId: string }) {
   const start = usePendingStart(draftId);
@@ -109,7 +126,7 @@ function StartingThread({ start }: { readonly start: PendingStart }) {
             <YouMessage
               text={message.text}
               byline={`You · ${messageTime(new Date(message.sentAt), now)}`}
-              note={`Waits for ${agent} to start.`}
+              note={startingNote(message, agent)}
               pending
             />
           </ConversationItem>
