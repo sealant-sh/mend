@@ -1,12 +1,5 @@
 import { Alert, AlertDescription } from "@mend/ui/components/ui/alert";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from "@mend/ui/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@mend/ui/components/ui/sheet";
 import { Skeleton } from "@mend/ui/components/ui/skeleton";
 import { cn } from "@mend/ui/lib/utils";
@@ -228,25 +221,15 @@ function SkillReader({
               <Button variant="outline" size="sm" onClick={edit}>
                 Edit skill
               </Button>
-              <DropdownMenu>
-                <DropdownMenuTrigger
-                  aria-label={`More for ${skill.name}`}
-                  className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
-                >
-                  <EllipsisIcon aria-hidden />
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="min-w-48">
-                  <DropdownMenuItem onClick={edit}>
-                    <PencilIcon aria-hidden />
-                    Edit skill
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onClick={() => setRemoving(true)}>
-                    <Trash2Icon aria-hidden />
-                    Remove skill…
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {/* Its own button, not a "…" that held Edit skill again and this (SLNT-1229). */}
+              <Button
+                variant="destructive"
+                size="icon-sm"
+                aria-label="Remove skill"
+                onClick={() => setRemoving(true)}
+              >
+                <Trash2Icon aria-hidden />
+              </Button>
             </>
           ) : null}
           <Link

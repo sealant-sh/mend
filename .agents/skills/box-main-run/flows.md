@@ -2062,20 +2062,22 @@ lane changed.
   tile's strip; every picture in How Mend fits together, desktop and phone; the sidebar's edge
   dragged toward the page, dragged back, dragged outward while open, and clicked; Running while each
   read of the inbox says the other session worked last; a session row's right-click menu and "…" in
-  the sidebar and on the project page. On a machine with classic scrollbars (Linux or Windows
-  Chrome), also look at a project's tabs.
+  the sidebar and on the project page; a skill's header, and its Remove skill button. On a machine
+  with classic scrollbars (Linux or Windows Chrome), also look at a project's tabs.
 - **See:** no row of tabs scrolls up and down or draws a scrollbar; every picture has room for what
   it draws, with even padding round the two sidebar rows; a drag from the edge toward the page folds
   the sidebar, outward opens it, outward on an open sidebar does nothing, and a click folds it;
   Running stays newest made first; no `Open session` in a row's menus, and a click on the row opens
-  the session.
+  the session; a skill's header has Edit skill and a red Remove skill button and no "…", and the
+  button asks before it removes.
 - **Mode:** `scripted` (recipes/new-web-second-pass.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `packages/ui/src/styles/globals.css`,
   `apps/web/src/components/project/project-frame.tsx`,
   `apps/web/src/components/workspace/phone-tab-strip.tsx`,
-  `apps/web/src/components/project/session-actions.tsx`
+  `apps/web/src/components/project/session-actions.tsx`,
+  `apps/web/src/components/skills/skill-panel.tsx`
 
 ### now-and-sessions.new-web-sheet-stop-setup
 

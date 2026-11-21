@@ -15,6 +15,11 @@
 //    of the inbox is answered with the other session as the one that did something last.
 // 6. A session row's menus have no Open session (a click on the row opens it): the sidebar row's
 //    right-click menu and "…", and the project page's row "…".
+// 7. A skill's header has Edit skill and a Remove skill button, with no "…" (it held Edit skill
+//    again and Remove skill…); the button asks first. The recipe makes the skill and removes it.
+//    A shell that isn't yours (a session's own terminal) has its one action, Copy working directory,
+//    as a button. A member's own row in Members has Leave as a button (recorded answers: the
+//    account reads as a member with a second organization; the dialog is closed unsent).
 //
 // It puts the sidebar back open and changes no server state.
 const DESKTOP = { width: 1280, height: 900 };
@@ -24,6 +29,12 @@ const OLDER = "second-pass-older";
 const NEWER = "second-pass-newer";
 
 /** A sideways row's box: whether it can scroll up and down, and its scrollbar. */
+/** The procedures a tRPC request asks for. */
+const pathsOf = (request) =>
+  decodeURIComponent(new URL(request.url()).pathname.replace(/^\/trpc\//, ""))
+    .split(",")
+    .filter((path) => path !== "");
+
 const strip = (locator) =>
   locator.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -193,9 +204,12 @@ export default async ({ page, web, capture, note }) => {
   };
   await drag(-140);
   expect((await state()) === "collapsed", "a drag from the edge toward the page folds the sidebar");
-  await capture("edge-dragged-folded");
+  // The capture comes after the drags: a full-page capture between two drags ate the second press.
   await drag(140);
   expect((await state()) === "expanded", "a drag from the folded edge outward opens it again");
+  await drag(-140);
+  await capture("edge-dragged-folded");
+  await reopen();
   await drag(80);
   expect((await state()) === "expanded", "a drag outward on an open sidebar leaves it open");
   const box = await railBox();
@@ -304,6 +318,112 @@ export default async ({ page, web, capture, note }) => {
   await tableRow.locator(`a[href$="/sessions/${older}"]`).click();
   await page.waitForURL(new RegExp(`/sessions/${older}$`));
   note("a click on the project page's row opened its session");
+
+  // ---- 7. A skill's header: no "…" for one more action.
+  const mutate = (path, input) =>
+    page.evaluate(
+      async ([route, value]) => {
+        let target = window["__TSR_ROUTER__"].options.context.trpcClient;
+        for (const part of route.split(".")) target = target[part];
+        return target.mutate(value);
+      },
+      [path, input],
+    );
+  const skillName = `second-pass-${Date.now().toString(36).slice(-4)}`;
+  const about = "A skill this recipe removes again.";
+  const made = await mutate("skills.create", {
+    scope: "user",
+    projectId: null,
+    name: skillName,
+    description: about,
+    files: [
+      {
+        path: "SKILL.md",
+        contents: `---\nname: ${skillName}\ndescription: ${about}\n---\n\nNothing here.\n`,
+      },
+    ],
+  });
+  try {
+    await page.setViewportSize(DESKTOP);
+    await open(`/skills/${made.skill.id}`);
+    const header = page.locator("article header").filter({ visible: true }).first();
+    await header.getByRole("button", { name: "Edit skill" }).waitFor();
+    const more = await header.getByRole("button", { name: /^More for / }).count();
+    const remove = header.getByRole("button", { name: "Remove skill", exact: true });
+    expect(
+      more === 0 && (await remove.count()) === 1,
+      `a skill's header has Edit skill and Remove skill, and ${more} "…"`,
+    );
+    await capture("skill-header");
+    await remove.click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByRole("heading", { name: `Remove ${skillName}?` }).waitFor();
+    await capture("skill-remove-asks");
+    await dialog.getByRole("button", { name: "Remove skill", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+    note("Remove skill asked first, then removed the skill");
+  } finally {
+    await mutate("skills.remove", { skillId: made.skill.id }).catch(() => undefined);
+  }
+
+  // ---- 7. Someone else's shell: the session's own terminal.
+  await open(`/sessions/${older}/terminal`);
+  const shells = page.getByRole("list", { name: "Open shells" }).filter({ visible: true }).first();
+  await shells.waitFor();
+  // The row's button shows while the row is pointed at.
+  await shells.getByRole("listitem").first().hover();
+  const copies = await shells
+    .getByRole("button", { name: /^Copy the working directory of / })
+    .count();
+  expect(copies >= 1, `the session's own shell has a Copy working directory button (${copies})`);
+  await capture("terminal-shells");
+
+  // ---- 7. A member's own row in Members: Leave as its own button.
+  await page.route("**/trpc/**", async (route) => {
+    const paths = pathsOf(route.request());
+    if (!paths.includes("organization.current") && !paths.includes("organizations.list"))
+      return route.continue();
+    const response = await route.fetch();
+    const body = await response.json();
+    const list = Array.isArray(body) ? body : [body];
+    paths.forEach((path, index) => {
+      const data = list[index]?.result?.data;
+      if (!data) return;
+      if (path === "organization.current") data.json = { ...data.json, role: "member" };
+      if (path === "organizations.list" && Array.isArray(data.json) && data.json.length === 1) {
+        const copy = structuredClone(data.json[0]);
+        copy.organization = {
+          ...copy.organization,
+          id: "00000000-0000-4000-8000-000000001229",
+          name: "Second organization",
+        };
+        data.json.push(copy);
+        for (const [key, value] of Object.entries(data.meta?.values ?? {}))
+          if (key.startsWith("0.")) data.meta.values[key.replace(/^0\./, "1.")] = value;
+      }
+    });
+    await route.fulfill({ response, json: body });
+  });
+  await open("/settings/organization/members");
+  // The page arrived with the server's reads: read them again through the recorded answers.
+  await page.evaluate(() =>
+    window["__TSR_ROUTER__"].options.context.queryClient.invalidateQueries(),
+  );
+  const leave = page.getByRole("button", { name: /^Leave .+…$/ }).filter({ visible: true });
+  await leave.first().waitFor();
+  expect(
+    (await leave.count()) === 1 &&
+      (await page.getByRole("button", { name: "Your membership" }).count()) === 0,
+    "a member's own row has a Leave button and no …",
+  );
+  await capture("members-member-leave");
+  await leave.first().click();
+  await page.getByRole("dialog").waitFor();
+  await capture("members-member-leave-asks");
+  await page.keyboard.press("Escape");
+  await page.getByRole("dialog").waitFor({ state: "detached" });
+  await page.unroute("**/trpc/**");
+  note("a member's Leave button opened the leave dialog, closed unsent");
 
   if (failures.length > 0) throw new Error(`not as expected: ${failures.join("; ")}`);
 };

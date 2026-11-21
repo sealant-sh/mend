@@ -348,54 +348,54 @@ function FolderRow({
               {upload.isPending ? "Uploading…" : "Upload files…"}
             </Button>
           ) : null}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  type="button"
-                  variant="ghost"
-                  size={phone ? "icon-touch" : "icon-sm"}
-                  aria-label={`Actions for ${folder.name}`}
-                  className="text-muted-foreground"
-                >
-                  <EllipsisIcon aria-hidden />
-                </Button>
-              }
-            />
-            <DropdownMenuContent align="end" width="sm">
-              <DropdownMenuGroup>
-                <DropdownMenuLabel>{folder.name}</DropdownMenuLabel>
-              </DropdownMenuGroup>
-              <DropdownMenuItem onClick={onToggle}>
-                <FolderIcon aria-hidden />
-                {open ? "Hide files" : "Show files"}
-              </DropdownMenuItem>
-              {owner ? (
-                <>
-                  <DropdownMenuItem disabled={upload.isPending} onClick={() => pick(files.current)}>
-                    <UploadIcon aria-hidden />
-                    Upload files…
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    disabled={upload.isPending}
-                    onClick={() => pick(directory.current)}
+          {/* A member who can't change folders had a "…" with only Show files, which the folder's
+              name already does (SLNT-1229). */}
+          {owner ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size={phone ? "icon-touch" : "icon-sm"}
+                    aria-label={`Actions for ${folder.name}`}
+                    className="text-muted-foreground"
                   >
-                    <UploadIcon aria-hidden />
-                    Upload a folder…
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={onRename}>
-                    <PencilIcon aria-hidden />
-                    Rename…
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem variant="destructive" onClick={onDelete}>
-                    <Trash2Icon aria-hidden />
-                    Delete folder…
-                  </DropdownMenuItem>
-                </>
-              ) : null}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                    <EllipsisIcon aria-hidden />
+                  </Button>
+                }
+              />
+              <DropdownMenuContent align="end" width="sm">
+                <DropdownMenuGroup>
+                  <DropdownMenuLabel>{folder.name}</DropdownMenuLabel>
+                </DropdownMenuGroup>
+                <DropdownMenuItem onClick={onToggle}>
+                  <FolderIcon aria-hidden />
+                  {open ? "Hide files" : "Show files"}
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={upload.isPending} onClick={() => pick(files.current)}>
+                  <UploadIcon aria-hidden />
+                  Upload files…
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={upload.isPending}
+                  onClick={() => pick(directory.current)}
+                >
+                  <UploadIcon aria-hidden />
+                  Upload a folder…
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={onRename}>
+                  <PencilIcon aria-hidden />
+                  Rename…
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onClick={onDelete}>
+                  <Trash2Icon aria-hidden />
+                  Delete folder…
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
         </span>
       </div>
       {upload.isError ? (

@@ -9,7 +9,7 @@ import {
 import { SidebarMenuItem } from "@mend/ui/components/ui/sidebar";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
-import { EllipsisIcon } from "lucide-react";
+import { EllipsisIcon, XIcon } from "lucide-react";
 import { useState } from "react";
 
 import { adoptionProgressOptions, useAdoptionAttempt } from "#/lib/adoptions";
@@ -20,9 +20,9 @@ import { useTRPC } from "#/lib/trpc";
 /**
  * A session started while its project clones, in the inbox before it is a session: under Running
  * while it waits ("Waiting for the clone"), under To review in red with why once it failed. It
- * has no page yet, so the row opens nothing; its "…" cancels it, or starts a failed one again:
- * in its project when the clone worked and the start failed, or on a new clone of the project
- * this browser is running.
+ * has no page yet, so the row opens nothing. Its × cancels it; a failed one with somewhere to start
+ * has a "…" with Start again and Cancel: in its project when the clone worked and the start failed,
+ * or on a new clone of the project this browser is running.
  */
 
 type Target = { readonly projectId: string } | { readonly adoptionId: string };
@@ -49,7 +49,11 @@ const useStartAgain = (row: QueuedRow): Target | null => {
     : null;
 };
 
-/** The row's "…": Start again for a failed one with somewhere to start, and Cancel. */
+/**
+ * The row's actions: Cancel as its own button while it is the only one (a "…" for one item was a
+ * menu for nothing, SLNT-1229); a "…" with Start again and Cancel once a failed one has somewhere
+ * to start.
+ */
 function QueuedActions({
   row,
   size,
@@ -81,6 +85,22 @@ function QueuedActions({
     }),
   );
   const busy = cancel.isPending || start.isPending;
+  const iconSize = size === "touch" ? "icon-touch" : "icon-sm";
+  if (target === null)
+    return (
+      <Button
+        type="button"
+        variant="ghost"
+        size={iconSize}
+        aria-label={`Cancel ${row.title}`}
+        title="Cancel session"
+        disabled={busy}
+        className="text-muted-foreground hover:text-destructive"
+        onClick={() => cancel.mutate({ id: row.id })}
+      >
+        <XIcon aria-hidden />
+      </Button>
+    );
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -88,7 +108,7 @@ function QueuedActions({
           <Button
             type="button"
             variant="ghost"
-            size={size === "touch" ? "icon-touch" : "icon-sm"}
+            size={iconSize}
             aria-label={`Actions for ${row.title}`}
             disabled={busy}
             className="text-muted-foreground"

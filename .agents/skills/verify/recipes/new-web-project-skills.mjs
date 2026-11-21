@@ -354,11 +354,10 @@ export default async ({ page, web, capture, note }) => {
     "skills-web-edit: edited in place of the project page, saved as revision 2 for everyone's new sessions",
   );
 
-  // skills-web-remove: the menu, the confirmation that says yours is used again, the toast.
-  await visible(page.getByRole("button", { name: `More for ${names.shared}` })).click();
-  await visible(page.getByRole("menuitem", { name: "Remove skill…" })).waitFor();
-  await light("menu-desktop");
-  await visible(page.getByRole("menuitem", { name: "Remove skill…" })).click();
+  // skills-web-remove: the header's own Remove skill button beside Edit skill (SLNT-1229), the
+  // confirmation that says yours is used again, the toast.
+  await light("header-desktop");
+  await visible(page.getByRole("button", { name: "Remove skill", exact: true })).click();
   await dialog()
     .getByRole("heading", { name: `Remove ${names.shared} from ${projectName}?` })
     .waitFor();
@@ -389,8 +388,7 @@ export default async ({ page, web, capture, note }) => {
     code: -32600,
     data: { code: "CONFLICT", httpStatus: 409, tag: "RemovalInProgress" },
   });
-  await visible(page.getByRole("button", { name: `More for ${names.own}` })).click();
-  await visible(page.getByRole("menuitem", { name: "Remove skill…" })).click();
+  await visible(page.getByRole("button", { name: "Remove skill", exact: true })).click();
   await dialog().getByRole("button", { name: "Remove skill", exact: true }).click();
   await text(
     `${projectName} is being removed, so its skills can't change. If ${projectName} is restored, try again.`,

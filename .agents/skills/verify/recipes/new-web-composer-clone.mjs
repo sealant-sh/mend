@@ -285,10 +285,15 @@ export default async ({ page, web, capture, note }) => {
   await page.setViewportSize(DESKTOP);
   await go("/");
   await unfold("To review");
-  await failedRow.getByRole("button", { name: /^Actions for / }).click();
-  await page.getByRole("menuitem", { name: "Cancel session" }).click();
+  // Cancel is the row's own × while it is its only action; with Start again too, it is in the "…".
+  const cancelOnly = failedRow.getByRole("button", { name: /^Cancel / });
+  if ((await cancelOnly.count()) > 0) await cancelOnly.click();
+  else {
+    await failedRow.getByRole("button", { name: /^Actions for / }).click();
+    await page.getByRole("menuitem", { name: "Cancel session" }).click();
+  }
   await failedRow.waitFor({ state: "detached", timeout: 20_000 });
-  note("Cancel session from the failed row's … removes it");
+  note("Cancel session from the failed row removes it");
 
   // Put back what this drive changed: the session it started stops, the browser forgets the
   // clone, the person's defaults are as before.

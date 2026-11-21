@@ -25,6 +25,7 @@ import {
 } from "@mend/ui/components/ui/select";
 import { Spinner } from "@mend/ui/components/ui/spinner";
 import { toast } from "@mend/ui/components/ui/toast";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@mend/ui/components/ui/tooltip";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import {
@@ -392,8 +393,9 @@ function RoleControl({
 }
 
 /**
- * A person's "…": a password reset link for a member, Remove from the organization; for yourself,
- * Leave. What the server would refuse is offered disabled, with the reason as the item's own line.
+ * A person's "…", for an owner: a password reset link for a member, Remove from the organization;
+ * for yourself, Leave. What the server would refuse is offered disabled, with the reason as the
+ * item's own line. A member has only Leave, on their own row, as a button.
  */
 function MemberMenu({
   member,
@@ -433,6 +435,38 @@ function MemberMenu({
       : [];
   // The server refuses leaving your only organization: no Leave item there.
   const canLeave = memberships.status === "success" && memberships.data.length > 1;
+  // A member's own row had a "…" with Leave alone in it: Leave is its own button, shown while the
+  // server would let them leave (SLNT-1229).
+  if (!owner)
+    return canLeave ? (
+      <>
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                ref={trigger}
+                type="button"
+                variant="ghost"
+                size={phone ? "icon-touch" : "icon"}
+                aria-label={`Leave ${organization.name}…`}
+                className="text-muted-foreground hover:text-destructive"
+                onClick={() => setDialog("leave")}
+              >
+                <LogOutIcon aria-hidden />
+              </Button>
+            }
+          />
+          <TooltipContent side="bottom">Leave {organization.name}…</TooltipContent>
+        </Tooltip>
+        <LeaveOrganizationDialog
+          open={dialog === "leave"}
+          onOpenChange={(open) => setDialog(open ? "leave" : null)}
+          organization={organization}
+          others={others}
+          finalFocus={trigger}
+        />
+      </>
+    ) : null;
   return (
     <>
       <DropdownMenu>

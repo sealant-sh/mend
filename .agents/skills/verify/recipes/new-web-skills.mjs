@@ -418,10 +418,9 @@ export default async ({ page, web, capture, note }) => {
   // skills-web-remove: the "…" menu, the confirmation, the toast.
   await go(`/skills/${doomed.skill.id}`);
   await heading(names.removed).waitFor();
-  await visible(page.getByRole("button", { name: `More for ${names.removed}` })).click();
-  await visible(page.getByRole("menuitem", { name: "Remove skill…" })).waitFor();
-  await both("menu-desktop");
-  await visible(page.getByRole("menuitem", { name: "Remove skill…" })).click();
+  // The header's own Remove skill button, beside Edit skill (SLNT-1229).
+  await both("header-desktop");
+  await visible(page.getByRole("button", { name: "Remove skill", exact: true })).click();
   await dialog()
     .getByRole("heading", { name: `Remove ${names.removed}?` })
     .waitFor();
@@ -436,8 +435,7 @@ export default async ({ page, web, capture, note }) => {
   // Removed elsewhere first: the dialog says so and offers only Close.
   await go(`/skills/${twin.skill.id}`);
   await heading(names.twin).waitFor();
-  await visible(page.getByRole("button", { name: `More for ${names.twin}` })).click();
-  await visible(page.getByRole("menuitem", { name: "Remove skill…" })).click();
+  await visible(page.getByRole("button", { name: "Remove skill", exact: true })).click();
   await call("skills.remove", { skillId: twin.skill.id }, "mutate");
   await dialog().getByRole("button", { name: "Remove skill", exact: true }).click();
   await text("Already removed.").waitFor();

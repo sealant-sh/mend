@@ -627,6 +627,10 @@ const CONTEXT: MenuParts = {
 /** A value on a menu item's right, in plain muted text on one line. */
 const META = "pl-4 tracking-normal whitespace-nowrap";
 
+/** The button at a shell row's right: its "…", or its one action. */
+const SHELL_ROW_BUTTON =
+  "grid size-6.5 place-items-center rounded-md text-foreground outline-none hover:bg-background focus-visible:ring-3 focus-visible:ring-ring/50 data-popup-open:bg-background pointer-coarse:size-11";
+
 /** A shell's actions, the same in its "…" menu, its right-click menu and the phone's picker. */
 function ShellMenuItems({
   parts: { Group, Label, Item, Separator, Shortcut },
@@ -775,17 +779,31 @@ function ShellRow({
           </span>
         </button>
         <span className="absolute top-1/2 right-1.5 hidden -translate-y-1/2 group-focus-within/row:flex group-hover/row:flex group-has-data-popup-open/row:flex pointer-coarse:flex">
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              aria-label={`Actions for ${shell.name}`}
-              className="grid size-6.5 place-items-center rounded-md text-foreground outline-none hover:bg-background focus-visible:ring-3 focus-visible:ring-ring/50 data-popup-open:bg-background pointer-coarse:size-11"
+          {actions.rename === null && actions.close === null ? (
+            // Someone else's shell has one action: a "…" for it alone was a menu for one item
+            // (SLNT-1229).
+            <button
+              type="button"
+              aria-label={`Copy the working directory of ${shell.name}`}
+              title="Copy working directory"
+              onClick={actions.copyDirectory}
+              className={SHELL_ROW_BUTTON}
             >
-              <EllipsisIcon aria-hidden className="size-4" />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent width="lg" align="start">
-              <ShellMenuItems parts={DROPDOWN} shell={shell} actions={actions} />
-            </DropdownMenuContent>
-          </DropdownMenu>
+              <CopyIcon aria-hidden className="size-4" />
+            </button>
+          ) : (
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                aria-label={`Actions for ${shell.name}`}
+                className={SHELL_ROW_BUTTON}
+              >
+                <EllipsisIcon aria-hidden className="size-4" />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent width="lg" align="start">
+                <ShellMenuItems parts={DROPDOWN} shell={shell} actions={actions} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </span>
       </ContextMenuTrigger>
       <ContextMenuContent width="lg">

@@ -246,6 +246,11 @@ export default async ({ page, web, capture, note }) => {
         .getByRole("button", { name: /New folder|Add reference|Upload files|Fetch again/ })
         .count()) === 0,
     );
+    // Its "…" held only Show files, which the name does: a member has none (SLNT-1229).
+    expect(
+      "a member sees no … on a folder",
+      (await page.getByRole("button", { name: `Actions for ${renamed}` }).count()) === 0,
+    );
     note("a member (recorded role) reads both lists with no button that changes them");
     await shot("folders-member-desktop-light");
     stubs.delete("organization.current");
