@@ -979,19 +979,26 @@ export const ProtocolHostLive: Layer.Layer<
           // turn reaches the harness, unless that takes longer than the wait (SLNT-1263).
           const sealing = entry.sealing;
           if (sealing !== null) {
+            const since = yield* Clock.currentTimeMillis;
             const sealed = yield* Deferred.await(sealing).pipe(
               Effect.timeoutOption(TURN_END_CHECKPOINT_WAIT),
             );
-            if (Option.isNone(sealed))
-              yield* Effect.logWarning(
-                "protocol host: the last turn's checkpoint is still being taken · sending the next turn",
-              ).pipe(
-                Effect.annotateLogs({
-                  sessionId: entry.process.sessionId,
-                  processId: entry.process.id,
-                  waitedMs: Duration.toMillis(TURN_END_CHECKPOINT_WAIT),
-                }),
-              );
+            const waitedMs = (yield* Clock.currentTimeMillis) - since;
+            yield* (
+              Option.isNone(sealed)
+                ? Effect.logWarning(
+                    "protocol host: the last turn's checkpoint is still being taken · sending the next turn",
+                  )
+                : Effect.logInfo(
+                    "protocol host: the next turn waited for the last turn's checkpoint · observed",
+                  )
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId: entry.process.sessionId,
+                processId: entry.process.id,
+                waitedMs,
+              }),
+            );
           }
           // Drain until one turn is accepted or the queue is empty. A rejected turn (bad model,
           // transient send failure) must not strand the turns queued behind it: nothing else
