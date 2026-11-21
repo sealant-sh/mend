@@ -499,7 +499,8 @@ describe("a mode switch to the terminal racing the process watcher (SLNT-142, SL
   it("continues a conversation with a completed turn as a terminal", async () => {
     const run = await switchAfterACompletedTurn(false);
     expect(run.outcome).toBe("switched");
-    expect(run.status).toBe("running");
+    // The terminal resumes with no prompt and waits at it: a finished turn reads idle (SLNT-1235).
+    expect(run.status).toBe("idle");
     expect(run.terminal).toBeDefined();
     expect(run.resumed).toBe(PROVIDER);
   }, 30_000);
@@ -507,7 +508,7 @@ describe("a mode switch to the terminal racing the process watcher (SLNT-142, SL
   it("continues it as a terminal when the watcher records the conversation's end first", async () => {
     const run = await switchAfterACompletedTurn(true);
     expect.soft(run.outcome).toBe("switched");
-    expect.soft(run.status).toBe("running");
+    expect.soft(run.status).toBe("idle");
     expect.soft(run.terminal).toBeDefined();
     expect.soft(run.resumed).toBe(PROVIDER);
     expect.soft(run.workspaceStops, "the workspace the terminal starts in kept").toEqual([]);
