@@ -109,7 +109,7 @@ inputs = ["pnpm-lock.yaml"]
 command = "pnpm dev --port 3000 --host 127.0.0.1"
 port = 3000
 browserScheme = "http"
-cwd = "apps/web-old"
+cwd = "apps/web"
 env = { NODE_ENV = "development" }
 ready = { http = "/", timeout = "120s" }
 depends = ["db"]

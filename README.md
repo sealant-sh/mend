@@ -119,7 +119,7 @@ site's feature-status page says what works today. Plan milestones describe direc
 
 - `apps/api`: the Mend API server (contract, auth, session engine, workers)
 - `apps/cli`: the `mend` CLI
-- `apps/web-old`: the product app, Now · projects · sessions · review
+- `apps/web`: the web app: the sessions inbox, sessions, review, projects and settings
 - `apps/desktop`: the Electron workbench
 - `apps/mobile`: the Expo native app (unpublished)
 - `apps/vscode`: the VS Code extension
@@ -160,7 +160,7 @@ next to it.
 - [Ghostty](https://github.com/ghostty-org/ghostty) (Mitchell Hashimoto & contributors, MIT):
   `libghostty-vt` is the terminal core behind every Mend terminal, on all three platforms.
 - [ghostty-web](https://github.com/coder/ghostty-web) (Coder, MIT): the wasm terminal used by
-  `apps/web-old`.
+  `apps/web`.
 - Symbols Nerd Font (Ryan L McIntyre, MIT): vendored with the desktop terminal so prompt glyphs
   render without a locally installed Nerd Font.
 

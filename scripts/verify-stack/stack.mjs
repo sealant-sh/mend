@@ -792,7 +792,7 @@ async function daemonSocket() {
 
 /**
  * The relay's port, and so the browser origin's: not 3105, where Mend's own dev server listens when
- * a session runs `pnpm dev` (apps/web-old/vite.config.ts), since Mend dials the workspace loopback
+ * a session runs `pnpm dev` (apps/web/vite.config.ts), since Mend dials the workspace loopback
  * before the Docker sidecar.
  */
 const DEFAULT_PORT = 3305;

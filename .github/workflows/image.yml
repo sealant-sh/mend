@@ -166,7 +166,7 @@ jobs:
           - { id: mend, name: mend, dockerfile: Dockerfile, baseline: false }
           - { id: mend-before, name: mend, dockerfile: Dockerfile, baseline: true }
           - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
-          - { id: mend-web, name: mend-web, dockerfile: apps/web-old/Dockerfile, baseline: false }
+          - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
         platform:
           - { arch: amd64, runner: ubuntu-24.04 }
           - { arch: arm64, runner: ubuntu-24.04-arm }
@@ -352,7 +352,7 @@ jobs:
           - { id: mend, name: mend, dockerfile: Dockerfile, baseline: false }
           - { id: mend-before, name: mend, dockerfile: Dockerfile, baseline: true }
           - { id: mend-api, name: mend-api, dockerfile: apps/api/Dockerfile, baseline: false }
-          - { id: mend-web, name: mend-web, dockerfile: apps/web-old/Dockerfile, baseline: false }
+          - { id: mend-web, name: mend-web, dockerfile: apps/web/Dockerfile, baseline: false }
         platform:
           - { arch: amd64, runner: ubuntu-24.04 }
           - { arch: arm64, runner: ubuntu-24.04-arm }

@@ -1,8 +1,8 @@
 # @mend/ui
 
 Mend's UI kit: shadcn's `base-nova` style on Base UI, themed to Sheet, the look on the Doop canvas
-"Mend" (`eOZgbKdtRc`). The new web app (`apps/web`) builds on it. Desktop, marketing, mobile, the
-API and the old web app stay on `@mend/ui-old`.
+"Mend" (`eOZgbKdtRc`). The web app (`apps/web`) builds on it, and the desktop app wraps the web app.
+Marketing, mobile and the API's published pages stay on `@mend/ui-old`.
 
 ## Using it
 

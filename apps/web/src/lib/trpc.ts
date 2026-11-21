@@ -83,7 +83,7 @@ export const browserTrpcClient = () =>
   (browserClient ??= createTRPCClient<AppRouter>({
     links: trpcLinks(
       typeof window === "undefined"
-        ? `http://localhost:${process.env["PORT"] ?? "3115"}/trpc`
+        ? `http://localhost:${process.env["PORT"] ?? "3105"}/trpc`
         : "/trpc",
     ),
   }));

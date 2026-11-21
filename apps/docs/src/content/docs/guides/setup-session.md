@@ -62,8 +62,8 @@ An entry in `.mend/features.md` might say:
 ## Task board
 
 People add tasks, mark them complete and see saved tasks after reloading. The board page lives in
-`apps/web-old/src/routes/board.tsx`; task storage lives in `packages/tasks/src/`. See "Task board"
-in `.mend/verify.md` for the user flow.
+`apps/web/src/routes/board.tsx`; task storage lives in `packages/tasks/src/`. See "Task board" in
+`.mend/verify.md` for the user flow.
 ```
 
 Paths come from your repository. The map describes the app's behavior and connects it to the code
@@ -337,7 +337,7 @@ image = "postgres:17"
 
 [service.web]
 command = "pnpm dev --port 3000 --strictPort --host 127.0.0.1"
-cwd = "apps/web-old"
+cwd = "apps/web"
 port = 3000
 browserScheme = "http"
 host = "preserve"

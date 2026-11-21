@@ -1,11 +1,13 @@
 # The web app is rebuilt beside the old one
 
-Status: accepted 2026-11-16 (the plan) and 2026-11-17 (the order of work); in progress. Yiannis
-agreed the plan "Mend redesign: the plan, step by step" (Linear project "Web redesign") on
-2026-11-16 and said to start the code on 2026-11-17. The renames landed in #1774 and the lint rules
-in #1775; the new kit (#1779, SLNT-1090) and the new app with no routes (#1777, SLNT-1093) are open.
-Read against Mend `732269db61`. Builds on [ADR 0025](0025-one-home-per-setting.md) (settings) and
-[ADR 0026](0026-tabs-and-tiles.md) (session screens); the look is `DESIGN.md`.
+Status: accepted 2026-11-16 (the plan) and 2026-11-17 (the order of work); done 2026-11-21, when
+`apps/web` became what ships and `apps/web-old` was deleted (SLNT-1253; see "Cut-over, as it
+happened" below). Yiannis agreed the plan "Mend redesign: the plan, step by step" (Linear project
+"Web redesign") on 2026-11-16 and said to start the code on 2026-11-17. The renames landed in #1774
+and the lint rules in #1775; the new kit (#1779, SLNT-1090) and the new app with no routes (#1777,
+SLNT-1093) are open. Read against Mend `732269db61`. Builds on
+[ADR 0025](0025-one-home-per-setting.md) (settings) and [ADR 0026](0026-tabs-and-tiles.md) (session
+screens); the look is `DESIGN.md`.
 
 ## Context
 
@@ -78,6 +80,24 @@ The new app becomes what ships once all of these are true:
 After cut-over `apps/web-old` is deleted. `packages/ui-old` is deleted once desktop, marketing and
 mobile no longer need it.
 
+#### Cut-over, as it happened (2026-11-21)
+
+Yiannis: "Ok when you are done with everything do the ui cutoff, remove the old ui etc". The
+conditions above were met as follows: every old route was rebuilt, redirected or dropped on purpose
+(the orchestrator's cut-over audit, 19 Nov); the whole new app ran on the preview server on check
+VMs through every flow (SLNT-1189, 21 Nov), and the Fix Now findings from it merged first. The
+switch is one stack of PRs (SLNT-1253), each revertible alone:
+
+1. The switch: the bundle image (`Dockerfile`, `scripts/bundle-supervisor.mjs`), the Helm chart's
+   `mend-web` image (`apps/web/Dockerfile`), previews, CI's browser check and `pnpm dev` serve
+   `apps/web`, whose front answers on 3105 again. The public docs and glossary describe it.
+2. The verify stack's `web` surface is the new app, and the box flows no longer split at cut-over.
+3. `apps/web-old` is deleted at once, not a release later as first planned; until then, reverting
+   the switch alone put every image back on the old app.
+
+`packages/ui-old` stays: mobile, marketing and the API's published and preview start pages still use
+it. The desktop app no longer does; it became a shell over `apps/web` (#1924).
+
 ### 8. Owner rulings carried by the rebuild
 
 Made while the canvas was finished, each recorded here because the new app builds it:
@@ -109,5 +129,5 @@ Made while the canvas was finished, each recorded here because the new app build
   is deleted.
 - Each route PR is small enough to judge and run on its own, and the list says what is left.
 - The new words (Waiting on you, To review, Running, Snoozed, Done, Idle) and the new settings names
-  are in ADRs 0025 and 0026 only. The public glossary and the docs site describe what ships, so they
-  change at cut-over or when each screen ships.
+  were in ADRs 0025 and 0026 only until cut-over, when the public glossary and the docs site moved
+  to them.

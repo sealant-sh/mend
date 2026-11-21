@@ -2196,7 +2196,8 @@ describe("the Slack runner, for `settings` and `list`", () => {
     const w = world();
     await w.deliver(command(w, "settings", "D-alice"));
     const [reply] = posts(w, "postEphemeral");
-    expect(reply?.text).toContain("https://mend.acme.test/settings/organization/slack");
+    expect(reply?.text).toContain("https://mend.acme.test/settings/connected-apps");
+    expect(reply?.text).toContain("Settings → Connected apps");
     expect(w.effects.some((entry) => entry.startsWith("defaults."))).toBe(false);
   });
 

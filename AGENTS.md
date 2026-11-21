@@ -25,13 +25,11 @@ the area. The roadmap is in Linear.
 - `apps/t3-gateway`: a t3code environment in front of Mend; t3code's clients pair with it (ADR
   0012).
 - `apps/vscode`: VS Code extension: open and steer sessions, workspaces over Remote-SSH.
-- `apps/web`: the web app being rebuilt to the Sheet design. It started with no product routes; each
-  route lands in its own PR, copying the `lib` modules it needs from the old app. It runs beside the
-  old app (`pnpm dev:web`, port 3115) and ships nowhere until cut-over.
-- `apps/web-old`: the web app people use today, until cut-over. It is frozen: only Fix Now bugs go
-  there.
-- `packages/ui-old` is the Evidence Review kit that desktop, marketing, mobile, the API and the old
-  web app use.
+- `apps/web`: the web app, in the Sheet design on `packages/ui`. It replaced the old app at the
+  cut-over (ADR 0027); `pnpm dev` runs it on 3105 with the API.
+- `apps/web-old`: the app `apps/web` replaced. Nothing ships it; it is about to be deleted.
+- `packages/ui-old` is the Evidence Review kit that mobile, marketing and the API's published pages
+  still use.
 - `packages/*`: shared libraries: `agent-conversation`, `agent-protocol` (Codex/Claude stdio
   adapters), `api-contracts` (the HTTP API contract), `auth`, `db` (Postgres, migrations), `domain`,
   `inference`, `jobs` (pg-boss), `landing`, `local-git` (git on the person's machine: handoff
@@ -238,9 +236,9 @@ delete it, and one you start after it boots the new one.
 - Write TypeScript to the `coding-standards` skill
   (`../agent-home/.agents/skills/coding-standards/`), including its rules on `any` and casts.
 - Before any non-tiny UI change, read `DESIGN.md` and follow it as the design source of truth. It
-  describes Sheet, the look of the new web app and its kit. Desktop, marketing, mobile, the VS Code
-  extension and the old web app keep Evidence Review, Sealant's look, until each is redone; a change
-  there follows `docs/design-evidence-review.md`.
+  describes Sheet, the look of the web app and its kit. Marketing, mobile, the VS Code extension and
+  the API's published pages keep Evidence Review, Sealant's look, until each is redone; a change
+  there follows `docs/design-evidence-review.md`. The desktop app is a shell over the web app.
 - This repo is not Next.js: write no `"use client"` directives.
 - In React, derive data from props, state and loaders; reach for `useEffect` only when no cleaner
   data flow exists.

@@ -25,8 +25,7 @@ import { POLICY_ONLY_HEADERS, securityHeaders } from "./security-headers.ts";
  * freely; every stateful concern lives behind the /api proxy.
  */
 
-// Its own ports, not the old app's 3105 and 3210, so the two fronts run on one machine at once.
-const port = Number(process.env["PORT"] ?? "3115");
+const port = Number(process.env["PORT"] ?? "3105");
 const apiUrl = new URL(process.env["MEND_API_URL"] ?? "http://localhost:3101");
 const publicNetwork = Effect.runSync(loadPublicNetwork);
 // The preview hosts Mend's app may frame: on Mend's own site and https only (docs/adr/0017).
@@ -44,7 +43,7 @@ const nitroEntry = [
 ].find(existsSync);
 
 const externalApp = process.env["MEND_APP_URL"];
-const appUrl = new URL(externalApp ?? "http://127.0.0.1:3220");
+const appUrl = new URL(externalApp ?? "http://127.0.0.1:3210");
 if (externalApp === undefined) {
   if (nitroEntry === undefined) {
     console.error("[web] no app build found (.output/server/index.mjs) and no MEND_APP_URL");

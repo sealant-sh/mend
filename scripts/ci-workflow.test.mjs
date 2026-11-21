@@ -375,32 +375,20 @@ test("clients-b loads the built web app in Chromium after its tests", () => {
   const run = commands("test-clients-b");
   const shard = run.indexOf("node scripts/ci-shards.mjs clients-b");
   const browser = run.findIndex((command) =>
-    command.includes("pnpm --filter @mend/web-old check:browser"),
+    command.includes("pnpm --filter @mend/web check:browser"),
   );
   assert.ok(shard >= 0 && browser > shard, "the browser check runs after the shard");
-  assert.match(run[browser], /turbo run build --filter=@mend\/web-old\n/);
+  assert.match(run[browser], /turbo run build --filter=@mend\/web\n/);
+  assert.ok(
+    !run.some((command) => command.includes("@mend/web-old")),
+    "the old app is no longer built or checked",
+  );
   assert.ok(
     run.some((command) => command.includes("--filter @mend/mobile exec playwright-core install")),
     "Chromium is installed for it",
   );
   const step = jobs["test-clients-b"].steps.find((candidate) =>
     candidate.run?.includes("check:browser"),
-  );
-  assert.equal(step.env.MEND_VERIFY_PLAYWRIGHT, "${{ github.workspace }}/apps/mobile");
-});
-
-test("clients-b loads the built new web app in Chromium beside the old one", () => {
-  const run = commands("test-clients-b");
-  const old = run.findIndex((command) =>
-    command.includes("pnpm --filter @mend/web-old check:browser"),
-  );
-  const browser = run.findIndex((command) =>
-    command.includes("pnpm --filter @mend/web check:browser"),
-  );
-  assert.ok(old >= 0 && browser > old, "the new app's check runs after the old app's");
-  assert.match(run[browser], /turbo run build --filter=@mend\/web\n/);
-  const step = jobs["test-clients-b"].steps.find((candidate) =>
-    candidate.run?.includes("pnpm --filter @mend/web check:browser"),
   );
   assert.equal(step.env.MEND_VERIFY_PLAYWRIGHT, "${{ github.workspace }}/apps/mobile");
 });
@@ -1541,14 +1529,14 @@ test("only a dispatch with runner: box selects the box, and nothing selects Blac
   for (const runner of written) assert.ok(hosted(runner), `preview.yml writes ${runner}`);
 });
 
-test("a preview serves today's web app unless its dispatch asks for the new one", () => {
+test("a preview serves apps/web unless its dispatch asks for the old app", () => {
   const preview = parse(readFileSync(new URL(".github/workflows/preview.yml", root), "utf8"));
   const input = preview.on.workflow_dispatch.inputs.web_app;
-  assert.equal(input.default, "web-old");
-  assert.deepEqual(input.options, ["web-old", "web"]);
+  assert.equal(input.default, "web");
+  assert.deepEqual(input.options, ["web", "web-old"]);
   const step = preview.jobs.mend.steps.find((candidate) => candidate.id === "args");
   assert.equal(step.env.WEB_APP, "${{ inputs.web_app }}");
-  // The step as the runner runs it, for each choice: only `web` adds a build argument.
+  // The step as the runner runs it, for each choice: only `web-old` adds a build argument.
   const buildArgs = (webApp) => {
     const directory = mkdtempSync(join(tmpdir(), "preview-args-"));
     try {
@@ -1575,8 +1563,8 @@ test("a preview serves today's web app unless its dispatch asks for the new one"
       rmSync(directory, { recursive: true, force: true });
     }
   };
-  assert.equal(buildArgs("web-old"), "MEND_VERSION=0.0.0-next.1.preview.1\n");
-  assert.equal(buildArgs("web"), "MEND_VERSION=0.0.0-next.1.preview.1\nMEND_WEB_APP=web\n");
+  assert.equal(buildArgs("web"), "MEND_VERSION=0.0.0-next.1.preview.1\n");
+  assert.equal(buildArgs("web-old"), "MEND_VERSION=0.0.0-next.1.preview.1\nMEND_WEB_APP=web-old\n");
 });
 
 test("CI's x86 lanes run on ubuntu-24.04 and return to the box only when dispatched to it", () => {

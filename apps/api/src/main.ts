@@ -371,7 +371,7 @@ const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
  * The composition boundary (docs/archive/ARCHITECTURE.md §2): every service is wired here
  * and nowhere else. This process is the Mend API server — the typed contract,
  * auth, the WebSocket data planes, the session engine, and the workers. The
- * web app is a separate, stateless process (`apps/web-old`) that proxies `/api/*`
+ * web app is a separate, stateless process (`apps/web`) that proxies `/api/*`
  * here. MEND_MODE (`all` default · `api` · `worker`) picks which halves run.
  */
 
