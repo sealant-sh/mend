@@ -266,12 +266,18 @@ export default async ({ page, web, capture, note }) => {
     const back = await read();
     await page.waitForTimeout(3_000);
     const following = await read();
-    return { up, later, back, following };
+    // Once more, while the reply keeps growing.
+    await page.mouse.wheel(0, -400);
+    await page.waitForTimeout(1_000);
+    await page.mouse.wheel(0, 100_000);
+    await page.waitForTimeout(2_000);
+    const again = await read();
+    return { up, later, back, following, again };
   };
   const turn4 = await record(4, "scroll", { during: scrollTest });
   const s = turn4.scrolled;
   note(
-    `turn 4: scrolled up to ${s.up.top} (${s.up.fromEnd}px from the end); 3s later at ${s.later.top} (${s.later.fromEnd}px from the end); back at the end ${s.back.fromEnd}px from it, and 3s later ${s.following.fromEnd}px from it`,
+    `turn 4: scrolled up to ${s.up.top} (${s.up.fromEnd}px from the end); 3s later at ${s.later.top} (${s.later.fromEnd}px from the end); back at the end ${s.back.fromEnd}px from it, and 3s later ${s.following.fromEnd}px from it; up and back once more, 2s later ${s.again.fromEnd}px from it`,
   );
 
   // What a person sees: a reply mid-stream, then the same reply finished. Captured in a turn of
