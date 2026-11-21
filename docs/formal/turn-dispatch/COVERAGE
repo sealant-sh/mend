@@ -74,9 +74,10 @@
 # and always ends, so it only delays DClaim, as entry.gate does, and adds no schedule the model
 # lacks. agent-conversation.ts gained turnSentAfter, one read of whether a later turn of the
 # session has a started_at, and nothing else. No action changes. Full run at 7f9eaf6aa: every
-# row as expected. 42cd427e5706 is the same commit rebased on main at f918758ec, whose new commit
-# changed no covered file.
-sync 42cd427e570671042f8d1193b22183e3ed5d06b5
+# row as expected. d021f0b645e7 is the same change rebased on main at f918758ec, whose new commit
+# changed no covered file, with one more line in dispatchNext: it logs how long the wait for the
+# last turn's checkpoint took. Full run at d021f0b645e7: every row as expected.
+sync d021f0b645e7c0a79fead996c4423783f7b33b8f
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
