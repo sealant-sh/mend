@@ -183,10 +183,12 @@ function SubAgent({
   segment,
   renderRequest,
   pages,
+  live,
 }: {
   readonly segment: Extract<Segment, { readonly kind: "sub-agent" }>;
   readonly renderRequest: (request: RequestView) => ReactNode;
   readonly pages: PagesById;
+  readonly live: boolean;
 }) {
   const { agent, task } = segment;
   const status =
@@ -203,7 +205,12 @@ function SubAgent({
     >
       <div className="flex flex-col gap-2 py-1">
         {segment.segments.length === 0 ? null : (
-          <AgentSegments segments={segment.segments} renderRequest={renderRequest} pages={pages} />
+          <AgentSegments
+            segments={segment.segments}
+            renderRequest={renderRequest}
+            pages={pages}
+            live={live}
+          />
         )}
         {task?.error == null ? null : <p className="text-row text-destructive">{task.error}</p>}
         {result === null ? null : <RichText text={result} />}
@@ -232,20 +239,25 @@ function Task({ task }: { readonly task: AgentTaskView }) {
   );
 }
 
-/** What the agent wrote and did, run by run, in the order it happened. */
+/**
+ * What the agent wrote and did, run by run, in the order it happened. While `live` (its turn
+ * runs), what it writes shows at a steady pace as it streams in.
+ */
 export function AgentSegments({
   segments,
   renderRequest,
   pages,
+  live,
 }: {
   readonly segments: ReadonlyArray<Segment>;
   readonly renderRequest: (request: RequestView) => ReactNode;
   readonly pages: PagesById;
+  readonly live: boolean;
 }) {
   return segments.map((segment) => {
     switch (segment.kind) {
       case "text":
-        return <RichText key={segment.key} text={segment.item.text ?? ""} />;
+        return <RichText key={segment.key} text={segment.item.text ?? ""} live={live} />;
       case "steps":
         return <Steps key={segment.key} items={segment.items} pages={pages} />;
       case "task":
@@ -257,6 +269,7 @@ export function AgentSegments({
             segment={segment}
             renderRequest={renderRequest}
             pages={pages}
+            live={live}
           />
         );
       case "request":
@@ -408,7 +421,12 @@ export function AgentTurn({
         <Worked row={row} />
         {/* A finished turn's steps fold away; the pages they made stay in view. */}
         <Pages items={row.folded} pages={pages} />
-        <AgentSegments segments={row.segments} renderRequest={renderRequest} pages={pages} />
+        <AgentSegments
+          segments={row.segments}
+          renderRequest={renderRequest}
+          pages={pages}
+          live={row.open}
+        />
         <TurnEnd row={row} facts={facts} />
       </MessageContent>
     </Message>

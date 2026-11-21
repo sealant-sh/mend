@@ -10,6 +10,13 @@ import { cn } from "@mend/ui/lib/utils";
 import * as React from "react";
 
 /**
+ * How near its end, in pixels, a reader counts as at the end, and so followed as messages grow:
+ * about two lines. A reply that streams in adds a line every few hundred milliseconds, and one can
+ * land between a reader's scroll back to the end and the check that resumes following.
+ */
+const AT_END_PX = 64;
+
+/**
  * A session's conversation, in a column 704px wide, its newest message at the bottom: a short
  * thread sits at the foot of the column, over its footer. It follows the newest message as messages
  * arrive and grow, unless the person has scrolled up to read; scrolling back to the bottom (or the
@@ -38,7 +45,7 @@ function Conversation({
   className?: string;
 }) {
   return (
-    <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+    <MessageScrollerProvider autoScroll defaultScrollPosition="end" scrollEdgeThreshold={AT_END_PX}>
       <div data-slot="conversation" className={cn("flex size-full min-h-0 flex-col", className)}>
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport
