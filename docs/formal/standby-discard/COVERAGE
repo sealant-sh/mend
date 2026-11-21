@@ -105,12 +105,12 @@
 # HotWorkspacesRepo, so no action models it. Full run at b9164303ec: every row as expected.
 # dc0ddbcc91 moves restoreRefused to the module scope; nothing else in engine.ts changes. --quick run at
 # dc0ddbcc91: every row as expected.
-# 096dbaaca1 is the SLNT-1243 branch rebased on main at 1a102d167 (SLNT-1259's squash, which the
+# 096dbaacad is the SLNT-1243 branch rebased on main at 1a102d167 (SLNT-1259's squash, which the
 # lines above account for). SLNT-1243 changed engine.ts only in tryCheckpoint: a checkpoint whose
 # admission a removal's mark or a rollback's fence refuses is logged and not taken, so the rest of
 # an agent's end (harvest, sweep) goes on. It makes no hot-pool, claim, retire, drain or discard
 # call, and changes none of the functions the actions stand for, so no action models it. Full run
-# at 096dbaaca1: every row as expected.
+# at 096dbaacad: every row as expected.
 sync 096dbaacad8a8c25167f517e13dacf45652ff361
 
 model StandbyDiscard.tla
