@@ -446,10 +446,12 @@ export const CodexAdapter: AgentAdapter = {
       };
 
       /**
-       * Codex records a steer's words as a user message when the turn takes them, at its next
-       * step, under the id `turn/steer` sent as `clientUserMessageId` (Codex 0.146 and later).
-       * Mend sends no such id with `turn/start`, so a user message of this thread's own that
-       * carries one is a steer the agent has now read.
+       * Codex records a steer's words as a user message once it takes them into the turn's
+       * history, under the id `turn/steer` sent as `clientUserMessageId` (Codex 0.146 and later).
+       * The model reads them in its next request: Codex 0.160.1 recorded them 0.3 s after the
+       * steer, while a command the model had started still ran. Mend sends no such id with
+       * `turn/start`, so a user message of this thread's own that carries one is a steer Codex
+       * has taken.
        */
       const steerTaken = (params: JsonObject): Effect.Effect<void> => {
         const item = objectField(params, "item");
@@ -1006,7 +1008,7 @@ export const CodexAdapter: AgentAdapter = {
         }
         const reply = yield* call("turn/steer", {
           threadId,
-          // Codex puts it on the user message it records when the turn takes the words.
+          // Codex puts it on the user message it records when it takes the words into the turn.
           clientUserMessageId: input.id,
           input: [{ type: "text", text: input.input }],
           expectedTurnId: input.expectedTurnId,

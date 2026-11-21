@@ -1023,12 +1023,14 @@ lane changed.
   choose it.
 - **See:** each message shows in the conversation as soon as it is sent, and the field empties; the
   first is answered `pong`; the one sent while the turn ran is dashed and reads
-  `Sent into this turn. Codex reads it when its current step finishes.` until Codex takes it at its
-  next step (when `sleep 45` ends); from then, while the turn still runs, it reads as any sent
-  message (solid, nothing under it but who and when), sits below the `sleep 45` step and above what
-  Codex did after reading it, and starts no turn of its own (the recipe `new-web-steer-taken-box`
-  drives this part alone); after `Stop turn` that turn reads `Stopped after …`, the line
-  `This turn was stopped at …` follows it, and the session's tab reads Idle.
+  `Sent into this turn. Codex reads it when its current step finishes.` until Codex takes it into
+  the turn (Codex 0.160.1 records it within a second, while `sleep 45` still runs; the model reads
+  it in its next request); from then, while the turn still runs, it reads as any sent message
+  (solid, nothing under it but who and when), sits below the step Codex had started when it was sent
+  and above what Codex did after taking it, and starts no turn of its own (the recipe
+  `new-web-steer-taken-box` drives this part alone); after `Stop turn` that turn reads
+  `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab reads
+  Idle.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`

@@ -1,8 +1,9 @@
 // A message sent into a running turn, with a real Codex turn (SLNT-1234): dashed, with "Sent into
-// this turn. Codex reads it when its current step finishes.", until Codex takes it at its next
-// step; from then on, while the turn still runs, it reads as any sent message (solid, no line
-// under it), and it sits where Codex took it: the command Codex was running when it was sent stays
-// above it, the work after it below. Run it against a server built from the commit under test:
+// this turn. Codex reads it when its current step finishes.", until Codex takes it into the turn
+// (Codex 0.160.1 records it within a second, while the command it started still runs; the model
+// reads it in its next request); from then on, while the turn still runs, it reads as any sent
+// message (solid, no line under it), and it sits where Codex took it: the command Codex was
+// running when it was sent stays above it, the work after it below. Run it against a server built from the commit under test:
 //
 //   pnpm verify drive new-web --box --recipe new-web-steer-taken-box
 //
@@ -72,28 +73,36 @@ export default async ({ page, web, capture, note }) => {
   await visible(page.getByText(/^ready\.?$/i)).waitFor({ timeout: TURN_MS });
   await stopTurn().waitFor({ state: "hidden", timeout: TURN_MS });
 
-  // A turn with two steps: the message goes in during the first, and Codex reads it before the
-  // second, which leaves the turn running after it took the message.
+  // A turn with two steps: the message goes in during the first, and the second leaves the turn
+  // running long after Codex took the message.
   await send(
     "Run the shell command `sleep 30` and wait for it to finish. Then run the shell command `sleep 40` and wait for it to finish. Then reply with the single word slept.",
   );
   await stopTurn().waitFor({ timeout: 120_000 });
-  const firstSleep = visible(page.getByText(/sleep 30/).last());
+  const firstSleep = visible(page.getByText(/-lc 'sleep 30'/).last());
   await firstSleep.waitFor({ timeout: 120_000 });
   note("turn 2 runs `sleep 30`");
 
   const steer = "When you reply, add the word steered after slept.";
   await send(steer);
   await bubble(steer).waitFor({ timeout: 30_000 });
-  await page.getByText(WAITING).filter({ visible: true }).first().waitFor({ timeout: 30_000 });
+  // Codex can take the words within a second: the waiting look may already be gone.
+  const seen = await page
+    .getByText(WAITING)
+    .filter({ visible: true })
+    .first()
+    .waitFor({ timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
   const waiting = await looks(steer);
-  if (!waiting.pending) throw new Error("the message sent into the turn was never drawn dashed");
-  note(
-    `sent into turn 2 while it ran sleep 30: dashed, the line under it reads "${waiting.byline}"`,
-  );
-  await capture("steer-waiting-desktop-light");
+  if (seen && waiting.pending) {
+    note(
+      `sent into turn 2 while it ran sleep 30: dashed, the line under it reads "${waiting.byline}"`,
+    );
+    await capture("steer-waiting-desktop-light");
+  } else note("Codex took the message before the page could show it waiting");
 
-  // Codex takes the words when `sleep 30` ends, at its next step: the bubble turns solid.
+  // Codex takes the words into the turn: the bubble turns solid while the turn runs on.
   const sentAt = Date.now();
   await page.waitForFunction(
     (words) =>
@@ -122,7 +131,7 @@ export default async ({ page, web, capture, note }) => {
   await page.waitForTimeout(500);
 
   // Where it sits: below the command Codex ran when it was sent, above what Codex did after.
-  const secondSleep = visible(page.getByText(/sleep 40/).last());
+  const secondSleep = visible(page.getByText(/-lc 'sleep 40'/).last());
   await secondSleep.waitFor({ timeout: 120_000 });
   const [before, message, after] = [
     await top(firstSleep),
