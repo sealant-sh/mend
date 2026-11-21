@@ -220,7 +220,19 @@ export default async ({ page, web, capture, note }) => {
     const shown = (await bubble.innerText()).replace(/\s+/g, " ");
     if (/Note from Mend/.test(shown))
       throw new Error(`the person's message shows the note: "${shown}"`);
-    // Everything the conversation shows after the person's question: Codex's reply to it.
+    // Everything the conversation shows after the person's question: Codex's reply to it, once it
+    // names the file's contents (the reply streams in after the turn's first step).
+    await page
+      .waitForFunction(
+        (asked) => {
+          const items = [...document.querySelectorAll('[data-slot="conversation-item"]')];
+          const at = items.findIndex((each) => each.textContent?.includes(asked));
+          return items.slice(at + 1).some((each) => /\bsecond\b/.test(each.textContent ?? ""));
+        },
+        "did Mend tell you",
+        { timeout: 120_000 },
+      )
+      .catch(() => undefined);
     const reply = await page.evaluate((asked) => {
       const items = [...document.querySelectorAll('[data-slot="conversation-item"]')].filter(
         (each) => each.getClientRects().length > 0,
