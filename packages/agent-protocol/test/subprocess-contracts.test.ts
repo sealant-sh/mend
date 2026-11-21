@@ -359,6 +359,9 @@ describe("provider adapter subprocess contracts (synthetic peers)", () => {
             expect(journal.map((control) => control.action)).toEqual(
               harness === "codex" ? [] : ["steer-now"],
             );
+            expect(events.filter((event) => event._tag === "steer.taken")).toEqual([
+              { _tag: "steer.taken", steerId: "6f1d2c3b-9a8e-4f70-8d61-5c4b3a291807" },
+            ]);
             yield* session.close();
             expect(peer.stderr()).toBe("");
           }),

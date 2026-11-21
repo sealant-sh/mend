@@ -203,6 +203,7 @@ describe.skipIf(postgres.skip)("a message whose commit acknowledgement was lost"
         expect(steers).toHaveLength(1);
         expect(steers[0]?.params).toEqual({
           threadId: "thread-1",
+          clientUserMessageId: receipt._tag === "Steer" ? receipt.steer.id : null,
           expectedTurnId: "native",
           input: [{ type: "text", text: input.input }],
         });
