@@ -165,6 +165,14 @@ Mend takes a checkpoint when a session starts, at each turn boundary, when a rev
 proof artifact is captured, and when you choose `Mark checkpoint`. The first one, the worktree's
 base state, anchors the chain.
 
+The change's owner can go back to a checkpoint, from a checkpoint's line in the conversation or from
+the Change tab's range picker. Mend first saves the files as they are as a new checkpoint, then puts
+the worktree's files back to how they were at the one you picked, and takes one more checkpoint
+after. Going back to the saved checkpoint undoes it. Tracked files and untracked files that aren't
+ignored go back; ignored files, the branch and its commits stay as they are. Every session in the
+worktree shows the line `Went back to checkpoint N`, and each agent reads a note about it ahead of
+your next message. Mend refuses while an agent in the worktree is working.
+
 ### Landing
 
 A landing is one push of a change to origin, plus its pull request when origin is on GitHub,

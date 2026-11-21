@@ -1,6 +1,7 @@
 // What the conversation shows of checkpoints (SLNT-1200): at most one line per turn, after its
 // reply, only when a file changed during the turn, and none above the first message. Hovering the
-// line, or pressing or tapping it, says what Mend saved and offers Show changes and Open in Record.
+// line, or pressing or tapping it, says what Mend saved and offers Show changes, Open in Record and,
+// to the session's owner, Go back to this checkpoint….
 // Run the CLI batch first, once per stack: three real `mend run` sessions in the worktree
 // `ckpt-turns`, one after another. The first writes two files, the second only reads them, the
 // third changes one. Each takes its real checkpoints: when it starts and when it ends.
@@ -254,9 +255,10 @@ export default async ({ page, web, capture, note }) => {
     "NOTES.md",
     "Show changes",
     "Open in Record",
+    // The session's owner can go back to it (SLNT-1259; recipes/go-back.mjs goes back).
+    "Go back to this checkpoint…",
   ])
     if (!words.includes(want)) throw new Error(`the details read "${words}", without "${want}"`);
-  if (/go back|restore|undo/i.test(words)) throw new Error(`the details promise "${words}"`);
   note(`hovering the line opens: "${words}"`);
   await settled();
   for (const theme of ["light", "dark"]) {

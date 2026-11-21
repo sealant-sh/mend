@@ -18,6 +18,13 @@ phone's Review and Diff screens.
 - `review-change-comment` comments on the change as a whole.
 - `review-comment-state` accepts, dismisses, marks addressed or reopens a comment.
 - `review-checkpoint-mark` takes a checkpoint by hand from the session page.
+- `review-go-back` puts the worktree's files back to a checkpoint (SLNT-1259), from a checkpoint
+  line's details in the conversation or `Go back to a checkpoint…` in the Change tab's range picker.
+  Mend saves the files first as a checkpoint (trigger `restore-save`), puts them back, and takes one
+  after (`restore`); the conversation of every session in the worktree shows
+  `Went back to checkpoint N`, whose details offer going back to the saved one. Refused while an
+  agent in the worktree works; each agent reads a note about it ahead of its next message. The
+  change's owner only.
 - `review-pinned` keeps the patch pinned and says so when the worktree changed after the review
   opened.
 - `review-machine-pass` asks Mend to read the change (`Read this change`), draft suggestions
@@ -95,6 +102,12 @@ Preconditions:
   dismissed, its `Reopen` is on its card in the diff.
 - **Mark a checkpoint.** On the session page, open `More session actions` and choose
   `Mark a checkpoint`. It reads `Marking a checkpoint…`, then a line `#<n> user-mark` is added.
+- **Go back.** `recipes/go-back.mjs` with its CLI batches, as its header says: the dialog
+  `Go back to a checkpoint?` from the range picker, the toast
+  `Went back to checkpoint N. Your files from before are checkpoint M.`, the line
+  `Went back to checkpoint N` and its `Go back to checkpoint M…`, each read back from the stack's
+  `sessions.detail` `restores` and `worktrees.sliceFiles`. The note to the agent needs a real turn
+  (flows.md `start-session.go-back`).
 - **Pinned slice.** Reload the review. Run `await page.goto("<web>/changes/<change id>")`. The same
   tab reuses the slice it opened: the `<sha A> → <sha B>` line is unchanged. When the worktree has
   moved since, the page says
