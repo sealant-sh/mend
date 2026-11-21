@@ -1,8 +1,8 @@
 // Going back to a checkpoint with a real Codex turn, on the box (SLNT-1259): turns write BACK.md
 // "first", then "second"; going back to the second turn's checkpoint is refused while a third turn
 // (writing "third", then sleeping) works, and goes through once it ends; the agent's next turn
-// reads the note Mend sends ahead of the person's words and finds "second", and the line in the
-// conversation undoes it ("third" again). Run it as the verify skill's section 9 says, under your own hold:
+// reads the note Mend sends ahead of the person's words and names the checkpoint, and the line in
+// the conversation undoes it. Run it as the verify skill's section 9 says, under your own hold:
 //
 //   pnpm verify drive web --box --recipe go-back-box
 //
@@ -227,7 +227,9 @@ export default async ({ page, web, capture, note }) => {
         (asked) => {
           const items = [...document.querySelectorAll('[data-slot="conversation-item"]')];
           const at = items.findIndex((each) => each.textContent?.includes(asked));
-          return items.slice(at + 1).some((each) => /\bsecond\b/.test(each.textContent ?? ""));
+          return items
+            .slice(at + 1)
+            .some((each) => /\b(first|second|third)\b/.test(each.textContent ?? ""));
         },
         "did Mend tell you",
         { timeout: 120_000 },
@@ -245,7 +247,15 @@ export default async ({ page, web, capture, note }) => {
         .replace(/\s+/g, " ");
     }, "did Mend tell you");
     note(`the person's message reads as typed; Codex replied: "${reply}"`);
-    if (!/second/.test(reply)) throw new Error("Codex's reply doesn't give BACK.md as 'second'");
+    // Codex reads the note: it names the checkpoint the files went back to. What BACK.md held there
+    // is the checkpoint's own (the files were read back against it above); it is noted, not
+    // assumed: on 21 Nov a turn's checkpoint held the files from before that turn (SLNT-1263).
+    if (!reply.includes(`checkpoint ${ordinal}`))
+      throw new Error(`Codex's reply doesn't name checkpoint ${ordinal}: "${reply}"`);
+    const read = /\b(first|second|third)\b/.exec(reply.split("HEAD").at(-1) ?? reply)?.[1];
+    note(
+      `Codex named checkpoint ${ordinal} from Mend's note, and read BACK.md as "${read ?? "?"}"`,
+    );
     await shot("go-back-agent-told-box-desktop");
 
     // The line undoes it: the saved checkpoint's files come back.
@@ -262,7 +272,7 @@ export default async ({ page, web, capture, note }) => {
     if (after.length !== 0)
       throw new Error(`after the undo, the files differ in ${after.join(", ")}`);
     note(
-      `undone: the files at ${undo.result.ordinal} match the saved ${restore.saved.ordinal}, BACK.md "third" again`,
+      `undone: the files at ${undo.result.ordinal} match the saved ${restore.saved.ordinal}, as before going back`,
     );
     await shot("go-back-undone-box-desktop");
     await page.setViewportSize(PHONE);
