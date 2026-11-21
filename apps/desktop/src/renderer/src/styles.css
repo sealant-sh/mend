@@ -4,7 +4,7 @@
 @import "@mend/ui/styles/fonts.css";
 @import "@mend/ui/styles/globals.css";
 
-@source "../../../../packages/ui/src";
+@source "../../../../../packages/ui/src";
 
 .desktop-drag {
   -webkit-app-region: drag;

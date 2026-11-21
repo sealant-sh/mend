@@ -90,7 +90,7 @@ export default async ({ page, web, capture, note, account }) => {
   await page.waitForTimeout(200);
 
   // 2. Unreachable address keeps the person on Connect with inline alert.
-  await input.fill("http://127.0.0.1:1");
+  await input.fill("http://127.0.0.1:41999");
   await page.getByRole("button", { name: "Connect" }).click();
   await page.getByText("Couldn't connect.", { exact: true }).waitFor();
   await page.getByText("Connection refused", { exact: false }).waitFor();
@@ -120,6 +120,7 @@ export default async ({ page, web, capture, note, account }) => {
     }
   }
 
+  await page.getByRole("navigation").first().waitFor({ timeout: 20_000 });
   const bridge = await page.evaluate(() => ({
     hasDesktop: typeof window.mendDesktop === "object" && window.mendDesktop !== null,
     hasShell: typeof window.mendShell !== "undefined",
@@ -165,7 +166,7 @@ export default async ({ page, web, capture, note, account }) => {
     await proxy.stop();
     await page.reload().catch(() => undefined);
     await page.getByRole("heading", { name: "Can't reach Mend" }).waitFor({ timeout: 15_000 });
-    await page.getByText(proxyUrl, { exact: true }).waitFor();
+    await page.getByRole("main").getByText(proxyUrl, { exact: true }).waitFor();
     await page
       .getByText("Reconnecting… Mend will reload as soon as the server answers.", { exact: true })
       .waitFor();

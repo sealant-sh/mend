@@ -93,7 +93,7 @@ try {
 
   // 2. Unreachable server shows an inline error without navigating away.
   const input = window.getByLabel("Server address");
-  await input.fill("http://127.0.0.1:1");
+  await input.fill("http://127.0.0.1:41999");
   await window.getByRole("button", { name: "Connect" }).click();
   await window.getByText("Couldn't connect.", { exact: true }).waitFor({ timeout: 15_000 });
   console.log("PASS unreachable server shows inline error");
