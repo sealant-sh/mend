@@ -236,13 +236,25 @@ export const matchesFilters = (
   (filters.projectId === null || row.project.id === filters.projectId) &&
   (!filters.mine || viewerId === null || row.session.ownerUserId === viewerId);
 
-/** Rows by group. Snoozed rows come back soonest first; the others keep newest activity first. */
+/**
+ * Running sessions by when they were made, newest first. Not by activity: a running session's
+ * `updatedAt` moves on every status and activity, so two running sessions swapped places each
+ * time either did something. A row moves only when it changes group.
+ */
+const newestMadeFirst = (a: InboxRow, b: InboxRow): number =>
+  b.session.createdAt.getTime() - a.session.createdAt.getTime() ||
+  (a.session.id < b.session.id ? -1 : a.session.id > b.session.id ? 1 : 0);
+
+/**
+ * Rows by group. Running rows stay in the order they were made; Snoozed rows come back soonest
+ * first; the others keep newest activity first.
+ */
 export const groupRows = (
   rows: ReadonlyArray<InboxRow>,
 ): Readonly<Record<InboxGroup, ReadonlyArray<InboxRow>>> => ({
   waiting: rows.filter((row) => row.group === "waiting"),
   review: rows.filter((row) => row.group === "review"),
-  running: rows.filter((row) => row.group === "running"),
+  running: rows.filter((row) => row.group === "running").toSorted(newestMadeFirst),
   snoozed: rows
     .filter((row) => row.group === "snoozed")
     .toSorted((a, b) => (a.snoozedUntil?.getTime() ?? 0) - (b.snoozedUntil?.getTime() ?? 0)),

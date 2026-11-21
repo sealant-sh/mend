@@ -399,9 +399,8 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     "a drag from line 12 to 15 opened 'lines 12–15'; the comment saved for real and shows under line 15",
   );
 
-  // From the keyboard: a file's "…", Comment on lines…, then the lines.
-  await button("Actions for src/payments/charge.test.ts").click();
-  await visible(page.getByRole("menuitem", { name: "Comment on lines…" })).click();
+  // From the keyboard: a file's Comment on lines… button (no "…" for one action), then the lines.
+  await button("Comment on lines of src/payments/charge.test.ts…").click();
   const form = visible(
     page.getByRole("form", { name: "Comment on lines of src/payments/charge.test.ts" }),
   );
@@ -417,7 +416,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await keyBox.press("Control+Enter");
   await comment("Also check that a 409").waitFor({ timeout: 30_000 });
   note(
-    "keyboard: the file's '…' > 'Comment on lines…', lines 5 to 6, Ctrl+Enter saved it for real",
+    "keyboard: the file's 'Comment on lines…' button, lines 5 to 6, Ctrl+Enter saved it for real",
   );
 
   // review-change-comment: the whole change, from the column.

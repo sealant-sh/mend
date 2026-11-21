@@ -2067,14 +2067,42 @@ lane changed.
   Projects row and a project's Sessions row away from the name; the session header's and Settings'
   breadcrumbs.
 - **See:** no line on the sidebar's edge at rest, in light or dark, and a short handle while pointed
-  at; every focus ring in both sidebars and the two tables whole; `Open project` right after
-  `Open session`, opening the project; each row opens its project or session; the project's name in
-  a session's header and a project settings page's breadcrumb opens the project.
+  at; every focus ring in both sidebars and the two tables whole; `Open project` first in a session
+  row's menus and no `Open session` (a click on the row opens it), opening the project; each row
+  opens its project or session; the project's name in a session's header and a project settings
+  page's breadcrumb opens the project.
 - **Mode:** `scripted` (recipes/new-web-polish.mjs)
 - **Box-only:** no
 - **Box:** after cut-over
 - **Areas:** `apps/web/src/components/app-sidebar.tsx`, `apps/web/src/components/row-actions.tsx`,
   `apps/web/src/lib/row-link.ts`, `apps/web/src/components/workspace/workspace-header.tsx`
+
+### now-and-sessions.new-web-second-pass
+
+- **Map:** now-and-sessions.md `inbox-groups`, `now-menus`, `rail`; adopt-project.md
+  `projects-directory`
+- **Needs:** either; no turn; CLI and web; two sessions that keep running
+- **Do:** Drive the recipe `new-web-second-pass` (after its CLI batch
+  `new-web-second-pass-sessions.json`): a project's tabs, the Record view's filters and a phone
+  tile's strip; every picture in How Mend fits together, desktop and phone; the sidebar's edge
+  dragged toward the page, dragged back, dragged outward while open, and clicked; Running while each
+  read of the inbox says the other session worked last; a session row's right-click menu and "…" in
+  the sidebar and on the project page; a skill's header, and its Remove skill button. On a machine
+  with classic scrollbars (Linux or Windows Chrome), also look at a project's tabs.
+- **See:** no row of tabs scrolls up and down or draws a scrollbar; every picture has room for what
+  it draws, with even padding round the two sidebar rows; a drag from the edge toward the page folds
+  the sidebar, outward opens it, outward on an open sidebar does nothing, and a click folds it;
+  Running stays newest made first; no `Open session` in a row's menus, and a click on the row opens
+  the session; a skill's header has Edit skill and a red Remove skill button and no "…", and the
+  button asks before it removes.
+- **Mode:** `scripted` (recipes/new-web-second-pass.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `packages/ui/src/styles/globals.css`,
+  `apps/web/src/components/project/project-frame.tsx`,
+  `apps/web/src/components/workspace/phone-tab-strip.tsx`,
+  `apps/web/src/components/project/session-actions.tsx`,
+  `apps/web/src/components/skills/skill-panel.tsx`
 
 ### now-and-sessions.new-web-sheet-stop-setup
 

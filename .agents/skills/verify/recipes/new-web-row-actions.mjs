@@ -14,9 +14,12 @@ const PHONE = { width: 390, height: 844 };
 const RUNNING = "row-running";
 const REVIEW = "row-review";
 const RENAMED = "Row actions renamed";
-const MENU_ITEMS = ["Open session", "Open project", "Snooze", "Mark done", "Rename", "Copy link"];
-/** The workspace's actions and the phone app's Approve, which a session row's menu never holds. */
-const NOT_IN_MENU = ["Copy branch name", "Land…", "Approve…", "Approve"];
+const MENU_ITEMS = ["Open project", "Snooze", "Mark done", "Rename", "Copy link"];
+/**
+ * The workspace's actions and the phone app's Approve, which a session row's menu never holds, and
+ * Open session: a click on the row opens it (SLNT-1229).
+ */
+const NOT_IN_MENU = ["Copy branch name", "Land…", "Approve…", "Approve", "Open session"];
 const REFUSAL = "The verify recipe refused this on purpose.";
 const pad = (n) => String(n).padStart(2, "0");
 
@@ -159,7 +162,7 @@ export default async ({ page, web, capture, note }) => {
   const more = await moreButton("Running", RUNNING);
   await capture("row-hover-desktop-light");
   await more.click();
-  await menuItem("Open session").waitFor();
+  await menuItem("Open project").waitFor();
   const names = await menuNames();
   for (const name of MENU_ITEMS)
     if (!names.some((each) => each.startsWith(name))) throw new Error(`the menu lacks ${name}`);
@@ -210,7 +213,7 @@ export default async ({ page, web, capture, note }) => {
 
   // Rename in place, from the right-click menu (frame 5O6d7RDIIl): Enter saves.
   await row("Running", RUNNING).click({ button: "right" });
-  await menuItem("Open session").waitFor();
+  await menuItem("Open project").waitFor();
   const contextNames = await menuNames();
   if (JSON.stringify(contextNames) !== JSON.stringify(names))
     throw new Error(`the right-click menu reads ${contextNames.join(" | ")}`);
@@ -277,7 +280,7 @@ export default async ({ page, web, capture, note }) => {
   await menuItem("Mark done").click();
   await row("Done", REVIEW).waitFor();
   await (await moreButton("Done", REVIEW)).click();
-  await menuItem("Open session").waitFor();
+  await menuItem("Open project").waitFor();
   const doneNames = await menuNames();
   await closeMenu();
   // A row in Done because its session ended, not marked by hand, has no mark to take back.
@@ -287,14 +290,14 @@ export default async ({ page, web, capture, note }) => {
     .first();
   const endedTitle = (await endedRow.locator("span").first().innerText()).trim();
   await (await moreButton("Done", endedTitle)).click();
-  await menuItem("Open session").waitFor();
+  await menuItem("Open project").waitFor();
   const endedNames = await menuNames();
   if (endedNames.some((each) => each.startsWith("Mark not done")))
     throw new Error(`a row done by its status offers Mark not done: ${endedNames.join(" | ")}`);
   note(`a row in Done because it ended (${endedTitle}) reads ${endedNames.join(" | ")}`);
   await closeMenu();
   await (await moreButton("Done", REVIEW)).click();
-  await menuItem("Open session").waitFor();
+  await menuItem("Open project").waitFor();
   if (doneNames.some((each) => each.startsWith("Mark done") || each.startsWith("Snooze")))
     throw new Error(`a Done row's menu reads ${doneNames.join(" | ")}`);
   await menuItem("Mark not done").click();
@@ -305,12 +308,11 @@ export default async ({ page, web, capture, note }) => {
     `inbox-snooze-settle: in Done the menu reads ${doneNames.join(" | ")}; Mark not done put it back`,
   );
 
-  // Open session opens the session's page.
+  // A click on the row opens the session's page: its menu has no Open session.
   const reviewRowId = await row("To review", REVIEW).getAttribute("data-session-id");
-  await (await moreButton("To review", REVIEW)).click();
-  await menuItem("Open session").click();
+  await row("To review", REVIEW).click();
   await page.waitForURL(new RegExp(`/sessions/${reviewRowId}$`));
-  note("Open session opened /sessions/<id>, the session's page");
+  note("a click on the row opened /sessions/<id>, the session's page");
   await open("/");
   await showAll("To review");
 
@@ -350,7 +352,7 @@ export default async ({ page, web, capture, note }) => {
   });
   await row("To review", THEIRS).waitFor();
   await (await moreButton("To review", THEIRS)).click();
-  await menuItem("Open session").waitFor();
+  await menuItem("Open project").waitFor();
   const theirNames = await menuNames();
   if (theirNames.some((each) => each.startsWith("Rename")))
     throw new Error(`someone else's row offers Rename: ${theirNames.join(" | ")}`);

@@ -160,7 +160,7 @@ export function TabLine({
   const location = useLocation({ select: (place) => place.pathname.replace(/\/+$/, "") });
   const pathname = shown ?? location;
   return (
-    <nav aria-label={`${name} project`} className={cn("flex gap-6 overflow-x-auto", className)}>
+    <nav aria-label={`${name} project`} className={cn("flex scroll-strip gap-6", className)}>
       {tabs.map((tab) => {
         const current =
           pathname === tab.path || (tab.nested === true && pathname.startsWith(`${tab.path}/`));
@@ -172,7 +172,7 @@ export function TabLine({
             className={cn(
               "relative flex shrink-0 items-center gap-1.5 py-3 text-prose whitespace-nowrap outline-none focus-visible:rounded-sm focus-visible:ring-3 focus-visible:ring-ring/50 max-lg:min-h-11 max-lg:text-lead",
               current
-                ? "font-medium text-foreground after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:rounded-full after:bg-primary"
+                ? "font-medium text-foreground after:absolute after:inset-x-0 after:bottom-0 after:h-0.5 after:rounded-full after:bg-primary"
                 : "text-muted-foreground hover:text-foreground",
             )}
           >

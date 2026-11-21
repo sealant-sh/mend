@@ -155,7 +155,7 @@ export function RecordBody({ place }: { readonly place: ViewPlace }) {
         >
           <TabsList
             aria-label="Show"
-            className="h-8 max-w-full overflow-x-auto max-lg:h-11 data-horizontal:h-8 max-lg:data-horizontal:h-11"
+            className="h-8 max-w-full scroll-strip max-lg:h-11 data-horizontal:h-8 max-lg:data-horizontal:h-11"
           >
             {RECORD_FILTERS.map((option) => (
               <TabsTrigger

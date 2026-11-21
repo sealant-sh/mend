@@ -109,8 +109,11 @@ function Picture({
   readonly children: ReactNode;
 }) {
   const box = useRef<HTMLDivElement>(null);
+  // The hairline sits outside the drawing (`box-content`), so it hides none of it: drawn inside,
+  // it took 2px off every framed picture's height and width.
+  const hairlines = framed ? 2 : 0;
   const room = useWidth(box);
-  const scale = room === 0 ? most : Math.min(most, room / width);
+  const scale = room === 0 ? most : Math.min(most, (room - hairlines) / width);
   return (
     <div ref={box} className={cn("w-full min-w-0", className)}>
       <div
@@ -118,7 +121,7 @@ function Picture({
         inert
         className={cn(
           "relative overflow-hidden bg-background select-none",
-          framed && "rounded-lg border",
+          framed && "box-content rounded-lg border",
         )}
         style={{ width: width * scale, height: height * scale }}
       >
@@ -338,7 +341,7 @@ function ProjectPicture({ names }: { readonly names: FitsNames }) {
 /** Two sessions in the worktree, as the sidebar lists them (`SidebarRow`). */
 function SessionsPicture({ names }: { readonly names: FitsNames }) {
   return (
-    <Picture width={300} height={108} most={1}>
+    <Picture width={300} height={116} most={1}>
       <PictureSidebar>
         <div className="bg-sidebar p-1.5">
           <SidebarMenu>
@@ -366,7 +369,7 @@ function SessionsPicture({ names }: { readonly names: FitsNames }) {
 /** The Workspace group of a session's Details tab. */
 function WorkspacePicture({ wide }: { readonly wide: boolean }) {
   return (
-    <Picture width={wide ? 460 : 380} height={110} most={1}>
+    <Picture width={wide ? 460 : 380} height={112} most={1}>
       <div className="px-4 text-row tabular-nums">
         <Group title="Workspace">
           <dl className="grid gap-1.5">
@@ -642,7 +645,7 @@ function SessionScreen({ names, phone, place }: ScreenProps) {
             which shows the workspace.
           </Callout>
         </ol>
-        <Picture width={390} height={110} most={1}>
+        <Picture width={390} height={112} most={1}>
           <div className="relative p-2">
             <PromptInput
               size="touch"

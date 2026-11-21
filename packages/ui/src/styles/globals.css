@@ -310,3 +310,18 @@
     font-variant-numeric: tabular-nums;
   }
 }
+
+/*
+ * A row that scrolls sideways (a line of tabs): never up and down, and with no scrollbar. A
+ * sideways scroller scrolls up and down as well once anything in it pokes out below (an active
+ * tab's underline), and Linux and Windows draw both scrollbars over the row.
+ */
+@utility scroll-strip {
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

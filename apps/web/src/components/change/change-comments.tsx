@@ -1,13 +1,8 @@
 import { Banner } from "@mend/ui/components/banner";
 import { Button } from "@mend/ui/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@mend/ui/components/ui/dropdown-menu";
 import { Input } from "@mend/ui/components/ui/input";
 import { Label } from "@mend/ui/components/ui/label";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@mend/ui/components/ui/tooltip";
 import { cn } from "@mend/ui/lib/utils";
 import type { DiffLineAnnotation } from "@pierre/diffs";
 import {
@@ -18,7 +13,7 @@ import {
   useSuspenseQuery,
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { EllipsisIcon, MessageSquarePlusIcon } from "lucide-react";
+import { MessageSquarePlusIcon } from "lucide-react";
 import { type ReactNode, useState } from "react";
 
 import { Overlay } from "#/components/projects/overlay";
@@ -565,27 +560,25 @@ export function useChangeComments({
     review.files
       .find((file) => (file.newPath ?? file.oldPath) === path)
       ?.hunks.find((hunk) => hunk.newLines > 0)?.newStart ?? 1;
+  // Its one action as its own button: a "…" that held only this was a menu for one item (SLNT-1229).
   const tools = (file: ChangeFile): ReactNode =>
     file.binary ? null : (
-      <DropdownMenu>
-        <DropdownMenuTrigger
+      <Tooltip>
+        <TooltipTrigger
           render={
             <Button
               variant="ghost"
               size={touch ? "icon-touch" : "icon-sm"}
-              aria-label={`Actions for ${file.path}`}
+              aria-label={`Comment on lines of ${file.path}…`}
               className="text-muted-foreground"
+              onClick={() => setLineForm(file.path)}
             >
-              <EllipsisIcon aria-hidden />
+              <MessageSquarePlusIcon aria-hidden />
             </Button>
           }
         />
-        <DropdownMenuContent align="end" width="sm">
-          <DropdownMenuItem onClick={() => setLineForm(file.path)}>
-            Comment on lines…
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+        <TooltipContent side="bottom">Comment on lines…</TooltipContent>
+      </Tooltip>
     );
   const under = (file: ChangeFile, also: ReactNode): ReactNode => (
     <>
