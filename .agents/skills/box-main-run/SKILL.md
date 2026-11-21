@@ -63,12 +63,13 @@ SHA=$(git rev-parse HEAD); TAG=main-${SHA:0:12}; E=$STATE/runs/$TAG
   with Boat (Lanes; SLNT-1223). This machine has four Boat slots (`pnpm verify vm list`, SLNT-1218),
   shared with other checks. At 1, only lane A has Boat and carries every Boat flow, as on 20 Nov.
 - `$VMS/box` holds the run's saved data: `world.sql`, `world.store.tgz` (the store directories that
-  data names), `mend-git.tgz` (the git service's repositories) and `mend-garage.tgz` (the blob
-  store, where sessions' captures live), each with the copy before it as `world.prev.sql`,
-  `world.prev.store.tgz`, `mend-git.prev.tgz` and `mend-garage.prev.tgz`. Beside them sit VM 131's
-  install identity and Boat key, which the data is sealed with. Never print, copy out or commit
-  anything from `$VMS`. Never restore a `.prev` copy unless the newest is lost: its agent logins
-  have been spent by the newer one, so expect `reconnect needed`.
+  data names), `mend-git.tgz` (the git service's repositories), `mend-garage.tgz` (the blob store,
+  where sessions' captures live) and `mend-boat-state.tgz` (the build journals of the Boat images
+  the data names), each with the copy before it as `world.prev.sql`, `world.prev.store.tgz`,
+  `mend-git.prev.tgz`, `mend-garage.prev.tgz` and `mend-boat-state.prev.tgz`. Beside them sit VM
+  131's install identity and Boat key, which the data is sealed with. Never print, copy out or
+  commit anything from `$VMS`. Never restore a `.prev` copy unless the newest is lost: its agent
+  logins have been spent by the newer one, so expect `reconnect needed`.
 - VM 130 (`alpha.mend.run`) is the owner's live server and VM 131 (`mend.yiannisp.dev`) the owner's
   preview server: nothing here reaches either. The preview workflow's `deploy` input targets VM 130;
   leave that input unset. Push no tag. Never ssh to `acer-laptop`.
@@ -481,11 +482,11 @@ Everything here runs against lane A's copy, by lane A's names.
    ```
 
    It refuses data carrying a migration `origin/main` lacks, then, with Mend stopped, holds the
-   logins against refresh, dumps the databases and store, archives the git service and the blob
-   store, and moves the four into `$VMS/box` once all four are whole, keeping the copies before as
-   `*.prev.*`. A failed save leaves `$VMS/box` as it was: run it once more, and when it fails again
-   keep lane A's copy running, file Fix Now and say so in the report. Do not delete that copy: it
-   holds the newest logins. Record `saved` in the ledger. Then
+   logins against refresh, dumps the databases and store, archives the git service, the blob store
+   and Boat's build journals, and moves the five into `$VMS/box` once all five are whole, keeping
+   the copies before as `*.prev.*`. A failed save leaves `$VMS/box` as it was: run it once more, and
+   when it fails again keep lane A's copy running, file Fix Now and say so in the report. Do not
+   delete that copy: it holds the newest logins. Record `saved` in the ledger. Then
    `node .agents/skills/box-main-run/logins.mjs` reads the saved logins: every line `held`.
 
 5. `pnpm verify vm down <lane A's slot>`. Check `pnpm verify vm list` shows none of the ledger's

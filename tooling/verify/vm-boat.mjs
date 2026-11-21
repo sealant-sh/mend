@@ -359,16 +359,15 @@ export const slotRemove = async (root, slot, { bootBare, step, copyRunning }) =>
  * Boat on a copy holding slot `slot`: Tailscale up from the slot's state (no key), the copy's own
  * Funnel on 8443 and 10000 to the endpoints setup publishes on the VM's loopback, then setup with
  * VM 131's own Boat key on stdin and VM 131's deployment name (which the loaded data's sealant keeps),
- * and the box's Boat build journals put into the copy's Boat state volume. Why the shared name is
- * safe, and why the resource gateway stays off: docs/operations/preview-builds.md, "Check VMs".
+ * and the Boat build journals the master was built with (`vm build` copies in the saved ones) put into
+ * the copy's Boat state volume. Why the shared name is safe, and why the resource gateway stays off:
+ * docs/operations/preview-builds.md, "Check VMs".
  */
 export const boatOn = (root, sshArgs, runPhase, slot, dir) => {
   const box = join(root, "box");
   const key = join(box, "boat.key");
-  const journals = join(box, "mend-boat-state.tgz");
-  for (const file of [key, journals])
-    if (!existsSync(file))
-      return { error: `no ${file}: pnpm verify vm build --from-box copies it from VM 131` };
+  if (!existsSync(key))
+    return { error: `no ${key}: pnpm verify vm build --from-box copies it from VM 131` };
   const up = tailnetUp(root, sshArgs, runPhase, slot);
   if (up.error) return { error: `Tailscale on slot ${slot}: ${up.error}` };
   // The slot's certificate should be the one it had last time: Let's Encrypt is asked again only
@@ -423,25 +422,23 @@ export const boatOn = (root, sshArgs, runPhase, slot, dir) => {
   const answered = (out.stdout ?? "")
     .split("\n")
     .filter((line) => /Boat VMs reach this server/.test(line) && /answered/.test(line));
-  const put = spawnSync(
-    "ssh",
-    [
-      "-o",
-      "BatchMode=yes",
-      ...sshArgs,
-      `set -e
-umask 077
-cat > /root/main-run/mend-boat-state.tgz
-d=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-boat-state)
-docker stop mend-mend-1 >/dev/null
-rm -f "$d"/native-builds/*.lock
-tar -xzpf /root/main-run/mend-boat-state.tgz --numeric-owner -C "$d"
-docker start mend-mend-1 >/dev/null`,
-    ],
-    { input: readFileSync(journals), maxBuffer: 16 * 1024 * 1024 },
-  );
-  if (put.status !== 0)
-    return { error: `the box's Boat build journals: ${lastLine(String(put.stderr ?? ""))}` };
+  // A master built before SLNT-1252 carries no journals: the copy gets the saved ones, which are
+  // the journals of the data that master was built from only until the next `vm save`.
+  const journals = join(box, "mend-boat-state.tgz");
+  const carried = guest("test -s /root/main-run/mend-boat-state.tgz").status === 0;
+  if (!carried) {
+    if (!existsSync(journals))
+      return { error: `the master carries no Boat build journals, and there is no ${journals}` };
+    const put = spawnSync(
+      "ssh",
+      ["-o", "BatchMode=yes", ...sshArgs, "umask 077; cat > /root/main-run/mend-boat-state.tgz"],
+      { input: readFileSync(journals), maxBuffer: 16 * 1024 * 1024 },
+    );
+    if (put.status !== 0)
+      return { error: `the saved Boat build journals: ${lastLine(String(put.stderr ?? ""))}` };
+  }
+  const restored = runPhase("boat-journals", []);
+  if (restored.code !== 0) return { error: `the Boat build journals: ${lastLine(restored.out)}` };
   // Setup probes the two addresses once, often before Funnel answers on a name just brought up (and
   // Mend publishes the session endpoint only once setup turns Boat on): the copy is ready when it does.
   const answering = runPhase("tailnet-wait", [up.dnsName]);
@@ -454,6 +451,7 @@ docker start mend-mend-1 >/dev/null`,
     deployment,
     dnsName: up.dnsName,
     certSeen,
+    journals: `${lastLine(restored.out).replace(/^vm-provision: /, "")}${carried ? "" : " (the saved ones: the master carries none)"}`,
   };
 };
 

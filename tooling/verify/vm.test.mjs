@@ -25,6 +25,7 @@ import {
   vmDown,
   vmList,
   vmSave,
+  SAVED,
   vmUp,
 } from "./vm.mjs";
 
@@ -325,6 +326,17 @@ test("vm save refuses a copy that is not running, and leaves the saved data as i
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("vm save keeps Boat's build journals with the data, and the ones before as .prev", () => {
+  const boat = SAVED.find(({ name }) => name === "mend-boat-state.tgz");
+  assert.ok(boat, "the Boat state is saved");
+  assert.equal(boat.prev, "mend-boat-state.prev.tgz");
+  assert.match(boat.read, /mend_mend-boat-state/);
+  assert.match(boat.read, /--exclude='\*\.lock'/);
+  // A copy that never set Boat up still has the journals its master was built with.
+  assert.match(boat.read, /else\n {2}cat \/root\/main-run\/mend-boat-state\.tgz/);
+  assert.equal(new Set(SAVED.map(({ prev }) => prev)).size, SAVED.length);
 });
 
 test("a saved copy's logins are held against refresh by a claim no sweeper reaches", () => {
