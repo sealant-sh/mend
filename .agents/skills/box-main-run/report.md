@@ -40,7 +40,9 @@ Check VMs:
 - Since <lastCommit:12>: <n> commits, PRs #a, #b, ….
 - Flows: <n> seen, <n> failed, <n> not run (<reasons with counts>); <n> after cut-over.
 - Logins: Codex <refreshed on lane A at <UTC> · held | not due (expires <UTC>) · held>; Claude <…>.
-  Saved: `vm save` <UTC>, <sizes>. Next master: <version>, built <UTC>, or why not.
+  While Claude's reads `invalid · refused`:
+  `Claude refused by the provider, left so by the owner's choice (SLNT-1219)`, and nothing filed for
+  it. Saved: `vm save` <UTC>, <sizes>. Next master: <version>, built <UTC>, or why not.
 - Free on lane A's `/`: <free before> → <free after>.
 
 | Flow           | Lane | Mode     | By        | Min | Outcome         | What was seen                                  |

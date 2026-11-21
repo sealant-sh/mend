@@ -1612,9 +1612,10 @@ lane changed.
 - **Needs:** no session; no turn; CLI and web; none
 - **Do:** `M accounts`; Settings → Connected accounts read only; `M agent-logins`, then
   `M agent-logins selected` and `M agent-logins all` to restore it in the same flow.
-- **See:** `codex   connected · …`, `claude` and `github` each `connected` or `not connected`,
-  recorded as found; the web rows agree; `selected · …` after the change and `all · …` after the
-  restore.
+- **See:** `codex   connected · …`; `github` `connected` or `not connected`, and `claude`
+  `connected`, `not connected` or `reconnect needed · the provider refused the login · …` (the
+  checker's Claude login is refused, left so by the owner: SLNT-1219), each recorded as found; the
+  web rows agree; `selected · …` after the change and `all · …` after the restore.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web-old/src/`
@@ -2326,8 +2327,12 @@ lane changed.
   `M sessions` and `M sessions --project <p> --all --json` until both sessions settle.
 - **See:** `no live terminal · rejoining the open shell` and `from the shell`; `M stop <k8>` prints
   no `keeps running` line; while it saves, a `stopping` row with a `saving …` line and a `capture`
-  object with `"notSaved": false`; then both sessions settled. A drain that ends before the first
-  read is reported as not seen.
+  object with `"notSaved": false`; then both sessions settled. A save already done at the first read
+  is what a person sees too: `M stop <k8>` printed
+  `saving · the workspace stops once nothing is pending`, and the first read lists both sessions
+  settled with a `capture` object with `"notSaved": false` and no `saving …` line. Record it as
+  seen, naming that read. A settled session whose `capture` reads `"notSaved": true`, or that has no
+  `capture`, is failed: nothing was saved.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `packages/sessions/`, `packages/store/`, `apps/api/src/`, `apps/cli/src/`
@@ -2951,8 +2956,10 @@ lane changed.
 - **Needs:** no session; no turn; CLI; none
 - **Do:** `M doctor`.
 - **See:** `✓ server` naming `$WEB · mend <version>`; `✓ signed in  token accepted`; `✓ sealant` and
-  `✓ codex … connected`; the `claude` and `github` lines each read `connected` or
-  `· … not connected`, recorded as found (claude was connected on 16 Nov); no `✗` line, exit `0`.
+  `✓ codex … connected`; the `github` line reads `connected` or `· … not connected`, and the
+  `claude` line `connected`, `· … not connected` or
+  `· claude reconnect needed · the provider refused the login`, each recorded as found (the
+  checker's Claude login is refused, left so by the owner: SLNT-1219); no `✗` line, exit `0`.
 - **Mode:** `scripted` (recipes/cli-reads.sh doctor.checklist)
 - **Box-only:** no
 - **Sample:** yes

@@ -11,8 +11,20 @@
 // Boat's resource gateway), the hold's own dump, and every workspace image: sealant's worker reaps
 // those itself, with its database's view of live workspaces and builds in flight
 // (packages/workspaces/src/worker/reap-workspace-images.ts in sealant).
+//
+// A preview deploy that takes no hold (scripts/preview-deploy.sh, SLNT-1251) makes the same choice
+// once it has deployed, on the box itself: `node box-tidy.mjs deploy <commit> <started>`, below. It
+// stands in for a hold of its own begun when the deploy started, so the image it just pulled and the
+// image of its commit are kept, and it removes nothing while a check's hold is in force: that check's
+// release tidies.
+
+import { pathToFileURL } from "node:url";
 
 export const HOLD = "/var/lib/mend-box-check/hold.json";
+/** A hold older than this has lapsed: a check that dies leaves its hold file behind. */
+export const HOLD_HOURS = 6;
+/** The tag a preview deploy tidies under: it holds nothing, so it guards on the hold file instead. */
+export const DEPLOY_TAG = "preview-deploy";
 
 const KEEP_PREVIEWS = 3;
 const KEEP_DUMPS = 10;
@@ -44,7 +56,8 @@ docker image ls -q --no-trunc | sort -u | xargs -r docker image inspect --format
   'image={{.Id}}|{{json .RepoTags}}|{{json .RepoDigests}}|{{.Created}}|{{.Metadata.LastTagTime}}|{{.Size}}|{{json (index .Config "Labels")}}'
 docker ps -aq --no-trunc | xargs -r docker inspect --format 'container={{.Image}}|{{.Name}}|{{.State.Status}}'
 echo "cache=$(curl -sf --unix-socket /var/run/docker.sock 'http://localhost/system/df?type=build-cache' | tr -d '\\n')"
-find ${BACKUPS} -maxdepth 1 -type f -name '*.sql' -printf 'dump=%T@|%s|%p\\n' 2>/dev/null
+# A box with no dumps has no ${BACKUPS}: that is no dumps, not a listing that failed.
+find ${BACKUPS} -maxdepth 1 -type f -name '*.sql' -printf 'dump=%T@|%s|%p\\n' 2>/dev/null || true
 `;
 
 const json = (text, fallback) => {
@@ -220,6 +233,28 @@ export const chooseTidy = ({ listing, hold, tag }) => {
   return { images, cache, dumps, kept };
 };
 
+/**
+ * What a preview deploy that took no hold removes once it has deployed: chooseTidy's choice, for a
+ * hold begun at `startedAt` naming `commit`. Refused while a check's hold is in force (younger than
+ * HOLD_HOURS, or unreadable); a lapsed hold's dump is kept as that check's own.
+ */
+export const chooseDeployTidy = ({ listing, hold, commit, startedAt }) => {
+  const none = { images: [], cache: [], dumps: [], kept: [] };
+  if (hold?.unreadable !== undefined)
+    return { ...none, refused: "the box's hold file could not be read" };
+  const age = hold ? ((listing.now ?? Date.now()) - (time(hold.at) ?? 0)) / 3_600_000 : null;
+  if (hold && age < HOLD_HOURS)
+    return {
+      ...none,
+      refused: `${hold.tag ?? "a check"} holds the box (${age.toFixed(1)} h); its release tidies it`,
+    };
+  return chooseTidy({
+    listing,
+    hold: { tag: DEPLOY_TAG, at: startedAt, head: commit, dump: hold?.dump },
+    tag: DEPLOY_TAG,
+  });
+};
+
 const gib = (bytes) => `${(bytes / 1024 ** 3).toFixed(1)} GiB`;
 
 /**
@@ -258,15 +293,20 @@ export const describeTidy = (choice) => {
 const quote = (text) => `'${text}'`;
 
 /**
- * The removal script for a choice: it refuses unless the hold file still names `tag`, and removes
- * only what the choice lists. `docker image rm` without -f, so Docker itself refuses an image a
- * container uses.
+ * The removal script for a choice: it refuses unless the hold file still names `tag` (for a deploy,
+ * unless the hold file is still what it was when the choice was made: `holdSha`, the sha256 of its
+ * contents, empty when there was none), and removes only what the choice lists. `docker image rm`
+ * without -f, so Docker itself refuses an image a container uses.
  */
-export const tidyScript = (choice, tag) => {
+export const tidyScript = (choice, tag, { holdSha } = {}) => {
   if (!SAFE_TAG.test(tag)) throw new Error(`refusing to tidy for an unexpected tag ${tag}`);
+  if (tag === DEPLOY_TAG && !/^[0-9a-f]{64}$/.test(holdSha ?? ""))
+    throw new Error("a deploy's tidy needs the sha256 of the hold file it chose with");
   const lines = [
     "set -u",
-    `grep -q '"tag":"${tag}"' ${HOLD} 2>/dev/null || { echo "refused=the hold is not ${tag}'s"; exit 9; }`,
+    tag === DEPLOY_TAG
+      ? `[ "$(cat ${HOLD} 2>/dev/null | sha256sum | cut -c1-64)" = '${holdSha}' ] || { echo "refused=a check took the box's hold since the choice"; exit 9; }`
+      : `grep -q '"tag":"${tag}"' ${HOLD} 2>/dev/null || { echo "refused=the hold is not ${tag}'s"; exit 9; }`,
     `echo "before=$(df -B1 --output=avail /var/lib/docker | tail -1 | tr -d ' ')"`,
   ];
   for (const image of choice.images) {
@@ -327,3 +367,65 @@ export const parseTidyRun = (text, listing) => {
       .map((record) => record.id);
   return { before, after, refused, removed, failed };
 };
+
+/** What a run removed of a choice, from parseTidyRun's names, with sizes for describeTidy. */
+export const goneOf = (choice, run, listing) => ({
+  images: choice.images.filter((image) => run.removed.images.includes(image.ref)),
+  cache: (listing.cache ?? []).filter((record) => run.removed.cache.includes(record.id)),
+  dumps: choice.dumps.filter((dump) => run.removed.dumps.includes(dump.path)),
+});
+
+const say = (line) => process.stdout.write(`preview-deploy: tidy: ${line}\n`);
+
+/**
+ * On the box, as root, after a preview deploy (scripts/preview-deploy.sh): lists the box, chooses
+ * with chooseDeployTidy and removes exactly that. Prints one `tidy: …` line; never throws, so a tidy
+ * that fails leaves the deploy as it stood.
+ */
+const deployTidy = async (commit, startedAt) => {
+  const { execFileSync } = await import("node:child_process");
+  const { readFileSync } = await import("node:fs");
+  const { createHash } = await import("node:crypto");
+  const bash = (script) =>
+    execFileSync("bash", ["-c", script], { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  try {
+    const listing = parseListing(bash(LIST_BOX));
+    let text = "";
+    try {
+      text = readFileSync(HOLD, "utf8");
+    } catch {
+      // No hold.
+    }
+    const hold = text === "" ? null : json(text, { unreadable: text.slice(0, 80) });
+    const choice = chooseDeployTidy({ listing, hold, commit, startedAt });
+    if (choice.refused) return say(`nothing removed: ${choice.refused}`);
+    if (choice.images.length + choice.cache.length + choice.dumps.length === 0)
+      return say(
+        `nothing to remove; ${listing.free === null ? "free space unknown" : `${gib(listing.free)} free`}`,
+      );
+    const holdSha = createHash("sha256").update(text).digest("hex");
+    let out = "";
+    try {
+      out = bash(tidyScript(choice, DEPLOY_TAG, { holdSha }));
+    } catch (error) {
+      out = String(error.stdout ?? "");
+    }
+    const run = parseTidyRun(out, listing);
+    say(
+      [
+        run.refused
+          ? `refused: ${run.refused}`
+          : `removed ${describeTidy(goneOf(choice, run, listing))}`,
+        ...run.failed.map((failure) => `could not remove ${failure.ref}: ${failure.why}`),
+        `free ${run.before === null ? "unknown" : gib(run.before)} before, ${run.after === null ? "unknown" : gib(run.after)} after`,
+      ].join("; "),
+    );
+  } catch (error) {
+    const why =
+      error.status === undefined ? String(error.message ?? error) : `bash exited ${error.status}`;
+    say(`failed, the deploy stands: ${why.split("\n")[0]}`);
+  }
+};
+
+if (process.argv[2] === "deploy" && import.meta.url === pathToFileURL(process.argv[1] ?? "").href)
+  await deployTidy(process.argv[3], process.argv[4]);

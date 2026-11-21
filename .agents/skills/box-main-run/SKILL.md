@@ -471,7 +471,8 @@ Everything here runs against lane A's copy, by lane A's names.
    Codex) whose line does not read `synced` within this run means the sweeper has not ticked yet:
    when lane A's copy has been up for less than 65 minutes, wait (a background `sleep`) until it
    has, and read again. A line reading `invalid`, or `refused` in its outcome, is the login signed
-   out: report it and file Fix Now (step 7); the owner reconnects it.
+   out: report it and file Fix Now (step 7); the owner reconnects it. Not Claude's: refused since 20
+   Nov and left so by the owner (SLNT-1219), it gets the report's one line and no ticket.
 4. Save lane A's data as the next master's:
 
    ```sh
@@ -488,20 +489,21 @@ Everything here runs against lane A's copy, by lane A's names.
 
 5. `pnpm verify vm down <lane A's slot>`. Check `pnpm verify vm list` shows none of the ledger's
    copies, and drop them from it.
-6. Build the next master from the saved data, with this run's preview, once no copy runs on this
-   machine: `vm build` replaces the master every copy is backed by, so it refuses while any runs. As
-   background work, wait for `pnpm verify vm list --json` to list no copy, re-reading it every 2
-   minutes for up to 6 hours, then:
+6. Build the next master from the saved data, with this run's preview, right after the save. Other
+   checks' copies may run: `vm build` builds the new disk beside the master and puts it in place
+   only once it is sealed, and a copy started before keeps the master it booted from until its
+   `vm down`.
 
    ```sh
    pnpm verify vm build --version <version> --sha $SHA --cli "$(npm view @sealant/mend dist-tags.next)"
    ```
 
-   (no `--from-box`: it builds from `$VMS/box`). Record `master` in the ledger from `vm list`. A
-   build that fails leaves no master: run it once more; a second failure is Fix Now, filed with the
-   build's step that failed. Six hours without a moment free of copies: say so in the report, and
-   the next run's start builds it first. Day copies keep running on the master before, whose Codex
-   access token stays valid until its own expiry.
+   (no `--from-box`: it builds from `$VMS/box`). Record `master` in the ledger from `vm list`. When
+   it is refused because another build runs (`vm list` reads `the next one is building beside it`),
+   wait for that one as background work, re-reading `vm list` every 2 minutes for up to 60 minutes,
+   then build. A build that fails leaves the master before in place: run it once more; a second
+   failure is Fix Now, filed with the build's step that failed. Day copies keep running on the
+   master before, whose Codex access token stays valid until its own expiry.
 
 `rm -rf ~/.local/state/mend-main-run/private` once the evidence scan (step 7) has passed, as one
 plain command.

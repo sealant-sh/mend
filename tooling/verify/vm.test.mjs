@@ -1,19 +1,27 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
 import { parseArgs } from "./verify.mjs";
-import { claimSlot, releaseSlot, slotDriveArgs, slotOfCopy } from "./vm-boat.mjs";
+import {
+  claimSlot,
+  funnelFromOutside,
+  releaseSlot,
+  slotDriveArgs,
+  slotOfCopy,
+} from "./vm-boat.mjs";
 import {
   addressOf,
   boxSshArgs,
   holdLoginsScript,
   hostOf,
   LOGIN_CLAIM,
+  masterHostKey,
   SLOTS,
   urlOf,
+  vmBuild,
   vmDown,
   vmList,
   vmSave,
@@ -88,6 +96,129 @@ test("vm down removes a copy whose VM is gone, and rewrites the ssh config witho
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("a copy started before the last build reads as on the master before", async () => {
+  const root = scratch();
+  try {
+    mkdirSync(join(root, "master"), { recursive: true });
+    writeFileSync(
+      join(root, "master/master.json"),
+      JSON.stringify({ version: "v2", sha: "b".repeat(40), builtAt: "2026-11-21T08:00:00Z" }),
+    );
+    for (const [slot, builtAt, version] of [
+      [1, "2026-11-20T08:00:00Z", "v1"],
+      [2, "2026-11-21T08:00:00Z", "v2"],
+    ]) {
+      mkdirSync(join(root, "copies", String(slot)), { recursive: true });
+      writeFileSync(
+        join(root, "copies", String(slot), "copy.json"),
+        JSON.stringify({ slot, startedAt: new Date().toISOString(), master: { version, builtAt } }),
+      );
+    }
+    const steps = vmList({ root }).steps;
+    assert.match(steps.find((s) => s.id === "copy-1").detail, /on the master before \(v1\)/);
+    assert.doesNotMatch(steps.find((s) => s.id === "copy-2").detail, /master before/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a copy stopping during a build keeps the build's ssh block, under the one host key alias", async () => {
+  const root = scratch();
+  try {
+    mkdirSync(join(root, "master-build"), { recursive: true });
+    writeFileSync(join(root, "master-build/building"), "1\n");
+    mkdirSync(join(root, "copies", "1"), { recursive: true });
+    await vmDown({ root, slot: 1 });
+    const config = readFileSync(join(root, "ssh_config"), "utf8");
+    assert.match(config, /Host mend-check-master\n/);
+    assert.match(config, /StrictHostKeyChecking accept-new/);
+    assert.deepEqual(
+      [...config.matchAll(/HostKeyAlias (\S+)/g)].map((m) => m[1]),
+      ["mend-check-vm"],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("every master gets one host key; the entry of the master before stays in known_hosts", () => {
+  const root = scratch();
+  try {
+    mkdirSync(join(root, "key"), { recursive: true });
+    const before =
+      "mend-check-vm ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBEFOREBEFOREBEFOREBEFOREBEFOREBEFOREBEFOR";
+    writeFileSync(join(root, "known_hosts"), before);
+    const first = masterHostKey(root);
+    const again = masterHostKey(root);
+    assert.equal(again.public, first.public, "made once");
+    assert.match(first.private, /BEGIN OPENSSH PRIVATE KEY/);
+    assert.deepEqual(readFileSync(join(root, "known_hosts"), "utf8").trim().split("\n"), [
+      before,
+      `mend-check-vm ${first.public}`,
+    ]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("vm build without what to install changes nothing, and the master stays", async () => {
+  const root = scratch();
+  try {
+    mkdirSync(join(root, "master"), { recursive: true });
+    writeFileSync(
+      join(root, "master/master.json"),
+      JSON.stringify({ version: "v", sha: "s".repeat(40) }),
+    );
+    const result = await vmBuild({ root });
+    assert.equal(result.steps[0].status, "failed");
+    assert.match(result.steps[0].detail, /--version <preview>/);
+    assert.deepEqual(readdirSync(root).toSorted(), ["master"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the Funnel counts as up only when both ports answer through a public address", async () => {
+  const asked = [];
+  const up = await funnelFromOutside("boat.example.ts.net", {
+    resolve: async () => ["192.0.2.7", "192.0.2.8"],
+    probe: (name, port, address) => {
+      asked.push(`${name}:${port}:${address}`);
+      return address === "192.0.2.7" ? "000" : port === 8443 ? "401" : "403";
+    },
+  });
+  assert.equal(up.ok, true);
+  assert.match(
+    up.detail,
+    /8443 answered 401 through 192\.0\.2\.8, 10000 answered 403 through 192\.0\.2\.8/,
+  );
+  assert.ok(
+    asked.includes("boat.example.ts.net:8443:192.0.2.7"),
+    "the name is asked through each relay address",
+  );
+
+  const dead = await funnelFromOutside("boat.example.ts.net", {
+    timeoutMs: 0,
+    resolve: async () => ["192.0.2.7"],
+    probe: (_name, port) => (port === 8443 ? "401" : "000"),
+  });
+  assert.equal(dead.ok, false);
+  assert.match(
+    dead.detail,
+    /8443 answered 401 through 192\.0\.2\.7, 10000 last 192\.0\.2\.7: no HTTP answer in 5 s/,
+  );
+  assert.match(dead.detail, /vm down, then vm up --boat/);
+
+  const unknown = await funnelFromOutside("boat.example.ts.net", {
+    timeoutMs: 0,
+    resolve: async () => {
+      throw Object.assign(new Error("not found"), { code: "ENOTFOUND" });
+    },
+  });
+  assert.equal(unknown.ok, false);
+  assert.match(unknown.detail, /no public A record \(ENOTFOUND\)/);
 });
 
 test("verify vm takes its build options", () => {

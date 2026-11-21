@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  chooseDeployTidy,
   chooseTidy,
+  DEPLOY_TAG,
   deployNeeds,
   describeTidy,
   describeUsage,
@@ -263,4 +265,70 @@ test("plan's usage line names the build cache, what no image shares, and the wor
     describeUsage(parseListing("")),
     "build cache unknown, workspace images 0.0 GiB in 0",
   );
+});
+
+test("a deploy that holds nothing makes release's choice, keeping what it just deployed", () => {
+  const listing = parseListing(boxListing());
+  // The box is now (hour 100); this deploy started at hour 99.8 and pulled preview 219, of its commit.
+  listing.images.find((item) => item.id === id(219)).pulled = Date.parse(hour(99.9));
+  const commit = "7".repeat(40);
+  listing.images.find((item) => item.id === id(218)).labels["org.opencontainers.image.revision"] =
+    commit;
+  const choice = chooseDeployTidy({ listing, hold: null, commit, startedAt: hour(99.8) });
+  assert.equal(choice.refused, undefined);
+  const removed = refs(choice);
+  for (const run of [218, 219, 221, 222, 225])
+    assert.ok(!removed.some((ref) => ref.endsWith(`.preview.${run}`)), `preview ${run} kept`);
+  for (const run of [211, 212, 213, 214, 215, 216, 217, 220])
+    assert.ok(
+      removed.some((ref) => ref.endsWith(`.preview.${run}`)),
+      `preview ${run} removed`,
+    );
+  assert.ok(
+    !removed.some((ref) => /workspace|postgres/.test(ref)),
+    "workspace and used images stay",
+  );
+  assert.equal(choice.dumps.length, 2);
+});
+
+test("a deploy removes nothing while a check holds the box; a lapsed hold's dump stays", () => {
+  const listing = parseListing(boxListing());
+  const args = { listing, commit: "7".repeat(40), startedAt: hour(99.8) };
+  const held = chooseDeployTidy({ ...args, hold });
+  assert.match(held.refused, /pr1755 holds the box \(1\.0 h\); its release tidies it/);
+  assert.deepEqual([held.images, held.cache, held.dumps], [[], [], []]);
+  assert.match(
+    chooseDeployTidy({ ...args, hold: { unreadable: "{" } }).refused,
+    /could not be read/,
+  );
+
+  const lapsed = { ...hold, at: hour(90), dump: "/root/backups/pre-1.sql" };
+  const choice = chooseDeployTidy({ ...args, hold: lapsed });
+  assert.equal(choice.refused, undefined);
+  assert.ok(
+    !choice.dumps.some((dump) => dump.path === lapsed.dump),
+    "the lapsed hold's dump stays",
+  );
+  assert.ok(choice.images.length > 0);
+});
+
+test("a deploy's removal script refuses once the hold file differs from what it chose with", () => {
+  const listing = parseListing(boxListing());
+  const choice = chooseDeployTidy({
+    listing,
+    hold: null,
+    commit: "7".repeat(40),
+    startedAt: hour(99.8),
+  });
+  const empty = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+  const script = tidyScript(choice, DEPLOY_TAG, { holdSha: empty });
+  assert.match(
+    script,
+    new RegExp(
+      `\\[ "\\$\\(cat /var/lib/mend-box-check/hold\\.json 2>/dev/null \\| sha256sum \\| cut -c1-64\\)" = '${empty}' \\] \\|\\| \\{`,
+    ),
+  );
+  assert.doesNotMatch(script, /grep -q '"tag"/);
+  assert.equal(script.match(/docker image rm /g).length, choice.images.length);
+  assert.throws(() => tidyScript(choice, DEPLOY_TAG), /sha256 of the hold file/);
 });

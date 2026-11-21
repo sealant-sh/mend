@@ -219,9 +219,9 @@ skill is `.agents/skills/box-main-run/`, the flows in `flows.md` there, each wit
 the feature you proved on a local stack is used again on a real server by an agent that wrote none
 of it. Each failure becomes a ticket in "CI follow-ups" naming the merged PR that most likely caused
 it; when it names yours, pick it up. The run's own copy is the only place the shared agent logins
-are refreshed, and its data becomes the next master (`pnpm verify vm save`, then `vm build`): the
-master is rebuilt each night once no copy runs, so a copy you start then may find no master for
-about ten minutes.
+are refreshed, and its data becomes the next master (`pnpm verify vm save`, then `vm build`). The
+build runs beside other checks' copies: a copy you started before it keeps its master until you
+delete it, and one you start after it boots the new one.
 
 ## Dependencies
 

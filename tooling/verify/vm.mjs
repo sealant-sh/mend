@@ -18,6 +18,7 @@ import { mainMigrations, restoreScript, saveScript, storeLoadScript, sshRunner }
 import {
   boatOn,
   claimSlot,
+  funnelFromOutside,
   joinedSlots,
   releaseSlot,
   slotAdd,
@@ -75,8 +76,28 @@ const paths = (root) => ({
   master: join(root, "master"),
   masterDisk: join(root, "master/disk.qcow2"),
   masterMeta: join(root, "master/master.json"),
+  build: join(root, "master-build"),
+  buildMarker: join(root, "master-build/building"),
+  hostKey: join(root, "key/host_ed25519"),
   copies: join(root, "copies"),
 });
+
+// A build runs beside copies (SLNT-1249). It boots its own disk in master-build/ and, once that
+// disk is sealed, renames it over master/disk.qcow2. A running copy's QEMU opened its backing file
+// when it started and keeps that file open, so it reads the master it booted from until `vm down`
+// stops it; the old disk's space is freed then. Nothing reopens a running copy's backing file by
+// path: QEMU is started once per copy (vm up, vm slot) and never restarted, a reboot inside the
+// guest keeps QEMU's open files, no snapshot is taken, and `vm save` works inside the copy over ssh.
+// Every master boots with one host key (key/host_ed25519, written by cloud-init), so known_hosts
+// holds the same entry before and after a build, and a copy of either master is reached as before.
+
+const readJson = (path) => {
+  try {
+    return JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return null;
+  }
+};
 
 const run = (command, args, options = {}) => {
   const result = spawnSync(command, args, {
@@ -102,10 +123,11 @@ const privateDir = (dir) => {
 
 /**
  * The ssh config every copy is reached through: one Host per copy (and the master while it builds),
- * the VMs' own key, and a known_hosts entry recorded at build under one alias, since every copy
- * boots with the master's host key.
+ * the VMs' own key, and one known_hosts entry under one alias, since every copy boots with the
+ * masters' one host key. It is written from what is on disk, so a copy that starts or stops during a
+ * build keeps the build's block.
  */
-const writeSshConfig = (p, slots) => {
+const writeSshConfig = (p) => {
   const block = (slot) =>
     [
       `Host ${hostOf(slot)}`,
@@ -115,16 +137,51 @@ const writeSshConfig = (p, slots) => {
       `  IdentityFile ${p.key}`,
       "  IdentitiesOnly yes",
       `  UserKnownHostsFile ${p.knownHosts}`,
-      "  HostKeyAlias mend-check-vm",
+      `  HostKeyAlias ${HOST_KEY_ALIAS}`,
       `  StrictHostKeyChecking ${slot === MASTER_SLOT ? "accept-new" : "yes"}`,
       "  ServerAliveInterval 15",
       "  LogLevel ERROR",
       "",
     ].join("\n");
+  const slots = [...(existsSync(p.buildMarker) ? [MASTER_SLOT] : []), ...liveSlots(p)];
   // Copies start and stop at once: each writes the whole file aside and renames it into place.
   const temporary = `${p.sshConfig}.${process.pid}.${Date.now()}`;
   writeFileSync(temporary, slots.map(block).join("\n"), { mode: 0o600 });
   renameSync(temporary, p.sshConfig);
+};
+
+const HOST_KEY_ALIAS = "mend-check-vm";
+
+/**
+ * The masters' one host key, made once, and its known_hosts entry. Entries for the alias already
+ * there stay: a master built before SLNT-1249 has a host key of its own, and its copies may still run.
+ */
+export const masterHostKey = (root) => {
+  const p = paths(root);
+  if (!existsSync(p.hostKey))
+    run("ssh-keygen", [
+      "-q",
+      "-t",
+      "ed25519",
+      "-N",
+      "",
+      "-C",
+      "mend-check-vm-host",
+      "-f",
+      p.hostKey,
+    ]);
+  const [type, key] = readFileSync(`${p.hostKey}.pub`, "utf8").trim().split(/\s+/);
+  const entry = `${HOST_KEY_ALIAS} ${type} ${key}`;
+  const known = existsSync(p.knownHosts) ? readFileSync(p.knownHosts, "utf8") : "";
+  if (!known.split("\n").includes(entry))
+    writeFileSync(
+      p.knownHosts,
+      `${known}${known === "" || known.endsWith("\n") ? "" : "\n"}${entry}\n`,
+      {
+        mode: 0o600,
+      },
+    );
+  return { private: readFileSync(p.hostKey, "utf8"), public: `${type} ${key}` };
 };
 
 export const boxSshArgs = (root, slot) => ["-F", paths(root).sshConfig, hostOf(slot)];
@@ -152,6 +209,20 @@ const qemuPid = (dir) => {
     return null;
   }
 };
+
+/** The copy's own disk: a qcow2 overlay of the master disk. */
+const overlayOf = (p, dir) =>
+  run("qemu-img", [
+    "create",
+    "-q",
+    "-f",
+    "qcow2",
+    "-b",
+    p.masterDisk,
+    "-F",
+    "qcow2",
+    join(dir, "disk.qcow2"),
+  ]);
 
 const qemuArgs = ({ dir, slot, cpus, memory, cache, seedUrl, extraDrives = [] }) => [
   "-name",
@@ -233,7 +304,7 @@ const stopQemu = async (dir) => {
 };
 
 /** The cloud-init NoCloud seed, served once over HTTP to the build VM through QEMU's 10.0.2.2. */
-const serveSeed = (publicKey) =>
+const serveSeed = (publicKey, host) =>
   new Promise((resolve) => {
     const files = {
       "/meta-data": `instance-id: mend-check-master\nlocal-hostname: mend-check\n`,
@@ -242,6 +313,14 @@ const serveSeed = (publicKey) =>
         "disable_root: false",
         "ssh_pwauth: false",
         "ssh_deletekeys: true",
+        // The masters' one host key: with keys given, cloud-init writes these and generates none.
+        "ssh_keys:",
+        "  ed25519_private: |",
+        ...host.private
+          .trim()
+          .split("\n")
+          .map((line) => `    ${line}`),
+        `  ed25519_public: ${host.public}`,
         "ssh_authorized_keys:",
         `  - ${publicKey.trim()}`,
         "growpart: {mode: auto, devices: ['/']}",
@@ -305,7 +384,9 @@ const step = (id, title, status, detail) => ({ id, title, status, ...(detail ? {
  * vm build: the master disk. From VM 131 it copies (with --from-box) the install identity, the box
  * run's data and its git repositories into <root>/box; then it boots a stock cloud image, installs
  * Docker, Node and the mend CLI, installs Mend with preview-deploy.sh over that identity, loads the
- * data, checks Mend answers, and seals the disk with Mend stopped.
+ * data, checks Mend answers, and seals the disk with Mend stopped. Copies may run throughout: the
+ * new disk is built aside and becomes the master only once sealed (SLNT-1249); a build that fails
+ * leaves the master before as it was.
  */
 export const vmBuild = async ({
   root = vmRoot(),
@@ -318,10 +399,46 @@ export const vmBuild = async ({
 }) => {
   const p = paths(root);
   const steps = [];
+  if (!version || !sha || !cliVersion)
+    return {
+      steps: [
+        step(
+          "args",
+          "What to install",
+          "failed",
+          "--version <preview>, --sha <commit> and --cli <version> are required",
+        ),
+      ],
+      next: [],
+    };
+  if (qemuPid(p.build) !== null)
+    return {
+      steps: [
+        step(
+          "build",
+          "No other build running",
+          "blocked_by_prerequisite",
+          `a build's VM runs in ${p.build} (pid ${qemuPid(p.build)}): wait for it to end`,
+        ),
+      ],
+      next: ["pnpm verify vm list"],
+    };
   const fail = async (id, title, detail) => {
-    steps.push(step(id, title, "failed", detail));
-    keepFailure(root, MASTER_SLOT, p.master);
-    if (!process.env.MEND_CHECK_VMS_KEEP) await stopQemu(p.master);
+    steps.push(
+      step(
+        id,
+        title,
+        "failed",
+        `${detail}; the master before is unchanged${existsSync(p.masterMeta) ? "" : " (there was none)"}`,
+      ),
+    );
+    keepFailure(root, MASTER_SLOT, p.build);
+    if (!process.env.MEND_CHECK_VMS_KEEP) {
+      await stopQemu(p.build);
+      rmSync(join(p.build, "disk.qcow2"), { force: true });
+      rmSync(p.buildMarker, { force: true });
+      writeSshConfig(p);
+    }
     return { steps, next: [] };
   };
   privateDir(root);
@@ -329,18 +446,6 @@ export const vmBuild = async ({
   privateDir(p.box);
   privateDir(join(root, "key"));
   privateDir(p.copies);
-  if (liveSlots(p).length > 0)
-    return fail(
-      "copies",
-      "No copy runs on the master",
-      `copies ${liveSlots(p).join(", ")} are backed by the master: pnpm verify vm down --all first`,
-    );
-  if (!version || !sha || !cliVersion)
-    return fail(
-      "args",
-      "What to install",
-      "--version <preview>, --sha <commit> and --cli <version> are required",
-    );
 
   // 1. The box's identity and data.
   const boxFiles = [
@@ -436,19 +541,23 @@ export const vmBuild = async ({
   if (!existsSync(p.key))
     run("ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-C", "mend-check-vm", "-f", p.key]);
 
-  // 3. A fresh master disk, booted with a cloud-init seed.
+  // 3. A fresh disk beside the master, booted with a cloud-init seed. The master every running copy
+  // is backed by is not touched until this one is sealed.
   const started = Date.now();
-  rmSync(p.master, { recursive: true, force: true });
+  const buildDisk = join(p.build, "disk.qcow2");
+  rmSync(p.build, { recursive: true, force: true });
+  privateDir(p.build);
   privateDir(p.master);
-  rmSync(p.knownHosts, { force: true });
-  const converted = run("qemu-img", ["convert", "-O", "qcow2", p.base, p.masterDisk]);
+  writeFileSync(p.buildMarker, `${process.pid}\n`, { mode: 0o600 });
+  const host = masterHostKey(root);
+  const converted = run("qemu-img", ["convert", "-O", "qcow2", p.base, buildDisk]);
   if (converted.code !== 0) return fail("disk", "The master disk", lastLine(converted.stderr));
-  run("qemu-img", ["resize", p.masterDisk, DISK_SIZE]);
-  writeSshConfig(p, [MASTER_SLOT, ...liveSlots(p)]);
-  const seed = await serveSeed(readFileSync(`${p.key}.pub`, "utf8"));
+  run("qemu-img", ["resize", buildDisk, DISK_SIZE]);
+  writeSshConfig(p);
+  const seed = await serveSeed(readFileSync(`${p.key}.pub`, "utf8"), host);
   const seedUrl = `http://10.0.2.2:${seed.address().port}/`;
   const qemu = startQemu({
-    dir: p.master,
+    dir: p.build,
     slot: MASTER_SLOT,
     cpus,
     memory,
@@ -466,12 +575,12 @@ export const vmBuild = async ({
     return fail(
       "boot",
       "Boot the master",
-      `no ssh in 180s; serial log in ${join(p.master, "serial.log")}`,
+      `no ssh in 180s; serial log in ${join(p.build, "serial.log")}`,
     );
   steps.push(step("boot", "Boot the master", "passed", `ssh answered in ${seconds(started)}s`));
 
   // 4. Provision, phase by phase; each phase's output is kept in the master's directory.
-  const phase = (name, args) => runPhase(root, MASTER_SLOT, name, args, p.master);
+  const phase = (name, args) => runPhase(root, MASTER_SLOT, name, args, p.build);
   const put = (file, target) => {
     const out = spawnSync(
       "ssh",
@@ -495,7 +604,7 @@ export const vmBuild = async ({
       return fail(
         name,
         title,
-        `${lastLine(done.out)} (log: ${join(p.master, `provision-${name}.log`)})`,
+        `${lastLine(done.out)} (log: ${join(p.build, `provision-${name}.log`)})`,
       );
     steps.push(
       step(
@@ -542,7 +651,7 @@ export const vmBuild = async ({
     return fail(
       "server",
       `mend server setup ${version}`,
-      `${lastLine(server.out)} (log: ${join(p.master, "provision-server.log")})`,
+      `${lastLine(server.out)} (log: ${join(p.build, "provision-server.log")})`,
     );
   steps.push(
     step(
@@ -681,21 +790,28 @@ fi`);
   const seal = phase("seal", []);
   if (seal.code !== 0) return fail("seal", "Seal the master", lastLine(seal.out));
   ssh("poweroff");
-  for (let i = 0; i < 120 && qemuPid(p.master) !== null; i++) await sleep(500);
-  if (qemuPid(p.master) !== null) await stopQemu(p.master);
+  for (let i = 0; i < 120 && qemuPid(p.build) !== null; i++) await sleep(500);
+  if (qemuPid(p.build) !== null) await stopQemu(p.build);
+  // The sealed disk becomes the master in one rename; master.json, written aside, follows it.
+  // Copies already running keep the disk they opened.
+  const running = liveSlots(p).filter((copy) => qemuPid(join(p.copies, String(copy))) !== null);
+  renameSync(buildDisk, p.masterDisk);
+  const meta = join(p.master, `master.json.${process.pid}.tmp`);
   writeFileSync(
-    p.masterMeta,
+    meta,
     `${JSON.stringify({ version, sha, cliVersion, builtAt: new Date().toISOString(), seconds: seconds(started) }, null, 2)}\n`,
     { mode: 0o600 },
   );
-  writeSshConfig(p, liveSlots(p));
+  renameSync(meta, p.masterMeta);
+  rmSync(p.buildMarker, { force: true });
+  writeSshConfig(p);
   const size = statSync(p.masterDisk).size;
   steps.push(
     step(
       "seal",
       "Seal the master",
       "passed",
-      `${(size / 1024 ** 3).toFixed(1)} GiB on disk; built in ${seconds(started)}s`,
+      `${(size / 1024 ** 3).toFixed(1)} GiB on disk; built in ${seconds(started)}s${running.length > 0 ? `; copies ${running.join(", ")} keep the master before until vm down` : ""}`,
     ),
   );
   return { steps, next: ["pnpm verify vm up"], master: { version, sha } };
@@ -720,7 +836,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
       ],
       next: ["pnpm verify vm build --version <preview> --sha <commit> --cli <version>"],
     };
-  const master = JSON.parse(readFileSync(p.masterMeta, "utf8"));
+  const master = readJson(p.masterMeta);
   if (boat && joinedSlots(root).length === 0)
     return {
       steps: [
@@ -782,19 +898,9 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
     if (boatSlot !== null) releaseSlot(root, boatSlot, slot);
     return { steps, next: [`pnpm verify vm down ${slot}`], copy: { slot, dir } };
   };
-  const overlay = run("qemu-img", [
-    "create",
-    "-q",
-    "-f",
-    "qcow2",
-    "-b",
-    p.masterDisk,
-    "-F",
-    "qcow2",
-    join(dir, "disk.qcow2"),
-  ]);
+  const overlay = overlayOf(p, dir);
   if (overlay.code !== 0) return fail("disk", "The copy's disk", lastLine(overlay.stderr));
-  writeSshConfig(p, liveSlots(p));
+  writeSshConfig(p);
   const qemu = startQemu({
     dir,
     slot,
@@ -843,6 +949,13 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
         "passed",
         `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment and Boat images; ${boatOn_.answeredAfter}`,
       ),
+    );
+    // The check above asked from inside the copy, over the tailnet; a Boat VM comes through Funnel.
+    const outside = await funnelFromOutside(boatOn_.dnsName);
+    if (!outside.ok)
+      return fail("funnel", "The copy's Funnel from outside the tailnet", outside.detail);
+    steps.push(
+      step("funnel", "The copy's Funnel from outside the tailnet", "passed", outside.detail),
     );
   }
   const total = seconds(started);
@@ -911,7 +1024,7 @@ export const vmDown = async ({ root = vmRoot(), slot, all }) => {
       ),
     );
   }
-  writeSshConfig(p, liveSlots(p));
+  writeSshConfig(p);
   if (steps.length === 0) steps.push(step("down", "Remove copies", "passed", "no copies"));
   return { steps, next: [] };
 };
@@ -1073,7 +1186,8 @@ export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
 /** vm list: the master and each copy, whether its VM runs, its address and age. */
 export const vmList = ({ root = vmRoot() }) => {
   const p = paths(root);
-  const master = existsSync(p.masterMeta) ? JSON.parse(readFileSync(p.masterMeta, "utf8")) : null;
+  const master = readJson(p.masterMeta);
+  const building = qemuPid(p.build) !== null;
   const copies = liveSlots(p).map((slot) => {
     const dir = join(p.copies, String(slot));
     let record = {};
@@ -1091,6 +1205,11 @@ export const vmList = ({ root = vmRoot() }) => {
       url: urlOf(slot),
       ssh: boxSshArgs(root, slot).join(" "),
       ageHours,
+      // A copy started before the last build runs on the master before it.
+      onOlderMaster:
+        record.master?.builtAt !== undefined && record.master.builtAt !== master?.builtAt
+          ? record.master.version
+          : null,
     };
   });
   const steps = [
@@ -1099,15 +1218,15 @@ export const vmList = ({ root = vmRoot() }) => {
       "The master disk",
       master ? "passed" : "blocked_by_prerequisite",
       master
-        ? `${master.version} (${master.sha.slice(0, 12)}), built ${master.builtAt}`
-        : "no master: pnpm verify vm build",
+        ? `${master.version} (${master.sha.slice(0, 12)}), built ${master.builtAt}${building ? "; the next one is building beside it" : ""}`
+        : `no master${building ? " yet: a build is running" : ": pnpm verify vm build"}`,
     ),
     ...copies.map((copy) =>
       step(
         `copy-${copy.slot}`,
         `Copy ${copy.slot}`,
         "passed",
-        `${copy.running ? "running" : "not running"} · ${copy.url} · ${copy.ageHours === null ? "starting" : `${copy.ageHours.toFixed(1)} h`}${copy.ageHours !== null && copy.ageHours > STALE_HOURS ? " · stale: pnpm verify vm down " + copy.slot : ""}`,
+        `${copy.running ? "running" : "not running"} · ${copy.url} · ${copy.ageHours === null ? "starting" : `${copy.ageHours.toFixed(1)} h`}${copy.onOlderMaster ? ` · on the master before (${copy.onOlderMaster})` : ""}${copy.ageHours !== null && copy.ageHours > STALE_HOURS ? " · stale: pnpm verify vm down " + copy.slot : ""}`,
       ),
     ),
   ];
@@ -1149,24 +1268,14 @@ const bootBare = (root, cpus, memory) => async (extraDrives) => {
   const remove = async () => {
     await stopQemu(dir);
     rmSync(dir, { recursive: true, force: true });
-    writeSshConfig(p, liveSlots(p));
+    writeSshConfig(p);
   };
-  const overlay = run("qemu-img", [
-    "create",
-    "-q",
-    "-f",
-    "qcow2",
-    "-b",
-    p.masterDisk,
-    "-F",
-    "qcow2",
-    join(dir, "disk.qcow2"),
-  ]);
+  const overlay = overlayOf(p, dir);
   if (overlay.code !== 0) {
     await remove();
     return { error: lastLine(overlay.stderr) };
   }
-  writeSshConfig(p, liveSlots(p));
+  writeSshConfig(p);
   const qemu = startQemu({ dir, slot, cpus, memory, cache: "unsafe", extraDrives });
   if (qemu || !(await waitForSsh(sshRunner(boxSshArgs(root, slot)), 120_000))) {
     await remove();

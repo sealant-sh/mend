@@ -53,6 +53,7 @@ for tool in mend docker curl; do
   command -v "$tool" >/dev/null 2>&1 || die "$tool is not on PATH."
 done
 
+started=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 assets=$(mktemp -d)
 trap 'rm -rf "$assets"' EXIT
 
@@ -122,4 +123,31 @@ else
 fi
 
 say "finished for $version from $REPOSITORY@$commit"
+
+# Old previews, untagged images nothing uses or pins, build cache unused for two days and dumps
+# beyond the newest ten go, by the choice `pnpm verify box release` makes (tooling/verify/box-tidy.mjs,
+# from this checkout, or from <commit> when this script was piped in). The image just deployed, any
+# image a container uses, the newest three previews and every workspace image stay. Nothing is
+# removed while a check holds the box. A tidy that cannot run or fails leaves the deploy as it is.
+tidy() {
+  if [[ ${PREVIEW_DEPLOY_TIDY:-1} == 0 ]]; then
+    say "tidy: skipped (PREVIEW_DEPLOY_TIDY=0)"
+    return
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    say "tidy: skipped, node is not on PATH"
+    return
+  fi
+  local module="$assets/box-tidy.mjs" here="${BASH_SOURCE[0]:-}"
+  if [[ -f $here && -f $(dirname "$here")/../tooling/verify/box-tidy.mjs ]]; then
+    cp "$(dirname "$here")/../tooling/verify/box-tidy.mjs" "$module"
+  elif ! curl -fsSL --retry 3 --output "$module" \
+    "https://raw.githubusercontent.com/$REPOSITORY/$commit/tooling/verify/box-tidy.mjs"; then
+    say "tidy: skipped, could not fetch tooling/verify/box-tidy.mjs at ${commit:0:12}"
+    return
+  fi
+  node "$module" deploy "$commit" "$started" || say "tidy: exited $?, the deploy stands"
+}
+tidy
+
 mend server status

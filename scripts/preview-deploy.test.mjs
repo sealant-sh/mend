@@ -51,6 +51,10 @@ case $1 in
   inspect) exit 1 ;;
 esac
 `,
+  // The tidy after a deploy runs tooling/verify/box-tidy.mjs with node; here it only records.
+  node: `#!/usr/bin/env bash
+exit "\${STUB_NODE_EXIT:-0}"
+`,
   mend: `#!/usr/bin/env bash
 case $2 in
   status)
@@ -87,7 +91,7 @@ function recordedCalls(log) {
   return calls;
 }
 
-function deploy(overrides = {}, setupOptions = []) {
+function deploy(overrides = {}, setupOptions = [], { piped = false } = {}) {
   const directory = mkdtempSync(path.join(tmpdir(), "preview-deploy-"));
   try {
     const bin = path.join(directory, "bin");
@@ -117,11 +121,19 @@ function deploy(overrides = {}, setupOptions = []) {
       STUB_LIVE: "0",
       ...overrides,
     };
-    const result = spawnSync("bash", [script, VERSION, COMMIT, ...setupOptions], {
-      encoding: "utf8",
-      env,
-      timeout: 10_000,
-    });
+    // Piped in, as `curl … | bash -s -- <version> <sha>` runs it: no checkout beside the script.
+    const result = piped
+      ? spawnSync("bash", ["-s", "--", VERSION, COMMIT, ...setupOptions], {
+          input: readFileSync(script),
+          encoding: "utf8",
+          env,
+          timeout: 10_000,
+        })
+      : spawnSync("bash", [script, VERSION, COMMIT, ...setupOptions], {
+          encoding: "utf8",
+          env,
+          timeout: 10_000,
+        });
     return {
       status: result.status,
       output: `${result.stdout}${result.stderr}`,
@@ -141,7 +153,12 @@ const deploymentCalls = (result) =>
       command === "mend" && args[0] === "server" && ["setup", "upgrade"].includes(args[1]),
   );
 
-const assertNoDeployment = (result) => assert.deepEqual(deploymentCalls(result), []);
+const tidyCalls = (result) => result.calls.filter(({ command }) => command === "node");
+
+const assertNoDeployment = (result) => {
+  assert.deepEqual(deploymentCalls(result), []);
+  assert.deepEqual(tidyCalls(result), [], "nothing is tidied when nothing was deployed");
+};
 
 const assertCandidateDeployed = (result, action, options = []) => {
   assert.equal(result.status, 0, result.output);
@@ -327,4 +344,45 @@ test("an image labeled with another version is refused before a deployment comma
     /image\.version="0\.36\.0-next\.601\.preview\.39", expected "0\.36\.0-next\.601\.preview\.40"/,
   );
   assertNoDeployment(result);
+});
+
+test("after a deploy, the box is tidied by box-tidy.mjs from this checkout, for the deployed commit", () => {
+  const result = deploy();
+  assertCandidateDeployed(result, "upgrade");
+  const tidies = tidyCalls(result);
+  assert.equal(tidies.length, 1);
+  const [module, verb, commit, started] = tidies[0].args;
+  assert.match(module, /\/box-tidy\.mjs$/);
+  assert.deepEqual([verb, commit], ["deploy", COMMIT]);
+  assert.match(started, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+  const order = result.calls.map(({ command, args }) => `${command} ${args[1] ?? ""}`);
+  assert.ok(
+    order.indexOf("mend upgrade") < order.indexOf(`node ${verb}`),
+    "the tidy runs after the upgrade",
+  );
+});
+
+test("piped in, the tidy fetches box-tidy.mjs from the deployed commit", () => {
+  const result = deploy({}, [], { piped: true });
+  assert.equal(result.status, 0, result.output);
+  assert.deepEqual(
+    result.calls.filter(({ command }) => command === "curl").map(({ args }) => args.at(-1)),
+    [
+      `https://raw.githubusercontent.com/sealant-sh/mend/${COMMIT}/deploy/docker/compose.v2.yaml`,
+      `https://raw.githubusercontent.com/sealant-sh/mend/${COMMIT}/deploy/docker/postgres-init.sh`,
+      `https://raw.githubusercontent.com/sealant-sh/mend/${COMMIT}/tooling/verify/box-tidy.mjs`,
+    ],
+  );
+  assert.equal(tidyCalls(result).length, 1);
+});
+
+test("a tidy that fails leaves the deploy as it stood, and PREVIEW_DEPLOY_TIDY=0 skips it", () => {
+  const failed = deploy({ STUB_NODE_EXIT: "3" });
+  assertCandidateDeployed(failed, "upgrade");
+  assert.match(failed.output, /tidy: exited 3, the deploy stands/);
+
+  const skipped = deploy({ PREVIEW_DEPLOY_TIDY: "0" });
+  assertCandidateDeployed(skipped, "upgrade");
+  assert.deepEqual(tidyCalls(skipped), []);
+  assert.match(skipped.output, /tidy: skipped \(PREVIEW_DEPLOY_TIDY=0\)/);
 });
