@@ -165,12 +165,10 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   ),
   /**
    * The workspace reached its memory limit during this turn and the kernel stopped a process in
-   * it (SLNT-1233); null otherwise.
+   * it (SLNT-1233); null or absent otherwise. Optional, so a turn built before it (a client's
+   * fixture, an older server's) reads as none.
    */
-  memoryLimit: Schema.NullOr(MemoryLimitHit).pipe(
-    Schema.withDecodingDefaultKey(Effect.succeed(null)),
-    Schema.withConstructorDefault(Effect.succeed(null)),
-  ),
+  memoryLimit: Schema.optionalKey(Schema.NullOr(MemoryLimitHit)),
   createdAt: Timestamp,
   startedAt: Schema.NullOr(Timestamp),
   endedAt: Schema.NullOr(Timestamp),

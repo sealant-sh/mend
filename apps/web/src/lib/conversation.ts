@@ -72,7 +72,7 @@ const turnView = (turn: WireTurn): TurnView => ({
   startedAt: isoOrNull(turn.startedAt),
   endedAt: isoOrNull(turn.endedAt),
   unreachable: turn.unreachable,
-  memoryLimit: turn.memoryLimit,
+  memoryLimit: turn.memoryLimit ?? null,
   selection: turn.selection,
 });
 
