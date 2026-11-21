@@ -25,6 +25,7 @@ import { useQuery, useSuspenseQuery } from "@tanstack/react-query";
 import { Link, useLocation, useNavigate } from "@tanstack/react-router";
 import { ArrowLeftIcon, ChevronDownIcon, ChevronRightIcon, ChevronsUpDownIcon } from "lucide-react";
 
+import { useMacDesktopTitlebarInset } from "#/lib/desktop";
 import {
   groupName,
   pageAt,
@@ -103,6 +104,7 @@ const itemClass = cn(
  */
 export function SettingsSidebar() {
   const pathname = useLocation({ select: (location) => location.pathname });
+  const macInset = useMacDesktopTitlebarInset();
   const { viewer, organizationName, members, projects } = useSettingsNav();
   const open = openSettingsPage(pathname);
   const names = { organization: organizationName };
@@ -116,8 +118,17 @@ export function SettingsSidebar() {
       collapsible="none"
       aria-label="Settings"
       style={{ "--sidebar-width": SETTINGS_SIDEBAR_WIDTH }}
-      className="sticky top-0 h-svh shrink-0 bg-sidebar pt-3 pr-2.5 pb-2.5 pl-3 text-sidebar-foreground tabular-nums"
+      className={cn(
+        "sticky top-0 h-svh shrink-0 bg-sidebar pr-2.5 pb-2.5 pl-3 text-sidebar-foreground tabular-nums",
+        macInset ? "pt-11" : "pt-3",
+      )}
     >
+      {macInset ? (
+        <div
+          aria-hidden
+          className="desktop-drag pointer-events-auto fixed top-0 left-0 z-20 h-10 w-sidebar"
+        />
+      ) : null}
       <SidebarHeader className="p-0">
         <SidebarMenu>
           <SidebarMenuItem>
