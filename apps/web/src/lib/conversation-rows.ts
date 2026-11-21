@@ -2,6 +2,7 @@ import {
   type AgentItemDto,
   type AgentTurnSteerDto,
   buildAgentConversation,
+  END_OF_TURN,
   agentTaskOf,
   type AgentTaskView,
   isHarnessTurn,
@@ -217,7 +218,7 @@ export const conversationRows = (
     return agent;
   };
   let turn: TurnView | null = null;
-  for (const entry of buildAgentConversation(conversation)) {
+  for (const entry of buildAgentConversation(conversation, steerPlace)) {
     switch (entry.kind) {
       case "turn": {
         flush();
@@ -287,6 +288,17 @@ export const conversationRows = (
   flush();
   closeTurn(turn);
   return rows;
+};
+
+/**
+ * Where a message sent into a running turn sits among the turn's output: where the agent took it,
+ * so what the agent did before reading it stays above it; at the end while its turn still runs and
+ * the agent hasn't taken it yet, as the bubble showed it at Send; else when it was sent.
+ */
+export const steerPlace = (steer: AgentTurnSteerDto, turn: TurnView): string => {
+  if (steer.takenAt != null) return steer.takenAt;
+  const waiting = steer.delivery._tag === "Sending" || steer.delivery._tag === "Accepted";
+  return waiting && isOpenTurn(turn) ? END_OF_TURN : steer.createdAt;
 };
 
 /**

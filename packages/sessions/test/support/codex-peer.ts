@@ -16,6 +16,7 @@ export const PeerRequest = Schema.Struct({
       path: Schema.optionalKey(Schema.String),
       lastTurnId: Schema.optionalKey(Schema.String),
       expectedTurnId: Schema.optionalKey(Schema.String),
+      clientUserMessageId: Schema.optionalKey(Schema.String),
       input: Schema.optionalKey(
         Schema.Array(Schema.Struct({ type: Schema.String, text: Schema.String })),
       ),

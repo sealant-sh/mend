@@ -437,6 +437,7 @@ const testLayer = (world: TestWorld) => {
     admitTurnSteer: () => Effect.die("not in test"),
     steerByClientId: () => Effect.succeed(null),
     settleTurnSteer: () => Effect.die("not in test"),
+    markTurnSteerTaken: () => Effect.succeed(null),
     queueTurnSteer: () => Effect.die("not in test"),
     withdrawTurnSteer: () => Effect.die("not in test"),
     recoverSendingSteers: () => Effect.void,

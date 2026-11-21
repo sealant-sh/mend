@@ -10,6 +10,7 @@ import {
   ownRunningTurn,
   sameSelection,
   shownStatus,
+  steerNote,
 } from "./session-composer.ts";
 
 const turn = (
@@ -276,5 +277,49 @@ describe("the status word on the session's tab", () => {
     ).toBe("running");
     expect(shownStatus("running", [turn("t-1", 0, "completed", "ada")])).toBe("running");
     expect(shownStatus("stopped", [turn("t-1", 0, "interrupted", "ada")])).toBe("stopped");
+  });
+});
+
+describe("steerNote", () => {
+  const accepted = { _tag: "Accepted", evidence: "transport-written" } as const;
+  const WAITING = {
+    words: "Sent into this turn. Claude Code reads it when its current step finishes.",
+    pending: true,
+  };
+
+  it("waits, dashed, while the turn runs and the agent hasn't taken the words", () => {
+    expect(steerNote({ delivery: { _tag: "Sending" } }, "Claude Code", true)).toEqual(WAITING);
+    expect(steerNote({ delivery: accepted, takenAt: null }, "Claude Code", true)).toEqual(WAITING);
+  });
+
+  it("reads as any sent message once the agent took the words, while the turn still runs", () => {
+    const takenAt = "2026-11-21T01:25:30.000Z";
+    expect(steerNote({ delivery: accepted, takenAt }, "Codex", true)).toEqual({
+      words: null,
+      pending: false,
+    });
+    // Taken before the send's own answer was saved, or after Mend couldn't confirm it.
+    for (const delivery of [{ _tag: "Sending" }, { _tag: "Unknown", reason: "uncertain" }] as const)
+      expect(steerNote({ delivery, takenAt }, "Codex", true)).toEqual({
+        words: null,
+        pending: false,
+      });
+  });
+
+  it("keeps the older words once the turn ended without a report, and never calls carried words taken", () => {
+    expect(steerNote({ delivery: accepted }, "Codex", false)).toEqual({
+      words: "Codex read this during its turn",
+      pending: false,
+    });
+    expect(
+      steerNote(
+        {
+          delivery: { _tag: "Queued", turnId: "t-2", reason: "turn-ended" },
+          takenAt: "2026-11-21T01:25:30.000Z",
+        },
+        "Codex",
+        false,
+      ),
+    ).toEqual({ words: "The turn ended first. This goes as the next turn.", pending: false });
   });
 });

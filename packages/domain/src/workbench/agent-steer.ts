@@ -66,6 +66,15 @@ export class AgentTurnSteer extends Schema.Class<AgentTurnSteer>("AgentTurnSteer
   delivery: AgentTurnSteerDelivery,
   queuedTurnId: Schema.NullOr(AgentTurnId),
   clientSteerId: Schema.NullOr(Schema.String),
+  /**
+   * When the agent took the words into its turn, as its harness showed it: Claude opened the
+   * continuation the steer asked for, or Codex recorded the steer's user message. Null until then,
+   * for a steer that never got there, and from older servers.
+   */
+  takenAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

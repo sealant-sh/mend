@@ -712,6 +712,8 @@ export const ClaudeAdapter: AgentAdapter = {
           }
           case "SegmentClosed":
             return cancelOpenRequests(effect.turnId);
+          case "SteerTaken":
+            return publish({ _tag: "steer.taken", steerId: effect.steerId });
           case "DrainEnded":
             return publish({ _tag: "drain.ended" });
           case "TurnCompleted":

@@ -5867,4 +5867,10 @@ export const migrations = {
   }),
   // The agent's screen is on by default: images nobody edited get it (SLNT-1201).
   "0234_screen_on": screenOnMigration,
+  // When the agent took a message sent into its running turn (SLNT-1234): the conversation shows
+  // the message as read from then on. Steers sent before this have none, and read as before.
+  "0235_steer_taken_at": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_turn_steers ADD COLUMN IF NOT EXISTS taken_at timestamptz`;
+  }),
 };

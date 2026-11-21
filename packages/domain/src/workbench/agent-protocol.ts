@@ -380,6 +380,11 @@ export const AgentEvent = Schema.Union([
     nativeHistory: Schema.optional(NativeHistoryObservation),
   }),
   Schema.TaggedStruct("drain.ended", {}),
+  /**
+   * The agent took a message sent into its running turn (`steerId`, Mend's steer id): Claude
+   * opened the continuation the steer asked for, or Codex recorded the steer's user message.
+   */
+  Schema.TaggedStruct("steer.taken", { steerId: Schema.String }),
   Schema.TaggedStruct("item.updated", { item: AgentEventItem }),
   Schema.TaggedStruct("content.delta", {
     providerItemId: Schema.String,

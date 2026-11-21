@@ -60,6 +60,7 @@ const turnView = (turn: WireTurn): TurnView => ({
     input: steer.input,
     createdAt: iso(steer.createdAt),
     delivery: steer.delivery,
+    takenAt: isoOrNull(steer.takenAt),
     clientMessageId: steer.clientMessageId,
   })),
   input: turn.input,

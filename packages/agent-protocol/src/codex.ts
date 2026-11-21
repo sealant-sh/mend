@@ -445,6 +445,21 @@ export const CodexAdapter: AgentAdapter = {
         });
       };
 
+      /**
+       * Codex records a steer's words as a user message when the turn takes them, at its next
+       * step, under the id `turn/steer` sent as `clientUserMessageId` (Codex 0.146 and later).
+       * Mend sends no such id with `turn/start`, so a user message of this thread's own that
+       * carries one is a steer the agent has now read.
+       */
+      const steerTaken = (params: JsonObject): Effect.Effect<void> => {
+        const item = objectField(params, "item");
+        if (childThreadOf(params) !== null || stringField(item, "type") !== "userMessage") {
+          return Effect.void;
+        }
+        const steerId = stringField(item, "clientId");
+        return steerId === null ? Effect.void : publish({ _tag: "steer.taken", steerId });
+      };
+
       const contentDelta = (params: JsonObject): Effect.Effect<void> => {
         const providerItemId = stringField(params, "itemId");
         const providerTurnId = turnIdFrom(params, currentTurnId);
@@ -591,7 +606,7 @@ export const CodexAdapter: AgentAdapter = {
             });
           }
           case "item/started":
-            return lifecycleItem(params, "in-progress");
+            return steerTaken(params).pipe(Effect.andThen(lifecycleItem(params, "in-progress")));
           case "item/completed":
             lastFinishedAt = Date.now();
             return lifecycleItem(params, "completed");
@@ -991,6 +1006,8 @@ export const CodexAdapter: AgentAdapter = {
         }
         const reply = yield* call("turn/steer", {
           threadId,
+          // Codex puts it on the user message it records when the turn takes the words.
+          clientUserMessageId: input.id,
           input: [{ type: "text", text: input.input }],
           expectedTurnId: input.expectedTurnId,
         }).pipe(Effect.mapError((failure) => steerFailure(input, failure)));

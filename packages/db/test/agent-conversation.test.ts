@@ -922,6 +922,57 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
     );
   });
 
+  it("stamps when the agent took a steer, once, only for its own process and a steer that went in", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const session = SessionId.make("sess-codex");
+        const process = SessionProcessId.make("p-codex-1");
+        const turn = yield* repo.submitTurn(session, process, "one", "user-1");
+        const admit = (input: string) =>
+          repo
+            .admitTurnSteer({ turnId: turn.id, author: "user-1", input, clientSteerId: null })
+            .pipe(Effect.map(({ steer }) => steer));
+
+        const accepted = yield* admit("accepted");
+        yield* repo.settleTurnSteer(accepted.id, {
+          _tag: "Accepted",
+          evidence: "provider-acknowledged",
+        });
+        expect(accepted.takenAt).toBeNull();
+        expect(
+          yield* repo.markTurnSteerTaken(accepted.id, SessionProcessId.make("p-other")),
+        ).toBeNull();
+        const taken = yield* repo.markTurnSteerTaken(accepted.id, process);
+        expect(taken?.takenAt).toBeInstanceOf(Date);
+        expect(taken?.delivery).toEqual({ _tag: "Accepted", evidence: "provider-acknowledged" });
+        // A replayed report changes nothing.
+        expect(yield* repo.markTurnSteerTaken(accepted.id, process)).toBeNull();
+        const [read] = (yield* repo.listConversationTurns(session)).flatMap((each) => each.steers);
+        expect(read?.takenAt).toEqual(taken?.takenAt);
+
+        // Taken before the send's own answer is saved: the answer still settles it.
+        const early = yield* admit("early");
+        expect((yield* repo.markTurnSteerTaken(early.id, process))?.takenAt).toBeInstanceOf(Date);
+        const settled = yield* repo.settleTurnSteer(early.id, {
+          _tag: "Accepted",
+          evidence: "transport-written",
+        });
+        expect(settled.delivery._tag).toBe("Accepted");
+        expect(settled.takenAt).toBeInstanceOf(Date);
+
+        // Words that went as a next turn were never taken into this one.
+        const carried = yield* admit("carried");
+        yield* repo.queueTurnSteer(carried.id, process, "turn-ended");
+        expect(yield* repo.markTurnSteerTaken(carried.id, process)).toBeNull();
+        const [row] = yield* sql<{ readonly taken_at: Date | null }>`
+          SELECT taken_at FROM agent_turn_steers WHERE id = ${carried.id}`;
+        expect(row?.taken_at).toBeNull();
+      }),
+    );
+  });
+
   it("keeps words as NotSent when the session stops, and never resends Sending after restart", async () => {
     await withConversation(
       Effect.gen(function* () {

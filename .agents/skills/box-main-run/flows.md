@@ -1022,16 +1022,19 @@ lane changed.
   `Run the shell command sleep 600, then reply with the word done.`, and once `Stop turn` shows,
   choose it.
 - **See:** each message shows in the conversation as soon as it is sent, and the field empties; the
-  first is answered `pong`; the one sent while the turn ran reads
-  `Sent into this turn. Codex reads it when its current step finishes.` (then
-  `Codex read this during its turn`) and starts no turn of its own; after `Stop turn` that turn
-  reads `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab
-  reads Idle.
+  first is answered `pong`; the one sent while the turn ran is dashed and reads
+  `Sent into this turn. Codex reads it when its current step finishes.` until Codex takes it at its
+  next step (when `sleep 45` ends); from then, while the turn still runs, it reads as any sent
+  message (solid, nothing under it but who and when), sits below the `sleep 45` step and above what
+  Codex did after reading it, and starts no turn of its own (the recipe `new-web-steer-taken-box`
+  drives this part alone); after `Stop turn` that turn reads `Stopped after …`, the line
+  `This turn was stopped at …` follows it, and the session's tab reads Idle.
 - **Mode:** `agent`
 - **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
-  `apps/web/src/lib/session-composer.ts`
+  `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
+  `apps/web/src/components/session/conversation-tile.tsx`
 
 ### start-session.new-web-streaming
 

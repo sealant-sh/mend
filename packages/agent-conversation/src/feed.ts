@@ -23,6 +23,8 @@ export interface AgentTurnSteerDto {
   readonly input: string;
   readonly createdAt: string;
   readonly delivery: AgentSteerDeliveryDto;
+  /** When the agent took the words into its turn; null until it did, absent from older servers. */
+  readonly takenAt?: string | null;
   /** The key its message was sent under; absent from older servers. */
   readonly clientMessageId?: string | null;
 }
@@ -149,13 +151,18 @@ export const mergeAgentItems = <I extends AgentItemDto>(
 export const latestItemSeq = (items: ReadonlyArray<AgentItemDto>): number =>
   items.reduce((latest, item) => Math.max(latest, item.seq), 0);
 
-/** Render authored turns first, then each turn's ordered items and human requests. */
+/**
+ * Render authored turns first, then each turn's ordered items and human requests. A steer sits
+ * among its turn's items at `steerAt` (an ISO time, or `END_OF_TURN`), when it was sent unless the
+ * client says otherwise.
+ */
 export const buildAgentConversation = <
   T extends AgentTurnDto,
   I extends AgentItemDto,
   R extends AgentRequestDto,
 >(
   conversation: AgentConversation<T, I, R>,
+  steerAt: (steer: AgentTurnSteerDto, turn: T) => string = (steer) => steer.createdAt,
 ): ReadonlyArray<AgentConversationEntry<T, I, R>> => {
   const entries: Array<AgentConversationEntry<T, I, R>> = [];
   const turns = sortedCopy(conversation.turns, (a, b) => a.ordinal - b.ordinal);
@@ -178,7 +185,7 @@ export const buildAgentConversation = <
         .filter((steer) => steer.delivery._tag !== "Queued")
         .map((steer) => ({
           kind: "steer" as const,
-          at: steer.createdAt,
+          at: steerAt(steer, turn),
           id: steer.id,
           steer,
         })),
@@ -230,6 +237,9 @@ export const buildAgentConversation = <
   }
   return entries;
 };
+
+/** A `steerAt` that places a steer after everything its turn holds so far: a time none reaches. */
+export const END_OF_TURN = "9999-12-31T23:59:59.999Z";
 
 /** Turn statuses that still occupy, or will occupy, the agent. */
 export const isOpenTurn = (turn: AgentTurnDto): boolean =>

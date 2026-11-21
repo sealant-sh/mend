@@ -162,7 +162,7 @@ const noteOf = (
   }
   if (row.steer === null) return { byline, note: null, pending: false };
   const turn = conversation?.turns.find((each) => each.id === row.steer?.turnId);
-  const steer = steerNote(row.steer.delivery, facts.agent, turn !== undefined && isOpenTurn(turn));
+  const steer = steerNote(row.steer, facts.agent, turn !== undefined && isOpenTurn(turn));
   return { byline, note: steer.words, pending: steer.pending };
 };
 

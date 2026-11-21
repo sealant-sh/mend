@@ -339,6 +339,10 @@ describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)
         expect(run.events.some((event) => event._tag === "harness-turn.started")).toBe(false);
         expect(completions(run)).toEqual([expect.objectContaining({ status: "completed" })]);
         expect(userFrames(run)[1]).toMatchObject({ priority: "now", uuid: STEER_ID });
+        // The continuation's init is where Claude takes the words, once.
+        expect(run.events.filter((event) => event._tag === "steer.taken")).toEqual([
+          { _tag: "steer.taken", steerId: STEER_ID },
+        ]);
         yield* expectDeterministicReplay(steps);
       }),
     );
@@ -389,6 +393,16 @@ describe("Claude steering, recorded (fixtures/steering/claude_transcript.ndjson)
         ]);
         expect(events.filter((event) => event._tag === "turn.started")).toHaveLength(1);
         expect(events.some((event) => event._tag === "harness-turn.started")).toBe(false);
+        // Taken when the continuation opens: after the aborted segment, before its answer.
+        const taken = events.findIndex((event) => event._tag === "steer.taken");
+        expect(events[taken]).toEqual({ _tag: "steer.taken", steerId: STEER_ID });
+        expect(
+          events.findIndex(
+            (event) =>
+              event._tag === "item.updated" && event.item.text === "steering fixture observed",
+          ),
+        ).toBeGreaterThan(taken);
+        expect(events.filter((event) => event._tag === "steer.taken")).toHaveLength(1);
         expect(events.filter((event) => event._tag === "turn.completed")).toEqual([
           {
             _tag: "turn.completed",

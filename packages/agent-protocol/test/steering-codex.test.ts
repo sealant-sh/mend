@@ -37,8 +37,13 @@ const matchCodex = (expected: TranscriptStep, actual: JsonObject): ReadonlyArray
   if (method === "turn/start" && textOf(actual["params"]) !== textOf(expected.frame["params"])) {
     return ["turn/start input differs from the recording"];
   }
-  if (method === "turn/steer" && !isDeepStrictEqual(actual["params"], expected.frame["params"])) {
-    return [`params ${JSON.stringify(actual["params"])}`];
+  if (method === "turn/steer") {
+    // T3 Code sent no client message id; Mend sends its steer id there, and nothing else differs.
+    const { clientUserMessageId, ...params } = isObject(actual["params"]) ? actual["params"] : {};
+    if (clientUserMessageId !== "steer-1")
+      return [`clientUserMessageId ${String(clientUserMessageId)}`];
+    if (!isDeepStrictEqual(params, expected.frame["params"]))
+      return [`params ${JSON.stringify(actual["params"])}`];
   }
   return [];
 };
@@ -149,27 +154,30 @@ const steerFrames = (sent: ReadonlyArray<JsonObject>) =>
 const STEER_INPUT = { id: "steer-1", expectedTurnId: "turn-1", input: "use the other file" };
 
 describe("Codex steering, synthetic", () => {
-  it.effect("sends exactly turn/steer with the expected turn and no client message id", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        const codex = yield* startCodex((id, push) => push({ id, result: { turnId: "turn-1" } }));
-        yield* codex.session.sendTurn("start");
-        const acceptance = yield* codex.session.steer(STEER_INPUT);
-        expect(acceptance).toEqual({ _tag: "ProviderAcknowledged", providerTurnId: "turn-1" });
-        expect(steerFrames(codex.wire.sent)).toEqual([
-          {
-            method: "turn/steer",
-            id: 4,
-            params: {
-              threadId: "thread-1",
-              input: [{ type: "text", text: "use the other file" }],
-              expectedTurnId: "turn-1",
+  it.effect(
+    "sends exactly turn/steer with the expected turn, and the steer id as its message id",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const codex = yield* startCodex((id, push) => push({ id, result: { turnId: "turn-1" } }));
+          yield* codex.session.sendTurn("start");
+          const acceptance = yield* codex.session.steer(STEER_INPUT);
+          expect(acceptance).toEqual({ _tag: "ProviderAcknowledged", providerTurnId: "turn-1" });
+          expect(steerFrames(codex.wire.sent)).toEqual([
+            {
+              method: "turn/steer",
+              id: 4,
+              params: {
+                threadId: "thread-1",
+                clientUserMessageId: "steer-1",
+                input: [{ type: "text", text: "use the other file" }],
+                expectedTurnId: "turn-1",
+              },
             },
-          },
-        ]);
-        expect(codex.session.activeSteering).toEqual({ supported: true, interruptsTools: false });
-      }),
-    ),
+          ]);
+          expect(codex.session.activeSteering).toEqual({ supported: true, interruptsTools: false });
+        }),
+      ),
   );
 
   const refusals: ReadonlyArray<
@@ -324,6 +332,47 @@ describe("Codex steering, synthetic", () => {
           _tag: "ProviderAcknowledged",
           providerTurnId: "turn-1",
         });
+      }),
+    ),
+  );
+
+  it.effect("reports a steer taken when Codex records its user message, once, and no other", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const codex = yield* startCodex((id, push) => push({ id, result: { turnId: "turn-1" } }));
+        yield* codex.session.sendTurn("start");
+        yield* codex.session.steer(STEER_INPUT);
+        const userMessage = (
+          method: string,
+          threadId: string,
+          id: string,
+          clientId: string | null,
+        ) => ({
+          method,
+          params: {
+            threadId,
+            turnId: "turn-1",
+            item: {
+              type: "userMessage",
+              id,
+              clientId,
+              content: [{ type: "text", text: "use the other file" }],
+            },
+          },
+        });
+        // The turn's own opening message carries no id: it is no steer.
+        codex.wire.push(userMessage("item/started", "thread-1", "user-0", null));
+        codex.wire.push(userMessage("item/completed", "thread-1", "user-0", null));
+        // A sub-agent's thread is not this conversation's.
+        codex.wire.push(userMessage("item/started", "thread-child", "user-c", "steer-9"));
+        yield* codex.wire.drain;
+        expect(codex.events.filter((event) => event._tag === "steer.taken")).toEqual([]);
+        codex.wire.push(userMessage("item/started", "thread-1", "user-1", "steer-1"));
+        codex.wire.push(userMessage("item/completed", "thread-1", "user-1", "steer-1"));
+        yield* codex.wire.drain;
+        expect(codex.events.filter((event) => event._tag === "steer.taken")).toEqual([
+          { _tag: "steer.taken", steerId: "steer-1" },
+        ]);
       }),
     ),
   );

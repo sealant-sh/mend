@@ -43,7 +43,7 @@ export class AgentSelectionRequiresReplacementError extends Schema.TaggedError<A
 ) {}
 
 export interface AgentSteerInput {
-  /** Mend's steer id; Claude puts it on the wire as `uuid`. */
+  /** Mend's steer id; Claude puts it on the wire as `uuid`, Codex as `clientUserMessageId`. */
   readonly id: string;
   /** Codex: the provider turn id. Claude: the adapter-minted logical turn id. */
   readonly expectedTurnId: string;
