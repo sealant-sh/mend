@@ -1033,6 +1033,28 @@ lane changed.
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
   `apps/web/src/lib/session-composer.ts`
 
+### start-session.new-web-streaming
+
+- **Map:** start-session.md `session-page`
+- **Needs:** real turn (codex); web; the project `verify-fixture`
+- **Do:** Drive the recipe `new-web-streaming-box` with `STREAM_OUT` set to `<scratch>`: it starts a
+  Codex session in `verify-fixture` from the New session composer, then asks for three replies of
+  about 500 words with headings, a list and a code block, the second with 100ms more latency on
+  every request, and in the third scrolls up mid-reply, waits, and scrolls back to the end. Stop the
+  session with `M stop <id8>` once it ends.
+- **See:** each reply's words appear at a steady pace, a word at a time, never a sentence or more at
+  once: the notes' `stepChars` median is under 15 and `gapMs` median under 50 (as each update lands,
+  they read about 70 characters every 300 ms); each new paragraph, list or code block fades in; the
+  reply is whole within about a second of the turn ending. Turn 4's note reads the same scroll
+  position 3 seconds after scrolling up, and 0px from the end both right after scrolling back and 3
+  seconds later. Reopening the session shows every reply whole at once, with nothing fading.
+- **Mode:** `scripted`
+- **Box:** after cut-over
+- **Box-only:** `real-agent-turn`
+- **Areas:** `apps/web/src/components/session/rich-text.tsx`,
+  `apps/web/src/components/session/agent-turn.tsx`, `apps/web/src/lib/text-reveal.ts`,
+  `apps/web/src/lib/markdown-blocks.ts`
+
 ### start-session.new-web-instant-start
 
 - **Map:** start-session.md `start-composer`; now-and-sessions.md `home-composer`
