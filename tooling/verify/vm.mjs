@@ -1167,12 +1167,12 @@ export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
       maxBuffer: 4 * 1024 ** 3,
     });
     const bytes = out.stdout?.length ?? 0;
-    const read =
+    const got =
       out.status === 0 &&
       bytes > 0 &&
       (name !== "world.sql" || out.stdout.subarray(-200).toString().includes("dump complete"));
-    if (read) writeFileSync(temporary(name), out.stdout, { mode: 0o600 });
-    if (!read || (name.endsWith(".tgz") && !wholeArchive(temporary(name)))) {
+    if (got) writeFileSync(temporary(name), out.stdout, { mode: 0o600 });
+    if (!got || (name.endsWith(".tgz") && !wholeArchive(temporary(name)))) {
       clean();
       return done(
         "copy-out",
