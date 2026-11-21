@@ -24,12 +24,22 @@ const visible = (locator) => locator.filter({ visible: true }).first();
 export default async ({ page, web, capture, note }) => {
   const stopTurn = () => visible(page.getByRole("button", { name: "Stop turn" }));
   const pick = (name) => visible(page.getByRole("button", { name }));
-  const hydrated = () =>
-    page.waitForFunction(() =>
-      [...document.querySelectorAll("button")].some((button) =>
-        Object.keys(button).some((key) => key.startsWith("__reactProps")),
-      ),
+  const hydratedOnce = () =>
+    page.waitForFunction(
+      () =>
+        [...document.querySelectorAll("button")].some((button) =>
+          Object.keys(button).some((key) => key.startsWith("__reactProps")),
+        ),
+      undefined,
+      { timeout: 90_000 },
     );
+  // The dev server can stall one load while it bundles a module for the first time: reload once.
+  const hydrated = () =>
+    hydratedOnce().catch(async () => {
+      note("the page did not hydrate in 90 s; reloading once");
+      await page.reload();
+      await hydratedOnce();
+    });
 
   /** Start a Codex session in verify-fixture with `task`; answers its id. */
   const start = async (task) => {
@@ -102,10 +112,20 @@ export default async ({ page, web, capture, note }) => {
   note(`/api/health answers ${health.status()}`);
   if (!health.ok()) throw new Error(`/api/health answered ${health.status()}`);
   await page.goto(`${web}/sessions/${bystander}`);
-  await hydrated();
   const field = visible(page.getByRole("textbox", { name: "Message Codex" }));
-  await field.fill("Reply with the single word pong, and nothing else.");
-  await page.keyboard.press("Enter");
+  await field.waitFor({ timeout: 60_000 });
+  // The field takes typing once React holds it: before that, a fill is dropped.
+  await page.waitForFunction(() =>
+    [...document.querySelectorAll("textarea")].some((textarea) =>
+      Object.keys(textarea).some((key) => key.startsWith("__reactProps")),
+    ),
+  );
+  const ping = "Reply with the single word pong, and nothing else.";
+  await field.fill(ping);
+  await field.press("Enter");
+  await visible(page.locator('[data-slot="user-message"]').filter({ hasText: ping })).waitFor({
+    timeout: 30_000,
+  });
   await visible(page.getByText(/^pong\.?$/i)).waitFor({ timeout: TURN_MS });
   note("the bystander session answered pong after the other workspace hit its limit");
   if ((await page.getByText(HEADING, { exact: true }).filter({ visible: true }).count()) !== 0)
