@@ -14,6 +14,7 @@
 #   vm-provision.sh tailnet-wait <dns name>         until the copy's own Funnel answers
 #   vm-provision.sh tailnet-down                    flush and unmount the slot before the VM stops
 #   vm-provision.sh tailnet-logout                  the slot's node leaves the tailnet
+#   vm-provision.sh boat-journals                   the saved Boat build journals into Boat's volume
 #   vm-provision.sh seal                            stop Mend, turn cloud-init off, trim the disk
 #
 # identity.env (the box's install secrets) and the run's data are copied in by vm.mjs over ssh
@@ -190,6 +191,20 @@ tailnet-wait)
   done
   say "https://$name:8443 did not answer in 90s" >&2
   exit 1
+  ;;
+boat-journals)
+  # After setup turned Boat on: the build journals of the Boat images the loaded data names, which
+  # sealant reads before it launches on an image and without which it quarantines the image
+  # (SLNT-1252), into Boat's own state volume. vm.mjs copies them in: the master carries the ones
+  # `vm save` kept with its data.
+  f=/root/main-run/mend-boat-state.tgz
+  [[ -s $f ]] || { say "no $f" >&2; exit 1; }
+  d=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-boat-state)
+  docker stop mend-mend-1 >/dev/null
+  rm -f "$d"/native-builds/*.lock
+  tar -xzpf "$f" --numeric-owner -C "$d"
+  docker start mend-mend-1 >/dev/null
+  say "$(tar -tzf "$f" | grep -vc '/$') files of Boat build journals"
   ;;
 tailnet-logout)
   tailscale logout >/dev/null 2>&1 && say "logged out: the node left the tailnet" ||

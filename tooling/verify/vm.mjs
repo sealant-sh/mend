@@ -627,6 +627,12 @@ export const vmBuild = async ({
     ...(existsSync(join(p.box, "mend-garage.tgz"))
       ? [["mend-garage.tgz", "/root/main-run/mend-garage.tgz"]]
       : []),
+    // The build journals of the Boat images the data names: the master carries the ones saved with
+    // its data, and `vm up --boat` puts them into the copy, so a later save cannot change what a
+    // copy of this master gets (SLNT-1252).
+    ...(existsSync(join(p.box, "mend-boat-state.tgz"))
+      ? [["mend-boat-state.tgz", "/root/main-run/mend-boat-state.tgz"]]
+      : []),
   ]) {
     if (!put(file, target))
       return fail("copy-in", "Copy the box's identity and data in", `${file} could not be written`);
@@ -639,7 +645,7 @@ export const vmBuild = async ({
       "copy-in",
       "Copy the box's identity and data in",
       "passed",
-      "identity.env, world.sql, world.store.tgz, /srv/mend-git",
+      `identity.env, world.sql, world.store.tgz, /srv/mend-git${existsSync(join(p.box, "mend-boat-state.tgz")) ? ", the Boat build journals" : ""}`,
     ),
   );
 
@@ -947,7 +953,7 @@ export const vmUp = async ({ root = vmRoot(), cpus = 6, memory = "8G", boat = fa
         "boat",
         `Boat through slot ${boatSlot}'s own Funnel`,
         "passed",
-        `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment and Boat images; ${boatOn_.answeredAfter}`,
+        `${boatOn_.sessionUrl} and ${boatOn_.blobUrl} in ${seconds(boatAt)}s; ${boatOn_.certSeen}; VM 131's deployment; ${boatOn_.journals}; ${boatOn_.answeredAfter}`,
       ),
     );
     // The check above asked from inside the copy, over the tailnet; a Boat VM comes through Funnel.
@@ -1049,7 +1055,7 @@ n=$(docker exec mend-postgres-1 psql -U postgres -d sealant_control_plane -At -v
 echo "held=$n"
 `;
 
-const SAVED = [
+export const SAVED = [
   { name: "world.sql", read: "cat /root/main-run/world.sql", prev: "world.prev.sql" },
   {
     name: "world.store.tgz",
@@ -1063,17 +1069,34 @@ const SAVED = [
     read: `docker stop mend-garage-1 >/dev/null && tar -C "$(docker volume inspect -f '{{.Mountpoint}}' mend-garage)" -czf - .`,
     prev: "mend-garage.prev.tgz",
   },
+  // Boat's own state: the build journal of each Boat image. sealant reads an image's journal before
+  // it launches on it, and quarantines an image whose journal is gone, so the journals go with the
+  // rows that name them (SLNT-1252). A copy that never set Boat up has no such volume: its journals
+  // are still the ones its master was built with.
+  {
+    name: "mend-boat-state.tgz",
+    read: `if d=$(docker volume inspect -f '{{.Mountpoint}}' mend_mend-boat-state 2>/dev/null); then
+  tar -C "$d" -czf - --exclude='*.lock' .
+else
+  cat /root/main-run/mend-boat-state.tgz
+fi`,
+    prev: "mend-boat-state.prev.tgz",
+  },
 ];
+
+/** Whether a saved `.tgz` reads to its end: an archive cut short fails here, not in the next build. */
+const wholeArchive = (file) => spawnSync("tar", ["-tzf", file], { stdio: "ignore" }).status === 0;
 
 /**
  * vm save <n>: makes a copy's data the data the next master is built from (SLNT-1216). With Mend
  * stopped in the copy, it holds the agent logins against refresh, dumps the databases and the store
  * directories they name (box.mjs saveScript, as `box release --save` does), and archives the git
- * service and the blob store. Then it copies the four into <root>/box beside the old ones, checks
- * each, and only once all four are whole moves the old ones to `*.prev.*` and the new ones into place. A save that
- * fails anywhere leaves <root>/box as it was. It refuses data carrying a Mend migration origin/main
- * lacks: a master built on it could not take a preview of main. The copy is left with Mend stopped;
- * `vm down` deletes it. The master is not touched: `vm build` builds the next one from these files.
+ * service, the blob store and Boat's build journals. Then it copies the five into <root>/box beside
+ * the old ones, checks each, and only once all five are whole moves the old ones to `*.prev.*` and
+ * the new ones into place. A save that fails anywhere leaves <root>/box as it was. It refuses data
+ * carrying a Mend migration origin/main lacks: a master built on it could not take a preview of main.
+ * The copy is left with Mend stopped; `vm down` deletes it. The master is not touched: `vm build`
+ * builds the next one from these files.
  */
 export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
   const p = paths(root);
@@ -1144,20 +1167,20 @@ export const vmSave = async ({ root = vmRoot(), repoRoot, slot }) => {
       maxBuffer: 4 * 1024 ** 3,
     });
     const bytes = out.stdout?.length ?? 0;
-    const whole =
+    const read =
       out.status === 0 &&
       bytes > 0 &&
       (name !== "world.sql" || out.stdout.subarray(-200).toString().includes("dump complete"));
-    if (!whole) {
+    if (read) writeFileSync(temporary(name), out.stdout, { mode: 0o600 });
+    if (!read || (name.endsWith(".tgz") && !wholeArchive(temporary(name)))) {
       clean();
       return done(
         "copy-out",
         "The saved data copied out",
         "failed",
-        `${name}: ssh exited ${out.status}, ${bytes} bytes${name === "world.sql" ? ", or no pg_dumpall trailer" : ""}; ${p.box} is as it was`,
+        `${name}: ssh exited ${out.status}, ${bytes} bytes${name === "world.sql" ? ", or no pg_dumpall trailer" : name.endsWith(".tgz") ? ", or an archive that does not read to its end" : ""}; ${p.box} is as it was`,
       );
     }
-    writeFileSync(temporary(name), out.stdout, { mode: 0o600 });
   }
   for (const { name, prev } of SAVED) {
     if (existsSync(join(p.box, name))) renameSync(join(p.box, name), join(p.box, prev));

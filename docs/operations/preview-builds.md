@@ -212,28 +212,33 @@ images are built once, and loads the data again. Measured on 20 Nov 2026: about 
 on disk, of which the warm-up is 6.5 minutes.
 
 **The run's data** lives in `~/.local/share/mend-check-vms/box`, and the master is built from it:
-`world.sql`, `world.store.tgz`, `mend-git.tgz` and `mend-garage.tgz` (the blob store, where
-sessions' captures live), with VM 131's identity, keys and Boat key beside them. Since SLNT-1216 the
-daily run of `main` keeps it (`.agents/skills/box-main-run/`): each night its own copy (lane A) runs
-the flows that change it, and `vm save <n>` makes that copy's data the next master's. With Mend
-stopped in the copy, it holds every agent login against refresh (below), dumps the databases and the
-store directories they name, as `box release --save` does, and archives the git service and the blob
-store. It copies the four out beside the old ones, checks each (a dump with no `pg_dumpall` trailer
-is refused), and only then moves the old ones to `*.prev.*` and the new ones into place. The first
-master (20 Nov) had no blob store: VM 131's Garage volume holds the owner's data beside the run's,
-so it was not copied, and a change made on VM 131 shows `its capture manifest could not be read` on
-a copy. Changes made on copies since keep theirs. A save that fails anywhere leaves the directory as
-it was. It refuses data carrying a Mend migration `origin/main` lacks. The run then builds the
-master with `vm build` and no `--from-box`, from those files and its own preview, while other
-checks' copies run (SLNT-1249). The build boots its own disk in `master-build/` and, once it is
-sealed, renames it over `master/disk.qcow2`. A copy already running keeps the disk it opened at
-start (its QEMU holds the file; nothing reopens it by path) until `vm down`, and `vm list` marks it
-`on the master before`; a copy started after the rename boots the new master. Every master boots
-with one host key, `key/host_ed25519`, which cloud-init writes, so `known_hosts` reaches a copy of
-either. A build that fails leaves the master before in place, and only one build runs at a time.
-`--from-box` copies the data from VM 131 (`identity.env`, `/root/main-run/world.{sql,store.tgz}`,
-`/srv/mend-git`, the two volumes) instead. Do not use it after 20 Nov 2026: VM 131's copy of the
-run's data stopped there, and its agent logins have been spent since (below).
+`world.sql`, `world.store.tgz`, `mend-git.tgz`, `mend-garage.tgz` (the blob store, where sessions'
+captures live) and `mend-boat-state.tgz` (the build journals of the Boat images the data names),
+with VM 131's identity, keys and Boat key beside them. Since SLNT-1216 the daily run of `main` keeps
+it (`.agents/skills/box-main-run/`): each night its own copy (lane A) runs the flows that change it,
+and `vm save <n>` makes that copy's data the next master's. With Mend stopped in the copy, it holds
+every agent login against refresh (below), dumps the databases and the store directories they name,
+as `box release --save` does, and archives the git service, the blob store and Boat's state volume
+(`mend_mend-boat-state`; a copy without Boat keeps the journals its master was built with). It
+copies the five out beside the old ones, checks each (a dump with no `pg_dumpall` trailer, or an
+archive that does not read to its end, is refused), and only then moves the old ones to `*.prev.*`
+and the new ones into place. Until SLNT-1252 (21 Nov 2026) the journals were not saved: the image
+lane A built that night kept its row as `ready` while its journal went with the copy, and sealant
+quarantined it (`native-local-io-failed`) on every copy's first launch. The first master (20 Nov)
+had no blob store: VM 131's Garage volume holds the owner's data beside the run's, so it was not
+copied, and a change made on VM 131 shows `its capture manifest could not be read` on a copy.
+Changes made on copies since keep theirs. A save that fails anywhere leaves the directory as it was.
+It refuses data carrying a Mend migration `origin/main` lacks. The run then builds the master with
+`vm build` and no `--from-box`, from those files and its own preview, while other checks' copies run
+(SLNT-1249). The build boots its own disk in `master-build/` and, once it is sealed, renames it over
+`master/disk.qcow2`. A copy already running keeps the disk it opened at start (its QEMU holds the
+file; nothing reopens it by path) until `vm down`, and `vm list` marks it `on the master before`; a
+copy started after the rename boots the new master. Every master boots with one host key,
+`key/host_ed25519`, which cloud-init writes, so `known_hosts` reaches a copy of either. A build that
+fails leaves the master before in place, and only one build runs at a time. `--from-box` copies the
+data from VM 131 (`identity.env`, `/root/main-run/world.{sql,store.tgz}`, `/srv/mend-git`, the two
+volumes) instead. Do not use it after 20 Nov 2026: VM 131's copy of the run's data stopped there,
+and its agent logins have been spent since (below).
 
 **A copy** is a qcow2 overlay of the master with QEMU's user-mode network, 6 vCPU and 8 GB as VM 131
 has, on a loopback address of its own, `127.0.1.<n>`: web on `3105`, ssh on `2022` as root with the
@@ -314,15 +319,20 @@ Limits of a check VM:
   tailnet as expired until someone deletes it in the admin console (Machines, Remove). It refuses a
   slot a running copy holds.
 - **The copy shares VM 131's Boat deployment.** It runs under the deployment name the loaded data's
-  sealant keeps, with the build journals of the box's Boat images (`mend_mend-boat-state`), so it
-  reuses those images and builds none. With a name of its own, the copy's first image build failed
-  at once (`native-local-io-failed`) and sealant quarantined the image, so sessions never started.
-  Sharing is safe because sealant acts only on runs in its own database: every Boat run the loaded
-  data holds under that name is settled, VM 131 never sees a copy's runs, and `vm down` stops the
-  copy's Boat sessions so no VM it launched is left. The resource gateway stays off on a copy (a
-  Boat session in a project with `@db` is refused there): its host id derives from the identity the
-  copy shares with VM 131, so a copy's gateway would take the box's place. A worktree the loaded
-  data made on Boat under that name starts on a Boat copy; on a Docker-only copy it cannot.
+  sealant keeps, with the build journals of the Boat images its data names (`mend_mend-boat-state`),
+  so it reuses those images and builds none. The master carries the journals saved with its data
+  (`vm build` copies `mend-boat-state.tgz` in), and `vm up --boat` puts them into the copy's volume
+  once setup turns Boat on; a master built before 21 Nov carries none, and its copy gets the saved
+  ones. sealant reads an image's journal before every launch on it: an image whose row is `ready`
+  but whose journal is missing is quarantined for good, and only an image built again (a new row)
+  starts. With a name of its own, the copy's first image build failed at once
+  (`native-local-io-failed`) and sealant quarantined the image, so sessions never started. Sharing
+  is safe because sealant acts only on runs in its own database: every Boat run the loaded data
+  holds under that name is settled, VM 131 never sees a copy's runs, and `vm down` stops the copy's
+  Boat sessions so no VM it launched is left. The resource gateway stays off on a copy (a Boat
+  session in a project with `@db` is refused there): its host id derives from the identity the copy
+  shares with VM 131, so a copy's gateway would take the box's place. A worktree the loaded data
+  made on Boat under that name starts on a Boat copy; on a Docker-only copy it cannot.
 - **One set of agent logins, refreshed in one place.** Every copy holds the Codex and Claude logins
   of the run's data. Only sealant's keep-fresh sweeper on a server refreshes them (every other
   holder gets a copy with no usable refresh token), and a refresh spends the refresh token every
