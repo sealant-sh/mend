@@ -72,6 +72,13 @@ export default async ({ page, web, capture, note }) => {
   const checkpointLines = () =>
     page.getByRole("button", { name: /^Checkpoint · / }).filter({ visible: true });
   const details = () => visible(page.getByRole("dialog"));
+  /** Opens a line's details from the keyboard: the floating composer can cover it for a pointer. */
+  const openLine = async (locator) => {
+    await locator.scrollIntoViewIfNeeded();
+    await locator.focus();
+    await page.keyboard.press("Enter");
+    await details().waitFor({ timeout: 15_000 });
+  };
   const detailOf = (id) =>
     page.evaluate(async (sessionId) => {
       const { trpcClient } = window["__TSR_ROUTER__"].options.context;
@@ -135,7 +142,7 @@ export default async ({ page, web, capture, note }) => {
       `two turns ended; the conversation shows ${shownLines} checkpoint line(s); the chain: ${chain.join(", ")}`,
     );
     // The second turn's line: the last one shown now.
-    await checkpointLines().last().click();
+    await openLine(checkpointLines().last());
     const title = await details()
       .getByText(/^Checkpoint \d+/)
       .first()
@@ -150,7 +157,7 @@ export default async ({ page, web, capture, note }) => {
     // While a turn works, going back is refused and nothing changes.
     await send(SLOW);
     await visible(page.getByRole("button", { name: "Stop turn" })).waitFor({ timeout: 120_000 });
-    await turnTwoLine().click();
+    await openLine(turnTwoLine());
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     const confirm = () =>
       visible(page.getByRole("dialog").filter({ hasText: "Go back to checkpoint" }));
@@ -165,7 +172,7 @@ export default async ({ page, web, capture, note }) => {
 
     // Once it ends, going back goes through.
     const target = await turnTwoLine().innerText();
-    await turnTwoLine().click();
+    await openLine(turnTwoLine());
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     await confirm().getByText(`Go back to checkpoint ${ordinal}?`).waitFor();
     await shot("go-back-confirm-box-desktop");
@@ -216,7 +223,7 @@ export default async ({ page, web, capture, note }) => {
     await shot("go-back-agent-told-box-desktop");
 
     // The line undoes it: the saved checkpoint's files come back.
-    await line().click();
+    await openLine(line());
     await details()
       .getByRole("button", { name: `Go back to checkpoint ${restore.saved.ordinal}…` })
       .click();
