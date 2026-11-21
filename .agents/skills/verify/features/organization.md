@@ -76,8 +76,9 @@ someone cannot see answers as a missing one does.
 - CLI: `mend org`; `mend org switch <name|id>`; `mend org leave <name|id> [--yes]`;
   `mend operator org add-member <org> <email> [--role member|owner]`.
 - Web, `multi` with more than one membership: the shell header names the active organization and
-  opens a menu of the account's organizations with the role in each (apps/web-old shell). Settings →
-  Organization offers leaving it when that is allowed.
+  opens a menu of the account's organizations with the role in each
+  (`apps/web/src/components/organization-menu.tsx`). Settings → Organization offers leaving it when
+  that is allowed.
 - Desktop, mobile, VS Code, TUI and Slack offer no organization controls. They act in the
   organization their own sign-in has.
 
@@ -278,34 +279,29 @@ Preconditions:
 
 ## Gotchas
 
-- The Settings panels are `<section>` elements with an `h2` and no `aria-labelledby`
-  (`apps/web-old/src/components/organization-settings.tsx:75`), so they are not regions. Scope to
-  one with
-  `page.locator("section").filter({ has: page.getByRole("heading", { name: "Members" }) })`. That is
-  a finding: the sections need a label.
-- Member row buttons carry no member name: `Make owner`, `Make member`, `Reset password`, `Remove…`
-  and `Leave…` (`organization-settings.tsx:262-282`). They are unique only in a two-person
-  organization. The rows have no role (plain `div`s inside the panel's body,
-  `organization-settings.tsx:249`), so there is no ARIA scope. Scope with CSS to the panel body's
-  direct children, filtered by email:
-  `page.locator("#members > div:last-child > div").filter({ hasText: "<email>" })`. A plain
-  `page.locator("div").filter({ hasText })` also matches the ancestor that holds every row and fails
-  strict mode. That is a finding: the rows need a role and a name.
+- A Settings page's sections (`SettingSection`) are `<section>`s named by their title
+  (`apps/web/src/components/settings/setting-row.tsx`), so they are regions: scope with
+  `page.getByRole("region", { name: "<title>" })`. (The old app's had no name, a finding.)
+- Members are the table `<organization>'s members`; a member's role is the control `<name>'s role`
+  and their other actions are under `<name>, more` (`Your membership` on your own row), with
+  `Leave <organization>…` for yourself
+  (`apps/web/src/components/settings/organization-members-page.tsx`). `recipes/org-members.mjs`
+  drives the page.
 - `Revoke` on each open invitation is named `Revoke the invitation for <email>` (or
-  `… for anyone with the link` when unbound), and the rows are table rows of `Open invitations`
-  (`apps/web-old/src/components/settings/org-invitations.tsx`); the box's ARIA snapshot showed both
-  on 17 Nov.
-- `Take over…` carries no project name (`organization-settings.tsx:749`); its confirmation
-  `Take over <name>` does.
-- The minted link is a plain `<code>` element with no label (`organization-settings.tsx:357`). Read
-  it with `page.getByText(/\/join\//)`. `Copy` writes to the clipboard, which a headless context may
-  refuse; read the text instead.
-- The two `Show password` toggles on `/join#<token>` share one name
-  (`apps/web-old/src/components/auth-fields.tsx:84`) and toggle both fields together. The password
-  inputs are not textboxes; use `getByLabel`.
-- The audit log is a plain `<ol>` with no name (`organization-settings.tsx:816`). Assert entries
-  with `page.getByRole("listitem").filter({ hasText: "…" })`. Project and session entries name the
-  id, not the project's name.
+  `… for anyone with the link` when unbound), and the rows are rows of the table `Open invitations`
+  (`organization-members-page.tsx`); the box's ARIA snapshot showed both in the old app on 17 Nov.
+  Used, expired and revoked links are the list `Used, expired and revoked links`.
+- `Take over…` is named `Take over <project>…`, on Settings → Organization → Projects
+  (`apps/web/src/components/settings/organization-projects-page.tsx`).
+- Read a minted link with `page.getByText(/\/join\//)`. `Copy` writes to the clipboard, which a
+  headless context may refuse; read the text instead.
+- The two `Show password` toggles on `/join#<token>` share one name (`Hide password` once shown) and
+  one state, so either shows both fields (`apps/web/src/components/account-fields.tsx`,
+  `auth-fields.tsx`). The password inputs are not textboxes; use
+  `getByLabel("Password", { exact: true })` and `getByLabel("Confirm password")`.
+- The audit log is the table `Audit log` (`apps/web/src/components/settings/audit-log-page.tsx`,
+  `recipes/audit-log.mjs`). Assert entries by row text. Project and session entries name the id, not
+  the project's name.
 - `--days` above 30 is cut to 30 without a message; below 1 is refused. The web link always expires
   after seven days.
 - Settings pages re-read on their own when membership, roles or invitations change. Wait for the

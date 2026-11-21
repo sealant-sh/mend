@@ -17,8 +17,7 @@ in the same PR, and its judge names that flow (`pnpm verify judge`, which refuse
 does not have). Ids are stable: reports, tickets and PRs name flows by id, so rename one only with a
 note in the PR that does it. A flow's `Areas` line names the paths it passes through: an entry
 ending in `/` holds everything under it, and a judge cannot answer "no flow" for a change inside
-one. A flow for a route only the new web app (`apps/web`) has carries `- **Box:** after cut-over`,
-and runs once the box serves that app.
+one. Every flow runs on every box: the box serves the web app (`apps/web`) that ships.
 
 `M` is the CLI under test, signed in as the box's owner account (never `mend login` or `mend logout`
 it). `<p>` is the project `boat-check-ubuntu` (Ubuntu, branch `master`). `<sha8>` is the first 8
@@ -58,11 +57,11 @@ are `Organization folders` (access `off`, `read`, `write`) on its `Folders` sub-
 section where it is now and reports a handle that differs from the map as a map gap.
 
 The map still names the project page's `Setup` tab. The web now has a project `Settings` tab with
-sub-tabs (`General`, `Workspace`, `Services`, `Secrets`, `Git`, `Landing`, `Review`, `Folders`;
-`apps/web-old/src/components/project/settings-sections.ts`), and app Settings has one page per
-section (`/settings/devices`, `/settings/git-access`, …; old `#anchors` redirect). A flow that reads
-a Setup section reads it in the matching Settings sub-tab, and reports a missing section as a map
-gap, not a product failure.
+pages (`General`, `Workspace`, `Services`, `Variables and secrets`, `Folders and references`,
+`Only you`; `apps/web/src/lib/settings-pages.ts`), and app Settings has one page per section
+(`/settings/devices`, `/settings/agent-logins`, …; old addresses redirect). A flow that reads a
+Setup section reads it in the matching Settings sub-tab, and reports a missing section as a map gap,
+not a product failure.
 
 ## Fixtures
 
@@ -156,37 +155,35 @@ lane changed.
 
 ### adopt-project.web-directory
 
-- **Map:** adopt-project.md `projects-directory`, `project-page`, `adopt-web` (the panel opens and
+- **Map:** adopt-project.md `projects-directory`, `project-page`, `adopt-web` (the dialog opens and
   refuses a local path; nothing is adopted)
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** On `/projects`, open `Adopt a repository`, type a local path in its `Repository` combobox
-  and read the refusal, close the dialog with `Cancel`; filter the directory by `<p>` and open its
-  page.
-- **See:** the dialog `Adopt a repository` with the `Repository` combobox marked invalid
-  (`aria-invalid`), the line
-  `Use an HTTP(S), SSH, SCP-style, or git:// repository URL. Local paths and file:// URLs are not supported.`
-  and `Adopt` disabled; `1 of <n>` and one row for `<p>`; the project heading `<p>` with the
-  navigation `<p> project` and its `Worktrees <n>` link.
-- **Mode:** `agent` · a recipe would make it cheaper
+- **Do:** On `/projects`, choose `Add project`; on its tab `From a Git URL` type a local path in
+  `Repository address`, leave the field and read the refusal, choose `Add project` once, then
+  `Cancel`. Search `Search projects` for `<p>` and open its page.
+- **See:** the dialog `Add project` with `Repository address` marked invalid (`aria-invalid`) and a
+  line ending `Local paths and file:// URLs are not supported.`; nothing adopted (`M projects` lists
+  what it did before); the table `Projects` with one row for `<p>`; `<p>`'s page at
+  `/projects/<id>`.
+- **Mode:** `agent` · the verify skill's `recipes/projects.mjs` drives the same refusal on a stack
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/projects.index.tsx`, `apps/web-old/src/components/project/`,
-  `apps/api/src/adoptions.ts`
+- **Areas:** `apps/web/src/components/projects/`, `apps/web/src/routes/_inbox.projects.index.tsx`,
+  `apps/web/src/routes/_inbox.projects.$projectId.tsx`, `apps/api/src/adoptions.ts`
 
 ### adopt-project.new-web-projects
 
 - **Map:** adopt-project.md `projects-directory`, `adopt-web`, `adopt-invalid-url`,
   `adopt-visibility`; project-settings.md `settings-remove`, `settings-retention`
 - **Needs:** no session; no turn; web; GitHub reachable from the box
-- **Do:** Drive the recipe `new-web-projects` (after the composer's CLI batch
-  `new-web-composer-setup.json`): Projects lists the projects, searches and filters them; Add
-  project refuses a local path, clones a small public repository shared with the organization,
-  clones a big one while a session queued in the composer waits for it, and reports a clone the key
-  can't read and a clone that fails; Remove project…, Restore and Purge… under Removed projects.
+- **Do:** Drive the recipe `projects` (after the composer's CLI batch `composer-setup.json`):
+  Projects lists the projects, searches and filters them; Add project refuses a local path, clones a
+  small public repository shared with the organization, clones a big one while a session queued in
+  the composer waits for it, and reports a clone the key can't read and a clone that fails; Remove
+  project…, Restore and Purge… under Removed projects.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the session queued on the
   clone starts by itself; every project the recipe made is purged at its end.
-- **Mode:** `scripted` (recipes/new-web-projects.mjs)
+- **Mode:** `scripted` (recipes/projects.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/projects/`, `apps/web/src/routes/_inbox.projects.index.tsx`,
   `apps/web/src/lib/projects.ts`, `apps/web/src/lib/clone-state.ts`,
   `apps/web/src/lib/project-removal.ts`
@@ -195,17 +192,16 @@ lane changed.
 
 - **Map:** appearance.md `theme-web`, `theme-system`, `theme-persist`; sign-in.md `web-sign-out`
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-settings`: Settings opens Profile beside its own sidebar, with
-  every page a person may open; old settings addresses go to their new homes; Profile changes the
+- **Do:** Drive the recipe `settings`: Settings opens Profile beside its own sidebar, with every
+  page a person may open; old settings addresses go to their new homes; Profile changes the
   account's name and password and puts both back; Appearance sets theme, text size and terminal
   font, kept across a reload from the first paint, and the account menu reads the same theme; a
   member sees no owner page or Server and is refused them by address; an operator sees Server; the
   phone's Settings tab, Profile and Appearance at 390px; Sign out last.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the account's name and
   password are what they were before the run.
-- **Mode:** `scripted` (recipes/new-web-settings.mjs)
+- **Mode:** `scripted` (recipes/settings.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/`, `apps/web/src/routes/_inbox.settings.index.tsx`,
   `apps/web/src/routes/_inbox.settings.profile.tsx`,
   `apps/web/src/routes/_inbox.settings.appearance.tsx`, `apps/web/src/routes/_inbox.settings.$.tsx`,
@@ -218,17 +214,16 @@ lane changed.
   `dotfiles-web-files`; secret-files.md `secrets-list`, `secrets-add-web`, `secrets-path-refused`,
   `secrets-remove`
 - **Needs:** no session; no turn; web; the server reaches GitHub
-- **Do:** Drive the recipe `new-web-dotfiles`: old `/settings/workspace#<section>` links land on
-  Dotfiles, Devices and access keys or Connected apps; a repository the server can't clone is
-  refused with nothing saved, and a small public one saves with its manager; a home file is added
-  from the browser and removed; a secret file's path outside the home folder is refused, then the
-  file is added from pasted text, replaced from a chosen file and removed.
+- **Do:** Drive the recipe `dotfiles`: old `/settings/workspace#<section>` links land on Dotfiles,
+  Devices and access keys or Connected apps; a repository the server can't clone is refused with
+  nothing saved, and a small public one saves with its manager; a home file is added from the
+  browser and removed; a secret file's path outside the home folder is refused, then the file is
+  added from pasted text, replaced from a chosen file and removed.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the account's repository,
   home files and secret files are what they were before the run, and no secret file's content
   appears anywhere.
-- **Mode:** `scripted` (recipes/new-web-dotfiles.mjs)
+- **Mode:** `scripted` (recipes/dotfiles.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/dotfiles-page.tsx`,
   `apps/web/src/routes/_inbox.settings.dotfiles.tsx`, `apps/web/src/lib/dotfiles-repository.ts`,
   `apps/web/src/lib/secret-files.ts`
@@ -238,16 +233,15 @@ lane changed.
 - **Map:** pairing-devices.md `pair-web`, `mint-by-hand`, `device-list`, `revoke`; workspace-ssh.md
   `ssh-keys`, `no-gateway`; access keys (ADR 0023)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-devices`: `/settings/access-keys` opens Devices and access keys;
-  Show a code makes a pairing code with its QR; a token made by hand is shown once, then its device
-  is listed and revoked by name; an access key is created, shown once, listed by name and revoked;
-  the workspace SSH keys list, Add SSH key… with `mend ssh setup`, and Remove… with its result; on
-  the box, the keys this account registered with `mend ssh setup`.
+- **Do:** Drive the recipe `devices`: `/settings/access-keys` opens Devices and access keys; Show a
+  code makes a pairing code with its QR; a token made by hand is shown once, then its device is
+  listed and revoked by name; an access key is created, shown once, listed by name and revoked; the
+  workspace SSH keys list, Add SSH key… with `mend ssh setup`, and Remove… with its result; on the
+  box, the keys this account registered with `mend ssh setup`.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no device or key the run
   made is left behind, and no code, token or key appears in any picture.
-- **Mode:** `scripted` (recipes/new-web-devices.mjs)
+- **Mode:** `scripted` (recipes/devices.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/devices-page.tsx`,
   `apps/web/src/routes/_inbox.settings.devices.tsx`, `apps/web/src/lib/devices.ts`,
   `apps/web/src/lib/pairing-qr.ts`
@@ -259,18 +253,17 @@ lane changed.
   `key-check`, `bridge-share`; git-author.md `git-author-set-web`, `git-author-refused`,
   `git-author-clear`
 - **Needs:** no session; no turn; web and the CLI
-- **Do:** Drive the recipe `new-web-agent-logins`, and while it waits run its CLI batch
-  `new-web-agent-logins-connect.json`: `/settings/git-access` opens Agent logins and Git; Connect
-  Claude Code shows `mend login --url` and `mend connect claude` and closes by itself when the
-  batch's login lands; Codex's login is replaced with an API key, a wrong key refused first; a
-  refused login reads Reconnect; Disconnect removes one; "Selected agent's login only" saves and
-  reports a failed save; the Git author is refused, saved and returned to the account's; the Mend
-  key is checked against GitHub; the Git access mode switches to your computer's key and back.
+- **Do:** Drive the recipe `agent-logins`, and while it waits run its CLI batch
+  `agent-logins-connect.json`: `/settings/git-access` opens Agent logins and Git; Connect Claude
+  Code shows `mend login --url` and `mend connect claude` and closes by itself when the batch's
+  login lands; Codex's login is replaced with an API key, a wrong key refused first; a refused login
+  reads Reconnect; Disconnect removes one; "Selected agent's login only" saves and reports a failed
+  save; the Git author is refused, saved and returned to the account's; the Mend key is checked
+  against GitHub; the Git access mode switches to your computer's key and back.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no part of any key on a
   page; the account's author, mode and switch are what they were before the run.
-- **Mode:** `scripted` (recipes/new-web-agent-logins.mjs)
+- **Mode:** `scripted` (recipes/agent-logins.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/agent-logins-page.tsx`,
   `apps/web/src/components/agent-login-panels.tsx`,
   `apps/web/src/routes/_inbox.settings.agent-logins.tsx`, `apps/web/src/lib/agent-login.ts`
@@ -279,20 +272,18 @@ lane changed.
 
 - **Map:** none in a feature file (route PR 41: a person's own MCP servers, docs/adr/0024)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-settings-mcp`: MCP servers lists the account's own servers under
-  "Only you"; add an HTTP server with a header (the row names the header, never its value), a stdio
-  server and an SSE one; a taken name is refused before sending; turn one off and it stays off; a
-  failed switch goes back with Try again; edit a URL and keep the saved header; a kept sign-in shows
-  Signed in and Forget sign-in… confirms; remove one; the Executor services section (recorded
-  answers) points to Connected apps without a link, lists services with one, and a service sign-in
-  comes back through `/executor/service-callback`, or says why it was refused; a failed read shows
-  Try again; the phone width uses 44px targets and an action sheet. The recipe removes the servers
-  it added.
+- **Do:** Drive the recipe `settings-mcp`: MCP servers lists the account's own servers under "Only
+  you"; add an HTTP server with a header (the row names the header, never its value), a stdio server
+  and an SSE one; a taken name is refused before sending; turn one off and it stays off; a failed
+  switch goes back with Try again; edit a URL and keep the saved header; a kept sign-in shows Signed
+  in and Forget sign-in… confirms; remove one; the Executor services section (recorded answers)
+  points to Connected apps without a link, lists services with one, and a service sign-in comes back
+  through `/executor/service-callback`, or says why it was refused; a failed read shows Try again;
+  the phone width uses 44px targets and an action sheet. The recipe removes the servers it added.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no header value in any
   picture, log or note.
-- **Mode:** `scripted` (recipes/new-web-settings-mcp.mjs)
+- **Mode:** `scripted` (recipes/settings-mcp.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/mcp-servers-page.tsx`,
   `apps/web/src/components/settings/mcp-server-dialog.tsx`,
   `apps/web/src/components/settings/executor-services.tsx`,
@@ -303,16 +294,15 @@ lane changed.
 
 - **Map:** none in a feature file (route PR 42: phone notifications, `GET`/`PUT /me/notifications`)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-settings-notifications`: Notifications shows the four switches
-  as the server holds them under "Only you"; turning one saves it at once, says so in a toast, and
-  the server keeps it; a slow save shows Saving…; a refused one goes back with Try again; Sent to
-  says no phone is paired, and (recorded answer) lists a paired iPhone and leaves a browser out; a
-  failed read shows Try again; the phone width. The recipe puts the setting back.
+- **Do:** Drive the recipe `settings-notifications`: Notifications shows the four switches as the
+  server holds them under "Only you"; turning one saves it at once, says so in a toast, and the
+  server keeps it; a slow save shows Saving…; a refused one goes back with Try again; Sent to says
+  no phone is paired, and (recorded answer) lists a paired iPhone and leaves a browser out; a failed
+  read shows Try again; the phone width. The recipe puts the setting back.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the account's setting is
   what it was before the run.
-- **Mode:** `scripted` (recipes/new-web-settings-notifications.mjs)
+- **Mode:** `scripted` (recipes/settings-notifications.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/notifications-page.tsx`,
   `apps/web/src/routes/_inbox.settings.notifications.tsx`, `apps/web/src/lib/notifications.ts`,
   `apps/web/src/server/routers/devices.ts`
@@ -323,10 +313,10 @@ lane changed.
   `doppler-disconnect`
 - **Needs:** no session; no turn; web; for Slack and Executor for real, a Slack workspace and an
   Executor connected to the organization
-- **Do:** Drive the recipe `new-web-settings-connected-apps`: Connected apps under "Only you" shows
-  Slack, Executor and Doppler; Doppler connects, replaces and disconnects a token with no part of it
-  ever shown, and the disconnect confirmation counts the projects with a picked config; a linked
-  Slack shows Your default project and unlinks; Executor's row says your link is used before the
+- **Do:** Drive the recipe `settings-connected-apps`: Connected apps under "Only you" shows Slack,
+  Executor and Doppler; Doppler connects, replaces and disconnects a token with no part of it ever
+  shown, and the disconnect confirmation counts the projects with a picked config; a linked Slack
+  shows Your default project and unlinks; Executor's row says your link is used before the
   organization's shared account; `/executor/callback` finishes a link and returns, or says why it
   didn't; old `/settings/workspace` opens Connected apps; `/slack/link#<code>` names the workspace,
   the Slack user and the Mend account, warns when it replaces a link, links, and says when a code
@@ -334,9 +324,8 @@ lane changed.
   in on the same address. On the box, link Slack from a real mention.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no token in any picture,
   log or note; no Doppler token left on the account.
-- **Mode:** `scripted` (recipes/new-web-settings-connected-apps.mjs)
+- **Mode:** `scripted` (recipes/settings-connected-apps.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/connected-apps-page.tsx`,
   `apps/web/src/components/settings/brand-marks.tsx`,
   `apps/web/src/routes/_inbox.settings.connected-apps.tsx`,
@@ -350,19 +339,18 @@ lane changed.
   (description and tour, suggested fixes as your switches); project-settings.md
   `settings-review-automation`, `settings-landing` (moved here, no Inherit). Route PR 43.
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-settings-automation`: `/settings/review`, `/settings/landing`
-  and `/settings/sessions` open Your automation; under "Only you" the four switches (Change
-  description and tour, Suggested fixes, Automatic landing, Stop the session when you settle its
-  thread) show what the server holds, with no Inherit; turning each saves it, says so in a toast,
-  and the server keeps it without changing `autoName` or `backgroundSessions`; the home composer's
-  "Land when a turn completes" starts from Automatic landing, on and off; a slow save shows Saving…;
-  a refused one goes back with Try again; a failed read shows Try again; the phone width. The recipe
-  puts both settings back.
+- **Do:** Drive the recipe `settings-automation`: `/settings/review`, `/settings/landing` and
+  `/settings/sessions` open Your automation; under "Only you" the four switches (Change description
+  and tour, Suggested fixes, Automatic landing, Stop the session when you settle its thread) show
+  what the server holds, with no Inherit; turning each saves it, says so in a toast, and the server
+  keeps it without changing `autoName` or `backgroundSessions`; the home composer's "Land when a
+  turn completes" starts from Automatic landing, on and off; a slow save shows Saving…; a refused
+  one goes back with Try again; a failed read shows Try again; the phone width. The recipe puts both
+  settings back.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the account's automation
   and settle settings are what they were before the run.
-- **Mode:** `scripted` (recipes/new-web-settings-automation.mjs)
+- **Mode:** `scripted` (recipes/settings-automation.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/automation-page.tsx`,
   `apps/web/src/routes/_inbox.settings.automation.tsx`, `apps/web/src/lib/automation.ts`
 
@@ -370,19 +358,18 @@ lane changed.
 
 - **Map:** none in a feature file (route PR 48: the organization's Boat key, docs/adr/0025)
 - **Needs:** no session; no turn; web; for a connected key for real, an owner and a Boat key
-- **Do:** Drive the recipe `new-web-settings-boat`: Boat under "Everyone in <organization>" says
-  whether there is a key; an owner connects one through a dialog with the create-key command, a
-  value that isn't a key is refused and the field empties; a connected key shows who added it and
-  when it expires, a banner two weeks before expiry with Replace key…, the wallet when the key's
-  account can bill several, Last check with Check again, Full check with its steps and a dialog to
-  run one, and what Boat reported; replace and remove confirm in dialogs and say a refusal there; a
-  member reads only whether there is a key; a failed read shows Try again. On the box, connect and
-  check a real key.
+- **Do:** Drive the recipe `settings-boat`: Boat under "Everyone in <organization>" says whether
+  there is a key; an owner connects one through a dialog with the create-key command, a value that
+  isn't a key is refused and the field empties; a connected key shows who added it and when it
+  expires, a banner two weeks before expiry with Replace key…, the wallet when the key's account can
+  bill several, Last check with Check again, Full check with its steps and a dialog to run one, and
+  what Boat reported; replace and remove confirm in dialogs and say a refusal there; a member reads
+  only whether there is a key; a failed read shows Try again. On the box, connect and check a real
+  key.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no part of the key in any
   picture, log or note.
-- **Mode:** `scripted` (recipes/new-web-settings-boat.mjs)
+- **Mode:** `scripted` (recipes/settings-boat.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/boat-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.boat.tsx`, `apps/web/src/lib/boat-key.ts`,
   `apps/web/src/server/routers/boat-key.ts`
@@ -391,18 +378,16 @@ lane changed.
 
 - **Map:** none in a feature file (the owners' Projects page, the owner's ruling of 18 Nov 2026)
 - **Needs:** no session; no turn; web; a second account to join and leave
-- **Do:** Drive the recipe `new-web-settings-org-projects`: Projects under "Owners of
-  <organization>" sits in the owner's settings sidebar right before Audit log, and a member has no
-  such entry and is sent to Profile by its address; with nothing to show, both lists say so; a
-  project whose creator left is listed without a creator, and Take over… confirms, says a refusal in
-  the dialog, and once taken over the row goes, a toast says so and the project is the owner's; kept
-  volumes list their project, volume, Docker name, when and size, with no actions; a failed read
-  shows Try again.
+- **Do:** Drive the recipe `settings-org-projects`: Projects under "Owners of <organization>" sits
+  in the owner's settings sidebar right before Audit log, and a member has no such entry and is sent
+  to Profile by its address; with nothing to show, both lists say so; a project whose creator left
+  is listed without a creator, and Take over… confirms, says a refusal in the dialog, and once taken
+  over the row goes, a toast says so and the project is the owner's; kept volumes list their
+  project, volume, Docker name, when and size, with no actions; a failed read shows Try again.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the member and the
   project the recipe made are gone afterwards.
-- **Mode:** `scripted` (recipes/new-web-settings-org-projects.mjs)
+- **Mode:** `scripted` (recipes/settings-org-projects.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/organization-projects-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.projects.tsx`,
   `apps/web/src/lib/organization-projects.ts`
@@ -412,10 +397,10 @@ lane changed.
 - **Map:** exposure.md `exposure-report`, `tenancy-gate`; doctor.md `doctor-web-connection`;
   workspace-images.md `image-instance-default` (read-only); operator.md `org-list`
 - **Needs:** no session; no turn; web; the server's operator and a second account that isn't one
-- **Do:** Drive the recipe `new-web-settings-server`: Server under "Operators of this server" says
-  what the server is (its address, version, where it runs, and the Sealant connection with Check
-  again, Checking… while it runs), then "Needs you" only when something does (Sealant not connected,
-  the server's Boat key refused or Boat unreachable when Boat is offered, a check not in place on a
+- **Do:** Drive the recipe `settings-server`: Server under "Operators of this server" says what the
+  server is (its address, version, where it runs, and the Sealant connection with Check again,
+  Checking… while it runs), then "Needs you" only when something does (Sealant not connected, the
+  server's Boat key refused or Boat unreachable when Boat is offered, a check not in place on a
   public server, a gate item missing on a server running several organizations), each with what Mend
   saw and the fix. Who can reach it shows the declaration and how it is set; on a private server
   what going public would change and the checks in place are two closed lines, each check with a
@@ -429,9 +414,8 @@ lane changed.
   reads the box's own Sealant.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no key, token or
   connection secret in any picture, log or note.
-- **Mode:** `scripted` (recipes/new-web-settings-server.mjs)
+- **Mode:** `scripted` (recipes/settings-server.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/server-page.tsx`,
   `apps/web/src/routes/_inbox.settings.[server].tsx`, `apps/web/src/lib/server-settings.ts`,
   `apps/web/src/server/routers/operator.ts`, `apps/api/src/exposure.ts`, `apps/api/src/tenancy.ts`,
@@ -441,7 +425,7 @@ lane changed.
 
 - **Map:** references-folders.md `folder-web`, `ref-refresh-remove`
 - **Needs:** no session; no turn; web; GitHub reachable from the server, for a reference's clone
-- **Do:** Drive the recipe `new-web-settings-folders`: Folders and references under "Everyone in
+- **Do:** Drive the recipe `settings-folders`: Folders and references under "Everyone in
   <organization>" lists the organization's folders with their file count, size and when they were
   added, and its references with their repository, ref and when they were fetched; an owner makes a
   folder (a name the server refuses is said under the field), uploads files, shows and deletes one,
@@ -451,9 +435,8 @@ lane changed.
   a failed read shows Try again.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the folder and the
   reference the recipe made are gone afterwards.
-- **Mode:** `scripted` (recipes/new-web-settings-folders.mjs)
+- **Mode:** `scripted` (recipes/settings-folders.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/folders-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.folders.tsx`,
   `apps/web/src/lib/organization-folders.ts`, `apps/api/src/routes/folders.ts`
@@ -463,20 +446,19 @@ lane changed.
 - **Map:** none in a feature file (route PR 47: where the organization's new sessions run, Docker or
   Boat, and what a switch changes; docs/adr/0025)
 - **Needs:** no session; no turn; web; for a real switch, a server that offers Docker and Boat
-- **Do:** Drive the recipe `new-web-settings-runtime`: Runtime under "Everyone in <organization>"
-  lists the runtimes the server offers with where new sessions run selected, Boat's line linking to
-  the Boat page; old `/settings/organization/defaults` and `/settings#organization-defaults` open
-  it. An owner switches: when the server says nothing changes, at once with a toast; otherwise a
-  dialog first says what the new runtime wouldn't run (the organization's image, projects by name, a
-  count of private ones) and that running sessions stay, with Cancel, Switch without moving and Move
-  and switch, and says a refusal there; after a switch without moving, the page lists what the
-  runtime doesn't run with Move to what <runtime> runs. A switch Mend couldn't check says so. A
-  member reads the choices and who can change them; a server where Sealant picks has no choice; a
-  failed read shows Try again. On the box, switch for real where it offers both.
+- **Do:** Drive the recipe `settings-runtime`: Runtime under "Everyone in <organization>" lists the
+  runtimes the server offers with where new sessions run selected, Boat's line linking to the Boat
+  page; old `/settings/organization/defaults` and `/settings#organization-defaults` open it. An
+  owner switches: when the server says nothing changes, at once with a toast; otherwise a dialog
+  first says what the new runtime wouldn't run (the organization's image, projects by name, a count
+  of private ones) and that running sessions stay, with Cancel, Switch without moving and Move and
+  switch, and says a refusal there; after a switch without moving, the page lists what the runtime
+  doesn't run with Move to what <runtime> runs. A switch Mend couldn't check says so. A member reads
+  the choices and who can change them; a server where Sealant picks has no choice; a failed read
+  shows Try again. On the box, switch for real where it offers both.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; what each switch sent.
-- **Mode:** `scripted` (recipes/new-web-settings-runtime.mjs)
+- **Mode:** `scripted` (recipes/settings-runtime.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/runtime-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.runtime.tsx`,
   `apps/web/src/lib/runtime-switch.ts`
@@ -487,7 +469,7 @@ lane changed.
   Executor (manage, configure, the directory, share a service)
 - **Needs:** no session; no turn; web; for Slack and Executor for real, a Slack workspace and an
   Executor (Mend-run or the organization's own)
-- **Do:** Drive the recipe `new-web-settings-integrations`: old `/settings/organization/slack` and
+- **Do:** Drive the recipe `settings-integrations`: old `/settings/organization/slack` and
   `/settings/organization/executor` land on Integrations under "Everyone in <organization>"; an
   owner connects Slack from Mend's manifest with two tokens that are never shown again (a refusal
   empties both fields), turns thread settings on and off, removes a person's Slack link from Linked
@@ -498,9 +480,8 @@ lane changed.
   workspace and start the Executor Mend runs.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; no part of a token in any
   picture, log or note.
-- **Mode:** `scripted` (recipes/new-web-settings-integrations.mjs)
+- **Mode:** `scripted` (recipes/settings-integrations.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/integrations-page.tsx`,
   `apps/web/src/components/settings/executor-services.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.integrations.tsx`,
@@ -511,7 +492,7 @@ lane changed.
 - **Map:** workspace-images.md `image-organization-default`, `image-packages`,
   `image-setup-commands`, `image-rejections` (route PR 47)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-settings-workspace-image`: Workspace image under "Everyone in
+- **Do:** Drive the recipe `settings-workspace-image`: Workspace image under "Everyone in
   <organization>" says Mend copies it into each new project when the project is created and that
   changing it changes no existing project. An owner adds packages with Add package; a package
   Sealant can't find refuses the save and is named beside why; the save goes through once it is
@@ -522,9 +503,8 @@ lane changed.
   again; on a phone the Unsaved changes bar has 44px buttons.
 - **See:** each step's note in the recipe's `steps.log` (the images the server answered), and its
   captures.
-- **Mode:** `scripted` (recipes/new-web-settings-workspace-image.mjs)
+- **Mode:** `scripted` (recipes/settings-workspace-image.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/workspace-image-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.workspace-image.tsx`,
   `apps/web/src/lib/workspace-image.ts`, `apps/web/src/lib/runtime-support.ts`
@@ -533,18 +513,17 @@ lane changed.
 
 - **Map:** adopt-project.md `adopt-web`, `adopt-invalid-url`, `adopt-visibility`
 - **Needs:** no session; no turn; web; GitHub reachable from the box
-- **Do:** Drive the recipe `new-web-first-project` (after the composer's CLI batch
-  `new-web-composer-setup.json`): setup's First project step sends someone who sees a project on to
-  How Mend fits together; with the project list answered without the account's projects, it refuses
-  a local path, reports a clone that fails with Clone again and Change details, clones a small
-  public repository shared with the organization, then clones a big one, keeps it across a reload,
-  and Continue opens How Mend fits together, whose Skip for now opens the composer, where a session
-  queued on the clone waits and starts.
+- **Do:** Drive the recipe `first-project` (after the composer's CLI batch `composer-setup.json`):
+  setup's First project step sends someone who sees a project on to How Mend fits together; with the
+  project list answered without the account's projects, it refuses a local path, reports a clone
+  that fails with Clone again and Change details, clones a small public repository shared with the
+  organization, then clones a big one, keeps it across a reload, and Continue opens How Mend fits
+  together, whose Skip for now opens the composer, where a session queued on the clone waits and
+  starts.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the session queued on the
   clone starts by itself; every project the recipe made is purged at its end.
-- **Mode:** `scripted` (recipes/new-web-first-project.mjs)
+- **Mode:** `scripted` (recipes/first-project.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/first-project-step.tsx`,
   `apps/web/src/routes/welcome.first-project.tsx`, `apps/web/src/lib/use-clone.ts`,
   `apps/web/src/lib/setup.ts`
@@ -554,24 +533,23 @@ lane changed.
 - **Map:** sign-in.md `first-account`, `cli-login`; git-access.md `mend-key`, `bridge-share`;
   provider-accounts.md `accounts-list`; adopt-project.md `adopt-web`
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-setup-order`: setup in the owner's order (SLNT-1191). Command
-  line, step 2 of 7, waits with the install and sign-in commands; Skip for now reaches Git access
-  with "Skipped" under the step and the full block once; a device the server announces with the
-  `user` event turns the open page into "Mend's command line is signed in on <computer>." with no
-  reload. Git access shows one ticked line and the GitHub account section, waiting then connected.
-  Agent login shows Mend's command line once above the tabs, and each tab holds only its own
-  command. Organization, step 5 of 7, reports a failed save, renames, and goes on to First project,
-  which shows how to connect GitHub with no login, then the person's repositories with an owner
-  choice: their own account, then each organization; an organization lists its repositories, search
-  looks within it, and one with none says it may need to approve GitHub CLI. Tab on the
-  first-account form goes Name, Email, Password, Confirm password, the button. A person who joins
-  lands on Command line, step 2 of 6, with no Organization step. The recipe also times a first
-  `/api/github/owners` and `/api/github/repos` as the caller with a fake GitHub login.
+- **Do:** Drive the recipe `setup-order`: setup in the owner's order (SLNT-1191). Command line, step
+  2 of 7, waits with the install and sign-in commands; Skip for now reaches Git access with
+  "Skipped" under the step and the full block once; a device the server announces with the `user`
+  event turns the open page into "Mend's command line is signed in on <computer>." with no reload.
+  Git access shows one ticked line and the GitHub account section, waiting then connected. Agent
+  login shows Mend's command line once above the tabs, and each tab holds only its own command.
+  Organization, step 5 of 7, reports a failed save, renames, and goes on to First project, which
+  shows how to connect GitHub with no login, then the person's repositories with an owner choice:
+  their own account, then each organization; an organization lists its repositories, search looks
+  within it, and one with none says it may need to approve GitHub CLI. Tab on the first-account form
+  goes Name, Email, Password, Confirm password, the button. A person who joins lands on Command
+  line, step 2 of 6, with no Organization step. The recipe also times a first `/api/github/owners`
+  and `/api/github/repos` as the caller with a fake GitHub login.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the organization's name
   is put back, the minted device revoked and the fake GitHub login removed at the end.
-- **Mode:** `scripted` (recipes/new-web-setup-order.mjs)
+- **Mode:** `scripted` (recipes/setup-order.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/command-line-step.tsx`,
   `apps/web/src/components/command-line-block.tsx`, `apps/web/src/components/organization-step.tsx`,
   `apps/web/src/components/github-connect.tsx`, `apps/web/src/components/setup-frame.tsx`,
@@ -584,13 +562,13 @@ lane changed.
 
 - **Map:** sign-in.md `first-account`
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-how-mend-fits` (SLNT-1203): setup's last step, How Mend fits
-  together. The first account sees step 7 of 7 with three screens on `?screen=`: how Mend's parts
-  nest (server, organization, project, worktree, session, workspace, change), inside a session, and
-  the sidebar ("The inbox" on a phone). The pictures are the app's own components with sample data;
-  the sidebar picture is the sidebar itself with its five groups. Next, Back and the browser's back
-  move between screens; Skip for now (screens 1 and 2) and Continue to Mend (screen 3) open Mend,
-  and going back to Git access the step reads skipped or done. `/welcome` sends someone who finished
+- **Do:** Drive the recipe `how-mend-fits` (SLNT-1203): setup's last step, How Mend fits together.
+  The first account sees step 7 of 7 with three screens on `?screen=`: how Mend's parts nest
+  (server, organization, project, worktree, session, workspace, change), inside a session, and the
+  sidebar ("The inbox" on a phone). The pictures are the app's own components with sample data; the
+  sidebar picture is the sidebar itself with its five groups. Next, Back and the browser's back move
+  between screens; Skip for now (screens 1 and 2) and Continue to Mend (screen 3) open Mend, and
+  going back to Git access the step reads skipped or done. `/welcome` sends someone who finished
   setup to Mend, never to this step; First project sends someone who sees a project on to it.
   Someone who joins sees step 6 of 6 and "You're a member of …". The account menu's "How Mend fits
   together" opens the same screens in a dialog, Done returns focus to the account row; on a phone,
@@ -598,9 +576,8 @@ lane changed.
 - **See:** each step's note in the recipe's `steps.log`, and its captures of every screen in light,
   dark and at 390px, the skipped rail, and the dialog; the recipe clears what it remembered in the
   browser.
-- **Mode:** `scripted` (recipes/new-web-how-mend-fits.mjs)
+- **Mode:** `scripted` (recipes/how-mend-fits.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/how-mend-fits.tsx`,
   `apps/web/src/components/how-mend-fits-step.tsx`,
   `apps/web/src/components/how-mend-fits-dialog.tsx`,
@@ -612,20 +589,19 @@ lane changed.
 - **Map:** sign-in.md `first-account`, `cli-login`; git-access.md `mend-key`; provider-accounts.md
   `accounts-list`
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-setup-revisit` (SLNT-1193). A real `mend login` signs a computer
-  in. The first account goes forward from Command line to First project, then back to each earlier
-  step by its link beside the sheet ("Git access, done"): each page shows what was saved and the
-  later steps stay links, First project as "not finished". It renames the organization on
-  Organization and Continue goes forward to First project again. Tab reaches each link by name; at
-  390px the header's back arrow goes to the step before, down to Command line, which has none. A
-  person who joins skips Command line and Agent login, goes back to each by its link, goes forward
-  again, and signing in again lands on `/welcome`.
+- **Do:** Drive the recipe `setup-revisit` (SLNT-1193). A real `mend login` signs a computer in. The
+  first account goes forward from Command line to First project, then back to each earlier step by
+  its link beside the sheet ("Git access, done"): each page shows what was saved and the later steps
+  stay links, First project as "not finished". It renames the organization on Organization and
+  Continue goes forward to First project again. Tab reaches each link by name; at 390px the header's
+  back arrow goes to the step before, down to Command line, which has none. A person who joins skips
+  Command line and Agent login, goes back to each by its link, goes forward again, and signing in
+  again lands on `/welcome`.
 - **See:** each step's note in the recipe's `steps.log`; only past steps are links, never Account,
   the current step or one not reached; no Continue sends the person back. The organization's name is
   put back and the computer's device revoked at the end.
-- **Mode:** `scripted` (recipes/new-web-setup-revisit.mjs)
+- **Mode:** `scripted` (recipes/setup-revisit.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/lib/setup.ts`, `apps/web/src/routes/welcome.git-access.tsx`,
   `apps/web/src/routes/welcome.index.tsx`, `apps/web/src/lib/git-access-step.ts`,
   `apps/web/src/components/git-access-step.tsx`, `apps/web/src/components/agent-login-step.tsx`
@@ -634,16 +610,14 @@ lane changed.
 
 - **Map:** sign-in.md `authorize-page`, `cli-login`
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-authorize-account` (SLNT-1193). The page a real `mend login`
-  opens, then a request answered in the browser for three accounts: a short name and email, a long
-  name and long email, and no name. Each at 1280px and 390px, then authorized, denied and signed
-  out.
+- **Do:** Drive the recipe `authorize-account` (SLNT-1193). The page a real `mend login` opens, then
+  a request answered in the browser for three accounts: a short name and email, a long name and long
+  email, and no name. Each at 1280px and 390px, then authorized, denied and signed out.
 - **See:** the "Approving as" row reads the name, the email under it, and "Not you? Sign out", with
   no "·" in it; an account with no name shows only its email, and "signed in as <email>" once
   authorized.
-- **Mode:** `scripted` (recipes/new-web-authorize-account.mjs)
+- **Mode:** `scripted` (recipes/authorize-account.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/routes/authorize.tsx`
 
 ### adopt-project.new-web-project-page
@@ -653,17 +627,16 @@ lane changed.
   `join-line`
 - **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box) with a live `mend run`
   session in it
-- **Do:** Drive the recipe `new-web-project` (after its CLI batch `new-web-project-setup.json`): a
-  project's page with its header, facts and tabs; the Sessions tab's search, Filter, Mine or
-  Everyone and Open or Stopped, kept in the address across a reload; a row's "…" starts a shell and
-  another session in its worktree; Open shell starts one in a new worktree; the "…" opens Set up
-  this project, which starts a setup session; an empty project; a clone's page while it runs; the
-  old setup page's address; a project that fails to load.
+- **Do:** Drive the recipe `project` (after its CLI batch `project-setup.json`): a project's page
+  with its header, facts and tabs; the Sessions tab's search, Filter, Mine or Everyone and Open or
+  Stopped, kept in the address across a reload; a row's "…" starts a shell and another session in
+  its worktree; Open shell starts one in a new worktree; the "…" opens Set up this project, which
+  starts a setup session; an empty project; a clone's page while it runs; the old setup page's
+  address; a project that fails to load.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; every session the recipe
   started is stopped, and every project it made is purged, at its end.
-- **Mode:** `scripted` (recipes/new-web-project.mjs)
+- **Mode:** `scripted` (recipes/project.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/project/`,
   `apps/web/src/routes/_inbox.projects.$projectId.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId.index.tsx`,
@@ -675,13 +648,13 @@ lane changed.
 
 - **Map:** no feature file yet (ADR 0026, tabs and tiles); start-session.md `session-page`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-tiles-sessions.json` (two sessions in the worktree `tiles-ws`,
-  each a `sleep`), then drive the recipe `new-web-tiles`: drag a tab onto a tile's right edge and
-  into another tile's middle, move tabs with Alt+Shift and the arrows, resize by the divider,
-  reload, maximise and restore, close a tile's last tab, reopen it from "+", open a New session tab,
-  start a session in the worktree from outside the page, open `?full=1`, and look under 1024px and
-  at 390px. Then pick the other batch session's tab, press Back, and reload on a view's tab. Stop
-  both batch sessions at the end.
+- **Do:** Run the CLI batch `tiles-sessions.json` (two sessions in the worktree `tiles-ws`, each a
+  `sleep`), then drive the recipe `tiles`: drag a tab onto a tile's right edge and into another
+  tile's middle, move tabs with Alt+Shift and the arrows, resize by the divider, reload, maximise
+  and restore, close a tile's last tab, reopen it from "+", open a New session tab, start a session
+  in the worktree from outside the page, open `?full=1`, and look under 1024px and at 390px. Then
+  pick the other batch session's tab, press Back, and reload on a view's tab. Stop both batch
+  sessions at the end.
 - **See:** each step's note in the recipe's `steps.log`: the drop marks Split right and Add to this
   tile, two tiles after a split and one after a merge, the resized width kept over a reload, the
   same conversation element after its tab moved, Restore layout on a maximised tile, the started
@@ -690,9 +663,8 @@ lane changed.
   conversation elements), the sidebar marks that session's row and the browser tab reads its title;
   Back leaves the workspace; a reload on a view's tab (`/sessions/<id>/<view>`) opens that tab
   focused in the same arrangement.
-- **Mode:** `scripted` (recipes/new-web-tiles.mjs)
+- **Mode:** `scripted` (recipes/tiles.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/`,
   `apps/web/src/components/session/session-sheet.tsx`,
   `apps/web/src/components/session/workspace-tabs.tsx`,
@@ -704,21 +676,20 @@ lane changed.
 - **Map:** no feature file yet (ADR 0026, "Layouts": the layout menu and a person's saved layouts,
   SLNT-1175)
 - **Needs:** either; no turn; web and CLI; `<p>`; the owner's sign-in typed in a second browser
-- **Do:** Run the CLI batch `new-web-layouts-sessions.json` (two sessions in the worktree
-  `layouts-one`, one in `layouts-two`, each a `sleep`), then drive the recipe `new-web-layouts` (the
-  drive passes the account's sign-in): open the layout button in the Workspace header, pick Change
-  over terminal and press ⌥2 and ⌥3, save the sheet as "Review with terminal", be refused the same
-  name in lower case, pick it in `layouts-two`, see it from a second browser signed in as the same
-  person, rename and remove it, and look under 1024px. Then drive `new-web-layouts-server` for the
-  API's refusals, limits and a second person.
+- **Do:** Run the CLI batch `layouts-sessions.json` (two sessions in the worktree `layouts-one`, one
+  in `layouts-two`, each a `sleep`), then drive the recipe `layouts` (the drive passes the account's
+  sign-in): open the layout button in the Workspace header, pick Change over terminal and press ⌥2
+  and ⌥3, save the sheet as "Review with terminal", be refused the same name in lower case, pick it
+  in `layouts-two`, see it from a second browser signed in as the same person, rename and remove it,
+  and look under 1024px. Then drive `layouts-server` for the API's refusals, limits and a second
+  person.
 - **See:** each step's note in the recipes' `steps.log`: the check on the layout the sheet shows,
   both sessions kept in one tile under Change over terminal and the Terminal tab kept under ⌥2, the
   saved toast and the menu again with the saved layout at ⌥5, the name-taken sentence in the dialog,
   the same three tiles in `layouts-two` while `layouts-one` keeps its own, the layout in the second
   browser, and no layout button under 1024px. Each recipe leaves nothing it saved.
-- **Mode:** `scripted` (recipes/new-web-layouts.mjs, recipes/new-web-layouts-server.mjs)
+- **Mode:** `scripted` (recipes/layouts.mjs, recipes/layouts-server.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/lib/layouts.ts`, `apps/web/src/components/workspace/layout-menu.tsx`,
   `packages/domain/src/workbench/saved-layout.ts`, `packages/db/src/repos/saved-layouts.ts`,
   `packages/api-contracts/src/saved-layouts.ts`, `apps/api/src/routes/saved-layouts.ts`,
@@ -729,15 +700,15 @@ lane changed.
 - **Map:** session-shell.md `shell-holds`; mobile.md `mobile-terminal-embed`; shared-control.md
   `terminal-owner-only`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-terminal-sessions.json` (a `sleep` session in the worktree
-  `term-ws`), then drive the recipe `new-web-terminal`: open the old shell address, open New shell,
-  type a command, Ctrl and click a printed link, move the Terminal tab to a tile of its own,
-  maximise it, put it under the conversation and back, Close shell…, watch as a member with shared
-  control (a fixture), look at 390px, load `/tty-embed` with an upgrade ticket and no cookie, and
-  stop the session. Run the batch again, then drive `new-web-terminal-shells`: two shells, a shell's
-  right-click menu, Rename…, its "…" menu's Copy working directory, `exit` in one shell, `exit 3` in
-  another and its "What it printed", Close shell… on a shell running `sleep 600`, a long press, and
-  390px. Stop the batch sessions at the end if the recipes didn't.
+- **Do:** Run the CLI batch `terminal-sessions.json` (a `sleep` session in the worktree `term-ws`),
+  then drive the recipe `terminal`: open the old shell address, open New shell, type a command, Ctrl
+  and click a printed link, move the Terminal tab to a tile of its own, maximise it, put it under
+  the conversation and back, Close shell…, watch as a member with shared control (a fixture), look
+  at 390px, load `/tty-embed` with an upgrade ticket and no cookie, and stop the session. Run the
+  batch again, then drive `terminal-shells`: two shells, a shell's right-click menu, Rename…, its
+  "…" menu's Copy working directory, `exit` in one shell, `exit 3` in another and its "What it
+  printed", Close shell… on a shell running `sleep 600`, a long press, and 390px. Stop the batch
+  sessions at the end if the recipes didn't.
 - **See:** each step's note in the recipe's `steps.log`: the redirect to `/sessions/<id>/terminal`
   with the Terminal tab showing, the command's output read through Copy, the link's new tab, the
   shell's column count falling in half a sheet and rising when maximised with the same terminal
@@ -748,9 +719,8 @@ lane changed.
   shell shown, its output in "What it printed", `/workspace/repo` both copied and printed by `pwd`,
   the confirm before closing, and "No shells are open in this workspace." with New shell once the
   last one is closed.
-- **Mode:** `scripted` (recipes/new-web-terminal.mjs, recipes/new-web-terminal-shells.mjs)
+- **Mode:** `scripted` (recipes/terminal.mjs, recipes/terminal-shells.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/`, `apps/web/src/components/terminal/`,
   `apps/web/src/lib/workspace-shells.ts`, `apps/web/src/lib/terminal-links.ts`,
   `apps/web/src/lib/embed-exchange.ts`, `apps/web/src/routes/tty-embed.tsx`,
@@ -764,23 +734,23 @@ lane changed.
   `land-session-line`; shared-control.md `share-on-web`, `share-off-web`, `who-pays`,
   `viewer-lines`, `org-owner-off`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-details-sessions.json` (two `sleep` sessions in one worktree
+- **Do:** Run the CLI batch `details-sessions.json` (two `sleep` sessions in one worktree
   `details-ws-<time>`, the first declaring a `web` Service in `.mend/mend.toml`), then drive the
-  recipe `new-web-details`: start the `web` Service, open `/sessions/<id>/details`, follow "Shared
-  with 1 other session", turn shared control on (through its dialog) and off, open Details from the
-  other session's tile "+", read the fixture lines (a pull request, a handoff, a second repository,
-  checks with edits since, a model, a per-person workspace and a layout fallback; shared control
-  granted to the viewer alone), follow Preview to its tab, and a pull request read that fails with
-  Try again.
+  recipe `details`: start the `web` Service, open `/sessions/<id>/details`, follow "Shared with 1
+  other session", read the owner's row (shared control goes to the person who asked, #1848, so the
+  row offers no `Turn on` for everyone), turn the everyone switch on through the API and off with
+  the row's `Turn off shared control`, open Details from the other session's tile "+", read the
+  fixture lines (a pull request, a handoff, a second repository, checks with edits since, a model, a
+  per-person workspace and a layout fallback; shared control granted to the viewer alone), follow
+  Preview to its tab, and a pull request read that fails with Try again.
 - **See:** each step's note in the recipe's `steps.log`: the Details tab selected; the Workspace
   group's worktree, branch, base and "None yet"; "web :8000" Running under Services; both sessions
-  with owner, agent and status; focus on "Sessions in this workspace"; the who-pays line and the
-  dialog's words; `sharedControlEnabledAt` set after Turn on and null after Turn off; Details in the
-  "+" menu; the Preview tab selected from Preview; the fixture lines; "This didn't load." then "None
-  yet" after Try again.
-- **Mode:** `scripted` (recipes/new-web-details.mjs)
+  with owner, agent and status; focus on "Sessions in this workspace"; the who-pays line and
+  `Shared control is off.` with no `Turn on`; `sharedControlEnabledAt` null after
+  `Turn off shared control`; Details in the "+" menu; the Preview tab selected from Preview; the
+  fixture lines; "This didn't load." then "None yet" after Try again.
+- **Mode:** `scripted` (recipes/details.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/details-view.tsx`,
   `apps/web/src/components/session/shared-control.tsx`, `apps/web/src/lib/session-details.ts`
 
@@ -789,21 +759,20 @@ lane changed.
 - **Map:** per-person-homes.md `join-line`, `runs-as-yourself`, `shared-workspace-line`;
   start-session.md `session-stop-shared`; land-change.md `land-web`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-shared-workspace-sessions.json` (the worktree
-  `shared-ws-<time>`: one `mend run` that writes a file, then two `sleep` sessions in it), then
-  drive the recipe `new-web-shared-workspace`: open the home composer's worktree picker, pick the
-  running workspace, read the join line with another person's session live there (fixture), open
-  that person's session and press "Start your own session in this workspace", Stop session… on the
-  second session and stop it, then Land… on the first and land (fixture answer).
+- **Do:** Run the CLI batch `shared-workspace-sessions.json` (the worktree `shared-ws-<time>`: one
+  `mend run` that writes a file, then two `sleep` sessions in it), then drive the recipe
+  `shared-workspace`: open the home composer's worktree picker, pick the running workspace, read the
+  join line with another person's session live there (fixture), open that person's session and press
+  "Start your own session in this workspace", Stop session… on the second session and stop it, then
+  Land… on the first and land (fixture answer).
 - **See:** each step's note in the recipe's `steps.log`: "Your running workspaces in <project>" with
   the worktree and "2 sessions"; no join line where only your sessions run; the join line saying the
   session runs as you, on your own logins; a New session tab beside the other person's with the join
   line and the task field focused; the Stop dialog naming the session that keeps the workspace
   running, and the toast that it is still running; the Land dialog naming the session still editing,
   and the toast "Pushed … to origin. … is still running."
-- **Mode:** `scripted` (recipes/new-web-shared-workspace.mjs)
+- **Mode:** `scripted` (recipes/shared-workspace.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/new-session/join-line.tsx`,
   `apps/web/src/components/new-session/pickers.tsx`, `apps/web/src/lib/shared-workspace.ts`
 
@@ -812,20 +781,19 @@ lane changed.
 - **Map:** start-session.md `session-stop`, `session-stop-shared`; attach-resume.md `resume-web`,
   `rename-web`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-session-actions-sessions.json` (two sessions in the worktree
-  `actions-ws` and one in `actions-solo`, each a `sleep`), then drive the recipe
-  `new-web-session-actions`: right-click a session tab, open its tile's "…" and the workspace "…",
-  Copy branch name, New session in this workspace, rename by F2, open Stop session… on a session
-  that shares its workspace and on one alone in its own, stop each, resume the lone one, and open
-  the phone's "…" sheet and its Stop session sheet at 390px.
+- **Do:** Run the CLI batch `session-actions-sessions.json` (two sessions in the worktree
+  `actions-ws` and one in `actions-solo`, each a `sleep`), then drive the recipe `session-actions`:
+  right-click a session tab, open its tile's "…" and the workspace "…", Copy branch name, New
+  session in this workspace, rename by F2, open Stop session… on a session that shares its workspace
+  and on one alone in its own, stop each, resume the lone one, and open the phone's "…" sheet and
+  its Stop session sheet at 390px.
 - **See:** each step's note in the recipe's `steps.log`: the tab menu holds the session's actions
   and no workspace action, the workspace menu holds no session action; the dialog names the session
   that keeps the workspace running, and says the workspace stops too for the lone one; the stopped
   banner and "You stopped the session at …" with what the workspace does now; the session running
   again after Resume session.
-- **Mode:** `scripted` (recipes/new-web-session-actions.mjs)
+- **Mode:** `scripted` (recipes/session-actions.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/session/session-actions.tsx`,
   `apps/web/src/components/session/stopped-banner.tsx`, `apps/web/src/lib/session-stop.ts`
 
@@ -835,18 +803,17 @@ lane changed.
   workspace-replace.md `retire-line`, `retire-evidence`, `replace-web`, `replace-refused`,
   `replacing-line`; services.md `service-hold`; attach-resume.md `delete-web`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-session-ended-sessions.json` (one `sleep` session in `ended-a`
-  and one in `ended-b`), then drive the recipe `new-web-session-ended`: read the bands a stopped
-  session shows while it saves, when work isn't saved (Discard…), while Services keep the workspace
-  up (Stop services) and while the workspace waits to be replaced (Replace this workspace now), then
-  stop the other session and delete it from its tab's menu.
+- **Do:** Run the CLI batch `session-ended-sessions.json` (one `sleep` session in `ended-a` and one
+  in `ended-b`), then drive the recipe `session-ended`: read the bands a stopped session shows while
+  it saves, when work isn't saved (Discard…), while Services keep the workspace up (Stop services)
+  and while the workspace waits to be replaced (Replace this workspace now), then stop the other
+  session and delete it from its tab's menu.
 - **See:** each step's note in the recipe's `steps.log`: each band's line in the domain's words, the
   server's answer to Discard and stop, Stop services and Replace this workspace now; no Delete
   session… on a running session; the Delete dialog's "What stays"; home after Delete with "Deleted …
   Its worktree and change are still in …", and the session gone from the inbox.
-- **Mode:** `scripted` (recipes/new-web-session-ended.mjs)
+- **Mode:** `scripted` (recipes/session-ended.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/session/session-notices.tsx`,
   `apps/web/src/lib/shared-workspace.ts`
 
@@ -855,13 +822,13 @@ lane changed.
 - **Map:** services.md `service-run-web`, `service-recipe`, `service-add`, `service-observe`,
   `service-logs`, `service-restart-stop`; mend-toml.md `toml-recipes-card`, `toml-parse-error`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-preview-sessions.json` (two `sleep` sessions in a new worktree
+- **Do:** Run the CLI batch `preview-sessions.json` (two `sleep` sessions in a new worktree
   `preview-ws-<time>`, whose `.mend/mend.toml` declares `web` and `broken`), then drive the recipe
-  `new-web-preview`: open `/sessions/<id>/preview`, Start web, open its page in a new tab, type a
-  path, Run a command… that asks `web` for its page from inside the workspace, open both logs,
-  Restart service…, adopt a port with an empty command, Start broken, Stop web and Run again, look
-  at 390px with the picker open, a Mend preview on another site, a file that doesn't parse and a
-  watcher with shared control (fixtures), the view's failed read, and Stop session on both.
+  `preview`: open `/sessions/<id>/preview`, Start web, open its page in a new tab, type a path, Run
+  a command… that asks `web` for its page from inside the workspace, open both logs, Restart
+  service…, adopt a port with an empty command, Start broken, Stop web and Run again, look at 390px
+  with the picker open, a Mend preview on another site, a file that doesn't parse and a watcher with
+  shared control (fixtures), the view's failed read, and Stop session on both.
 - **See:** each step's note in the recipe's `steps.log`: the file's recipes with Start, "Both
   sessions in <worktree> use these services…", `web` Running with `:8000` on the Preview tab, the
   new tab at the Service's address and the typed path in its link, `docs` printing
@@ -871,9 +838,8 @@ lane changed.
   Open in a new tab, the file's error with Read it again, "Only <owner> starts services…" with
   Restart and Stop still there, Try again, and "This workspace isn't running…" with Resume after
   both stop.
-- **Mode:** `scripted` (recipes/new-web-preview.mjs)
+- **Mode:** `scripted` (recipes/preview.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/preview-view.tsx`,
   `apps/web/src/components/workspace/views/preview-page.tsx`,
   `apps/web/src/components/workspace/views/service-log.tsx`,
@@ -885,15 +851,15 @@ lane changed.
 ### session-page.new-web-checks
 
 - **Map:** none in a feature file: the checks the agent ran were a section of the old app's side
-  panel, and are the Checks view in the new web app (SLNT-1157)
+  panel, and are the Checks view in the web app (SLNT-1157)
 - **Needs:** either; one Codex turn; web and CLI; `<p>`
-- **Do:** Drive the recipe `new-web-checks-box` (`pnpm verify drive new-web --box`): it starts a
-  Codex session on `verify-fixture` that writes three scripts, runs a test twice, a typecheck, a
-  lint that fails and `ls`, then edits README.md; it opens `/sessions/<id>/checks`, the tile's "+",
-  and 390px, then lays fixtures over that session's record reads: earlier history unread with a
-  check Claude ran through Bash, an empty record, the record being read, and a failed read with Try
-  again; then it stops the session. Locally, the CLI batch `new-web-checks-sessions.json` (a `sleep`
-  session in `checks-ws`) and the recipe `new-web-checks` draw the same states from fixtures alone.
+- **Do:** Drive the recipe `checks-box` (`pnpm verify drive web --box`): it starts a Codex session
+  on `verify-fixture` that writes three scripts, runs a test twice, a typecheck, a lint that fails
+  and `ls`, then edits README.md; it opens `/sessions/<id>/checks`, the tile's "+", and 390px, then
+  lays fixtures over that session's record reads: earlier history unread with a check Claude ran
+  through Bash, an empty record, the record being read, and a failed read with Try again; then it
+  stops the session. Locally, the CLI batch `checks-sessions.json` (a `sleep` session in
+  `checks-ws`) and the recipe `checks` draw the same states from fixtures alone.
 - **See:** each step's note in the recipe's `steps.log`: the Checks tab showing with its fact ("1
   failed"), one row per command, newest first, `ls` not among them and the test once, each with what
   it is, how it ended and the checkpoint it ran after ("Lint failed after checkpoint N"), the
@@ -901,22 +867,21 @@ lane changed.
   between Change and Preview in the "+" menu; no sideways scroll at 390px. From the fixtures:
   Claude's run reading "The record doesn't hold how it ended.", Read earlier history, the empty
   line, "Reading the record…", and "This didn't load." with Try again bringing the list back.
-- **Mode:** `scripted` (recipes/new-web-checks-box.mjs, recipes/new-web-checks.mjs)
+- **Mode:** `scripted` (recipes/checks-box.mjs, recipes/checks.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/checks-view.tsx`, `apps/web/src/lib/checks.ts`
 
 ### session-page.new-web-record
 
 - **Map:** review-change.md `review-checkpoint-mark`
 - **Needs:** either; one Codex turn; web; `<p>`
-- **Do:** Drive the recipe `new-web-record-box` (`pnpm verify drive new-web --box`): it starts a
-  Codex session on `verify-fixture` that writes a file, runs `ls` and a command that exits 1, and
-  edits the file again; it opens `/sessions/<id>/record`, filters by Commands and Checkpoints, opens
-  the failing command's row, loads `/sessions/<id>#checkpoint-N` from scratch and clears the mark,
-  marks a checkpoint by hand, and looks at 390px; then it lays fixtures over the session's record
-  reads (earlier history unread, the record being read, a failed read with Try again into an empty
-  record) and stops the session.
+- **Do:** Drive the recipe `record-box` (`pnpm verify drive web --box`): it starts a Codex session
+  on `verify-fixture` that writes a file, runs `ls` and a command that exits 1, and edits the file
+  again; it opens `/sessions/<id>/record`, filters by Commands and Checkpoints, opens the failing
+  command's row, loads `/sessions/<id>#checkpoint-N` from scratch and clears the mark, marks a
+  checkpoint by hand, and looks at 390px; then it lays fixtures over the session's record reads
+  (earlier history unread, the record being read, a failed read with Try again into an empty record)
+  and stops the session.
 - **See:** each step's note in the recipe's `steps.log`: the session's messages, commands, edits and
   checkpoints newest first, each with its time, kind and checkpoint; Commands and Checkpoints
   showing only their kind; the failing command's row open with its output and "It exited with code 1
@@ -925,25 +890,23 @@ lane changed.
   "marked by hand" checkpoint after Mark a checkpoint; no sideways scroll at 390px; "This is the
   record so far…" with Read earlier history, "Reading the record…", "This didn't load." with Try
   again, and "Nothing in the record yet…".
-- **Mode:** `scripted` (recipes/new-web-record-box.mjs)
+- **Mode:** `scripted` (recipes/record-box.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/record-view.tsx`,
   `apps/web/src/lib/record-rows.ts`, `apps/web/src/lib/screen-log.ts`
 
 ### session-page.new-web-screen
 
 - **Map:** none in a feature file: the agent's screen, its log, Take over and Hand back (ADR 0020)
-  were the old app's Screen tab, and are the Screen view in the new web app (SLNT-1157)
+  were the old app's Screen tab, and are the Screen view in the web app (SLNT-1157)
 - **Needs:** either; one Codex turn; web; a project whose workspace image has Screen on (else
   `verify-fixture`, and the live states are drawn by fixtures only)
-- **Do:** Drive the recipe `new-web-screen-box` (`pnpm verify drive new-web --box`; on a local
-  stack, `new-web-screen`, which turns Screen on in verify-fixture and starts a shell there): it
-  starts a Codex session in a project with Screen on, opens `/sessions/<id>?view=desktop`, reads the
-  Screen view, and when the screen is live takes over, hands back and opens full screen; then it
-  lays fixtures over `screens.read` and `screens.log` (no screen, starting, didn't start, stopped
-  with the session, and a live screen the viewer can't reach, with Reconnect), looks at 390px and
-  stops the session.
+- **Do:** Drive the recipe `screen-box` (`pnpm verify drive web --box`; on a local stack, `screen`,
+  which turns Screen on in verify-fixture and starts a shell there): it starts a Codex session in a
+  project with Screen on, opens `/sessions/<id>?view=desktop`, reads the Screen view, and when the
+  screen is live takes over, hands back and opens full screen; then it lays fixtures over
+  `screens.read` and `screens.log` (no screen, starting, didn't start, stopped with the session, and
+  a live screen the viewer can't reach, with Reconnect), looks at 390px and stops the session.
 - **See:** each step's note in the recipe's `steps.log`: `?view=desktop` moving to
   `/sessions/<id>/screen` with the Screen tab selected; a live screen's bar ("Codex has input ·
   You're watching", "Display :N · W × H", Full screen, Take over), "You have input · Codex waits
@@ -951,9 +914,8 @@ lane changed.
   log newest first with its frames; "No screen in this workspace.", "Starting the screen…", "The
   screen didn't start." with Try again, "The screen stopped with the session." with Resume session,
   and "Mend couldn't reach the screen." with Reconnect; no sideways scroll at 390px.
-- **Mode:** `scripted` (recipes/new-web-screen-box.mjs, recipes/new-web-screen.mjs)
+- **Mode:** `scripted` (recipes/screen-box.mjs, recipes/screen.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/workspace/views/screen-view.tsx`,
   `apps/web/src/components/workspace/views/screen-viewer.ts`, `apps/web/src/lib/screen-state.ts`,
   `apps/web/src/lib/screen-rtc.ts`, `apps/web/src/lib/screen-socket.ts`
@@ -978,12 +940,12 @@ lane changed.
 
 - **Map:** start-session.md `session-page`
 - **Needs:** either; web; `verify-fixture`
-- **Do:** Run the CLI batch `new-web-checkpoints-sessions.json` (three `mend run` sessions in the
-  worktree `ckpt-turns`, one after another: the first writes two files, the second only reads them,
-  the third changes one), then drive the recipe `new-web-checkpoints`. It lays one conversation of
-  three turns over the worktree's real checkpoints, a turn inside each run, and reads it with one,
-  two and three turns held; it hovers the last checkpoint line, opens it from the keyboard, follows
-  Open in Record, then Show changes, and taps the line at 390px.
+- **Do:** Run the CLI batch `checkpoints-sessions.json` (three `mend run` sessions in the worktree
+  `ckpt-turns`, one after another: the first writes two files, the second only reads them, the third
+  changes one), then drive the recipe `checkpoints`. It lays one conversation of three turns over
+  the worktree's real checkpoints, a turn inside each run, and reads it with one, two and three
+  turns held; it hovers the last checkpoint line, opens it from the keyboard, follows Open in
+  Record, then Show changes, and taps the line at 390px.
 - **See:** no checkpoint line above the first message; one line after the first turn,
   `Checkpoint · 2 files changed`; none after the turn that changed nothing;
   `Checkpoint · 1 file changed` after the third. Hovering, Enter or a tap opens the line's details:
@@ -992,9 +954,8 @@ lane changed.
   going back. Open in Record lands on `/sessions/<id>/record#checkpoint-N`, whose Checkpoints filter
   still lists every checkpoint; Show changes opens `/sessions/<id>/change` over that turn's
   checkpoints with `NOTES.md` in it; no sideways scroll at 390px.
-- **Mode:** `scripted` (recipes/new-web-checkpoints.mjs)
+- **Mode:** `scripted` (recipes/checkpoints.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/session/checkpoint-line.tsx`,
   `apps/web/src/lib/turn-checkpoints.ts`
 
@@ -1009,7 +970,7 @@ lane changed.
   completes; `M sessions --project <p> --json` lists it with no file changed by it.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
-- **Areas:** `apps/web-old/src/`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/web/src/`, `apps/api/src/`, `packages/sessions/`
 
 ### start-session.web-write
 
@@ -1031,9 +992,8 @@ lane changed.
   and above what Codex did after taking it, and starts no turn of its own
   (`start-session.new-web-steer-taken` drives this part with a recipe); after `Stop turn` that turn
   reads `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab
-  reads Idle.
+  reads `Replied`.
 - **Mode:** `agent`
-- **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
   `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
@@ -1043,8 +1003,8 @@ lane changed.
 
 - **Map:** start-session.md `session-page`
 - **Needs:** real turn (codex); web; the project `verify-fixture`
-- **Do:** Drive the recipe `new-web-steer-taken-box` (`pnpm verify drive new-web --box`): it starts
-  a Codex session in `verify-fixture` from the New session composer, asks it to run `sleep 30`, then
+- **Do:** Drive the recipe `steer-taken-box` (`pnpm verify drive web --box`): it starts a Codex
+  session in `verify-fixture` from the New session composer, asks it to run `sleep 30`, then
   `sleep 40`, then reply `slept`, and once Codex runs `sleep 30`, sends
   `When you reply, add the word steered after slept.` from the composer (its button reads Steer).
   Stop the session with `M stop <id8>` once it ends.
@@ -1056,8 +1016,7 @@ lane changed.
   and after a reload it stays solid with nothing under it but who and when. It fails (SLNT-1234) if
   the message still reads as waiting when turn 2 ends, or reads `Codex read this during its turn`:
   the recipe stops with "the message read as waiting until turn 2 ended".
-- **Mode:** `scripted` (recipes/new-web-steer-taken-box.mjs)
-- **Box:** after cut-over
+- **Mode:** `scripted` (recipes/steer-taken-box.mjs)
 - **Box-only:** `real-agent-turn`
 - **Areas:** `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
   `apps/web/src/components/session/conversation-tile.tsx`,
@@ -1069,8 +1028,8 @@ lane changed.
 - **Map:** start-session.md `session-memory-limit`
 - **Needs:** real turn (codex); web; the project `verify-fixture`; a copy without Boat (its sessions
   run on Docker)
-- **Do:** Drive the recipe `new-web-memory-limit-box` (`pnpm verify drive new-web --box`): it starts
-  a Codex session in `verify-fixture` that replies `ready`, then a second one told to run
+- **Do:** Drive the recipe `memory-limit-box` (`pnpm verify drive web --box`): it starts a Codex
+  session in `verify-fixture` that replies `ready`, then a second one told to run
   `head -c 4608M /dev/zero | tail | wc -c` once and reply `finished`, then sends the first one
   `Reply with the single word pong, and nothing else.` Stop both with `M stop <id8>` once it ends.
 - **See:** the command is stopped inside its workspace (a copy has 8 GB, so the workspace's limit is
@@ -1081,8 +1040,7 @@ lane changed.
   answers `pong` with no such line. It fails (SLNT-1233) on a build whose workspaces have no memory
   limit, or that says nothing when one is reached: the recipe stops with "nothing says the workspace
   hit its memory limit".
-- **Mode:** `scripted` (recipes/new-web-memory-limit-box.mjs)
-- **Box:** after cut-over
+- **Mode:** `scripted` (recipes/memory-limit-box.mjs)
 - **Box-only:** `real-agent-turn`
 - **Areas:** `packages/sessions/src/workspace-memory.ts`,
   `packages/domain/src/workbench/memory-limit.ts`, `apps/web/src/components/session/agent-turn.tsx`
@@ -1091,10 +1049,10 @@ lane changed.
 
 - **Map:** start-session.md `session-page`
 - **Needs:** real turn (codex); web; the project `verify-fixture`
-- **Do:** Drive the recipe `new-web-streaming-box` with `STREAM_OUT` set to `<scratch>`: it starts a
-  Codex session in `verify-fixture` from the New session composer, then asks for three replies of
-  about 500 words with headings, a list and a code block, the second with 100ms more latency on
-  every request, and in the third scrolls up mid-reply, waits, and scrolls back to the end. Stop the
+- **Do:** Drive the recipe `streaming-box` with `STREAM_OUT` set to `<scratch>`: it starts a Codex
+  session in `verify-fixture` from the New session composer, then asks for three replies of about
+  500 words with headings, a list and a code block, the second with 100ms more latency on every
+  request, and in the third scrolls up mid-reply, waits, and scrolls back to the end. Stop the
   session with `M stop <id8>` once it ends.
 - **See:** each reply's words appear at a steady pace, a word at a time, never a sentence or more at
   once: the notes' `stepChars` median is under 15 and `gapMs` median under 50 (as each update lands,
@@ -1103,7 +1061,6 @@ lane changed.
   position 3 seconds after scrolling up, and 0px from the end both right after scrolling back and 3
   seconds later. Reopening the session shows every reply whole at once, with nothing fading.
 - **Mode:** `scripted`
-- **Box:** after cut-over
 - **Box-only:** `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/rich-text.tsx`,
   `apps/web/src/components/session/agent-turn.tsx`, `apps/web/src/lib/text-reveal.ts`,
@@ -1118,8 +1075,8 @@ lane changed.
   the address moves to the session's id send `And say done.`; then, while it still reads Starting,
   go to Projects and wait there a minute before coming back. Then, on `<p>`'s Worktrees tab, open a
   worktree's "…", New session in this worktree, Codex, and once it has started send `hi` from its
-  composer, wait a minute, then send `tell me a joke`. Drive the recipe `new-web-instant-start` for
-  the same steps against a stack, with a refused start and the phone width.
+  composer, wait a minute, then send `tell me a joke`. Drive the recipe `instant-start` for the same
+  steps against a stack, with a refused start and the phone width.
 - **See:** the session's page opens at once at `/sessions/starting-…` with the message,
   `Getting the session ready`, and a Starting row under Running; the composer is open and reads
   `Codex is starting. What you send now goes to it once it's ready.`, never `runs in a terminal`;
@@ -1134,7 +1091,6 @@ lane changed.
   or the project's name as a name (SLNT-1230); once sent `tell me a joke` within about a minute it
   reads a name Mend made from the joke, different from the worktree's other session.
 - **Mode:** `agent`
-- **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/pending-starts.ts`,
   `apps/web/src/components/new-session/instant-start.ts`,
@@ -1146,8 +1102,8 @@ lane changed.
 
 - **Map:** start-session.md `start-composer`, `session-page`
 - **Needs:** real turn (codex); web; the project `verify-fixture`
-- **Do:** Drive the recipe `new-web-impatient-start-box` (`pnpm verify drive new-web --box`). It
-  starts a Codex session in `verify-fixture` from the New session composer with
+- **Do:** Drive the recipe `impatient-start-box` (`pnpm verify drive web --box`). It starts a Codex
+  session in `verify-fixture` from the New session composer with
   `Reply with the single word ready, and nothing else.`, and while it still reads Starting sends
   `Then reply with the single word again, and nothing else.` from its composer. As soon as Mend has
   answered for those words it closes the tab (the page leaves the app), then opens the session in a
@@ -1163,8 +1119,7 @@ lane changed.
   the second message, which then lived only in the closed tab: the recipe stops with "the message
   sent while it started isn't there in a new tab". It also fails if the reload shows no first
   message, or `New session`.
-- **Mode:** `scripted` (recipes/new-web-impatient-start-box.mjs)
-- **Box:** after cut-over
+- **Mode:** `scripted` (recipes/impatient-start-box.mjs)
 - **Box-only:** `real-agent-turn`
 - **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/outbox.ts`,
   `apps/web/src/components/new-session/instant-start.ts`,
@@ -1213,7 +1168,6 @@ lane changed.
   reload, and the turn replies `deleted`; after `Deny` it reads `You denied` and Codex replies
   `kept`.
 - **Mode:** `agent`
-- **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/request-card.tsx`,
   `apps/web/src/lib/agent-requests.ts`, `apps/web/src/lib/answered-here.ts`
@@ -1262,36 +1216,36 @@ lane changed.
 
 - **Map:** review-change.md `review-open`, `review-diff`; start-session.md `session-page`
 - **Needs:** either (the turn's session); no turn; web; `start-session.boat-turn`
-- **Do:** Recipe `session-review` with `MAIN_RUN_SESSION` set to the turn's session.
-- **See:** on the Now inbox, the session's row menu `Open review` opens the session's change at
-  `/sessions/<id>/change` (`/changes/<id>` lands there too; either path is seen), whose diff shows
-  `MAIN-RUN.md` and the added line `seen`. The recipe's exit `0` and its `steps.log` line
-  `Open review on <id8>'s row opened <path>: the diff's MAIN-RUN.md reads … seen` show all of it.
-- **Mode:** `scripted` (recipes/session-review.mjs)
+- **Do:** Open the turn's session's change at `/sessions/<id>/change` (and `/changes/<id>`, which
+  opens the same change), and read its diff.
+- **See:** the Change view's file list (the heading `Files …`) names `MAIN-RUN.md`, and its diff
+  shows the added line `seen`; either path is seen.
+- **Mode:** `agent` (the old app's `recipes/session-review.mjs` went at cut-over)
 - **Box-only:** no
 - **Sample:** yes
-- **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
+- **Areas:** `apps/web/src/components/change/`,
+  `apps/web/src/routes/_inbox.sessions.$sessionId.$view.tsx`,
+  `apps/web/src/routes/_inbox.changes.$changeId.tsx`, `apps/api/src/`, `packages/store/`
 
 ### review-change.new-web-change
 
 - **Map:** review-change.md `review-open`, `review-diff`, `review-files`, `review-pinned`;
   repositories-in-session.md `repo-review-line`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-change-sessions.json` (worktrees `change-small`, written by two
-  sessions, `change-big` and `change-empty`, each by `mend run`), then drive the recipe
-  `new-web-change`; when its `steps.log` reads "waiting for the worktree to change", run the batch
-  `new-web-change-moves.json`. It opens `/sessions/<id>/change` and `/changes/<id>#land`, picks a
-  file, switches to Split and reloads, marks a file viewed and reloads, shows the new version after
-  the files change, reads the big change and filters it, splits the Change tab beside the
-  conversation, and looks at 390px.
+- **Do:** Run the CLI batch `change-sessions.json` (worktrees `change-small`, written by two
+  sessions, `change-big` and `change-empty`, each by `mend run`), then drive the recipe `change`;
+  when its `steps.log` reads "waiting for the worktree to change", run the batch
+  `change-moves.json`. It opens `/sessions/<id>/change` and `/changes/<id>#land`, picks a file,
+  switches to Split and reloads, marks a file viewed and reloads, shows the new version after the
+  files change, reads the big change and filters it, splits the Change tab beside the conversation,
+  and looks at 390px.
 - **See:** each step's note in the recipe's `steps.log`: the Change tab focused with its +/− counts,
   "This workspace's change, from 2 sessions.", Split and the viewed mark kept over a reload, the
   banner "Files changed since you opened this." and the changed file unviewed after Show the new
   version, the lock file folded as generated, fewer drawn lines than the 3,000-line file holds,
   `/changes/<id>#land` arriving at `/sessions/<id>/change#land`, and the narrow tile's file picker.
-- **Mode:** `scripted` (recipes/new-web-change.mjs)
+- **Mode:** `scripted` (recipes/change.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/change/`, `apps/web/src/components/workspace/view-facts.ts`,
   `apps/web/src/routes/_inbox.changes.$changeId.tsx`, `apps/web/src/lib/change-files.ts`,
   `apps/web/src/lib/review-open.ts`, `apps/web/src/lib/viewed-files.ts`
@@ -1301,12 +1255,12 @@ lane changed.
 - **Map:** review-change.md `review-machine-pass` (the description and tour); mobile.md (the tour on
   the phone)
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe `new-web-tour`. It
-  waits for Mend's own pass on `change-small` (written on the box, failed on a local stack) and asks
-  again; then lays a written description and a four-stop tour over the change, walks the tour
-  forwards and back, opens a link into the session, ends the tour, folds the description on a later
-  look, shows out of date, no description, being written and a login failure, then the narrow tile
-  beside the conversation and 390px.
+- **Do:** Run the CLI batch `change-sessions.json`, then drive the recipe `tour`. It waits for
+  Mend's own pass on `change-small` (written on the box, failed on a local stack) and asks again;
+  then lays a written description and a four-stop tour over the change, walks the tour forwards and
+  back, opens a link into the session, ends the tour, folds the description on a later look, shows
+  out of date, no description, being written and a login failure, then the narrow tile beside the
+  conversation and 390px.
 - **See:** each step's note in the recipe's `steps.log`: Mend's real outcome (the description "Mend
   wrote this from checkpoint N", or "Mend couldn't write the description." with its reason and Try
   again); "How the session got there" and "Tour · 4 stops" with Start tour; the Tour section above
@@ -1315,9 +1269,8 @@ lane changed.
   description with Finish tour; End tour back at the same scroll; a record link focusing the
   session's conversation tab; Show more; Write again; the narrow tile's picker on the stop's file;
   44px Previous and Next on the phone.
-- **Mode:** `scripted` (recipes/new-web-tour.mjs)
+- **Mode:** `scripted` (recipes/tour.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/change/change-description.tsx`,
   `apps/web/src/components/change/change-tour.tsx`, `apps/web/src/components/change/tour-stop.tsx`,
   `apps/web/src/lib/tour.ts`
@@ -1329,13 +1282,13 @@ lane changed.
   send-review-back.md `send-open`, `send-select`, `send-edit`, `send-deliver`, `send-pending`,
   `send-sent-state`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe
-  `new-web-comments`. On `change-small` it comments on one line (a click on its number), on a range
-  (a drag across numbers), on lines typed from a file's "…", and on the whole change; resolves,
-  reopens and dismisses; asks Mend to read the change and suggest fixes; lays Mend's drafts over the
-  comments and adds one, then removes it; marks every file viewed; chooses and edits before sending;
-  sends (the `mend run` session refuses it); then shows a failed, a pending and a delivered send
-  from the server's answers, the sent state with a second look, and 390px.
+- **Do:** Run the CLI batch `change-sessions.json`, then drive the recipe `comments`. On
+  `change-small` it comments on one line (a click on its number), on a range (a drag across
+  numbers), on lines typed from a file's "…", and on the whole change; resolves, reopens and
+  dismisses; asks Mend to read the change and suggest fixes; lays Mend's drafts over the comments
+  and adds one, then removes it; marks every file viewed; chooses and edits before sending; sends
+  (the `mend run` session refuses it); then shows a failed, a pending and a delivered send from the
+  server's answers, the sent state with a second look, and 390px.
 - **See:** each step's note in the recipe's `steps.log`: the box "Comment on <file>, line 20" and
   "lines 12–15"; each comment under its last line as "Not sent · line N"; "On the whole change" over
   the diffs; "Send 4 comments to Claude Code" with "Claude Code has finished, so it starts on your
@@ -1346,9 +1299,8 @@ lane changed.
   comments." with Try again; "Your comments are saved, not sent yet."; the conversation tab after a
   delivered send; "Sent" and "1 comment resolved, 2 open."; the phone's "Send N comments" and
   Comments sheet.
-- **Mode:** `scripted` (recipes/new-web-comments.mjs)
+- **Mode:** `scripted` (recipes/comments.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/change/change-comments.tsx`,
   `apps/web/src/components/change/review-comment.tsx`,
   `apps/web/src/components/change/send-dialog.tsx`, `apps/web/src/lib/review-comments.ts`
@@ -1358,13 +1310,13 @@ lane changed.
 - **Map:** review-change.md `review-comment-state` (Second look: a review since your last review,
   the agent's answer under each sent comment, replies)
 - **Needs:** either; no turn on a local stack, a real codex turn on the box; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe
-  `new-web-second-look`. On `change-small` it opens the range picker before anyone has sent
-  comments, comments on line 20 and on the whole change, lays where you last reviewed and Claude
-  Code's answers over the real comments, follows "Show changes since your last review", picks "Up to
-  a checkpoint" and compares one checkpoint with itself, replies and resolves, and shows 390px and a
-  review that fails to open. On the box after cut-over, `new-web-second-look-ui-box` sends real
-  comments to codex through Send and reads its answers in the view.
+- **Do:** Run the CLI batch `change-sessions.json`, then drive the recipe `second-look`. On
+  `change-small` it opens the range picker before anyone has sent comments, comments on line 20 and
+  on the whole change, lays where you last reviewed and Claude Code's answers over the real
+  comments, follows "Show changes since your last review", picks "Up to a checkpoint" and compares
+  one checkpoint with itself, replies and resolves, and shows 390px and a review that fails to open.
+  On the box, `second-look-ui-box` sends real comments to codex through Send and reads its answers
+  in the view.
 - **See:** each step's note in the recipe's `steps.log`: no "Since your last review" in the picker
   before a send; "Claude Code finished working on your 2 comments." with "Show changes since your
   last review"; the chip "Since your last review · checkpoint N to M" and "N files changed since
@@ -1373,10 +1325,8 @@ lane changed.
   whole change"; "Your reply goes to Claude Code with your next comments." then the reply "Not sent"
   and "Send 1 reply to Claude Code"; a resolved comment folded with what the agent did; the phone's
   "Show changes" sheet.
-- **Mode:** `scripted` (recipes/new-web-second-look.mjs; recipes/new-web-second-look-ui-box.mjs on
-  the box)
+- **Mode:** `scripted` (recipes/second-look.mjs; recipes/second-look-ui-box.mjs on the box)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/change/range-picker.tsx`, `apps/web/src/lib/review-range.ts`,
   `apps/web/src/lib/review-open.ts`
 
@@ -1385,18 +1335,16 @@ lane changed.
 - **Map:** review-change.md `review-diff` (the diff's code in syntax colours),
   `review-comment-state` (Second look: an "Up to a checkpoint" range with nothing in it)
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe
-  `new-web-review-reads`. On `change-small` it reads the colour each token of
-  `src/payments/retry.ts` is drawn in, in light and dark, then picks "Up to a checkpoint" with
-  checkpoint 1, which holds the base's files, and goes back to the whole change through the range
-  picker.
+- **Do:** Run the CLI batch `change-sessions.json`, then drive the recipe `review-reads`. On
+  `change-small` it reads the colour each token of `src/payments/retry.ts` is drawn in, in light and
+  dark, then picks "Up to a checkpoint" with checkpoint 1, which holds the base's files, and goes
+  back to the whole change through the range picker.
 - **See:** each step's note in the recipe's `steps.log`: `import`, `"./charge"` and `lastError` in
   three different computed colours, light and dark (the recipe fails when any two match); "Nothing
   changed up to checkpoint 1" under the toolbar with the range picker still there (it fails when the
   picker is gone); the picker back at the whole change with the diffs drawn.
-- **Mode:** `scripted` (.agents/skills/verify/recipes/new-web-review-reads.mjs)
+- **Mode:** `scripted` (.agents/skills/verify/recipes/review-reads.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/change/change-diffs.tsx`,
   `apps/web/src/components/change/change-view.tsx`,
   `apps/web/src/components/change/range-picker.tsx`, `apps/web/src/styles.css`,
@@ -1418,27 +1366,26 @@ lane changed.
   `M sessions --project <p> --all --json` shows the session's `review.openComments` as `1`.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/changes.$changeId.tsx`,
-  `apps/web-old/src/components/session/change-tab.tsx`,
-  `apps/web-old/src/components/comment-state.tsx`, `apps/api/src/`, `packages/store/`
+- **Areas:** `apps/web/src/routes/_inbox.changes.$changeId.tsx`,
+  `apps/web/src/components/change/change-view.tsx`,
+  `apps/web/src/components/change/change-comments.tsx`, `apps/api/src/`, `packages/store/`
 
 ### send-review-back.deliver
 
 - **Map:** send-review-back.md `send-open`, `send-select`, `send-deliver`, `send-sent-state`
 - **Needs:** Boat; real turn (codex); web; `attach-resume.boat-stop-resume` (the turn's session,
-  settled)
-- **Do:** On the turn's change, in the Comments rail's `Comment on the whole change` box, add the
-  comment `Add a second line to MAIN-RUN.md reading: reviewed.` and choose `Comment`; choose
-  `Send 1 to Codex` in the rail, then `Send 1 to Codex` in the overlay. Wait for the turn with
-  `M wait <id> --turn --timeout 8m`.
-- **See:** the rail's `Comments 1 not sent`; the overlay `Send 1 to Codex` with
-  `1 of 1 comments · continues <branch>` and the checked comment
-  `whole change · Add a second line …`; its confirm button reads `Sending…`; then
-  `Comments 0 not sent` and the card `<owner> · sent` over the comment; `M wait` exits `0`; the
-  change shows `MAIN-RUN.md` with the lines `seen` and `reviewed`.
-- **Mode:** `agent`
+  stopped)
+- **Do:** On the turn's change (`/sessions/<id>/change`), choose `Comment on the whole change`, type
+  `Add a second line to MAIN-RUN.md reading: reviewed.` and choose `Add comment`; mark the files
+  viewed; in `Your review` choose `Choose and edit before sending…`, then `Send 1 comment` in the
+  dialog `Send to Codex`. Wait for the turn with `M wait <id> --turn --timeout 8m`.
+- **See:** the comment under `On the whole change`; the toolbar's `Send 1 comment to Codex`; the
+  dialog `Send to Codex` with that comment checked; then the comment reads `Sent`; `M wait` exits
+  `0`; the change shows `MAIN-RUN.md` with the lines `seen` and `reviewed`.
+- **Mode:** `agent` · the verify skill's `recipes/comments-box.mjs` drives the same send on a
+  session of its own
 - **Box-only:** `boat`, `real-agent-turn`
-- **Areas:** `apps/web-old/src/`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/web/src/components/change/`, `apps/api/src/`, `packages/sessions/`
 
 ### land-change.panel-read
 
@@ -1451,7 +1398,7 @@ lane changed.
   `pull request unavailable · origin is on <host>, not GitHub` (record which).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
+- **Areas:** `apps/web/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
 
 ### land-change.web-push
 
@@ -1475,7 +1422,7 @@ lane changed.
   the same `<sha>` and `show` prints `landed`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/land-panel.tsx`, `apps/api/src/landing-state.ts`,
+- **Areas:** `apps/web/src/components/change/land-dialog.tsx`, `apps/api/src/landing-state.ts`,
   `apps/api/src/workspace-landing.ts`, `packages/landing/`
 
 ### land-change.cli-again
@@ -1542,7 +1489,7 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/workspace-landing.ts`, `packages/landing/src/git-words.ts`,
-  `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/landing.ts`,
+  `apps/web/src/components/change/land-dialog.tsx`, `apps/cli/src/landing.ts`,
   `packages/domain/src/workbench/landing-rules.ts`
 
 ### land-change.new-web-land
@@ -1550,14 +1497,14 @@ lane changed.
 - **Map:** land-change.md `land-web`, `land-preview`, `land-again`, `land-refused`, `land-check`,
   `land-observe`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `new-web-land-sessions.json` (the worktree `land-retry`, written by
-  `mend run`, and a second session in it that keeps running), then drive the recipe `new-web-land`.
-  It opens `/sessions/<id>/change`, chooses `Land…`, chooses `Push to origin` against the project's
-  origin, then `Check origin`; opens the dialog from the workspace "…" and from
-  `/changes/<id>#land`; then lays recorded answers over the landing reads for a GitHub origin: the
-  title and description with `Preview`, the view after landing, the conversation's landing line,
-  `Land again…` with `Update pull request #412`, GitHub refusing the push, and the phone's sheet. It
-  stops the running session at the end.
+- **Do:** Run the CLI batch `land-sessions.json` (the worktree `land-retry`, written by `mend run`,
+  and a second session in it that keeps running), then drive the recipe `land`. It opens
+  `/sessions/<id>/change`, chooses `Land…`, chooses `Push to origin` against the project's origin,
+  then `Check origin`; opens the dialog from the workspace "…" and from `/changes/<id>#land`; then
+  lays recorded answers over the landing reads for a GitHub origin: the title and description with
+  `Preview`, the view after landing, the conversation's landing line, `Land again…` with
+  `Update pull request #412`, GitHub refusing the push, and the phone's sheet. It stops the running
+  session at the end.
 - **See:** each step's note in the recipe's `steps.log`: `Land…` in the Change view's toolbar; the
   dialog `Land change` naming `Write tests for retry is still editing`; on an origin that is not
   GitHub, `No pull request: …` and `Push to origin`; the push refused in git's own words with
@@ -1567,9 +1514,8 @@ lane changed.
   "Checkpoint N landed as pull request #412 · View pull request" in the conversation; "Checkpoint N
   isn't in pull request #412 yet." with `Land again…`; `Update pull request #412` keeping the title;
   `GitHub refused the push` with GH006's words.
-- **Mode:** `scripted` (recipes/new-web-land.mjs)
+- **Mode:** `scripted` (recipes/land.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/change/land-dialog.tsx`, `apps/web/src/lib/landing.ts`,
   `apps/web/src/components/change/change-view.tsx`,
   `apps/web/src/components/session/conversation-tile.tsx`
@@ -1605,15 +1551,17 @@ lane changed.
 
 - **Map:** sign-in.md `registration-closed`, `web-sign-in`, `web-sign-out`, `authorize-page`
 - **Needs:** no session; no turn; web; a fresh browser context (not the saved `browser.json`)
-- **Do:** In a context with no saved sign-in, open `/settings`, sign in with the account file, open
-  `/authorize` with no code, then `Sign out`. The saved browser state other flows use is untouched.
-- **See:** `/login#next=%2Fsettings%2Faccount` with the heading `Sign in` and
-  `Accounts are created by invitation. …`; after sign-in `/settings/account` with the heading
-  `Account`; the heading `No code to authorize`; after sign-out, `/login`.
-- **Mode:** `agent` · a recipe would make it cheaper
+- **Do:** In a context with no saved sign-in, open `/settings/profile`, sign in with the account
+  file, open `/authorize` with no code, then `Sign out` on Profile. The saved browser state other
+  flows use is untouched.
+- **See:** `/login#next=%2Fsettings%2Fprofile` with the heading `Sign in` and
+  `No account? Ask an owner of your organization for an invitation.`; after sign-in
+  `/settings/profile`; on `/authorize`, `This code can't be used.`; after sign-out, `/login`.
+- **Mode:** `agent` · the verify skill's `recipes/sign-in.mjs`, `recipes/authorize.mjs` and
+  `recipes/settings.mjs` drive each part on a stack
 - **Box-only:** no
-- **Areas:** `packages/auth/`, `apps/web-old/src/routes/login.tsx`,
-  `apps/web-old/src/routes/authorize.tsx`
+- **Areas:** `packages/auth/`, `apps/web/src/routes/login.tsx`, `apps/web/src/routes/authorize.tsx`,
+  `apps/web/src/lib/sign-in.ts`
 
 ### pairing-devices.mint-read
 
@@ -1628,7 +1576,7 @@ lane changed.
   reading `<device> cli`, its paired day (`Nov 5, 2026`) and its last use.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/settings.devices.tsx`, `apps/cli/src/`, `apps/api/src/`
+- **Areas:** `apps/web/src/routes/_inbox.settings.devices.tsx`, `apps/cli/src/`, `apps/api/src/`
 
 ### provider-accounts.read
 
@@ -1642,7 +1590,7 @@ lane changed.
   web rows agree; `selected · …` after the change and `all · …` after the restore.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web-old/src/`
+- **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web/src/`
 
 ### git-access.read
 
@@ -1655,7 +1603,8 @@ lane changed.
   same mode pressed.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/web-old/src/routes/settings.git-access.tsx`, `apps/api/src/`
+- **Areas:** `apps/cli/src/`, `apps/web/src/routes/_inbox.settings.agent-logins.tsx`,
+  `apps/api/src/`
 
 ### workspace-ssh.status
 
@@ -1682,7 +1631,7 @@ lane changed.
   default row (`<label> default`) `aria-checked="true"`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/web-old/src/`, `apps/api/src/`
+- **Areas:** `apps/cli/src/`, `apps/web/src/`, `apps/api/src/`
 
 ## Personal setup
 
@@ -1698,7 +1647,7 @@ lane changed.
   snapshot's file count and rows).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/dotfiles.ts`, `apps/web-old/src/`, `apps/api/src/`
+- **Areas:** `apps/cli/src/dotfiles.ts`, `apps/web/src/`, `apps/api/src/`
 
 ### secret-files.cli-roundtrip
 
@@ -1713,7 +1662,7 @@ lane changed.
   `removed ~/.main-run/token · …`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/api/src/`, `apps/web-old/src/`
+- **Areas:** `apps/cli/src/`, `apps/api/src/`, `apps/web/src/`
 
 ### git-author.roundtrip
 
@@ -1729,7 +1678,7 @@ lane changed.
   `· your account's name and email`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/git-author.ts`, `apps/api/src/`, `apps/web-old/src/`
+- **Areas:** `apps/cli/src/git-author.ts`, `apps/api/src/`, `apps/web/src/`
 
 ### skills.read
 
@@ -1740,21 +1689,20 @@ lane changed.
   `Your skill library`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/web-old/src/routes/skills.index.tsx`, `apps/api/src/`
+- **Areas:** `apps/cli/src/`, `apps/web/src/routes/_inbox.skills.index.tsx`, `apps/api/src/`
 
 ### skills.new-web-skills
 
 - **Map:** skills.md `skills-list`, `skills-web-create`, `skills-web-edit`, `skills-web-remove`
 - **Needs:** no session; no turn; web; GitHub reachable from the box
-- **Do:** Drive the recipe `new-web-skills`: Skills with nothing yet; New skill… creates one and
-  says each broken field's rule beside it; search and no matches; a skill whose name a project's
-  skill also has; Edit skill adds and removes a file, previews, asks before leaving, and is refused
-  when a second browser saved first; Remove skill…, and a skill already removed elsewhere.
+- **Do:** Drive the recipe `skills`: Skills with nothing yet; New skill… creates one and says each
+  broken field's rule beside it; search and no matches; a skill whose name a project's skill also
+  has; Edit skill adds and removes a file, previews, asks before leaving, and is refused when a
+  second browser saved first; Remove skill…, and a skill already removed elsewhere.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; every skill and the
   project the recipe made are removed at its end.
-- **Mode:** `scripted` (recipes/new-web-skills.mjs)
+- **Mode:** `scripted` (recipes/skills.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/skills/`, `apps/web/src/routes/_inbox.skills.tsx`,
   `apps/web/src/routes/_inbox.skills.$skillId.tsx`, `apps/web/src/lib/skills.ts`,
   `apps/web/src/lib/skill-removal.ts`, `apps/web/src/lib/use-skill-twins.ts`
@@ -1764,17 +1712,16 @@ lane changed.
 - **Map:** skills.md `skills-list`, `skills-web-create`, `skills-web-edit`, `skills-web-remove`, in
   a project's library; `skills-project-inherit` is dropped (no "Use global skills" switch)
 - **Needs:** no session; no turn; web; GitHub reachable from the box
-- **Do:** Drive the recipe `new-web-project-skills`: a project's Skills tab with nothing yet; New
-  skill… from an empty skill, then each rule (nothing picked to copy, a name the project has); a
-  copy of one of your skills under its own name; your skill and the project's each saying which is
-  used, and linking to the other; Edit skill in place of the project page and Save; Remove skill…,
-  which says yours is used again; fixtures for a reader who may not change them and for a project
-  being removed; a list that fails to load; the phone.
+- **Do:** Drive the recipe `project-skills`: a project's Skills tab with nothing yet; New skill…
+  from an empty skill, then each rule (nothing picked to copy, a name the project has); a copy of
+  one of your skills under its own name; your skill and the project's each saying which is used, and
+  linking to the other; Edit skill in place of the project page and Save; Remove skill…, which says
+  yours is used again; fixtures for a reader who may not change them and for a project being
+  removed; a list that fails to load; the phone.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; every skill and the
   project the recipe made are removed at its end.
-- **Mode:** `scripted` (recipes/new-web-project-skills.mjs)
+- **Mode:** `scripted` (recipes/project-skills.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/project/skills-tab.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId.skills.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId.skills.$skillId.tsx`,
@@ -1782,19 +1729,18 @@ lane changed.
 
 ### search.new-web-search
 
-- **Map:** none yet: search from anywhere is new in the new web app (SLNT-1142), and the map
-  describes the app people use until cut-over.
+- **Map:** none yet: search from anywhere is new in the web app (SLNT-1142), and the map has no
+  feature file for it.
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-search`: Ctrl K from the home composer, the Skills page and a
-  session page; nothing typed; a query that finds sessions, a project and a skill; one that finds
-  nothing; arrows, Enter and Escape; the sidebar's Search field and its rail's button; New session,
-  Add project… and Collapse/Expand sidebar; skills that fail to read, then Try again; on a phone,
-  the inbox's search screen with Clear, Cancel and the keyboard's search key.
+- **Do:** Drive the recipe `search`: Ctrl K from the home composer, the Skills page and a session
+  page; nothing typed; a query that finds sessions, a project and a skill; one that finds nothing;
+  arrows, Enter and Escape; the sidebar's Search field and its rail's button; New session, Add
+  project… and Collapse/Expand sidebar; skills that fail to read, then Try again; on a phone, the
+  inbox's search screen with Clear, Cancel and the keyboard's search key.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; the projects and skills
   the recipe made are removed at its end.
-- **Mode:** `scripted` (recipes/new-web-search.mjs)
+- **Mode:** `scripted` (recipes/search.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/command-palette.tsx`,
   `apps/web/src/components/phone-search.tsx`, `apps/web/src/components/search-parts.tsx`,
   `apps/web/src/lib/search.ts`, `apps/web/src/lib/search-keys.ts`, `apps/web/src/lib/fuzzy.ts`,
@@ -1816,8 +1762,8 @@ lane changed.
 - **Map:** agent-memory.md `memory-list`, `memory-show`, `memory-remove` (and Clear memory…, new on
   the web with route PR 57); doppler.md `doppler-use`
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-project-only-you`: it makes a project with no repository,
-  imports three memory files through `POST /api/projects/<id>/memory/import`, and opens
+- **Do:** Drive the recipe `project-only-you`: it makes a project with no repository, imports three
+  memory files through `POST /api/projects/<id>/memory/import`, and opens
   `/projects/<id>/settings/only-you` from the settings sidebar; View notes…, shows MEMORY.md,
   removes it; Clear memory… where one file isn't removed (a rewritten answer), then all of them;
   saves a fake Doppler token, types a config the token can't list, picks one from recorded lists,
@@ -1827,9 +1773,8 @@ lane changed.
   MEMORY.md's words; the server listing 2 files after Remove and none after Clear memory; the
   Doppler row reading `checkout / dev_personal`, then `checkout / dev`, then `None` with Choose…; no
   part of the token on any page. The recipe removes the token and the project.
-- **Mode:** `scripted` (recipes/new-web-project-only-you.mjs)
+- **Mode:** `scripted` (recipes/project-only-you.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/only-you-page.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.only-you.tsx`,
   `apps/web/src/server/routers/memory.ts`, `apps/web/src/lib/only-you.ts`
@@ -1844,7 +1789,7 @@ lane changed.
   `mend-theme` is `"system"` at the end.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/`, `packages/ui-old/`
+- **Areas:** `apps/web/src/`, `packages/ui/`
 
 ## Project setup and customization
 
@@ -1858,7 +1803,7 @@ lane changed.
   `The MEND_ prefix is reserved for Mend itself.` with `Save` disabled.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/env.ts`, `apps/web-old/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/cli/src/env.ts`, `apps/web/src/components/settings/`, `apps/api/src/`
 
 ### cluster-bindings.read
 
@@ -1870,7 +1815,7 @@ lane changed.
   non-Kubernetes install (record which); no `cluster binding` line in `env show`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/web/src/components/settings/`, `apps/api/src/`
 
 ### workspace-images.read
 
@@ -1889,8 +1834,8 @@ lane changed.
   `Follow the instance`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/`,
-  `apps/web-old/src/components/settings/environment-organization.tsx`, `apps/api/src/`,
+- **Areas:** `apps/web/src/components/settings/`,
+  `apps/web/src/components/settings/workspace-image-page.tsx`, `apps/api/src/`,
   `packages/db/src/repos/organization-settings.ts`
 
 ### automatic-install.read
@@ -1907,7 +1852,7 @@ lane changed.
   (record which); or `Capture mode only. …`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/`
+- **Areas:** `apps/web/src/components/settings/`, `apps/api/src/`
 
 ### hot-sessions.read
 
@@ -1920,7 +1865,7 @@ lane changed.
   `<n> warming`, `<n> failed` or `none ready yet` (record which).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/`, `apps/api/src/preview-pools.ts`,
+- **Areas:** `apps/web/src/components/settings/`, `apps/api/src/preview-pools.ts`,
   `packages/sessions/`
 
 ### project-settings.read
@@ -1938,9 +1883,9 @@ lane changed.
   matching your switch; under `Defaults · Default`, only `Where new sessions run`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/`,
-  `apps/web-old/src/components/settings/`, `apps/web-old/src/lib/person-settings.ts`,
-  `apps/web-old/src/routes/settings.organization.defaults.tsx`, `apps/api/src/`,
+- **Areas:** `apps/web/src/components/settings/`, `apps/web/src/components/settings/`,
+  `apps/web/src/lib/settings-pages.ts`,
+  `apps/web/src/routes/_inbox.settings.organization.runtime.tsx`, `apps/api/src/`,
   `packages/db/src/repos/person-settings.ts`
 
 ### project-settings.new-web-general
@@ -1950,7 +1895,7 @@ lane changed.
   route PR 52); the project's settings frame (its pages in the settings sidebar, the phone's list of
   them, old `/projects/<id>/configuration#…` addresses)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-project-general`: it makes a project with no repository, opens
+- **Do:** Drive the recipe `project-general`: it makes a project with no repository, opens
   `/projects/<id>/settings` (General) as its owner, follows the old configuration and settings
   addresses and the project's "…" → Project settings; renames it (a name Mend won't take and a taken
   one refused beside the field, Save, Enter, Escape); makes it shared and private; a second person
@@ -1963,9 +1908,8 @@ lane changed.
   it and who can remove it, and the server's 404 to their rename; after Remove the page shows the
   removed project with Restore and Purge…; after Purge its address is not found. The project is
   purged and the second person removed.
-- **Mode:** `scripted` (recipes/new-web-project-general.mjs)
+- **Mode:** `scripted` (recipes/project-general.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/project-general-page.tsx`,
   `apps/web/src/components/settings/phone-project-settings.tsx`,
   `apps/web/src/components/settings/removed-project-page.tsx`,
@@ -1982,10 +1926,10 @@ lane changed.
   `install-detected`, `install-custom`, `install-switch`, `install-colocated`; hot-sessions.md
   `hot-count`, `hot-status`, `hot-rewarm` (route PR 53)
 - **Needs:** no session; no turn; web; Sealant's package catalog
-- **Do:** Drive the recipe `new-web-project-workspace`: it makes a project with no repository and
-  opens `/projects/<id>/settings/workspace` from the settings sidebar; Edit image… with a package
-  Sealant can't find, then bash and the Docker switch saved; Start again from the organization's
-  image and saved; a custom command saved, install switched off and on, the command cleared; the
+- **Do:** Drive the recipe `project-workspace`: it makes a project with no repository and opens
+  `/projects/<id>/settings/workspace` from the settings sidebar; Edit image… with a package Sealant
+  can't find, then bash and the Docker switch saved; Start again from the organization's image and
+  saved; a custom command saved, install switched off and on, the command cleared; the
   ready-workspace count raised and lowered; the ready workspaces starting again and failing
   (rewritten status), a status read that fails, and the page as a reader.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: the refused package named
@@ -1993,9 +1937,8 @@ lane changed.
   copy of the organization's starting image; `Saved the custom command.`; the switch's line saying
   the command is kept; `None ready yet` at 1 and `Off` at 0; on the box, a real project's ready
   workspaces reading `starting` after an image save. The recipe removes the project.
-- **Mode:** `scripted` (recipes/new-web-project-workspace.mjs)
+- **Mode:** `scripted` (recipes/project-workspace.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/project-workspace-page.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.workspace.tsx`,
   `apps/web/src/lib/workspace-image.ts`
@@ -2006,7 +1949,7 @@ lane changed.
   install), `link-project` (on the project's General page); `ref-add` is the organization's page's
   (docs/adr/0025)
 - **Needs:** no session; no turn; web; GitHub reachable from the server, for a reference's clone
-- **Do:** Drive the recipe `new-web-project-folders`: it makes two projects with no repository, two
+- **Do:** Drive the recipe `project-folders`: it makes two projects with no repository, two
   organization folders (one with two files) and a reference cloned from GitHub; on
   `/projects/<id>/settings/folders` it sets one folder Read only and the other Read and write, turns
   the reference on and reloads; a refused save; as the operator it adds and removes a server folder;
@@ -2018,9 +1961,8 @@ lane changed.
   folder's row, then gone; the reader's page naming who can change it, with each access as words;
   the Linked projects row reading `/workspace/repos/web` and its worktree, then
   `No linked projects.`. The recipe removes what it made.
-- **Mode:** `scripted` (recipes/new-web-project-folders.mjs)
+- **Mode:** `scripted` (recipes/project-folders.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/project-folders-page.tsx`,
   `apps/web/src/components/settings/project-links-section.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.folders.tsx`,
@@ -2032,17 +1974,16 @@ lane changed.
   dropped by ruling D8); services.md (the fixed preview address and moving it to another worktree)
 - **Needs:** no session; no turn; web; `<p>` (a project whose default branch has a
   `.mend/mend.toml`, ideally with `[preview] fixed = true`)
-- **Do:** Drive the recipe `new-web-project-services`, or by hand: open `<p>`'s Settings → Services;
-  read the banner, the file and the Fixed preview address row; on a project whose file declares a
-  fixed preview, Change worktree… to another worktree and back.
+- **Do:** Drive the recipe `project-services`, or by hand: open `<p>`'s Settings → Services; read
+  the banner, the file and the Fixed preview address row; on a project whose file declares a fixed
+  preview, Change worktree… to another worktree and back.
 - **See:** "Read-only here." over the page; "This is the file on <branch>." with the branch's
   `.mend/mend.toml` shown with line numbers, or "<branch> has no .mend/mend.toml." and what that
   means; the row naming the host, the Service and the worktree it shows; Change worktree… listing
   the project's worktrees by their newest session with the current one marked, then Default branch;
   after the move, `The preview address now shows "<label>".` and the row naming it.
-- **Mode:** `scripted` (recipes/new-web-project-services.mjs)
+- **Mode:** `scripted` (recipes/project-services.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/project-services-page.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.services.tsx`,
   `apps/web/src/lib/project-services.ts`
@@ -2050,20 +1991,19 @@ lane changed.
 ### project-settings.new-web-secrets
 
 - **Map:** project-environment.md `env-composer`, `env-import`, `env-routing`, `env-configuration`,
-  `env-secrets`, `env-not-inherited` (the new web app's Variables and secrets page)
+  `env-secrets`, `env-not-inherited` (the web app's Variables and secrets page)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-project-secrets`, or by hand on a project the run makes: add,
-  edit, rename and remove a variable; add, replace and remove a secret (a value from
-  `scripts/fakes.mjs`); Import .env file… with a variable, a secret-looking name, a reserved name
-  and a line that isn't `NAME=value`; then remove the project.
+- **Do:** Drive the recipe `project-secrets`, or by hand on a project the run makes: add, edit,
+  rename and remove a variable; add, replace and remove a secret (a value from `scripts/fakes.mjs`);
+  Import .env file… with a variable, a secret-looking name, a reserved name and a line that isn't
+  `NAME=value`; then remove the project.
 - **See:** `Saved <name>.`, `Added <name>.`, `Replaced <name>.`, `Removed <name>.` toasts and the
   lists following each; a secret-looking name refused as a variable beside the field; the import's
   rows each saying where they go, values hidden, and its toast
   `Saved 1 variable and 1 secret. 1 name was refused.`; the secrets read and the page never holding
   a secret's value.
-- **Mode:** `scripted` (recipes/new-web-project-secrets.mjs)
+- **Mode:** `scripted` (recipes/project-secrets.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/project-secrets-page.tsx`,
   `apps/web/src/components/settings/environment-dialogs.tsx`,
   `apps/web/src/routes/_inbox.projects.$projectId_.settings.secrets.tsx`,
@@ -2072,19 +2012,18 @@ lane changed.
 ### project-settings.new-web-cluster-bindings
 
 - **Map:** cluster-bindings.md `cluster-bind-web`, `cluster-remove`, `cluster-service-account`,
-  `cluster-local-runner` (the new web app's Variables and secrets page)
+  `cluster-local-runner` (the web app's Variables and secrets page)
 - **Needs:** no session; no turn; web; on the box, whatever runtime it runs
-- **Do:** Drive the recipe `new-web-project-cluster-bindings`: verify-fixture's Variables and
-  secrets page as the server has it, then with the bindings read rewritten as a Kubernetes server
-  answers it (bind, a duplicate, the service account, remove) and as a server without Kubernetes
-  that still has a binding.
+- **Do:** Drive the recipe `project-cluster-bindings`: verify-fixture's Variables and secrets page
+  as the server has it, then with the bindings read rewritten as a Kubernetes server answers it
+  (bind, a duplicate, the service account, remove) and as a server without Kubernetes that still has
+  a binding.
 - **See:** on a local runner with nothing bound, no Cluster bindings section; on Kubernetes,
   `Bound Secret <name>.`, `Secret app-env is already bound to this project.`,
   `Workspaces run as <account>.`, `Removed ConfigMap <name>.`; a stranded binding's "These bindings
   can't resolve here." with Remove only, and the section gone once it is removed.
-- **Mode:** `scripted` (recipes/new-web-project-cluster-bindings.mjs)
+- **Mode:** `scripted` (recipes/project-cluster-bindings.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/cluster-bindings-section.tsx`,
   `apps/web/src/lib/cluster-bindings.ts`
 
@@ -2101,7 +2040,7 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
-  `apps/web-old/src/routes/settings.organization.folders.tsx`
+  `apps/web/src/routes/_inbox.settings.organization.folders.tsx`
 
 ### references-folders.select-link
 
@@ -2137,8 +2076,8 @@ lane changed.
   `main-run-extras-<sha8>`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
-- **Areas:** `apps/web-old/src/components/project/settings/general-links.tsx`,
-  `apps/web-old/src/components/project/settings/folders.tsx`, `apps/api/src/`, `packages/sessions/`
+- **Areas:** `apps/web/src/components/settings/project-links-section.tsx`,
+  `apps/web/src/components/settings/project-folders-page.tsx`, `apps/api/src/`, `packages/sessions/`
 
 ### now-and-sessions.web-now
 
@@ -2149,7 +2088,7 @@ lane changed.
 - **Mode:** `scripted` (recipes/now.mjs)
 - **Box-only:** no
 - **Sample:** yes
-- **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/web-old/src/routes/_inbox.index.tsx`,
+- **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/web/src/routes/_inbox.index.tsx`,
   `apps/api/src/`
 
 ### now-and-sessions.cli-lists
@@ -2168,44 +2107,41 @@ lane changed.
 
 - **Map:** now-and-sessions.md `inbox-snooze-settle`, `inbox-folds`, `inbox-filters`,
   `home-composer` (read), `rail`
-- **Needs:** either; no turn; CLI and web; a session of its own: `Ready to review` holds only a
-  completed change nobody has commented on, and `review-change.web-comments` comments on the run
-  session's change before this flow runs
+- **Needs:** either; no turn; CLI and web; a session of its own
 - **Do:**
   `M run --project <p> --name main-run-settle-<sha8> -- sh -c 'printf "settle\n" > SETTLE.md'`;
   record its session `<id>` from its `watch · <web>/sessions/<id>` line. `--name` names the
   worktree, not the session, and a session nobody named reads `New session` (SLNT-1211), as do many
   other rows of the inbox: find this session's row by its link to `/sessions/<id>`, never by its
-  text, and use the controls inside that row. On `/`, wait for that row under `Ready to review`,
-  settle it, open `Settled`, and use `Back to the inbox` on it, so the flow ends where it began;
-  narrow the inbox by `<p>` and clear it. Type no prompt. Restore:
-  `M worktrees rm main-run-settle-<sha8> --force --project <p>`.
-- **See:** the row linking to `/sessions/<id>` under `Ready to review` reads `New session`, not
-  `main-run-settle-<sha8>`; it leaves `Ready to review` and reads `settled just now` under
-  `Settled`, then is back; the project filter shows only `<p>`'s rows; the heading
-  `What should an agent work on?`.
-- **Mode:** `agent` · a recipe would make it cheaper
+  text, and use the controls inside that row (`Actions for <title>`). On `/`, wait for that row
+  under `To review`, choose `Mark done` from its menu, open `Done`, then `Mark not done` on it, so
+  the flow ends where it began; narrow the inbox to `<p>` with `Inbox filters: …` and put the filter
+  back. Type no prompt. Restore: `M worktrees rm main-run-settle-<sha8> --force --project <p>`.
+- **See:** the row linking to `/sessions/<id>` under `To review` reads `New session`, not
+  `main-run-settle-<sha8>`; it leaves `To review` for `Done`, then is back; narrowed to `<p>`, the
+  inbox shows only `<p>`'s rows; home is the composer under the heading `New session`.
+- **Mode:** `agent` · the verify skill's `recipes/row-actions.mjs` and `recipes/inbox.mjs` drive the
+  same controls on a stack
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/_inbox.tsx`, `apps/api/src/`,
+- **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/web/src/components/row-actions.tsx`,
+  `apps/web/src/components/inbox-filters.tsx`, `apps/api/src/`,
   `packages/domain/src/workbench/inbox-rules.ts`
 
 ### now-and-sessions.new-web-polish
 
 - **Map:** now-and-sessions.md `now-menus`, `rail`; adopt-project.md `projects-directory`
 - **Needs:** either; no turn; CLI and web; a session that keeps running
-- **Do:** Drive the recipe `new-web-polish` (after its CLI batch `new-web-polish-sessions.json`):
-  the sheet's edge beside the sidebar, open, pointed at and folded; a session row's focus ring and
-  its right-click and "…" menus; Open project from them and from the phone's row sheet; a click on a
-  Projects row and a project's Sessions row away from the name; the session header's and Settings'
-  breadcrumbs.
+- **Do:** Drive the recipe `polish` (after its CLI batch `polish-sessions.json`): the sheet's edge
+  beside the sidebar, open, pointed at and folded; a session row's focus ring and its right-click
+  and "…" menus; Open project from them and from the phone's row sheet; a click on a Projects row
+  and a project's Sessions row away from the name; the session header's and Settings' breadcrumbs.
 - **See:** no line on the sidebar's edge at rest, in light or dark, and a short handle while pointed
   at; every focus ring in both sidebars and the two tables whole; `Open project` first in a session
   row's menus and no `Open session` (a click on the row opens it), opening the project; each row
   opens its project or session; the project's name in a session's header and a project settings
   page's breadcrumb opens the project.
-- **Mode:** `scripted` (recipes/new-web-polish.mjs)
+- **Mode:** `scripted` (recipes/polish.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/app-sidebar.tsx`, `apps/web/src/components/row-actions.tsx`,
   `apps/web/src/lib/row-link.ts`, `apps/web/src/components/workspace/workspace-header.tsx`
 
@@ -2214,22 +2150,21 @@ lane changed.
 - **Map:** now-and-sessions.md `inbox-groups`, `now-menus`, `rail`; adopt-project.md
   `projects-directory`
 - **Needs:** either; no turn; CLI and web; two sessions that keep running
-- **Do:** Drive the recipe `new-web-second-pass` (after its CLI batch
-  `new-web-second-pass-sessions.json`): a project's tabs, the Record view's filters and a phone
-  tile's strip; every picture in How Mend fits together, desktop and phone; the sidebar's edge
-  dragged toward the page, dragged back, dragged outward while open, and clicked; Running while each
-  read of the inbox says the other session worked last; a session row's right-click menu and "…" in
-  the sidebar and on the project page; a skill's header, and its Remove skill button. On a machine
-  with classic scrollbars (Linux or Windows Chrome), also look at a project's tabs.
+- **Do:** Drive the recipe `second-pass` (after its CLI batch `second-pass-sessions.json`): a
+  project's tabs, the Record view's filters and a phone tile's strip; every picture in How Mend fits
+  together, desktop and phone; the sidebar's edge dragged toward the page, dragged back, dragged
+  outward while open, and clicked; Running while each read of the inbox says the other session
+  worked last; a session row's right-click menu and "…" in the sidebar and on the project page; a
+  skill's header, and its Remove skill button. On a machine with classic scrollbars (Linux or
+  Windows Chrome), also look at a project's tabs.
 - **See:** no row of tabs scrolls up and down or draws a scrollbar; every picture has room for what
   it draws, with even padding round the two sidebar rows; a drag from the edge toward the page folds
   the sidebar, outward opens it, outward on an open sidebar does nothing, and a click folds it;
   Running stays newest made first; no `Open session` in a row's menus, and a click on the row opens
   the session; a skill's header has Edit skill and a red Remove skill button and no "…", and the
   button asks before it removes.
-- **Mode:** `scripted` (recipes/new-web-second-pass.mjs)
+- **Mode:** `scripted` (recipes/second-pass.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `packages/ui/src/styles/globals.css`,
   `apps/web/src/components/project/project-frame.tsx`,
   `apps/web/src/components/workspace/phone-tab-strip.tsx`,
@@ -2241,21 +2176,20 @@ lane changed.
 - **Map:** now-and-sessions.md `inbox-groups`; start-session.md `session-stop`; sign-in.md
   `web-sign-in`
 - **Needs:** either; no turn; CLI and web; a session that keeps running
-- **Do:** Drive the recipe `new-web-sheet-stop-setup` (after its CLI batch
-  `new-web-sheet-stop-setup-sessions.json`): `/` for an account past setup, and for one with no
-  project, one whose setup ended in this browser and one whose setup can't be read; Stop from a
-  sidebar row's menu with Mend's answer held, refused, then let through with the toast's Try again;
-  a toast beside a session's composer at desktop and phone width; the sheet's corners on a
-  session's, a project's and a settings page, light and dark.
+- **Do:** Drive the recipe `sheet-stop-setup` (after its CLI batch
+  `sheet-stop-setup-sessions.json`): `/` for an account past setup, and for one with no project, one
+  whose setup ended in this browser and one whose setup can't be read; Stop from a sidebar row's
+  menu with Mend's answer held, refused, then let through with the toast's Try again; a toast beside
+  a session's composer at desktop and phone width; the sheet's corners on a session's, a project's
+  and a settings page, light and dark.
 - **See:** `/` stays on Mend for someone past setup, opens setup's next step for someone without a
   project, and stays on Mend once setup ended here or can't be read; the row reads Stopped under
   Done or To review the moment Stop is confirmed, goes back to Running with a toast and Try again
   when Mend refuses, and stays where the stop put it once Mend took it; toasts sit in the
   bottom-right corner on a desktop and cover no composer; nothing square shows over the sheet's
   rounded corners, and no focus ring is cut by the sheet.
-- **Mode:** `scripted` (recipes/new-web-sheet-stop-setup.mjs)
+- **Mode:** `scripted` (recipes/sheet-stop-setup.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/routes/_inbox.tsx`, `apps/web/src/routes/_inbox.index.tsx`,
   `apps/web/src/lib/setup.ts`, `apps/web/src/lib/setup-skips.ts`,
   `apps/web/src/lib/pending-stops.ts`, `apps/web/src/lib/toast-clearance.ts`,
@@ -2266,21 +2200,20 @@ lane changed.
 - **Map:** now-and-sessions.md `inbox-groups`, `inbox-snooze-settle`, `rail`; start-session.md
   `session-stop`
 - **Needs:** either; one real codex turn (one-line prompt); CLI and web; `<p>`
-- **Do:** Run the CLI batch `new-web-session-states.json`, then drive the recipe
-  `new-web-session-states`: the batch's live and ended sessions in their groups, the row menu of a
-  Running and a To review row, Stop session… from a Running row (one with no files, one with a
-  file), the project's Sessions tab, and the fixture's agent moves step by step. On the box, also
-  start a codex session from the composer with a one-line prompt and watch its row: working, the
-  turn ending, then Stop session… from its row.
+- **Do:** Run the CLI batch `session-states.json`, then drive the recipe `session-states`: the
+  batch's live and ended sessions in their groups, the row menu of a Running and a To review row,
+  Stop session… from a Running row (one with no files, one with a file), the project's Sessions tab,
+  and the fixture's agent moves step by step. On the box, also start a codex session from the
+  composer with a one-line prompt and watch its row: working, the turn ending, then Stop session…
+  from its row.
 - **See:** each step's note in the recipe's `steps.log`: a live session under Running with the
   kneading glyph, the server's `turnOpen` and `lastNewAt` on its row; ended ones under To review
   (files, or failed) and Done (none); Running rows offer Stop session… and no Mark done or Snooze; a
   stopped row changes in place, then moves and stays lit; the project table says each row's word
   with the same glyph. The real turn: Running with what the agent does, still Running saying
   `Replied` with the dome once the turn ends, and To review or Done after Stop session….
-- **Mode:** `scripted` (recipes/new-web-session-states.mjs) · the real turn by the run's agent
+- **Mode:** `scripted` (recipes/session-states.mjs) · the real turn by the run's agent
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/lib/inbox.ts`, `apps/web/src/lib/sidebar-moves.ts`,
   `apps/web/src/lib/row-actions.ts`, `apps/web/src/lib/project-sessions.ts`,
   `apps/web/src/components/session-status.tsx`, `apps/web/src/components/changed.tsx`,
@@ -2290,16 +2223,18 @@ lane changed.
 
 - **Map:** start-session.md `session-stop`; attach-resume.md `stop-cli`, `resume-web`
 - **Needs:** Boat; no turn (resume sends no prompt); CLI and web; `start-session.boat-turn`
-- **Do:** `M stop <id8>` on the turn's session, then recipe `resume` with `MAIN_RUN_SESSION` set to
-  it, then `M stop <id8>` again.
-- **See:** `✓ stopped · codex · <id8> · …`; the session's row menu on the Now inbox has
-  `Resume session`, which opens the session page and brings it to `running`; after the second stop,
+- **Do:** `M stop <id8>` on the turn's session; open its page `/sessions/<id>` and choose
+  `Resume session` on its banner `This session is stopped.`; wait until it runs; then `M stop <id8>`
+  again.
+- **See:** `✓ stopped · codex · <id8> · …`; the banner and `Resume session`, then the banner gone
+  and the session running again (its row under `Running`); after the second stop,
   `M sessions --all --project <p> --json` lists it settled with `MAIN-RUN.md` still in its change.
-- **Mode:** `scripted` (recipes/resume.mjs)
+- **Mode:** `agent` (the old app's `recipes/resume.mjs` went at cut-over; the verify skill's
+  `recipes/session-actions.mjs` drives the banner on a stack, resuming a command as a shell)
 - **Box-only:** `boat`
 - **Sample:** yes
-- **Areas:** `packages/sessions/`, `apps/web-old/src/routes/_inbox.sessions.$sessionId.tsx`,
-  `apps/api/src/`
+- **Areas:** `packages/sessions/`, `apps/web/src/routes/_inbox.sessions.$sessionId.tsx`,
+  `apps/web/src/components/session/stopped-banner.tsx`, `apps/api/src/`
 
 ### attach-resume.attach-detach
 
@@ -2316,15 +2251,14 @@ lane changed.
 ### attach-resume.terminal-and-web
 
 - **Map:** attach-resume.md `attach-cli`, `terminal-and-web`
-- **Needs:** either; real turns (codex); CLI in tmux and the new web app; `<p>`
+- **Needs:** either; real turns (codex); CLI in tmux and the web app; `<p>`
 - **Do:** Run the recipe with `MAIN_RUN_M=<M> MAIN_RUN_SHA8=<sha8> MAIN_RUN_PROJECT=<p>` through
-  `pnpm verify drive new-web --box --recipe .agents/skills/box-main-run/recipes/terminal-and-web.mjs --timeout 900000`:
-  it serves the new web app from the commit under test in front of the lane's copy, so it runs
-  before cut-over too. It starts a Codex conversation from the CLI (ALPHA), takes it over with
-  `M attach` in tmux and types a turn into Codex's TUI (BRAVO), opens the session in the web and
-  sends a turn from its composer (CHARLIE), closes the terminal and waits, sends one more from the
-  web (DELTA), then starts a session in a terminal with `M codex` (FOXTROT). It stops both sessions
-  and its tmux server however it ends.
+  `pnpm verify drive web --box --recipe .agents/skills/box-main-run/recipes/terminal-and-web.mjs --timeout 900000`:
+  it serves the web app from the commit under test in front of the lane's copy. It starts a Codex
+  conversation from the CLI (ALPHA), takes it over with `M attach` in tmux and types a turn into
+  Codex's TUI (BRAVO), opens the session in the web and sends a turn from its composer (CHARLIE),
+  closes the terminal and waits, sends one more from the web (DELTA), then starts a session in a
+  terminal with `M codex` (FOXTROT). It stops both sessions and its tmux server however it ends.
 - **See:** each step's note in `steps.log`: BRAVO's question and answer in the web within 45 s of
   the page opening, ALPHA once, no "AGENTS.md instructions" message and no lock line, the field
   `Message Codex`; CHARLIE answered in the web and typed into the still-attached terminal; within
@@ -2341,12 +2275,17 @@ lane changed.
 
 - **Map:** attach-resume.md `rename-web`
 - **Needs:** either; no turn; web and CLI; `start-session.boat-run`
-- **Do:** On the run session's page choose `rename`, set `main-run label`, then clear it again.
-- **See:** the heading shows the label and `M sessions --all --project <p>` agrees; after the clear,
-  the heading is back to its earlier title.
-- **Mode:** `agent` · a recipe would make it cheaper
+- **Do:** On the run session's page, press `F2` on its tab (or choose `Rename…` from the tab's
+  menu), set `main-run label` in `Session name` in the dialog `Rename session`, then rename it back
+  to its earlier title the same way.
+- **See:** the tab and the session's row read `main-run label`, and `M sessions --all --project <p>`
+  agrees; afterwards both read the earlier title again.
+- **Mode:** `agent` · the verify skill's `recipes/session-actions.mjs` drives the same rename on a
+  stack
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/_inbox.sessions.$sessionId.tsx`, `apps/api/src/`
+- **Areas:** `apps/web/src/routes/_inbox.sessions.$sessionId.tsx`,
+  `apps/web/src/components/session/session-actions.tsx`, `apps/web/src/components/row-actions.tsx`,
+  `apps/api/src/`
 
 ### session-shell.live-shell
 
@@ -2421,24 +2360,23 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/cli/src/`, `packages/sessions/`, `packages/store/`, `apps/api/src/`,
-  `apps/web-old/src/`
+  `apps/web/src/`
 
 ### worktrees.web-create-remove
 
-- **Map:** worktrees.md `worktrees-tab`, `worktrees-new`, `worktrees-view`, `worktrees-menu`,
-  `worktrees-remove`, `worktrees-cli`; start-session.md `start-new-worktree`
+- **Map:** worktrees.md `worktrees-tab`, `worktrees-new`, `worktrees-menu`, `worktrees-remove`,
+  `worktrees-cli`; start-session.md `start-new-worktree`
 - **Needs:** no session; no turn; web and CLI; `<p>`
-- **Do:** On `<p>`'s Worktrees tab create `main-run-wt-<sha8>` with `New worktree`, read it with
-  `M worktrees --project <p> --json`, right-click its name to open its menu, and choose
-  `Remove worktree…`, then `Really remove worktree main-run-wt-<sha8>? …`.
-- **See:** the dialog's `branch mend/main-run-wt-<sha8>`; the row `Worktree main-run-wt-<sha8>`
-  reading `base master@<sha7>`, `0 sessions`, `not landed` and `No visible sessions`; JSON with
-  `"version": 2` and that name; the menu ending `Remove worktree…`; after removal the row is gone
-  from the tab and `M worktrees --project <p> --json` no longer lists it.
-- **Mode:** `agent` · a recipe would make it cheaper
+- **Do:** On `<p>`'s Worktrees tab (`/projects/<id>/worktrees`) choose `New worktree…` and create
+  `main-run-wt-<sha8>`, read it with `M worktrees --project <p> --json`, open its menu and choose
+  `Remove worktree…`, then `Remove worktree` in the dialog.
+- **See:** `Created main-run-wt-<sha8> on mend/main-run-wt-<sha8>.` and its row in the region
+  `Worktrees`; JSON with `"version": 2` and that name; the menu holding `Remove worktree…`; after
+  removal the row is gone from the tab and `M worktrees --project <p> --json` no longer lists it.
+- **Mode:** `agent` · the verify skill's `recipes/worktrees.mjs` drives the same tab on a stack
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/tabs/worktrees.tsx`, `apps/api/src/`,
-  `packages/store/`
+- **Areas:** `apps/web/src/components/project/`,
+  `apps/web/src/routes/_inbox.projects.$projectId.worktrees.tsx`, `apps/api/src/`, `packages/store/`
 
 ### worktrees.new-web-worktrees
 
@@ -2446,18 +2384,17 @@ lane changed.
   `worktrees-clear-settled`, `worktrees-hidden-ended`; capture-and-save.md `capture-removal-hold`;
   repositories-in-session.md `repo-removal-hold` (their words, from `lib/worktree-removal.ts`)
 - **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box)
-- **Do:** Drive the recipe `new-web-worktrees` (after its CLI batch `new-web-worktrees-setup.json`):
-  the Worktrees tab; New worktree… makes one; its "…" menu, and a shell started from it; Remove
-  worktree… while the shell runs, then again once it is stopped; the never-landed refusal with its
-  files and Remove anyway; Clear finished…; the phone sheets; a project with no worktrees; a project
-  that fails to load.
+- **Do:** Drive the recipe `worktrees` (after its CLI batch `worktrees-setup.json`): the Worktrees
+  tab; New worktree… makes one; its "…" menu, and a shell started from it; Remove worktree… while
+  the shell runs, then again once it is stopped; the never-landed refusal with its files and Remove
+  anyway; Clear finished…; the phone sheets; a project with no worktrees; a project that fails to
+  load.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: "Not removed" says a
   session is still running with no Remove anyway; after the stop, `Removed <name> and its session.`;
   Clear finished's toast names `wt-unlanded-<time>` as kept because its change was never landed;
   Remove anyway's toast says the change was discarded.
-- **Mode:** `scripted` (recipes/new-web-worktrees.mjs)
+- **Mode:** `scripted` (recipes/worktrees.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/project/worktrees-tab.tsx`,
   `apps/web/src/components/project/worktree-actions.tsx`,
   `apps/web/src/components/project/new-worktree.tsx`,
@@ -2489,13 +2426,13 @@ lane changed.
 
 ### resources.new-web-resources
 
-- **Map:** ADR 0019 resources, as the new web app's Resources tab shows them (no feature file): the
-  list with each worktree's Shared · Own · Off, Add a resource…, Start and Stop, a failed start,
-  Load data…, Remove…, no resources yet, the New session composer's resource line, and "New
-  worktrees use project resources"
+- **Map:** ADR 0019 resources, as the web app's Resources tab shows them (no feature file): the list
+  with each worktree's Shared · Own · Off, Add a resource…, Start and Stop, a failed start, Load
+  data…, Remove…, no resources yet, the New session composer's resource line, and "New worktrees use
+  project resources"
 - **Needs:** no turn; web; `verify-fixture` (or `<p>` on the box); a runtime that runs resources
   (Docker)
-- **Do:** Drive the recipe `new-web-resources`: on `verify-fixture` it makes two worktrees, writes a
+- **Do:** Drive the recipe `resources`: on `verify-fixture` it makes two worktrees, writes a
   Postgres table into one with Add a resource…, starts it from that worktree as the project's
   resource, turns the other worktree's database Off and back, loads a small SQL dump, stops and
   starts it, removes it, and opens the home composer on the first worktree.
@@ -2504,9 +2441,8 @@ lane changed.
   reads Stopped; Remove's toast says `archived · volumes kept`; the composer reads
   `Resources @<name> shared database`; the home, project and session pages are no taller than the
   window.
-- **Mode:** `scripted` (recipes/new-web-resources.mjs)
+- **Mode:** `scripted` (recipes/resources.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/project/resources-tab.tsx`,
   `apps/web/src/components/project/resource-panel.tsx`,
   `apps/web/src/components/project/resource-dialogs.tsx`,
@@ -2569,7 +2505,7 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
-  `apps/web-old/src/routes/settings.organization.invitations.tsx`
+  `apps/web/src/components/settings/organization-members-page.tsx`
 
 ### organization.visibility-who-sees
 
@@ -2590,8 +2526,8 @@ lane changed.
   from `M2 projects`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/project/settings/general.tsx`, `apps/api/src/`,
-  `apps/web-old/src/components/land-panel.tsx`, `apps/cli/src/`
+- **Areas:** `apps/web/src/components/settings/project-general-page.tsx`, `apps/api/src/`,
+  `apps/web/src/components/change/land-dialog.tsx`, `apps/cli/src/`
 
 ### organization.roles-roundtrip
 
@@ -2619,7 +2555,7 @@ lane changed.
   lines name `made <second> an owner` and the change back.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/settings.organization.members.tsx`, `apps/api/src/`,
+- **Areas:** `apps/web/src/routes/_inbox.settings.organization.members.tsx`, `apps/api/src/`,
   `apps/cli/src/`
 
 ### organization.join-refused
@@ -2657,27 +2593,26 @@ lane changed.
   words).
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/routes/join.$token.tsx`, `apps/web-old/src/routes/join.index.tsx`,
-  `apps/web-old/src/routes/settings.organization.invitations.tsx`, `apps/api/src/`
+- **Areas:** `apps/web/src/routes/join.$token.tsx`, `apps/web/src/routes/join.index.tsx`,
+  `apps/web/src/components/settings/organization-members-page.tsx`, `apps/api/src/`
 
 ### organization.new-web-create-leave
 
-- **Map:** organization.md `org-create`, `org-leave` (the new web app's organization switcher)
+- **Map:** organization.md `org-create`, `org-leave` (the web app's organization switcher)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-organizations`: the switcher on a single-tenant server, on the
-  desk and in the phone's Settings sheet; then, with the organization read and list rewritten in the
-  page to say the server allows creating and the account has a second organization, the Create
-  organization dialog with an empty name, a taken name and the server's own refusal, and the Leave
-  dialog for the only owner and for a member, whose Leave the server refuses; then the toasts home
-  shows after a create and a leave.
+- **Do:** Drive the recipe `organizations`: the switcher on a single-tenant server, on the desk and
+  in the phone's Settings sheet; then, with the organization read and list rewritten in the page to
+  say the server allows creating and the account has a second organization, the Create organization
+  dialog with an empty name, a taken name and the server's own refusal, and the Leave dialog for the
+  only owner and for a member, whose Leave the server refuses; then the toasts home shows after a
+  create and a leave.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: no "Create organization…"
   or "Leave …" item with one organization; `This Mend runs one organization (MEND_TENANCY=single).`
   in the dialog's alert; `You can't leave yet.` for the only owner;
   `This is your only organization. Ask one of its owners to remove you instead.` in the Leave
   dialog's alert. Nothing changes on the server.
-- **Mode:** `scripted` (recipes/new-web-organizations.mjs)
+- **Mode:** `scripted` (recipes/organizations.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/organization-menu.tsx`,
   `apps/web/src/components/organization-dialogs.tsx`, `apps/web/src/lib/organization-membership.ts`,
   `apps/web/src/lib/organization-switch.ts`
@@ -2690,40 +2625,37 @@ lane changed.
   whose signed-in account holds the operator role. The run's data never declared tenancy and stays
   single, so this runs on a copy that is not saved, after
   `mend server setup --offline --tenancy multi` there.
-- **Do:** Drive the recipe `new-web-org-create-operator`: the operator's switcher on the desk, the
-  Create organization dialog with a name, the home it lands on, Settings → Server's Organizations
-  rows, and the phone's Settings sheet. Then, as the second account (not an operator),
-  `M2 organization` reads `canCreateOrganizations` false and a create is refused.
+- **Do:** Drive the recipe `org-create-operator`: the operator's switcher on the desk, the Create
+  organization dialog with a name, the home it lands on, Settings → Server's Organizations rows, and
+  the phone's Settings sheet. Then, as the second account (not an operator), `M2 organization` reads
+  `canCreateOrganizations` false and a create is refused.
 - **See:** the recipe's `steps.log`: `organizationCreation operator, canCreateOrganizations true`;
   the switcher reads `… | Create organization…`; `role owner, 1 member(s)` for the new organization;
   `Only an operator creates organizations, and owns each one they create.`;
   `Mend's git may reach private networks`. The second account's create answers
   `On this Mend, only an operator creates organizations (MEND_ORGANIZATION_CREATION=operator). Ask one for an organization.`
-- **Mode:** `scripted` (recipes/new-web-org-create-operator.mjs)
+- **Mode:** `scripted` (recipes/org-create-operator.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/api/src/tenancy.ts`, `apps/api/src/routes/organization.ts`,
   `apps/web/src/lib/server-settings.ts`
 
 ### organization.new-web-audit-log
 
 - **Map:** operator.md `operator-audit`; shared-control.md `audit`; organization.md `audit-log` (the
-  new web app's Audit log page)
-- **Needs:** a session of the owner's (the CLI batch `new-web-shared-control-setup.json`); no turn;
-  web
-- **Do:** Run the CLI batch, then drive the recipe `new-web-audit-log`: it makes real events as the
-  owner (verify-fixture shared and private again, shared control on and off, enough invitation links
-  made and revoked to need a second page), opens `/settings/organization/audit-log`, reads the next
-  page with Show older events, then, with the log's answers rewritten in the page, an older page
-  that fails, an empty log, the loading screen and a first page that fails with Try again; desk and
+  web app's Audit log page)
+- **Needs:** a session of the owner's (the CLI batch `shared-control-setup.json`); no turn; web
+- **Do:** Run the CLI batch, then drive the recipe `audit-log`: it makes real events as the owner
+  (verify-fixture shared and private again, shared control on and off, enough invitation links made
+  and revoked to need a second page), opens `/settings/organization/audit-log`, reads the next page
+  with Show older events, then, with the log's answers rewritten in the page, an older page that
+  fails, an empty log, the loading screen and a first page that fails with Try again; desk and
   phone.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: "Revoked an invitation
   link", "Made verify-fixture private", the shared-control rows, `Owners of <organization>` under
   the title, more rows after Show older events, "Mend couldn't read older events." under the button.
   verify-fixture ends private and every link the run made is revoked.
-- **Mode:** `scripted` (recipes/new-web-audit-log.mjs)
+- **Mode:** `scripted` (recipes/audit-log.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/audit-log-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.audit-log.tsx`, `apps/web/src/lib/audit-log.ts`
 
@@ -2732,7 +2664,7 @@ lane changed.
 - **Map:** organization.md `org-leave` (from the General page); an owner renames the organization
   (`PUT /organization/name`, new with route PR 45)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-org-general`: `/settings/organization` as its owner (old
+- **Do:** Drive the recipe `org-general`: `/settings/organization` as its owner (old
   `/settings/organization/` lands there, and so does the switcher's settings item); rename it
   (Unsaved changes, an empty name refused beside the field, Save, Enter, Escape) and put the name
   back; a second person joins through an invitation and reads the page as a member; made an owner
@@ -2742,9 +2674,8 @@ lane changed.
   breadcrumb and audience line reading the new name, an `organization.renamed` audit entry; the
   member's read-only name with `Only an owner can rename it: <owner>.`; the server's 404 to the
   member's rename. The name is what it was before the run, and the second person is removed.
-- **Mode:** `scripted` (recipes/new-web-org-general.mjs)
+- **Mode:** `scripted` (recipes/org-general.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/organization-general-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.index.tsx`,
   `apps/web/src/lib/organization-general.ts`
@@ -2752,9 +2683,9 @@ lane changed.
 ### organization.new-web-members
 
 - **Map:** organization.md `members-web`, `invite-web`, `invite-revoke`, `role-change`,
-  `password-reset`, `member-removal` (the new web app's Members page)
+  `password-reset`, `member-removal` (the web app's Members page)
 - **Needs:** no session; no turn; web
-- **Do:** Drive the recipe `new-web-org-members`: `/settings/organization/invitations` lands on
+- **Do:** Drive the recipe `org-members`: `/settings/organization/invitations` lands on
   `/settings/organization/members`; the only owner's role is locked; the owner creates a link bound
   to an email through Create invitation, a second person joins with it in a second browser and the
   owner's page says so; the owner makes them an owner and undoes it, makes them a reset link,
@@ -2766,9 +2697,8 @@ lane changed.
   "Revoked the invitation for anyone with the link.", "Removed <person> from <organization>", the
   removed person's browser at `/login?reason=access`. The person is removed and every link the run
   made is revoked.
-- **Mode:** `scripted` (recipes/new-web-org-members.mjs)
+- **Mode:** `scripted` (recipes/org-members.mjs)
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `apps/web/src/components/settings/organization-members-page.tsx`,
   `apps/web/src/routes/_inbox.settings.organization.members.tsx`,
   `apps/web/src/lib/organization-members.ts`
@@ -2806,14 +2736,14 @@ lane changed.
   harness session.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/web-old/src/components/shared-control-dialog.tsx`, `apps/web-old/src/`,
-  `apps/api/src/`, `apps/cli/src/`
+- **Areas:** `apps/web/src/components/session/shared-control.tsx`, `apps/web/src/`, `apps/api/src/`,
+  `apps/cli/src/`
 
 ### shared-control.ask-and-grant
 
 - **Map:** shared-control.md `ask`, `withdraw`, `grant`, `take-back`, `switch-ends-grants`,
   `sender-login`, `audit`
-- **Needs:** Boat; one codex turn; CLI (`M` and `M2`) and two browsers once the new web app asks and
+- **Needs:** Boat; one codex turn; CLI (`M` and `M2`) and two browsers once the web app asks and
   grants (route PR 34); until then the API with each account's access key, as the feature file says
 - **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`.
   `M2 codex "Say hello and change nothing." --project <second> --name main-run-ask-<sha8> --detach`;
@@ -2829,7 +2759,6 @@ lane changed.
   `<second>` holds it; the control log and audit log name each step and the person.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Box:** after cut-over
 - **Areas:** `packages/db/src/repos/session-shared-control.ts`,
   `apps/web/src/server/routers/sessions.ts`, `apps/web/src/server/api/errors.ts`
 
@@ -2861,7 +2790,6 @@ lane changed.
   band reads `Your Codex login has expired, so your message wasn't sent.` with `Connect again…`, and
   the message sends by itself once `mend connect codex` finishes.
 - **Mode:** `agent`
-- **Box:** after cut-over
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/shared-control.tsx`,
   `apps/web/src/lib/shared-control.ts`
@@ -2890,7 +2818,7 @@ lane changed.
   home).
 - **Mode:** `agent`
 - **Box-only:** `boat`
-- **Areas:** `apps/web-old/src/components/shared-workspace.tsx`,
+- **Areas:** `apps/web/src/components/session/shared-control.tsx`,
   `packages/domain/src/workbench/shared-workspace.ts`, `packages/sessions/`, `apps/cli/src/`
 
 ### operator.owner-grant-restore
@@ -2927,7 +2855,7 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/`, `apps/cli/src/`,
-  `apps/web-old/src/routes/settings.organization.audit-log.tsx`
+  `apps/web/src/routes/_inbox.settings.organization.audit-log.tsx`
 
 ### shared-control.refuse-script
 
@@ -2953,8 +2881,7 @@ lane changed.
   `not run · not the operator`.
 - **Mode:** `agent`
 - **Box-only:** no
-- **Areas:** `apps/cli/src/`, `apps/api/src/`,
-  `apps/web-old/src/routes/settings.instance.defaults.tsx`
+- **Areas:** `apps/cli/src/`, `apps/api/src/`, `apps/web/src/components/settings/server-page.tsx`
 
 ### exposure.read
 
@@ -2995,12 +2922,12 @@ lane changed.
 - **Needs:** either; no turn; CLI and web; the previous run's session
 - **Do:** `before.*` is the listing the previous run took just before it saved the run's data
   (SKILL.md, State: `$STATE/listing/`, copied in step 4); after the deploy, `M projects --json` and
-  `M sessions --all --project <p> --json` into `after.*`. Then recipe `session-review` with
-  `MAIN_RUN_SESSION` set to the previous run's session.
+  `M sessions --all --project <p> --json` into `after.*`. Then open the previous run's session's
+  change as `review-change.web-review` does.
 - **See:** every project and session id of `before` is in `after` with the same status; the old
   session page loads and its change still shows `MAIN-RUN.md` with `seen`. With no previous run, the
   listing half alone, and say so; with no saved listing, the session half alone, and say so.
-- **Mode:** `agent` (its second half runs recipes/session-review.mjs)
+- **Mode:** `agent`
 - **Box-only:** `upgrade-real-data`
 - **Sample:** yes
 - **Areas:** `packages/db/`, `packages/store/`, `apps/api/src/`
@@ -3049,7 +2976,7 @@ lane changed.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/doctor-bundle.ts`, `apps/cli/src/doctor-bundle-collectors.ts`,
-  `apps/web-old/src/routes/settings.sealant.tsx`
+  `apps/web/src/components/settings/server-page.tsx`
 
 ### cli.version
 

@@ -132,10 +132,11 @@ Preconditions:
 
 ## Gotchas
 
-- The add forms for references, linked projects and mounted folders have no labels. Their inputs are
-  named only by placeholders (`apps/web-old/src/components/project-setup.tsx:644-654`, `816-825`,
-  `1174-1189`), and the linked-project picker is a `select` with no accessible name at all
-  (`project-setup.tsx:800-815`): find it as the only combobox in `section("Linked projects")`.
+- In the web app, a project's references and server folders are on its `Folders and references` page
+  (`apps/web/src/components/settings/project-folders-page.tsx`, `recipes/project-folders.mjs`) and
+  its linked projects on `General` (`project-links-section.tsx`, `Link project`). The old app's add
+  forms, with inputs named only by placeholders and an unnamed linked-project `select`, went with
+  it.
 - Rows in these sections are plain `div`s, not list items. `refresh` and `remove` repeat per row,
   and `remove` also appears in `Services`, `Mounted folders` and `Linked projects`. Scope to the
   section, then to the row by its name text.
@@ -151,18 +152,17 @@ Preconditions:
   host mounts are not delivered to captured workspaces at all, although `Linked projects` shows no
   note saying so (`Folders` does). Report the link and host-mount delivery unreachable in capture
   mode.
-- In Settings, `Add files…` and `Add a folder…` are labels around hidden file inputs, not buttons
-  (`apps/web-old/src/components/organization-settings.tsx:680-700`). Drive them through Playwright's
-  file chooser after clicking the text; they have no role to ask for.
+- The organization's folders are on Settings → Organization → Folders and references
+  (`apps/web/src/components/settings/folders-page.tsx`, `recipes/settings-folders.mjs`): the tables
+  `Folders` and `References`, and `New folder`. (The old app's `Add files…` and `Add a folder…` were
+  labels around hidden file inputs.)
 - The `Folders` and `References` checkboxes are controlled by the saved selection, which updates
   after a server round trip. Use `click()` and then wait for `toBeChecked()`; Playwright's `check()`
   can report that the click did not change the state.
-- A folder row's button name is its whole text, `<name> created <date> · files`; match it with an
-  anchored regular expression. Folder and file rows have no group role or accessible name. `Delete`
-  repeats for every file and `Remove…` for every folder
-  (`apps/web-old/src/components/organization-settings.tsx:571-600`, `666-676`); scope to the row by
-  its folder button or file path text before choosing the action. File deletion has no confirm. Web
-  folder removal requires `Remove…`, then `Remove <name>`; a selected folder is refused.
+- In the web app a folder's row is named by the folder, its files open with
+  `Show the files in <name>` into the list `Files in <name>`, its actions are under
+  `Actions for <name>`, and each file's delete is `Delete <path>` (`folders-page.tsx`). Removing a
+  folder that a project has selected is refused.
 - `mend folder push` skips `.git`, `node_modules`, symlinks and files over 1 MiB and counts them;
   the skip reason for directories reads `skipped`. Without `--replace` files add beside what the
   folder holds.

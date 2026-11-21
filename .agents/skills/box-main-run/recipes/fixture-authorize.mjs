@@ -9,8 +9,8 @@ export default async ({ page, capture, note }) => {
   if (!url) throw new Error("MAIN_RUN_AUTHORIZE_URL is not set");
   await page.goto(url);
   await page.getByRole("heading", { name: "Authorize this terminal?" }).waitFor();
-  await page.getByRole("button", { name: "Authorize", exact: true }).click();
-  await page.getByRole("heading", { name: "Authorized" }).waitFor();
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
+  await page.getByRole("heading", { name: "Terminal authorized" }).waitFor();
   note("the second account authorized its CLI");
   await capture("authorized");
 };

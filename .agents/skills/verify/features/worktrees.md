@@ -15,7 +15,7 @@ origin's branches into the store so new worktrees base on current tips.
 - `worktrees-tab` shows the Worktrees tab: the region `Worktrees`, its count, and each worktree with
   its sessions.
 - `worktrees-view`: gone. The tab has no `List`/`Cards` switch (none on the box, 17 Nov; none in
-  `apps/web-old/src/components/project/tabs/worktrees.tsx`).
+  `apps/web/src/components/project/worktrees-tab.tsx`).
 - `worktrees-toggle` hides or shows one worktree's sessions.
 - `worktrees-new` creates a worktree from `New worktree` (or `Create your first worktree`).
 - `worktrees-menu` opens a worktree's right-click menu: open its newest session or review, start a
@@ -176,8 +176,10 @@ Preconditions:
   Its menu (`role="menu"`) has no accessible name, opens with the worktree's name as a paragraph,
   and only its `menuitem`s are named. A confirm item renames itself to its confirmation on the first
   click, and a copy item to `Copied`. The box run of 17 Nov saw the row leave after
-  `Remove worktree…` but did not capture the `Really remove worktree <name>? …` item: that wording
-  is from `apps/web-old/src/lib/workbench-menus.ts`, not confirmed by a capture.
+  `Remove worktree…` but did not capture the old app's `Really remove worktree <name>? …` item. In
+  the web app `Remove worktree…` (`apps/web/src/components/project/worktree-actions.tsx`) opens a
+  dialog whose button reads `Remove worktree` (`Removing…` while it runs;
+  `apps/web/src/components/project/remove-worktree.tsx`); `recipes/worktrees.mjs` drives it.
 - `Remove worktree…` is absent while any session in the worktree is live; the CLI refuses the same
   case itself, before asking the server.
 - `mend run --name <n>` names its worktree; without it the name is automatic (`wt-<id>`). Read it

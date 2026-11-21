@@ -225,12 +225,8 @@ export const runCheck = async (
   const next = [];
   const logOf = (id) => join(logs, `check-${id}.log`);
 
-  // Both web apps' trees: the old app's and the new one's (apps/web, rebuilt beside it).
-  if (
-    !["apps/web-old", "apps/web"].every((app) =>
-      existsSync(join(root, app, "src/routeTree.gen.ts")),
-    )
-  ) {
+  // The web app's route tree.
+  if (!existsSync(join(root, "apps/web/src/routeTree.gen.ts"))) {
     return {
       steps: [
         {

@@ -140,7 +140,7 @@ export const evidence = async (
       });
     }
   }
-  // The new web app on the box: its own registry while it lives, else the scan `box release` left.
+  // The web app on the box: its own registry while it lives, else the scan `box release` left.
   const front = readFrontRun(root);
   const onBox = drives.filter((result) => result.drive?.box);
   if (onBox.length > 0) {
@@ -217,7 +217,7 @@ export const evidence = async (
       .filter((line) => /^(ok|NOT)\s+(web version|mend at|sealant at|sealantd at)/.test(line)),
     ...[...new Set(onBox.map((result) => JSON.stringify(result.drive.box)))].map((text) => {
       const box = JSON.parse(text);
-      return `the box ${box.web} runs ${box.version}, revision ${box.revision}; the new web app from this checkout`;
+      return `the box ${box.web} runs ${box.version}, revision ${box.revision}; the web app from this checkout`;
     }),
   ];
   const verdictDir = join(root, ".verify/evidence", head.sha.slice(0, 12));

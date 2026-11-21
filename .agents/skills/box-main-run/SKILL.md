@@ -24,11 +24,9 @@ Nov 2026 the run held VM 131, which also serves the owner's instance and waited 
 nothing here touches VM 131 now.
 
 flows.md lists every feature of the map. Which of its flows a run does is the line `Runs:` at its
-top; report any flow outside it as `not run · not in this run's set`. A flow marked
-`- **Box:** after cut-over` drives the new web app (`apps/web`). A preview of `main`, which this run
-deploys, serves today's app until cut-over: report such a flow as `not run · after cut-over`, apart
-from the seen and failed flows. A preview built with `web_app=web` serves the new app, and
-`pnpm verify box plan`'s `flows` line says so: there every flow runs.
+top; report any flow outside it as `not run · not in this run's set`. Every flow runs on every copy:
+the preview of `main` this run builds serves the web app (`apps/web`) that ships, and
+`pnpm verify box plan`'s `flows` line says all of them run.
 
 ## Who does what
 
@@ -425,6 +423,9 @@ How a flow is driven, by you or a subagent:
   MAIN_RUN_SESSION=<id> ~/.local/state/mend-main-run/lanes/<lane>/bin/web $E/<flow> \
     .agents/skills/box-main-run/recipes/<recipe>.mjs
   ```
+
+  A flow whose Do says `Drive the recipe <name>` names the verify skill's recipe,
+  `.agents/skills/verify/recipes/<name>.mjs`; run it the same way, after any CLI batch its Do names.
 
 - A scripted CLI flow runs
   `E=$E SHA8=<sha8> LANE=<lane> .agents/skills/box-main-run/recipes/cli-reads.sh <flow id>` (it uses

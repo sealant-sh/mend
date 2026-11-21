@@ -81,8 +81,10 @@ Preconditions:
   rendered only while the author comes from a setting.
 - On the box (17 Nov) the panel was read with a setting saved: `Name`, `Email` and
   `Use my account's name and email`. The `from your account` marks, the save bar (`Save author`, its
-  summary, `Saved · applies to sessions launched from now on`) and the clear's `Saving…` are from
-  `apps/web-old/src/components/settings/git-access.tsx`, not confirmed by a capture.
+  summary, `Saved · applies to sessions launched from now on`) and the clear's `Saving…` were the
+  old app's words, not confirmed by a capture. The web app's author rows are `AuthorRows` in
+  `apps/web/src/components/settings/agent-logins-page.tsx` (Settings → Agent logins and Git): take
+  their words from there.
 - The web form checks only once something changed: an unchanged invalid value shows no error.
 - `mend git-author` takes exactly two words, name then email. Quote a name with spaces.
 - A `user` section in the person's dotfiles or in the repository's config wins over the setting, by

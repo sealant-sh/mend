@@ -163,8 +163,8 @@ Preconditions:
   the page; `connecting…` shows until the socket opens. Reloading the same URL spends nothing new:
   `/api/upgrade-tickets/exchange` answers 401 (twice) and the page reads
   `connection lost — reconnecting automatically`. It posts `mend:embed-expired` only to a host: a
-  React Native WebView, or a parent frame (`apps/web-old/src/components/terminal.tsx:80-89`). Loaded
-  at the top level, as here, it posts nothing.
+  React Native WebView, or a parent frame (`apps/web/src/lib/embed-exchange.ts`). Loaded at the top
+  level, as here, it posts nothing.
 - **Clear settled.** On Now, under `Recently settled`, tap `Clear settled`: it reads `Remove <n>?`;
   tap again. It reads `Removing…`, then the shelf empties of what the server removed. Run
   `mend sessions --project <project> --all --json` to see what remains.

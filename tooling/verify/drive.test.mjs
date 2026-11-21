@@ -59,7 +59,13 @@ test("a recipe's surface is the driver its header names, else its prefix; helper
   const checkedIn = listRecipes(repo);
   assert.ok(checkedIn.vscode.includes("g4-terminal-agent-waits"));
   assert.deepEqual(checkedIn.t3, ["t3-client"]);
-  assert.ok(checkedIn.web.includes("web-projects"));
+  assert.ok(checkedIn.web.includes("shell"));
+  assert.ok(
+    !Object.values(checkedIn)
+      .flat()
+      .some((name) => name.startsWith("new-web-")),
+    "the web app's recipes lost their new-web- prefix at cut-over",
+  );
   assert.ok(
     !Object.values(checkedIn)
       .flat()
@@ -79,10 +85,11 @@ test("a surface with no recipe, or a name from another surface, is not_implement
   }
 });
 
-test("web drives the run's own stack through drive-web, as its first account", async (t) => {
+test("web drives the stack's own served app through drive-web, as its first account", async (t) => {
   const { root, state, exec, calls } = world(t);
   const result = await drive(root, { surface: "web", recipe: "web-projects", exec });
   assert.equal(result.steps[0].status, "passed");
+  assert.equal(calls.length, 1, "nothing served from the checkout: the stack's image is the app");
   const call = calls[0].line;
   for (const part of [
     "drive-web.mjs",
@@ -93,6 +100,7 @@ test("web drives the run's own stack through drive-web, as its first account", a
     `--out ${state.evidence}/web-projects/web`,
   ])
     assert.ok(call.includes(part), part);
+  assert.doesNotMatch(call, /--sign-in/, "the app signs in on its own /login");
   assert.ok(calls[0].env.PATH.includes(".agents/skills/verify/scripts/guard"));
 });
 
@@ -202,154 +210,6 @@ test("mobile-web keeps its proxy only for the recipe, and stops it when the reci
   );
 });
 
-test("new-web drives the new app once it answers, signed in through the stack, and stops it after", async (t) => {
-  const { root, state, exec, calls } = world(t);
-  writeFileSync(join(state.private, "new-web.json"), "{}");
-  let child;
-  const background = (_command, args, options) => {
-    calls.push({ line: args.join(" ") });
-    child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
-      ...options,
-      stdio: "ignore",
-    });
-    return child;
-  };
-  // The proxy answers 502 until vite has compiled the first page.
-  const answers = [502, 502, 404];
-  const fetch = async () => ({ status: answers.shift() ?? 404 });
-  const result = await drive(root, {
-    surface: "new-web",
-    recipe: join(root, ".agents/skills/verify/recipes/web-projects.mjs"),
-    exec,
-    background,
-    wait: async () => {},
-    fetch,
-  });
-  assert.equal(result.steps[0].status, "passed");
-  assert.equal(child.signalCode, "SIGTERM");
-  assert.equal(answers.length, 0, "the recipe waited for the app to answer");
-  const [proxy, driven] = calls.map((call) => call.line);
-  assert.match(
-    proxy,
-    /drive-mobile\.mjs --client new-web --app \S+\/apps\/web --web http:\/\/localhost:3373/,
-  );
-  for (const part of [
-    `--web ${result.drive.web}`,
-    `--account ${state.private}/account.json`,
-    `--sign-in ${state.web}`,
-  ])
-    assert.ok(driven.includes(part), part);
-});
-
-test("new-web releases its servers after a failed recipe or an exception", async (t) => {
-  for (const failure of ["exit", "throw"]) {
-    const { root, state } = world(t);
-    const pinned = await choosePorts([undefined, undefined]);
-    writeFileSync(join(state.private, "new-web.json"), "{}");
-    let child;
-    let ready;
-    let ports;
-    const background = (_command, args, options) => {
-      ports = [
-        Number(args[args.indexOf("--port") + 1]),
-        Number(args[args.indexOf("--expo-port") + 1]),
-      ];
-      child = spawn(
-        process.execPath,
-        [
-          "-e",
-          `
-        const net = require('node:net');
-        let count = 0;
-        for (const port of JSON.parse(process.argv[1]))
-          net.createServer().listen(port, '127.0.0.1', () => {
-            if (++count === 2) process.send('ready');
-          });
-      `,
-          JSON.stringify(ports),
-        ],
-        { ...options, stdio: ["ignore", "ignore", "ignore", "ipc"] },
-      );
-      ready = once(child, "message");
-      return child;
-    };
-    const options = {
-      surface: "new-web",
-      recipe: join(root, ".agents/skills/verify/recipes/web-projects.mjs"),
-      env: {
-        ...process.env,
-        MEND_VERIFY_NEW_WEB_PORT: String(pinned[0]),
-        MEND_VERIFY_NEW_WEB_VITE_PORT: String(pinned[1]),
-      },
-      background,
-      fetch: async () => {
-        await ready;
-        return { status: 200 };
-      },
-      exec: async () => {
-        if (failure === "throw") throw new Error("recipe crashed");
-        return { code: 1 };
-      },
-    };
-    if (failure === "throw") await assert.rejects(drive(root, options), /recipe crashed/);
-    else {
-      const result = await drive(root, options);
-      assert.equal(result.steps[0].status, "failed");
-      assert.equal(new URL(result.drive.web).port, String(ports[0]));
-    }
-    assert.deepEqual(ports, pinned);
-    assert.notEqual(child.signalCode, null);
-    assert.deepEqual(await choosePorts(ports.map(String)), ports);
-  }
-});
-
-test("interrupting a new-web drive releases both ports", async (t) => {
-  const { root, state } = world(t);
-  const scripts = join(root, ".agents/skills/verify/scripts");
-  mkdirSync(scripts, { recursive: true });
-  writeFileSync(
-    join(scripts, "drive-mobile.mjs"),
-    `
-    import { createServer } from 'node:net';
-    import { writeFileSync } from 'node:fs';
-    const arg = (name) => Number(process.argv[process.argv.indexOf(name) + 1]);
-    let ready = 0;
-    const ports = [arg('--port'), arg('--expo-port')];
-    for (const port of ports)
-      createServer().listen(port, '127.0.0.1', () => {
-        if (++ready === 2) writeFileSync(${JSON.stringify(join(state.private, "new-web.json"))}, JSON.stringify({ ports }));
-      });
-  `,
-  );
-  const recipe = join(root, ".agents/skills/verify/recipes/web-projects.mjs");
-  const child = fork(
-    "-e",
-    [
-      `
-    const { drive } = await import(${JSON.stringify(new URL("./drive.mjs", import.meta.url).href)});
-    await drive(${JSON.stringify(root)}, {
-      surface: 'new-web', recipe: ${JSON.stringify(recipe)},
-      fetch: async () => ({ status: 200 }),
-      exec: async (_command, args) => {
-        process.send({ web: args[args.indexOf('--web') + 1] });
-        await new Promise(() => {});
-      },
-    });
-  `,
-    ],
-    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
-  );
-  t.after(() => child.kill());
-  const [{ web }] = await once(child, "message");
-  const port = Number(new URL(web).port);
-  await assert.rejects(choosePorts([String(port)]), { code: "EADDRINUSE" });
-  const closed = once(child, "close");
-  child.kill("SIGINT");
-  assert.deepEqual(await closed, [130, null]);
-  const { ports } = JSON.parse(readFileSync(join(state.private, "new-web.json"), "utf8"));
-  assert.deepEqual(await choosePorts(ports.map(String)), ports);
-});
-
 test("evidence takes only this head's clean drives, sorts what each made, and writes the verdict", async (t) => {
   const { root, state, exec, calls } = world(t);
   const head = { sha: "a".repeat(40), branch: "b", dirty: false };
@@ -429,7 +289,7 @@ test("a scan hit withholds the evidence instead of passing it", async (t) => {
   assert.equal(result.steps.find((step) => step.id === "scan").status, "evidence_withheld");
 });
 
-// The box as `drive new-web --box` meets it: READ_FRONT's answer, and the account it signs in as.
+// The box as `drive web --box` meets it: READ_FRONT's answer, and the account it signs in as.
 const boxWorld = (t, { appUrl = "https://box.example.test", running = "true" } = {}) => {
   const { root, exec, calls } = world(t);
   const head = { sha: "d".repeat(40), branch: "b", dirty: false };
@@ -457,20 +317,23 @@ const boxWorld = (t, { appUrl = "https://box.example.test", running = "true" } =
   return { root, exec, calls, head, env, ssh, privateDir };
 };
 
-test("new-web --box fronts the declared box from this checkout and signs in on the app's own page", async (t) => {
+test("web --box fronts the declared box from this checkout and signs in on the app's own page", async (t) => {
   const { root, exec, calls, head, env, ssh, privateDir } = boxWorld(t);
   let child;
   const background = (_command, args, options) => {
     calls.push({ line: args.join(" ") });
-    writeFileSync(join(privateDir, "new-web.json"), "{}");
+    writeFileSync(join(privateDir, "web.json"), "{}");
     child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
       ...options,
       stdio: "ignore",
     });
     return child;
   };
+  // The proxy answers 502 until vite has compiled the first page.
+  const answers = [502, 502, 404];
+  const fetch = async () => ({ status: answers.shift() ?? 404 });
   const result = await drive(root, {
-    surface: "new-web",
+    surface: "web",
     recipe: join(root, ".agents/skills/verify/recipes/web-projects.mjs"),
     head,
     env,
@@ -479,16 +342,17 @@ test("new-web --box fronts the declared box from this checkout and signs in on t
     box: true,
     background,
     wait: async () => {},
-    fetch: async () => ({ status: 200 }),
+    fetch,
   });
   assert.equal(result.steps[0].status, "passed");
   assert.equal(child.signalCode, "SIGTERM");
+  assert.equal(answers.length, 0, "the recipe waited for the app to answer");
   const [proxy, driven] = calls.map((call) => call.line);
-  assert.match(proxy, /drive-mobile\.mjs --client new-web --app \S+\/apps\/web --outer --port/);
+  assert.match(proxy, /drive-mobile\.mjs --client web --app \S+\/apps\/web --outer --port/);
   assert.doesNotMatch(proxy, /--web /, "the proxy fronts the declared outer, nothing named");
   assert.ok(driven.includes(`--account ${privateDir}/account.json`));
   assert.ok(driven.includes(`--state ${privateDir}/browser.json`));
-  assert.doesNotMatch(driven, /--sign-in/, "the new app signs in on its own /login");
+  assert.doesNotMatch(driven, /--sign-in/, "the app signs in on its own /login");
   assert.equal(calls[1].env.MEND_VERIFY_PRIVATE, privateDir);
   assert.deepEqual(result.drive.box, {
     web: "https://box.example.test",
@@ -510,10 +374,10 @@ test("new-web --box fronts the declared box from this checkout and signs in on t
   assert.deepEqual(result.next, ["pnpm verify box identity", "pnpm verify evidence"]);
 });
 
-test("new-web --box refuses a box it was not told of, a stopped Mend, no ssh, and other surfaces", async (t) => {
+test("web --box refuses a box it was not told of, a stopped Mend, no ssh, and other surfaces", async (t) => {
   const go = (world, extra = {}) =>
     drive(world.root, {
-      surface: "new-web",
+      surface: "web",
       recipe: join(world.root, ".agents/skills/verify/recipes/web-projects.mjs"),
       head: world.head,
       env: world.env,
@@ -536,8 +400,122 @@ test("new-web --box refuses a box it was not told of, a stopped Mend, no ssh, an
   const unnamed = await go(boxWorld(t), { ssh: null });
   assert.equal(unnamed.steps[0].status, "blocked_by_prerequisite");
 
-  const web = await go(boxWorld(t), { surface: "web" });
-  assert.equal(web.steps[0].status, "not_implemented");
+  const desktop = await go(boxWorld(t), { surface: "desktop" });
+  assert.equal(desktop.steps[0].status, "not_implemented");
+});
+
+test("web --box releases its servers after a failed recipe or an exception", async (t) => {
+  for (const failure of ["exit", "throw"]) {
+    const { root, head, env, ssh, privateDir } = boxWorld(t);
+    const pinned = await choosePorts([undefined, undefined]);
+    let child;
+    let ready;
+    let ports;
+    const background = (_command, args, options) => {
+      writeFileSync(join(privateDir, "web.json"), "{}");
+      ports = [
+        Number(args[args.indexOf("--port") + 1]),
+        Number(args[args.indexOf("--expo-port") + 1]),
+      ];
+      child = spawn(
+        process.execPath,
+        [
+          "-e",
+          `
+        const net = require('node:net');
+        let count = 0;
+        for (const port of JSON.parse(process.argv[1]))
+          net.createServer().listen(port, '127.0.0.1', () => {
+            if (++count === 2) process.send('ready');
+          });
+      `,
+          JSON.stringify(ports),
+        ],
+        { ...options, stdio: ["ignore", "ignore", "ignore", "ipc"] },
+      );
+      ready = once(child, "message");
+      return child;
+    };
+    const options = {
+      surface: "web",
+      recipe: join(root, ".agents/skills/verify/recipes/web-projects.mjs"),
+      head,
+      ssh,
+      box: true,
+      env: {
+        ...env,
+        MEND_VERIFY_WEB_PORT: String(pinned[0]),
+        MEND_VERIFY_WEB_VITE_PORT: String(pinned[1]),
+      },
+      background,
+      fetch: async () => {
+        await ready;
+        return { status: 200 };
+      },
+      exec: async () => {
+        if (failure === "throw") throw new Error("recipe crashed");
+        return { code: 1 };
+      },
+    };
+    if (failure === "throw") await assert.rejects(drive(root, options), /recipe crashed/);
+    else {
+      const result = await drive(root, options);
+      assert.equal(result.steps[0].status, "failed");
+      assert.equal(new URL(result.drive.web).port, String(ports[0]));
+    }
+    assert.deepEqual(ports, pinned);
+    assert.notEqual(child.signalCode, null);
+    assert.deepEqual(await choosePorts(ports.map(String)), ports);
+  }
+});
+
+test("interrupting a web --box drive releases both ports", async (t) => {
+  const { root, head, env, privateDir } = boxWorld(t);
+  const scripts = join(root, ".agents/skills/verify/scripts");
+  mkdirSync(scripts, { recursive: true });
+  writeFileSync(
+    join(scripts, "drive-mobile.mjs"),
+    `
+    import { createServer } from 'node:net';
+    import { writeFileSync } from 'node:fs';
+    const arg = (name) => Number(process.argv[process.argv.indexOf(name) + 1]);
+    let ready = 0;
+    const ports = [arg('--port'), arg('--expo-port')];
+    for (const port of ports)
+      createServer().listen(port, '127.0.0.1', () => {
+        if (++ready === 2) writeFileSync(${JSON.stringify(join(privateDir, "web.json"))}, JSON.stringify({ ports }));
+      });
+  `,
+  );
+  const recipe = join(root, ".agents/skills/verify/recipes/web-projects.mjs");
+  const child = fork(
+    "-e",
+    [
+      `
+    const { drive } = await import(${JSON.stringify(new URL("./drive.mjs", import.meta.url).href)});
+    await drive(${JSON.stringify(root)}, {
+      surface: 'web', recipe: ${JSON.stringify(recipe)}, box: true,
+      head: ${JSON.stringify(head)}, env: ${JSON.stringify(env)},
+      ssh: () => ({ code: 0, stdout: 'version=v\\nrevision=${"e".repeat(40)}\\nrunning=true\\nAPP_URL=https://box.example.test', stderr: '' }),
+      fetch: async () => ({ status: 200 }),
+      exec: async (_command, args) => {
+        process.send({ web: args[args.indexOf('--web') + 1] });
+        await new Promise(() => {});
+      },
+    });
+  `,
+    ],
+    { stdio: ["ignore", "ignore", "ignore", "ipc"] },
+  );
+  t.after(() => child.kill());
+  const [{ web }] = await once(child, "message");
+  const port = Number(new URL(web).port);
+  await assert.rejects(choosePorts([String(port)]), { code: "EADDRINUSE" });
+  const closed = once(child, "close");
+  child.kill("SIGINT");
+  assert.deepEqual(await closed, [130, null]);
+  const { ports } = JSON.parse(readFileSync(join(privateDir, "web.json"), "utf8"));
+  assert.deepEqual(await choosePorts(ports.map(String)), ports);
 });
 
 test("evidence scans a box drive with the box check's own registry and names the box's build", async (t) => {
@@ -559,19 +537,16 @@ test("evidence scans a box drive with the box check's own registry and names the
   mkdirSync(results, { recursive: true });
   const box = { web: front.web, revision: front.revision, version: front.version };
   for (const [name, drove] of [
-    [
-      "drive-new-web-20261118T000001Z.json",
-      { box, out: join(front.evidence, "new-web-inbox/new-web") },
-    ],
-    ["drive-new-web-20261118T000002Z.json", { out: join(root, "evidence/new-web-inbox/new-web") }],
+    ["drive-web-20261118T000001Z.json", { box, out: join(front.evidence, "inbox/web") }],
+    ["drive-web-20261118T000002Z.json", { out: join(root, "evidence/inbox/web") }],
   ])
     writeFileSync(
       join(results, name),
       JSON.stringify({
-        verb: "drive new-web",
+        verb: "drive web",
         status: "passed",
         head: { sha: head.sha, dirty: false },
-        drive: { surface: "new-web", recipe: "new-web-inbox", ...drove },
+        drive: { surface: "web", recipe: "inbox", ...drove },
       }),
     );
   assert.equal(driveResults(root, head).length, 2, "a box drive and a stack drive of one recipe");
@@ -589,5 +564,5 @@ test("evidence scans a box drive with the box check's own registry and names the
     verdict,
     /the box https:\/\/box\.example\.test runs 0\.37\.0-next\.1\.preview\.9, revision e{40}/,
   );
-  assert.match(verdict, /new-web on the box · `new-web-inbox`/);
+  assert.match(verdict, /web on the box · `inbox`/);
 });

@@ -124,14 +124,12 @@ Preconditions:
 
 ## Gotchas
 
-- The Slack panel is a `section` with an `id` but no accessible name, so it is not a region, and its
-  buttons share names with other panels on the settings page: `Copy` (devices, git key), `Remove…`
-  (organization members), `On` and `Off` (instance defaults). Scope by `section#slack`, Mend's own
-  anchor (the link page navigates to it). Finding:
-  `apps/web-old/src/components/organization-settings.tsx:75`.
-- Inside the panel, the four display settings each have an `On` and an `Off` button with nothing to
-  tell them apart but order, and `Default harness`'s choices are named only by the harness. The rows
-  are not groups. Finding: `apps/web-old/src/components/slack-settings.tsx:378`, `:355`.
+- In the web app, a person's own Slack link is a row of Settings → Connected apps
+  (`apps/web/src/components/settings/connected-apps-page.tsx`,
+  `recipes/settings-connected-apps.mjs`) and the organization's Slack app is under Settings →
+  Organization → Integrations (`recipes/settings-integrations.mjs`). The old app's panel
+  (`section#slack`, unnamed `On`/`Off` buttons told apart only by order) went with it; the steps
+  below that use it need a rewrite against those pages.
 - The token fields are password inputs, so they are not textboxes; reach them with
   `getByLabel("app-level token")` and `getByLabel("bot token")`, which their wrapping labels name.
 - `Your default project` is a select named by its `aria-label`; it appears only once the

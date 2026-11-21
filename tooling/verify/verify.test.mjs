@@ -61,7 +61,6 @@ const fixture = (t) => {
     copyFileSync(join(repo, path), join(root, path));
   }
   write(".gitignore", ".verify/\n");
-  write("apps/web-old/src/routeTree.gen.ts", "// generated\n");
   write("apps/web/src/routeTree.gen.ts", "// generated\n");
   git("init", "-b", "main");
   git("add", "-A");
@@ -401,7 +400,7 @@ const LOCAL_ANSWER = {
 
 test("a feature's run is owed until it is judged and verify evidence passes on this commit", async (t) => {
   const { root, commit } = fixture(t);
-  commit("apps/web-old/src/routes/a.tsx");
+  commit("apps/web/src/routes/a.tsx");
   const line = async (id) =>
     (await runVerb(root, "status", options())).steps.find((step) => step.id === id);
   assert.equal((await line("judge")).status, "skipped");
@@ -414,7 +413,7 @@ test("a feature's run is owed until it is judged and verify evidence passes on t
   assert.deepEqual(validateResult(asked), []);
   assert.equal(asked.status, "requires_external_observer");
   const brief = readFileSync(join(root, asked.evidence[0].path), "utf8");
-  assert.match(brief, /apps\/web-old\/src\/routes\/a\.tsx/);
+  assert.match(brief, /apps\/web\/src\/routes\/a\.tsx/);
   assert.match(brief, /`boat`:/);
   saveResult(root, asked);
   assert.equal((await line("judge")).status, "requires_external_observer");
@@ -446,14 +445,14 @@ test("a feature's run is owed until it is judged and verify evidence passes on t
   );
   assert.equal((await line("run-it")).status, "passed");
 
-  commit("apps/web-old/src/routes/b.tsx");
+  commit("apps/web/src/routes/b.tsx");
   assert.equal((await line("judge")).status, "skipped", "a later commit is judged again");
   assert.equal((await line("run-it")).status, "skipped");
 });
 
 test("the receipt carries the judgement in a block a script reads back exactly", async (t) => {
   const { root, commit, write, git } = fixture(t);
-  commit("apps/web-old/src/routes/a.tsx");
+  commit("apps/web/src/routes/a.tsx");
   // Text that would close the block or open HTML if it were not escaped.
   const answer = {
     ...LOCAL_ANSWER,
@@ -491,10 +490,10 @@ test("the receipt carries the judgement in a block a script reads back exactly",
   const first = read.receipt.productPatchId;
   assert.match(first, /^[0-9a-f]{40}$/);
   const patchOf = async () => (await runVerb(root, "status", options())).productPatchId;
-  commit("apps/web-old/src/routes/a.test.tsx");
+  commit("apps/web/src/routes/a.test.tsx");
   commit("docs/notes.md");
   assert.equal(await patchOf(), first);
-  commit("apps/web-old/src/routes/b.tsx");
+  commit("apps/web/src/routes/b.tsx");
   assert.notEqual(await patchOf(), first);
 
   // `verify receipt` reads a body from a file; a damaged block is named, an absent one skipped.
@@ -549,7 +548,7 @@ test("a judgement for the box is discharged by the box running this change", asy
 
 test("an answer the brief did not ask for is refused, and the deploy script only goes to the box", async (t) => {
   const { root, commit, write } = fixture(t);
-  commit("apps/web-old/src/routes/a.tsx");
+  commit("apps/web/src/routes/a.tsx");
   const refused = async (answer) => {
     const result = await runVerb(root, "judge", options({ record: answerFile(root, answer) }));
     assert.equal(result.status, "failed");
@@ -561,11 +560,11 @@ test("an answer the brief did not ask for is refused, and the deploy script only
   assert.match(await refused({ ...LOCAL_ANSWER, mustSee: ["one"] }), /three to five/);
   assert.match(await refused({ ...LOCAL_ANSWER, reason: " " }), /reason is required/);
 
-  write("apps/web-old/src/routes/a.tsx", "edited\n");
+  write("apps/web/src/routes/a.tsx", "edited\n");
   assert.equal((await runVerb(root, "judge", options())).status, "blocked_by_prerequisite");
 
   const limits = loadLimits(repo);
-  const floor = floorOf(limits, ["scripts/preview-deploy.sh", "apps/web-old/src/a.tsx"]);
+  const floor = floorOf(limits, ["scripts/preview-deploy.sh", "apps/web/src/a.tsx"]);
   assert.deepEqual(floor, [{ id: "preview-deploy", files: ["scripts/preview-deploy.sh"] }]);
   const { flows } = loadFlows(repo);
   const facts = { limits, floor, flows };
@@ -581,7 +580,7 @@ test("an answer the brief did not ask for is refused, and the deploy script only
 
 test("a judgement names the box run's flow, and a change inside a flow's Areas cannot skip it", async (t) => {
   const { root, commit, write, git } = fixture(t);
-  commit("apps/web-old/src/routes/a.tsx");
+  commit("apps/web/src/routes/a.tsx");
   const judged = async (answer) =>
     runVerb(root, "judge", options({ record: answerFile(root, answer) }));
   const refused = async (answer) => {
@@ -604,7 +603,7 @@ test("a judgement names the box run's flow, and a change inside a flow's Areas c
     await refused({ ...unnamed, newFlow: "Renaming a project from its row" }),
     /no flow covers this change \(Renaming a project from its row\): add its flow/,
   );
-  // `apps/web-old/src/` is in many flows' Areas, so "no flow" is not an answer for it.
+  // `apps/web/src/routes/` is in many flows' Areas, so "no flow" is not an answer for it.
   assert.match(
     await refused({ ...unnamed, noFlow: { reason: "a small route" } }),
     /noFlow is refused: this change is inside the Areas of \d+ flows/,
@@ -617,21 +616,28 @@ test("a judgement names the box run's flow, and a change inside a flow's Areas c
   assert.equal(client.status, "passed");
   assert.match(client.steps[0].detail, /Box run: no flow \(not on the box: vscode\): VS Code\./);
 
-  // A change only to the new web app names today's flow and says the box shows it after cut-over.
+  // A change to the web app names its flow, which every box runs.
   git("reset", "-q", "--hard", "main");
-  commit("apps/web/src/routes/projects.tsx");
+  commit("apps/web/src/lib/new-thing.ts");
   assert.match(
-    await refused({ ...unnamed, noFlow: { reason: "not served yet" } }),
-    /noFlow is refused for the new web app \(apps\/web\/src\/routes\/projects\.tsx\)/,
+    await refused({ ...unnamed, noFlow: { reason: "a helper" } }),
+    /noFlow is refused for the web app \(apps\/web\/src\/lib\/new-thing\.ts\)/,
   );
-  const later = await judged(LOCAL_ANSWER);
-  assert.equal(later.status, "passed");
-  assert.equal(later.judgement.flowsOnTheBox, "after cut-over");
-  saveResult(root, later);
-  assert.match(
-    toMarkdown(await runVerb(root, "status", options())),
-    /\*\*Box run:\*\* flow adopt-project\.web-directory, on the box after cut-over/,
+  const named = await judged(LOCAL_ANSWER);
+  assert.equal(named.status, "passed");
+  assert.equal(named.judgement.flowsOnTheBox, undefined, "nothing writes after cut-over now");
+  saveResult(root, named);
+  const markdown = toMarkdown(await runVerb(root, "status", options()));
+  assert.match(markdown, /\*\*Box run:\*\* flow adopt-project\.web-directory$/m);
+  // A receipt recorded before cut-over still reads.
+  const before = markdown.replace(
+    '"judgedBy": "agent",',
+    '"judgedBy": "agent",\n    "flowsOnTheBox": "after cut-over",',
   );
+  assert.notEqual(before, markdown);
+  const [old] = readReceipts(before);
+  assert.equal(old.errors, undefined);
+  assert.equal(old.receipt.judgement.flowsOnTheBox, "after cut-over");
 
   // The flow a change adds to flows.md is one it can name.
   const flowsPath = join(root, ".agents/skills/box-main-run/flows.md");
@@ -639,7 +645,7 @@ test("a judgement names the box run's flow, and a change inside a flow's Areas c
     ".agents/skills/box-main-run/flows.md",
     readFileSync(flowsPath, "utf8").replace(
       "## Not on the box",
-      "### projects.web-rename\n\n- **Box:** after cut-over\n- **Areas:** `apps/web/src/routes/`\n\n## Not on the box",
+      "### projects.web-rename\n\n- **Areas:** `apps/web/src/routes/`\n\n## Not on the box",
     ),
   );
   git("add", "-A");

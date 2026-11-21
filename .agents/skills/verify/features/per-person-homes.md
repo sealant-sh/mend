@@ -127,10 +127,10 @@ Preconditions:
   `page.getByRole("status").filter({ hasText: /^Waits for / })`, for example
   `Waits for <owner>'s 2 background tasks to finish before <member>'s turn starts.` The list
   `Work the turn waits for`, with an `End` button per item, shows only to the session's owner or the
-  person the work runs as, and only when at least one item can be ended
-  (`apps/web-old/src/components/shared-workspace.tsx:62`); with no endable item the status shows
-  alone. The desktop and mobile conversations show the same words under their turns. Report this
-  step unreachable when the state cannot be made.
+  person the work runs as, and only when at least one item can be ended (the list
+  `Work the turn waits for`, `apps/web/src/components/session/shared-control.tsx`); with no endable
+  item the status shows alone. The desktop and mobile conversations show the same words under their
+  turns. Report this step unreachable when the state cannot be made.
 - **Proof.** Capture the open `New session in verify-pp` menu, `/sessions/<a-id>` with the
   shared-workspace line visible (`ariaSnapshot()` and a screenshot), the `mend claude --worktree`
   and `mend sessions` transcripts, both tmux captures of `id`, the TUI picker and session pane
@@ -140,19 +140,16 @@ Preconditions:
 
 ## Gotchas
 
-- The join line in the `New session` menu is a plain paragraph inside the menu, not a menu item
-  (`apps/web-old/src/components/project-detail/new-worktree-session.tsx:89`). Assert it with
-  `getByRole("menu").getByText(…)`. The composer's join line is a plain paragraph too
-  (`apps/web-old/src/components/session-composer.tsx:196`). Both are unnamed paragraphs; assert
-  their text.
-- The shared-workspace line on the session page is an unnamed paragraph
-  (`apps/web-old/src/routes/sessions.$sessionId.tsx:311`); on the desktop it is a `span` in a strip
+- The join line and the session page's shared-workspace line were unnamed paragraphs in the old app;
+  in the web app (the New session page, `apps/web/src/components/new-session/`, and the session
+  page) they have not been re-read since cut-over. Assert their text with `getByText`.
+- On the desktop the shared-workspace line is a `span` in a strip
   (`apps/desktop/src/renderer/src/components/workspace-facts.tsx:68`), and on mobile an unlabelled
   `Text`. Use `getByText`. The desktop strip truncates long lines visually; the full text is in the
   DOM and in its `title`.
-- Each `End` button on the waiting line is named only `End`
-  (`apps/web-old/src/components/shared-workspace.tsx:85`); with several items they are ambiguous.
-  Scope by the item's text (`<kind> · <description>`). That is a finding.
+- Each `End` button on the waiting line is named `End <kind> <description>`
+  (`apps/web/src/components/session/shared-control.tsx`), so several items are told apart by name.
+  (In the old app each was named only `End`, a finding.)
 - The CLI never prints the shared-home join line: it has no viewer id where nobody is listed live
   (`apps/cli/src/main.ts:946-951`). ADR 0016 decision 13 names "join a worktree" in the CLI as a
   place the product says where two people meet; in a shared-home workspace the CLI says nothing.

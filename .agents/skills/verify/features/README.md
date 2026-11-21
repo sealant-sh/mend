@@ -3,7 +3,7 @@
 This directory is the maintained source for verifying every user-facing feature of Mend. Read this
 index before driving Mend, find the feature in the coverage table, then use its file as the recipe.
 The map was written from source: the command catalog in `apps/cli/src/help.ts` and the CLI in
-`apps/cli/src`, the web routes and components in `apps/web-old/src`, the TUI in
+`apps/cli/src`, the web routes and components (then in the old app, now `apps/web/src`), the TUI in
 `apps/cli/src/dashboard*` and `apps/cli/src/review.tsx`, the desktop, mobile, VS Code and T3 gateway
 apps, the docs site in `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. It was first
 driven live on 2026-10-10, every mapped feature at least once, on local verify stacks through the
@@ -50,8 +50,8 @@ pass's results and evidence paths, and its corrections are in these files.
   `Sign out`. Scope page content to `page.getByRole("main")` so a project, `Projects` or `Settings`
   link never resolves to the sidebar's.
 - Never wait for `networkidle`. Every workbench page holds an open SSE stream (`/api/events`,
-  `apps/web-old/src/lib/workbench-events.ts`), so the network never goes idle. Wait for the role,
-  name or text the step names.
+  `apps/web/src/lib/workbench-events.ts`), so the network never goes idle. Wait for the role, name
+  or text the step names.
 - CLI steps are exact `mend` commands. Treat every command as literal; keep quoted names and flags
   unchanged. Angle-bracketed words are values the run fills in.
 - `mend codex`, `mend claude`, `mend attach`, `mend continue`, `mend service connect` and
@@ -121,10 +121,10 @@ commands and observable proof.
 ## Features
 
 One row per user-facing feature, found by sweeping the 86 commands in `apps/cli/src/help.ts`, every
-route under `apps/web-old/src/routes` (settings and project setup included), the TUI dashboard and
-review screen, the desktop, mobile and VS Code apps, the T3 gateway, Slack (ADR 0006), `mend.toml`,
-every page under `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. A feature that appears
-on several surfaces is one row. `not mapped` rows say why, so a gap is visible rather than silent.
+route of the web app (then the old app; now `apps/web/src/routes`), the TUI dashboard and review
+screen, the desktop, mobile and VS Code apps, the T3 gateway, Slack (ADR 0006), `mend.toml`, every
+page under `apps/docs/src/content/docs`, and the ADRs in `docs/adr/`. A feature that appears on
+several surfaces is one row. `not mapped` rows say why, so a gap is visible rather than silent.
 
 Totals: 60 features, 53 mapped, 7 not mapped.
 

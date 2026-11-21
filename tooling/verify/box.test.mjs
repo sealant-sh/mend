@@ -20,7 +20,7 @@ import {
   startScript,
   storeLoadScript,
 } from "./box.mjs";
-import { boxFlows, loadFlows } from "./flows.mjs";
+import { loadFlows } from "./flows.mjs";
 import { exitCode, validateResult } from "./result.mjs";
 import { parseArgs, runVerb } from "./verify.mjs";
 
@@ -42,7 +42,6 @@ const boxSays = ({
   revision = "a".repeat(40),
   applied = migrations,
   free = 40 * 1024 ** 3,
-  webapp,
   version = "0.37.0-next.1.preview.1",
   running = "true",
   active = OWNERS,
@@ -50,7 +49,6 @@ const boxSays = ({
   [
     `version=${version}`,
     `revision=${revision}`,
-    ...(webapp === undefined ? [] : [`webapp=${webapp}`]),
     "started=2026-11-14T20:00:00Z",
     `running=${running}`,
     `live=${live}`,
@@ -129,7 +127,7 @@ const box = (subverb, extra) =>
     subverb,
     pr: "1700",
     readMain: () => migrations,
-    // Never this checkout's own new web app check: release would scan and remove it.
+    // Never this checkout's own web app check: release would scan and remove it.
     front: { read: () => null, scan: () => 0, end: () => null },
     ...extra,
   });
@@ -142,37 +140,12 @@ test("the box's state is read with unknowns kept unknown", () => {
   assert.equal(parseState("version=\nrevision=not-a-sha").revision, null);
 });
 
-test("a preview of today's app leaves the after-cut-over flows; a preview of the new app runs them", async () => {
-  // Images from before the label, and every release, serve today's app.
-  for (const webapp of [undefined, "", "web-old", "something-else"])
-    assert.equal(parseState(boxSays({ webapp })).webApp, "web-old", String(webapp));
-  assert.equal(parseState(boxSays({ webapp: "web" })).webApp, "web");
-
+test("every box runs every flow of the daily run", async () => {
   const { flows } = loadFlows(root);
-  const later = flows.filter((flow) => flow.afterCutOver);
-  assert.ok(later.length > 0 && later.length < flows.length, "flows.md marks some flows, not all");
-  assert.deepEqual(boxFlows(flows, "web-old"), {
-    run: flows.filter((flow) => !flow.afterCutOver),
-    afterCutOver: later,
-  });
-  assert.deepEqual(boxFlows(flows, "web"), { run: flows, afterCutOver: [] });
-
-  const today = await box("plan", { sshRunner: fakeBox(boxSays()).ssh });
-  const todayFlows = today.steps.find((step) => step.id === "flows");
-  assert.equal(todayFlows.status, "passed");
-  assert.equal(
-    todayFlows.detail,
-    `it serves apps/web-old: ${flows.length - later.length} flows run, and the ${later.length} marked after cut-over are reported as not run · after cut-over`,
-  );
-  const next = await box("plan", { sshRunner: fakeBox(boxSays({ webapp: "web" })).ssh });
-  assert.equal(
-    next.steps.find((step) => step.id === "flows").detail,
-    `it serves apps/web (a preview built with web_app=web): all ${flows.length} flows run, the ${later.length} marked after cut-over included`,
-  );
-  // Nothing else in the plan depends on which app the box serves.
-  const without = (result) => result.steps.filter((step) => step.id !== "flows");
-  assert.deepEqual(without(next), without(today));
-  assert.equal(next.status, today.status);
+  const plan = await box("plan", { sshRunner: fakeBox(boxSays()).ssh });
+  const step = plan.steps.find((found) => found.id === "flows");
+  assert.equal(step.status, "passed");
+  assert.equal(step.detail, `all ${flows.length} flows run`);
 });
 
 test("a box schema this head cannot take is named, both ways", () => {
@@ -890,7 +863,7 @@ test("release refuses --no-restore after prepare --load, and --save without it",
   assert.equal(plain.scripts.filter((script) => script.includes("# save-data")).length, 0);
 });
 
-// A checkout whose change is the new web app's alone, and the builds a box might run: the
+// A checkout whose change is the web app's alone, and the builds a box might run: the
 // branch's base, main after it, and a server from another line that lacks the base.
 const frontHistory = (t) => {
   const cwd = mkdtempSync(join(tmpdir(), "mend-verify-front-"));
@@ -933,7 +906,7 @@ const frontHistory = (t) => {
   const front = commit({
     "apps/web/src/route.tsx": "export const r = 1;\n",
     "packages/ui/src/kit.tsx": "export const k = 1;\n",
-    ".agents/skills/verify/recipes/new-web-route.mjs": "export default async () => {};\n",
+    ".agents/skills/verify/recipes/route.mjs": "export default async () => {};\n",
   });
   git("checkout", "-qb", "server");
   const server = commit({ "apps/api/src/server.ts": "export const v = 2;\n" });
@@ -955,18 +928,23 @@ const frontHistory = (t) => {
 
 // Named as `verify` names results, so the newest sorts last: the newest drive of a recipe counts.
 let drives = 0;
-const droveOnBox = (cwd, head, revision, status = "passed") => {
+// `surface` new-web: a drive recorded before cut-over (SLNT-1253), which identity still reads.
+const droveOnBox = (cwd, head, revision, status = "passed", surface = "web") => {
   mkdirSync(join(cwd, ".verify/results"), { recursive: true });
   drives += 1;
   writeFileSync(
-    join(cwd, ".verify/results", `drive-new-web-20261118T${String(drives).padStart(6, "0")}Z.json`),
+    join(
+      cwd,
+      ".verify/results",
+      `drive-${surface}-20261118T${String(drives).padStart(6, "0")}Z.json`,
+    ),
     JSON.stringify({
-      verb: "drive new-web",
+      verb: `drive ${surface}`,
       status,
       head: { sha: head.sha, dirty: false },
       drive: {
-        surface: "new-web",
-        recipe: "new-web-route",
+        surface,
+        recipe: "route",
         out: join(cwd, "out"),
         box: { web: "https://box.example.test", revision, version: "0.37.0-next.1.preview.9" },
       },
@@ -977,7 +955,7 @@ const droveOnBox = (cwd, head, revision, status = "passed") => {
 const identityOn = (cwd, head, revision) =>
   boxIdentity(cwd, { head, ssh: fakeBox(boxSays({ revision })).ssh });
 
-test("a change that is the new web app's alone is found by its drive on the box, not by a deploy", (t) => {
+test("a change that is the web app's alone is found by its drive on the box, not by a deploy", (t) => {
   const { cwd, checkout, head, serverHead, base, later, other } = frontHistory(t);
   assert.deepEqual(
     { ...frontOnly(cwd, { head, revision: base }), product: undefined },
@@ -988,7 +966,7 @@ test("a change that is the new web app's alone is found by its drive on the box,
 
   const undriven = identityOn(cwd, head, base);
   assert.equal(undriven.steps[0].status, "failed");
-  assert.match(undriven.steps[0].detail, /no passing drive new-web --box of this clean head/);
+  assert.match(undriven.steps[0].detail, /no passing drive web --box of this clean head/);
 
   droveOnBox(cwd, head, later, "failed");
   assert.equal(identityOn(cwd, head, later).steps[0].status, "failed", "a failed drive is none");
@@ -996,7 +974,7 @@ test("a change that is the new web app's alone is found by its drive on the box,
   const driven = identityOn(cwd, head, base);
   assert.equal(driven.steps[0].status, "passed");
   assert.equal(driven.identity.relation, "front");
-  assert.match(driven.steps[0].detail, /served from this checkout by drive new-web --box/);
+  assert.match(driven.steps[0].detail, /served from this checkout by drive web --box/);
   assert.equal(
     identityOn(cwd, head, later).steps[0].status,
     "failed",
@@ -1026,7 +1004,13 @@ test("a change that is the new web app's alone is found by its drive on the box,
   assert.equal(server.identity.relation, "none");
 });
 
-test("plan says a new web app check needs no deploy, and that a stopped Mend needs one first", (t) => {
+test("identity still takes a drive recorded as new-web, the surface's name before cut-over", (t) => {
+  const { cwd, head, base } = frontHistory(t);
+  droveOnBox(cwd, head, base, "passed", "new-web");
+  assert.equal(identityOn(cwd, head, base).steps[0].status, "passed");
+});
+
+test("plan says a web app check needs no deploy, and that a stopped Mend needs one first", (t) => {
   const { cwd, head, base } = frontHistory(t);
   const front = (running) =>
     boxPlan(cwd, {
@@ -1052,7 +1036,7 @@ test("plan says a new web app check needs no deploy, and that a stopped Mend nee
   );
 });
 
-test("release scans the new web app check's evidence and removes its sign-in, only with --yes", async () => {
+test("release scans the web app check's evidence and removes its sign-in, only with --yes", async () => {
   const run = { private: "/p", evidence: "/e" };
   const seen = [];
   const front = {

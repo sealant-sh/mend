@@ -24,7 +24,7 @@
 // refuses any other server, and its proxy sends the API to that one and nothing else. The same
 // holds for the t3code client serve-t3-client.mjs serves ($MEND_VERIFY_PRIVATE/t3-client.json),
 // whose `web` is the Mend its T3 gateway serves: it refuses a gateway serving any other, and for
-// the new web app drive-mobile.mjs --client new-web serves ($MEND_VERIFY_PRIVATE/new-web.json).
+// the web app drive-mobile.mjs --client web serves ($MEND_VERIFY_PRIVATE/web.json).
 //
 // The CLI check refuses (exit 97, nothing run) when:
 //   - MEND_VERIFY_OUTER_URL is not set, or is not a URL;
@@ -154,8 +154,8 @@ export const allowedTargets = (env) => {
 export const MOBILE_RECORD = "mobile.json";
 /** The file serve-t3-client.mjs records its t3code client in, in the private directory. */
 export const T3_CLIENT_RECORD = "t3-client.json";
-/** The file drive-mobile.mjs --client new-web records the new web app's proxy in. */
-export const NEW_WEB_RECORD = "new-web.json";
+/** The file drive-mobile.mjs --client web records the web app's proxy in. */
+export const WEB_RECORD = "web.json";
 
 /**
  * The URLs of a client page this run serves (`record`: the mobile proxy, or the t3code client),
@@ -199,7 +199,7 @@ export const checkTarget = (url, env, { clients = false } = {}) => {
     targets.push(
       ...clientTargets(env, [...targets], MOBILE_RECORD),
       ...clientTargets(env, [...targets], T3_CLIENT_RECORD),
-      ...clientTargets(env, [...targets], NEW_WEB_RECORD),
+      ...clientTargets(env, [...targets], WEB_RECORD),
     );
   const wanted = normalizeUrl(url);
   if (wanted === null || !targets.includes(wanted))

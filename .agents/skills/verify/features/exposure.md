@@ -149,12 +149,11 @@ Preconditions:
   without blocking. `core-private`, `edge-tls` and `reassessment` never block a start.
 - `/api/health` gives counts for exposure but names the failing multi mode gate items in
   `tenancyGate.failing` (an open question in ADR 0004, left as released).
-- The exposure line is an unnamed paragraph in the account popover's machine block (`MachineBlock`,
-  `apps/web-old/src/components/shell.tsx`), not on the sidebar itself; the popover renders only once
-  the account button is opened. With an organization the button and popover are named
-  `… account, organization and machine` / `Account, organization and machine` instead (`shell.tsx`,
-  `PersonMenu`); the box read `Account and machine` on 17 Nov. Its `title` holds the host's address
-  kinds.
+- The exposure line is in the account menu, not on the sidebar itself
+  (`apps/web/src/components/account-menu.tsx`, from `platform.machine`'s `exposure`); it renders
+  only once the account button, `<name>, account`, is opened, and its menu is named `Account`. (The
+  old app's popover was named `Account and machine`, as the box read on 17 Nov.) Its `title` holds
+  the host's address kinds.
 - `mend operator exposure` and `mend operator gate` have no `--json`. Assert lines by their item id.
 - Budget request windows are in memory per API process; a restart resets them. Session ceilings are
   counted from the database and can be overshot by the number of requests in flight.

@@ -18,7 +18,7 @@ import {
   tidyScript,
 } from "./box-tidy.mjs";
 import { driveResults } from "./evidence.mjs";
-import { boxFlows, loadFlows, webAppOf } from "./flows.mjs";
+import { loadFlows } from "./flows.mjs";
 
 // The box-check setup (AGENTS.md, Check Features on the Box; docs/operations/preview-builds.md):
 // what the box runs and whether another check holds it, the database dump before a deploy, a CLI
@@ -26,8 +26,8 @@ import { boxFlows, loadFlows, webAppOf } from "./flows.mjs";
 // The check itself stays a person-shaped run by another agent. `plan` and `identity` only read;
 // `prepare`, `cli` and `release` change the box only with --yes. `release` tidies the box first, and
 // `prepare` tidies it when it is short of room for one deploy (box-tidy.mjs says what goes).
-// A change that is only the new web app needs no deploy: `verify drive new-web --box` serves it
-// from this checkout in front of the box's API (box-front.mjs), and identity accepts that drive.
+// A change that is only the web app needs no deploy: `verify drive web --box` serves it from this
+// checkout in front of the box's API (box-front.mjs), and identity accepts that drive.
 //
 // The box is named by MEND_VERIFY_BOX_SSH (or --ssh): the ssh arguments that reach it as root, such
 // as `-J root@<proxmox host> root@<vm>`. preview-builds.md, "The box", says what is on it.
@@ -96,7 +96,6 @@ set -u
 label() { docker inspect --format "{{index .Config.Labels \\"$1\\"}}" mend-mend-1 2>/dev/null; }
 echo "version=$(label org.opencontainers.image.version)"
 echo "revision=$(label org.opencontainers.image.revision)"
-echo "webapp=$(label dev.sealant.mend.web-app)"
 echo "started=$(docker inspect --format '{{.State.StartedAt}}' mend-mend-1 2>/dev/null)"
 echo "running=$(docker inspect --format '{{.State.Running}}' mend-mend-1 2>/dev/null)"
 echo "live=$(docker exec mend-postgres-1 psql -U postgres -d mend -At -c 'select count(*) from agent_sessions where settled_at is null' 2>/dev/null)"
@@ -132,7 +131,6 @@ export const parseState = (text) => {
   return {
     version: values.version ?? null,
     revision: /^[0-9a-f]{40}$/.test(values.revision ?? "") ? values.revision : null,
-    webApp: webAppOf(values.webapp),
     started: values.started ?? null,
     running: values.running === "true" ? true : values.running === "false" ? false : null,
     live: /^\d+$/.test(values.live ?? "") ? Number(values.live) : null,
@@ -276,22 +274,14 @@ const frontOf = (root, head, revision) => {
   }
 };
 
-/**
- * Which flows of the daily run (.agents/skills/box-main-run/flows.md, at this head) the box can
- * show, by the web app its image serves: on today's app the flows marked `Box: after cut-over`
- * wait for cut-over; on a preview built with `web_app=web` every flow runs.
- */
-const flowsStep = (root, state) => {
+/** The flows of the daily run (.agents/skills/box-main-run/flows.md, at this head): every box runs them all. */
+const flowsStep = (root) => {
   const { flows } = loadFlows(root);
-  const { run, afterCutOver } = boxFlows(flows, state.webApp);
   return {
     id: "flows",
     title: "The flows this box can show",
     status: "passed",
-    detail:
-      state.webApp === "web"
-        ? `it serves apps/web (a preview built with web_app=web): all ${run.length} flows run, the ${flows.filter((flow) => flow.afterCutOver).length} marked after cut-over included`
-        : `it serves apps/web-old: ${run.length} flows run, and the ${afterCutOver.length} marked after cut-over are reported as not run · after cut-over`,
+    detail: `all ${flows.length} flows run`,
   };
 };
 
@@ -323,10 +313,10 @@ const stateSteps = (root, state, { head, tag, listing, load }) => {
   });
   if (busy)
     next.push("wait until the other check posts its verdict and its sessions settle, then rerun");
-  steps.push(flowsStep(root, state));
+  steps.push(flowsStep(root));
   const front = frontOf(root, head, state.revision);
   const noDeploy = front.front && ["same", "later"].includes(front.server);
-  // A new web app check drives the box's API as it runs now, so Mend must be running there: a
+  // A web app check drives the box's API as it runs now, so Mend must be running there: a
   // release that put the data back leaves it stopped until the next deploy.
   const stopped = noDeploy && state.running === false;
   if (front.front)
@@ -337,7 +327,7 @@ const stateSteps = (root, state, { head, tag, listing, load }) => {
       detail: stopped
         ? `${describeFront(front, state.revision)}, but Mend is stopped there (a release that put the data back leaves it so): deploy a preview of main after pnpm verify box prepare --yes, then drive`
         : noDeploy
-          ? `${describeFront(front, state.revision)}. This change is the new web app's alone: pnpm verify drive new-web --box serves it from this checkout in front of the box's API, so no preview deploy is needed`
+          ? `${describeFront(front, state.revision)}. This change is the web app's alone: pnpm verify drive web --box serves it from this checkout in front of the box's API, so no preview deploy is needed`
           : describeFront(front, state.revision),
     });
   const problems = schemaProblems(state.migrations, headMigrations(root));
@@ -555,7 +545,7 @@ export const boxPrepare = (root, { head, ssh, tag, yes, stamp, load }) => {
       next: [],
       box: state,
     };
-  // What the box runs, and whether a new web app check needs a deploy first, never refuse the dump:
+  // What the box runs, and whether a web app check needs a deploy first, never refuse the dump:
   // the deploy comes after it.
   const blocking = steps.filter(
     (step) => step.status !== "passed" && !["deployed", "front"].includes(step.id),
@@ -977,10 +967,9 @@ const putBackSteps = (ssh, { state, yes, noRestore, save, tag, main }) => {
  * own data and build), tidy the box while this check still holds it, then lift the hold (or write
  * back the lapsed hold prepare --load found).
  */
-const FRONT_TITLE =
-  "Scan the new web app check's evidence and remove its sign-in from this machine";
+const FRONT_TITLE = "Scan the web app check's evidence and remove its sign-in from this machine";
 
-/** Scans what `drive new-web --box` captured with its private registry; returns the exit code. */
+/** Scans what `drive web --box` captured with its private registry; returns the exit code. */
 const scanFront = (root, run) =>
   spawnSync(
     "node",
@@ -996,7 +985,7 @@ const scanFront = (root, run) =>
   ).status;
 
 /**
- * The new web app check's local part (`front`: its record, scan and removal, injectable for
+ * The web app check's local part (`front`: its record, scan and removal, injectable for
  * tests): its evidence scanned, then its private registry removed.
  */
 export const FRONT_RUN = { read: readFrontRun, scan: scanFront, end: endFrontRun };
@@ -1185,8 +1174,8 @@ export const relate = (root, { head, revision, limit = 400 }) => {
 };
 
 /**
- * Identity for a change that is the new web app's alone: the box's server is this head's, or at or
- * after this branch's base (box-front.mjs), and `drive new-web --box` drove this clean head in
+ * Identity for a change that is the web app's alone: the box's server is this head's, or at or
+ * after this branch's base (box-front.mjs), and `drive web --box` drove this clean head in
  * front of the build the box runs now. Null when the change is not the front's alone.
  */
 const frontIdentity = (root, { head, state }) => {
@@ -1203,7 +1192,8 @@ const frontIdentity = (root, { head, state }) => {
       box: state,
     };
   const drives = driveResults(root, head).filter(
-    (result) => result.drive?.surface === "new-web" && result.drive.box,
+    // `new-web`: the surface's name before cut-over (SLNT-1253).
+    (result) => ["web", "new-web"].includes(result.drive?.surface) && result.drive.box,
   );
   const passed = drives.filter(
     (result) => result.status === "passed" && result.drive.box.revision === state.revision,
@@ -1215,14 +1205,14 @@ const frontIdentity = (root, { head, state }) => {
           id: "identity",
           title,
           status: "failed",
-          detail: `${state.version}: ${where}, but no passing drive new-web --box of this clean head in front of it${
+          detail: `${state.version}: ${where}, but no passing drive web --box of this clean head in front of it${
             drives.length > 0
               ? ` (${drives.map((result) => `${result.drive.recipe}: ${result.status}, revision ${result.drive.box.revision?.slice(0, 12)}`).join("; ")})`
               : ""
           }`,
         },
       ],
-      next: ["pnpm verify drive new-web --box --recipe <recipe>", "pnpm verify box identity"],
+      next: ["pnpm verify drive web --box --recipe <recipe>", "pnpm verify box identity"],
       box: state,
     };
   return {
@@ -1231,7 +1221,7 @@ const frontIdentity = (root, { head, state }) => {
         id: "identity",
         title,
         status: "passed",
-        detail: `${state.version}: ${where}; the new web app is this head's, served from this checkout by drive new-web --box (${passed.map((result) => result.drive.recipe).join(", ")})`,
+        detail: `${state.version}: ${where}; the web app is this head's, served from this checkout by drive web --box (${passed.map((result) => result.drive.recipe).join(", ")})`,
       },
     ],
     next: [],

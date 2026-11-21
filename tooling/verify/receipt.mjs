@@ -21,7 +21,8 @@ import { STATUSES } from "./result.mjs";
 // `productPatchId` is the patch id of the diff, merge base to `sha`, of only the files that make
 // the change owe a judgement: a rebase, or a push that touches only tests or docs, keeps it.
 // `flows`, `flowsOnTheBox` and `noFlow` came with SLNT-1050: a judgement recorded before them has
-// none, and still conforms.
+// none, and still conforms. Nothing writes `flowsOnTheBox` since cut-over (SLNT-1253), when every
+// flow runs on every box; a receipt recorded before it still conforms.
 
 export const RECEIPT_VERSION = 1;
 

@@ -71,16 +71,15 @@ node $skill/scripts/drive-web.mjs --web http://127.0.0.1:18305 --viewport 390x84
 # a client pass on the declared outer: --outer instead of --web "$web"
 ```
 
-**New web app.** `drive-mobile.mjs --client new-web --app <checkout>/apps/web` serves the new web
-app the same way: `vite dev` on `--expo-port` in place of Expo, with the app's own server calling
-the API through the proxy (`MEND_API_URL`) and taking the browser's origin as its own (`APP_URL`).
-It records itself in `$P/new-web.json`, which `drive-web.mjs` takes as it takes `mobile.json`.
-`drive-web.mjs --sign-in "$web"` signs in on the stack's page before the recipe runs, and the recipe
-opens `http://localhost:<port>`, where the browser sends that session's cookie. A recipe that signs
-in on the new app's own page types the account through `account` (`recipes/new-web-sign-in.mjs`).
-`pnpm verify drive new-web` does all of this, and waits for vite's first page before the recipe.
-With `--box` it fronts the box instead (`--outer`, the box declared as the outer server) and signs
-in on the new app's own `/login` with no `--sign-in` (SKILL.md, section 9).
+**Web app on the box.** `drive-mobile.mjs --client web --app <checkout>/apps/web --outer` serves the
+web app from a checkout the same way: `vite dev` on `--expo-port` in place of Expo, with the app's
+own server calling the API through the proxy (`MEND_API_URL`) and taking the browser's origin as its
+own (`APP_URL`). It records itself in `$P/web.json`, which `drive-web.mjs` takes as it takes
+`mobile.json`, and the recipe opens `http://localhost:<port>`. `pnpm verify drive web --box` does
+all of this in front of the box (the declared outer server), waits for vite's first page, and signs
+in on the app's own `/login` (SKILL.md, section 9). On a stack, `drive web` needs none of it: the
+stack's image serves the app. A recipe that signs in on the app's page itself types the account
+through `account` (`recipes/sign-in.mjs`).
 
 Keep every log and profile **beside** `$P`, never inside it: every file under `$P` joins the secret
 registry, a non-JSON one whole, and its text would then be redacted out of the evidence.

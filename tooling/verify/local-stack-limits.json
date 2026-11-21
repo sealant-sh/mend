@@ -15,7 +15,7 @@
     },
     {
       "id": "real-agent-turn",
-      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there. A box run goes to a check VM on this machine (pnpm verify vm up), which holds the daily run's real logins (with --boat when it also needs Boat). A route of the new web app (apps/web) sent here runs from its checkout: pnpm verify drive new-web --box serves it in front of the check VM's or the box's API, so a change that is only apps/web and packages/ui needs no preview deploy (the verify skill, section 9)."
+      "what": "An agent really running a turn. A local stack has no real agent login: its recipes sign agents in with published fake values the provider refuses, so no Claude or Codex turn runs there. A box run goes to a check VM on this machine (pnpm verify vm up), which holds the daily run's real logins (with --boat when it also needs Boat). A route of the web app (apps/web) sent here runs from its checkout: pnpm verify drive web --box serves it in front of the check VM's or the box's API, so a change that is only apps/web and packages/ui needs no preview deploy (the verify skill, section 9)."
     }
   ]
 }
