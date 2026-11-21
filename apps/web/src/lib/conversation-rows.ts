@@ -11,6 +11,7 @@ import {
 import {
   endpointUnreachableWords,
   isHarnessSetupMessage,
+  memoryLimitWords,
   type LoginClass,
 } from "@mend/domain/workbench";
 
@@ -456,6 +457,15 @@ export const turnEnd = (
 ): { readonly words: string; readonly next: TurnNext | null } | null => {
   const turn = row.turn;
   if (turn === null) return null;
+  // The workspace reached its memory limit during the turn: said whatever the turn's status,
+  // since a command the kernel stopped leaves the turn itself completed.
+  const memory = turn.memoryLimit ?? null;
+  if (memory !== null) {
+    return {
+      words: memoryLimitWords(memory),
+      next: memory.stopped === "agent" ? "send-again" : null,
+    };
+  }
   const unreachable = turn.unreachable ?? null;
   if (turn.status === "failed" && unreachable !== null) {
     const observed = clockTime(new Date(turn.endedAt ?? row.at));

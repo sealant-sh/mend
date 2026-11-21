@@ -64,7 +64,17 @@
 # stay. It makes no hot-pool, claim, retire, discard or drain call, and no action models a shell, so
 # no action models it. Full tlx run at 1e50a49f7d: every row as expected (`code` 129,386,795 states,
 # 218 s on four workers).
-sync 1e50a49f7dc337b2a1d3a91c314e88924aee6361
+# 61bf84dcb8 is the SLNT-1233 branch on main at 665d4b68dd, whose covered files carry nothing since
+# 1e50a49f7d but SLNT-1205's squash, which the line before accounted for. SLNT-1233 changed
+# engine.ts only outside every covered function's modelled steps: when an agent ends on its own
+# (recordAgentEnd) and after a protocol turn ends (in a forked fiber), one exec reads the
+# workspace's out-of-memory kills, a new table notes the count said, and the session's summary or
+# the turn says the workspace hit its memory limit. It makes no hot-pool, claim, retire, drain,
+# discard, stop or session-process call, so no action models it. Full tlx run at 61bf84dcb8: every
+# row as expected (`code` 129,386,795 states, 397 s on four workers).
+# cb5993b958 is the same SLNT-1233 commit rebased on main at 6d443dff6, whose two new commits
+# changed no covered file: the covered code is 61bf84dcb8's, which the full run above checked.
+sync cb5993b95885c57e868d13de47eff7c14e3f8264
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

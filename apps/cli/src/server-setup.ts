@@ -219,6 +219,18 @@ import {
   workspaceImagesChangedLines,
   workspaceImagesLine,
 } from "./server-workspace-images.ts";
+import {
+  parseWorkspaceMemory,
+  parseWorkspaceMemoryField,
+  renderWorkspaceMemoryOverlay,
+  resolveWorkspaceMemory,
+  type ServerWorkspaceMemory,
+  WORKSPACE_MEMORY_COMPOSE_FILE,
+  WORKSPACE_MEMORY_RULE,
+  type WorkspaceMemoryValue,
+  workspaceMemoryChangedLines,
+  workspaceMemoryLine,
+} from "./server-workspace-memory.ts";
 import { redactCredentials } from "./shared.ts";
 import { cliVersion } from "./version.ts";
 
@@ -442,6 +454,13 @@ interface SetupOptions {
    */
   readonly workspaceImageKeep: WorkspaceImageValue | undefined;
   readonly workspaceImageMinAge: WorkspaceImageValue | undefined;
+  /**
+   * `--workspace-memory`, `--workspace-docker-memory` (server-workspace-memory.ts): the memory
+   * limit of each session's workspace and of its Docker service. `default` takes a saved value
+   * away; omitted keeps the saved one.
+   */
+  readonly workspaceMemory: WorkspaceMemoryValue | undefined;
+  readonly workspaceDockerMemory: WorkspaceMemoryValue | undefined;
   /** `--docker-hub-username` with `--docker-hub-token-stdin`: the Docker mirror's upstream login. */
   readonly dockerHubUsername: string | undefined;
   readonly dockerHubTokenStdin: boolean;
@@ -535,6 +554,11 @@ export interface ServerConfig {
    * (server-workspace-images.ts). Absent, sealant's defaults apply.
    */
   readonly workspaceImages?: ServerWorkspaceImages;
+  /**
+   * The memory limit of each session's workspace and of its Docker service
+   * (server-workspace-memory.ts). Absent, sealant's `auto` applies.
+   */
+  readonly workspaceMemory?: ServerWorkspaceMemory;
   /**
    * The t3code gateway's port (docs/adr/0012), when the operator turned it on with `--t3-gateway`;
    * absent, it does not run. Published where the web port is (`t3GatewayPlacement`).
@@ -789,6 +813,8 @@ const SETUP_FLAGS = new Set([
   "--docker-mirror-max-size",
   "--workspace-image-keep",
   "--workspace-image-min-age",
+  "--workspace-memory",
+  "--workspace-docker-memory",
   "--docker-hub-username",
   "--docker-hub-token-stdin",
   "--docker-hub-public-only",
@@ -1010,6 +1036,19 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     throw setupError(
       `--workspace-image-min-age must be ${WORKSPACE_IMAGE_MIN_AGE_RULE}, not "${minAgeFlag ?? ""}".`,
     );
+  const memoryFlag = flagValue("--workspace-memory");
+  const workspaceMemory = memoryFlag === undefined ? undefined : parseWorkspaceMemory(memoryFlag);
+  if (workspaceMemory === null)
+    throw setupError(
+      `--workspace-memory must be ${WORKSPACE_MEMORY_RULE}, not "${memoryFlag ?? ""}".`,
+    );
+  const dockerMemoryFlag = flagValue("--workspace-docker-memory");
+  const workspaceDockerMemory =
+    dockerMemoryFlag === undefined ? undefined : parseWorkspaceMemory(dockerMemoryFlag);
+  if (workspaceDockerMemory === null)
+    throw setupError(
+      `--workspace-docker-memory must be ${WORKSPACE_MEMORY_RULE}, not "${dockerMemoryFlag ?? ""}".`,
+    );
   const dockerHubUsername = flagValue("--docker-hub-username");
   const dockerHubTokenStdin = values.has("--docker-hub-token-stdin");
   const noDockerHubLogin = values.has("--no-docker-hub-login");
@@ -1177,6 +1216,8 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     dockerMirrorMaxSize,
     workspaceImageKeep,
     workspaceImageMinAge,
+    workspaceMemory,
+    workspaceDockerMemory,
     dockerHubUsername,
     dockerHubTokenStdin,
     noDockerHubLogin,
@@ -1794,6 +1835,13 @@ const parseServerConfig = (raw: string): ServerConfig => {
     throw setupError(
       "Server config is corrupt: workspaceImages must hold keep and minAgeHours, each a whole number. Run mend server setup with --workspace-image-keep and --workspace-image-min-age.",
     );
+  const workspaceMemory = fields.has("workspaceMemory")
+    ? parseWorkspaceMemoryField(fields.get("workspaceMemory"))
+    : undefined;
+  if (workspaceMemory === null)
+    throw setupError(
+      "Server config is corrupt: workspaceMemory must hold workspace and dockerService, each auto, none or a size of at least 64m such as 4g. Run mend server setup with --workspace-memory and --workspace-docker-memory.",
+    );
   const config: ServerConfig = {
     ...(fields.has("sessionRuntime")
       ? { sessionRuntime: sessionRuntimeOf(fields.get("sessionRuntime")) }
@@ -1828,6 +1876,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(declared.length === 0 ? {} : { declared }),
     ...(fields.has("mirrors") ? { mirrors: parseMirrorsField(fields.get("mirrors")) } : {}),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
+    ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
     ...(t3GatewayPort === undefined ? {} : { t3GatewayPort }),
     ...(t3GatewayOrigin === undefined ? {} : { t3GatewayOrigin }),
     ...(preview === undefined ? {} : { preview }),
@@ -1875,6 +1924,8 @@ const parseServerConfig = (raw: string): ServerConfig => {
     dockerMirrorMaxSize: undefined,
     workspaceImageKeep: undefined,
     workspaceImageMinAge: undefined,
+    workspaceMemory: undefined,
+    workspaceDockerMemory: undefined,
     dockerHubUsername: undefined,
     dockerHubTokenStdin: false,
     noDockerHubLogin: false,
@@ -2705,6 +2756,10 @@ const validateOverlays = (
     throw setupError(
       `Server generation is corrupt: ${WORKSPACE_IMAGES_COMPOSE_FILE} does not match the saved workspace image settings.`,
     );
+  if (files.workspaceMemory !== renderWorkspaceMemoryOverlay(config.workspaceMemory))
+    throw setupError(
+      `Server generation is corrupt: ${WORKSPACE_MEMORY_COMPOSE_FILE} does not match the saved workspace memory settings.`,
+    );
   if (!isBoatOverlayOf(files.boat, config.boat))
     throw setupError(
       "Server generation is corrupt: compose.boat.yaml does not match the saved Boat settings.",
@@ -3038,6 +3093,9 @@ export const readServerInstallationFacts = async (
           ...(generation.files.workspaceImages === undefined
             ? []
             : [{ name: WORKSPACE_IMAGES_COMPOSE_FILE, content: generation.files.workspaceImages }]),
+          ...(generation.files.workspaceMemory === undefined
+            ? []
+            : [{ name: WORKSPACE_MEMORY_COMPOSE_FILE, content: generation.files.workspaceMemory }]),
           ...(generation.files.npmMirrorConf === undefined
             ? []
             : [{ name: NPM_MIRROR_CONF_NAME, content: generation.files.npmMirrorConf }]),
@@ -3144,6 +3202,7 @@ const generationFiles = (
   const posture = renderPostureOverlay(config);
   const mirrors = renderMirrorsOverlay(config.mirrors);
   const workspaceImages = renderWorkspaceImagesOverlay(config.workspaceImages);
+  const workspaceMemory = renderWorkspaceMemoryOverlay(config.workspaceMemory);
   const t3Gateway = renderT3GatewayOverlay(config);
   const remoteEndpoints = renderRemoteEndpointsOverlay(config.remoteEndpoints, config.edgeHost);
   const remoteEndpointsCaddyfile =
@@ -3170,6 +3229,7 @@ const generationFiles = (
       : { edge: EDGE_COMPOSE_OVERLAY, caddyfile: EDGE_CADDYFILE }),
     ...(mirrors === undefined ? {} : { mirrors }),
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
+    ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
     ...(config.mirrors === undefined || config.mirrors.npm === null
       ? {}
       : { npmMirrorConf: NPM_MIRROR_CONF }),
@@ -4704,6 +4764,7 @@ const setupServer = async (
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
   const mirrors = resolveMirrors(existing?.config.mirrors, options);
   const workspaceImages = resolveWorkspaceImages(existing?.config.workspaceImages, options);
+  const workspaceMemory = resolveWorkspaceMemory(existing?.config.workspaceMemory, options);
   const configWithoutBucket: ServerConfig = {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     assetContract: ASSET_CONTRACT,
@@ -4717,6 +4778,7 @@ const setupServer = async (
     ...validateExposure(existing?.config ?? null, options, tailnet),
     mirrors,
     ...(workspaceImages === undefined ? {} : { workspaceImages }),
+    ...(workspaceMemory === undefined ? {} : { workspaceMemory }),
   };
   const dockerHubToken = await resolveDockerHubToken(runtime, options, mirrors, store);
   const boatKey = await resolveServerBoatKey(runtime, options, configWithoutBucket.boat, store);
@@ -4888,6 +4950,11 @@ const setupServer = async (
   for (const line of workspaceImagesChangedLines(
     existing?.config.workspaceImages,
     config.workspaceImages,
+  ))
+    runtime.writeLine(line);
+  for (const line of workspaceMemoryChangedLines(
+    existing?.config.workspaceMemory,
+    config.workspaceMemory,
   ))
     runtime.writeLine(line);
   // A changed URL says how every CLI follows it; otherwise the last word is how to sign in, and
@@ -5938,6 +6005,7 @@ const serverStatus = async (
   // What this install declares, from its own config: facts about the generation, whatever runs.
   for (const line of declaredPostureLines(config)) runtime.writeLine(line);
   runtime.writeLine(workspaceImagesLine(config.workspaceImages));
+  runtime.writeLine(workspaceMemoryLine(config.workspaceMemory));
   const state = await composeCommand(runtime, installation, ["ps", "--all"]);
   runtime.writeLine(state.stdout.trim() || "No Compose containers found. Run mend server start.");
   const running = await composeCommand(runtime, installation, [

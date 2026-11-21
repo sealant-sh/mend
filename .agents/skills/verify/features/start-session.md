@@ -27,6 +27,13 @@ reads as an observation ("Running · recording", "Completed · observed").
   review.
 - `session-attach-resume` takes a live session's terminal (`a` in the dashboard), or resumes a
   settled one (`r`, the desktop's `resume`, the phone's `Resume`).
+- `session-memory-limit` a session whose workspace reaches its memory limit says so: the kernel
+  stops a process inside that workspace (the server and other sessions carry on), and the turn it
+  happened in reads `The workspace hit its memory limit` with what was stopped (the agent, or a
+  process in it, most likely a command the agent ran). When the agent itself was stopped, the
+  session line says the same instead of an exit code. Docker workspaces get `auto` limits from
+  sealant (half the host for the workspace, 2–16 GiB; a quarter for its Docker service, 1–8 GiB);
+  `mend server setup --workspace-memory` and `--workspace-docker-memory` set them.
 - `session-stop` stops the agent; the record and the review remain. When no other session in the
   workspace is running, the workspace stops too, with its Services and shells, once saved
   (docs/adr/0026, decision 7).

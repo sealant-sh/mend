@@ -5873,4 +5873,21 @@ export const migrations = {
     const sql = yield* SqlClient.SqlClient;
     yield* sql`ALTER TABLE agent_turn_steers ADD COLUMN IF NOT EXISTS taken_at timestamptz`;
   }),
+  // A workspace that reached its memory limit (SLNT-1233): the turn it happened in says what the
+  // kernel stopped, and each workspace keeps the count of its kills Mend has already said, so a
+  // later look says only new ones. Turns and workspaces before this have none.
+  "0236_workspace_memory_limit": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_turns ADD COLUMN IF NOT EXISTS memory_limit jsonb
+      CHECK (memory_limit IS NULL OR jsonb_typeof(memory_limit) = 'object')`;
+    yield* sql`
+      CREATE TABLE IF NOT EXISTS workspace_memory_kills (
+        sealant_workspace_id text PRIMARY KEY,
+        session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+        kills integer NOT NULL CHECK (kills >= 0),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS workspace_memory_kills_session_idx
+      ON workspace_memory_kills (session_id)`;
+  }),
 };

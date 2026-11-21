@@ -46,6 +46,7 @@ import {
   type AgentItemKind,
   type AgentTurnStatus,
   type AgentTurnUsage,
+  MemoryLimitHit,
   type UnreachableCause,
   type RequestIntentReading,
   type TurnLanding,
@@ -537,6 +538,14 @@ export class AgentConversationRepo extends Context.Service<
      */
     readonly failUnconfirmedTurn: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
     /**
+     * The workspace reached its memory limit during the turn (SLNT-1233): what the kernel
+     * stopped, said under the turn. Replaced whole; the turn's status is left as it is.
+     */
+    readonly setTurnMemoryLimit: (
+      id: AgentTurnId,
+      hit: MemoryLimitHit,
+    ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+    /**
      * What the turn's request asked for (docs/adr/0007-landing.md), read once per turn and
      * replaced whole when read again.
      */
@@ -704,7 +713,9 @@ export const toTurn = (row: typeof agentTurns.$inferSelect): AgentTurn =>
     processId: row.processId ?? importedTurnProcessIdOf(row.sessionId),
     mergeBack: Schema.decodeUnknownSync(Schema.Array(MergeBackContext))(row.mergeBack),
     selection: Schema.decodeUnknownSync(Schema.NullOr(TurnSelection))(row.selection),
+    memoryLimit: decodeMemoryLimit(row.memoryLimit),
   });
+const decodeMemoryLimit = Schema.decodeUnknownSync(Schema.NullOr(MemoryLimitHit));
 const toItem = (row: typeof agentItems.$inferSelect): AgentItem =>
   new AgentItem({
     ...row,
@@ -2187,6 +2198,21 @@ export const AgentConversationRepoLive: Layer.Layer<
       return toTurn(row);
     });
 
+    const setTurnMemoryLimit = Effect.fn("AgentConversationRepo.setTurnMemoryLimit")(function* (
+      id: AgentTurnId,
+      hit: MemoryLimitHit,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({ memoryLimit: hit })
+        .where(eq(agentTurns.id, id))
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
+      yield* notify(row.sessionId);
+      return toTurn(row);
+    });
+
     const setTurnIntent = Effect.fn("AgentConversationRepo.setTurnIntent")(function* (
       id: AgentTurnId,
       reading: RequestIntentReading,
@@ -3066,6 +3092,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       setTurnPayer,
       failTurn,
       failUnconfirmedTurn,
+      setTurnMemoryLimit,
       setTurnIntent,
       claimTurnLanding,
       decideTurnLanding,

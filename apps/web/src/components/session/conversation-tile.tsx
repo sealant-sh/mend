@@ -318,7 +318,13 @@ function SessionFailure({
   if (session.status !== "failed" || startFailed(facts) || session.summary === null) return null;
   const last = rows.at(-1);
   // The last turn already says why it ended.
-  if (last?.kind === "agent" && last.turn !== null && last.turn.status === "failed") return null;
+  if (
+    last?.kind === "agent" &&
+    last.turn !== null &&
+    (last.turn.status === "failed" || (last.turn.memoryLimit ?? null) !== null)
+  ) {
+    return null;
+  }
   return (
     <ConversationItem messageId="failed">
       <div className="flex flex-col gap-2 border-t pt-4">

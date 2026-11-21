@@ -26,7 +26,15 @@
 # markTurnSteerTaken, which stamps a steer row's taken_at. None writes a turn's status or provider
 # turn id, nor touches turn/start, turn.started or turn/completed, so no action models it. Full run
 # at 792ac83bf1: every row as expected.
-sync 792ac83bf176d768850a1826635660ec346fc7ca
+# 61bf84dcb8 is the SLNT-1233 branch on main at 665d4b68dd, whose covered files carry nothing since
+# 792ac83bf1 but SLNT-1234's squash, which the line before accounted for. agent-conversation.ts
+# gained setTurnMemoryLimit, which writes an ended turn's memory_limit (the workspace reached its
+# memory limit during it) and nothing else, and toTurn decodes that column. Neither writes a turn's
+# status or provider turn id, nor claims, binds, completes or cancels one, so no action models it.
+# Full run at 61bf84dcb8: every row as expected.
+# cb5993b958 is the same SLNT-1233 commit rebased on main at 6d443dff6, whose two new commits
+# changed no covered file: the covered code is 61bf84dcb8's, which the full run above checked.
+sync cb5993b95885c57e868d13de47eff7c14e3f8264
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

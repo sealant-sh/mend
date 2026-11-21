@@ -14,6 +14,10 @@ import {
   type ServerWorkspaceImages,
   WORKSPACE_IMAGES_COMPOSE_FILE,
 } from "./server-workspace-images.ts";
+import {
+  type ServerWorkspaceMemory,
+  WORKSPACE_MEMORY_COMPOSE_FILE,
+} from "./server-workspace-memory.ts";
 
 /**
  * The edge and the posture of a packaged install (docs/adr/0004-access-without-a-private-network.md
@@ -495,6 +499,7 @@ export const composeOverlays = (
   posture: ServerPosture & {
     readonly mirrors?: ServerMirrors;
     readonly workspaceImages?: ServerWorkspaceImages;
+    readonly workspaceMemory?: ServerWorkspaceMemory;
     readonly remoteEndpoints?: ServerRemoteEndpoints;
     readonly boat?: ServerBoat;
   },
@@ -503,6 +508,7 @@ export const composeOverlays = (
   ...(renderPostureOverlay(posture) === undefined ? [] : [POSTURE_COMPOSE_FILE]),
   ...(runsMirrors(posture.mirrors) ? [MIRRORS_COMPOSE_FILE] : []),
   ...(posture.workspaceImages === undefined ? [] : [WORKSPACE_IMAGES_COMPOSE_FILE]),
+  ...(posture.workspaceMemory === undefined ? [] : [WORKSPACE_MEMORY_COMPOSE_FILE]),
   ...(posture.t3GatewayPort === undefined ? [] : [T3_GATEWAY_COMPOSE_FILE]),
   ...(posture.preview === undefined ? [] : [PREVIEW_COMPOSE_FILE]),
   ...(posture.remoteEndpoints === undefined ? [] : [REMOTE_ENDPOINTS_COMPOSE_FILE]),

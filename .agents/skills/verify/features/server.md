@@ -20,6 +20,9 @@ same way, and an old-style preview moves to the `next` channel once with `--from
 - `server-workspace-images` sets how many workspace images the bundled worker keeps
   (`--workspace-image-keep`) and for how long (`--workspace-image-min-age`), kept across reruns and
   upgrades; `default` returns either to sealant's own.
+- `server-workspace-memory` sets the memory limit of each session's workspace (`--workspace-memory`)
+  and of its Docker service (`--workspace-docker-memory`): `auto`, `none` or a size, kept across
+  reruns and upgrades; `default` returns either to sealant's `auto`.
 - `server-status` prints the pin, the generation, the containers, the edge and the posture.
 - `server-lifecycle` stops, starts and restarts the installation without touching its volumes.
 - `server-logs` prints a bounded tail of every container's log.

@@ -694,6 +694,60 @@ describe("an agent's first screen (alpha 2026-09-30)", () => {
   );
 
   it.effect(
+    "an agent the kernel stopped at its workspace's memory limit says so, once, instead of its exit code",
+    () =>
+      Effect.gen(function* () {
+        const created: Array<CreateOptions> = [];
+        const memoryLooks: Array<string> = [];
+        const clock = yield* makeLaunchClock;
+        yield* withPreparedEngineEffect(
+          (world, tmp) => setup(tmp, world),
+          (world, tmp, project) =>
+            Effect.gen(function* () {
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "claude",
+                label: null,
+                name: null,
+                ownerUserId: "user-fixture",
+                start: { kind: "base", base: null },
+              });
+              yield* engine.launch(session.id, ["claude"]);
+              yield* clock.untilChanged(
+                () => world.sessions.get(session.id)?.settledAt != null,
+                "the session to settle from its run",
+              );
+              expect(world.sessions.get(session.id)?.status).toBe("failed");
+              expect(world.sessions.get(session.id)?.summary).toBe(
+                "The workspace reached its memory limit of 4 GiB, and the kernel stopped Claude Code.",
+              );
+              expect(memoryLooks.length).toBeGreaterThan(0);
+            }),
+          {
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                record: () => Stream.empty,
+                exec: (argv) => {
+                  if (argv[0] !== "sh" || !String(argv[2]).includes("memory.events"))
+                    return undefined;
+                  memoryLooks.push(String(argv[2]));
+                  return { exitCode: 0, stdout: "limit 4294967296\noom_kill 1\n", stderr: "" };
+                },
+                waitRun: () =>
+                  Effect.succeed({
+                    ...fakeExecRun,
+                    result: { status: "completed", outcome: "completed", exitCode: 137 },
+                  }),
+              },
+            }),
+            prepareWorld: clock.prepareWorld,
+          },
+        );
+      }),
+  );
+
+  it.effect(
     "a launch whose run settles completed but exited non-zero settles failed, as its PTY end reads",
     () =>
       Effect.gen(function* () {

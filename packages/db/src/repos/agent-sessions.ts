@@ -64,6 +64,7 @@ import {
   reviewComments,
   sessionInboxMarks,
   type StoredUnsavedAnswer,
+  workspaceMemoryKills,
   worktreeChanges,
 } from "../schema/workbench.ts";
 import { lockAgentConversation } from "./agent-conversation.ts";
@@ -453,6 +454,16 @@ export class SessionsRepo extends Context.Service<
      * status alone, so a picked-up session would otherwise keep reading the loss.
      */
     readonly setSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
+    /**
+     * Note a workspace's own count of its out-of-memory kills (SLNT-1233). True when it is more
+     * than Mend had noted for that workspace, so exactly one look says the new ones; false for a
+     * count already said, or a lower one.
+     */
+    readonly noteMemoryKills: (
+      id: SessionId,
+      sealantWorkspaceId: string,
+      kills: number,
+    ) => Effect.Effect<boolean>;
     /**
      * A settled session's outcome and summary, rewritten from what was observed since it settled
      * (its executor saved after all, ended later, or was never made): the latest observation is
@@ -1520,6 +1531,26 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
+      });
+
+      const noteMemoryKills = Effect.fn("SessionsRepo.noteMemoryKills")(function* (
+        id: SessionId,
+        sealantWorkspaceId: string,
+        kills: number,
+      ) {
+        if (kills <= 0) return false;
+        const now = yield* DateTime.nowAsDate;
+        const rows = yield* db
+          .insert(workspaceMemoryKills)
+          .values({ sealantWorkspaceId, sessionId: id, kills, updatedAt: now })
+          .onConflictDoUpdate({
+            target: workspaceMemoryKills.sealantWorkspaceId,
+            set: { kills, sessionId: id, updatedAt: now },
+            setWhere: lt(workspaceMemoryKills.kills, kills),
+          })
+          .returning({ kills: workspaceMemoryKills.kills })
+          .pipe(Effect.orDie);
+        return rows.length > 0;
       });
 
       const restate = Effect.fn("SessionsRepo.restate")(function* (
@@ -2606,6 +2637,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         touchTerminal,
         terminalActivity,
         setSummary,
+        noteMemoryKills,
         restate,
         setLabel,
         setSharedControl,

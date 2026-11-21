@@ -119,6 +119,7 @@ import {
 } from "@mend/domain/workbench";
 import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
 import type { BoatLaunchKey } from "@mend/domain/workbench";
+import { type MemoryLimitHit, memoryLimitWords } from "@mend/domain/workbench";
 import { isConversationTranscript, isTextConversationFile } from "@mend/domain/workbench";
 import {
   BOAT_LAUNCH_REFUSAL_CODES,
@@ -874,6 +875,7 @@ import {
   writeFilesPickupExec,
 } from "./workspace-files.ts";
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
+import { agentNameOf, parseWorkspaceMemory, WORKSPACE_MEMORY_SCRIPT } from "./workspace-memory.ts";
 import {
   resourcesNote,
   parseWorkspaceNoteOutcomes,
@@ -12585,13 +12587,86 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         (recording: EndRecording) =>
           recording === "recorded" ? finishAgentProcess(agentProcess, trigger, sweep) : Effect.void;
 
+      /**
+       * What the kernel stopped in an agent's workspace for reaching its memory limit since Mend
+       * last looked there (SLNT-1233), or null. Read when a turn ends and when the agent ends;
+       * each kill is said once (`SessionsRepo.noteMemoryKills`). Bounded and best effort: a
+       * workspace that does not answer, or is not a cgroup of its own, says nothing.
+       */
+      const memoryLimitHitOf = (agentProcess: SessionProcess, stopped: MemoryLimitHit["stopped"]) =>
+        Effect.gen(function* () {
+          const workspaceId = agentProcess.sealantWorkspaceId;
+          if (workspaceId === null) return null;
+          const lookup = yield* lookupWorkspace(workspaceId);
+          if (lookup.kind !== "found") return null;
+          const result = yield* sealant.exec(lookup.workspace, [
+            "sh",
+            "-c",
+            WORKSPACE_MEMORY_SCRIPT,
+          ]);
+          const reading = parseWorkspaceMemory(result.stdout);
+          if (reading === null) return null;
+          const fresh = yield* sessions.noteMemoryKills(
+            agentProcess.sessionId,
+            workspaceId,
+            reading.kills,
+          );
+          if (!fresh) return null;
+          const hit: MemoryLimitHit = {
+            limitBytes: reading.limitBytes,
+            stopped,
+            agent: agentNameOf(agentProcess.harness),
+          };
+          yield* Effect.logWarning("session engine: workspace reached its memory limit").pipe(
+            Effect.annotateLogs({
+              sessionId: agentProcess.sessionId,
+              workspaceId,
+              kills: reading.kills,
+              limitBytes: reading.limitBytes,
+              stopped,
+            }),
+          );
+          return hit;
+        }).pipe(
+          Effect.timeoutOption(Duration.seconds(15)),
+          Effect.map(Option.getOrElse(() => null)),
+          Effect.catch(() => Effect.succeed(null)),
+          Effect.catchDefect(() => Effect.succeed(null)),
+        );
+
+      /** Say a memory-limit stop under the agent's latest turn, the one it was on when stopped. */
+      const sayMemoryOnLastTurn = (agentProcess: SessionProcess, hit: MemoryLimitHit) =>
+        Effect.gen(function* () {
+          const last = (yield* conversations.listTurns(agentProcess.sessionId))
+            .filter((turn) => turn.processId === agentProcess.id && turn.startedAt !== null)
+            .at(-1);
+          if (last !== undefined) yield* conversations.setTurnMemoryLimit(last.id, hit);
+        }).pipe(Effect.ignore);
+
       const recordAgentEnd = Effect.fn("SessionEngine.endAgentProcess")(function* (
         agentProcess: SessionProcess,
-        end: AgentEnd,
+        reported: AgentEnd,
       ) {
         const current = yield* processes.byId(agentProcess.id);
         if (current === null || current.exitedAt !== null) return false;
         const sessionId = agentProcess.sessionId;
+        // An agent that ended on its own may have been stopped by the kernel at its workspace's
+        // memory limit (SLNT-1233): the session says so instead of an exit code, and a
+        // conversation says it under the turn the agent was on.
+        const memory =
+          reported.how === "exited"
+            ? yield* memoryLimitHitOf(
+                agentProcess,
+                reported.exitCode === null || reported.exitCode >= 128 ? "agent" : "process",
+              )
+            : null;
+        const end: AgentEnd =
+          memory === null
+            ? reported
+            : { ...reported, outcome: "failed", summary: memoryLimitWords(memory) };
+        if (memory !== null && agentProcess.kind === "agent-protocol") {
+          yield* sayMemoryOnLastTurn(agentProcess, memory);
+        }
         // An agent that ended before it drew is not starting any more.
         if (current.firstOutputAt === null) {
           yield* clearAgentStartingWords(sessionId).pipe(Effect.ignore);
@@ -22558,6 +22633,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   ),
                 );
               }
+              // A command the agent ran may have been stopped at the workspace's memory limit:
+              // said under this turn, off the turn's path.
+              yield* memoryLimitHitOf(agentProcess, "process").pipe(
+                Effect.flatMap((hit) =>
+                  hit === null
+                    ? Effect.void
+                    : conversations.setTurnMemoryLimit(turn.id, hit).pipe(Effect.ignore),
+                ),
+                forkSealantBackground(scope),
+              );
               const currentSession = yield* sessions.byId(turn.sessionId);
               const run =
                 agentProcess.sealantRunId === null

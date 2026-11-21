@@ -4,7 +4,7 @@ import {
   type AgentRequestDto,
   type AgentTurnDto,
 } from "@mend/agent-conversation";
-import type { TurnSelection, UnreachableCause } from "@mend/domain/workbench";
+import type { MemoryLimitHit, TurnSelection, UnreachableCause } from "@mend/domain/workbench";
 import { type InfiniteData, infiniteQueryOptions, type QueryClient } from "@tanstack/react-query";
 import type { inferRouterOutputs } from "@trpc/server";
 
@@ -24,6 +24,8 @@ export interface TurnView extends AgentTurnDto {
   readonly endedAt: string | null;
   /** Why a turn on a login with an endpoint could not connect; null or absent otherwise. */
   readonly unreachable?: UnreachableCause | null;
+  /** The workspace reached its memory limit during the turn; null or absent otherwise. */
+  readonly memoryLimit?: MemoryLimitHit | null;
   /** The model, thinking, speed and permission the turn was sent with; null when not recorded. */
   readonly selection?: TurnSelection | null;
 }
@@ -70,6 +72,7 @@ const turnView = (turn: WireTurn): TurnView => ({
   startedAt: isoOrNull(turn.startedAt),
   endedAt: isoOrNull(turn.endedAt),
   unreachable: turn.unreachable,
+  memoryLimit: turn.memoryLimit ?? null,
   selection: turn.selection,
 });
 
