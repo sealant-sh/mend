@@ -2,7 +2,7 @@
 // window, its title and its buttons on screen, and its list scrolls inside it, at desktop and
 // phone width. The owner's projects have 70 to 80 worktrees.
 //
-//   pnpm verify drive new-web --recipe new-web-long-dialogs
+//   pnpm verify drive web --recipe long-dialogs
 //
 // The recipe makes real worktrees in verify-fixture until it has 80 (no sessions, nothing
 // running), opens each dialog and cancels it, and removes the worktrees it made. Clear finished

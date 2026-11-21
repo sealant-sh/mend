@@ -3,8 +3,8 @@
 // first message, and a reloaded page must land on that session, never on an empty composer.
 // Run the composer's CLI batch first: it gives the stack's account a (fake) Codex login.
 //
-//   pnpm verify drive cli --recipe .agents/skills/verify/recipes/new-web-composer-setup.json
-//   pnpm verify drive new-web --recipe new-web-cut-short-start
+//   pnpm verify drive cli --recipe .agents/skills/verify/recipes/composer-setup.json
+//   pnpm verify drive web --recipe cut-short-start
 //
 // The recipe lets the start's request reach Mend and holds back Mend's answer, as a slow server or
 // a person quick on the reload key would, then closes the tab (or reloads it). On a build where
