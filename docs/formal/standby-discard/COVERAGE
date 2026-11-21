@@ -96,7 +96,16 @@
 # terminal stayed closed past a grace back to a conversation through switchMode. None touches
 # drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
 # HotWorkspacesRepo, so no action models it. Full run at ffe6f9f15a: every row as expected.
-sync ffe6f9f15a3981a670f328f50a9cabe9dc351d2f
+# b9164303ec is SLNT-1259 (going back to a checkpoint). engine.ts adds restoreCheckpoint, a worktree
+# Git action through withOwnedWorktreeGit (a new `files` scope: refused while any session in the
+# worktree has an open turn, a turn being queued or a terminal agent at work), which wakes the
+# session's workspace as the other Git actions do, takes two checkpoints and runs one exec in it;
+# the protocol hooks' restoreNotes and deliverTerminalTurns read the notes it leaves. None touches
+# drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
+# HotWorkspacesRepo, so no action models it. Full run at b9164303ec: every row as expected.
+# dc0ddbcc91 moves restoreRefused to the module scope; nothing else in engine.ts changes. --quick run at
+# dc0ddbcc91: every row as expected.
+sync dc0ddbcc9195972e5b0221e61f9ff4f9adc958d6
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

@@ -32,11 +32,11 @@ the address the lane's copy serves (`$WEB`, read each run). On a Boat copy (lane
 without Boat they run on Docker. The runtime is chosen per organization and a worktree keeps the
 runtime it was made on, so a worktree the data made on Boat starts no session on a copy without it.
 One organization (Default), single tenancy. Provider logins on 16 Nov: codex and claude connected,
-GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided.
-Five flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
-`start-session.composer`, `start-session.web-write`, `start-session.web-answer` and
-`send-review-back.deliver`. They use codex: the owner has far more Codex capacity than Claude (17
-Nov).
+GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided. Six
+flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
+`start-session.composer`, `start-session.web-write`, `start-session.web-answer`,
+`send-review-back.deliver` and `start-session.go-back`. They use codex: the owner has far more Codex
+capacity than Claude (17 Nov).
 
 For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
 git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
@@ -118,7 +118,7 @@ lane changed.
 2. `doctor.checklist`, `cli.version`, `exposure.read`, `operator.read`, `organization.read-invite`,
    `provider-accounts.read`, `models.list-picker`
 3. `start-session.boat-turn`, `review-change.web-review`, `now-and-sessions.web-now`,
-   `attach-resume.boat-stop-resume`, `send-review-back.deliver`
+   `attach-resume.boat-stop-resume`, `send-review-back.deliver`, `start-session.go-back`
 4. `start-session.boat-run`, `start-session.composer`, `start-session.web-write`,
    `start-session.web-answer`, `review-change.web-comments`, `land-change.panel-read`,
    `pull-change.boat-run`, `attach-resume.rename-web`, `tui.dashboard`
@@ -950,14 +950,44 @@ lane changed.
   `Checkpoint · 2 files changed`; none after the turn that changed nothing;
   `Checkpoint · 1 file changed` after the third. Hovering, Enter or a tap opens the line's details:
   `Checkpoint N` with its short sha, "When this turn ended, Mend saved a copy of the files in this
-  worktree…", the changed file `NOTES.md`, `Show changes` and `Open in Record`, and nothing about
-  going back. Open in Record lands on `/sessions/<id>/record#checkpoint-N`, whose Checkpoints filter
-  still lists every checkpoint; Show changes opens `/sessions/<id>/change` over that turn's
-  checkpoints with `NOTES.md` in it; no sideways scroll at 390px.
+  worktree…", the changed file `NOTES.md`, `Show changes`, `Open in Record` and
+  `Go back to this checkpoint…` (the owner's; `start-session.go-back` and
+  `review-change.new-web-go-back` use it). Open in Record lands on
+  `/sessions/<id>/record#checkpoint-N`, whose Checkpoints filter still lists every checkpoint; Show
+  changes opens `/sessions/<id>/change` over that turn's checkpoints with `NOTES.md` in it; no
+  sideways scroll at 390px.
 - **Mode:** `scripted` (recipes/checkpoints.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/session/checkpoint-line.tsx`,
   `apps/web/src/lib/turn-checkpoints.ts`
+
+### start-session.go-back
+
+- **Map:** review-change.md `review-go-back`
+- **Needs:** either; real turn (codex); web and CLI; `<p>`
+- **Do:**
+  `M codex "Create a file named BACK.md containing the one line: first. Change nothing else." --name main-run-back-<sha8> --project <p> --effort low --detach --conversation --json`,
+  then `M wait <id> --turn --timeout 8m`;
+  `M message <id> --queue -- "Replace the line in BACK.md with: second. Change nothing else."` and
+  wait again. On `/sessions/<id>`, send `Run sleep 60 in the shell, then reply done.` and, while
+  that turn works, open the first turn's checkpoint line, choose `Go back to this checkpoint…`, then
+  `Go back`. Wait for the turn, and do the same again. Send
+  `Before my message, did Mend tell you anything about this worktree's files? Say what in one sentence, then reply with the contents of BACK.md.`
+  and wait. Then open the line `Went back to checkpoint N`, choose `Go back to checkpoint M…`, then
+  `Go back`; open `/sessions/<id>/change`.
+- **See:** while the turn works, the dialog says
+  `An agent in this worktree is working. Stop its turn or wait for it to end, then try again.` and
+  nothing changes; after it, the toast
+  `Went back to checkpoint N. Your files from before are checkpoint M.` and the line
+  `Went back to checkpoint N`; the agent's reply says Mend told it the files went back to checkpoint
+  N, and reads `first`; the conversation shows the person's message as they wrote it, without the
+  note; after the undo, the Change view shows BACK.md reading `second`.
+- **Mode:** `agent`
+- **Box-only:** `real-agent-turn`
+- **Areas:** `apps/web/src/components/session/go-back-dialog.tsx`,
+  `apps/web/src/components/session/restore-line.tsx`, `apps/web/src/lib/checkpoint-restores.ts`,
+  `packages/sessions/src/checkpoint-restore.ts`,
+  `packages/domain/src/workbench/checkpoint-restore.ts`
 
 ### start-session.composer
 
@@ -1272,6 +1302,28 @@ lane changed.
 - **Areas:** `apps/web/src/components/change/`, `apps/web/src/components/workspace/view-facts.ts`,
   `apps/web/src/routes/_inbox.changes.$changeId.tsx`, `apps/web/src/lib/change-files.ts`,
   `apps/web/src/lib/review-open.ts`, `apps/web/src/lib/viewed-files.ts`
+
+### review-change.new-web-go-back
+
+- **Map:** review-change.md `review-go-back`
+- **Needs:** either; no turn; web and CLI; `verify-fixture`
+- **Do:** Run the CLI batch `go-back-sessions.json` (two `mend run` sessions in the worktree
+  `go-back`: the first writes BACK.md, the second rewrites it and adds LATER.md), drive the recipe
+  `go-back`, then run the batch `go-back-files.json`. The recipe goes back to the first run's last
+  checkpoint from the Change tab's range picker, reads the result back from the stack, then undoes
+  it from the line in the conversation.
+- **See:** the dialog `Go back to a checkpoint?` naming the checkpoint and saying Mend saves the
+  files first; the toast `Went back to checkpoint N. Your files from before are checkpoint M.`; the
+  stack's checkpoints `restore-save` then `restore`, the latter's files matching checkpoint N; the
+  line `Went back to checkpoint N` with `Go back to checkpoint M…`; after the undo, both lines and
+  the files matching checkpoint M; the last batch prints `BACK.md: second` and `LATER.md is there`;
+  no sideways scroll at 390px.
+- **Mode:** `scripted` (recipes/go-back.mjs)
+- **Box-only:** no
+- **Areas:** `apps/web/src/components/session/go-back-dialog.tsx`,
+  `apps/web/src/components/session/restore-line.tsx`,
+  `apps/web/src/components/change/range-picker.tsx`, `apps/web/src/lib/checkpoint-restores.ts`,
+  `packages/sessions/src/checkpoint-restore.ts`, `packages/db/src/repos/checkpoints.ts`
 
 ### review-change.new-web-tour
 

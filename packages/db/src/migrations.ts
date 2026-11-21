@@ -5950,4 +5950,33 @@ export const migrations = {
     )`;
     yield* sql`CREATE INDEX IF NOT EXISTS session_starts_created_idx ON session_starts (created_at)`;
   }),
+  // Going back to a checkpoint (SLNT-1259): each restore of a worktree's files, and the note each
+  // of its sessions owes its agent on the next message.
+  "0240_checkpoint_restores": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`CREATE TABLE IF NOT EXISTS checkpoint_restores (
+      id text PRIMARY KEY,
+      worktree_id text NOT NULL REFERENCES worktrees (id) ON DELETE CASCADE,
+      session_id text REFERENCES agent_sessions (id) ON DELETE SET NULL,
+      actor_id text NOT NULL,
+      target_checkpoint_id text REFERENCES checkpoints (id) ON DELETE SET NULL,
+      target_ordinal integer NOT NULL,
+      saved_checkpoint_id text REFERENCES checkpoints (id) ON DELETE SET NULL,
+      saved_ordinal integer NOT NULL,
+      result_checkpoint_id text REFERENCES checkpoints (id) ON DELETE SET NULL,
+      result_ordinal integer NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS checkpoint_restores_worktree_idx
+      ON checkpoint_restores (worktree_id, created_at)`;
+    yield* sql`CREATE TABLE IF NOT EXISTS checkpoint_restore_notes (
+      restore_id text NOT NULL REFERENCES checkpoint_restores (id) ON DELETE CASCADE,
+      session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      carrier text,
+      delivered_at timestamptz,
+      PRIMARY KEY (restore_id, session_id)
+    )`;
+    yield* sql`CREATE INDEX IF NOT EXISTS checkpoint_restore_notes_session_idx
+      ON checkpoint_restore_notes (session_id, carrier)`;
+  }),
 };

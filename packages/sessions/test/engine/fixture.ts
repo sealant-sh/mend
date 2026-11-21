@@ -86,6 +86,7 @@ import {
   AgentTurnId,
   ChangeId,
   CheckpointId,
+  CheckpointRestoreId,
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   OrganizationId,
@@ -107,7 +108,11 @@ import {
   defaultSettings,
   type DotfilesRepository,
 } from "@mend/domain";
-import { DEFAULT_MESSAGE_SETTINGS, type MessageSettings } from "@mend/domain/workbench";
+import {
+  CheckpointRestore,
+  DEFAULT_MESSAGE_SETTINGS,
+  type MessageSettings,
+} from "@mend/domain/workbench";
 import {
   AgentTurn,
   Change,
@@ -1665,6 +1670,11 @@ export interface World {
   readonly checkpoints: Array<Checkpoint>;
   /** What `CheckpointsRepo.create` was given as the capture each row was observed from. */
   readonly checkpointCaptureIds: Map<string, string | null>;
+  /** Going back to a checkpoint: each restore, and which carrier took each session's note. */
+  readonly restores: Array<{
+    readonly restore: CheckpointRestore;
+    readonly notes: Map<string, string | null>;
+  }>;
   /** When set, `CheckpointsRepo.create` waits on it first: a store that does not answer. */
   readonly checkpointHold: { current: Promise<void> | null };
   /** When set, `setWaiting` awaits it first: whatever lands between a reader and its move. */
@@ -1774,6 +1784,7 @@ export const makeWorld = (): World => ({
   fileCounts: new Map(),
   checkpoints: [],
   checkpointCaptureIds: new Map(),
+  restores: [],
   checkpointHold: { current: null },
   beforeWaitingMove: { current: null },
   checkpointConflicts: { count: 0 },
@@ -3707,6 +3718,38 @@ export const checkpointsLayer = (world: World) =>
     listForSession: (sessionId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.sessionId === sessionId)),
     withWorktreeLock: (_worktreeId, effect) => effect,
+    recordRestore: (input) =>
+      Effect.sync(() => {
+        const restore = new CheckpointRestore({
+          id: CheckpointRestoreId.make(crypto.randomUUID()),
+          worktreeId: input.worktreeId,
+          sessionId: input.sessionId,
+          actorId: input.actorId,
+          target: { id: input.target.id, ordinal: input.target.ordinal },
+          saved: { id: input.saved.id, ordinal: input.saved.ordinal },
+          result: { id: input.result.id, ordinal: input.result.ordinal },
+          createdAt: world.clock.now(),
+        });
+        world.restores.push({
+          restore,
+          notes: new Map(input.notify.map((sessionId) => [sessionId, null])),
+        });
+        return restore;
+      }),
+    restoresForWorktree: (worktreeId) =>
+      Effect.succeed(
+        world.restores
+          .filter((entry) => entry.restore.worktreeId === worktreeId)
+          .map((entry) => entry.restore),
+      ),
+    takeRestoreNotes: (sessionId, carrier) =>
+      Effect.sync(() =>
+        world.restores.flatMap((entry) => {
+          if (!entry.notes.has(sessionId)) return [];
+          if (entry.notes.get(sessionId) === null) entry.notes.set(sessionId, carrier);
+          return entry.notes.get(sessionId) === carrier ? [entry.restore] : [];
+        }),
+      ),
   });
 
 const serveGitOrigin = (tmp: string) =>

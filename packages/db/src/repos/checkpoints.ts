@@ -1,17 +1,23 @@
 import {
   CheckpointId,
+  CheckpointRestoreId,
   type SealantRunId,
   type SessionId,
   type Sha,
   type WorktreeId,
 } from "@mend/domain";
-import { Checkpoint, CheckpointSource, type CheckpointTrigger } from "@mend/domain/workbench";
-import { and, asc, count, desc, eq, lte, sql } from "drizzle-orm";
+import {
+  Checkpoint,
+  CheckpointRestore,
+  CheckpointSource,
+  type CheckpointTrigger,
+} from "@mend/domain/workbench";
+import { and, asc, count, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { checkpoints } from "../schema/workbench.ts";
+import { checkpointRestoreNotes, checkpointRestores, checkpoints } from "../schema/workbench.ts";
 
 export interface NewCheckpoint {
   readonly worktreeId: WorktreeId;
@@ -27,6 +33,18 @@ export interface NewCheckpoint {
   readonly captureId?: string | null;
   /** Taken during a Stop from the Stop's own flush; absent when observed for itself. */
   readonly source?: CheckpointSource | null;
+}
+
+/** A restore to record: the three checkpoints it names, and the sessions whose agents it tells. */
+export interface NewCheckpointRestore {
+  readonly worktreeId: WorktreeId;
+  readonly sessionId: SessionId;
+  readonly actorId: string;
+  readonly target: Checkpoint;
+  readonly saved: Checkpoint;
+  readonly result: Checkpoint;
+  /** Every session in the worktree: each owes its agent a note on its next message. */
+  readonly notify: ReadonlyArray<SessionId>;
 }
 
 /**
@@ -97,8 +115,35 @@ export class CheckpointsRepo extends Context.Service<
       worktreeId: WorktreeId,
       effect: Effect.Effect<A, E, R>,
     ) => Effect.Effect<A, E, R>;
+    /** Record a restore (SLNT-1259) and a waiting note for each session it names. */
+    readonly recordRestore: (restore: NewCheckpointRestore) => Effect.Effect<CheckpointRestore>;
+    /** The worktree's restores, oldest first. */
+    readonly restoresForWorktree: (
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<ReadonlyArray<CheckpointRestore>>;
+    /**
+     * The restores whose note rides on `carrier` (a turn's id, a terminal message's key), oldest
+     * first: every note of the session still waiting is given to it first. Asking again with the
+     * same carrier answers the same restores, so a turn sent again carries its notes again.
+     */
+    readonly takeRestoreNotes: (
+      sessionId: SessionId,
+      carrier: string,
+    ) => Effect.Effect<ReadonlyArray<CheckpointRestore>>;
   }
 >()("@mend/db/CheckpointsRepo") {}
+
+const toRestore = (row: typeof checkpointRestores.$inferSelect): CheckpointRestore =>
+  new CheckpointRestore({
+    id: row.id,
+    worktreeId: row.worktreeId,
+    sessionId: row.sessionId,
+    actorId: row.actorId,
+    target: { id: row.targetCheckpointId, ordinal: row.targetOrdinal },
+    saved: { id: row.savedCheckpointId, ordinal: row.savedOrdinal },
+    result: { id: row.resultCheckpointId, ordinal: row.resultOrdinal },
+    createdAt: row.createdAt,
+  });
 
 const toCheckpoint = ({
   sourceKind,
@@ -274,6 +319,88 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
           ),
         );
 
+    const recordRestore = Effect.fn("CheckpointsRepo.recordRestore")(function* (
+      restore: NewCheckpointRestore,
+    ) {
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            const [row] = yield* tx
+              .insert(checkpointRestores)
+              .values({
+                id: CheckpointRestoreId.make(crypto.randomUUID()),
+                worktreeId: restore.worktreeId,
+                sessionId: restore.sessionId,
+                actorId: restore.actorId,
+                targetCheckpointId: restore.target.id,
+                targetOrdinal: restore.target.ordinal,
+                savedCheckpointId: restore.saved.id,
+                savedOrdinal: restore.saved.ordinal,
+                resultCheckpointId: restore.result.id,
+                resultOrdinal: restore.result.ordinal,
+              })
+              .returning();
+            if (row === undefined)
+              return yield* Effect.die("checkpoint restore insert returned no row");
+            if (restore.notify.length > 0)
+              yield* tx
+                .insert(checkpointRestoreNotes)
+                .values(restore.notify.map((sessionId) => ({ restoreId: row.id, sessionId })))
+                .onConflictDoNothing();
+            return toRestore(row);
+          }),
+        )
+        .pipe(Effect.orDie);
+    });
+
+    const restoresForWorktree = Effect.fn("CheckpointsRepo.restoresForWorktree")(function* (
+      worktreeId: WorktreeId,
+    ) {
+      const rows = yield* db
+        .select()
+        .from(checkpointRestores)
+        .where(eq(checkpointRestores.worktreeId, worktreeId))
+        .orderBy(asc(checkpointRestores.createdAt), asc(checkpointRestores.id))
+        .pipe(Effect.orDie);
+      return rows.map(toRestore);
+    });
+
+    const takeRestoreNotes = Effect.fn("CheckpointsRepo.takeRestoreNotes")(function* (
+      sessionId: SessionId,
+      carrier: string,
+    ) {
+      return yield* db
+        .transaction((tx) =>
+          Effect.gen(function* () {
+            yield* tx
+              .update(checkpointRestoreNotes)
+              .set({ carrier, deliveredAt: sql`now()` })
+              .where(
+                and(
+                  eq(checkpointRestoreNotes.sessionId, sessionId),
+                  isNull(checkpointRestoreNotes.carrier),
+                ),
+              );
+            const carried = tx
+              .select({ id: checkpointRestoreNotes.restoreId })
+              .from(checkpointRestoreNotes)
+              .where(
+                and(
+                  eq(checkpointRestoreNotes.sessionId, sessionId),
+                  eq(checkpointRestoreNotes.carrier, carrier),
+                ),
+              );
+            const rows = yield* tx
+              .select()
+              .from(checkpointRestores)
+              .where(inArray(checkpointRestores.id, carried))
+              .orderBy(asc(checkpointRestores.createdAt), asc(checkpointRestores.id));
+            return rows.map(toRestore);
+          }),
+        )
+        .pipe(Effect.orDie);
+    });
+
     return {
       create,
       byId,
@@ -285,6 +412,9 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
       countForWorktree,
       listForSession,
       withWorktreeLock,
+      recordRestore,
+      restoresForWorktree,
+      takeRestoreNotes,
     };
   }),
 );

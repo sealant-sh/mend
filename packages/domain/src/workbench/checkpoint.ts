@@ -11,6 +11,9 @@ export const CheckpointTrigger = Schema.Literals([
   "review-open",
   "user-mark",
   "proof-capture",
+  // Going back to a checkpoint (SLNT-1259): the files as they were before, then as they are after.
+  "restore-save",
+  "restore",
 ]);
 export type CheckpointTrigger = typeof CheckpointTrigger.Type;
 

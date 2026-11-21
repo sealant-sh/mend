@@ -751,7 +751,13 @@ export const createTenancyApi = async (
       recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
       recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
       recording(ChangeToursRepo, "changeTours", {}, calls),
-      recording(CheckpointsRepo, "checkpoints", options.implement?.checkpoints ?? {}, calls),
+      recording(
+        CheckpointsRepo,
+        "checkpoints",
+        // A worktree that never went back to a checkpoint (SLNT-1259), unless a test says so.
+        { restoresForWorktree: () => Effect.succeed([]), ...options.implement?.checkpoints },
+        calls,
+      ),
       recording(DevicesRepo, "devices", options.implement?.devices ?? {}, calls),
       recording(AccessKeysRepo, "accessKeys", {}, calls),
       recording(FollowUpsRepo, "followUps", options.implement?.followUps ?? {}, calls),

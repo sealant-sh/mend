@@ -3130,6 +3130,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           change,
           repositories,
           landings: change === null ? [] : yield* landings.listForChange(change.id),
+          restores: yield* checkpoints.restoresForWorktree(session.worktreeId),
           processes: rows,
           currentAgent: currentAgentProcess(rows),
           liveServices:
@@ -4346,6 +4347,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.fail(new StoreFailure({ message: error.stderr })),
           ),
           withinCheckpointLimit("The checkpoint"),
+        );
+      }),
+    )
+    .handle("restoreCheckpoint", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        const caller = yield* CurrentUser;
+        return yield* (yield* SessionEngine).restoreCheckpoint(
+          params.id,
+          params.checkpointId,
+          caller.user.id,
         );
       }),
     )

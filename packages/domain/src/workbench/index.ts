@@ -44,6 +44,7 @@ export * from "./agent-memory-merge.ts";
 export * from "./capture-drain.ts";
 export * from "./change.ts";
 export * from "./checkpoint.ts";
+export * from "./checkpoint-restore.ts";
 export * from "./connected-credential.ts";
 export * from "./default-login.ts";
 export * from "./login-words.ts";

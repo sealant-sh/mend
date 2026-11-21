@@ -8,7 +8,7 @@ import {
   ReviewSliceId,
   Timestamp,
 } from "@mend/domain";
-import { TurnSelection } from "@mend/domain/workbench";
+import { CheckpointRestore, TurnSelection } from "@mend/domain/workbench";
 import {
   AgentLaunchMode,
   CLUSTER_BINDING_KINDS,
@@ -414,6 +414,11 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
    * the pull request as `gh` last reported it. Older servers omit it.
    */
   landings: Schema.Array(ChangeLanding).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
+  /**
+   * Each time someone put the worktree's files back to a checkpoint (SLNT-1259), oldest first.
+   * Older servers omit it.
+   */
+  restores: Schema.Array(CheckpointRestore).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Every process the session has held, oldest first — agents, shells, Service attempts. */
   processes: Schema.Array(SessionProcess),
   /** The agent process "the session's agent" means right now; null before the first launch. */

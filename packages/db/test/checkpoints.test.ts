@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { CheckpointSource } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/sql";
@@ -186,5 +186,50 @@ describe.skipIf(postgres.skip)("checkpoints repo", () => {
     expect(read.fromStop.source?.kind).toBe("stop-final");
     expect(read.again?.source?.captureN).toBe(12);
     expect(read.again?.source?.observedAt.getTime()).toBe(observedAt.getTime());
+  });
+
+  it("restores: each session's note rides on the first carrier that asks, and only on it", async () => {
+    const seen = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CheckpointsRepo;
+        const worktreeId = yield* freshWorktree;
+        const [one, two] = [SessionId.make(`${worktreeId}-a`), SessionId.make(`${worktreeId}-b`)];
+        for (const id of [one, two])
+          yield* sql`
+            INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch,
+                                        base_sha, base_ref)
+            VALUES (${id}, ${PROJECT}, ${worktreeId}, 'codex', ${worktreeId}, 'mend/wt',
+                    ${"a".repeat(40)}, 'main')`;
+        const target = yield* repo.create(rowAt(worktreeId, 0, "b"));
+        const saved = yield* repo.create(rowAt(worktreeId, 1, "c"));
+        const result = yield* repo.create(rowAt(worktreeId, 2, "d"));
+        const restore = yield* repo.recordRestore({
+          worktreeId,
+          sessionId: one,
+          actorId: "user-1",
+          target,
+          saved,
+          result,
+          notify: [one, two],
+        });
+        const firstTurn = yield* repo.takeRestoreNotes(one, "turn-1");
+        // The same turn sent again carries its note again; the next turn carries none.
+        const sentAgain = yield* repo.takeRestoreNotes(one, "turn-1");
+        const nextTurn = yield* repo.takeRestoreNotes(one, "turn-2");
+        // The other session's note waited for its own first turn.
+        const otherSession = yield* repo.takeRestoreNotes(two, "turn-3");
+        const listed = yield* repo.restoresForWorktree(worktreeId);
+        return { restore, firstTurn, sentAgain, nextTurn, otherSession, listed };
+      }),
+    );
+    expect(seen.restore.target).toEqual({ id: seen.listed[0]?.target.id, ordinal: 0 });
+    expect(seen.restore.saved.ordinal).toBe(1);
+    expect(seen.restore.result.ordinal).toBe(2);
+    expect(seen.firstTurn.map((each) => each.id)).toEqual([seen.restore.id]);
+    expect(seen.sentAgain.map((each) => each.id)).toEqual([seen.restore.id]);
+    expect(seen.nextTurn).toEqual([]);
+    expect(seen.otherSession.map((each) => each.id)).toEqual([seen.restore.id]);
+    expect(seen.listed.map((each) => each.id)).toEqual([seen.restore.id]);
   });
 });

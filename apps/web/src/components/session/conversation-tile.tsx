@@ -19,6 +19,7 @@ import { Schema } from "effect";
 import { CircleAlertIcon, ClockIcon } from "lucide-react";
 import type { ReactNode } from "react";
 
+import { restoreMarks } from "#/lib/checkpoint-restores";
 import { type ConversationView, conversationQuery, heldConversation } from "#/lib/conversation";
 import { conversationBody, type ConversationRow, workingOn } from "#/lib/conversation-rows";
 import { activityDetail } from "#/lib/inbox";
@@ -34,7 +35,7 @@ import { steerNote } from "#/lib/session-composer";
 import { withoutLayoutWords } from "#/lib/session-details";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
 import { SESSION_STALE_MS } from "#/lib/session-queries";
-import { messageTime, withCheckpoints, withLandings } from "#/lib/session-sheet";
+import { messageTime, withCheckpoints, withLandings, withRestores } from "#/lib/session-sheet";
 import { controlMarkers, withMarkers } from "#/lib/shared-control";
 import { startingLine } from "#/lib/starting-line";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
@@ -46,6 +47,7 @@ import { CheckpointLine } from "./checkpoint-line";
 import { messageInputId, SessionComposer } from "./composer";
 import { ExecutorCalls } from "./executor-calls";
 import { RequestLine } from "./request-card";
+import { RestoreLine } from "./restore-line";
 import type { SessionFacts } from "./session-facts";
 import { SessionNotices } from "./session-notices";
 import { ControlMarkerLabel, LoginBand, SharedControlBands, WaitingLine } from "./shared-control";
@@ -474,10 +476,16 @@ export function ConversationTile({
     })),
   });
   const shared = sharedWorktree(facts.session.id, facts.detail.checkpoints);
+  // Going back to a checkpoint (SLNT-1259) is the change's owner's; the server checks it again.
+  const canGoBack = facts.detail.control.own;
   const entries = withMarkers(
-    withLandings(
-      withCheckpoints(body.rows, checkpointMarks(turns, turnFiles)),
-      landingMarks(facts.detail.landings, facts.detail.checkpoints, facts.session.id),
+    withRestores(
+      withLandings(
+        withCheckpoints(body.rows, checkpointMarks(turns, turnFiles)),
+        landingMarks(facts.detail.landings, facts.detail.checkpoints, facts.session.id),
+        !conversation.hasNextPage,
+      ),
+      restoreMarks(facts.detail.restores, facts.viewerId, facts.nameOf),
       !conversation.hasNextPage,
     ),
     (entry) => (entry.kind === "row" ? entry.row.at : entry.mark.at),
@@ -589,6 +597,15 @@ export function ConversationTile({
                     sessionId={facts.session.id}
                     changeId={facts.detail.change?.id ?? null}
                     shared={shared}
+                    canGoBack={canGoBack}
+                  />
+                </ConversationItem>
+              ) : entry.kind === "restore" ? (
+                <ConversationItem key={entry.key} messageId={entry.key}>
+                  <RestoreLine
+                    mark={entry.mark}
+                    sessionId={facts.session.id}
+                    canGoBack={canGoBack}
                   />
                 </ConversationItem>
               ) : entry.kind === "landing" ? (

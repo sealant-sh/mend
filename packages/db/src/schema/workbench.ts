@@ -31,6 +31,7 @@ import type {
   ChangeId,
   ChangeLandingId,
   CheckpointId,
+  CheckpointRestoreId,
   CommentAuthorKind,
   ContextSnapshotId,
   DispatchAttemptId,
@@ -3046,6 +3047,66 @@ export const checkpoints = pgTable(
     index("checkpoints_worktree_created_idx").on(table.worktreeId, table.createdAt),
     index("checkpoints_session_idx").on(table.sessionId, table.seq),
     index("checkpoints_session_created_idx").on(table.sessionId, table.createdAt),
+  ],
+);
+
+/**
+ * Going back to a checkpoint (SLNT-1259): who put the worktree's files back to `target`, the
+ * checkpoint Mend saved of the files just before, and the one it took once they were back. The
+ * ordinals stay when a checkpoint row goes, so the conversation can still say which it was.
+ */
+export const checkpointRestores = pgTable(
+  "checkpoint_restores",
+  {
+    id: text().$type<CheckpointRestoreId>().primaryKey(),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    /** The session the person went back from; null once it is deleted. */
+    sessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "set null" }),
+    actorId: text().notNull(),
+    targetCheckpointId: text()
+      .$type<CheckpointId>()
+      .references(() => checkpoints.id, { onDelete: "set null" }),
+    targetOrdinal: integer().notNull(),
+    savedCheckpointId: text()
+      .$type<CheckpointId>()
+      .references(() => checkpoints.id, { onDelete: "set null" }),
+    savedOrdinal: integer().notNull(),
+    resultCheckpointId: text()
+      .$type<CheckpointId>()
+      .references(() => checkpoints.id, { onDelete: "set null" }),
+    resultOrdinal: integer().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("checkpoint_restores_worktree_idx").on(table.worktreeId, table.createdAt)],
+);
+
+/**
+ * The note each session in the worktree owes its agent after a restore: it rides ahead of the
+ * next message a person sends that session. `carrier` names what carried it (a turn's id, or a
+ * terminal message's key) and stays null while the note waits.
+ */
+export const checkpointRestoreNotes = pgTable(
+  "checkpoint_restore_notes",
+  {
+    restoreId: text()
+      .$type<CheckpointRestoreId>()
+      .notNull()
+      .references(() => checkpointRestores.id, { onDelete: "cascade" }),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    carrier: text(),
+    deliveredAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    primaryKey({ columns: [table.restoreId, table.sessionId] }),
+    index("checkpoint_restore_notes_session_idx").on(table.sessionId, table.carrier),
   ],
 );
 

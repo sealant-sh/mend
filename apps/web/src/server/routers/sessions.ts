@@ -16,7 +16,14 @@ import {
   SharedControlRequest,
   StartSessionRequest,
 } from "@mend/api-contracts";
-import { AgentRequestId, AgentTurnId, ProjectId, SessionId, SessionProcessId } from "@mend/domain";
+import {
+  AgentRequestId,
+  AgentTurnId,
+  CheckpointId,
+  ProjectId,
+  SessionId,
+  SessionProcessId,
+} from "@mend/domain";
 import { TRPCError } from "@trpc/server";
 import { Schema } from "effect";
 
@@ -258,6 +265,14 @@ export const sessionsRouter = router({
     .input(input(Schema.Struct({ id: SessionId, request: CheckpointRequest })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.checkpoint({ params: { id: i.id }, payload: i.request })),
+    ),
+  /** Going back to a checkpoint (SLNT-1259): the server saves the files first, then restores. */
+  restoreCheckpoint: procedure
+    .input(input(Schema.Struct({ id: SessionId, checkpointId: CheckpointId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.restoreCheckpoint({ params: { id: i.id, checkpointId: i.checkpointId } }),
+      ),
     ),
   transcript: procedure
     .input(byId)

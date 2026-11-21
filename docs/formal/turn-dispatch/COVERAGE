@@ -56,7 +56,18 @@
 # the session switches back to a conversation moves onto the new process through the protocol
 # host's takeQueuedTurns, as any queued turn of an earlier process does. No action changes. Full
 # run at ffe6f9f15a: every row as expected.
-sync ffe6f9f15a3981a670f328f50a9cabe9dc351d2f
+# b9164303ec is SLNT-1259 (going back to a checkpoint). protocol-host.ts: dispatchOne, after it
+# reads the app context and before sendTurn, asks the engine's optional restoreNotes hook which
+# restores' notes ride on a person's turn, and sends them ahead of the turn's input
+# (messageWithRestoreNotes); the person's turn input as stored does not change. The hook only
+# claims and reads rows of checkpoint_restore_notes, by the turn's id, so the same turn sent again
+# reads the same notes, and a defect in it is read as no notes. It writes no turn's status or
+# provider turn id, takes no turn and fails none, and the dispatch phase around it is the one the
+# app-context read already runs in, so no action changes. Full run at b9164303ec: every row as
+# expected.
+# dc0ddbcc91 changes no line of protocol-host.ts after b9164303ec. --quick run at dc0ddbcc91: every row as
+# expected.
+sync dc0ddbcc9195972e5b0221e61f9ff4f9adc958d6
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

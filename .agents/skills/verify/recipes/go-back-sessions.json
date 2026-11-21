@@ -1,0 +1,32 @@
+[
+  {
+    "name": "01-first",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--name",
+      "go-back",
+      "--",
+      "sh",
+      "-c",
+      "printf 'first\\n' > BACK.md"
+    ]
+  },
+  {
+    "name": "02-second",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "go-back",
+      "--",
+      "sh",
+      "-c",
+      "printf 'second\\n' > BACK.md; printf 'later\\n' > LATER.md"
+    ]
+  }
+]

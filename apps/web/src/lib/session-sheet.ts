@@ -1,6 +1,7 @@
 import type { LumpPr, LumpStatus } from "@mend/ui/components/lump";
 
 import type { SessionDetailDto, SessionStatusDto } from "./api.ts";
+import type { RestoreMark } from "./checkpoint-restores.ts";
 import type { ConversationRow } from "./conversation-rows.ts";
 import type { CheckpointMark } from "./turn-checkpoints.ts";
 
@@ -83,11 +84,15 @@ export interface LandingEntryMark {
   readonly pullRequest: { readonly url: string } | null;
 }
 
-/** One entry of the conversation: a message, or a checkpoint or a landing between messages. */
+/**
+ * One entry of the conversation: a message, or a checkpoint, a landing or a going back to a
+ * checkpoint between messages.
+ */
 export type ConversationEntry =
   | { readonly kind: "row"; readonly row: ConversationRow }
   | { readonly kind: "checkpoint"; readonly key: string; readonly mark: CheckpointMark }
-  | { readonly kind: "landing"; readonly key: string; readonly mark: LandingEntryMark };
+  | { readonly kind: "landing"; readonly key: string; readonly mark: LandingEntryMark }
+  | { readonly kind: "restore"; readonly key: string; readonly mark: RestoreMark };
 
 /**
  * The turns' checkpoints laid into the conversation (`checkpointMarks` in `lib/turn-checkpoints.ts`
@@ -121,21 +126,50 @@ export const withCheckpoints = (
 const entryAt = (entry: ConversationEntry): string =>
   entry.kind === "row" ? entry.row.at : entry.mark.at;
 
+/** A line between messages, placed by when it happened. */
+type TimedLine = Extract<ConversationEntry, { readonly kind: "landing" | "restore" }>;
+
 /**
- * The session's landings laid into its conversation, each after the last entry that came before
- * it (Doop "Session · landed": "Checkpoint 9 landed as pull request #412" after checkpoint 9). A
- * landing older than every entry held belongs to an earlier window, as checkpoints do.
+ * Lines laid into the conversation, each after the last entry that came before it. A line older
+ * than every entry held belongs to an earlier window, as checkpoints do.
+ */
+const withTimedLines = (
+  entries: ReadonlyArray<ConversationEntry>,
+  lines: ReadonlyArray<TimedLine>,
+  fromStart: boolean,
+): ReadonlyArray<ConversationEntry> => {
+  const out = [...entries];
+  for (const line of lines.toSorted((a, b) => a.mark.at.localeCompare(b.mark.at))) {
+    const index = out.findLastIndex((entry) => entryAt(entry) <= line.mark.at) + 1;
+    if (index === 0 && out.length > 0 && !fromStart) continue;
+    out.splice(index, 0, line);
+  }
+  return out;
+};
+
+/**
+ * The session's landings laid into its conversation (Doop "Session · landed": "Checkpoint 9
+ * landed as pull request #412" after checkpoint 9).
  */
 export const withLandings = (
   entries: ReadonlyArray<ConversationEntry>,
   marks: ReadonlyArray<LandingEntryMark>,
   fromStart: boolean,
-): ReadonlyArray<ConversationEntry> => {
-  const out = [...entries];
-  for (const mark of marks.toSorted((a, b) => a.at.localeCompare(b.at))) {
-    const index = out.findLastIndex((entry) => entryAt(entry) <= mark.at) + 1;
-    if (index === 0 && out.length > 0 && !fromStart) continue;
-    out.splice(index, 0, { kind: "landing", key: mark.key, mark });
-  }
-  return out;
-};
+): ReadonlyArray<ConversationEntry> =>
+  withTimedLines(
+    entries,
+    marks.map((mark) => ({ kind: "landing", key: mark.key, mark })),
+    fromStart,
+  );
+
+/** The worktree's restores (SLNT-1259) laid into the conversation the same way. */
+export const withRestores = (
+  entries: ReadonlyArray<ConversationEntry>,
+  marks: ReadonlyArray<RestoreMark>,
+  fromStart: boolean,
+): ReadonlyArray<ConversationEntry> =>
+  withTimedLines(
+    entries,
+    marks.map((mark) => ({ kind: "restore", key: mark.key, mark })),
+    fromStart,
+  );

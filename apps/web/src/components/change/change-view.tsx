@@ -15,6 +15,7 @@ import { type RefObject, useEffect, useMemo, useRef, useState } from "react";
 
 import { QueryView } from "#/components/query-view";
 import { QueryError } from "#/components/route-screens";
+import { GoBackDialog } from "#/components/session/go-back-dialog";
 import type { ViewPlace } from "#/components/workspace/views";
 import type {
   OpenReviewResultDto,
@@ -43,7 +44,13 @@ import {
   useReviewOpenKey,
   useReviewRange,
 } from "#/lib/review-open";
-import { checkpointRows, finishedWords, rangeLabel, rangeNoteWords } from "#/lib/review-range";
+import {
+  checkpointRows,
+  finishedWords,
+  goBackChoicesOf,
+  rangeLabel,
+  rangeNoteWords,
+} from "#/lib/review-range";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { harnessName } from "#/lib/session-view";
 import { removedWithin, type StopPlace, stopPlace } from "#/lib/tour";
@@ -334,6 +341,7 @@ function ReviewBody({
   const [filter, setFilter] = useState("");
   const [focus, setFocus] = useState<DiffsFocus | null>(null);
   const [showing, setShowing] = useState<string | null>(null);
+  const [goingBack, setGoingBack] = useState(false);
   const folds = useFolds();
   const landing = useChangeLanding({ detail, changeId, review, sessions });
   const tourRead = useQuery(trpc.changes.tour.queryOptions({ id: changeId }));
@@ -432,8 +440,22 @@ function ReviewBody({
       rows={checkpointRows(chain, opened.lastReview ?? null)}
       onPick={(next) => setReviewRange(changeId, next)}
       onOpen={() => void freshChain()}
+      {...(detail.control.own ? { onGoBack: () => setGoingBack(true) } : {})}
     />
   );
+  // Going back to a checkpoint (SLNT-1259): any checkpoint of the chain, the base included,
+  // starting from the one the review shows up to.
+  const goBackChoices = goBackChoicesOf(chain);
+  const goBackDialog = detail.control.own ? (
+    <GoBackDialog
+      key={goingBack ? "open" : "closed"}
+      sessionId={detail.session.id}
+      choices={goBackChoices}
+      initial={picked.kind === "up-to" ? picked.checkpointId : (goBackChoices[1]?.id ?? null)}
+      open={goingBack}
+      onOpenChange={setGoingBack}
+    />
+  ) : null;
   if (ordered.length === 0)
     // Nothing in the range: the toolbar and its picker stay, so any range can be picked from
     // here, and the empty state takes the diffs' place. The whole change with nothing in it is
@@ -461,6 +483,7 @@ function ReviewBody({
           />
         )}
         {landing.dialog}
+        {goBackDialog}
       </>
     );
 
@@ -600,6 +623,7 @@ function ReviewBody({
       {landing.band}
       {review24.band}
       {landing.dialog}
+      {goBackDialog}
       {review24.dialogs}
       {review.worktreeChangedSinceSnapshot && range?.to === undefined ? (
         <div

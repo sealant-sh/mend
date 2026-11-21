@@ -1,0 +1,17 @@
+[
+  {
+    "name": "01-files-now",
+    "run": [
+      "mend",
+      "run",
+      "--project",
+      "verify-fixture",
+      "--worktree",
+      "go-back",
+      "--",
+      "sh",
+      "-c",
+      "printf 'BACK.md: '; cat BACK.md; if [ -e LATER.md ]; then echo 'LATER.md is there'; else echo 'no LATER.md'; fi; git status --short"
+    ]
+  }
+]

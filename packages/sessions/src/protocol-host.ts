@@ -29,7 +29,12 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import { RollbackRefusedError, messageWithMergeBack } from "@mend/domain/workbench";
+import {
+  type CheckpointRestore,
+  RollbackRefusedError,
+  messageWithMergeBack,
+  messageWithRestoreNotes,
+} from "@mend/domain/workbench";
 import type {
   HistoryAdmissionRefusedError,
   RollbackOperation,
@@ -121,6 +126,11 @@ export interface ProtocolHostHooks {
    * sent to this process, as before.
    */
   readonly sharedControl?: ProtocolSharedControl;
+  /**
+   * The restores (going back to a checkpoint, SLNT-1259) whose note the agent reads ahead of this
+   * person's turn. Asked once per send of a person's turn; the same turn asks for the same ones.
+   */
+  readonly restoreNotes?: (turn: AgentTurn) => Effect.Effect<ReadonlyArray<CheckpointRestore>>;
   /** Resume an idle conversation with the admitted options, on the process's existing login. */
   readonly replaceSelection?: (
     sender: string,
@@ -836,10 +846,18 @@ export const ProtocolHostLive: Layer.Layer<
               Effect.logWarning("Failed to read MCP app model context.").pipe(Effect.as([])),
             ),
           );
+        const restores =
+          turn.author === null ||
+          turn.origin !== "request" ||
+          entry.hooks.restoreNotes === undefined
+            ? []
+            : yield* entry.hooks.restoreNotes(turn);
         const sent = yield* entry.adapter
-          .sendTurn(messageWithMergeBack(turn.input, turn.mergeBack), turn.selection, {
-            appContext,
-          })
+          .sendTurn(
+            messageWithRestoreNotes(messageWithMergeBack(turn.input, turn.mergeBack), restores),
+            turn.selection,
+            { appContext },
+          )
           .pipe(Effect.result);
         if (sent._tag === "Success") {
           yield* finishSend(entry, writing, sent.success);

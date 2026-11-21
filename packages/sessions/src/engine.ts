@@ -85,6 +85,7 @@ import {
 import {
   type AgentRequestId,
   type AgentTurnId,
+  type CheckpointId,
   type OrganizationId,
   type PreviewId,
   SealantRunId,
@@ -161,9 +162,11 @@ import type {
   MessageKeyConflictError,
   MessageTargetAmbiguousError,
 } from "@mend/domain/workbench";
+import { messageWithRestoreNotes } from "@mend/domain/workbench";
 import type {
   AgentHookReport,
   Checkpoint,
+  CheckpointRestore,
   CheckpointTrigger,
   HotWorkspace,
   PreviewPhase,
@@ -472,6 +475,12 @@ import {
   containerTokenRefused,
   pickupOnly,
 } from "./channel-identity.ts";
+import {
+  RestoreOutcome,
+  restoreCheckpointExec,
+  restoreFailureWords,
+  terminalAgentWorking,
+} from "./checkpoint-restore.ts";
 import { claudePlanFileArgv } from "./claude-plan-file.ts";
 import { CLAUDE_AGENT_HOOKS, withClaudeSessionId } from "./claude-settings.ts";
 import { withCodexLogin } from "./codex-login.ts";
@@ -3000,6 +3009,17 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       actor: string,
     ) => Effect.Effect<WorktreePullResult, WorktreeGitRefused>;
+    /**
+     * Going back to a checkpoint (SLNT-1259): the worktree's files go back to how they were at
+     * `checkpointId`. Mend saves the files as they are first, as a checkpoint of their own, and
+     * refuses while any session in the worktree has an agent at work. Every session in the
+     * worktree tells its agent on its next message. The change's owner only.
+     */
+    readonly restoreCheckpoint: (
+      sessionId: SessionId,
+      checkpointId: CheckpointId,
+      actor: string,
+    ) => Effect.Effect<CheckpointRestore, WorktreeGitRefused>;
     /** Orders a whole landing against the same worktree's explicit Git actions. */
     readonly withWorktreeGit: <A, E, R>(
       worktreeId: WorktreeId,
@@ -3876,6 +3896,9 @@ export class SessionEngine extends Context.Service<
 
 const rollbackRefused = (code: RollbackRefusedError["code"], message: string) =>
   new RollbackRefusedError({ code, message });
+/** Going back to a checkpoint refused before or while it ran, in words a person reads. */
+const restoreRefused = (message: string) =>
+  new WorktreeGitRefused({ code: "unavailable", message });
 
 type SessionEngineRequirements =
   | ResourceRuntime
@@ -22717,6 +22740,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   "The native fork identity conflicts with its durable receipt. Recovery is required.",
                 );
             }),
+          restoreNotes: (turn) => restoreNotesOf(turn),
           replaceSelection: (sender, turn, check) =>
             handOverConversation(agentProcess, sender, turn.id, check),
           onRequestChanged: (changedSessionId) =>
@@ -26085,13 +26109,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       // One authority for person-scoped Git mutations. Callers supply only the actual Git operation.
+      // `files` rewrites the worktree's files under every session in it (going back to a
+      // checkpoint): refused while any of them has an agent at work, whatever its mode.
       const withOwnedWorktreeGit = <A>(
         sessionId: SessionId,
         actor: string,
-        mutationScope: "checkout" | "branch" | "worktree",
+        mutationScope: "checkout" | "branch" | "worktree" | "files",
         operate: (
           execute: WorktreeGitExec,
           worktree: Worktree,
+          workspace: { readonly session: Session; readonly workspace: Workspace },
         ) => Effect.Effect<A, WorktreeGitRefused>,
       ): Effect.Effect<A, WorktreeGitRefused> =>
         Effect.gen(function* () {
@@ -26113,20 +26140,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     message: "Only the change's owner runs Git actions on this worktree.",
                   });
                 const members = yield* sessions.listForWorktree(session.worktreeId);
-                if (mutationScope === "checkout") {
+                if (mutationScope === "checkout" || mutationScope === "files") {
                   for (const member of members) {
                     if (
                       (turnsBeingQueued.get(member.id) ?? 0) > 0 ||
-                      (yield* conversations.openTurns(member.id)).length > 0
+                      (yield* conversations.openTurns(member.id)).length > 0 ||
+                      (mutationScope === "files" &&
+                        terminalAgentWorking(yield* processes.listForSession(member.id)))
                     )
                       return yield* new WorktreeGitRefused({
                         code: "busy",
                         message:
-                          "Wait for the running turn to finish, or stop the turn before switching branches.",
+                          mutationScope === "files"
+                            ? "An agent in this worktree is working. Stop its turn or wait for it to end, then try again."
+                            : "Wait for the running turn to finish, or stop the turn before switching branches.",
                       });
                   }
                 }
-                if (mutationScope !== "worktree" && members.length !== 1)
+                if (
+                  mutationScope !== "worktree" &&
+                  mutationScope !== "files" &&
+                  members.length !== 1
+                )
                   return yield* new WorktreeGitRefused({
                     code: "busy",
                     message:
@@ -26165,6 +26200,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                         ),
                       ),
                   worktree,
+                  { session: current, workspace },
                 );
                 yield* flushCaptures(sessionId, "Git action finished");
                 return result;
@@ -26223,6 +26259,155 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         withOwnedWorktreeGit(sessionId, actor, "worktree", (execute) =>
           pullWorktree("/workspace/repo", execute),
         );
+
+      const restoreCheckpointAsOwner: SessionEngine["Service"]["restoreCheckpoint"] = (
+        sessionId,
+        checkpointId,
+        actor,
+      ) =>
+        withOwnedWorktreeGit(sessionId, actor, "files", (execute, worktree, live) =>
+          Effect.gen(function* () {
+            const target = yield* checkpoints.byId(checkpointId);
+            if (target === null || target.worktreeId !== worktree.id)
+              return yield* restoreRefused("That checkpoint isn't in this worktree.");
+            const latestRun = yield* sessionRuns.latestForSession(sessionId);
+            const cursor = {
+              sealantRunId: latestRun?.sealantRunId ?? null,
+              sequence: latestRun?.lastSeenSequence ?? 0n,
+            };
+            // The files as they are, saved before any is touched: going back to this undoes it.
+            // Only from a disk Mend knows it has caught up with, or nothing changes.
+            const saved = yield* takeWorktreeSnapshot(
+              worktree,
+              "restore-save",
+              sessionId,
+              cursor,
+              true,
+            ).pipe(
+              Effect.map((taken) => taken.checkpoint),
+              Effect.catchTag("CapturesBehindError", () =>
+                Effect.fail(
+                  restoreRefused(
+                    "Mend couldn't save the current files first, so nothing changed. Try again in a moment.",
+                  ),
+                ),
+              ),
+              Effect.mapError((error) =>
+                error._tag === "WorktreeGitRefused"
+                  ? error
+                  : restoreRefused(
+                      "Mend couldn't save the current files first, so nothing changed. Try again in a moment.",
+                    ),
+              ),
+            );
+            // Capture mode: Mend made the checkpoint on its side, so the workspace gets its objects.
+            const pack =
+              capture === null || sessionRepo.packCheckpoint === undefined
+                ? null
+                : `/tmp/mend-restore-${crypto.randomUUID()}.pack`;
+            if (pack !== null && sessionRepo.packCheckpoint !== undefined) {
+              const bytes = yield* sessionRepo
+                .packCheckpoint({
+                  projectId: worktree.projectId,
+                  worktreeId: worktree.id,
+                  captureId: yield* checkpoints.captureIdOf(target.id, worktree.id),
+                  sha: target.sha,
+                  have: worktree.baseSha,
+                })
+                .pipe(
+                  Effect.mapError(() =>
+                    restoreRefused(
+                      "Mend couldn't read the checkpoint's files, so nothing changed. Your files are saved as checkpoint " +
+                        `${saved.ordinal}.`,
+                    ),
+                  ),
+                );
+              yield* writeWorkspaceFiles(live.session, live.workspace, [
+                {
+                  path: pack,
+                  bytes,
+                  absent: true,
+                  within: { root: "/tmp", directoryMode: 0o700, fileMode: 0o644 },
+                },
+              ]).pipe(
+                Effect.mapError(() =>
+                  restoreRefused(
+                    "Mend couldn't send the checkpoint's files to the workspace, so nothing changed.",
+                  ),
+                ),
+              );
+            }
+            const ran = yield* execute(
+              restoreCheckpointExec({ repository: "/workspace/repo", commit: target.sha, pack }),
+            ).pipe(
+              Effect.ensuring(
+                pack === null
+                  ? Effect.void
+                  : sealant.exec(live.workspace, ["rm", "-f", pack]).pipe(Effect.ignore),
+              ),
+            );
+            if (ran.exitCode !== 0)
+              return yield* new WorktreeGitRefused({
+                code: "git",
+                message: restoreFailureWords(ran.stderr),
+              });
+            yield* Schema.decodeUnknownEffect(Schema.fromJsonString(RestoreOutcome))(
+              ran.stdout,
+            ).pipe(
+              Effect.mapError(() =>
+                restoreRefused("The workspace didn't say whether the files went back."),
+              ),
+            );
+            const result = yield* takeWorktreeCheckpoint(
+              worktree,
+              "restore",
+              sessionId,
+              cursor,
+            ).pipe(
+              Effect.mapError(() =>
+                restoreRefused(
+                  `The files went back, but Mend couldn't take a checkpoint after. Your files from before are checkpoint ${saved.ordinal}.`,
+                ),
+              ),
+            );
+            const members = yield* sessions.listForWorktree(worktree.id);
+            const restore = yield* checkpoints.recordRestore({
+              worktreeId: worktree.id,
+              sessionId,
+              actorId: actor,
+              target,
+              saved,
+              result,
+              notify: members.map((member) => member.id),
+            });
+            yield* refreshChangeHead(live.session).pipe(Effect.ignore);
+            yield* Effect.logInfo("session engine: worktree went back to a checkpoint").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                worktreeId: worktree.id,
+                target: target.ordinal,
+                saved: saved.ordinal,
+                result: result.ordinal,
+              }),
+            );
+            return restore;
+          }),
+        );
+
+      /** The restores whose note rides on this person's turn; none when they can't be read. */
+      const restoreNotesOf = (turn: AgentTurn) =>
+        turn.author === null || turn.origin !== "request"
+          ? Effect.succeed([])
+          : checkpoints
+              .takeRestoreNotes(turn.sessionId, turn.id)
+              .pipe(
+                Effect.catchDefect((defect) =>
+                  Effect.logWarning("session engine: restore notes not read").pipe(
+                    Effect.annotateLogs({ turnId: turn.id, defect: String(defect) }),
+                    Effect.as([]),
+                  ),
+                ),
+              );
 
       /**
        * The copy of a session's worktree Mend reads: beside this process when the deployment
@@ -29443,10 +29628,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const turn = yield* conversations.startTerminalTurn(agent.id);
         if (turn === null) return;
         const ptyId = agent.sealantSessionId;
+        const restores = yield* restoreNotesOf(turn);
         const typed = yield* Effect.gen(function* () {
           const workspace = yield* sealant.getWorkspace(agent.sealantWorkspaceId);
           const pty = yield* sealant.getSession(workspace, ptyId);
-          yield* Effect.tryPromise(() => pty.send(terminalPaste(turn.input)));
+          yield* Effect.tryPromise(() =>
+            pty.send(terminalPaste(messageWithRestoreNotes(turn.input, restores))),
+          );
           yield* Effect.sleep(TERMINAL_ENTER_AFTER);
           yield* Effect.tryPromise(() => pty.send("\r"));
         }).pipe(Effect.exit);
@@ -32840,6 +33028,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sessions.byId(sessionId).pipe(Effect.flatMap(stopSessionReachOf)),
         changeWorktreeBranch: editWorktreeBranch,
         commitWorktree: commitWorktreeAsOwner,
+        restoreCheckpoint: restoreCheckpointAsOwner,
         pullWorktree: pullWorktreeAsOwner,
         withWorktreeGit,
         openShell: (sessionId, openedBy) =>

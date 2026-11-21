@@ -56,6 +56,7 @@ const detail = new SessionDetail({
   change: null,
   repositories: [],
   landings: [],
+  restores: [],
   processes: [],
   currentAgent: null,
   liveServices: 0,
