@@ -29,9 +29,10 @@
         "**/*-test-*",
         "**/*-test.*",
         "**/*fixture*",
-        "**/*fixture*/**"
+        "**/*fixture*/**",
+        "apps/*/scripts/check-*.mjs"
       ],
-      "excludeWhy": "Tests and what only tests use: a file or directory whose name starts with test-, holds -test- or -test., or says fixture. Product code is never named that way, and plan.test.mjs fails when product code imports one",
+      "excludeWhy": "Tests and what only tests use: a file or directory whose name starts with test-, holds -test- or -test., or says fixture, and an app's check script (apps/<app>/scripts/check-*.mjs) that only CI runs, through the app's own check:* script. Product code is never named that way, and plan.test.mjs fails when product code imports one, or when anything but a check:* script runs a check script",
       "why": "A feature or fix merges only after an agent that did not write it has said where it must be run and what a person must see, and its author has run it and put that on the PR (AGENTS.md, Run a Feature Before It Merges). Test, CI and docs PRs owe none",
       "owes": [
         {

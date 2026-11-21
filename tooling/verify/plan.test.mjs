@@ -123,9 +123,8 @@ test("a test helper, fake or fixture under a product path owes no judge; the cod
   assert.deepEqual(filesOwing(map, product, "judge"), product);
 });
 
-// The rule is a name, so it holds only while product code never imports a file named like a test
-// helper: such a file would be product code that changes without a judge.
-test("no product file imports a file the feature entry excludes as a test helper", () => {
+// The files under the feature entry's paths, which of them it excludes, and the product code left.
+const featureFiles = () => {
   const feature = map.obligations.find((entry) => entry.id === "feature");
   const files = execFileSync(
     "git",
@@ -137,11 +136,18 @@ test("no product file imports a file the feature entry excludes as a test helper
   )
     .split("\n")
     .filter(Boolean);
-  const known = new Set(files);
   const excluded = (file) => feature.exclude.some((glob) => matchesGlob(file, glob));
   const product = files.filter(
     (file) => /\.(ts|tsx|mts|mjs|js|jsx)$/.test(file) && !excluded(file),
   );
+  return { feature, files, excluded, product };
+};
+
+// The rule is a name, so it holds only while product code never imports a file named like a test
+// helper: such a file would be product code that changes without a judge.
+test("no product file imports a file the feature entry excludes as a test helper", () => {
+  const { files, excluded, product } = featureFiles();
+  const known = new Set(files);
   const resolve = (from, spec) => {
     const base = normalize(join(dirname(from), spec));
     const stem = base.replace(/\.(js|mjs)$/, "");
@@ -170,5 +176,43 @@ test("no product file imports a file the feature entry excludes as a test helper
     offenders,
     [],
     "rename the import's target, or the importer is a test helper too",
+  );
+});
+
+// An app's check script (apps/<app>/scripts/check-*.mjs) is excluded because only CI runs it,
+// through the app's own check:* script. That holds only while nothing else runs it: a check script
+// a build, dev or product path ran would be product code that changes without a judge.
+test("an app's check script owes no judge, and only its app's check:* script runs it", () => {
+  const glob = "apps/*/scripts/check-*.mjs";
+  const { feature, files, product } = featureFiles();
+  assert.ok(feature.exclude.includes(glob), `the feature entry excludes ${glob}`);
+  const checks = files.filter((file) => matchesGlob(file, glob));
+  for (const file of [
+    "apps/desktop/scripts/check-connection.mjs",
+    "apps/mobile/scripts/check-web.mjs",
+    "apps/web/scripts/check-browser.mjs",
+  ])
+    assert.ok(checks.includes(file), `${file} still exists`);
+  assert.deepEqual(filesOwing(map, checks, "judge"), []);
+
+  const offenders = [];
+  for (const file of checks) {
+    const app = file.slice(0, file.indexOf("/scripts/"));
+    const script = file.slice(app.length + 1);
+    const { scripts = {} } = JSON.parse(readFileSync(join(root, app, "package.json"), "utf8"));
+    const runners = Object.keys(scripts).filter((name) => scripts[name].includes(script));
+    if (runners.length === 0) offenders.push(`no script in ${app}/package.json runs ${file}`);
+    for (const name of runners.filter((runner) => !runner.startsWith("check:")))
+      offenders.push(`${app}/package.json's ${name} runs ${file}`);
+    const names = [script.slice("scripts/".length), ...runners];
+    for (const source of product) {
+      const text = readFileSync(join(root, source), "utf8");
+      for (const name of names) if (text.includes(name)) offenders.push(`${source} names ${name}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    "a check script runs only through its app's check:* script, and product code never names it",
   );
 });
