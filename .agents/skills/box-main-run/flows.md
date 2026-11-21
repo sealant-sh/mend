@@ -1999,19 +1999,27 @@ lane changed.
 - **Map:** workspace-images.md `image-project-override`, `image-rejections`, `image-use-default`
   (read as "start again from a copy of the organization's starting image"); automatic-install.md
   `install-detected`, `install-custom`, `install-switch`, `install-colocated`; hot-sessions.md
-  `hot-count`, `hot-status`, `hot-rewarm` (route PR 53)
+  `hot-count`, `hot-status`, `hot-rewarm` (route PR 53); project-settings.md `settings-remove` after
+  the project's automatic installs (SLNT-1243)
 - **Needs:** no session; no turn; web; Sealant's package catalog
 - **Do:** Drive the recipe `project-workspace`: it makes a project with no repository and opens
   `/projects/<id>/settings/workspace` from the settings sidebar; Edit image… with a package Sealant
   can't find, then bash and the Docker switch saved; Start again from the organization's image and
   saved; a custom command saved, install switched off and on, the command cleared; the
   ready-workspace count raised and lowered; the ready workspaces starting again and failing
-  (rewritten status), a status read that fails, and the page as a reader.
+  (rewritten status), a status read that fails, and the page as a reader. Then it waits until the
+  automatic installs those saves queued have ended, and removes the project with Remove project… on
+  its General page.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: the refused package named
   with Sealant's reason and nothing saved; the server holding bash and the Docker switch, then a
   copy of the organization's starting image; `Saved the custom command.`; the switch's line saying
   the command is kept; `None ready yet` at 1 and `Off` at 0; on the box, a real project's ready
-  workspaces reading `starting` after an image save. The recipe removes the project.
+  workspaces reading `starting` after an image save. `install-then-remove`: on the box, one or more
+  `install · mend` worktrees, none live, then `<name> was removed` and the project under Removed
+  projects; a refusal that asks only to try again is retried once and noted, and any other
+  (`executor not ended`, a session to stop) fails the flow, with its words and
+  `workspace-install-then-remove-refused`. The cleanup line says whether the server removed and
+  purged the project.
 - **Mode:** `scripted` (recipes/project-workspace.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/project-workspace-page.tsx`,

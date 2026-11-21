@@ -17,6 +17,7 @@ import {
 import { DopplerRepo, ImportedConversationsRepo, SessionHistoryRepo } from "@mend/db";
 import {
   InstanceRolesRepo,
+  isRemovalFenced,
   RemovalFencesRepo,
   whileAdmitted,
   AgentConversationRepo,
@@ -9993,7 +9994,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* takeWorktreeCheckpoint(worktree, trigger, session.id, cursor, observed);
       });
 
-      /** A checkpoint that cannot be taken is a gap, carried as content — never a crash. */
+      /**
+       * A checkpoint that cannot be taken is a gap, carried as content — never a crash. That
+       * includes one whose admission a removal's mark or a rollback's fence refuses (a defect, as
+       * every refused start is): the session is no longer live at an agent's end, so a removal
+       * that marks its worktree or project right then refuses the end's checkpoint. Whatever asked
+       * for it goes on; at an agent's end, that is the harvest and the sweep that ends the
+       * workspace, which nothing would come back to do (SLNT-1243).
+       */
       const tryCheckpoint = (
         session: Session,
         trigger: CheckpointTrigger,
@@ -10006,6 +10014,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.annotateLogs({ sessionId: session.id, trigger, error: String(error) }),
               Effect.as(null),
             ),
+          ),
+          Effect.catchDefect((defect) =>
+            isRemovalFenced(defect) || Schema.is(HistoryAdmissionRefusedError)(defect)
+              ? Effect.logWarning(
+                  "session engine: checkpoint not taken · a removal or a rollback holds the worktree",
+                ).pipe(
+                  Effect.annotateLogs({ sessionId: session.id, trigger, error: String(defect) }),
+                  Effect.as(null),
+                )
+              : Effect.die(defect),
           ),
         );
 

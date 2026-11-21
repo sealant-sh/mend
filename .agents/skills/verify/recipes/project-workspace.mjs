@@ -20,7 +20,11 @@
 //   one fails (a stack has no session in the project this week, so it keeps none ready), the page
 //   as someone who may only read it, and a status read that fails.
 //
-// The recipe removes the project it made, so it can run again.
+// - Real, at the end: once the project's automatic installs have ended, Remove project… on its
+//   General page removes it (SLNT-1243: an install that ended during a removal's check kept its
+//   workspace and held every later removal).
+//
+// The recipe removes and purges the project it made, so it can run again.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
@@ -435,12 +439,82 @@ export default async ({ page, web, capture, note }) => {
     await noToasts();
     await shot("workspace-reader-desktop-light");
     stubs.delete("projects.detail");
+
+    // --- install-then-remove: the project goes once its automatic installs have ended ------------
+    // SLNT-1243: an install that ended while a removal was being checked kept its workspace, and
+    // every later removal was refused as `executor not ended`. The saves above queued automatic
+    // installs (none run on a stack without captured sessions); wait until each has ended, then
+    // remove the project from its General page as a person would.
+    const LIVE = new Set(["starting", "running", "waiting", "idle", "stopping"]);
+    let quiet = 0;
+    let installs = 0;
+    // On the box each install ends in about 15 s. On a stack, a workspace's own Docker service
+    // never comes up in the nested Docker, so each install's launch fails after about 3.5 minutes,
+    // and the installs run one after another.
+    const waitUntil = Date.now() + 720_000;
+    while (quiet < 3) {
+      expect("the automatic installs end within 12 minutes", Date.now() < waitUntil, installs);
+      const read = await detail(project.id);
+      installs = read.worktrees.length;
+      quiet = read.sessions.some((session) => LIVE.has(session.status)) ? 0 : quiet + 1;
+      await page.waitForTimeout(2_000);
+    }
+    note(`install-then-remove: ${installs} automatic install worktree(s), none live`);
+    await open(`/projects/${project.id}/settings/general`);
+    await heading("General");
+    await button("Remove project…").click();
+    const removeDialog = dialog(`Remove ${name}?`);
+    await removeDialog.getByRole("button", { name: "Remove project", exact: true }).click();
+    const removalRefused = removeDialog.locator('[data-slot="inline-alert"]');
+    const removedToast = page
+      .getByRole("region", { name: /Notifications/ })
+      .getByText(`${name} was removed. You can restore it here.`);
+    await removedToast.or(removalRefused).first().waitFor({ timeout: 60_000 });
+    // A refusal that asks only to try again (a read that failed, another removal under way) is
+    // what a person meets and retries once, a moment later. Any other refusal fails the flow.
+    if (
+      (await removalRefused.isVisible()) &&
+      (await removalRefused.innerText()).endsWith("remove the project again in a moment.")
+    ) {
+      note(`install-then-remove: asked to try again · ${await removalRefused.innerText()}`);
+      await page.waitForTimeout(5_000);
+      await removeDialog.getByRole("button", { name: "Remove project", exact: true }).click();
+      await removedToast.or(removalRefused).first().waitFor({ timeout: 60_000 });
+      await page.waitForTimeout(1_000);
+    }
+    if ((await removalRefused.isVisible()) && !(await removedToast.isVisible())) {
+      await shot("workspace-install-then-remove-refused");
+      throw new Error(`install-then-remove: refused · ${await removalRefused.innerText()}`);
+    }
+    const listed = (await call("projects.list")).some((entry) => entry.id === project.id);
+    const kept = (await call("projects.removed")).some((entry) => entry.id === project.id);
+    expect("gone from Projects and listed under Removed projects", !listed && kept, {
+      listed,
+      kept,
+    });
+    note(
+      `install-then-remove: ${name} removed from its General page; listed under Removed projects`,
+    );
+    await shot("workspace-install-then-remove-desktop-light");
   } finally {
     stubs.clear();
-    await call("projects.remove", { id: project.id }, "mutate").catch(() => undefined);
-    await call("projects.purge", { id: project.id, confirm: project.name }, "mutate").catch(
-      () => undefined,
+    // The step above removes the project; on any earlier failure, this tidies it, and says
+    // whether the server let it go instead of claiming it did.
+    const left = (await call("projects.list")).some((entry) => entry.id === project.id);
+    const removal = left
+      ? await call("projects.remove", { id: project.id }, "mutate").then(
+          () => "removed",
+          (error) => `not removed · ${String(error?.message ?? error).split("\n")[0]}`,
+        )
+      : "already removed";
+    const purged = await call(
+      "projects.purge",
+      { id: project.id, confirm: project.name },
+      "mutate",
+    ).then(
+      () => "purged",
+      (error) => `not purged · ${String(error?.message ?? error).split("\n")[0]}`,
     );
-    note("removed the project the recipe made");
+    note(`cleanup · ${name}: ${removal}; ${purged}`);
   }
 };

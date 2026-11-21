@@ -494,6 +494,53 @@ describe("projectRefusalWords", () => {
       "Mend kept this project. Kostas's session in api-v2 is live. fix-auth holds Anna's change, which is not on origin. Stop, land or remove those in Mend, then remove the project again.",
     );
   });
+
+  // SLNT-1243: an install session that had ended held the removal as `executor not ended`, and the
+  // words told the person to stop it, which Mend then refused.
+  it("asks to wait, never to stop, when only a workspace still saving or ending holds it", () => {
+    const ending: RemovalBlocker = {
+      _tag: "Saving",
+      worktreeId: WorktreeId.make("w-3"),
+      worktreeName: "wt-c3ef6682",
+      holds: [{ sessionId: SessionId.make("s-3"), kind: "executor", via: "own" }],
+    };
+    expect(projectRefusalWords([ending], "in-mend")).toBe(
+      "not removed · wt-c3ef6682 is executor not ended · 1 session · wait for those workspaces to save and end, then remove the project again.",
+    );
+    expect(projectRefusalWords([ending], "outside-mend")).toBe(
+      "Mend kept this project. wt-c3ef6682 is executor not ended · 1 session. Wait for those workspaces to save and end, then remove the project again.",
+    );
+    const live: RemovalBlocker = {
+      _tag: "SessionLive",
+      worktreeId: WorktreeId.make("w-2"),
+      worktreeName: "api-v2",
+      sessionId: SessionId.make("s-9"),
+      owner: kostas,
+      role: "inhabitant",
+      activity: "live",
+    };
+    expect(projectRefusalWords([live, ending], "in-mend")).toBe(
+      "not removed · Kostas's session in api-v2 is live · wt-c3ef6682 is executor not ended · 1 session · stop, land or remove those first, wait for the workspaces to save and end, then remove the project again.",
+    );
+  });
+
+  it("asks only to try again when a read failed or another removal is under way", () => {
+    const unread: RemovalBlocker = {
+      _tag: "Unlanded",
+      worktreeId: WorktreeId.make("w-4"),
+      worktreeName: "wt-c7e525ee",
+      owner: anna,
+      standing: { _tag: "unread", reason: "the capture head could not be read" },
+    };
+    expect(
+      projectRefusalWords([unread, { _tag: "RemovalUnderway", stopped: null }], "in-mend"),
+    ).toBe(
+      "not removed · wt-c7e525ee holds Anna's change, which Mend could not read · another removal of this project or one of its worktrees is under way · remove the project again in a moment.",
+    );
+    expect(
+      projectRefusalWords([unread, { ...unread, standing: neverLanded }], "in-mend"),
+    ).toContain("· stop, land or remove those first, then remove the project again.");
+  });
 });
 
 describe("owner words", () => {

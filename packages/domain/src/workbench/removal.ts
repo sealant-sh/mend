@@ -568,14 +568,54 @@ const projectClause = (blocker: RemovalBlocker): string => {
   }
 };
 
+/**
+ * What a blocker asks of the person before the project can go: `act` (stop, land or remove
+ * something), `wait` for a workspace still saving or ending (`Saving`: its session may have ended
+ * already, SLNT-1243), or only `retry`, for a read that failed or another removal under way.
+ */
+const projectStepOf = (blocker: RemovalBlocker): "act" | "wait" | "retry" => {
+  switch (blocker._tag) {
+    case "Saving":
+      return "wait";
+    case "Unlanded":
+      return blocker.standing._tag === "unread" || blocker.standing._tag === "origin-unchecked"
+        ? "retry"
+        : "act";
+    case "RemovalUnderway":
+      return blocker.stopped === null ? "retry" : "act";
+    default:
+      return "act";
+  }
+};
+
+/** The steps a refused project removal names, from what its blockers ask (`projectStepOf`). */
+const projectSteps = (blockers: ReadonlyArray<RemovalBlocker>, audience: RefusalAudience) => {
+  const steps = new Set(blockers.map(projectStepOf));
+  const waits = steps.has("wait");
+  const acts = steps.has("act");
+  if (!acts && !waits) return "remove the project again in a moment.";
+  const act =
+    audience === "in-mend"
+      ? "stop, land or remove those first"
+      : "stop, land or remove those in Mend";
+  const wait = acts
+    ? "wait for the workspaces to save and end"
+    : "wait for those workspaces to save and end";
+  return [acts ? act : null, waits ? wait : null]
+    .filter((step) => step !== null)
+    .concat("then remove the project again.")
+    .join(", ");
+};
+
 /** What a refused project removal says: every blocking worktree, and whose work it is (Q2). */
 export const projectRefusalWords = (
   blockers: ReadonlyArray<RemovalBlocker>,
   audience: RefusalAudience,
 ): string => {
   const clauses = blockers.map(projectClause);
+  const steps = projectSteps(blockers, audience);
   if (audience === "in-mend") {
-    return `not removed · ${clauses.join(" · ")} · stop, land or remove those first, then remove the project again.`;
+    return `not removed · ${clauses.join(" · ")} · ${steps}`;
   }
   // A clause that opens with a worktree's name keeps the name as it is written.
   const sentences = blockers.map((blocker, index) => {
@@ -586,7 +626,7 @@ export const projectRefusalWords = (
       blocker._tag === "NestedRepositories";
     return `${named ? clause : capitalized(clause)}.`;
   });
-  return `Mend kept this project. ${sentences.join(" ")} Stop, land or remove those in Mend, then remove the project again.`;
+  return `Mend kept this project. ${sentences.join(" ")} ${capitalized(steps)}`;
 };
 
 /** Who may remove a worktree the caller did not start (decision Q4). */
