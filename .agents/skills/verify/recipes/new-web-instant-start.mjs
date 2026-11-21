@@ -17,8 +17,8 @@ const PHONE = { width: 390, height: 844 };
 const PROMPT = "Change nothing. Reply with done.";
 const FOLLOW_UP = "Then list the top-level folders.";
 const HANDOFF = "And say which one holds the tests.";
-/** How long the recipe holds the agent's launch, so the person leaves while messages wait. */
-const LAUNCH_HELD_MS = 10_000;
+/** The request that makes and launches a session (SLNT-1239), alone or in a tRPC batch. */
+const STARTS = /\/trpc\/(?:[^?]*,)?sessions\.start(?=[,?]|$)/;
 const DRAFT = /\/sessions\/starting-[^/]+$/;
 const MADE = /\/sessions\/(?!starting-)[^/]+$/;
 
@@ -134,17 +134,16 @@ export default async ({ page, web, capture, note }) => {
   );
 
   // start-composer: Start opens the session's page at once, the message on it, the row in Running.
-  // The recipe holds Mend's answer 3 s, as a slow server would, to see the page before it.
-  // It also holds the agent's launch 10 s, so the session is still starting when the person leaves.
+  // The recipe holds the start's request 3 s, as a slow server would, to see the page before it.
+  // Mend makes and launches the session in that one request (SLNT-1239), so the launch is Mend's
+  // to time: on a stack the workspace's boot keeps the session starting while the person leaves.
   await page.route("**/trpc/**", async (route) => {
-    const url = route.request().url();
-    if (url.includes("sessions.create")) await new Promise((resolve) => setTimeout(resolve, 3_000));
-    if (url.includes("sessions.launch"))
-      await new Promise((resolve) => setTimeout(resolve, LAUNCH_HELD_MS));
+    if (STARTS.test(route.request().url()))
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
     await route.continue();
   });
   await task().fill(PROMPT);
-  const created = page.waitForResponse((response) => response.url().includes("sessions.create"));
+  const created = page.waitForResponse((response) => STARTS.test(response.url()));
   const pressed = Date.now();
   await task().press("Enter");
   await page.waitForURL(DRAFT);
@@ -200,7 +199,7 @@ export default async ({ page, web, capture, note }) => {
     note(`the session reads ${detail.session.status}; its composer is open and says so`);
   } else note(`the session already read ${detail.session.status} when its page settled`);
 
-  // SLNT-1232: the person goes to another page while both messages wait (the launch is held).
+  // SLNT-1232: the person goes to another page while both messages wait for Codex to start.
   const waitingWhenLeft = await page
     .getByText("Waits for Codex to start.")
     .filter({ visible: true })
@@ -307,7 +306,7 @@ export default async ({ page, web, capture, note }) => {
   await open("/");
   await ready();
   await page.route("**/trpc/**", (route) => {
-    if (!route.request().url().includes("sessions.create")) return route.continue();
+    if (!STARTS.test(route.request().url())) return route.continue();
     return route.fulfill({
       status: 500,
       contentType: "application/json",
@@ -346,7 +345,7 @@ export default async ({ page, web, capture, note }) => {
   await open("/new");
   await ready();
   await page.route("**/trpc/**", async (route) => {
-    if (route.request().url().includes("sessions.create"))
+    if (STARTS.test(route.request().url()))
       await new Promise((resolve) => setTimeout(resolve, 3_000));
     await route.continue();
   });

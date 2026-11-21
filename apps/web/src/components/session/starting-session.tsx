@@ -1,6 +1,7 @@
 import { Conversation, ConversationItem } from "@mend/ui/components/conversation";
 import { ConversationMarker } from "@mend/ui/components/conversation-marker";
 import { Navigate } from "@tanstack/react-router";
+import { useEffect } from "react";
 
 import { PhoneHeader } from "#/components/workspace/phone-header";
 import { PhoneTabStrip } from "#/components/workspace/phone-tab-strip";
@@ -8,11 +9,17 @@ import { Tile } from "#/components/workspace/tile";
 import { TileTab } from "#/components/workspace/tile-tab";
 import { WorkspaceHeader } from "#/components/workspace/workspace-header";
 import { type OutboxMessage, UNCONFIRMED, useOutbox } from "#/lib/outbox";
-import { type PendingStart, startTitle, usePendingStart } from "#/lib/pending-starts";
+import {
+  type PendingStart,
+  startTitle,
+  usePendingStart,
+  useStoredStart,
+} from "#/lib/pending-starts";
 import { lumpStatusOf, messageTime, STATUS_WORDS } from "#/lib/session-sheet";
 import { harnessName } from "#/lib/session-view";
 import { STARTING_LINE } from "#/lib/starting-line";
 
+import { useRecoverStart } from "../new-session/instant-start";
 import { StartingComposer } from "./composer";
 import { YouMessage } from "./conversation-tile";
 
@@ -24,12 +31,24 @@ const NEW_SESSION = "New session";
 /**
  * A session this tab is starting, before Mend has made it (SLNT-1196): laid out as the session's
  * own page is, with the person's message, anything sent since, and the start's line, so nothing
- * moves when that page takes its place. A start this tab doesn't hold (a reload, one Mend refused)
- * goes home: the composer there has the words back.
+ * moves when that page takes its place. After a reload the tab's kept copy of the start shows, and
+ * Mend is asked which session it made (SLNT-1239). A start the tab doesn't hold at all goes home.
  */
 export function StartingSessionPage({ draftId }: { readonly draftId: string }) {
   const start = usePendingStart(draftId);
-  if (start === undefined) return <Navigate to="/" replace />;
+  const stored = useStoredStart(draftId);
+  if (start !== undefined) return <StartingSheet start={start} />;
+  // Drawn on the server, which can't see the tab's starts: the browser decides.
+  if (stored === undefined) return null;
+  if (stored === null) return <Navigate to="/" replace />;
+  return <RecoveredStart start={stored} />;
+}
+
+/** A start kept from before a reload: its page again, while Mend is asked what it made. */
+function RecoveredStart({ start }: { readonly start: PendingStart }) {
+  const recover = useRecoverStart();
+  // Once, as the page opens: the recovery reads Mend until it knows, then moves the page on.
+  useEffect(() => recover(start), [recover, start]);
   return <StartingSheet start={start} />;
 }
 

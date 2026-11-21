@@ -3,6 +3,7 @@ import {
   HarnessLayoutRefused,
   LaunchRequest,
   NotFound,
+  WorktreeNotFound,
   SessionAgentLive,
   SessionMovedOn,
   StoreFailure,
@@ -31,6 +32,7 @@ import {
   type HarnessLayout,
   type Session,
   type SessionOrigin,
+  type Worktree,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import {
@@ -91,6 +93,18 @@ export interface LaunchAnswer {
    * for the launch to end, whatever it takes (Slack, which reports through its own messages).
    */
   readonly within?: Duration.Duration;
+  /**
+   * Run once the launch is admitted, before it awaits anything: the opening turn is being
+   * recorded then (SLNT-1237). A start that answers as soon as its launch is under way waits on it.
+   */
+  readonly onAdmitted?: Effect.Effect<void>;
+}
+
+/** A new session in an existing worktree: the worktree create route's payload. */
+export interface CreateInWorktreeInput {
+  readonly harness: string;
+  readonly label: string | null;
+  readonly autoLand: boolean | null;
 }
 
 /** Provision, then launch: what Slack asks for in one step. */
@@ -158,12 +172,23 @@ export class SessionStart extends Context.Service<
       projectId: ProjectId,
       input: CreateSessionInput,
     ) => Effect.Effect<Session, StartError | RemovalInProgress>;
+    /** A new session in a worktree the caller already resolved, and so may see. */
+    readonly createInWorktreeAs: (
+      actor: Actor,
+      worktree: Worktree,
+      input: CreateInWorktreeInput,
+    ) => Effect.Effect<Session, WorktreeNotFound | StoreFailure | RemovalInProgress>;
     readonly launchAs: (
       userId: string,
       session: Session,
       input: LaunchRequest,
       answer?: LaunchAnswer,
     ) => Effect.Effect<Session, StartError>;
+    /**
+     * End a session whose launch never got under way: failed, with `launch failed: <message>`,
+     * and what waited for its agent with it. A session that launched is left as it is.
+     */
+    readonly settleUnlaunched: (session: Session, message: string) => Effect.Effect<void>;
     /** Project access, the session budget, provision, the launch slot, launch, the auto-namer. */
     readonly startAs: (
       actor: Actor,
@@ -278,6 +303,36 @@ export const makeSessionStart = Effect.gen(function* () {
           ),
         ),
         refusedWhileRemoving,
+      );
+  });
+
+  const createInWorktreeAs = Effect.fn("SessionStart.createInWorktreeAs")(function* (
+    actor: Actor,
+    worktree: Worktree,
+    input: CreateInWorktreeInput,
+  ) {
+    yield* refuseStartWhileRemoving({
+      projectId: worktree.projectId,
+      worktreeId: worktree.id,
+    }).pipe(Effect.provideService(RemovalFencesRepo, fences));
+    return yield* engine
+      .provisionSessionIn(worktree.id, {
+        harness: input.harness,
+        label: input.label,
+        ownerUserId: actor.userId,
+        autoLand: input.autoLand,
+      })
+      .pipe(
+        Effect.catchTag("WorktreeNotFoundError", () =>
+          Effect.fail(new WorktreeNotFound({ id: worktree.id })),
+        ),
+        Effect.catchTag("ProjectNotFoundError", (error) =>
+          Effect.fail(new WorktreeNotFound({ id: error.projectId })),
+        ),
+        // A project Mend refuses (SHA-256, reftable): the reason, as the person reads it.
+        Effect.catchTag("GitError", (error) =>
+          Effect.fail(new StoreFailure({ message: error.stderr })),
+        ),
       );
   });
 
@@ -407,7 +462,9 @@ export const makeSessionStart = Effect.gen(function* () {
     // Inline naming has no transcript dependency and a first launch can take minutes: it is
     // enqueued as the launch is admitted, so the label lands while the workspace still
     // provisions, and a refused launch names nothing from its prompt (SLNT-167).
-    const nameOnAdmission = inlineNamePrompt === null ? Effect.void : queueAutoName;
+    const nameOnAdmission = (inlineNamePrompt === null ? Effect.void : queueAutoName).pipe(
+      Effect.andThen(answer.onAdmitted ?? Effect.void),
+    );
     const over = launchOverOf(request);
     // A PTY launch's model and effort, recorded once it is admitted (a protocol launch records its
     // own). A verbatim argv names its own flags, which Mend did not resolve: the row says so with
@@ -523,7 +580,16 @@ export const makeSessionStart = Effect.gen(function* () {
     return yield* launchAs(actor.userId, session, input.launch);
   });
 
-  return { createAs, launchAs, startAs };
+  return {
+    createAs,
+    createInWorktreeAs,
+    launchAs,
+    settleUnlaunched: (session: Session, message: string) =>
+      settleUnlaunched(session, message).pipe(
+        Effect.catchTag("SessionNotFoundError", () => Effect.void),
+      ),
+    startAs,
+  };
 });
 
 export const SessionStartLive: Layer.Layer<

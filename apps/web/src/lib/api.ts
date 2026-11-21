@@ -440,42 +440,69 @@ export const setGitAccess = (mode: GitAccessModeDto) =>
 const startMode = (harness: string) =>
   CONVERSATION_HARNESSES.has(harness) ? ({ mode: "protocol" } as const) : {};
 
-export const createSession = (
-  projectId: string,
-  harness: string,
-  base: string | null = null,
-  name: string | null = null,
-  autoLand: boolean | null = null,
-  purpose?: "setup",
-) =>
-  orLogin(
-    browserTrpcClient().sessions.create.mutate({
-      projectId,
-      session: {
-        harness,
-        ...startMode(harness),
-        label: null,
-        name,
-        base,
-        ...(autoLand === null ? {} : { autoLand }),
-        ...(purpose === undefined ? {} : { purpose }),
-      },
-    }),
-  );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
   orLogin(browserTrpcClient().sessions.launch.mutate({ id, request: { argv } }));
 
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchRequestDto = Parameters<TrpcClient["sessions"]["launch"]["mutate"]>[0]["request"];
 export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
-/** Launch a session the web started, as `startMode` says for its harness. */
-export const launchSessionStart = (id: string, harness: string, start: LaunchStartDto) =>
+/** Where a start makes its session: a new worktree of a project, or a worktree that exists. */
+export type StartTarget =
+  | {
+      readonly _tag: "project";
+      readonly projectId: string;
+      /** This session's own "Land when a turn completes"; null follows the project. */
+      readonly autoLand: boolean | null;
+      readonly purpose?: "setup";
+    }
+  | { readonly _tag: "worktree"; readonly worktreeId: string; readonly autoLand: boolean | null };
+
+/**
+ * Make a session and launch it, in one request named by `key` (SLNT-1239). Once the request has
+ * left, Mend makes and launches the session whatever becomes of this page, and a page reloaded
+ * before the answer reads the start back by its key (`readSessionStart`).
+ */
+export const startSessionNow = (
+  key: string,
+  target: StartTarget,
+  harness: string,
+  launch: LaunchStartDto,
+) =>
   orLogin(
-    browserTrpcClient().sessions.launch.mutate({
-      id,
-      request: { ...start, ...startMode(harness) },
+    browserTrpcClient().sessions.start.mutate({
+      key,
+      target:
+        target._tag === "project"
+          ? {
+              _tag: "Project",
+              projectId: target.projectId,
+              session: {
+                harness,
+                ...startMode(harness),
+                label: null,
+                name: null,
+                base: null,
+                ...(target.autoLand === null ? {} : { autoLand: target.autoLand }),
+                ...(target.purpose === undefined ? {} : { purpose: target.purpose }),
+              },
+            }
+          : {
+              _tag: "Worktree",
+              worktreeId: target.worktreeId,
+              session: {
+                harness,
+                ...startMode(harness),
+                label: null,
+                ...(target.autoLand === null ? {} : { autoLand: target.autoLand }),
+              },
+            },
+      launch: { ...launch, ...startMode(harness) },
     }),
   );
+/** A start by its key, as Mend has it: what a page reloaded during the start reads. */
+export type SessionStartReadDto = Outputs["sessions"]["started"];
+export const readSessionStart = (key: string): Promise<SessionStartReadDto> =>
+  orLogin(browserTrpcClient().sessions.started.query({ key }));
 /** The first message of an imported conversation: it starts the agent (`lib/first-message`). */
 export const launchFirstMessage = (id: string, request: FirstMessageLaunch) =>
   orLogin(browserTrpcClient().sessions.launch.mutate({ id, request }));
@@ -552,7 +579,7 @@ export type QueuedSessionDto = Outputs["queuedSessions"]["list"][number];
 
 /**
  * Start a session in a project the caller's adoption (`adoptionId`) is still cloning: it waits and
- * starts by itself, as `createSession` and `launchSessionStart` would start it, once the clone
+ * starts by itself, as `startSessionNow` would start it, once the clone
  * finishes. `id` is the client's: the same request again queues it once.
  */
 export const queueSession = (request: {
@@ -578,23 +605,6 @@ export const queueSession = (request: {
     }),
   );
 
-/** `autoLand` is this session's own "Land when a turn completes"; null follows the project. */
-export const createSessionInWorktree = (
-  id: string,
-  harness: string,
-  autoLand: boolean | null = null,
-) =>
-  orLogin(
-    browserTrpcClient().worktrees.createSession.mutate({
-      id,
-      session: {
-        harness,
-        ...startMode(harness),
-        label: null,
-        ...(autoLand === null ? {} : { autoLand }),
-      },
-    }),
-  );
 export const setSessionLabel = (id: string, label: string | null) =>
   orLogin(browserTrpcClient().sessions.setLabel.mutate({ id, label }));
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>

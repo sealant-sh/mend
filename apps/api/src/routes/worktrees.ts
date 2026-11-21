@@ -43,11 +43,12 @@ import { type DiffFileFact, isWorktreeRelativePath } from "@mend/store";
 import { Clock, Duration, Effect } from "effect";
 import { HttpApiBuilder } from "effect/http-api";
 
-import { ProjectAccess } from "../access.ts";
+import { ProjectAccess, signInOf } from "../access.ts";
 import { LIVE_STATES } from "../live-states.ts";
 import { PreviewSetupConfig } from "../preview-config.ts";
 import { describeWorktreePreviews } from "../preview-reads.ts";
-import { refuseStartWhileRemoving, Removal } from "../removal.ts";
+import { Removal } from "../removal.ts";
+import { makeSessionStart } from "../session-start.ts";
 import { generateWorktreeCommitMessage } from "../worktree-commit.ts";
 import { rawFileResponse } from "./raw-file-response.ts";
 import { observationOf, readFailure, withinCheckpointLimit } from "./workbench.ts";
@@ -668,28 +669,12 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const worktree = yield* (yield* ProjectAccess)
           .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
-        yield* refuseStartWhileRemoving({ projectId: worktree.projectId, worktreeId: worktree.id });
-        const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        return yield* engine
-          .provisionSessionIn(params.id, {
-            harness: payload.harness,
-            label: payload.label,
-            ownerUserId: caller.user.id,
-            autoLand: payload.autoLand,
-          })
-          .pipe(
-            Effect.catchTag("WorktreeNotFoundError", () =>
-              Effect.fail(new WorktreeNotFound({ id: params.id })),
-            ),
-            Effect.catchTag("ProjectNotFoundError", (error) =>
-              Effect.fail(new WorktreeNotFound({ id: error.projectId })),
-            ),
-            // A project Mend refuses (SHA-256, reftable): the reason, as the person reads it.
-            Effect.catchTag("GitError", (error) =>
-              Effect.fail(new StoreFailure({ message: error.stderr })),
-            ),
-          );
+        return yield* (yield* makeSessionStart).createInWorktreeAs(signInOf(caller), worktree, {
+          harness: payload.harness,
+          label: payload.label,
+          autoLand: payload.autoLand,
+        });
       }),
     )
     .handle("checkpoint", ({ params, payload }) =>

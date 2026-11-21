@@ -1,21 +1,21 @@
-import { createSession, createSessionInWorktree, launchSessionStart } from "./api.ts";
+import { startSessionNow, type StartTarget } from "./api.ts";
 
 /**
  * The sessions a project's page starts without a first message: a shell, a session in an
- * existing worktree, and a setup session. Each says how its session is made and how its agent
- * starts, for an instant start (`components/new-session/instant-start.ts`): the session's page
- * opens at once, and a launch that fails is that page's to show (the session records it).
+ * existing worktree, and a setup session. Each says how its session is made and launched, in one
+ * request (SLNT-1239), for an instant start (`components/new-session/instant-start.ts`): the
+ * session's page opens at once, and a launch that fails is that page's to show (the session
+ * records it).
  */
 export interface ProjectStart {
   readonly harness: string;
-  readonly make: () => Promise<string>;
-  readonly launch: (sessionId: string) => Promise<unknown>;
+  readonly start: (key: string) => Promise<string>;
 }
 
-const launchOf =
-  (agent: string) =>
-  (sessionId: string): Promise<unknown> =>
-    launchSessionStart(sessionId, agent, {});
+const startOf =
+  (target: StartTarget, harness: string) =>
+  async (key: string): Promise<string> =>
+    (await startSessionNow(key, target, harness, {})).id;
 
 /** Where a shell starts: in a worktree's workspace, beside its sessions, or in a new worktree. */
 export type ShellTarget =
@@ -24,19 +24,18 @@ export type ShellTarget =
 
 export const shellStart = (target: ShellTarget): ProjectStart => ({
   harness: "shell",
-  make: async () =>
-    (target._tag === "worktree"
-      ? await createSessionInWorktree(target.worktreeId, "shell")
-      : await createSession(target.projectId, "shell")
-    ).id,
-  launch: launchOf("shell"),
+  start: startOf(
+    target._tag === "worktree"
+      ? { _tag: "worktree", worktreeId: target.worktreeId, autoLand: null }
+      : { _tag: "project", projectId: target.projectId, autoLand: null },
+    "shell",
+  ),
 });
 
 /** Another session in a worktree that already exists; it follows the project on landing. */
 export const worktreeStart = (worktreeId: string, agent: string): ProjectStart => ({
   harness: agent,
-  make: async () => (await createSessionInWorktree(worktreeId, agent)).id,
-  launch: launchOf(agent),
+  start: startOf({ _tag: "worktree", worktreeId, autoLand: null }, agent),
 });
 
 /**
@@ -45,6 +44,5 @@ export const worktreeStart = (worktreeId: string, agent: string): ProjectStart =
  */
 export const setupStart = (projectId: string, agent: string): ProjectStart => ({
   harness: agent,
-  make: async () => (await createSession(projectId, agent, null, null, false, "setup")).id,
-  launch: launchOf(agent),
+  start: startOf({ _tag: "project", projectId, autoLand: false, purpose: "setup" }, agent),
 });

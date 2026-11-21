@@ -1172,6 +1172,29 @@ lane changed.
   `apps/web/src/components/session/conversation-tile.tsx`, `packages/sessions/src/protocol-host.ts`,
   `packages/db/src/repos/agent-conversation.ts`, `docs/formal/turn-dispatch/`
 
+### start-session.new-web-cut-short-start
+
+- **Map:** start-session.md `start-composer`
+- **Needs:** real turn (codex); web; the project `verify-fixture`
+- **Do:** Drive the recipe `new-web-cut-short-start` (`pnpm verify drive new-web --box`). From the
+  New session composer it starts a Codex session in `verify-fixture` with
+  `Change nothing. Reply with closed <time>.`, lets that start reach Mend, and closes the tab before
+  Mend's answer reaches the page. It then starts a second with
+  `Change nothing. Reply with reloaded <time>.` and reloads the page the same way. Stop both
+  sessions with `M stop <id8>` (the recipe prints their ids).
+- **See:** the closed tab's session launches: within two minutes it has left Starting, and its
+  conversation and its page hold the first message. The reloaded page moves to `/sessions/<id>`, the
+  session Mend made, and shows its first message; it never stays on `/` with an empty composer. It
+  fails (SLNT-1239) on a build whose page sent the launch as a second request once Mend answered the
+  first: the recipe stops with "never launched" for the closed tab and "an empty composer" for the
+  reload.
+- **Mode:** `scripted` (recipes/new-web-cut-short-start.mjs)
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/pending-starts.ts`,
+  `apps/web/src/lib/project-starts.ts`, `apps/web/src/components/new-session/instant-start.ts`,
+  `apps/web/src/components/session/starting-session.tsx`, `apps/api/src/session-starts.ts`,
+  `apps/api/src/routes/session-starts.ts`, `packages/db/src/repos/session-starts.ts`
+
 ### start-session.web-answer
 
 - **Map:** terminal-agent-waits.md `wait-permission`, `wait-question`, `wait-clears`;

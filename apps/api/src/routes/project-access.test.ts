@@ -289,6 +289,11 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "queuedSessions.read",
   "queuedSessions.start",
   "queuedSessions.cancel",
+  // The caller's own starts, by the key they chose; another account's reads as unknown
+  // (session-starts.test.ts). Making the session checks the project through SessionStart, or
+  // the worktree through ProjectAccess first.
+  "sessionStarts.start",
+  "sessionStarts.read",
   // Creation is scoped to the authenticated person's membership: project-creation.test.ts.
   "projects.createNew",
   "projects.ensureScratch",

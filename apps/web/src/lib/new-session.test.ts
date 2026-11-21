@@ -12,7 +12,7 @@ import {
   startingAgent,
   startingProject,
 } from "./new-session.ts";
-import { startSession, type StartCalls } from "./start-session.ts";
+import { composerStart, type StartCalls } from "./start-session.ts";
 
 const at = new Date("2026-11-18T09:00:00Z");
 
@@ -144,27 +144,19 @@ describe("the start request", () => {
   });
 });
 
-/** Start calls that record what they were asked, in order; `launch` answers as given. */
-const recording = (launch: StartCalls["launch"] = () => Promise.resolve()) => {
+/** Mend's start call, recording what it was asked; it answers as given. */
+const recording = (answer: Promise<{ readonly id: SessionId }>) => {
   const calls: Array<string> = [];
   const fake: StartCalls = {
-    create: (projectId, agent, autoLand) => {
-      calls.push(`create ${projectId} ${agent} ${String(autoLand)}`);
-      return Promise.resolve({ id: SessionId.make("s-new") });
-    },
-    createInWorktree: (worktreeId, agent, autoLand) => {
-      calls.push(`join ${worktreeId} ${agent} ${String(autoLand)}`);
-      return Promise.resolve({ id: SessionId.make("s-join") });
-    },
-    launch: (sessionId, agent, fields) => {
-      calls.push(`launch ${sessionId} ${agent} ${JSON.stringify(fields)}`);
-      return launch(sessionId, agent, fields);
+    start: (key, target, harness, launch) => {
+      calls.push(`${key} ${JSON.stringify(target)} ${harness} ${JSON.stringify(launch)}`);
+      return answer;
     },
   };
   return { calls, fake };
 };
 
-describe("startSession", () => {
+describe("a composer's start", () => {
   const spec = {
     agent: "claude",
     prompt: "Fix it",
@@ -175,34 +167,24 @@ describe("startSession", () => {
     autoLand: false,
   } as const;
 
-  it("makes a new worktree, or joins the one picked, then starts the agent on the task", async () => {
-    const { calls, fake } = recording();
-    await expect(startSession(fake, "p1", { _tag: "new" }, spec)).resolves.toBe("s-new");
-    await expect(
-      startSession(fake, "p1", { _tag: "existing", id: "w1", branch: "mend/a" }, spec),
-    ).resolves.toBe("s-join");
+  it("makes the session and launches it on the task in one call (SLNT-1239)", async () => {
+    const { calls, fake } = recording(Promise.resolve({ id: SessionId.make("s-new") }));
+    await expect(composerStart(fake, "p1", { _tag: "new" }, spec).start("k1")).resolves.toBe(
+      "s-new",
+    );
+    await composerStart(fake, "p1", { _tag: "existing", id: "w1", branch: "mend/a" }, spec).start(
+      "k2",
+    );
     expect(calls).toEqual([
-      "create p1 claude false",
-      'launch s-new claude {"prompt":"Fix it","model":"opus"}',
-      "join w1 claude false",
-      'launch s-join claude {"prompt":"Fix it","model":"opus"}',
+      'k1 {"_tag":"project","projectId":"p1","autoLand":false} claude {"prompt":"Fix it","model":"opus"}',
+      'k2 {"_tag":"worktree","worktreeId":"w1","autoLand":false} claude {"prompt":"Fix it","model":"opus"}',
     ]);
   });
 
-  it("answers with the session even when its agent fails to start: the session page shows that", async () => {
-    const { fake } = recording(() => Promise.reject(new Error("no login")));
-    await expect(startSession(fake, "p1", { _tag: "new" }, spec)).resolves.toBe("s-new");
-  });
-
-  it("fails, and starts nothing, when the session can't be made", async () => {
-    const { calls, fake } = recording();
-    const refusing: StartCalls = {
-      ...fake,
-      create: () => Promise.reject(new Error("The project is gone.")),
-    };
-    await expect(startSession(refusing, "p1", { _tag: "new" }, spec)).rejects.toThrow(
+  it("fails when Mend refuses the start", async () => {
+    const { fake } = recording(Promise.reject(new Error("The project is gone.")));
+    await expect(composerStart(fake, "p1", { _tag: "new" }, spec).start("k1")).rejects.toThrow(
       "The project is gone.",
     );
-    expect(calls).toEqual([]);
   });
 });

@@ -3,14 +3,26 @@ import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-quer
 import { useNavigate, useRouter } from "@tanstack/react-router";
 import { useEffect } from "react";
 
+import { readSessionStart } from "#/lib/api";
 import { conversationQuery } from "#/lib/conversation";
 import { makeCourier, sendHeld } from "#/lib/outbox";
-import { newDraftId, type RefusedStart } from "#/lib/pending-starts";
+import {
+  keepRefusal,
+  newDraftId,
+  type PendingStart,
+  type RefusedStart,
+} from "#/lib/pending-starts";
+import { usePhone } from "#/lib/phone";
 import type { ProjectStart } from "#/lib/project-starts";
 import { sessionDetailQuery } from "#/lib/session-queries";
 import { sessionLink } from "#/lib/session-sheet";
 import { signedInOptions } from "#/lib/sign-in";
-import { type InstantStart, type StartPlace, startInstantly } from "#/lib/start-session";
+import {
+  type InstantStart,
+  recoverStart,
+  type StartPlace,
+  startInstantly,
+} from "#/lib/start-session";
 import { useTRPC, useTRPCClient } from "#/lib/trpc";
 
 /** What a start says of itself; who starts it and its id are the hook's. */
@@ -90,6 +102,43 @@ export const usePageStart = () => {
       },
     };
     void startInstantly(place, { ...request, draftId, userId: common.userId });
+  };
+};
+
+/** Starts this tab is recovering now: a page drawn twice recovers each once. */
+const recovering = new Set<string>();
+
+/**
+ * Pick up a start this tab kept from before a reload (SLNT-1239), on its own page: once Mend says
+ * which session it made, the address moves to that session; a start Mend refused or never got
+ * goes back to the composer with the words and the reason.
+ */
+export const useRecoverStart = () => {
+  const common = useStartCommon();
+  const navigate = useNavigate();
+  const router = useRouter();
+  const phone = usePhone();
+  return (start: PendingStart) => {
+    if (recovering.has(start.draftId)) return;
+    recovering.add(start.draftId);
+    const at = () => router.state.location.pathname === `/sessions/${start.draftId}`;
+    const place: StartPlace = {
+      ...common,
+      show: () => undefined,
+      settle: (sessionId) => {
+        if (at()) void navigate({ ...sessionLink(sessionId), replace: true });
+      },
+      refuse: (refused) => {
+        keepRefusal(refused);
+        // The composer takes the words back: `/` on a wide screen, `/new` on a phone.
+        if (at()) void navigate({ to: phone ? "/new" : "/", replace: true });
+      },
+    };
+    void recoverStart(place, start, {
+      read: readSessionStart,
+      wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.now(),
+    }).finally(() => recovering.delete(start.draftId));
   };
 };
 
