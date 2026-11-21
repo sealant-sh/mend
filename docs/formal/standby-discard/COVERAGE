@@ -74,7 +74,14 @@
 # row as expected (`code` 129,386,795 states, 397 s on four workers).
 # cb5993b958 is the same SLNT-1233 commit rebased on main at 6d443dff6, whose two new commits
 # changed no covered file: the covered code is 61bf84dcb8's, which the full run above checked.
-sync cb5993b95885c57e868d13de47eff7c14e3f8264
+# 4681d853dc is the SLNT-1237 branch on main at 665d4b68dd. Its covered change is in engine.ts only:
+# a conversation launch records its first message as a waiting turn as it is admitted
+# (launchProtocol, queueOpeningTurn), a message to a starting conversation waits for its first
+# process (conversationStartsFor, sendMessage), and a Stop's entry, a settle and a terminal launch
+# end waiting turns (stop, endWaitingOfSettled, launch). Each writes agent turns only; no hot-pool,
+# claim, retire, drain, discard or session-process call changed, so no action models it. Full tlx
+# run at 4681d853dc: every row as expected (`code` 129,386,795 states, 260 s on four workers).
+sync 4681d853dcc5273dbb2aa29b6ac8459f5999d8a6
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

@@ -34,7 +34,12 @@
 # Full run at 61bf84dcb8: every row as expected.
 # cb5993b958 is the same SLNT-1233 commit rebased on main at 6d443dff6, whose two new commits
 # changed no covered file: the covered code is 61bf84dcb8's, which the full run above checked.
-sync cb5993b95885c57e868d13de47eff7c14e3f8264
+# 4681d853dc is the SLNT-1237 branch: the model gained the start (Starts, Attach, ATake, WRead,
+# WAdmit, WTake, LaunchFails, StopAsk, Settle) and NeverStranded, for waiting turns
+# (admitTurnMessage with no process, takeWaitingTurns at attachInternal and in waitForStart,
+# endWaitingTurns, queueOpeningTurn, rekeyWaitingTurn) and cancelOpenForTurn's notify. Full run at
+# 4681d853dc: every row as expected, counts as ROWS pins.
+sync 4681d853dcc5273dbb2aa29b6ac8459f5999d8a6
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

@@ -412,13 +412,13 @@ const makeConversationWorld = () => {
             update(turn.id, { processId: to });
       }),
     queueOpeningTurn: () => Effect.succeed(null),
-    takeWaitingTurns: (sessionId, to) =>
+    takeWaitingTurns: (session, to) =>
       Effect.suspend(() => admission.beforeTakeWaiting).pipe(
         Effect.andThen(
           Effect.sync(() => {
             let taken = 0;
             for (const turn of [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal))
-              if (isWaitingTurn(turn) && turn.sessionId === sessionId && turn.status === "queued") {
+              if (isWaitingTurn(turn) && turn.sessionId === session && turn.status === "queued") {
                 update(turn.id, { processId: to });
                 taken++;
               }
@@ -426,11 +426,11 @@ const makeConversationWorld = () => {
           }),
         ),
       ),
-    endWaitingTurns: (sessionId, end) =>
+    endWaitingTurns: (session, end) =>
       Effect.sync(() => {
         let ended = 0;
         for (const turn of turns.values())
-          if (isWaitingTurn(turn) && turn.sessionId === sessionId && turn.status === "queued") {
+          if (isWaitingTurn(turn) && turn.sessionId === session && turn.status === "queued") {
             update(turn.id, { status: end.status, error: end.error, endedAt: now() });
             ended++;
           }
@@ -712,6 +712,11 @@ const turnWith = (world: ReturnType<typeof makeConversationWorld>, words: string
   [...world.turns.values()].find((turn) => turn.input === words);
 const turnStarts = (peer: ReturnType<typeof makePipe>) =>
   peer.written.filter((frame) => frame.method === "turn/start").length;
+/** The words of each turn/start Mend wrote, in order. */
+const startedTexts = (peer: ReturnType<typeof makePipe>) =>
+  peer.written
+    .filter((frame) => frame.method === "turn/start")
+    .map((frame) => frame.params?.input?.[0]?.text);
 const startsWith = (peer: ReturnType<typeof makePipe>, words: string) =>
   peer.written.filter(
     (frame) => frame.method === "turn/start" && frame.params?.input?.[0]?.text === words,
@@ -4165,10 +4170,6 @@ describe("ProtocolHost message turn admission", () => {
   });
 
   const said = (words: string) => ({ ...message(), input: MessageInput.make(words) });
-  const turnStarts = (peer: ReturnType<typeof makePipe>) =>
-    peer.written
-      .filter((frame) => frame.method === "turn/start")
-      .map((frame) => frame.params?.input?.[0]?.text);
 
   it.effect(
     "keeps a message sent while the conversation starts, for the process that comes up",
@@ -4197,13 +4198,13 @@ describe("ProtocolHost message turn admission", () => {
         yield* attachCodex(host, peer.pipe);
         yield* waitUntil(() => world.turns.get(firstId)?.providerTurnId === "provider-first");
         expect(world.turns.get(secondId)).toMatchObject({ processId, status: "queued" });
-        expect(turnStarts(peer)).toEqual(["Fix the login page."]);
+        expect(startedTexts(peer)).toEqual(["Fix the login page."]);
         peer.push({
           method: "turn/completed",
           params: { threadId: "thread-1", turn: { id: "provider-first", status: "completed" } },
         });
         yield* waitUntil(() => world.turns.get(secondId)?.providerTurnId === "provider-second");
-        expect(turnStarts(peer)).toEqual(["Fix the login page.", "Then add a test."]);
+        expect(startedTexts(peer)).toEqual(["Fix the login page.", "Then add a test."]);
         yield* host.detach(processId);
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
@@ -4225,7 +4226,7 @@ describe("ProtocolHost message turn admission", () => {
       const id = receipt._tag === "Turn" ? receipt.turn.id : AgentTurnId.make("none");
       yield* waitUntil(() => world.turns.get(id)?.providerTurnId === "provider-late");
       expect(world.turns.get(id)).toMatchObject({ processId, status: "running" });
-      expect(turnStarts(peer)).toEqual(["Words sent as it came up."]);
+      expect(startedTexts(peer)).toEqual(["Words sent as it came up."]);
       yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });

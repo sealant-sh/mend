@@ -22,8 +22,8 @@ says, and keep it true to the code.
 Diff the covered code from the sync commit to your tree:
 
 ```sh
-git diff --stat 6c5c39774e -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts
-git diff 6c5c39774e -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts | grep -nE '^[-+].*(claimNextTurn|bindOwnSend|putBackOwn|failOwn|releaseOwn|completeTurn|failTurn|failUnconfirmedTurn|cancelOpenFor|withdrawUntakenTurn|requeueQueuedTurns|takeWaitingTurns|endWaitingTurns|queueOpeningTurn|launchCorrelationId|dispatchOne|finishSend|settleCompletion|applyCompletion|turn\.started|interruptTurn|rehydrate|sendInFlight|currentTurnId|ownTurn|turn/start|turn/interrupt|certainty|detach)'
+git diff --stat 4681d853dc -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts
+git diff 4681d853dc -- packages/sessions/src/protocol-host.ts packages/db/src/repos/agent-conversation.ts packages/agent-protocol/src/codex.ts | grep -nE '^[-+].*(claimNextTurn|bindOwnSend|putBackOwn|failOwn|releaseOwn|completeTurn|failTurn|failUnconfirmedTurn|cancelOpenFor|withdrawUntakenTurn|requeueQueuedTurns|takeWaitingTurns|endWaitingTurns|queueOpeningTurn|launchCorrelationId|dispatchOne|finishSend|settleCompletion|applyCompletion|turn\.started|interruptTurn|rehydrate|sendInFlight|currentTurnId|ownTurn|turn/start|turn/interrupt|certainty|detach)'
 ```
 
 Then check `packages/sessions/src/engine.ts` by name, since it is not in `COVERAGE`. Look for a
@@ -127,12 +127,12 @@ the code's guards allow it, and the value it acts on was read where and when the
 | `StopDetach`, `StopCancel`           | the session Stop in `engine.ts`: `protocolHost.detach`, then `conversations.cancelOpenForProcess` (the process's own rows)                                                                                                                |
 | `Restart`                            | a Mend restart; `ProtocolHost.rehydrate` (`failUnconfirmedTurn` on running turns with no provider turn id) and the adapter's `options.rehydrate`                                                                                          |
 
-**Sync commit: `6c5c39774e`** (2026-11-16, SLNT-895: imported turns land through the backfill's
-insert, which writes no status or provider turn id the model tracks; full TLC run, every row as
-expected). Written at `163a84a967` for SLNT-1017. The model was confirmed to describe the recorded
-code at this commit by a full TLC run. Move it forward only after step 1 finds every change to that
-code since then accounted for in the model, and a full `check.sh` run ends with every row as
-expected. The sync line in `COVERAGE` is where it moves.
+**Sync commit: `4681d853dc`** (2026-11-21, SLNT-1237: the start and its waiting turns; full tlx run,
+every row as expected). Before it `6c5c39774e` (2026-11-16, SLNT-895). Written at `163a84a967` for
+SLNT-1017. The model was confirmed to describe the recorded code at this commit by a full TLC run.
+Move it forward only after step 1 finds every change to that code since then accounted for in the
+model, and a full `check.sh` run ends with every row as expected. The sync line in `COVERAGE` is
+where it moves.
 
 ## In CI and `verify formal`
 

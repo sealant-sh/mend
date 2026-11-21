@@ -164,4 +164,14 @@ export default async ({ page, web, capture, note }) => {
   await page.setViewportSize(DESKTOP);
   await visible(page.getByText(/^second\.?$/i)).waitFor({ timeout: TURN_MS });
   note("the reloaded start's turn ran: Codex replied second");
+
+  // 4. A message to the session now it runs goes as before: answered, nothing under it.
+  const third = "Now reply with the single word third, and nothing else.";
+  await visible(page.getByRole("textbox", { name: "Message Codex" })).fill(third);
+  await page.keyboard.press("Enter");
+  await visible(page.getByText(/^third\.?$/i)).waitFor({ timeout: TURN_MS });
+  const after = await byline(page, third);
+  if (after.includes("Waits for") || after.includes("Not sent"))
+    throw new Error(`a message to the running session reads "${after}"`);
+  note(`a message to the running session was answered third; it reads "${after}"`);
 };
