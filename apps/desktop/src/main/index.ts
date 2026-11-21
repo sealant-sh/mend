@@ -283,6 +283,7 @@ const createWindow = (): BrowserWindow => {
     minWidth: MIN_WINDOW_SIZE.width,
     minHeight: MIN_WINDOW_SIZE.height,
     show: false,
+    autoHideMenuBar: true,
     backgroundColor: backgroundColorForTheme(),
     ...(PLATFORM === "darwin"
       ? {
@@ -300,6 +301,10 @@ const createWindow = (): BrowserWindow => {
       sandbox: true,
     },
   });
+
+  if (PLATFORM !== "darwin") {
+    win.setMenuBarVisibility(false);
+  }
 
   if (persisted.maximized) {
     win.maximize();
