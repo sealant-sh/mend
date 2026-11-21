@@ -19,6 +19,7 @@ import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Link, type LinkProps, useNavigate } from "@tanstack/react-router";
 import {
+  ArrowLeftRightIcon,
   ArrowUpRightIcon,
   BookOpenIcon,
   CheckIcon,
@@ -34,6 +35,7 @@ import {
 import { type ReactNode, useRef, useState } from "react";
 
 import { authClient } from "#/lib/auth-client";
+import { desktopBridge, useDesktopBridge } from "#/lib/desktop";
 import { exposureDetail, exposureLine } from "#/lib/exposure";
 import { fitsDialog } from "#/lib/how-mend-fits-open";
 import { useServerHost } from "#/lib/online";
@@ -115,6 +117,9 @@ export const useSignOut = () =>
     mutationFn: async () => {
       const result = await authClient.signOut();
       if (result.error !== null) throw new Error(result.error.message ?? "Signing out failed.");
+      await desktopBridge()
+        ?.setBadgeCount(0)
+        .catch(() => undefined);
     },
     onSuccess: () => window.location.assign("/login"),
   });
@@ -148,6 +153,7 @@ export function AccountMenu({
   readonly place: Place;
 }) {
   const host = useServerHost();
+  const desktop = useDesktopBridge();
   const theme = useThemePreference();
   const signOut = useSignOut();
   const leaving = signOut.isPending || signOut.isSuccess;
@@ -253,6 +259,12 @@ export function AccountMenu({
             <ArrowUpRightIcon aria-hidden className="size-3.5 text-muted-foreground" />
           </DropdownMenuItem>
           <DropdownMenuSeparator />
+          {desktop === null ? null : (
+            <DropdownMenuItem onClick={() => void desktop.switchServer()}>
+              <ArrowLeftRightIcon aria-hidden className="text-muted-foreground" />
+              Switch server…
+            </DropdownMenuItem>
+          )}
           <DropdownMenuItem
             closeOnClick={false}
             disabled={leaving}

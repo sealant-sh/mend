@@ -13,6 +13,7 @@ import {
   useSyncExternalStore,
 } from "react";
 
+import { useDesktopCloseTab } from "#/lib/desktop";
 import type { InboxRow } from "#/lib/inbox";
 import { inboxQuery } from "#/lib/inbox-live";
 import { type ApplyContext, applyLayout, oneTileOf } from "#/lib/layouts";
@@ -308,6 +309,13 @@ function SessionSheet({
         (id) => sessions?.some((each) => each.id === id && each.running) ?? false,
       ),
     );
+
+  // Desktop `Cmd/Ctrl+W` closes the focused tile's active tab instead of closing the window.
+  useDesktopCloseTab(() => {
+    if (allTabs.length <= 1) return;
+    const active = focusedTab(shown);
+    if (active !== undefined) closeOne(active);
+  });
 
   const keys = (tab: string, label: string) => (event: KeyboardEvent<HTMLButtonElement>) => {
     const tabSession = sessionOfTab(tab);

@@ -7,6 +7,7 @@ import { type ReactNode, useState, useSyncExternalStore } from "react";
 import { savedAgentLine } from "#/lib/agent-login";
 import { accountNameOptions } from "#/lib/auth-client";
 import { commandLineState } from "#/lib/command-line";
+import { useDesktopBadgeCount, useMacDesktopTitlebarInset } from "#/lib/desktop";
 import { savedModeLine } from "#/lib/git-access";
 import {
   SETUP_STEP_NAMES,
@@ -261,12 +262,25 @@ export function SetupFrame({
   readonly children: ReactNode;
 }) {
   const host = useServerHost();
+  const macInset = useMacDesktopTitlebarInset();
+  useDesktopBadgeCount(0);
   const stepLine = step === undefined ? null : stepLineOf(steps, step);
   // On a phone, where the steps aren't beside the sheet, the step before this one.
   const back = step === undefined ? null : previousStep(steps, step);
   return (
     <div className="flex min-h-dvh bg-background lg:bg-canvas lg:p-sheet-inset">
-      <div className="hidden w-sidebar shrink-0 flex-col gap-8 px-3 pt-3 lg:flex">
+      {macInset ? (
+        <div
+          aria-hidden
+          className="desktop-drag pointer-events-auto fixed top-0 left-0 z-20 h-10 w-sidebar max-lg:hidden"
+        />
+      ) : null}
+      <div
+        className={cn(
+          "hidden w-sidebar shrink-0 flex-col gap-8 px-3 lg:flex",
+          macInset ? "pt-11" : "pt-3",
+        )}
+      >
         <div>
           <p className="text-lead font-semibold text-foreground">Mend</p>
           <p className="text-row text-muted-foreground">{host}</p>

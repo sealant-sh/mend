@@ -1,6 +1,6 @@
 import { SidebarInset, SidebarProvider } from "@mend/ui/components/ui/sidebar";
 import { cn } from "@mend/ui/lib/utils";
-import { createFileRoute, Outlet, useLocation } from "@tanstack/react-router";
+import { createFileRoute, Outlet, useLocation, useNavigate } from "@tanstack/react-router";
 
 import { AppSidebar, SIDEBAR_RAIL_WIDTH, SIDEBAR_WIDTH } from "#/components/app-sidebar";
 import { SearchProvider } from "#/components/command-palette";
@@ -12,6 +12,11 @@ import { HeldMessagesCourier } from "#/components/session/held-messages";
 import { StopSessionHost } from "#/components/session/stop-session-host";
 import { SettingsSidebar } from "#/components/settings/settings-sidebar";
 import { Toaster } from "#/components/toaster";
+import {
+  dispatchDesktopCloseTab,
+  useDesktopBadgeCount,
+  useDesktopMenuActions,
+} from "#/lib/desktop";
 import { inboxQuery } from "#/lib/inbox-live";
 import { useOnline } from "#/lib/online";
 import { isSettingsPath } from "#/lib/settings-pages";
@@ -54,8 +59,16 @@ export const Route = createFileRoute("/_inbox")({
 function InboxLayout() {
   // One event stream for the tab, joined here so every signed-in page is live.
   useWorkbenchEvents();
+  const navigate = useNavigate();
   const inbox = useInbox();
   const online = useOnline();
+  const waitingCount = inbox.status === "success" ? inbox.view.groups.waiting.length : 0;
+  useDesktopBadgeCount(waitingCount);
+  useDesktopMenuActions({
+    onNewSession: () => void navigate({ to: "/" }),
+    onOpenSettings: () => void navigate({ to: "/settings" }),
+    onCloseTab: dispatchDesktopCloseTab,
+  });
   const home = useLocation({ select: (location) => location.pathname === "/" });
   const settings = useLocation({ select: (location) => isSettingsPath(location.pathname) });
   const { organizationName, account } = useViewer();

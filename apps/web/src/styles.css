@@ -7,6 +7,15 @@
 
 @source "../../../packages/ui/src";
 
+/* Window drag regions used only when running inside the Electron desktop shell. */
+.desktop-drag {
+  -webkit-app-region: drag;
+}
+
+.desktop-no-drag {
+  -webkit-app-region: no-drag;
+}
+
 /*
  * Text size, for this browser (Settings → Appearance, `lib/appearance.ts`): the root's size, which
  * the kit's type and spacing are measured in. Default leaves the browser's own.

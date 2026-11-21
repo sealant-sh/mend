@@ -58,6 +58,7 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 
+import { useMacDesktopTitlebarInset } from "#/lib/desktop";
 import {
   activity,
   age,
@@ -214,6 +215,7 @@ export function AppSidebar({
 }) {
   const pathname = useLocation({ select: (location) => location.pathname });
   const { state } = useSidebar();
+  const macInset = useMacDesktopTitlebarInset();
   const area = areaOf(pathname);
   const openId = openSessionOf(pathname);
   return (
@@ -221,8 +223,18 @@ export function AppSidebar({
       collapsible="icon"
       aria-label="Sidebar"
       // The kit draws a border on a left sidebar's edge; the sheet's own rounded edge is the edge.
-      className="bg-sidebar pt-3 group-data-[side=left]:border-r-0 pr-2 pb-2.5 pl-3 text-sidebar-foreground tabular-nums group-data-[collapsible=icon]:p-2"
+      // Inside macOS desktop (`hiddenInset`), reserve top desk room for the traffic lights.
+      className={cn(
+        "bg-sidebar group-data-[side=left]:border-r-0 pr-2 pb-2.5 pl-3 text-sidebar-foreground tabular-nums group-data-[collapsible=icon]:p-2",
+        macInset ? "pt-11 group-data-[collapsible=icon]:pt-11" : "pt-3",
+      )}
     >
+      {macInset ? (
+        <div
+          aria-hidden
+          className="desktop-drag pointer-events-auto fixed top-0 left-0 z-20 h-10 w-sidebar"
+        />
+      ) : null}
       {state === "expanded" ? (
         <ExpandedSidebar
           organizationName={organizationName}
