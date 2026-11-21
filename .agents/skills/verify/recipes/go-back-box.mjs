@@ -1,7 +1,8 @@
-// Going back to a checkpoint with a real Codex turn, on the box (SLNT-1259): two turns write
-// BACK.md, going back is refused while a third turn works, then goes through once it ends; the
-// agent's next turn reads the note Mend sends ahead of the person's words, and the line in the
-// conversation undoes it. Run it as the verify skill's section 9 says, under your own hold:
+// Going back to a checkpoint with a real Codex turn, on the box (SLNT-1259): turns write BACK.md
+// "first", then "second"; going back to the second turn's checkpoint is refused while a third turn
+// (writing "third", then sleeping) works, and goes through once it ends; the agent's next turn
+// reads the note Mend sends ahead of the person's words and finds "second", and the line in the
+// conversation undoes it ("third" again). Run it as the verify skill's section 9 says, under your own hold:
 //
 //   pnpm verify drive web --box --recipe go-back-box
 //
@@ -13,7 +14,8 @@ const FIRST =
   "Create a file named BACK.md containing the one line: first. Change nothing else. Reply in one sentence.";
 const SECOND =
   "Replace the line in BACK.md with: second. Change nothing else. Reply in one sentence.";
-const SLOW = "Run sleep 45 in the shell, then reply with the single word done.";
+const SLOW =
+  "Replace the line in BACK.md with: third. Then run sleep 45 in the shell, and reply with the single word done.";
 const ASK =
   "Before my message, did Mend tell you anything about this worktree's files? Say what in one sentence, then reply with the exact contents of BACK.md.";
 const BUSY =
@@ -120,15 +122,36 @@ export default async ({ page, web, capture, note }) => {
     await turnsEnded(1);
     await send(SECOND);
     await turnsEnded(2);
-    await checkpointLines().nth(1).waitFor({ timeout: 60_000 });
+    await checkpointLines().first().waitFor({ timeout: 60_000 });
+    const chain = await page.evaluate(async (sessionId) => {
+      const { trpcClient } = window["__TSR_ROUTER__"].options.context;
+      const detail = await trpcClient.sessions.detail.query({ id: sessionId });
+      return detail.checkpoints.map(
+        (each) => `${each.ordinal} ${each.trigger} ${new Date(each.createdAt).toISOString()}`,
+      );
+    }, id);
+    const shownLines = await checkpointLines().count();
     note(
-      `two turns ended; the conversation shows ${await checkpointLines().count()} checkpoint lines`,
+      `two turns ended; the conversation shows ${shownLines} checkpoint line(s); the chain: ${chain.join(", ")}`,
     );
+    // The second turn's line: the last one shown now.
+    await checkpointLines().last().click();
+    const title = await details()
+      .getByText(/^Checkpoint \d+/)
+      .first()
+      .innerText();
+    const ordinal = Number(/Checkpoint (\d+)/.exec(title)?.[1]);
+    await page.keyboard.press("Escape");
+    const turnTwoLine = () =>
+      visible(
+        page.locator(`#checkpoint-${ordinal}`).getByRole("button", { name: /^Checkpoint · / }),
+      );
+    note(`the second turn's line is checkpoint ${ordinal}`);
 
     // While a turn works, going back is refused and nothing changes.
     await send(SLOW);
     await visible(page.getByRole("button", { name: "Stop turn" })).waitFor({ timeout: 120_000 });
-    await checkpointLines().first().click();
+    await turnTwoLine().click();
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     const confirm = () =>
       visible(page.getByRole("dialog").filter({ hasText: "Go back to checkpoint" }));
@@ -142,13 +165,8 @@ export default async ({ page, web, capture, note }) => {
     await turnsEnded(3);
 
     // Once it ends, going back goes through.
-    const target = await checkpointLines().first().innerText();
-    await checkpointLines().first().click();
-    const title = await details()
-      .getByText(/^Checkpoint \d+/)
-      .first()
-      .innerText();
-    const ordinal = Number(/Checkpoint (\d+)/.exec(title)?.[1]);
+    const target = await turnTwoLine().innerText();
+    await turnTwoLine().click();
     await details().getByRole("button", { name: "Go back to this checkpoint…" }).click();
     await confirm().getByText(`Go back to checkpoint ${ordinal}?`).waitFor();
     await shot("go-back-confirm-box-desktop");
@@ -156,7 +174,7 @@ export default async ({ page, web, capture, note }) => {
     const toast = page.getByText(`Went back to checkpoint ${ordinal}.`, { exact: false });
     await toast.waitFor({ timeout: 180_000 });
     note(
-      `going back to the first turn's line ("${target}") says: "${(await toast.innerText()).replace(/\s+/g, " ")}"`,
+      `going back to the second turn's line ("${target}") says: "${(await toast.innerText()).replace(/\s+/g, " ")}"`,
     );
     const [restore] = (await detailOf(id)).restores;
     if (restore === undefined || restore.target.ordinal !== ordinal)
@@ -195,7 +213,7 @@ export default async ({ page, web, capture, note }) => {
         .replace(/\s+/g, " ");
     }, "did Mend tell you");
     note(`the person's message reads as typed; Codex replied: "${reply}"`);
-    if (!/first/.test(reply)) throw new Error("Codex's reply doesn't give BACK.md as 'first'");
+    if (!/second/.test(reply)) throw new Error("Codex's reply doesn't give BACK.md as 'second'");
     await shot("go-back-agent-told-box-desktop");
 
     // The line undoes it: the saved checkpoint's files come back.
@@ -212,7 +230,7 @@ export default async ({ page, web, capture, note }) => {
     if (after.length !== 0)
       throw new Error(`after the undo, the files differ in ${after.join(", ")}`);
     note(
-      `undone: the files at ${undo.result.ordinal} match the saved ${restore.saved.ordinal}, BACK.md "second" again`,
+      `undone: the files at ${undo.result.ordinal} match the saved ${restore.saved.ordinal}, BACK.md "third" again`,
     );
     await shot("go-back-undone-box-desktop");
     await page.setViewportSize(PHONE);
