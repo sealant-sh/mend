@@ -65,7 +65,9 @@
 # provider turn id, takes no turn and fails none, and the dispatch phase around it is the one the
 # app-context read already runs in, so no action changes. Full run at b9164303ec: every row as
 # expected.
-sync b9164303ecc88641ad49e52eaa15fb56859c6565
+# dc0ddbcc91 changes no line of protocol-host.ts after b9164303ec. --quick run at dc0ddbcc91: every row as
+# expected.
+sync dc0ddbcc9195972e5b0221e61f9ff4f9adc958d6
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla

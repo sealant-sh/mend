@@ -103,7 +103,9 @@
 # the protocol hooks' restoreNotes and deliverTerminalTurns read the notes it leaves. None touches
 # drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
 # HotWorkspacesRepo, so no action models it. Full run at b9164303ec: every row as expected.
-sync b9164303ecc88641ad49e52eaa15fb56859c6565
+# dc0ddbcc91 moves restoreRefused to the module scope; nothing else in engine.ts changes. --quick run at
+# dc0ddbcc91: every row as expected.
+sync dc0ddbcc9195972e5b0221e61f9ff4f9adc958d6
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
