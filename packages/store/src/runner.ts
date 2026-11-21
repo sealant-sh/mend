@@ -367,6 +367,13 @@ export const renderHead = (head: string): Buffer =>
     ? Buffer.concat([Buffer.from("ref: "), bytesOfKey(head), Buffer.from("\n")])
     : Buffer.from(`${head}\n`);
 
+/** Replace `name` in `dir` whole: a reader sees the old bytes or the new, never a part. */
+const replaceFile = (dir: string, name: string, bytes: string | Uint8Array) => {
+  const tmp = path.join(dir, `${name}.${process.pid}.${crypto.randomUUID()}`);
+  fs.writeFileSync(tmp, bytes);
+  fs.renameSync(tmp, path.join(dir, name));
+};
+
 // ─── Live ───────────────────────────────────────────────────────────────────
 
 export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreConfig | BlobStore> =
@@ -519,11 +526,12 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
               ...manifest.sections.git.refs,
             };
             const head = manifest.sections.git.head;
+            // Reads run beside this, outside the lock, so each file is replaced whole by a
+            // rename. HEAD written in place is empty for a moment: git then finds no repository
+            // here and `git diff` compares two missing files ("Could not access", SLNT-1264).
             yield* cacheIo(projectId, () => {
-              const tmp = path.join(cache, `packed-refs.${process.pid}.${crypto.randomUUID()}`);
-              fs.writeFileSync(tmp, renderPackedRefs(refs, format));
-              fs.renameSync(tmp, path.join(cache, "packed-refs"));
-              fs.writeFileSync(path.join(cache, "HEAD"), renderHead(head));
+              replaceFile(cache, "packed-refs", renderPackedRefs(refs, format));
+              replaceFile(cache, "HEAD", renderHead(head));
               const marker = path.join(path.dirname(cache), LAST_USED);
               fs.writeFileSync(marker, "");
             });
