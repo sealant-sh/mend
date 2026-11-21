@@ -175,7 +175,7 @@ export default async ({ page, web, capture, note }) => {
     return history({
       turns: [t],
       items: [
-        item(t.id, "agent-message", reply.live ? "in-progress" : "completed", start, end, {
+        item(t.id, "assistant-message", reply.live ? "in-progress" : "completed", start, end, {
           text: reply.text,
         }),
       ],
