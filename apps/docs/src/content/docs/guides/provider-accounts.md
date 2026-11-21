@@ -114,9 +114,9 @@ pbpaste | mend connect claude --api-key --default
 Mend never moves your sessions from one login to the other on its own. A subscription that reached
 its limit stays your login until you choose another, and so does a key the provider refused.
 
-In the web app, open Settings → Connected accounts. Choose **Add a Claude API key** under the list,
-or **API key** in the Connect dialog, and paste the key. **Use it as my default Claude login** makes
-it the default.
+In the web app, open **Settings → Agent logins and Git**, choose **Connect…** (or **Add login…**) on
+Claude Code's row, then **Use an API key instead**, paste the key and choose **Save key**. To make a
+key the default, use `--default` on the command line as above.
 
 To disconnect the key and keep the subscription:
 
@@ -151,10 +151,9 @@ The endpoint must be an absolute `http` or `https` URL with a host, and no user 
 query string or fragment. Mend drops a trailing slash. `http` is accepted because an endpoint on a
 private network often has no TLS.
 
-In the web app, choose **API key** in the Connect dialog and fill in **Endpoint (optional)**. With
-an endpoint, the key field accepts any value.
+The web app has no endpoint field: add a key with an endpoint from the terminal, with `--endpoint`.
 
-Mend shows you the endpoint's host after the key, in Settings, `mend accounts` and `mend doctor`:
+Mend shows you the endpoint's host after the key, in `mend accounts` and `mend doctor`:
 `Claude · API key ····a1b2 · billed per token · endpoint gateway.example.com`. Other people see the
 login without the host. `mend connect --json` carries the host, never the full URL.
 
@@ -203,12 +202,11 @@ reason. Read [Land a change](/guides/land-a-change/).
 
 ## Connect from the web
 
-Settings on the web has a Connected accounts panel that takes a pasted credential: for Claude, a
-setup token from `claude setup-token`, the contents of `~/.claude/.credentials.json` or an Anthropic
-API key; for Codex, the contents of `~/.codex/auth.json` or an OpenAI API key; for GitHub, the
-output of `gh auth token`. Once you hold a key, the panel lists each of your logins for the
-provider, with the default marked. The same panel holds **Give my sessions only the selected agent's
-login**.
+**Settings → Agent logins and Git** lists your Claude Code, Codex and GitHub logins. **Connect…**
+shows the command to run on your own computer (`mend connect claude`, `mend connect codex`,
+`mend connect github`) and waits for the login to arrive; for Claude Code and Codex it also takes an
+API key with **Use an API key instead**. The web app takes no pasted credential files. The same page
+holds **Selected agent's login only**.
 
 ## Replace or remove an account
 
@@ -275,7 +273,8 @@ connected it, so the agent can run `codex` or `claude` on your own login. In a p
 only your own logins are ever given: a session never gets anyone else's. In a workspace that shares
 one home, a join or a steered turn runs on the logins of whoever started it, these included. To give
 each session its own agent's login only, turn on **Give my sessions only the selected agent's
-login** in Settings → Connected accounts, or run `mend agent-logins selected`. Read
+login** (**Selected agent's login only** on Settings → Agent logins and Git), or run
+`mend agent-logins selected`. Read
 [Only the selected agent's login](../../concepts/provider-logins/#only-the-selected-agents-login).
 
 ## When an account is missing

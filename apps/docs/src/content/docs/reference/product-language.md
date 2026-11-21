@@ -43,6 +43,47 @@ Do not call a session a worktree. A worktree holds many sessions over its life, 
 at once, and it survives every one of them. Deleting a session leaves the worktree, its change, and
 its checkpoints standing; removing a worktree is its own explicit act.
 
+## Inbox
+
+The web app's sidebar is the inbox: every session a person can see, in one of five groups.
+
+| Group              | Meaning                                                                                                 |
+| ------------------ | ------------------------------------------------------------------------------------------------------- |
+| **Waiting on you** | The agent asks something, a teammate asks for shared control, or an imported conversation waits         |
+| **To review**      | The session ended with changed files nobody reviewed yet, it failed, or a follow-up waits to be sent    |
+| **Running**        | The session is alive and asks nothing: starting, working, or waiting for the next message after a reply |
+| **Snoozed**        | Put off until a time. A new question brings it back at once                                             |
+| **Done**           | The session ended without changed files, or the person marked it done                                   |
+
+**Snooze** and **Mark done** are each person's own and change nothing for anyone else. A row's word
+says what the session did, never the person's mark: "Replied" while it waits for the next message,
+"Saving" while it stops, then "Completed", "Failed" or "Stopped". To review lists one row per
+change.
+
+Write these group names for the web app. Do not write "Now", "Needs you", "Ready to review" or
+"Settled" for it. The phone app, VS Code and the terminal keep their own words.
+
+## Settings
+
+Every setting has one home, and the web app shows and changes it only there. Settings offers no
+Inherit choice.
+
+| Home             | Pages                                                                                                                         |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| **Account**      | Profile, Agent logins and Git, Devices and access keys, Dotfiles, MCP servers, Notifications, Your automation, Connected apps |
+| **This device**  | Appearance                                                                                                                    |
+| **Organization** | General, Members, Workspace image, Runtime, Boat, Integrations, Folders and references, Projects, Audit log                   |
+| **Project**      | General, Workspace, Services, Variables and secrets, Folders and references, Only you                                         |
+| **Server**       | Server, for its operators only                                                                                                |
+
+Under each page's title, one line names who it reaches: "Only you", "Only this browser", "Everyone
+in &lt;organization&gt;", "Owners of &lt;organization&gt;", "Everyone who can open &lt;project&gt;"
+or "Operators of this server". **Your automation** holds a person's own switches (change description
+and tour, suggested fixes, automatic landing). **Only you** is a person's own corner of a project:
+their agent memory and Doppler config there. **Connected apps** is a person's own links to Slack,
+Executor and Doppler; **Integrations** is the organization's Slack app and Executor. Do not write
+"Inherit", "Configuration page" or "Connected accounts" for the web app.
+
 ## Workspaces and people
 
 | Term                               | Meaning                                                                                                                                                      |

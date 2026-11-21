@@ -119,29 +119,29 @@ Anyone who can see the project can see the landing record and the observed facts
 
 ## Land from the web
 
-The change's review page has a `Land` panel. The session page links to it with `Land →` (or
-`Landing →` for someone other than the owner) beside its latest landing fact.
+The change's toolbar, in the workspace's **Change** view, has a line about the pull request and a
+**Land…** button (**Land again…** once something has landed). The workspace's **…** menu has
+**Land…** too, and `/changes/<id>#land` opens the dialog directly.
 
-The panel's header says where the change goes, for example
-`push mend/fix-login to origin · pull request into main`. Below it are the observed facts, or
-`not landed · nothing pushed from Mend yet`.
+The **Land change** dialog says where the change goes and lists what Mend observed about earlier
+landings, or `Nothing has landed yet.`
 
-For the change's owner, the panel has `Pull request title`, `Your description` (written above Mend's
-section), `Preview description`, and one button:
+For the change's owner, the dialog has **Pull request title**, a **Description** (written above
+Mend's section) with **Write** and **Preview**, and one button:
 
 - `Push and open pull request` for the first landing on GitHub;
 - `Push and update pull request` once there is an open pull request to update;
 - `Push to origin` when origin is not on GitHub, or when the change's pull request is from a fork.
 
-Everyone else sees `only the change's owner lands it`.
+Everyone else reads what landed, and `Only the change's owner lands it.`
 
-The panel also has:
+The dialog also has:
 
-- `Check origin`, which fetches the branch the next landing pushes with your git access and compares
-  it with what Mend last pushed there;
-- `Check GitHub`, for the owner, which looks for a pull request opened outside Mend;
-- `Refresh pull request`, for the owner, which asks GitHub for the pull request's state now;
-- `Open #412 on GitHub ↗`.
+- **Check origin**, which fetches the branch the next landing pushes with your git access and
+  compares it with what Mend last pushed there;
+- **Check GitHub**, for the owner, which looks for a pull request opened outside Mend;
+- **Refresh pull request**, for the owner, which asks GitHub for the pull request's state now;
+- the pull request's number, which opens it on GitHub.
 
 Mend does not poll GitHub. A pull request's state is as fresh as the last landing, refresh, or
 check.
@@ -156,8 +156,8 @@ Wherever you are, the change's pull request is a way to GitHub:
   owner's `Refresh` asks GitHub for its state now. A terminal session shows the newest one at the
   end of its transcript;
 - on the phone's review, as a line above the change;
-- on every list row whose change has one, on the web's Now and project pages and the phone's Now,
-  Projects and project screens, as `#412 · open` and its title, which opens it on GitHub.
+- on every list row whose change has one, in the web app's sidebar and project pages and the phone's
+  Now, Projects and project screens, as `#412 · open` and its title, which opens it on GitHub.
 
 Lists never ask GitHub, so `merged` shows there only after a landing, a refresh, or a check saw it.
 
@@ -181,7 +181,7 @@ mend land 3f2a --no-pr --branch wip/login
 mend land fix-login --title "Retry the login request once on a 502"
 ```
 
-The command first says which branch it pushes to, in the Land panel's words. When Mend pushed that
+The command first says which branch it pushes to, in the Land dialog's words. When Mend pushed that
 branch before and origin no longer has it, it prints
 `origin no longer has <branch> · this landing creates it again` before the push. Then it prints the
 landing, what it wrote, and every fact Mend observed:
@@ -202,7 +202,7 @@ It exits 1 when the push was refused or a step failed.
 ## Ask the agent to land
 
 Inside a session's workspace, the agent has its own `mend land`. When you ask it to land, push, or
-open a pull request, it runs `mend land`, and Mend lands the change exactly as the Land panel does:
+open a pull request, it runs `mend land`, and Mend lands the change exactly as the Land dialog does:
 as the change's owner, fast-forward only, without moving the session's branch. The agent never
 pushes itself. It reports what Mend printed:
 
@@ -249,12 +249,12 @@ change. The first landing opens the pull request and later ones update it.
 
 ### When it is on
 
-- A session started from the web or the CLI follows its project's `Land when a turn completes`
-  setting, which is `inherit`, `on`, or `off`. `inherit` follows the session owner's own
-  `Land when a turn completes` in their Settings, which is off until they turn it on.
-- A session can override the project when it starts. The web composer's menu has
-  `Land when a turn completes` with `As the project`, `Land`, and `Do not land`. The CLI has
-  `--land` and `--no-land`:
+- A session started from the web or the CLI follows its owner's own **Automatic landing**, in
+  **Settings → Your automation**, which is off until they turn it on.
+- A session can choose for itself when it starts. The web composer's menu has **Land when a turn
+  completes**, which starts from your **Automatic landing**; the session keeps what you picked, so
+  changing the setting later never changes a session already started. The CLI has `--land` and
+  `--no-land`:
 
   ```sh
   mend claude "fix the flaky login test" --land
@@ -264,12 +264,13 @@ change. The first landing opens the pull request and later ones update it.
   is on, which it is by default. `autopr=true` or `autopr=false` in the request decides for that
   request. See [Slack](/integrations/slack/).
 - A project set to `off` wins over everything: the composer, `--land`, the Slack setting, and
-  `autopr=true`.
+  `autopr=true`. The web app no longer sets a project's own landing switch, but one saved earlier
+  still holds; the composer then shows **Land when a turn completes** off.
 
 Mend lands only after turns it runs itself. A terminal session, where `mend codex` or `mend claude`
 attaches the agent to your terminal, has no turns Mend sees end, so it never lands by itself. It
 does once the session is picked up as a conversation, on the phone for example. Until then, land it
-with `mend land` or the Land panel.
+with `mend land` or the Land dialog.
 
 ### When a completed turn lands
 
@@ -283,7 +284,7 @@ Mend checks these in order, and all must hold:
 4. The request asked for a change, or asked to land the change as it stands.
 5. The change is captured, not empty, and not what the last landing already pushed.
 
-Every turn that does not land records why, and the Land panel and the Slack thread say it. A
+Every turn that does not land records why, and the Land dialog and the Slack thread say it. A
 question that left nothing to land says nothing.
 
 Before it reads the change, Mend asks the session's executor to register what its disk holds, up to
@@ -317,7 +318,7 @@ turn changed nothing, and in a Slack thread even with automatic landing off. Ask
 landed (`did you open a PR?`) is a question.
 
 When a question still left files changed, Mend does not land it and says
-`changes not landed · the request read as a question`. The Land panel then notes that a completed
+`changes not landed · the request read as a question`. The Land dialog then notes that a completed
 turn left changes Mend did not land, and in Slack the reply carries a `Push and open pull request`
 button that acts only for the change's owner.
 
@@ -381,7 +382,7 @@ The refusal is the first step, never the last. In the web app, the worktree menu
 worktree** shows these words with the files and line counts not on origin, and offers **Remove
 anyway**, which is the same removal with `force=true`. Force lifts only work that is not on origin.
 It never lifts a live session or a save under way, and the web app does not offer it then. **Clear
-settled** never forces: it says how many worktrees it kept for this reason, and each one's menu
+finished** never forces: it says how many worktrees it kept for this reason, and each one's menu
 shows what it holds. From a terminal, `mend worktrees rm <name>` prints the refusal as the server
 said it, and `mend worktrees rm <name> --force` removes the worktree anyway when force lifts the
 refusal.

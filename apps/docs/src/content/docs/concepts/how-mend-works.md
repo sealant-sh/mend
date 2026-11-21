@@ -153,11 +153,13 @@ same workspace and can keep it alive after an agent settles.
 
 The web app is built around four places, and the other clients follow the same shape:
 
-- **Now** is your inbox across projects. Sessions sit under `Needs you`, `Running` and
-  `Ready to review`; you can snooze a row or settle it, for yourself only.
-- A **project** page lists its worktrees and sessions and holds the project's setup. You start
-  sessions from it or from Now.
-- A **session** page shows the conversation, the terminal, the record, previews and the change.
+- The **sidebar** is your inbox across projects. Sessions sit under `Waiting on you`, `To review`,
+  `Running`, `Snoozed` and `Done`. You can snooze a row or mark it done, for yourself only.
+- A **project** page lists its sessions, worktrees, resources and skills, and its settings hold the
+  project's setup. You start sessions from it or from **New session** in the sidebar.
+- A **session** opens in its workspace. Every session in the workspace and every view of it (the
+  change, checks, preview, terminal, screen, record and details) is a tab, and tabs sit side by side
+  in tiles.
 - The **review** of a change shows the diff, the tour, comments and Mend's findings, and sends your
   comments back to the session. See [Review a change](/guides/review-a-change/).
 

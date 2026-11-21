@@ -148,11 +148,10 @@ image builds reads `stopped`, and the build failing afterwards does not change t
 
 ## Docker inside a workspace
 
-The **Docker service** switch, in the instance, organization and project editors alike, requests a
-disposable daemon scoped to that workspace. With it off, the image summary on a project's
-**Configuration** page says `docker disabled`. Its isolation and privilege model depend on the
-workspace runtime. Mend does not mount the host Docker socket. Compose files can run inside the
-workspace against the provided daemon.
+The **Docker inside workspaces** switch, in the server, organization and project image editors
+alike, requests a disposable daemon scoped to that workspace. Its isolation and privilege model
+depend on the workspace runtime. Mend does not mount the host Docker socket. Compose files can run
+inside the workspace against the provided daemon.
 
 Changing the switch does not retrofit a workspace that is already running or retained. Joining or
 resuming a session that reuses that workspace keeps the Docker capability it was created with. A
@@ -182,16 +181,16 @@ platform services.
 
 Each level holds its own image, and nothing follows a level above:
 
-1. a project's image, on its **Configuration** page, is what its sessions launch with;
-2. an organization's **starting image**, which its owners set in **Settings**, is what each new
-   project in it starts with a copy of;
-3. the instance's image, which only the operator sees and edits in **Settings**, is what each new
-   organization starts with a copy of.
+1. a project's image, under **Image** on its **Workspace** settings page, is what its sessions
+   launch with;
+2. an organization's **starting image**, which its owners set on the organization's **Settings →
+   Workspace image** page, is what each new project in it starts with a copy of;
+3. the server's starting workspace image, which only the operator sees, on **Settings → Server**, is
+   what each new organization starts with a copy of.
 
 Changing an organization's starting image changes the projects created after it, not the ones that
-exist. **Reset** on a project's image replaces it with a copy of its organization's starting image
-as it is then. Members see the organization's starting image read-only. Each change to it is
-recorded in the organization's audit log.
+exist. Members see the organization's starting image read-only. Each change to it is recorded in the
+organization's audit log.
 
 On upgrade, a project or organization that followed a level above keeps what it resolved to then, as
 its own copy.

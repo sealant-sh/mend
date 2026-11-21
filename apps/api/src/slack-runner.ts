@@ -508,7 +508,7 @@ export const startingAnew = section(
 /** `settings` in a direct message, where no channel default applies. */
 const settingsElsewhere = (webOrigin: string): SlackMessage =>
   section(
-    `\`settings\` sets a channel's default project: mention Mend in the channel. Your own default is in Mend under <${settingsUrl(webOrigin)}|Settings → Slack>.`,
+    `\`settings\` sets a channel's default project: mention Mend in the channel. Your own default is in Mend under <${settingsUrl(webOrigin)}|Settings → Connected apps>.`,
   );
 
 const notLinkedYet = section(

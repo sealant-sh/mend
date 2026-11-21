@@ -8,9 +8,9 @@ import { defineConfig, esmExternalRequirePlugin } from "vite";
 
 import { devProxyRoutes } from "./src/entry/proxy-headers.ts";
 
-// The new app, rebuilt one route at a time beside the old one (apps/web-old). Dev runs this vite
-// server on 3115 against a Mend API already running on 3101 (`pnpm dev` starts the old app and the
-// API); the proxy keeps the app and /api one origin, the shape production has.
+// Dev runs two processes (`pnpm dev`, scripts/dev.mjs): this vite server for the app on 3105, and
+// the Mend API server (apps/api) on 3101. The proxy keeps them one origin, the shape production
+// has, where the web server proxies /api to the API.
 
 // Vite's DNS-rebinding guard receives the same explicit hosts as auth and
 // CORS. It accepts hostnames rather than origins, so scheme and port remain
@@ -46,10 +46,10 @@ const config = defineConfig({
     },
   },
   server: {
-    // Steered from any device on the operator's network, like the old app, so dev binds every
-    // interface. Its own port, so the two apps run at once.
+    // Steered from any device on the operator's network, so dev binds every interface. A fixed
+    // port: `pnpm dev` hands its environment, PORT included, to the API server too.
     host: true,
-    port: Number(process.env["PORT"] ?? "3115"),
+    port: 3105,
     allowedHosts,
     proxy: {
       // Vite owns WebSocket upgrades; nitro's earlier middleware handles HTTP through devProxy.

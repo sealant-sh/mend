@@ -162,9 +162,9 @@ boat gateway · declared on · present on the worker that launches Boat · obser
 Boat VMs and some Boat key can pay for them; until then, Boat sessions are refused. A line that
 needs something done ends with what to do, after an arrow. `mend doctor`, run anywhere the CLI is
 signed in, prints the same lines from the server's point of view, then the organization's Boat key
-and your own, if you connected one. **Settings · Instance · Exposure** shows them to the operator
-under **Where sessions run**. People who do not operate the server see only where sessions run,
-their organization's key and their own.
+and your own, if you connected one. **Settings → Server** shows them to the operator under **Where
+sessions run**. People who do not operate the server see only where sessions run, their
+organization's key and their own.
 
 ## Boat keys
 
@@ -188,7 +188,7 @@ person's.
 
 ### Create a Boat key
 
-Create the key with the Boat CLI. The Boat page in **Settings · Organization · Boat** shows the same
+Create the key with the Boat CLI. The organization's **Settings → Boat** page shows the same
 commands, ready to copy. For a Boat organization, replace the placeholder with its name:
 
 ```sh
@@ -224,8 +224,8 @@ Boat shows the key once. Paste it straight into Mend, as the next section shows.
 
 ### Connect an organization's Boat key
 
-An owner of the organization connects the key in **Settings · Organization · Boat**, or runs
-`mend boat connect` and pastes the key at the hidden prompt. Boat checks the key before Sealant
+An owner of the organization connects the key on the organization's **Settings → Boat** page, or
+runs `mend boat connect` and pastes the key at the hidden prompt. Boat checks the key before Sealant
 keeps it, and Sealant refuses it with Boat's reason when Boat does not accept it. From then on, the
 organization's new Boat sessions and its standbys run in, and are billed to, that key's Boat
 account. Members see whether the organization has a key; only owners see its details or change it.
@@ -233,13 +233,12 @@ Connecting, replacing and removing the key are in the organization's audit log.
 
 ### Connect your own Boat key
 
-Anyone in an organization can connect a key of their own in **Settings · Account**, or with
-`mend boat connect --mine`, using a key made with the commands above. It applies in the organization
-they are acting in, and only there: the Boat sessions they start in it run in, and are billed to,
-their own Boat account, and the organization's repositories are checked out in VMs there. Only that
-person sees, checks, replaces or removes it. An owner sees which members have their own key, on
-**Settings · Organization · Boat** and in `mend boat status`, never its details. The audit log
-records it.
+Anyone in an organization can connect a key of their own with `mend boat connect --mine` (the web
+app has no page for a personal key), using a key made with the commands above. It applies in the
+organization they are acting in, and only there: the Boat sessions they start in it run in, and are
+billed to, their own Boat account, and the organization's repositories are checked out in VMs there.
+Only that person sees, checks, replaces or removes it. An owner sees which members have their own
+key in `mend boat status`, never its details. The audit log records it.
 
 ### Give the server a key of its own
 
@@ -262,9 +261,9 @@ when sealant first checks it, which needs the key's `account.read` permission.
 ## Check a key
 
 **Check now** on the Boat page, or `mend boat check`, asks Boat about the key now, read-only; for
-your own key, **Check now** in **Settings · Account**, or `mend boat check --mine`. It starts
-nothing and costs nothing. Sealant also checks every key when it is connected or replaced, and once
-a day. The page and `mend boat status` show the last answer and when it was observed:
+your own key, `mend boat check --mine`. It starts nothing and costs nothing. Sealant also checks
+every key when it is connected or replaced, and once a day. The page and `mend boat status` show the
+last answer and when it was observed:
 
 - who the key is, and whether it is a Boat organization's key or a personal one
 - the wallet it bills, and whether that is fixed (see
@@ -287,9 +286,8 @@ Keys tab in Boat's dashboard, to see them, or run a full check.
 
 A full check shows that the key can do what a session needs, by doing it once. Run it after you
 create a Boat organization's key, whose permissions Mend cannot read, or when a Boat session fails
-and the report shows nothing wrong. An owner runs it with **Run a full check** on the Boat page, or
-with `mend boat check --full`. Anyone runs it on their own key from **Settings · Account**, or with
-`mend boat check --full --mine`.
+and the report shows nothing wrong. An owner runs it with **Run a full check…** on the Boat page, or
+with `mend boat check --full`. Anyone runs it on their own key with `mend boat check --full --mine`.
 
 Sealant starts the smallest VM in the key's Boat account, runs a command in it, publishes a port and
 saves a snapshot, then deletes the snapshot and the VM. It uses one VM start, takes about a minute,
@@ -314,13 +312,13 @@ organization your Boat account belongs to. sealant pins it, when it is connected
 bills at that moment, your active wallet in Boat, and names that wallet on every request, so a later
 `boat org switch` does not move Mend's bill.
 
-When the key's Boat account can bill more than one wallet, the Boat page and **Settings · Account**
-show them all, the one billed now chosen, under **Wallet this key bills**. Choose another and
-confirm. From the command line, `mend boat wallet` lists them and `mend boat wallet <name>` (a Boat
-organization's name or id, or `personal`) chooses one; add `--mine` for your own key. The change
-needs no key and takes effect at once, for the Boat sessions that start next. Sessions running now,
-and the images already saved, stay in the wallet they were made in, and sealant keeps managing them
-there. A key whose Boat account has one wallet shows it and offers no choice.
+When the key's Boat account can bill more than one wallet, the Boat page shows them all, the one
+billed now chosen, under **Wallet**. Choose another and confirm. From the command line,
+`mend boat wallet` lists them and `mend boat wallet <name>` (a Boat organization's name or id, or
+`personal`) chooses one; add `--mine` for your own key. The change needs no key and takes effect at
+once, for the Boat sessions that start next. Sessions running now, and the images already saved,
+stay in the wallet they were made in, and sealant keeps managing them there. A key whose Boat
+account has one wallet shows it and offers no choice.
 
 The choice comes after the key is connected, not before: sealant learns which wallets a key can bill
 only by asking Boat with that key, which it does when the key is connected. Until you choose, the
@@ -342,26 +340,26 @@ money or keep a saved snapshot slot. The Boat page, `mend boat status` and `mend
 saved images as Boat's Saved snapshots list shows them, and count the rest. Replace the key with one
 made with `account.read` (the command on the Boat page): sealant then reads them again and records
 gone what Boat no longer holds. Removing them in Boat alone does not clear the list. Owners see
-their organization's, each person their own key's, and the operator the server's own key's, on the
-instance page and in `mend doctor`.
+their organization's, each person their own key's, and the operator the server's own key's, on
+**Settings → Server** and in `mend doctor`.
 
 ## Where each organization's sessions run
 
 The server offers Docker, Boat, or both (`--session-runtimes`). With both, each organization's owner
-chooses in **Settings · Organization · Defaults**, and an organization that has not chosen gets the
-server's default (`--session-runtime`). Members see the choice and cannot change it. The server's
-Docker still runs Mend and the project resources either way.
+chooses on the organization's **Settings → Runtime** page, and an organization that has not chosen
+gets the server's default (`--session-runtime`). Members see the choice and cannot change it. The
+server's Docker still runs Mend and the project resources either way.
 
 A choice applies to new worktrees. A worktree keeps the runtime it was created with, so a running
 Docker session never moves to Boat, or the other way round.
 
 ### Switch an organization to Boat
 
-When an owner picks Boat in **Settings · Organization · Defaults**, a dialog opens before the switch
-takes effect. Mend asks Sealant what Boat runs and lists what it would not run: the organization's
-own environment, each project whose environment Boat cannot start, each Service on a port Boat
-holds, and projects with server folders Boat cannot bind. An owner sees by name every project they
-can see, and a count of other members' private projects.
+When an owner picks Boat on **Settings → Runtime**, a dialog opens before the switch takes effect.
+Mend asks Sealant what Boat runs and lists what it would not run: the organization's own
+environment, each project whose environment Boat cannot start, each Service on a port Boat holds,
+and projects with server folders Boat cannot bind. An owner sees by name every project they can see,
+and a count of other members' private projects.
 
 The owner can move the environments to one Boat runs in the same step. Mend's default packages on
 Ubuntu replace them. A project's own packages are not kept, and its next session builds the new
@@ -599,11 +597,10 @@ on a server without one, and Sealant deletes the images it built in that Boat ac
 is refused while a session's VM or an image build still holds the account, with the count: stop
 those sessions, then remove it again. A refused removal changes nothing.
 
-**Replace or remove your own key.** In **Settings · Account**, or with `mend boat connect --mine`
-and `mend boat disconnect --mine`. Replacing and removing work as for the organization's key:
-Sealant deletes the images it built in your Boat account, and a removal is refused while a session's
-VM or an image build still holds it. Your Boat sessions then use the organization's key, or the
-server's.
+**Replace or remove your own key.** With `mend boat connect --mine` and
+`mend boat disconnect --mine`. Replacing and removing work as for the organization's key: Sealant
+deletes the images it built in your Boat account, and a removal is refused while a session's VM or
+an image build still holds it. Your Boat sessions then use the organization's key, or the server's.
 
 **Replace the server's key.** Give setup the new key the same way as the first one, on standard
 input with `--boat-api-key-stdin`.
@@ -707,27 +704,27 @@ the session again.
 
 ## Reference
 
-| To                                                    | Do                                                                                                             |
-| ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| Offer Boat as the only runtime                        | `mend server setup --yes --session-runtime boat` with the two address flags                                    |
-| Let each organization choose Docker or Boat           | `mend server setup --yes --session-runtimes docker,boat`                                                       |
-| Set what an organization gets until its owner chooses | `mend server setup --yes --session-runtime docker` or `--session-runtime boat`                                 |
-| Set the two public addresses                          | `--session-endpoint-url <origin>` and `--blob-store-public-url <origin>` on `mend server setup`                |
-| Name this install's Boat VMs yourself                 | `--boat-deployment-id <name>` on the first `mend server setup`                                                 |
-| Turn the resource gateway off or on                   | `mend server setup --yes --no-boat-resources`, or `--boat-resources`                                           |
-| Give the server its own key, or replace it            | `mend server setup --yes --boat-api-key-stdin`, with the key on standard input                                 |
-| Name the Boat organization the server's key bills     | `mend server setup --yes --boat-organization <id or name>`; `--no-boat-organization` drops it                  |
-| Drop the server's own key                             | `mend server setup --yes --no-boat-api-key`                                                                    |
-| Forget Boat entirely                                  | `mend server setup --yes --no-boat`                                                                            |
-| See where sessions run and what was observed          | `mend server status` on the server's machine, `mend doctor` anywhere                                           |
-| Connect or replace the organization's key             | **Settings · Organization · Boat**, or `mend boat connect`                                                     |
-| See the organization's key                            | `mend boat status`                                                                                             |
-| Ask Boat about the key now                            | **Check now**, or `mend boat check`                                                                            |
-| Prove the key with a throwaway VM                     | **Run a full check**, or `mend boat check --full`                                                              |
-| Remove the organization's key                         | **Remove…**, or `mend boat disconnect`                                                                         |
-| Connect, check or remove your own key                 | **Settings · Account**, or `mend boat connect --mine`, `mend boat check --mine`, `mend boat disconnect --mine` |
-| See which key a session runs on                       | "Runs on" in the session's details, or `mend sessions`                                                         |
-| Choose where an organization's sessions run           | **Settings · Organization · Defaults**                                                                         |
+| To                                                    | Do                                                                                              |
+| ----------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Offer Boat as the only runtime                        | `mend server setup --yes --session-runtime boat` with the two address flags                     |
+| Let each organization choose Docker or Boat           | `mend server setup --yes --session-runtimes docker,boat`                                        |
+| Set what an organization gets until its owner chooses | `mend server setup --yes --session-runtime docker` or `--session-runtime boat`                  |
+| Set the two public addresses                          | `--session-endpoint-url <origin>` and `--blob-store-public-url <origin>` on `mend server setup` |
+| Name this install's Boat VMs yourself                 | `--boat-deployment-id <name>` on the first `mend server setup`                                  |
+| Turn the resource gateway off or on                   | `mend server setup --yes --no-boat-resources`, or `--boat-resources`                            |
+| Give the server its own key, or replace it            | `mend server setup --yes --boat-api-key-stdin`, with the key on standard input                  |
+| Name the Boat organization the server's key bills     | `mend server setup --yes --boat-organization <id or name>`; `--no-boat-organization` drops it   |
+| Drop the server's own key                             | `mend server setup --yes --no-boat-api-key`                                                     |
+| Forget Boat entirely                                  | `mend server setup --yes --no-boat`                                                             |
+| See where sessions run and what was observed          | `mend server status` on the server's machine, `mend doctor` anywhere                            |
+| Connect or replace the organization's key             | The organization's **Settings → Boat**, or `mend boat connect`                                  |
+| See the organization's key                            | `mend boat status`                                                                              |
+| Ask Boat about the key now                            | **Check now**, or `mend boat check`                                                             |
+| Prove the key with a throwaway VM                     | **Run a full check…**, or `mend boat check --full`                                              |
+| Remove the organization's key                         | **Remove…**, or `mend boat disconnect`                                                          |
+| Connect, check or remove your own key                 | `mend boat connect --mine`, `mend boat check --mine`, `mend boat disconnect --mine`             |
+| See which key a session runs on                       | "Runs on" in the session's details, or `mend sessions`                                          |
+| Choose where an organization's sessions run           | The organization's **Settings → Runtime**                                                       |
 
 [Server environment](/reference/server-environment/#boat) lists every Boat setting in the install's
 `server.env`, and [the CLI reference](/reference/cli/) every flag.

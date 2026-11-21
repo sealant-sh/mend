@@ -316,8 +316,8 @@ another hostname.
 ### Removing a key
 
 Each machine that ran setup registered its own key with your account. To stop a machine opening
-workspaces, for a lost laptop, remove its key under **Settings → Workspace SSH** in the web app, or
-from any signed-in terminal:
+workspaces, for a lost laptop, remove its key under **Workspace SSH keys** in the web app's
+**Settings → Devices and access keys**, or from any signed-in terminal:
 
 ```sh
 mend ssh keys                   # every key you registered; the one this machine offers is marked
@@ -610,22 +610,22 @@ Until it is connected, the Mend view shows one step at a time.
 4. The account shows in VS Code's Accounts menu, as `dana@example.com @ mend-mini.local (Mend)`.
    **Sign Out** there signs this editor out as **Mend: Sign out** does.
 
-The editor receives its own device token, listed under **Settings → Devices** as
+The editor receives its own device token, listed under **Settings → Devices and access keys** as
 `VS Code on <machine>`. The wait is timed from the server's answer, so a server whose clock is off
 from this machine's (a Mac's Docker VM after sleep) does not expire it early. The URL is saved as
 the `mend.serverUrl` setting and the token in VS Code's secret storage (encrypted, with its key in
 the macOS Keychain on a Mac). The CLI's token is used only while `mend.serverUrl` points at the same
 URL as the CLI's configuration. **Mend: Sign out** revokes the device the browser sign-in created
 and forgets its token, and says what Mend answered: the device revoked, already signed out, or Mend
-not reached (then revoke it under **Settings → Devices** yourself). Signed out stays signed out: the
-editor does not fall back to the CLI's sign-in for that server until you connect again or press
-**Use it**, and the CLI keeps its own (`mend logout` ends it).
+not reached (then revoke it under **Settings → Devices and access keys** yourself). Signed out stays
+signed out: the editor does not fall back to the CLI's sign-in for that server until you connect
+again or press **Use it**, and the CLI keeps its own (`mend logout` ends it).
 
 When Mend refuses the editor's token, for example after you revoke its device under **Settings →
-Devices**, the editor forgets the token: the account leaves the Accounts menu in every VS Code
-window, and one notification says `Signed out — sign in again.` with **Connect to server**.
-Connecting again while connected revokes the device the new sign-in replaces, so Settings → Devices
-keeps one `VS Code on <machine>`.
+Devices and access keys**, the editor forgets the token: the account leaves the Accounts menu in
+every VS Code window, and one notification says `Signed out — sign in again.` with **Connect to
+server**. Connecting again while connected revokes the device the new sign-in replaces, so Settings
+→ Devices and access keys keeps one `VS Code on <machine>`.
 
 Next, the view offers `Open sessions in VS Code: needs Remote-SSH and an SSH key for Mend` with
 **Set up** (see [Workspace SSH setup](#workspace-ssh-setup)), or **Skip for now**. With no project

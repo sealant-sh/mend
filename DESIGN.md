@@ -1,11 +1,11 @@
 # Sheet: Mend's design language
 
-Version 4.0, 18 November 2026. Applies to the new web app (`apps/web`, `@mend/web`) and its UI kit
-(`packages/ui`, `@mend/ui`). Sheet was chosen on 14 November 2026.
+Version 4.0, 18 November 2026. Applies to the web app (`apps/web`, `@mend/web`) and its UI kit
+(`packages/ui`, `@mend/ui`), and so to the desktop app, which wraps the web app. Sheet was chosen on
+14 November 2026, and the web app in Sheet replaced the old one at the cut-over (ADR 0027).
 
-The desktop app, the marketing site, the mobile app, the VS Code extension, the old web app
-(`apps/web-old`) and everything else on the old kit (`@mend/ui-old`) still follow Evidence Review
-until each is redone. Its text is
+The marketing site, the mobile app, the VS Code extension, the API's published pages and everything
+else on the old kit (`@mend/ui-old`) still follow Evidence Review until each is redone. Its text is
 [`docs/design-evidence-review.md`](docs/design-evidence-review.md), unchanged and with the same
 section numbers, so a code comment in those apps that cites "`DESIGN.md` §4" means §4 of that file.
 
@@ -191,8 +191,8 @@ The sheet's geometry has tokens: `p-sheet-inset` (8px), `w-sidebar` (268px), `h-
   (after Stop turn), plus Starting and Stopping. The word is `text-muted-foreground`, except Waiting
   on you in amber and Failed in red.
 - The inbox groups are Waiting on you, To review, Running, Snoozed and Done. Older names (Needs you,
-  Ready to review, Settled) are wrong in new code. The public glossary changes when the new app
-  ships these words.
+  Ready to review, Settled) are wrong in new code. The public glossary uses these words since the
+  cut-over.
 - A session also has the **lump** glyph, on its tab and on the sidebar rail. Its shape is the
   session's state and its colour is the pull request's (`pr-none`, `pr-open`, `pr-merged`,
   `pr-conflict`); a session waiting on you has an amber lump. Completed is a dome with a check cut

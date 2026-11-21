@@ -137,16 +137,16 @@ export const previewSealantdEnvironment = (environment) => {
 };
 
 /**
- * The web front the bundle serves: today's app (`apps/web-old`) unless the image was built with
- * `MEND_WEB_APP=web`, the new app (`apps/web`, ADR 0027). Only a preview build passes it
- * (.github/workflows/preview.yml); a release build passes none and serves today's app. Any other
- * value is refused, so a typo can't start a front the image doesn't carry.
+ * The web front the bundle serves: `apps/web` (ADR 0027) unless the image was built with
+ * `MEND_WEB_APP=web-old`, the app it replaced, which stays buildable only until `apps/web-old`
+ * leaves the tree. A release build passes none and serves `apps/web`. Any other value is refused,
+ * so a typo can't start a front the image doesn't carry.
  *
  * @param {Readonly<Record<string, string | undefined>>} environment
  * @returns {string}
  */
 export const webFrontPath = (environment) => {
-  const app = environment.MEND_WEB_APP?.trim() || "web-old";
+  const app = environment.MEND_WEB_APP?.trim() || "web";
   if (app === "web-old") return "/app/apps/web-old/.output/front.mjs";
   if (app === "web") return "/app/apps/web/.output/front.mjs";
   throw new Error(`MEND_WEB_APP is ${JSON.stringify(app)}: it names web-old or web`);

@@ -189,9 +189,8 @@ mend stop --services 01MEND
 Once nothing is live, the workspace closes.
 
 `--foreground` gives one launch foreground semantics: the session stops when the launching `mend`
-exits. The default is the "Run sessions in the background" switch. The operator sets the instance's
-default in Settings, an organization owner sets the organization's default over it, and a project's
-setup page can override both.
+exits. Without it, sessions run in the background. The web app has no switch for this; a background
+setting saved earlier for you or a project, from the old web app or the API, still applies.
 
 ## Reattach
 

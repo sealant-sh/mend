@@ -190,8 +190,9 @@ launch failed: the server's host refuses user namespaces · no workspace can sta
 
 Each workspace runs its own rootless Docker, and Ubuntu refuses the unprivileged user namespaces it
 needs (`kernel.apparmor_restrict_unprivileged_userns=1`). `mend server setup` asks to allow them
-before its other questions; `mend doctor` reports it on the `workspaces` line, and the web on the
-Now page. A server older than 0.36 fails later instead, while the workspace starts, with
+before its other questions; `mend doctor` reports it on the `workspaces` line, and the web app above
+the new-session composer. A server older than 0.36 fails later instead, while the workspace starts,
+with
 `Workspace Docker service 'sealant-…-docker' did not become ready … container … is not running`.
 Allow them with setup, which writes the file with a marker so `mend uninstall --all` removes it and
 puts the kernel back; no restart is needed:
@@ -288,7 +289,7 @@ store is deprecated and to unset the variable.
 A refused request names the budget and its limit, for example
 `budget reached · 4 launches starting at once for one account · nothing running was stopped`. It
 answers 429 (413 for a body) with `Retry-After` for a request window. Nothing running is stopped.
-Wait for the window, settle sessions you no longer need, or raise the budget. See
+Wait for the window, stop sessions you no longer need, or raise the budget. See
 [Budgets](/operate/exposure/#budgets).
 
 ### A socket will not open through a proxy

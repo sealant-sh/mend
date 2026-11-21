@@ -445,15 +445,9 @@ jobs:
         env:
           MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
         run: |
-          pnpm exec turbo run build --filter=@mend/web-old
-          pnpm --filter @mend/web-old check:browser
-      - name: The built new web app renders its sign-in page in Chromium
-        env:
-          MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
-        run: |
           pnpm exec turbo run build --filter=@mend/web
           pnpm --filter @mend/web check:browser
-      - name: The new web app's first load stays within its budget
+      - name: The web app's first load stays within its budget
         run: node scripts/ci-web-size.mjs
       - name: Archive Turbo task hashes and cache outcomes
         if: ${{ !cancelled() }}

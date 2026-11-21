@@ -292,7 +292,7 @@ The operator declares where sessions may run on the server, and each organizatio
 among those places for the organization's new sessions. On Docker server installs,
 `mend server setup` asks where sessions can run: Docker, Boat, or both. Docker is the default. With
 one place, every organization's sessions run there, as before organizations could choose. With both,
-an organization's owner picks Docker or Boat in **Settings · Organization · Defaults**, and an
+an organization's owner picks Docker or Boat in the organization's **Settings → Runtime**, and an
 organization that has not picked gets the server's default. Members see the choice and cannot change
 it.
 
@@ -320,8 +320,8 @@ new project on an environment that runtime can run. Existing projects keep their
 Naming Boat with `--session-runtime` or `--session-runtimes` turns it on, with the two public
 addresses described in [Remote workspace endpoints](#remote-workspace-endpoints) and no Boat key.
 Setup refuses Boat without the addresses, and a Boat session never starts on Docker instead. Each
-organization's owner connects the organization's own Boat key in **Settings · Organization · Boat**,
-or with `mend boat connect`; Sealant keeps those keys sealed, not `server.env`.
+organization's owner connects the organization's own Boat key on its **Settings → Boat** page, or
+with `mend boat connect`; Sealant keeps those keys sealed, not `server.env`.
 [Run sessions on Boat](/operate/boat/) walks through the whole setup. Boat sessions bypass the
 server's npm and Docker mirrors; local Docker sessions keep using them. When new organizations get
 Boat, the server's default environment is Ubuntu until its operator saves another.
@@ -346,8 +346,8 @@ is refused.
 Sealant also reads `SEALANT_BOAT_API_KEY_FILE`, a path to a file holding the server's own key, for
 deployments that do not run `mend server setup`. Set it or `SEALANT_BOAT_API_KEY`, never both. Mend
 reads the server's own key back only as Sealant's last report of it: `mend server status`,
-`mend doctor` and **Settings · Instance · Exposure** show who it is, the wallet it bills, whether it
-can start a VM and when it expires, to the operator.
+`mend doctor` and **Settings → Server** show who it is, the wallet it bills, whether it can start a
+VM and when it expires, to the operator.
 
 A Boat session reaches the project's resources, such as `@db`, through Sealant's resource gateway on
 the Docker host. The gateway is optional. When a session's worktree binds no resource at the moment

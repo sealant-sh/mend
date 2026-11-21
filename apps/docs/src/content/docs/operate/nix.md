@@ -293,9 +293,9 @@ the two public HTTPS addresses Boat VMs dial, and name it where sessions run:
 ```
 
 This is what `mend server setup --session-runtime boat` does. No Boat key is needed: an owner of
-each organization connects the organization's key in **Settings · Organization · Boat**, or with
-`mend boat connect`, and that Boat account pays for the organization's Boat sessions. Until one is
-connected, the organization's Boat sessions are refused. They never start on Docker instead.
+each organization connects its own key on its **Settings → Boat** page, or with `mend boat connect`,
+and that Boat account pays for the organization's Boat sessions. Until one is connected, the
+organization's Boat sessions are refused. They never start on Docker instead.
 
 Forward the two addresses to this machine's `127.0.0.1:13106` and `127.0.0.1:13900`
 (`boat.sessionEndpointPort` and `boat.blobStorePort`) with a Tailscale Funnel or your own TLS proxy,
@@ -311,8 +311,7 @@ Nix store. `SEALANT_BOAT_ORGANIZATION` beside it names the Boat organization a p
 
 Once the server runs, `mend doctor` from a CLI signed in as the operator says where sessions run,
 whether the two public addresses answered from the server, what Sealant last observed of the
-server's own key, and whether a worker launches Boat. **Settings · Instance · Exposure** shows the
-same lines.
+server's own key, and whether a worker launches Boat. **Settings → Server** shows the same lines.
 
 To let each organization's owner choose between this server's Docker and Boat, offer both:
 
@@ -324,7 +323,7 @@ To let each organization's owner choose between this server's Docker and Boat, o
 ```
 
 `sessions.runtimes` sets `MEND_SESSION_RUNTIMES`, and `sessions.runtime` is then what an
-organization gets until its owner picks in **Settings · Organization · Defaults**.
+organization gets until its owner picks in the organization's **Settings → Runtime**.
 
 ## Keep the identity in your secret manager
 

@@ -206,7 +206,7 @@ test("the bundle uses the catalog sealant version and declared digest images wit
   assert.doesNotMatch(supervisor, /RABBITMQ_URL|REGISTRY_/);
   // Both Mend processes run from bundles; the runtime image carries no workspace or node_modules.
   assert.match(supervisor, /\/app\/apps\/api\/dist\/main\.js/);
-  assert.match(supervisor, /\/app\/apps\/web-old\/\.output\/front\.mjs/);
+  assert.match(supervisor, /\/app\/apps\/web\/\.output\/front\.mjs/);
   assert.doesNotMatch(
     dockerfile,
     /src\/main\.ts|mend-production-dependencies|\/app\/node_modules \.\/node_modules/,
@@ -234,15 +234,15 @@ test("the Sealant worker runs four launches at once unless the operator says oth
   });
 });
 
-test("the bundle serves today's web app unless a preview build asks for the new one", async () => {
+test("the bundle serves apps/web unless a build asks for the old app", async () => {
   const [dockerfile, supervisor, { webFrontPath }] = await Promise.all([
     readFile(path.join(root, "Dockerfile"), "utf8"),
     readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
     import("./bundle-supervisor.mjs"),
   ]);
-  // Both stages default to today's app, so a release build, which passes no MEND_WEB_APP, ships it.
-  assert.equal(dockerfile.match(/^ARG MEND_WEB_APP=web-old$/gm)?.length, 2);
-  assert.doesNotMatch(dockerfile, /^ARG MEND_WEB_APP=(?!web-old$)/m);
+  // Both stages default to apps/web, so a release build, which passes no MEND_WEB_APP, ships it.
+  assert.equal(dockerfile.match(/^ARG MEND_WEB_APP=web$/gm)?.length, 2);
+  assert.doesNotMatch(dockerfile, /^ARG MEND_WEB_APP=(?!web$)/m);
   assert.match(dockerfile, /pnpm --filter "@mend\/\$\{MEND_WEB_APP\}" build/);
   assert.match(
     dockerfile,
@@ -253,8 +253,8 @@ test("the bundle serves today's web app unless a preview build asks for the new 
   assert.match(supervisor, /const webFront = webFrontPath\(process\.env\);/);
   assert.match(supervisor, /baseSpecification\("mend-web", \["node", webFront\]/);
 
-  assert.equal(webFrontPath({}), "/app/apps/web-old/.output/front.mjs");
-  assert.equal(webFrontPath({ MEND_WEB_APP: "" }), "/app/apps/web-old/.output/front.mjs");
+  assert.equal(webFrontPath({}), "/app/apps/web/.output/front.mjs");
+  assert.equal(webFrontPath({ MEND_WEB_APP: "" }), "/app/apps/web/.output/front.mjs");
   assert.equal(webFrontPath({ MEND_WEB_APP: "web-old" }), "/app/apps/web-old/.output/front.mjs");
   assert.equal(webFrontPath({ MEND_WEB_APP: " web " }), "/app/apps/web/.output/front.mjs");
   assert.throws(() => webFrontPath({ MEND_WEB_APP: "../web" }), /MEND_WEB_APP is "\.\.\/web"/);

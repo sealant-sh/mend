@@ -13,6 +13,15 @@ git show "$(git rev-list -n1 HEAD -- MEND-AGENT-WORKBENCH-PLAN.md)^:MEND-AGENT-W
 
 ## Decided
 
+- **2026-11-21: the new web app replaces the old one, and the old one is deleted.** Yiannis, after
+  the whole-app pass on the preview server (SLNT-1189): "Ok when you are done with everything do the
+  ui cutoff, remove the old ui etc". Every image, the CLI's server bundle, the Helm chart, previews,
+  `pnpm dev` and the verify stack serve `apps/web`; `apps/web-old` goes in the same stack of PRs
+  rather than a release later, so the way back is reverting the switch while the old app is still in
+  the tree. Slack's `settings` reply links to Settings → Connected apps. `packages/ui-old` stays
+  while mobile, marketing and the API's published pages use it. Details:
+  [ADR 0027](adr/0027-web-app-rebuilt-beside-the-old-one.md), "Cut-over".
+
 - **2026-11-21: one session from its terminal and the web; a session records its mode.** Yiannis, on
   SLNT-1235, after a session taken over with `mend attach` locked the web and hid what was typed in
   the terminal: "all three sound good but in addition to the convo auto turning to a convo after the

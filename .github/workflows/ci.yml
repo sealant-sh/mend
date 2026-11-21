@@ -487,7 +487,8 @@ jobs:
       - name: CLI, client and shared-library tests
         run: node scripts/ci-shards.mjs clients-b
       # The built web app loads in a real browser and renders its first screen: the sign-in page,
-      # served by the production front with no API behind it (apps/web-old/scripts/check-browser.mjs).
+      # served by the production front. The page needs the server to answer, so the check puts a
+      # fake API behind the front (apps/web/scripts/check-browser.mjs).
       - name: Install Chromium for the web app's browser check
         # The runner image already carries Chromium's system libraries; when its apt mirror is down
         # or stalls, install the browser alone rather than fail the lane before a test runs. Each
@@ -502,20 +503,11 @@ jobs:
           # The workspace's locked Playwright, as the packaging job's verify tests use it.
           MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
         run: |
-          pnpm exec turbo run build --filter=@mend/web-old
-          pnpm --filter @mend/web-old check:browser
-      # The new web app (apps/web, ADR 0027) is held to the same until it replaces the old one. Its
-      # sign-in page needs the server to answer, so its check puts a fake API behind the front
-      # (apps/web/scripts/check-browser.mjs).
-      - name: The built new web app renders its sign-in page in Chromium
-        env:
-          MEND_VERIFY_PLAYWRIGHT: ${{ github.workspace }}/apps/mobile
-        run: |
           pnpm exec turbo run build --filter=@mend/web
           pnpm --filter @mend/web check:browser
-      # What a browser downloads before the new web app draws (its entry chunk and the sign-in
-      # page), read from the build above against apps/web/size-budget.json.
-      - name: The new web app's first load stays within its budget
+      # What a browser downloads before the web app draws (its entry chunk and the sign-in page),
+      # read from the build above against apps/web/size-budget.json.
+      - name: The web app's first load stays within its budget
         run: node scripts/ci-web-size.mjs
 
       - name: Archive Turbo task hashes and cache outcomes

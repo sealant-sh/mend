@@ -158,22 +158,20 @@ that cannot run or fails leaves the deploy as it stood; `PREVIEW_DEPLOY_TIDY=0` 
 Nov 2026 only a release tidied, so a box that took deploys and no checks (VM 131 since checks moved
 to check VMs) filled its disk with old previews (SLNT-1251).
 
-### The new web app
+### The web app
 
-A preview image serves the old web app (`apps/web-old`) until cut-over (ADR 0027), and so does every
-release, unless its dispatch asks for the new one with `-f web_app=web`. That preview's image builds
-`apps/web`, its `dev.sealant.mend.web-app` label reads `web`, and the bundle supervisor starts the
-new app's front on 3105 in place of the old one's. Nothing else about it changes.
+A preview image serves `apps/web`, as every release does since the cut-over (ADR 0027). While
+`apps/web-old` is still in the tree, a dispatch can ask for it with `-f web_app=web-old`: that image
+builds the old app, its `dev.sealant.mend.web-app` label reads `web-old`, and the bundle supervisor
+starts the old app's front on 3105 instead.
 
-A route of the new app (`apps/web`) is checked on the box from its author's checkout instead, and
-nothing on the box changes for it. `pnpm verify drive new-web --box` runs `vite dev` on this machine
-behind a local proxy. The proxy sends `/api` to the box's `APP_URL` with the box's own `Origin`, so
-the box's allowed origins stay as they are. The new app signs in on its own `/login` as the box's
-checker account, and the session cookie the box sets is for `localhost`. A change that is only
-`apps/web` and `packages/ui` needs no preview of its head: `verify box identity` passes on that
-drive, against a box whose server is the head's base or later. The commands are in the verify skill,
-section 9. The box check of the whole new app before cut-over runs a preview built with
-`web_app=web`.
+A change that is only `apps/web` and `packages/ui` can be checked on the box from its author's
+checkout instead, and nothing on the box changes for it. `pnpm verify drive web --box` runs
+`vite dev` on this machine behind a local proxy. The proxy sends `/api` to the box's `APP_URL` with
+the box's own `Origin`, so the box's allowed origins stay as they are. The app signs in on its own
+`/login` as the box's checker account, and the session cookie the box sets is for `localhost`. Such
+a change needs no preview of its head: `verify box identity` passes on that drive, against a box
+whose server is the head's base or later. The commands are in the verify skill, section 9.
 
 ### From the workflow
 

@@ -28,8 +28,9 @@ A Slack workspace belongs to at most one organization on an instance.
 
 ## Connect the Slack app
 
-An organization owner connects Slack in **Settings → Slack**. Under **Connect a Slack app** the page
-shows the manifest (`manifest.json`, with **Copy**) and these steps:
+An organization owner connects Slack on the organization's **Settings → Integrations** page, with
+**Connect Slack…**. The dialog shows the manifest (`manifest.json`, with **Copy manifest**) and
+these steps:
 
 1. Create an app in Slack from the manifest: api.slack.com/apps → **Create New App** → **From a
    manifest**.
@@ -37,8 +38,8 @@ shows the manifest (`manifest.json`, with **Copy**) and these steps:
    scope. It starts with `xapp-`.
 3. Install the app to your workspace, then copy the **Bot User OAuth Token** from **OAuth &
    Permissions**. It starts with `xoxb-`.
-4. Paste the first into **app-level token** and the second into **bot token**, then choose **Check
-   and connect**.
+4. Paste the first into **App-level token** and the second into **Bot token**, then choose
+   **Connect**.
 
 Before it saves anything, Mend checks the bot token with `auth.test`, the app-level token with
 `apps.connections.open`, and that both belong to the same app. Both tokens are sealed at rest and
@@ -59,8 +60,7 @@ The manifest turns on Socket Mode and interactivity, subscribes to the `app_ment
 
 It names no request, redirect or event URL.
 
-Links Mend posts into Slack start with the web address the owner used when connecting. The connected
-app's row shows it as `links open <address>`.
+Links Mend posts into Slack start with the web address the owner used when connecting.
 
 Once connected, the owner can **Replace tokens…** or **Remove…** the app. Tokens for the same Slack
 workspace keep its links and channel defaults; tokens for another workspace delete them. Removing
@@ -70,15 +70,15 @@ from Slack stay, with their record and their origin.
 ## Update an existing Slack app
 
 An app installed before proof uploads needs the `files:write` bot scope. Mend checks the granted
-scopes when you connect and when an owner opens **Settings → Slack**.
+scopes when you connect and when an owner opens **Settings → Integrations**.
 
 1. Open your app at api.slack.com/apps. Under **OAuth & Permissions → Bot Token Scopes**, add
-   `files:write`. You can instead open **App Manifest** and paste the current manifest from
-   **Settings → Slack → Manifest** in Mend, then save it.
+   `files:write`. You can instead open **App Manifest** and paste the current manifest from **Copy
+   manifest** in the **Replace tokens…** dialog on Mend's **Settings → Integrations**, then save it.
 2. Choose **Reinstall to Workspace** and approve the updated permissions. Adding a scope takes
    effect for an existing install only after reinstallation.
-3. If Slack shows a new **Bot User OAuth Token**, paste it in **Settings → Slack → Replace
-   tokens…**, along with the app-level token, and choose **Check and connect**.
+3. If Slack shows a new **Bot User OAuth Token**, paste it in **Replace tokens…** on **Settings →
+   Integrations**, along with the app-level token, and choose **Replace tokens**.
 
 See Slack's
 [manifest update instructions](https://docs.slack.dev/app-manifests/configuring-apps-with-app-manifests/#updating-configurations-via-manifests).
@@ -97,9 +97,9 @@ the Slack user and the Slack workspace you are about to link, and shows the requ
 The link works once, for ten minutes, and only for members of the organization that connected that
 Slack workspace. If the page says your request was not queued, mention `@mend` in the thread again.
 
-Each person sees their own link under **Your Slack link** in **Settings → Slack**, with **Unlink**.
-Owners see every link in the organization under **Links** and can remove any of them. Removing a
-member from the organization deletes their link.
+Each person sees their own link on **Settings → Connected apps**, with **Unlink…**. Owners see every
+link in the organization under **Linked people** on **Settings → Integrations** and can remove any
+of them. Removing a member from the organization deletes their link.
 
 Mend ignores messages from bots, including its own. A mention from a user outside the connected
 Slack workspace, in a Slack Connect channel, gets a private reply saying that only members of the
@@ -128,7 +128,7 @@ words:
 
 An inline option wins over a plain one, and a later duplicate wins over an earlier one. What is left
 is the prompt. Slack sessions run the `claude` or `codex` harness in protocol mode. The owner sets
-the app's **Default harness** in **Settings → Slack**; it starts as `claude`.
+the app's **Default agent** on **Settings → Integrations**; it starts as `claude`.
 
 A direct message to the app works the same way without the `@mend`.
 
@@ -169,7 +169,7 @@ Mend takes the project from the first of these that answers:
    the thread to a repository, pull request, issue, commit or file; otherwise Mend uses inference
    over the thread's text to pick one of the candidate projects.
 3. The channel default, set with `@mend settings`.
-4. Your own default, set under **Your default project** in **Settings → Slack**.
+4. Your own default, set under **Your default project** on **Settings → Connected apps**.
 
 The candidates are the projects you can see. In a channel, only `shared` projects are candidates,
 because everyone in the channel reads what Mend posts. In a direct message with the app, your
@@ -247,8 +247,8 @@ artifacts, even when other agent messages are enabled there.
   current. The latest turn reply with **Push and open pull request** also gains an **Open preview**
   button when its preview answers. That reply is edited as previews change: green while answering or
   starting, kept after an idle stop, and removed after a person stops it. A session started from
-  Slack always gets a review tour when it settles with a change, even where the project's automatic
-  tour is off.
+  Slack always gets a review tour when it ends with a change, even where its owner's automatic tour
+  is off.
 
 The status message states what was observed and gives no verdict. When a channel thread's project is
 made private, Mend edits the status message to `not shown · the project is private`, which names no
@@ -262,14 +262,14 @@ thread.
 
 ### Display settings
 
-An owner sets how much reaches Slack in **Settings → Slack**:
+An owner sets how much reaches Slack on **Settings → Integrations**:
 
-| Setting                | Off                                                                   | On                                                                         |
-| ---------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
-| Agent messages         | Status, reactions and links only                                      | Also the plan, closing messages, questions and the summary. The default    |
-| Diffs                  | Changed files and line counts only. The default                       | Also the diff of each changed file, up to 3,000 characters, once           |
-| Slack Connect channels | Only status and links there, without previews. The default            | The two settings above apply there too, and the previews show              |
-| Land automatically     | A completed turn pushes nothing; the thread offers the owner a button | A request that asked for a change lands when a turn completes. The default |
+| Setting                               | Off                                                                   | On                                                                         |
+| ------------------------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Agent messages                        | Status, reactions and links only                                      | Also the plan, closing messages, questions and the summary. The default    |
+| Diffs                                 | Changed files and line counts only. The default                       | Also the diff of each changed file, up to 3,000 characters, once           |
+| Channels shared with other workspaces | Only status and links there, without previews. The default            | The two settings above apply there too, and the previews show              |
+| Land automatically                    | A completed turn pushes nothing; the thread offers the owner a button | A request that asked for a change lands when a turn completes. The default |
 
 A change to these settings reaches an open thread the next time Mend updates it, not at once.
 

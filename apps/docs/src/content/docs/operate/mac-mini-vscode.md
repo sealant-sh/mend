@@ -107,8 +107,8 @@ to log in and 6 attempts. One source may have 10 connections not yet logged in, 
 lookups a minute of keys nobody holds. A source is an IPv4 address or an IPv6 /64, as the gateway
 sees it. Rootful Docker keeps each client's own address for IPv4; rootless Docker, Docker Desktop
 and docker-proxy for IPv6 clients hide it, and every client then shares one source's limits.
-Removing a key in Settings → Workspace SSH or with `mend ssh keys remove` ends the connections
-opened with it within a minute.
+Removing a key under **Workspace SSH keys** in Settings → Devices and access keys, or with
+`mend ssh keys remove` ends the connections opened with it within a minute.
 
 The DNS name must point at the mini, and 80 and 443 must reach it from the internet (port forwarding
 on the router). A fresh install refuses `--edge`: set up on localhost, create the first account,
@@ -191,7 +191,7 @@ the code in the status bar (`Mend sign-in · <code>`) until you approve. The bro
 shows the same code. If the browser did not open (VS Code's "open the external website?" dialog can
 sit behind other windows), use **Copy link**. The extension keeps its token in VS Code's secret
 storage (encrypted in VS Code's own storage, with the key in the macOS Keychain), and lists itself
-under Settings → Devices as `VS Code on <laptop>`.
+under Settings → Devices and access keys as `VS Code on <laptop>`.
 
 If you already ran `mend login --url http://mac-mini:3105` on the laptop, the extension uses that
 sign-in and there is nothing to do. Run over SSH (or on Linux with no display), `mend login` prints

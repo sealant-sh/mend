@@ -122,8 +122,8 @@ mend invite --email sam@acme.dev --days 3
 | `--email <address>` | Only an account with this email address may accept it |
 | `--days <n>`        | Days until the link expires. Default: 7, at most 30   |
 
-Or from **Settings → Invitations** on the web: enter an optional email, pick the role, and choose
-**New link**. The web link expires after seven days.
+Or from **Settings → Members** on the web: choose **Create invitation…**, enter an optional email,
+pick the role, and choose **Create invitation link**. The web link expires after seven days.
 
 Mend sends no email. The command and the page print a link, once, for you to hand over. The link
 works once and joins the organization you are in when you create it. Whoever opens it at
@@ -161,9 +161,9 @@ An account joins another organization in one of two ways:
 
 Each sign-in acts in one organization at a time. A browser, the CLI and a paired phone each keep
 their own, so the web can be in one organization while the CLI is in another. Everything a sign-in
-shows belongs to its organization: projects, sessions, Now, settings, members, invitations, folders,
-references, Slack, Executor and the audit log. Something in another organization answers as a
-missing one does, even to a member of both. Tabs of one browser share a sign-in, so they share one
+shows belongs to its organization: projects, sessions, the inbox, settings, members, invitations,
+folders, references, Slack, Executor and the audit log. Something in another organization answers as
+a missing one does, even to a member of both. Tabs of one browser share a sign-in, so they share one
 organization.
 
 A new sign-in starts in the organization the account switched to last, or else in the one it joined
@@ -175,8 +175,8 @@ organizations.
 
 ### Switch organizations
 
-On the web, the header names the organization you are in. Choose another one from its menu. Mend
-opens Now in the organization you chose.
+On the web, the row at the top of the sidebar names the organization you are in. Choose another one
+from its menu. Mend opens the home page in the organization you chose.
 
 From the terminal:
 
@@ -219,10 +219,12 @@ needs their logins kept apart uses a separate account for each organization.
 mend org leave globex
 ```
 
-Or leave from Settings on the web. Leaving asks first; `mend org leave <name|id> --yes` answers for
-a script. Your sessions in that organization are checkpointed and stopped, and you lose access to
-its projects. Your account and your other organizations stay as they are, and a sign-in that was in
-the organization you left moves to another of yours.
+Or leave on the web, with **Leave &lt;organization&gt;…** in the organization menu, on the
+organization's **General** settings page, or on your own row in **Members**. Leaving asks first;
+`mend org leave <name|id> --yes` answers for a script. Your sessions in that organization are
+checkpointed and stopped, and you lose access to its projects. Your account and your other
+organizations stay as they are, and a sign-in that was in the organization you left moves to another
+of yours.
 
 Mend refuses to let you leave when you are the organization's last owner (make someone else an owner
 first), or when it is your only organization (ask one of its owners to remove you instead).
@@ -242,9 +244,9 @@ mend adopt --private
 mend adopt --shared
 ```
 
-After adoption, only an owner changes visibility, from the **Visibility** section at the top of the
-project's **Configuration** page. Making a shared project private drains other members' warm
-workspaces; their running sessions keep running until they end.
+After adoption, only an owner changes visibility, with **Visible to** on the project's **General**
+settings page. Making a shared project private drains other members' warm workspaces; their running
+sessions keep running until they end.
 
 A private project is never saved inside a worktree others can open. Inside a session,
 `mend repo add` adds a private project only from a session in another private project of the same
@@ -378,8 +380,10 @@ send it turns while control is shared.
 
 ## Remove a member or change a role
 
-Owners manage people in **Settings → Members**. Each row has **Make owner** or **Make member**,
-**Reset password** for members, and **Remove…**. An owner's own row offers **Leave…**.
+Owners manage people on the organization's **Settings → Members** page. Each row's menu has **Make
+&lt;name&gt; an owner** or **Make &lt;name&gt; a member**, **Create password reset link…** for
+members, and **Remove from &lt;organization&gt;…**. Your own row offers **Leave
+&lt;organization&gt;…**.
 
 Removal is per organization: removing someone from one organization leaves their other organizations
 alone. It takes effect as follows, as the confirmation states:
@@ -397,13 +401,13 @@ Every agent, shell and Service of theirs ends, including in workspaces other peo
 workspace they started is retired: the sessions of others working in it stop with
 `stopped · the workspace creator is no longer an organization member · start again in a workspace of your own`,
 and it saves through the normal Stop. Their open connections close, and their Slack link is deleted.
-A browser they still have open in the organization goes to Now in another of their organizations,
-or, when this was their only one, to the sign-in page, which says
+A browser they still have open in the organization goes to the home page in another of their
+organizations, or, when this was their only one, to the sign-in page, which says
 `This account no longer belongs to an organization on this Mend. Its sessions are being stopped; their work so far is kept.`
 
-Projects whose creator was removed appear under **Settings → Projects without a creator**. **Take
-over…** makes you the creator. A private project stays hidden from everyone until an owner takes it
-over, and the takeover is recorded in the audit log.
+Projects whose creator was removed appear under **Without a creator** on the organization's
+**Settings → Projects** page. **Take over…** makes you the creator. A private project stays hidden
+from everyone until an owner takes it over, and the takeover is recorded in the audit log.
 
 ## Audit log
 
@@ -422,17 +426,17 @@ change.
 
 ## Organization defaults
 
-The organization's starting image, under **Workspace environment · &lt;organization&gt;** in
-Settings, is copied into each new project; changing it leaves existing projects' images as they are.
-Where its new sessions run is under **Defaults · &lt;organization&gt;**. Members read the values and
-where each came from. The automation switches are not the organization's: each person sets their
-own. See [Where defaults come from](/guides/project-environment/#where-defaults-come-from).
+The organization's starting image, on the organization's **Settings → Workspace image** page, is
+copied into each new project; changing it leaves existing projects' images as they are. Where its
+new sessions run is on the organization's **Settings → Runtime** page. Members read both. The
+automation switches are not the organization's: each person sets their own. See
+[Where defaults come from](/guides/project-environment/#where-defaults-come-from).
 
 ## Recover an account without email
 
 Mend sends no email, so recovery is a link someone hands over.
 
-- An owner chooses **Reset password** on a member's row in **Settings → Members**.
+- An owner chooses **Create password reset link…** on a member's row in **Settings → Members**.
 - The operator issues a link for any account:
 
   ```sh

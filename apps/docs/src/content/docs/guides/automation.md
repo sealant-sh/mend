@@ -22,8 +22,9 @@ export MEND_ACCESS_KEY=mak_<id>_<secret>
 
 ## Create an access key
 
-To create a key in the web app, open **Settings → Access keys**. Give the key a name the audit log
-can show, such as `ci-bot`. Choose an expiry: 30 days, 90 days (the default), 1 year, or no expiry.
+To create a key in the web app, open **Settings → Devices and access keys** and find **Access
+keys**. Give the key a name the audit log can show, such as `ci-bot`. Choose an expiry: 30 days, 90
+days (the default), 1 year, or no expiry.
 
 To create a key from a CLI signed in with `mend login`, run:
 
@@ -339,7 +340,7 @@ Read more in [Land a change](/guides/land-a-change/).
 
 ## Revoke the key
 
-To revoke a key, open **Settings → Access keys** in the web app, or run:
+To revoke a key, open **Settings → Devices and access keys** in the web app, or run:
 
 ```sh
 mend access-keys revoke <id>

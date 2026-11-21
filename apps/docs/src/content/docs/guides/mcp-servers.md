@@ -136,6 +136,6 @@ Known limits:
 
 ## Your organization's Executor
 
-**Settings → MCP servers** also lists your organization's Executor as its own row, when you are in
-an organization. It gives agents services such as Linear through Executor; see
-[Services through Executor](/guides/executor/).
+Below your servers, **Settings → MCP servers** lists the **Executor services** your own Executor
+link can use, when your organization has set up Executor. Executor gives agents services such as
+Linear; see [Services through Executor](/guides/executor/).

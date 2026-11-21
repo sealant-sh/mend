@@ -434,14 +434,15 @@ session starts:
 ### Background sessions
 
 Sessions run in the background: closing the terminal, losing the network, or the CLI dying leaves
-the session running, and stops are explicit. The `Sessions` switch in Settings (overridable per
-project, `inherit · on · off`) turns this off for interactive launches, giving them foreground
-semantics: the session stops when the launching `mend` exits. `--detach` and `--foreground` override
-both for one launch. Foreground stops are best-effort on signals: a `SIGKILL` or power loss cannot
-stop anything; `mend sessions` shows what still runs and `mend stop` ends it. A terminal that closes
-(its window, `tmux kill-session`) stops a foreground session as `SIGHUP` does. The switch applies to
-interactive CLI launches (`mend codex|claude|opencode|pi`); `mend run` prints the command's recorded
-output without attaching, and browser or phone clients never stop a session by disconnecting.
+the session running, and stops are explicit. A background setting saved earlier for you or a project
+(`inherit · on · off`), from the old web app or the API, can turn this off for interactive launches;
+the web app no longer shows it. Off gives them foreground semantics: the session stops when the
+launching `mend` exits. `--detach` and `--foreground` override it for one launch. Foreground stops
+are best-effort on signals: a `SIGKILL` or power loss cannot stop anything; `mend sessions` shows
+what still runs and `mend stop` ends it. A terminal that closes (its window, `tmux kill-session`)
+stops a foreground session as `SIGHUP` does. The switch applies to interactive CLI launches
+(`mend codex|claude|opencode|pi`); `mend run` prints the command's recorded output without
+attaching, and browser or phone clients never stop a session by disconnecting.
 
 Inside a session workspace, the staged helper accepts `mend stop` too, so a workspace shell (or the
 agent itself) can end its own session, and `mend land`, which lands the session's change as its
@@ -1013,7 +1014,7 @@ and how it is saved.
 Every command acts in the organization this CLI's sign-in has; `mend org` says which. Mend sends no
 email: you share the invitation link yourself. With `--email`, only an account with that address can
 accept it. Someone already signed in joins with the account they have. Owners change roles and
-remove members in Settings on the web.
+remove members on **Settings → Members** on the web.
 
 A project selects which folders its sessions receive, at `/workspace/home/<name>`, read-only unless
 chosen otherwise, from its next session. `mend folder push` skips `.git` and `node_modules`
@@ -1063,7 +1064,8 @@ open. The report is what was observed; it does not say an instance is fit to exp
 
 `MEND_TENANCY=multi` refuses to start while any item of the multi mode gate is open. Organization
 changes the operator makes are recorded in that organization's audit log. Setting a password with a
-reset link signs the account out everywhere; owners reset their members' passwords from Settings.
+reset link signs the account out everywhere; owners reset their members' passwords from **Settings →
+Members**.
 
 ## Shell completion
 

@@ -362,9 +362,10 @@ For a remote server, use its configured URL instead. `mend login` opens the auth
 Compare its code with your terminal before approving. The CLI receives its own revocable device
 token; it does not ask for your password in the terminal.
 
-Everyone else joins by invitation. An owner runs `mend invite` (or uses Settings on the web) and
-shares the printed one-time `/join#<token>` link; whoever opens it joins the organization, with a
-new account or, when signed in, the one they have. Read [Organizations](/organizations/overview/).
+Everyone else joins by invitation. An owner runs `mend invite` (or uses **Settings → Members** on
+the web) and shares the printed one-time `/join#<token>` link; whoever opens it joins the
+organization, with a new account or, when signed in, the one they have. Read
+[Organizations](/organizations/overview/).
 
 ## Connect providers
 

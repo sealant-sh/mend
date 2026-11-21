@@ -199,8 +199,8 @@ The chart creates:
   the typed API, authentication, the WebSocket data planes, the session engine and the workers. One
   replica with the `Recreate` strategy, because the engine keeps live state in memory. It mounts the
   store claim and serves the session channel on the `<release>-session` Service, port 3106.
-- `<release>-web`: the web app (`apps/web-old`) from the `mend-web` image. It serves the interface
-  and proxies `/api`, the event stream and WebSocket upgrades to the API tier, so clients keep one
+- `<release>-web`: the web app (`apps/web`) from the `mend-web` image. It serves the interface and
+  proxies `/api`, the event stream and WebSocket upgrades to the API tier, so clients keep one
   origin on port 3105. It is stateless; scale it with `web.replicaCount`.
 - Postgres (or `DATABASE_URL` from the secret with `postgres.enabled: false`), NetworkPolicies per
   tier, a PodDisruptionBudget, and optionally an Ingress.

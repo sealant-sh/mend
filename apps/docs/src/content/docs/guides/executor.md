@@ -9,27 +9,31 @@ without receiving those credentials. Mend adds no services until someone chooses
 
 ## Choose the organization's Executor
 
-An owner opens **Settings → MCP servers**, opens the **Executor** row, and chooses either:
+An owner opens the organization's **Settings → Integrations** and, under **Executor**, sets **Who
+runs it** to either:
 
-- **Mend runs Executor for this organization.** Sealant starts a private Executor with a 1.5 GiB
-  memory limit and retained storage. Mend shows the runtime and observed state before starting.
-  Docker is supported; Mend refuses this choice where Sealant cannot run it, including Kubernetes
-  until its runtime has been verified. People use Mend's address throughout setup and linking.
-- **Use an Executor this organization already has.** Enter its address and link Mend's member.
-  People add services and connect accounts in that Executor. Mend lists the tools each link can use
-  and provides a link to the organization's Executor.
+- **Mend runs it.** Sealant starts a private Executor with a 1.5 GiB memory limit and retained
+  storage. Mend shows the runtime and observed state before starting. Docker is supported; Mend
+  refuses this choice where Sealant cannot run it, including Kubernetes until its runtime has been
+  verified. People use Mend's address throughout setup and linking.
+- **Use your own**, an Executor this organization already has. Enter **Your Executor's address** and
+  link Mend's member under **Shared account**. People add services and connect accounts in that
+  Executor. Mend lists the tools each link can use and provides a link to the organization's
+  Executor.
 
 Mend's member supplies calls for people without a personal Executor link. It can use only services
-and accounts shared with everyone. Owners manage it from the organization's Executor settings.
+and accounts shared with everyone. Owners manage it under **Shared account** on **Settings →
+Integrations**.
 
-For a Mend-run Executor, **Stop** keeps its service logins and storage. **Upgrade** stops it, saves
-a backup of its volume, and starts the image pinned by the Mend release. **Remove** explicitly
-deletes the organization's service logins, retained volume, backups and Mend's stored grants. The
-confirmation describes that deletion. A later start creates a new Executor.
+For a Mend-run Executor, **Stop Executor** keeps its service logins and storage. **Upgrade to
+&lt;version&gt;** stops it, saves a backup of its volume, and starts the image pinned by the Mend
+release. **Remove Executor** explicitly deletes the organization's service logins, retained volume,
+backups and Mend's stored grants. The confirmation describes that deletion. A later start creates a
+new Executor.
 
 ## Link your account
 
-Open **Settings → MCP servers**, open the **Executor** row and choose **Link**. For a Mend-run
+Open **Settings → Connected apps** and choose **Link** on the **Executor** row. For a Mend-run
 Executor this is one click. Mend signs you in privately and obtains the grants needed to call tools
 and manage your service accounts. No Executor sign-in page reaches your browser. With the
 organization's own Executor, complete its consent page and return to Mend.
@@ -40,13 +44,13 @@ delete those logins from Executor.
 
 ## Add a service
 
-With a Mend-run Executor, owners add a name and **MCP address** under **Shared services** in the
-organization's Executor settings. **Add service for everyone** imports the service as Mend's member
-and shares it with everyone. If import succeeds but sharing does not, reload and choose **Share with
+With a Mend-run Executor, owners choose **Add service…** under **Shared services** on **Settings →
+Integrations** and give a name and **MCP address**. Mend imports the service as Mend's member and
+shares it with everyone. If import succeeds but sharing does not, reload and choose **Share with
 everyone** on that service.
 
-To add a service only you can see, use the service form under your own Executor link in Workspace
-settings. The service stays private to your link.
+To add a service only you can see, choose **Add service…** under **Executor services** on **Settings
+→ MCP servers**. The service stays private to your link.
 
 An MCP address must allow anonymous discovery or advertise OAuth sign-in. It cannot contain a login,
 query parameters or fragment. An API-key service needs a service definition already in Executor; its

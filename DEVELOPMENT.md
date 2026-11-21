@@ -17,11 +17,6 @@ pnpm dev
 `pnpm dev` starts Postgres (port 5434) and Garage (3900) from `compose.dev.yaml`, the web app on
 **3105** and the API on **3101**, then runs migrations. Open `http://localhost:3105`.
 
-The new web app (`apps/web`), rebuilt one route at a time, runs beside it on **3115** with
-`pnpm dev:web`, against the same API. Add `http://localhost:3115` to `MEND_ALLOWED_ORIGINS` in
-`.env` and restart `pnpm dev`, or the API refuses its calls. Sign in on either app: the session
-holds on both.
-
 ## Environment
 
 `.env.example` is a working set for a Linux Docker host. `pnpm dev` loads `.env`; a variable set in
@@ -55,8 +50,8 @@ host-side dev server refuses it; the comment in `deploy/dev/executor.compose.yam
   needs Docker.
 - The `scripts/*.test.mjs` suites run in CI's static job (`.github/workflows/ci.yml`). Run the one
   for any script you change with `node --test`.
-- With `pnpm dev` running, `node --test apps/web-old/scripts/dev-auth.integration.mjs` checks that
-  auth requests reach the auth server rather than the app.
+- With `pnpm dev` running, `node --test apps/web/scripts/dev-auth.integration.mjs` checks that auth
+  requests reach the auth server rather than the app.
 
 The default suite runs no performance benchmark. Three measurements have their own commands. Run
 each on an otherwise idle machine, and keep the JSON report, the workload and the machine with the

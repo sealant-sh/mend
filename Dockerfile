@@ -19,10 +19,10 @@ FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
 # keeps memory down: Node keeps every loaded module's source resident and evaluates everything a
 # barrel re-exports, so an unbundled server pays for code it never calls.
 FROM node:26-bookworm-slim AS mend-build
-# The web app the bundle serves: `web-old` (apps/web-old), today's app, which every release ships;
-# `web` (apps/web), the new app (ADR 0027), only when a preview build asks for it
-# (.github/workflows/preview.yml). scripts/bundle-supervisor.mjs starts the front it names.
-ARG MEND_WEB_APP=web-old
+# The web app the bundle serves: `web` (apps/web), which every release ships since the cut-over
+# (ADR 0027); `web-old` (apps/web-old) only while it is still in the tree, so reverting the switch
+# alone puts the image back on it. scripts/bundle-supervisor.mjs starts the front it names.
+ARG MEND_WEB_APP=web
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN npm install --global corepack && corepack enable
 WORKDIR /app
@@ -37,7 +37,7 @@ RUN node scripts/mend-migrations.mjs > /app/mend-migrations.txt
 FROM node:26-bookworm-slim AS runtime
 
 ARG MEND_VERSION=dev
-ARG MEND_WEB_APP=web-old
+ARG MEND_WEB_APP=web
 # A preview build's sealantd image (by digest), baked into workspace images by the bundled worker;
 # scripts/bundle-supervisor.mjs hands it over. Empty in a release build, which changes nothing.
 ARG MEND_PREVIEW_SEALANTD_IMAGE=""
