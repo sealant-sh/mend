@@ -243,6 +243,16 @@ export default async ({ page, web, capture, note }) => {
 
   // From a worktree's menu: the same instant start, and nothing red while the session gets ready.
   const fixture = (await trpc("projects.list")).find((each) => each.name === "verify-fixture");
+  // The CLI batch makes this worktree on a stack; a server without it (a check VM) gets it here.
+  await page.evaluate(async (projectId) => {
+    const client = window["__TSR_ROUTER__"].options.context.trpcClient;
+    const listed = JSON.stringify(await client.worktrees.list.query({ projectId }));
+    if (!listed.includes('"composer-existing"'))
+      await client.worktrees.create.mutate({
+        projectId,
+        worktree: { name: "composer-existing", base: null },
+      });
+  }, fixture.id);
   await open(`/projects/${fixture.id}/worktrees`);
   const actions = page
     .getByRole("button", { name: "Actions for composer-existing" })
