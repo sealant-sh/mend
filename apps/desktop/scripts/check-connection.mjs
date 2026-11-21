@@ -113,7 +113,11 @@ try {
   console.log(`PASS connected to ${serverUrl} with origin-scoped window.mendDesktop only`);
 
   // 4. Switch server returns to Connect with Recent servers + Back button, and Back returns.
-  await window.evaluate(() => window.mendDesktop.switchServer());
+  // The main process navigates this page away before it answers `switchServer`, so the page
+  // only starts the switch; the Connect heading below is what says it happened.
+  await window.evaluate(() => {
+    void window.mendDesktop.switchServer();
+  });
   await window
     .getByRole("heading", { name: "Connect to a Mend server" })
     .waitFor({ timeout: 15_000 });
