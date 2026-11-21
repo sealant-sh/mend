@@ -53,21 +53,23 @@ import { DiffFile } from "./diff-file.tsx";
 
 /**
  * Sheet's syntax theme for the diff renderer: every colour is a `--diffs-*` variable the
- * `.change-diff` rule in styles.css sets from the kit's tokens, so one theme serves light and
- * dark. The values here only cover a variable that fails to resolve. Like the canvas's Diff, code
- * is one ink; the tints and the signs carry the change.
+ * `.change-diff` rule in styles.css sets from the kit's tokens (`syntax-keyword`, `syntax-string`,
+ * `syntax-constant`, `syntax-link`), so one theme serves light and dark. The values here only cover
+ * a variable that fails to resolve. The tints and the signs carry the change; the hues only help
+ * read the code.
  */
 registerCustomCSSVariableTheme("mend-sheet", {
   foreground: "var(--color-foreground)",
   background: "transparent",
-  "token-comment": "var(--color-faint)",
-  "token-keyword": "var(--color-foreground)",
-  "token-string": "var(--color-foreground)",
-  "token-string-expression": "var(--color-foreground)",
-  "token-constant": "var(--color-foreground)",
+  "token-comment": "var(--color-muted-foreground)",
+  "token-keyword": "var(--color-syntax-keyword)",
+  "token-string": "var(--color-syntax-string)",
+  "token-string-expression": "var(--color-syntax-string)",
+  "token-constant": "var(--color-syntax-constant)",
+  "token-parameter": "var(--color-foreground)",
   "token-function": "var(--color-foreground)",
-  "token-punctuation": "var(--color-foreground)",
-  "token-link": "var(--color-foreground)",
+  "token-punctuation": "var(--color-muted-foreground)",
+  "token-link": "var(--color-syntax-link)",
 });
 
 const THEME = { light: "mend-sheet", dark: "mend-sheet" } as const;

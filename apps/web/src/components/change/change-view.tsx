@@ -119,7 +119,10 @@ const nothingYetWords = (harness: string, sessions: number): string => {
     : `${agent} hasn't changed any files in this session. The change shows up here as soon as it edits one.`;
 };
 
-/** Nothing to review yet: no file differs from the base. */
+/**
+ * Nothing to review yet: no file differs from the base. It fills the space it is given, so it sits
+ * in the middle of the view, or under the toolbar when the review has one.
+ */
 function NothingYet({
   detail,
   sessions,
@@ -129,7 +132,7 @@ function NothingYet({
 }) {
   const base = baseWords(detail);
   return (
-    <Empty className="m-auto">
+    <Empty className="flex-1">
       <EmptyHeader className="max-w-md">
         <EmptyMedia>
           <FileDiffIcon aria-hidden className="size-6 text-muted-foreground" />
@@ -147,6 +150,51 @@ function NothingYet({
           </>
         )}
       </dl>
+    </Empty>
+  );
+}
+
+/** The words for a range the person picked that holds no change, by the kind of range it is. */
+const emptyRangeWords = (
+  picked: PickedRange,
+  from: number,
+  to: number,
+  base: string,
+): { readonly title: string; readonly detail: string } => {
+  if (picked.kind === "up-to")
+    return {
+      title: `Nothing changed up to checkpoint ${to}`,
+      detail: `Checkpoint ${to} holds the same files as ${base}.`,
+    };
+  return {
+    title:
+      picked.kind === "since-last-review"
+        ? "Nothing changed since your last review"
+        : "Nothing changed between these checkpoints",
+    detail: `Checkpoint ${from} and checkpoint ${to} hold the same files.`,
+  };
+};
+
+/** A range the person picked with no change in it, in the diffs' place, and the way back. */
+function EmptyRange({
+  words,
+  onWhole,
+}: {
+  readonly words: { readonly title: string; readonly detail: string };
+  readonly onWhole: () => void;
+}) {
+  return (
+    <Empty className="flex-1">
+      <EmptyHeader className="max-w-md">
+        <EmptyMedia>
+          <FileDiffIcon aria-hidden className="size-6 text-muted-foreground" />
+        </EmptyMedia>
+        <EmptyTitle>{words.title}</EmptyTitle>
+        <EmptyDescription>{words.detail}</EmptyDescription>
+      </EmptyHeader>
+      <Button variant="outline" className="max-lg:h-11" onClick={onWhole}>
+        Show the whole change
+      </Button>
     </Empty>
   );
 }
@@ -386,41 +434,32 @@ function ReviewBody({
       onOpen={() => void freshChain()}
     />
   );
-  if (ordered.length === 0 && fromBase)
-    return (
-      <>
-        <NothingYet detail={detail} sessions={sessions.length} />
-        {landing.dialog}
-      </>
-    );
   if (ordered.length === 0)
-    // A narrower range with nothing in it: say so, and keep the picker to move on.
+    // Nothing in the range: the toolbar and its picker stay, so any range can be picked from
+    // here, and the empty state takes the diffs' place. The whole change with nothing in it is
+    // the agent's not having changed a file; a range the person picked is said as that range.
     return (
       <>
-        <div className="flex h-[50px] shrink-0 items-center border-b px-4">{picker}</div>
-        <Empty className="m-auto">
-          <EmptyHeader className="max-w-md">
-            <EmptyMedia>
-              <FileDiffIcon aria-hidden className="size-6 text-muted-foreground" />
-            </EmptyMedia>
-            <EmptyTitle>
-              {rangeKind === "since-last-review"
-                ? "Nothing changed since your last review"
-                : "Nothing changed between these checkpoints"}
-            </EmptyTitle>
-            <EmptyDescription>
-              Checkpoint {review.checkpointA.ordinal} and checkpoint {review.checkpointB.ordinal}{" "}
-              hold the same files.
-            </EmptyDescription>
-          </EmptyHeader>
-          <Button
-            variant="outline"
-            className="max-lg:h-11"
-            onClick={() => setReviewRange(changeId, null)}
-          >
-            Show the whole change
-          </Button>
-        </Empty>
+        <ChangeToolbar
+          range={label.range}
+          detail={label.detail}
+          picker={picker}
+          layout={layout}
+          onLayoutChange={diffLayout.set}
+        />
+        {range === null && fromBase ? (
+          <NothingYet detail={detail} sessions={sessions.length} />
+        ) : (
+          <EmptyRange
+            words={emptyRangeWords(
+              picked,
+              review.checkpointA.ordinal,
+              review.checkpointB.ordinal,
+              baseName,
+            )}
+            onWhole={() => setReviewRange(changeId, null)}
+          />
+        )}
         {landing.dialog}
       </>
     );

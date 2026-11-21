@@ -1304,6 +1304,28 @@ lane changed.
 - **Areas:** `apps/web/src/components/change/range-picker.tsx`, `apps/web/src/lib/review-range.ts`,
   `apps/web/src/lib/review-open.ts`
 
+### review-change.new-web-review-reads
+
+- **Map:** review-change.md `review-diff` (the diff's code in syntax colours),
+  `review-comment-state` (Second look: an "Up to a checkpoint" range with nothing in it)
+- **Needs:** either; no turn; web and CLI; `<p>`
+- **Do:** Run the CLI batch `new-web-change-sessions.json`, then drive the recipe
+  `new-web-review-reads`. On `change-small` it reads the colour each token of
+  `src/payments/retry.ts` is drawn in, in light and dark, then picks "Up to a checkpoint" with
+  checkpoint 1, which holds the base's files, and goes back to the whole change through the range
+  picker.
+- **See:** each step's note in the recipe's `steps.log`: `import`, `"./charge"` and `lastError` in
+  three different computed colours, light and dark (the recipe fails when any two match); "Nothing
+  changed up to checkpoint 1" under the toolbar with the range picker still there (it fails when the
+  picker is gone); the picker back at the whole change with the diffs drawn.
+- **Mode:** `scripted` (.agents/skills/verify/recipes/new-web-review-reads.mjs)
+- **Box-only:** no
+- **Box:** after cut-over
+- **Areas:** `apps/web/src/components/change/change-diffs.tsx`,
+  `apps/web/src/components/change/change-view.tsx`,
+  `apps/web/src/components/change/range-picker.tsx`, `apps/web/src/styles.css`,
+  `packages/ui/src/styles/globals.css`
+
 ### review-change.web-comments
 
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,

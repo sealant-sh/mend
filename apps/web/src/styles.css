@@ -21,7 +21,8 @@ html[data-text-size="large"] {
 /*
  * The Change view's diffs (@pierre/diffs draws them in a shadow root; custom properties reach
  * in): the canvas's Diff, from the kit's tokens. Added and removed lines take the diff tints, a
- * hunk's header the band; code is one ink, the line numbers faint.
+ * hunk's header the band, the line numbers faint. Code takes the kit's syntax colours: keywords,
+ * strings, constants and URLs each their own muted hue, comments muted, the rest the text's ink.
  */
 .change-diff {
   --diffs-font-family: var(--font-mono);
@@ -52,14 +53,15 @@ html[data-text-size="large"] {
   --diffs-annotation-bg: transparent;
   --diffs-foreground: color-mix(in oklab, var(--color-foreground) 82%, var(--color-background));
   --diffs-background: transparent;
-  --diffs-token-comment: var(--color-faint);
-  --diffs-token-keyword: var(--diffs-foreground);
-  --diffs-token-string: var(--diffs-foreground);
-  --diffs-token-string-expression: var(--diffs-foreground);
-  --diffs-token-constant: var(--diffs-foreground);
-  --diffs-token-function: var(--diffs-foreground);
-  --diffs-token-punctuation: var(--diffs-foreground);
-  --diffs-token-link: var(--diffs-foreground);
+  --diffs-token-comment: var(--color-muted-foreground);
+  --diffs-token-keyword: var(--color-syntax-keyword);
+  --diffs-token-string: var(--color-syntax-string);
+  --diffs-token-string-expression: var(--color-syntax-string);
+  --diffs-token-constant: var(--color-syntax-constant);
+  --diffs-token-parameter: var(--diffs-foreground);
+  --diffs-token-function: var(--color-foreground);
+  --diffs-token-punctuation: var(--color-muted-foreground);
+  --diffs-token-link: var(--color-syntax-link);
 }
 
 /*
