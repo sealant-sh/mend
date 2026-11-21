@@ -46,9 +46,10 @@ const config = defineConfig({
     },
   },
   server: {
-    // Steered from any device on the operator's network, so dev binds every interface.
+    // Steered from any device on the operator's network, so dev binds every interface. A fixed
+    // port: `pnpm dev` hands its environment, PORT included, to the API server too.
     host: true,
-    port: Number(process.env["PORT"] ?? "3105"),
+    port: 3105,
     allowedHosts,
     proxy: {
       // Vite owns WebSocket upgrades; nitro's earlier middleware handles HTTP through devProxy.
