@@ -67,7 +67,16 @@
 # expected.
 # dc0ddbcc91 changes no line of protocol-host.ts after b9164303ec. --quick run at dc0ddbcc91: every row as
 # expected.
-sync dc0ddbcc9195972e5b0221e61f9ff4f9adc958d6
+# 7f9eaf6aa is SLNT-1263 (a turn's checkpoint names its turn). protocol-host.ts: the
+# turn.completed case sets entry.sealing while settleCompletion runs (the turn's end, its
+# checkpoint included, through onTurnCompleted) and clears it after; dispatchNext, after
+# entry.gate, waits for entry.sealing for at most 10 s before dispatchOne. The wait writes nothing
+# and always ends, so it only delays DClaim, as entry.gate does, and adds no schedule the model
+# lacks. agent-conversation.ts gained turnSentAfter, one read of whether a later turn of the
+# session has a started_at, and nothing else. No action changes. Full run at 7f9eaf6aa: every
+# row as expected. 42cd427e5706 is the same commit rebased on main at f918758ec, whose new commit
+# changed no covered file.
+sync 42cd427e570671042f8d1193b22183e3ed5d06b5
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
