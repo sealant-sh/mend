@@ -1074,7 +1074,12 @@ export const createTenancyApi = async (
       recording(SecretCipher, "cipher", options.implement?.cipher ?? {}, calls),
     ),
     Layer.mergeAll(
-      recording(Store, "store", options.implement?.store ?? {}, calls),
+      recording(
+        Store,
+        "store",
+        { listSubtreeBlobs: () => Effect.succeed([]), ...options.implement?.store },
+        calls,
+      ),
       recording(Screens, "screens", {}, calls),
       recording(ScreenRtc, "screenRtc", {}, calls),
       recording(ScreensRepo, "screensRepo", options.implement?.screensRepo ?? {}, calls),

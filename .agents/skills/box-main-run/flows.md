@@ -1809,6 +1809,22 @@ lane changed.
   `apps/web/src/routes/_inbox.projects.$projectId.skills.$skillId.tsx`,
   `apps/web/src/lib/project-skills.ts`, `apps/web/src/lib/use-project-skill-owner.ts`
 
+### skills.adopt-project-skills
+
+- **Map:** skills.md `skills-list` (project skills imported automatically at adoption from
+  `.agents/skills`)
+- **Needs:** no session; no turn; CLI; `<git>` (git service on the box)
+- **Do:** On the box, create a throwaway bare repository in `<git dir>` carrying
+  `.agents/skills/adopted-skill/SKILL.md` (with a `description:` line in frontmatter), adopt it as a
+  project with `M adopt <git>/<repo>.git --name <name>`, read `M skills --project <name>` and
+  `M skills`, then remove the project and throwaway bare repository.
+- **See:** `M skills --project <name>` lists `adopted-skill` with its frontmatter description;
+  `M skills` (the personal library) does not list `adopted-skill`.
+- **Mode:** `agent`
+- **Box-only:** no
+- **Areas:** `apps/api/src/adoption-skills.ts`, `apps/api/src/routes/workbench.ts`,
+  `packages/store/src/store.ts`
+
 ### search.new-web-search
 
 - **Map:** none yet: search from anywhere is new in the web app (SLNT-1142), and the map has no

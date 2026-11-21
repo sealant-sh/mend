@@ -21,13 +21,17 @@ import {
   SessionProcessesRepo,
   SessionRepositoriesRepo,
   SessionsRepo,
+  SkillInvalidError,
+  SkillsRepo,
+  type SkillBundleInput,
+  type SkillOwner,
   UserGitAccessRepo,
   WorktreeChangesRepo,
   WorktreesRepo,
   RemovalFencesRepo,
   SettingsRepo,
 } from "@mend/db";
-import { defaultWorkspaceImage } from "@mend/domain";
+import { defaultWorkspaceImage, newOrganizationSettings } from "@mend/domain";
 import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { UNREAD } from "@mend/domain/runtime-support-fixtures";
 import {
@@ -196,6 +200,21 @@ const projectsLayer = (world: TestWorld): Layer.Layer<ProjectsRepo> =>
         ) ?? null,
       ),
     listAll: () => Effect.succeed(world.projects),
+    create: (input) =>
+      Effect.succeed(
+        new Project({
+          ...project(input.id, input.name),
+          organizationId: input.organizationId,
+          visibility: input.visibility,
+          createdByUserId: input.createdByUserId,
+          originUrl: input.originUrl,
+          storePath: input.storePath,
+          defaultBranch: input.defaultBranch,
+          adoptedSha: input.adoptedSha,
+          gitAuthMode: input.gitAuthMode,
+          workspaceImage: input.workspaceImage,
+        }),
+      ),
     setInstallEnabled: (id, installEnabled) => {
       const found = world.projects.find((candidate) => candidate.id === id);
       return found === undefined
@@ -305,6 +324,7 @@ type ProjectRouteServices =
   | UserGitAccessRepo
   | MendKeys
   | SessionsRepo
+  | SkillsRepo
   | WorktreeChangesRepo
   | SessionProcessesRepo
   | WorktreesRepo
@@ -349,7 +369,10 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(ProjectCreation, {}),
   AdoptionsLive,
   Layer.mock(AuditEventsRepo, {}),
-  Layer.mock(OrganizationSettingsRepo, { sessionRuntime: () => Effect.succeed(null) }),
+  Layer.mock(OrganizationSettingsRepo, {
+    sessionRuntime: () => Effect.succeed(null),
+    get: () => Effect.succeed(newOrganizationSettings(defaultWorkspaceImage)),
+  }),
   Layer.mock(RemovalFencesRepo, {}),
   Layer.mock(Removal, {}),
   Layer.succeed(
@@ -362,7 +385,8 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   ),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
   Layer.mock(Store, {}),
-  Layer.mock(UserGitAccessRepo, {}),
+  Layer.mock(SkillsRepo, {}),
+  Layer.mock(UserGitAccessRepo, { mode: () => Effect.succeed("mend-key") }),
   Layer.mock(MendKeys, {}),
   Layer.mock(ServiceForwardsRepo, {}),
   Layer.mock(SessionEngine, {
@@ -435,7 +459,9 @@ const requestRoute = async (
   path: string,
   authorization: string | null = AUTHORIZATION,
   init: RequestInit = {},
-  overrides: Layer.Layer<JobRunner | Store> = Layer.mergeAll(
+  overrides:
+    | Layer.Layer<JobRunner | Store>
+    | Layer.Layer<JobRunner | Store | SkillsRepo> = Layer.mergeAll(
     Layer.mock(JobRunner, {}),
     Layer.mock(Store, {}),
   ),
@@ -813,6 +839,102 @@ describe("GET /projects/:id response", () => {
     });
     expect(AMBIENT_REMOVED_GUIDANCE).toContain("--auth mend-key");
     expect(AMBIENT_REMOVED_GUIDANCE).toContain("--auth bridge");
+  });
+
+  it("imports .agents/skills into the adopted project's library only, and keeps adoption when sync fails", async () => {
+    const adoptedSha = Sha.make("1111111111111111111111111111111111111111");
+    const skillMd = "---\nname: linear\ndescription: Linear ticket workflow\n---\nUse SLNT.\n";
+    const encoder = new TextEncoder();
+    const storeOverride = Layer.mock(Store, {
+      adopt: () =>
+        Effect.succeed({
+          storePath: "/store/agent-home/repo.git",
+          defaultBranch: "main",
+          headSha: adoptedSha,
+        }),
+      listSubtreeBlobs: (_dir, _rev, prefix) =>
+        Effect.succeed(
+          prefix === ".agents/skills"
+            ? [{ path: ".agents/skills/linear/SKILL.md", size: skillMd.length }]
+            : [],
+        ),
+      readBlob: (_dir, _rev, relative) =>
+        Effect.succeed(
+          relative === ".agents/skills/linear/SKILL.md"
+            ? {
+                bytes: encoder.encode(skillMd),
+                size: skillMd.length,
+                truncated: false,
+                binary: false,
+              }
+            : null,
+        ),
+    });
+
+    const synced: Array<{
+      readonly owner: SkillOwner;
+      readonly bundles: ReadonlyArray<SkillBundleInput>;
+      readonly prune: boolean;
+    }> = [];
+    const ok = await requestRoute(
+      makeWorld([]),
+      "/api/projects",
+      AUTHORIZATION,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: "agent-home",
+          source: "https://github.com/sealant-sh/agent-home.git",
+        }),
+      },
+      Layer.mergeAll(
+        Layer.mock(JobRunner, {}),
+        storeOverride,
+        Layer.mock(SkillsRepo, {
+          sync: (owner, bundles, options) =>
+            Effect.sync(() => {
+              synced.push({ owner, bundles, prune: options.prune });
+              return { created: ["linear"], updated: [], unchanged: [], removed: [] };
+            }),
+        }),
+      ),
+    );
+    expect(ok.response.status).toBe(200);
+    const createdId = Schema.decodeUnknownSync(Schema.Struct({ id: ProjectId }))(ok.body).id;
+    expect(synced).toEqual([
+      {
+        owner: { scope: "project", projectId: createdId },
+        prune: false,
+        bundles: [
+          {
+            name: "linear",
+            description: "Linear ticket workflow",
+            files: [{ path: "SKILL.md", contents: skillMd }],
+          },
+        ],
+      },
+    ]);
+
+    const degraded = await requestRoute(
+      makeWorld([]),
+      "/api/projects",
+      AUTHORIZATION,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          name: "agent-home-2",
+          source: "https://github.com/sealant-sh/agent-home.git",
+        }),
+      },
+      Layer.mergeAll(
+        Layer.mock(JobRunner, {}),
+        storeOverride,
+        Layer.mock(SkillsRepo, {
+          sync: () => Effect.fail(new SkillInvalidError({ message: "db hiccup" })),
+        }),
+      ),
+    );
+    expect(degraded.response.status).toBe(200);
   });
 
   it("counts the Services that keep a session's workspace up", async () => {

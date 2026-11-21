@@ -59,11 +59,13 @@ List a library with `mend skills`, or `mend skills --project [p]` for a project'
 and the `SKILL.md` contents. Opening a skill lets you edit its description and files, add a file by
 its path in the bundle (for example `references/notes.md`), and remove the skill.
 
-A project's skills live on its **Skills** tab, with the same controls as your library. Every new
-session in the project gets them. Your own skills always follow you into the project's sessions; a
-project skill with the same name as one of yours is used instead of yours there, and the tab says
-so. The web app has no switch to keep your library out of a project. A project switched off earlier,
-from the old web app or the API, still gives its sessions only the project's skills.
+A project's skills live on its **Skills** tab, with the same controls as your library. When you
+adopt a repository that carries `.agents/skills/<name>/SKILL.md`, Mend imports those bundles into
+the adopted project's library automatically (your personal library is untouched). Every new session
+in the project gets them. Your own skills always follow you into the project's sessions; a project
+skill with the same name as one of yours is used instead of yours there, and the tab says so. The
+web app has no switch to keep your library out of a project. A project switched off earlier, from
+the old web app or the API, still gives its sessions only the project's skills.
 
 Anyone who can see a project can read its skills. Changing them takes an owner or the member who
 created the project.
