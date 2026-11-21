@@ -176,6 +176,9 @@ export default async ({ page, web, capture, note }) => {
       turns: [t],
       items: [
         item(t.id, "assistant-message", reply.live ? "in-progress" : "completed", start, end, {
+          // One reply throughout, as a streamed one is: the same item, its text growing.
+          id: "fixture-reply",
+          seq: 1,
           text: reply.text,
         }),
       ],
@@ -254,7 +257,7 @@ export default async ({ page, web, capture, note }) => {
   );
   note(`conversation-sh: ${sh.length} coloured pieces; the commit message ${string[2]}`);
   note(
-    "conversation-plain: the no-such-language block and the block with no language have no colours",
+    "conversation-plain: the no-such-language block, the block with no language and the inline `withRetry` have no colours",
   );
   await tsBlock.scrollIntoViewIfNeeded();
   await settled();
