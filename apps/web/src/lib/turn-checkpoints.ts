@@ -20,7 +20,15 @@ export interface ChainCheckpoint {
   readonly sessionId: string | null;
   readonly sha: string;
   readonly createdAt: Date | string;
+  /** How Mend came to take it; older readers may leave it out. */
+  readonly trigger?: string;
 }
+
+/**
+ * The checkpoints going back to a checkpoint takes (SLNT-1259): the files saved first, and the
+ * files once back. They are the restore's, which has a line of its own, never a turn's.
+ */
+const RESTORE_TRIGGERS: ReadonlySet<string> = new Set(["restore-save", "restore"]);
 
 /** A turn as its checkpoint is found: its place, whether it ended, and when it began. */
 export interface TurnTimes extends AgentTurnDto {
@@ -62,6 +70,7 @@ export const turnCheckpoints = (
       (checkpoint) =>
         checkpoint.ordinal > 0 &&
         checkpoint.sessionId === sessionId &&
+        !RESTORE_TRIGGERS.has(checkpoint.trigger ?? "") &&
         millis(checkpoint.createdAt) >= start &&
         millis(checkpoint.createdAt) < end,
     );

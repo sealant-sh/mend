@@ -21,13 +21,19 @@ const turn = (id: string, ordinal: number, start: number, status = "completed"):
   startedAt: at(start),
 });
 
-const checkpoint = (ordinal: number, minute: number, sessionId: string | null = "s-1") =>
+const checkpoint = (
+  ordinal: number,
+  minute: number,
+  sessionId: string | null = "s-1",
+  trigger = "turn-boundary",
+) =>
   ({
     id: `c-${ordinal}`,
     ordinal,
     sessionId,
     sha: `${ordinal}abcdef0123456`,
     createdAt: new Date(at(minute)),
+    trigger,
   }) satisfies ChainCheckpoint;
 
 const slices = (turns: ReadonlyArray<TurnTimes>, chain: ReadonlyArray<ChainCheckpoint>) =>
@@ -56,6 +62,18 @@ describe("a turn's checkpoint", () => {
       { turn: "t-1", from: 0, to: 2 },
       { turn: "t-2", from: 3, to: 4 },
     ]);
+  });
+
+  it("is never one going back to a checkpoint took: those are the restore's own line", () => {
+    // The turn read a file; going back ran after it, before the next message.
+    const chain = [
+      checkpoint(0, 0, null),
+      checkpoint(1, 2),
+      checkpoint(2, 4, "s-1", "restore-save"),
+      checkpoint(3, 4, "s-1", "restore"),
+    ];
+    expect(slices([turn("t-1", 1, 1)], chain)).toEqual([{ turn: "t-1", from: 0, to: 1 }]);
+    expect(slices([turn("t-1", 1, 3)], chain)).toEqual([]);
   });
 
   it("isn't drawn while the turn runs", () => {
