@@ -16,13 +16,16 @@ const startToggleProxy = (targetUrl) => {
   const target = new URL(targetUrl);
   const createServer = () =>
     http.createServer((request, response) => {
+      const headers = { ...request.headers, host: target.host };
+      if (headers.origin) headers.origin = target.origin;
+      if (headers.referer) headers.referer = `${target.origin}/`;
       const upstream = http.request(
         {
           host: target.hostname,
           port: target.port || (target.protocol === "https:" ? 443 : 80),
           method: request.method,
           path: request.url,
-          headers: { ...request.headers, host: target.host },
+          headers,
         },
         (upstreamResponse) => {
           response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
@@ -106,21 +109,25 @@ export default async ({ page, web, capture, note, account }) => {
   await account.typePassword(page.getByLabel("Password", { exact: true }));
   await page.getByRole("button", { name: "Sign in" }).click();
   await page.waitForURL((url) => url.pathname !== "/login", { timeout: 20_000 });
-  // Clear the welcome gate if this is the first sign-in on a fresh stack.
-  if (new URL(page.url()).pathname === "/welcome") {
-    const onward = page.getByRole("button", { name: "Continue to Mend" });
-    if (
-      await onward.waitFor({ timeout: 5_000 }).then(
-        () => true,
-        () => false,
-      )
-    ) {
-      await onward.click();
-      await page.waitForURL((url) => url.pathname !== "/welcome", { timeout: 15_000 });
-    }
+  // Mark first-run setup as ended for the stack's account (same cookie drive-web.mjs sets) so `/`
+  // opens Now instead of redirecting to `/welcome/command-line`.
+  const session = await page.request
+    .get(new URL("/api/auth/get-session", web).href)
+    .then((response) => (response.ok() ? response.json() : null))
+    .catch(() => null);
+  const userId = session?.user?.id;
+  if (typeof userId === "string") {
+    await page.context().addCookies([
+      {
+        name: "mend-setup",
+        value: encodeURIComponent(JSON.stringify({ skippedCommandLine: [], ended: [userId] })),
+        url: web,
+      },
+    ]);
   }
+  await page.goto(`${web}/`);
 
-  await page.getByRole("navigation").first().waitFor({ timeout: 20_000 });
+  await page.locator("[data-slot=sidebar]").first().waitFor({ timeout: 20_000 });
   const bridge = await page.evaluate(() => ({
     hasDesktop: typeof window.mendDesktop === "object" && window.mendDesktop !== null,
     hasShell: typeof window.mendShell !== "undefined",
@@ -134,14 +141,18 @@ export default async ({ page, web, capture, note, account }) => {
   note(
     `signed in on ${web} (${new URL(page.url()).pathname}) · window.mendDesktop present (${bridge.platform}), window.mendShell withheld`,
   );
+  await page.waitForTimeout(400);
   await capture("signed-in-light");
 
-  // 4. Switch server returns to Connect with Recent servers + Back; Back returns still signed in.
-  await page.evaluate(() => window.mendDesktop.switchServer());
+  // 4. Account menu shows Switch server… and choosing it opens Connect with Recent servers + Back;
+  //    Back returns still signed in.
+  await page.locator("[data-slot=sidebar-footer] button").filter({ visible: true }).first().click();
+  await page.getByRole("menuitem", { name: "Switch server…" }).waitFor({ timeout: 10_000 });
+  await page.getByRole("menuitem", { name: "Switch server…" }).click();
   await page.getByRole("heading", { name: "Connect to a Mend server" }).waitFor();
   await page.getByRole("heading", { name: "Recent servers" }).waitFor();
   await page.getByRole("button", { name: "Back" }).waitFor();
-  note("Switch server shows Connect with Recent servers listing the stack and Back");
+  note("Account menu Switch server… shows Connect with Recent servers listing the stack and Back");
   await capture("switch-server-light");
 
   await page.getByRole("button", { name: "Back" }).click();
@@ -157,7 +168,9 @@ export default async ({ page, web, capture, note, account }) => {
   const proxy = startToggleProxy(web);
   try {
     const proxyUrl = await proxy.listen();
-    await page.evaluate(() => window.mendDesktop.switchServer());
+    await page.evaluate(() => {
+      void window.mendDesktop.switchServer();
+    });
     await page.getByRole("heading", { name: "Connect to a Mend server" }).waitFor();
     await page.getByLabel("Server address").fill(proxyUrl);
     await page.getByRole("button", { name: "Connect" }).click();
