@@ -20,7 +20,13 @@
 # session's first few turns Mend sent and still in its history (the namer reads past a first "hi"),
 # and nothing else. It claims, binds, completes or cancels no turn, so no action models it. Full
 # run at 4c6808f4ff: every row as expected.
-sync 4c6808f4fff1db1f03f764b4492db85985c3c954
+# 792ac83bf1 is the SLNT-1234 branch: when the agent takes a message sent into its running turn,
+# Codex's user message carries the steer's id (codex.ts sends it on turn/steer and reports the
+# item as steer.taken), protocol-host.ts handles steer.taken, and agent-conversation.ts gained
+# markTurnSteerTaken, which stamps a steer row's taken_at. None writes a turn's status or provider
+# turn id, nor touches turn/start, turn.started or turn/completed, so no action models it. Full run
+# at 792ac83bf1: every row as expected.
+sync 792ac83bf176d768850a1826635660ec346fc7ca
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
