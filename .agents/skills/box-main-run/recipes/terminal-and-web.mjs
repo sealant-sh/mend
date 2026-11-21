@@ -160,10 +160,10 @@ export default async ({ page, web, capture, note }) => {
     note(
       `continued as a conversation ${Math.round((Date.now() - closed) / 1000)} s after the terminal closed`,
     );
-    const after = Date.now() - closed;
-    if (after < GRACE_MS)
+    const waited = Date.now() - closed;
+    if (waited < GRACE_MS)
       throw new Error(
-        `it went back ${Math.round(after / 1000)} s after the terminal closed, inside the grace`,
+        `it went back ${Math.round(waited / 1000)} s after the terminal closed, inside the grace`,
       );
     await page.reload();
     const again = page
