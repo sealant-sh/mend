@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionInboxRowDto } from "./api.ts";
 import { readDraft, writeDrafts } from "./drafts.ts";
 import type { StartSpec } from "./new-session.ts";
-import { draftItems, holdUntilStarted, readOutbox, waitingMessages } from "./outbox.ts";
+import { draftItems, holdForStart, type OutboxMessage, readOutbox } from "./outbox.ts";
 import {
   dismissRefusal,
   isPendingRow,
@@ -66,6 +66,10 @@ const gate = () => {
 const placeOf = () => {
   const log: Array<string> = [];
   const refusals: Array<RefusedStart> = [];
+  const sent: Array<{
+    readonly sessionId: string;
+    readonly written: ReadonlyArray<OutboxMessage>;
+  }> = [];
   const place: StartPlace = {
     show: (draftId) => log.push(`show ${draftId}`),
     settle: (sessionId) => log.push(`settle ${sessionId}`),
@@ -73,14 +77,19 @@ const placeOf = () => {
       refusals.push(refused);
       log.push("refused");
     },
-    prefetch: (sessionId) => {
-      log.push(`read ${sessionId}`);
+    prefetch: (sessionId, opening) => {
+      log.push(
+        opening ? `read ${sessionId} until it holds the first message` : `read ${sessionId}`,
+      );
       return Promise.resolve();
     },
-    holdOpening: (sessionId, text) => log.push(`hold ${sessionId}: ${text}`),
+    sendWritten: (sessionId, written) => {
+      sent.push({ sessionId, written });
+      log.push(`send ${written.length} to ${sessionId}`);
+    },
     moved: () => log.push("moved"),
   };
-  return { place, log, refusals };
+  return { place, log, refusals, sent };
 };
 
 const callsWith = (made: Promise<Made>, launched: Array<string>) =>
@@ -114,22 +123,29 @@ describe("an instant start", () => {
     made.resolve({ id: SessionId.make("s-real") });
     await started;
     expect(launched).toEqual(["s-real"]);
+    // Mend records the first message as the launch is admitted (SLNT-1237): nothing holds it here,
+    // and the page is read until the conversation has it.
     expect(log).toEqual([
       "show starting-1",
-      "hold s-real: Tell me about this repo",
       "moved",
-      "read s-real",
+      "read s-real until it holds the first message",
       "settle s-real",
     ]);
   });
 
-  it("moves what was written while it started onto the session Mend made", async () => {
+  it("sends what was written before Mend answered to the session it made, once it exists", async () => {
     const made = deferred();
-    const started = startInstantly(placeOf().place, start(made.promise));
-    holdUntilStarted({ userId: "ada", sessionId: "starting-1" }, "And the tests.", "k-1");
+    const launched: Array<string> = [];
+    const { place, log, sent } = placeOf();
+    const started = startInstantly(place, start(made.promise, launched));
+    holdForStart({ userId: "ada", sessionId: "starting-1" }, "And the tests.", "k-1");
     made.resolve({ id: SessionId.make("s-real") });
     await started;
-    expect(waitingMessages({ userId: "ada", sessionId: "s-real" }).map((m) => m.text)).toEqual([
+    // After the launch, which records the first message: Mend keeps this one behind it.
+    expect(launched).toEqual(["s-real"]);
+    expect(log.slice(0, 2)).toEqual(["show starting-1", "send 1 to s-real"]);
+    expect(sent.map(({ written }) => written.map((m) => m.text))).toEqual([["And the tests."]]);
+    expect(readOutbox({ userId: "ada", sessionId: "s-real" }).map((m) => m.text)).toEqual([
       "And the tests.",
     ]);
     expect(readOutbox({ userId: "ada", sessionId: "starting-1" })).toEqual([]);
@@ -149,17 +165,14 @@ describe("an instant start", () => {
     );
     // Mend has answered and the agent is launching: the session's page is being read now.
     await vi.waitFor(() => expect(launched).toEqual(["s-hand"]));
-    holdUntilStarted(onStartPage(), "Also the README.", "k-1");
+    // The start's composer writes, and sends, to the session from here (SLNT-1237).
+    expect(onStartPage().sessionId).toBe("s-hand");
     writeDrafts([[draftItems(onStartPage()).text, "Half a thought"]]);
     reading.open();
     await started;
     // Settled, but the start's page may still be drawn until the session's page replaces it.
-    holdUntilStarted(onStartPage(), "And the tests.", "k-2");
+    expect(onStartPage().sessionId).toBe("s-hand");
     const session = { userId: "ada", sessionId: "s-hand" };
-    expect(waitingMessages(session).map((m) => m.text)).toEqual([
-      "Also the README.",
-      "And the tests.",
-    ]);
     expect(readDraft(draftItems(session).text)).toBe("Half a thought");
     expect(readOutbox({ userId: "ada", sessionId: "starting-hand" })).toEqual([]);
   });
@@ -179,7 +192,7 @@ describe("an instant start", () => {
     const { place, log, refusals } = placeOf();
     const started = startInstantly(place, start(made.promise, launched));
     const draft = { userId: "ada", sessionId: "starting-1" };
-    holdUntilStarted(draft, "And the tests.", "k-1");
+    holdForStart(draft, "And the tests.", "k-1");
     writeDrafts([[draftItems(draft).text, "Half a thought"]]);
     made.reject(new Error("The project is being removed."));
     await started;

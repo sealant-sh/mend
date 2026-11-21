@@ -425,9 +425,15 @@ export class ProtocolHost extends Context.Service<
       launchCorrelationId?: string | null,
       selection?: TurnSelection,
     ) => Effect.Effect<AgentTurn, ProtocolHostNotLiveError | HistoryAdmissionRefusedError>;
+    /**
+     * `starting`: the session's conversation is starting (SLNT-1237). With no process of it hosted
+     * yet, the message waits on the server as a waiting turn for the process that comes up, in
+     * place of a refusal.
+     */
     readonly sendMessage: (
       input: SendMessageInput,
       choice: MessageChoice,
+      starting?: boolean,
     ) => Effect.Effect<SessionMessageResult, MessageSendError>;
     readonly steerTurn: (input: SteerTurnInput) => Effect.Effect<AgentTurnSteer, TurnSteerError>;
     readonly interruptTurn: (turnId: AgentTurnId) => Effect.Effect<void, ProtocolHostNotLiveError>;
@@ -1662,6 +1668,12 @@ export const ProtocolHostLive: Layer.Layer<
       };
       activeEntry = entry;
       hosted.set(input.process.id, entry);
+      // What was sent while the conversation started waits for its first process (SLNT-1237):
+      // this one takes it, the opening turn first, before anything here dispatches. Hosted first,
+      // so a message admitted as waiting from here on finds this entry and is taken by its own
+      // send (`sendTurnMessage`).
+      if (rehydrateInput === null && !entry.candidate)
+        yield* conversations.takeWaitingTurns(input.process.sessionId, input.process.id);
       // The queue is the conversation's (decision 6): a person's process takes the turns queued
       // for the session on the process it replaces, or while none ran. Hosted first, so a turn
       // submitted from here on queues on it; one that read the old process just before queues
@@ -1894,11 +1906,40 @@ export const ProtocolHostLive: Layer.Layer<
       scope,
     });
 
-    const sendTurnMessage = Effect.fn("ProtocolHost.sendTurnMessage")(function* (
+    /**
+     * A message to a conversation that is starting, with no process of it hosted yet: it waits on
+     * the server for the process that comes up (SLNT-1237). That process takes the waiting turns
+     * as it is hosted (`attachInternal`); one hosted between the read above and this admission
+     * has taken them already, so this send gives its turn over and dispatches it.
+     */
+    const waitForStart = Effect.fn("ProtocolHost.waitForStart")(function* (
       input: SendMessageInput,
       reason: MessageTurnReason,
     ) {
+      const admitted = yield* conversations.admitTurnMessage(input, null, reason);
+      if (admitted._tag === "Replay") return admitted.result;
+      const { messageId } = admitted.result;
+      const entry = [...hosted.values()].findLast(
+        (candidate) => candidate.process.sessionId === input.sessionId && !candidate.candidate,
+      );
+      if (entry !== undefined) {
+        yield* conversations.takeWaitingTurns(input.sessionId, entry.process.id);
+        yield* dispatchJoined(entry);
+      }
+      return yield* retried(
+        Effect.suspend(() => conversations.messageById(messageId)),
+        "protocol host: a message's receipt was not read",
+        { turnId: admitted.result.turn.id },
+      );
+    });
+
+    const sendTurnMessage = Effect.fn("ProtocolHost.sendTurnMessage")(function* (
+      input: SendMessageInput,
+      reason: MessageTurnReason,
+      starting = false,
+    ) {
       const place = yield* placeTurn(input.sessionId);
+      if (place === null && starting) return yield* waitForStart(input, reason);
       if (place === null)
         return yield* new ProtocolHostNotLiveError({ processId: input.sessionId });
       const admitted = yield* conversations.admitTurnMessage(input, place.processId, reason);
@@ -1937,16 +1978,19 @@ export const ProtocolHostLive: Layer.Layer<
     const sendMessage = Effect.fn("ProtocolHost.sendMessage")(function* (
       input: SendMessageInput,
       choice: MessageChoice,
+      starting = false,
     ) {
       const steered =
         choice._tag === "Steer"
           ? steerMessage(input, choice.turnId).pipe(
               Effect.catchTags({
-                AgentTurnNotFoundError: () => sendTurnMessage(input, "no-own-running-turn"),
-                TurnSteerForbiddenError: () => sendTurnMessage(input, "no-own-running-turn"),
+                AgentTurnNotFoundError: () =>
+                  sendTurnMessage(input, "no-own-running-turn", starting),
+                TurnSteerForbiddenError: () =>
+                  sendTurnMessage(input, "no-own-running-turn", starting),
               }),
             )
-          : sendTurnMessage(input, choice.reason);
+          : sendTurnMessage(input, choice.reason, starting);
       return yield* steered.pipe(
         Effect.catchTag("SessionStoppingError", () =>
           Effect.fail(new ProtocolHostNotLiveError({ processId: input.sessionId })),

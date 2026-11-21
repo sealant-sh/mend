@@ -117,7 +117,15 @@ import {
   type NativeHistoryObservation,
   InheritedHistory,
 } from "@mend/domain/workbench";
-import { turnSelectionRefusal, type TurnSelection } from "@mend/domain/workbench";
+import {
+  CONVERSATION_HARNESSES,
+  isWaitingTurn,
+  WAITING_TURN_IN_TERMINAL,
+  WAITING_TURN_NOT_STARTED,
+  WAITING_TURN_STOPPED,
+  turnSelectionRefusal,
+  type TurnSelection,
+} from "@mend/domain/workbench";
 import type { BoatLaunchKey } from "@mend/domain/workbench";
 import { type MemoryLimitHit, memoryLimitWords } from "@mend/domain/workbench";
 import { isConversationTranscript, isTextConversationFile } from "@mend/domain/workbench";
@@ -1892,6 +1900,13 @@ const createAskedAtOf = (key: string): Date | null => {
 
 /** A planned launch's opening prompt no process accepted yet: its plan stays. */
 const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
+
+/**
+ * How long a message to a session nothing has launched in yet waits for its launch to begin
+ * (SLNT-1237): a start sends its launch and the messages written meanwhile together, and the
+ * server may read them in either order. Waiting lets the launch record its opening turn first.
+ */
+const OPENING_WAIT_MS = 10_000;
 /** How many launches a planned relaunch tries in one process before it only keeps its plan. */
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
@@ -6004,6 +6019,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * ends (`oneLaunch`).
        */
       const stoppedDuringLaunch = new Set<SessionId>();
+      /**
+       * Sessions a conversation launch is under way for (`launchProtocol`), from its admission to
+       * its end: a message sent meanwhile, before its process is hosted, waits for that process
+       * on the server (SLNT-1237).
+       */
+      const conversationStarting = new Set<SessionId>();
       /** The launch stands down before its agent starts: nothing of it runs after the stop. */
       const refuseIfStoppedDuringLaunch = (sessionId: SessionId) =>
         Effect.suspend(() =>
@@ -8514,12 +8535,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         return Effect.gen(function* () {
           const prompt = plan.start?.prompt?.trim() ?? "";
-          if (
-            prompt !== "" &&
-            (yield* conversations.byLaunchCorrelation(sessionId, plan.launchCorrelationId)) !== null
-          ) {
-            return "done" as const;
-          }
+          const opening =
+            prompt === ""
+              ? null
+              : yield* conversations.byLaunchCorrelation(sessionId, plan.launchCorrelationId);
+          // An opening turn still waiting for a process (SLNT-1237) was recorded, not taken.
+          if (opening !== null && !isWaitingTurn(opening)) return "done" as const;
           const correlated = yield* processes.byLaunchCorrelation(plan.launchCorrelationId);
           if (prompt === "" && correlated !== null) return "done" as const;
           if (prompt !== "") {
@@ -8565,6 +8586,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : isWorkspaceWakeLaunch(plan.launchCorrelationId)
                 ? `${plan.launchCorrelationId}:${crypto.randomUUID()}`
                 : `relaunch:${crypto.randomUUID()}`;
+          // A waiting opening turn goes with the fresh id, so the relaunch's submit finds it
+          // rather than asking the same words again.
+          if (opening !== null && correlation !== plan.launchCorrelationId)
+            yield* conversations.rekeyWaitingTurn(sessionId, plan.launchCorrelationId, correlation);
           // The harness's saved state when there is one; a process that ended before anything
           // harvested it leaves none, and the opening prompt still goes (a protocol start resumes
           // by its own id).
@@ -9397,12 +9422,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * of its own (a stop, a lost executor, a run's own end) finds no open run here and keeps
        * them.
        */
+      /**
+       * A session that settled ends what still waited for its agent (SLNT-1237): its start failed,
+       * or it was stopped, before any process took it. One the settle left holding its workspace
+       * (`stopping`) keeps them until that drain settles it.
+       */
+      const endWaitingOfSettled = (sessionId: SessionId, outcome: SessionOutcome) =>
+        Effect.gen(function* () {
+          const settled = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (settled === null || settled.settledAt === null) return;
+          yield* conversations.endWaitingTurns(
+            sessionId,
+            outcome === "failed"
+              ? { status: "failed", error: WAITING_TURN_NOT_STARTED }
+              : { status: "cancelled", error: WAITING_TURN_STOPPED },
+          );
+        });
+
       const settleSession = Effect.fn("SessionEngine.settleSession")(function* (
         sessionId: SessionId,
         outcome: SessionOutcome,
         summary: string | null,
       ) {
         yield* sessions.settle(sessionId, outcome, summary);
+        yield* endWaitingOfSettled(sessionId, outcome);
         yield* settleRunsOfSettled(sessionId);
         yield* screenProcess.stop(sessionId, "session-stopped").pipe(owned(sessionId));
         yield* betweenLaunches(sessionId, releaseDisplayIfEnded(sessionId));
@@ -22725,6 +22770,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           model: start.model ?? null,
           effort: start.effort ?? null,
         });
+        // The first message is the session's opening turn from here (SLNT-1237), before the
+        // workspace builds: a reload or another device reads it, and the session's title from it,
+        // while the agent starts. It waits for the process this launch brings up, which takes it
+        // first; the submit at the launch's end finds it by the correlation id and moves nothing
+        // more. A launch that carries its own id (a follow-up's) keeps submitting at the end.
+        const openingInput = start.prompt?.trim() ?? "";
+        const correlation =
+          launchCorrelationId ?? (openingInput === "" ? null : `opening:${crypto.randomUUID()}`);
+        if (launchCorrelationId === null && correlation !== null) {
+          yield* conversations
+            .queueOpeningTurn(sessionId, openingInput, author, correlation)
+            .pipe(Effect.catchTag("HistoryAdmissionRefusedError", () => Effect.succeed(null)));
+        }
         // A fresh-workspace relaunch must carry the harvested state with it: the composed
         // argv resumes by provider id, and without the restored transcript the harness
         // refuses the resume ("No conversation found"). A first launch (no prior protocol
@@ -22736,7 +22794,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed(null)),
               );
         const launchPlan = agentLaunch(composed, {
-          launchCorrelationId,
+          launchCorrelationId: correlation,
           resumeId: providerSessionId ?? null,
           protocolStart: start,
           protocolAuthor: author,
@@ -22744,12 +22802,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const launchFresh = () => launchInternal(sessionId, { ...launchPlan, state: located });
         const retainCurrentWorkspace =
           !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session, handedOver));
-        if (!retainCurrentWorkspace) {
-          return yield* launchFresh();
-        }
-        return yield* launchInRetainedWorkspace(sessionId, launchPlan).pipe(
-          Effect.catchTag("SessionNotLiveError", launchFresh),
-        );
+        // Messages sent from here until its process is hosted wait for it (`sendMessage`).
+        conversationStarting.add(sessionId);
+        return yield* (
+          retainCurrentWorkspace
+            ? launchInRetainedWorkspace(sessionId, launchPlan).pipe(
+                Effect.catchTag("SessionNotLiveError", launchFresh),
+              )
+            : launchFresh()
+        ).pipe(Effect.ensuring(Effect.sync(() => conversationStarting.delete(sessionId))));
       });
 
       /** A person's own login, as sealant said it stood within the last minute: active only. */
@@ -22988,6 +23049,42 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           cancelQueued(sessionId, (turn) => turn.author === userId),
         ).pipe(Effect.map((counts) => counts.reduce((sum, count) => sum + count, 0)));
 
+      /**
+       * Whether a message to `session` waits on the server for its conversation's first process
+       * (SLNT-1237): it reads `starting`, on an agent the web starts as a conversation, and either a
+       * conversation launch of it is under way or nothing has launched in it yet. In that last case
+       * the start's launch is on its way beside this message (`OPENING_WAIT_MS`): the message waits
+       * for it to begin, so its opening turn goes first. When none comes, the message waits for
+       * whichever launch does; a terminal one ends it (`launch`).
+       */
+      const conversationStartsFor = (session: Session) =>
+        Effect.gen(function* () {
+          // A Stop under way has ended what waited (`stop`): nothing more waits after it.
+          const stopped = () => stopUnderWay(session.id) || stoppedDuringLaunch.has(session.id);
+          if (
+            session.status !== "starting" ||
+            session.settledAt !== null ||
+            !CONVERSATION_HARNESSES.has(session.harness) ||
+            stopped()
+          )
+            return false;
+          if (conversationStarting.has(session.id)) return true;
+          if (
+            launchGate.underWay(session.id) ||
+            (yield* processes.listForSession(session.id)).length > 0
+          )
+            return false;
+          const deadline = clock.currentTimeMillisUnsafe() + OPENING_WAIT_MS;
+          while (
+            !conversationStarting.has(session.id) &&
+            clock.currentTimeMillisUnsafe() < deadline
+          )
+            yield* Effect.sleep("50 millis");
+          return (
+            !stopped() && (conversationStarting.has(session.id) || !launchGate.underWay(session.id))
+          );
+        });
+
       const sendMessage = (input: SendMessageInput) =>
         detached(
           owned(input.sessionId)(
@@ -23033,6 +23130,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 return yield* protocolHost.sendMessage(
                   selection === undefined ? input : { ...input, selection },
                   choice,
+                  yield* conversationStartsFor(session),
                 );
               });
               // A concurrent request with the same key may have committed as this one failed.
@@ -24770,6 +24868,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
         // One further along stands down before its agent starts, or is stopped again as it ends.
         if (launchGate.underWay(sessionId)) stoppedDuringLaunch.add(sessionId);
+        // What was sent while it started never goes now (SLNT-1237): no process may take it.
+        yield* conversations.endWaitingTurns(sessionId, {
+          status: "cancelled",
+          error: WAITING_TURN_STOPPED,
+        });
         yield* screenProcess.stop(sessionId, "session-stopped");
         const rows = yield* processes.listForSession(sessionId);
         endOwnership.stopContinuations(rows.map((row) => row.id));
@@ -32186,7 +32289,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         awaitLaunch: (sessionId) => launchGate.runWhenFree(sessionId)(Effect.void),
         launch: (sessionId, argv, admission) =>
           detached(
-            owned(sessionId)(admittedLaunch(sessionId, admission)(launch(sessionId, argv))),
+            owned(sessionId)(
+              admittedLaunch(
+                sessionId,
+                admission,
+              )(
+                // The agent runs in a terminal: what waited for a conversation never goes to it.
+                conversations
+                  .endWaitingTurns(sessionId, { status: "failed", error: WAITING_TURN_IN_TERMINAL })
+                  .pipe(Effect.andThen(launch(sessionId, argv))),
+              ),
+            ),
           ).pipe(withInteractiveSealant),
         launchProtocol: (
           sessionId,

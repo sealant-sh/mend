@@ -486,6 +486,10 @@ const testLayer = (world: TestWorld) => {
     backfillConversation: () => Effect.succeed(0),
     resetSendingResponses: () => Effect.void,
     requeueQueuedTurns: () => Effect.void,
+    queueOpeningTurn: () => Effect.succeed(null),
+    takeWaitingTurns: () => Effect.succeed(0),
+    endWaitingTurns: () => Effect.succeed(0),
+    rekeyWaitingTurn: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
 

@@ -5890,4 +5890,18 @@ export const migrations = {
     yield* sql`CREATE INDEX IF NOT EXISTS workspace_memory_kills_session_idx
       ON workspace_memory_kills (session_id)`;
   }),
+  // A message sent while a session's conversation starts waits on the server (SLNT-1237): a turn
+  // queued for the session before any agent process of it is hosted, which the one that comes up
+  // takes. Such a turn has no process, so no process is no longer only an imported turn's: an
+  // imported turn still never has one, and a turn of Mend's has none only while it waits or after
+  // it ended without any process taking it.
+  "0237_waiting_turns": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_imported_process_check`;
+    yield* sql`ALTER TABLE agent_turns ADD CONSTRAINT agent_turns_imported_process_check
+      CHECK (
+        (imported AND process_id IS NULL)
+        OR (NOT imported AND (process_id IS NOT NULL OR status IN ('queued', 'cancelled', 'failed')))
+      )`;
+  }),
 };

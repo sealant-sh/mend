@@ -1137,10 +1137,39 @@ lane changed.
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/pending-starts.ts`,
   `apps/web/src/components/new-session/instant-start.ts`,
-  `apps/web/src/components/session/held-messages.tsx`,
   `apps/web/src/components/session/starting-session.tsx`, `apps/web/src/lib/starting-line.ts`,
   `apps/web/src/lib/project-starts.ts`, `apps/web/src/lib/session-title.ts`,
   `apps/api/src/session-naming.ts`
+
+### start-session.new-web-impatient-start
+
+- **Map:** start-session.md `start-composer`, `session-page`
+- **Needs:** real turn (codex); web; the project `verify-fixture`
+- **Do:** Drive the recipe `new-web-impatient-start-box` (`pnpm verify drive new-web --box`). It
+  starts a Codex session in `verify-fixture` from the New session composer with
+  `Reply with the single word ready, and nothing else.`, and while it still reads Starting sends
+  `Then reply with the single word again, and nothing else.` from its composer. As soon as Mend has
+  answered for those words it closes the tab (the page leaves the app), then opens the session in a
+  new tab. Then it starts a second session with
+  `Reply with the single word second, and nothing else.` and reloads its page the moment the address
+  moves to the session's id. Stop both sessions with `M stop <id8>` once they end.
+- **See:** before the tab closes, the second message reads `Waits for Codex to start.` (or nothing,
+  once Codex took it), never `Sending…`. In the new tab both messages are there, in order. Codex
+  replies `ready`, then `again`, and neither message reads `Waits for` or `Not sent`. After the
+  reload during the second start, the page still reads `Getting the session ready…`, the first
+  message shows within 5 seconds, and the conversation is titled after it or with a name Mend made,
+  never `New session`. Codex then replies `second`. It fails (SLNT-1237) if the new tab never shows
+  the second message, which then lived only in the closed tab: the recipe stops with "the message
+  sent while it started isn't there in a new tab". It also fails if the reload shows no first
+  message, or `New session`.
+- **Mode:** `scripted` (recipes/new-web-impatient-start-box.mjs)
+- **Box:** after cut-over
+- **Box-only:** `real-agent-turn`
+- **Areas:** `apps/web/src/lib/start-session.ts`, `apps/web/src/lib/outbox.ts`,
+  `apps/web/src/components/new-session/instant-start.ts`,
+  `apps/web/src/components/session/composer.tsx`,
+  `apps/web/src/components/session/conversation-tile.tsx`, `packages/sessions/src/protocol-host.ts`,
+  `packages/db/src/repos/agent-conversation.ts`, `docs/formal/turn-dispatch/`
 
 ### start-session.web-answer
 

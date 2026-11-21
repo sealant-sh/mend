@@ -32,6 +32,7 @@ import {
   AgentRequest,
   AgentTurn,
   ConversationSteer,
+  isWaitingTurn,
   SessionProcess,
 } from "@mend/domain/workbench";
 import {
@@ -157,6 +158,7 @@ const makeConversationWorld = () => {
     afterUnconfirmed: Effect.Effect<void>;
     beforeCancel: Effect.Effect<void>;
     beforeWithdraw: Effect.Effect<void>;
+    beforeTakeWaiting: Effect.Effect<void>;
   } = {
     stopping: false,
     journalFailure: false,
@@ -178,6 +180,7 @@ const makeConversationWorld = () => {
     afterUnconfirmed: Effect.void,
     beforeCancel: Effect.void,
     beforeWithdraw: Effect.void,
+    beforeTakeWaiting: Effect.void,
   };
   const requeued = Effect.runSync(Deferred.make<void>());
   const items = new Map<string, AgentItem>();
@@ -408,6 +411,32 @@ const makeConversationWorld = () => {
           if (turn.processId === from && turn.status === "queued")
             update(turn.id, { processId: to });
       }),
+    queueOpeningTurn: () => Effect.succeed(null),
+    takeWaitingTurns: (sessionId, to) =>
+      Effect.suspend(() => admission.beforeTakeWaiting).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            let taken = 0;
+            for (const turn of [...turns.values()].toSorted((a, b) => a.ordinal - b.ordinal))
+              if (isWaitingTurn(turn) && turn.sessionId === sessionId && turn.status === "queued") {
+                update(turn.id, { processId: to });
+                taken++;
+              }
+            return taken;
+          }),
+        ),
+      ),
+    endWaitingTurns: (sessionId, end) =>
+      Effect.sync(() => {
+        let ended = 0;
+        for (const turn of turns.values())
+          if (isWaitingTurn(turn) && turn.sessionId === sessionId && turn.status === "queued") {
+            update(turn.id, { status: end.status, error: end.error, endedAt: now() });
+            ended++;
+          }
+        return ended;
+      }),
+    rekeyWaitingTurn: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
   return {
@@ -4132,6 +4161,72 @@ describe("ProtocolHost message turn admission", () => {
       ).toMatchObject({ _tag: "ProtocolHostNotLiveError" });
       expect(yield* world.steerStore.messageByClientId(input)).toBeNull();
       expect(world.turns.size).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+  });
+
+  const said = (words: string) => ({ ...message(), input: MessageInput.make(words) });
+  const turnStarts = (peer: ReturnType<typeof makePipe>) =>
+    peer.written
+      .filter((frame) => frame.method === "turn/start")
+      .map((frame) => frame.params?.input?.[0]?.text);
+
+  it.effect(
+    "keeps a message sent while the conversation starts, for the process that comes up",
+    () => {
+      const world = makeConversationWorld();
+      const peer = makePipe(["provider-first", "provider-second"]);
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        // SLNT-1237: no process is hosted yet. The words wait on the server, not in a browser.
+        const first = yield* host.sendMessage(
+          said("Fix the login page."),
+          { _tag: "Turn", reason: "queue-requested" },
+          true,
+        );
+        const second = yield* host.sendMessage(
+          said("Then add a test."),
+          { _tag: "Turn", reason: "queue-requested" },
+          true,
+        );
+        expect(first).toMatchObject({ _tag: "Turn", turn: { status: "queued" } });
+        expect(second).toMatchObject({ _tag: "Turn", turn: { status: "queued" } });
+        const firstId = first._tag === "Turn" ? first.turn.id : AgentTurnId.make("none");
+        const secondId = second._tag === "Turn" ? second.turn.id : AgentTurnId.make("none");
+        expect(isWaitingTurn(world.turns.get(firstId)!)).toBe(true);
+        // The process comes up and takes them, oldest first, one turn at a time.
+        yield* attachCodex(host, peer.pipe);
+        yield* waitUntil(() => world.turns.get(firstId)?.providerTurnId === "provider-first");
+        expect(world.turns.get(secondId)).toMatchObject({ processId, status: "queued" });
+        expect(turnStarts(peer)).toEqual(["Fix the login page."]);
+        peer.push({
+          method: "turn/completed",
+          params: { threadId: "thread-1", turn: { id: "provider-first", status: "completed" } },
+        });
+        yield* waitUntil(() => world.turns.get(secondId)?.providerTurnId === "provider-second");
+        expect(turnStarts(peer)).toEqual(["Fix the login page.", "Then add a test."]);
+        yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.effect("sends a waiting message the process came up past, from its own send", () => {
+    const world = makeConversationWorld();
+    const peer = makePipe(["provider-late"]);
+    return Effect.gen(function* () {
+      const host = yield* ProtocolHost;
+      // The send read no hosted process; the process came up, and took what waited, before
+      // this message was stored. Its own send hands it over.
+      world.admission.beforeAdmit = once(attachCodex(host, peer.pipe).pipe(Effect.orDie));
+      const receipt = yield* host.sendMessage(
+        said("Words sent as it came up."),
+        { _tag: "Turn", reason: "queue-requested" },
+        true,
+      );
+      const id = receipt._tag === "Turn" ? receipt.turn.id : AgentTurnId.make("none");
+      yield* waitUntil(() => world.turns.get(id)?.providerTurnId === "provider-late");
+      expect(world.turns.get(id)).toMatchObject({ processId, status: "running" });
+      expect(turnStarts(peer)).toEqual(["Words sent as it came up."]);
+      yield* host.detach(processId);
     }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
   });
 });

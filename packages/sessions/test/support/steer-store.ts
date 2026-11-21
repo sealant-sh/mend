@@ -18,6 +18,7 @@ import {
   ConversationSteer,
   ConversationTurn,
   turnSteerSender,
+  waitingTurnProcessIdOf,
   type AgentProtocolControl,
 } from "@mend/domain/workbench";
 import { Effect } from "effect";
@@ -144,7 +145,7 @@ export const makeSteerStore = (
         const turn = new AgentTurn({
           id: AgentTurnId.make(crypto.randomUUID()),
           sessionId: input.sessionId,
-          processId,
+          processId: processId ?? waitingTurnProcessIdOf(input.sessionId),
           ordinal: Math.max(-1, ...[...turns.values()].map((row) => row.ordinal)) + 1,
           author: input.sender,
           input: input.input,

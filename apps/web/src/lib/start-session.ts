@@ -2,7 +2,13 @@ import type { TurnSelection } from "@mend/domain/workbench";
 
 import type { SessionDto } from "./api.ts";
 import { launchFields, type StartSpec, type WorktreeTarget } from "./new-session.ts";
-import { type MessageScope, moveMessages, takeWritten } from "./outbox.ts";
+import {
+  type MessageScope,
+  moveMessages,
+  type OutboxMessage,
+  readOutbox,
+  takeWritten,
+} from "./outbox.ts";
 import { beginStart, endStart, type RefusedStart, startCreated } from "./pending-starts.ts";
 import { failureWords } from "./refusal.ts";
 
@@ -72,10 +78,14 @@ export interface StartPlace {
   readonly settle: (sessionId: string) => unknown;
   /** Mend refused: back where the start came from, with everything written and Mend's words. */
   readonly refuse: (refused: RefusedStart) => unknown;
-  /** Read what the session's page shows first, so it paints at once; a failure is fine. */
-  readonly prefetch: (sessionId: string) => Promise<unknown>;
-  /** Hold the first message for the session's page until its conversation has it. */
-  readonly holdOpening: (sessionId: string, text: string, sentAt: Date) => void;
+  /**
+   * Read what the session's page shows first, so it paints at once; a failure is fine. With
+   * `opening`, the read waits a moment for the conversation to hold the first message, which Mend
+   * records as the launch is admitted (SLNT-1237), so the page never shows the start without it.
+   */
+  readonly prefetch: (sessionId: string, opening: boolean) => Promise<unknown>;
+  /** Send what the person wrote on the start's page before Mend made the session, in order. */
+  readonly sendWritten: (sessionId: string, written: ReadonlyArray<OutboxMessage>) => void;
   /** The server moved: read the sessions again. */
   readonly moved: () => void;
 }
@@ -167,15 +177,18 @@ export const startInstantly = async (place: StartPlace, start: InstantStart): Pr
     });
     return;
   }
+  // The launch records the first message as the session's opening turn (SLNT-1237); what was
+  // written meanwhile goes to Mend right behind it, which keeps it for the agent's first process.
   void start.launch(sessionId).catch(() => undefined);
-  if (start.prompt.trim() !== "") place.holdOpening(sessionId, start.prompt, sentAt);
   // What was written so far moves onto the session, and from the same moment the start's page
   // writes there (`writingAddressOf`), before anything is awaited: the page stays on screen while
   // the session's is read, and words written meanwhile were left under the start's address,
   // never shown or sent again (SLNT-1232).
+  const written = readOutbox(draft);
   moveMessages(draft, { userId: start.userId, sessionId });
   startCreated(start.draftId, sessionId);
+  if (written.length > 0) place.sendWritten(sessionId, written);
   place.moved();
-  await place.prefetch(sessionId).catch(() => undefined);
+  await place.prefetch(sessionId, start.prompt.trim() !== "").catch(() => undefined);
   place.settle(sessionId);
 };

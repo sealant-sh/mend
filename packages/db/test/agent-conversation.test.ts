@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { ClientMessageId } from "@mend/domain";
 import { SessionId, SessionProcessId } from "@mend/domain";
-import { MessageInput, type TurnSelection } from "@mend/domain/workbench";
+import { isWaitingTurn, MessageInput, type TurnSelection } from "@mend/domain/workbench";
 import {
   type AgentTurnSteer,
   ConversationSteer,
@@ -113,6 +113,98 @@ describe.skipIf(postgres.skip)("conversation repository against current migratio
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql.unsafe(`DROP DATABASE ${database} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("keeps a start's messages as waiting turns until its first process takes them (SLNT-1237)", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        const follow = (words: string, key: string) => ({
+          sessionId,
+          sender: "user-1",
+          input: MessageInput.make(words),
+          intent: "default" as const,
+          clientMessageId: ClientMessageId.make(key),
+        });
+        // A running session takes no waiting turn: its process is the one to queue on.
+        expect(
+          yield* repo
+            .admitTurnMessage(
+              follow("too late", "33333333-3333-4333-8333-333333333331"),
+              null,
+              "no-own-running-turn",
+            )
+            .pipe(Effect.flip),
+        ).toMatchObject({ _tag: "SessionStoppingError" });
+        expect(yield* repo.queueOpeningTurn(sessionId, "nope", "user-1", "opening:x")).toBeNull();
+        yield* sql`UPDATE agent_sessions SET status = 'starting' WHERE id = ${sessionId}`;
+        const opening = yield* repo.queueOpeningTurn(
+          sessionId,
+          "Fix the login page.",
+          "user-1",
+          "opening:a",
+        );
+        expect(opening).toMatchObject({ status: "queued", ordinal: 0 });
+        expect(opening !== null && isWaitingTurn(opening)).toBe(true);
+        // Asked again under its id: the same turn, nothing new.
+        expect(
+          (yield* repo.queueOpeningTurn(sessionId, "Fix the login page.", "user-1", "opening:a"))
+            ?.id,
+        ).toBe(opening?.id);
+        const next = yield* repo.admitTurnMessage(
+          follow("Then add a test.", "33333333-3333-4333-8333-333333333332"),
+          null,
+          "no-own-running-turn",
+        );
+        expect(next._tag).toBe("Created");
+        // A turn of Mend's has no process only while it waits or after it ended unsent.
+        expect(
+          yield* sql`UPDATE agent_turns SET status = 'running' WHERE session_id = ${sessionId}`.pipe(
+            Effect.flip,
+          ),
+        ).toBeDefined();
+        expect(yield* repo.takeWaitingTurns(sessionId, processId)).toBe(2);
+        expect(yield* repo.takeWaitingTurns(sessionId, processId)).toBe(0);
+        // The launch's own submit under its id finds the opening turn where it is now.
+        const submitted = yield* repo.submitTurn(
+          sessionId,
+          processId,
+          "Fix the login page.",
+          "user-1",
+          "opening:a",
+        );
+        expect(submitted).toMatchObject({ id: opening?.id, processId, status: "queued" });
+        const claimed = yield* repo.claimNextTurn(processId, newAttempt());
+        expect(claimed?.input).toBe("Fix the login page.");
+      }),
+    );
+  });
+
+  it("ends waiting turns, and moves a waiting opening turn to a relaunch's id (SLNT-1237)", async () => {
+    await withConversation(
+      Effect.gen(function* () {
+        const repo = yield* AgentConversationRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const sessionId = SessionId.make("sess-codex");
+        const processId = SessionProcessId.make("p-codex-1");
+        yield* sql`UPDATE agent_sessions SET status = 'starting' WHERE id = ${sessionId}`;
+        const opening = yield* repo.queueOpeningTurn(sessionId, "first", "user-1", "opening:b");
+        yield* repo.rekeyWaitingTurn(sessionId, "opening:b", "relaunch:c");
+        expect((yield* repo.byLaunchCorrelation(sessionId, "relaunch:c"))?.id).toBe(opening?.id);
+        expect(
+          yield* repo.endWaitingTurns(sessionId, { status: "failed", error: "didn't start" }),
+        ).toBe(1);
+        expect(yield* repo.byTurnId(opening!.id)).toMatchObject({
+          status: "failed",
+          error: "didn't start",
+        });
+        // An ended waiting turn stays where it was: no process takes it.
+        expect(yield* repo.takeWaitingTurns(sessionId, processId)).toBe(0);
       }),
     );
   });

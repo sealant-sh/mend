@@ -47,6 +47,8 @@ export type ConversationRow =
       readonly at: string;
       /** A message into a running turn, with how far it got. */
       readonly steer: AgentTurnSteerDto | null;
+      /** The turn the message is, when it is one: where it stands (queued, waiting, ended). */
+      readonly turnId?: string | null;
       /** The key it was sent under, when it was sent with one. */
       readonly clientMessageId: string | null;
       /**
@@ -242,6 +244,7 @@ export const conversationRows = (
             author: entry.turn.author ?? null,
             at: entry.turn.createdAt,
             steer: null,
+            turnId: entry.fromSteer === undefined ? entry.turn.id : null,
             clientMessageId,
             outbox: null,
           });

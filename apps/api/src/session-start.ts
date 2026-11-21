@@ -26,6 +26,7 @@ import {
   resolveAutoLand,
   resolveAutomation,
   resolveLaunchOptions,
+  WAITING_TURN_NOT_STARTED,
   withLandingGuard,
   type HarnessLayout,
   type Session,
@@ -280,8 +281,19 @@ export const makeSessionStart = Effect.gen(function* () {
       );
   });
 
+  // What waited for its agent (SLNT-1237) ends with the start: nothing will take it now.
   const settleUnlaunched = (session: Session, message: string) =>
-    settleIfUnlaunched(sessions, session, `launch failed: ${message}`);
+    settleIfUnlaunched(sessions, session, `launch failed: ${message}`).pipe(
+      Effect.andThen(sessions.byId(session.id)),
+      Effect.flatMap((settled) =>
+        settled.settledAt === null
+          ? Effect.void
+          : conversations.endWaitingTurns(session.id, {
+              status: "failed",
+              error: WAITING_TURN_NOT_STARTED,
+            }),
+      ),
+    );
 
   const launchAs = Effect.fn("SessionStart.launchAs")(function* (
     userId: string,

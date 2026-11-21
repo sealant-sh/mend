@@ -5,7 +5,6 @@ import type { TurnView } from "./conversation.ts";
 import {
   composerMode,
   currentSelection,
-  heldMessagesFate,
   othersOpenTurn,
   ownRunningTurn,
   sameSelection,
@@ -148,65 +147,6 @@ describe("the composer under a session's conversation", () => {
         agentLive: false,
       }),
     ).toEqual({ _tag: "conversation", resumes: true });
-  });
-});
-
-describe("messages held while a session started", () => {
-  const running = { _tag: "conversation", resumes: false } as const;
-  it.each([
-    [
-      "wait while the agent starts",
-      { _tag: "starting-conversation" } as const,
-      "starting",
-      [],
-      true,
-      "wait",
-    ],
-    ["wait for the opening turn once the agent runs", running, "running", [], true, "wait"],
-    ["wait while the conversation is read", running, "running", undefined, false, "wait"],
-    ["go once the opening turn is in", running, "running", [{}], true, "send"],
-    [
-      "go when this tab holds no opening and the start is over",
-      running,
-      "running",
-      [],
-      false,
-      "send",
-    ],
-    [
-      "wait while the start isn't over and no opening is held",
-      running,
-      "starting",
-      [],
-      false,
-      "wait",
-    ],
-    [
-      "are stuck when the agent runs in a terminal",
-      { _tag: "terminal" } as const,
-      "running",
-      [],
-      false,
-      "stuck",
-    ],
-    [
-      "are stuck when the start failed",
-      { _tag: "not-running" } as const,
-      "failed",
-      [],
-      false,
-      "stuck",
-    ],
-    [
-      "are stuck when the agent stopped first",
-      { _tag: "conversation", resumes: true } as const,
-      "stopped",
-      [],
-      false,
-      "stuck",
-    ],
-  ] as const)("%s", (_what, mode, status, turns, openingHeld, fate) => {
-    expect(heldMessagesFate({ mode, status, turns, openingHeld })).toBe(fate);
   });
 });
 

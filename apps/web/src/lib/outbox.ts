@@ -24,8 +24,10 @@ import { uuidV4 } from "./uuid.ts";
  * the moment Send is pressed; the server's turn or steer replaces the bubble once it arrives with
  * the same key.
  *
- * - `Waiting`: sent while the session started, before its agent ran: it waits in this outbox, no
- *   request made, and goes once the agent runs (`sendWaiting`). The server never saw it.
+ * A message sent while the session starts goes to Mend at once, like any other: Mend keeps it for
+ * the agent's first process (SLNT-1237). Only words written on a start's page before Mend has
+ * made the session wait here, for a moment, as `Sending` (`holdForStart`).
+ *
  * - `Sending`: on its way. Read back after a reload, when nothing in this tab still sends it, it
  *   is `Unconfirmed`.
  * - `Sent`: Mend answered that it took the words; the bubble waits for the turn or steer the
@@ -37,7 +39,6 @@ import { uuidV4 } from "./uuid.ts";
  *   did and the spent key would replay this answer.
  */
 export type OutboxState =
-  | { readonly _tag: "Waiting" }
   | { readonly _tag: "Sending" }
   | {
       readonly _tag: "Sent";
@@ -102,7 +103,6 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const isState = (value: unknown): value is OutboxState => {
   if (!isRecord(value)) return false;
   switch (value["_tag"]) {
-    case "Waiting":
     case "Sending":
     case "Unconfirmed":
       return true;
@@ -138,13 +138,22 @@ let parsed: { readonly raw: string; readonly messages: ReadonlyArray<OutboxMessa
   messages: [],
 };
 
+/**
+ * A message an earlier version of this page kept in the tab while its session started (`Waiting`,
+ * before SLNT-1237): nothing sent it, so it reads as unconfirmed, with Try again and Edit.
+ */
+const fromEarlier = (value: unknown): unknown =>
+  isRecord(value) && isRecord(value["state"]) && value["state"]["_tag"] === "Waiting"
+    ? { ...value, state: { _tag: "Unconfirmed" } }
+    : value;
+
 /** The stored outbox as read from its raw text; the same array while the text is the same. */
 export const parseOutbox = (raw: string): ReadonlyArray<OutboxMessage> => {
   if (raw === parsed.raw) return parsed.messages;
   let messages: ReadonlyArray<OutboxMessage> = [];
   try {
     const value: unknown = JSON.parse(raw);
-    if (Array.isArray(value)) messages = value.filter(isMessage);
+    if (Array.isArray(value)) messages = value.map(fromEarlier).filter(isMessage);
   } catch {
     // Not what this tab wrote: nothing to show.
   }
@@ -507,56 +516,35 @@ export const retryMessage = (
 };
 
 /**
- * Keep new words for a session that is starting, until its agent runs: their bubble shows at once,
- * at the end, saying they wait. Nothing leaves until `sendWaiting`.
+ * Words written on a start's page before Mend has made the session (`lib/pending-starts`): their
+ * bubble shows at once, at the end, as on its way, and they go the moment the session exists
+ * (`sendHeld`). This tab alone holds them for that moment; a reload then shows them unconfirmed.
  */
-export const holdUntilStarted = (
+export const holdForStart = (
   scope: MessageScope,
   text: string,
   clientMessageId: string,
   { now = new Date(), selection }: Omit<SendOptions, "resuming"> = {},
-) =>
+) => {
   writeOutbox(scope, [
     ...readOutbox(scope),
     {
       clientMessageId,
       text,
       sentAt: now.toISOString(),
-      state: { _tag: "Waiting" },
+      state: { _tag: "Sending" },
       ...(selection === undefined ? {} : { selection }),
     },
   ]);
-
-/** The messages waiting for the session's agent to run, oldest first. */
-export const waitingMessages = (scope: MessageScope): ReadonlyArray<OutboxMessage> =>
-  readOutbox(scope).filter((message) => message.state._tag === "Waiting");
-
-/**
- * The sessions one person has messages waiting for in this tab, as their ids, space-separated in
- * a stable order: the same text while the set is the same, for `useSyncExternalStore`. It may
- * name a start's own address (`lib/pending-starts`), for the start's page alone to read.
- */
-export const waitingSessions = (userId: string): string => {
-  const prefix = `${userId}.`;
-  const suffix = ".outbox";
-  const keys = new Set(
-    [...draftKeys(), ...inMemory.keys()].filter(
-      (key) => key.startsWith(prefix) && key.endsWith(suffix),
-    ),
-  );
-  return [...keys]
-    .filter((key) => readStoredOutbox(key).some((message) => message.state._tag === "Waiting"))
-    .map((key) => key.slice(prefix.length, -suffix.length))
-    .toSorted()
-    .join(" ");
+  setInFlight(clientMessageId, true);
 };
 
-/**
- * The agent runs: send every waiting message, oldest first, each under its own key. They leave
- * one at a time in that order (`deliver`), so the agent reads them as they were written.
- */
-export const sendWaiting = (courier: Courier, scope: MessageScope) =>
-  Promise.all(waitingMessages(scope).map((message) => deliver(courier, scope, message)));
+/** Send messages held for a start, oldest first, each under its own key, one at a time. */
+export const sendHeld = (
+  courier: Courier,
+  scope: MessageScope,
+  messages: ReadonlyArray<OutboxMessage>,
+) => Promise.all(messages.map((message) => deliver(courier, scope, message)));
 
 /**
  * Move what one person wrote to a session that wasn't made yet (a start still on its way, under
@@ -697,6 +685,23 @@ export const useMessageOwner = (): string | null => {
  * The signed-in person's outbox for one session, as its bubbles show it, and the courier that
  * sends from it. Empty until who is signed in is known.
  */
+/** The courier that sends one session's messages, and re-reads what each answer moved. */
+export const makeCourier = (
+  queryClient: QueryClient,
+  client: ReturnType<typeof useTRPCClient>,
+  trpc: ReturnType<typeof useTRPC>,
+  sessionId: string,
+): Courier => ({
+  queryClient,
+  send: (request) => orLogin(client.sessions.sendMessage.mutate(request)),
+  conversation: () => cachedConversation(queryClient, trpc, sessionId),
+  answered: (cause) => {
+    if (refusalTagOf(cause) === "MessageAuthorChanged")
+      void queryClient.invalidateQueries(trpc.organization.current.queryFilter());
+    void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+  },
+});
+
 export const useOutbox = (sessionId: string) => {
   const trpc = useTRPC();
   const client = useTRPCClient();
@@ -710,16 +715,7 @@ export const useOutbox = (sessionId: string) => {
   );
   useSyncExternalStore(subscribeInFlight, inFlightSnapshot, inFlightSnapshot);
   const scope = userId === null ? null : { userId, sessionId };
-  const courier: Courier = {
-    queryClient,
-    send: (request) => orLogin(client.sessions.sendMessage.mutate(request)),
-    conversation: () => cachedConversation(queryClient, trpc, sessionId),
-    answered: (cause) => {
-      if (refusalTagOf(cause) === "MessageAuthorChanged")
-        void queryClient.invalidateQueries(trpc.organization.current.queryFilter());
-      void queryClient.invalidateQueries(trpc.sessions.pathFilter());
-    },
-  };
+  const courier = makeCourier(queryClient, client, trpc, sessionId);
   return {
     scope,
     messages: scope === null ? [] : shownOutbox(readOutbox(scope)),
