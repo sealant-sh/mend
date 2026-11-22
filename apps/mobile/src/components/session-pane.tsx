@@ -1,5 +1,6 @@
 import {
   canRelaunchSession,
+  MODE_SWITCH_HARNESSES,
   REPLACE_WORKSPACE_ACTION,
   resumesOwnHarness,
   terminalOwnerOnlyLine,
@@ -144,9 +145,9 @@ export function SessionPane({
   const previews = useWorktreePreviews(session?.worktreeId ?? null).data;
   const preview = previewToOpen(previews, sessionId);
   const openPreview = usePreviewOpen(preview, reservePreviewBrowser);
-  // Cross-mode pickup: claude and codex sessions continue here in structured
+  // Cross-mode pickup: Claude Code, Codex and Antigravity sessions continue here in structured
   // mode; other harnesses keep the raw terminal composer.
-  const canPickUp = own && (session?.harness === "claude" || session?.harness === "codex");
+  const canPickUp = own && session !== undefined && MODE_SWITCH_HARNESSES.has(session.harness);
 
   const openTerminal = () => {
     if (session === undefined) {

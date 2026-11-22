@@ -86,6 +86,15 @@ describe("the composer under a session's conversation", () => {
       "terminal",
     ],
     [
+      "the owner of an Antigravity terminal, which has no hooks, is told to type there (SLNT-1277)",
+      { ...terminal, harness: "antigravity" },
+      "agent-pty",
+      true,
+      true,
+      true,
+      "terminal",
+    ],
+    [
       "a stopped conversation comes back for the next message",
       { ...session, status: "stopped" as const },
       "agent-protocol",

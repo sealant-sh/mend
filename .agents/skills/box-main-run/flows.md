@@ -2510,6 +2510,39 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   `apps/web/src/components/session/`, `apps/cli/src/`, `packages/sessions/`,
   `packages/agent-protocol/`, `apps/api/src/routes/workbench.ts`, `apps/api/src/routes/tty.ts`
 
+### attach-resume.antigravity-mode-switch
+
+- **Map:** attach-resume.md `antigravity-mode-switch`, `pickup-takeover`
+- **Needs:** either; real turns (antigravity); CLI in tmux and the web app; the owner's Antigravity
+  login; `<p>`
+- **Do:** On `/`, in the form `New session`: project `<p>`, harness Antigravity, the prompt
+  `Remember the word PELICAN. Reply with just OK.`, then `Start`; wait with
+  `M wait <id> --turn --timeout 8m`. Run `M attach <id8>` in tmux and, once agy's prompt shows, type
+  `Which word did I ask you to remember? Reply with just that word.` and Enter; once it answers,
+  detach with `Ctrl+]`. Open `/sessions/<id>` and read the composer, then choose
+  `Continue as a conversation` from the session menu and send
+  `Say the word again, then the single word back.` from the field `Message Antigravity`. Stop the
+  session with `M stop <id8>`.
+- **See:** the attach prints `reopening as a terminal — same conversation…` and agy's terminal opens
+  on the conversation, with no folder-trust question and no "Invalid Project", and answers `PELICAN`
+  (agy's own colour scheme and terms screens may come first: SLNT-1290); while it is a terminal the
+  composer reads `Antigravity runs in a terminal in this session. Type to it there.` and has no
+  input, and the conversation reads
+  `Antigravity runs in a terminal. It keeps the turns typed there; they don't show here.`; it is
+  still a terminal a minute after the detach; after the switch the page is a conversation again, the
+  reply holds `PELICAN` and `back`, and the conversation reads
+  `Antigravity keeps the turns typed in its terminal; they don't show here.` On a build before
+  SLNT-1277 the attach fails with `This session's agent cannot switch to that mode.`
+- **Waiting on:** SLNT-1276 · the box's data holds no Antigravity login, so the session does not
+  start. Nothing else of this flow can be seen without one.
+- **Mode:** `agent`
+- **Box-only:** `real-agent-turn`
+- **Areas:** `packages/domain/src/workbench/harness-launch.ts`,
+  `apps/web/src/components/session/session-actions.tsx`, `apps/web/src/lib/session-composer.ts`,
+  `apps/web/src/components/session/conversation-tile.tsx`,
+  `apps/mobile/src/components/session-pane.tsx`, `packages/sessions/src/harness-state.ts`,
+  `packages/sessions/src/harness-seeds.ts`
+
 ### attach-resume.rename-web
 
 - **Map:** attach-resume.md `rename-web`

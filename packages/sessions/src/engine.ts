@@ -122,6 +122,8 @@ import {
 } from "@mend/domain/workbench";
 import {
   CONVERSATION_HARNESSES,
+  MODE_SWITCH_HARNESSES,
+  TERMINAL_HOOK_HARNESSES,
   isWaitingTurn,
   WAITING_TURN_IN_TERMINAL,
   WAITING_TURN_NOT_STARTED,
@@ -1493,8 +1495,12 @@ const AGENT_WAIT_MOVE_ATTEMPTS = 3;
  */
 const TERMINAL_INGEST_SETTLE = Duration.seconds(3);
 
-/** The harnesses whose terminal turns Mend reads into the conversation: the ones it can switch. */
-const TERMINAL_TRANSCRIPT_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+/**
+ * The harnesses whose terminal turns Mend reads into the conversation, types messages into and
+ * returns to a conversation on its own: the ones whose hooks report their waits. Antigravity
+ * switches modes but has none.
+ */
+const TERMINAL_TRANSCRIPT_HARNESSES: ReadonlySet<string> = TERMINAL_HOOK_HARNESSES;
 
 /**
  * How long a session taken over in a terminal waits, once no terminal is open on it, before it
@@ -2798,7 +2804,7 @@ export class HoldUnsupportedError extends Schema.TaggedError<HoldUnsupportedErro
   { sessionId: Schema.String, message: Schema.String },
 ) {}
 
-/** The session's harness cannot continue in the requested mode (claude and codex only). */
+/** The session's harness cannot continue in the requested mode (`MODE_SWITCH_HARNESSES` only). */
 export class ModeSwitchUnsupportedError extends Schema.TaggedError<ModeSwitchUnsupportedError>()(
   "ModeSwitchUnsupportedError",
   {
@@ -25599,7 +25605,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (isLegacyBench(session)) {
             return yield* new LegacyBenchReadOnlyError({ sessionId });
           }
-          if (session.harness !== "claude" && session.harness !== "codex") {
+          if (!MODE_SWITCH_HARNESSES.has(session.harness)) {
             return yield* new ModeSwitchUnsupportedError({
               sessionId,
               harness: session.harness,
@@ -26146,13 +26152,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * A conversation reopened as a terminal (SLNT-1235) resumes with no prompt, so its agent
        * waits at its prompt, though no turn's end said so: the composer's words can go at once.
-       * If no terminal is ever open on it, it goes back to a conversation after the grace.
+       * If no terminal is ever open on it, it goes back to a conversation after the grace. Only
+       * for an agent whose hooks report its waits: no hook would ever clear an Antigravity
+       * terminal's prompt, so it would read idle while it works, and it stays a terminal until
+       * the person switches it back.
        */
       const awaitTerminalAt = Effect.fn("SessionEngine.awaitTerminalAt")(function* (
         sessionId: SessionId,
       ) {
         const agent = currentAgentProcess(yield* processes.listForSession(sessionId));
-        if (agent === null || agent.kind !== "agent-pty" || !isLiveProcess(agent)) return;
+        if (
+          agent === null ||
+          agent.kind !== "agent-pty" ||
+          !isLiveProcess(agent) ||
+          agent.harness === null ||
+          !TERMINAL_TRANSCRIPT_HARNESSES.has(agent.harness)
+        )
+          return;
         const now = new Date(clock.currentTimeMillisUnsafe());
         if (agent.waiting === null) {
           const prompt = new AgentWait({ kind: "prompt", tool: null, since: now });

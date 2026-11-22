@@ -1,6 +1,6 @@
 import { type AgentTurnSteerDto, isOpenTurn } from "@mend/agent-conversation";
 import {
-  MODE_SWITCH_HARNESSES,
+  TERMINAL_HOOK_HARNESSES,
   isSelectableHarness,
   type PermissionMode,
   runsInTerminal,
@@ -64,10 +64,10 @@ export const composerMode = ({
 }): ComposerMode => {
   if (!steer) return { _tag: "no-control" };
   if (takesFirstMessage(session, currentAgent, steer)) return { _tag: "first-message" };
-  // The owner's composer types into a Claude Code or Codex terminal; anyone else's, and any other
-  // agent's, says to type there.
+  // The owner's composer types into a Claude Code or Codex terminal, whose hooks say when it waits;
+  // anyone else's, and any other agent's (Antigravity's included), says to type there.
   const inTerminal: ComposerMode =
-    terminalInput && MODE_SWITCH_HARNESSES.has(session.harness)
+    terminalInput && TERMINAL_HOOK_HARNESSES.has(session.harness)
       ? { _tag: "to-terminal" }
       : { _tag: "terminal" };
   if (session.status === "starting" && currentAgent === null)

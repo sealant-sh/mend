@@ -34,10 +34,8 @@ import { shellQuote } from "./workspace-files.ts";
  * 2026-09-28 (18)).
  */
 
-const CLAUDE_SEED_PROGRAM = [
-  `const fs=require("fs"),os=require("os"),path=require("path"),crypto=require("crypto"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;`,
-  `fs.mkdirSync(h+"/.claude",{recursive:true});`,
-  `if(t){try{fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600,flag:"wx"})}catch{}}`,
+/** The JSON merge the seeds below share: `read`, `put` and `merge`, as described above. */
+const SEED_JSON_HELPERS = [
   // Absent reads as {}; anything else that is not a JSON object is null: leave the file alone.
   `function read(p){let raw;try{raw=fs.readFileSync(p,"utf8")}catch(e){if(e.code!=="ENOENT")return null;try{fs.lstatSync(p);return null}catch{return {}}}`,
   `try{const v=JSON.parse(raw);return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch{return null}}`,
@@ -49,6 +47,13 @@ const CLAUDE_SEED_PROGRAM = [
   `if(fd===null)return;try{try{fs.writeFileSync(fd,text);fs.fchmodSync(fd,mode)}finally{fs.closeSync(fd)}fs.renameSync(tmp,real)}catch{try{fs.unlinkSync(tmp)}catch{}}}`,
   `function merge(p,f){const v=read(p);if(v===null)return;const before=JSON.stringify(v);f(v);`,
   `if(JSON.stringify(v)===before&&fs.existsSync(p))return;put(p,JSON.stringify(v,null,2))}`,
+].join("");
+
+const CLAUDE_SEED_PROGRAM = [
+  `const fs=require("fs"),os=require("os"),path=require("path"),crypto=require("crypto"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;`,
+  `fs.mkdirSync(h+"/.claude",{recursive:true});`,
+  `if(t){try{fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600,flag:"wx"})}catch{}}`,
+  SEED_JSON_HELPERS,
   `merge(h+"/.claude.json",c=>{c.hasCompletedOnboarding=true;c.bypassPermissionsModeAccepted=true;`,
   `c.projects=c.projects&&typeof c.projects==="object"?c.projects:{};`,
   `c.projects["/workspace/repo"]=Object.assign({},c.projects["/workspace/repo"],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true})});`,
@@ -191,6 +196,25 @@ export const claudeOnboardingSeed = (
   `export IS_SANDBOX=1 DISABLE_AUTOUPDATER=1; exec "$@"`;
 
 export const CLAUDE_ONBOARDING_SEED = claudeOnboardingSeed();
+
+/**
+ * Antigravity's (`agy`) terminal, as Claude's and Codex's are (SLNT-1277). The folder trust
+ * prompt is pre-answered: the user made that decision when they adopted the repo, and agy keeps it
+ * in its CLI settings' `trustedWorkspaces`. And the project every conversation `agy acp` starts
+ * belongs to, `default-cli-project`, is written when missing: `agy acp` never writes it, so a
+ * conversation reopened in the terminal (a mode switch) read "Invalid Project … Use /fork", and a
+ * fork leaves the conversation. agy's own terms screen is the person's to answer. Never fails the
+ * launch.
+ */
+export const ANTIGRAVITY_SEED = `node -e '${[
+  `const fs=require("fs"),os=require("os"),path=require("path"),crypto=require("crypto"),h=os.homedir();`,
+  `fs.mkdirSync(h+"/.gemini/antigravity-cli",{recursive:true});fs.mkdirSync(h+"/.gemini/config/projects",{recursive:true});`,
+  SEED_JSON_HELPERS,
+  `merge(h+"/.gemini/antigravity-cli/settings.json",s=>{const w=Array.isArray(s.trustedWorkspaces)?s.trustedWorkspaces:[];`,
+  `if(!w.includes(${JSON.stringify(WORKSPACE_REPO)}))s.trustedWorkspaces=[...w,${JSON.stringify(WORKSPACE_REPO)}]});`,
+  `try{fs.writeFileSync(h+"/.gemini/config/projects/default-cli-project.json",`,
+  `JSON.stringify({id:"default-cli-project",name:"CLI Project",projectResources:{}},null,2),{flag:"wx"})}catch{}`,
+].join("")}' 2>/dev/null; exec "$@"`;
 
 /**
  * Codex's per-project trust prompt, pre-answered the same way: the user made the trust decision
@@ -674,5 +698,6 @@ export const withHarnessSetup = (
   if (harness === "pi") {
     return ["sh", "-c", options.person === true ? PI_PERSON_SEED : PI_SEED, "sh", ...argv];
   }
+  if (harness === "antigravity") return ["sh", "-c", ANTIGRAVITY_SEED, "sh", ...argv];
   return argv;
 };

@@ -18,6 +18,7 @@ import {
   CODEX_SYSTEM_CONFIG_TEXT_V2,
   CODEX_SYSTEM_CONFIG_TEXT_V3,
   CODEX_SYSTEM_CONFIG_TEXTS_WRITTEN,
+  ANTIGRAVITY_SEED,
   CODEX_TRUST_SEED,
   codexSystemConfigScript,
   COPY_REFRESH_TOKEN,
@@ -904,6 +905,44 @@ describe("Codex's system default: no sandbox of its own in a workspace", () => {
     fs.mkdirSync(locked, { mode: 0o500 });
     runCodexSystemConfig(path.join(locked, "codex", "config.toml"));
     expect(fs.readdirSync(locked)).toEqual([]);
+  });
+});
+
+describe("antigravity seed (SLNT-1277)", () => {
+  it("trusts the workspace and writes agy's default project once, keeping what is there", () => {
+    const home = makeHome();
+    const settings = path.join(home, ".gemini", "antigravity-cli", "settings.json");
+    const project = path.join(home, ".gemini", "config", "projects", "default-cli-project.json");
+    write(settings, JSON.stringify({ trustedWorkspaces: ["/elsewhere"], theme: "dark" }));
+    expect(runSeed(ANTIGRAVITY_SEED, home)).toBe("ran \n");
+    expect(JSON.parse(fs.readFileSync(settings, "utf8"))).toEqual({
+      trustedWorkspaces: ["/elsewhere", "/workspace/repo"],
+      theme: "dark",
+    });
+    expect(JSON.parse(fs.readFileSync(project, "utf8"))).toEqual({
+      id: "default-cli-project",
+      name: "CLI Project",
+      projectResources: {},
+    });
+    // Already there: neither file changes, and agy's own project record is never replaced.
+    write(
+      project,
+      JSON.stringify({ id: "default-cli-project", name: "Mine", projectResources: {} }),
+    );
+    const before = fs.readFileSync(settings, "utf8");
+    runSeed(ANTIGRAVITY_SEED, home);
+    expect(fs.readFileSync(settings, "utf8")).toBe(before);
+    expect(JSON.parse(fs.readFileSync(project, "utf8")).name).toBe("Mine");
+  });
+
+  it("starts agy on an empty home", () => {
+    const home = makeHome();
+    expect(runSeed(ANTIGRAVITY_SEED, home)).toBe("ran \n");
+    expect(
+      JSON.parse(
+        fs.readFileSync(path.join(home, ".gemini", "antigravity-cli", "settings.json"), "utf8"),
+      ).trustedWorkspaces,
+    ).toEqual(["/workspace/repo"]);
   });
 });
 
