@@ -2776,7 +2776,7 @@ export class PreReleaseMigrationError extends Schema.TaggedError<PreReleaseMigra
  * the words.
  */
 export const SteererLogin = Schema.Struct({
-  provider: Schema.Literals(["claude", "codex"]),
+  provider: Schema.Literals(["claude", "codex", "antigravity"]),
   state: Schema.Literals(["missing", "invalid", "unchosen"]),
 });
 export type SteererLogin = typeof SteererLogin.Type;

@@ -137,7 +137,7 @@ export interface HandoffIo {
   readonly ask: (question: string) => Promise<boolean>;
 }
 
-const HARNESSES: ReadonlyArray<string> = ["claude", "codex", "opencode", "pi"];
+const HARNESSES: ReadonlyArray<string> = ["claude", "codex", "antigravity", "opencode", "pi"];
 
 export interface HandoffArgs {
   readonly prompt: string | null;

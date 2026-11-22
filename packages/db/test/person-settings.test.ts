@@ -150,6 +150,13 @@ describe.skipIf(postgres.skip)("a person's own settings, in Postgres", () => {
         expect(yield* defaults.set("cleo", chosen)).toEqual(chosen);
         expect(yield* defaults.forUser("cleo")).toEqual(chosen);
         expect(yield* defaults.adopt("cleo", laptop)).toEqual({ saved: chosen, adopted: false });
+
+        const antigravity = new SessionDefaults({
+          harness: "antigravity",
+          byHarness: { antigravity: { model: "gemini-4-argon", effort: "high" } },
+        });
+        expect(yield* defaults.set("cleo", antigravity)).toEqual(antigravity);
+        expect(yield* defaults.forUser("cleo")).toEqual(antigravity);
       }),
     );
   });

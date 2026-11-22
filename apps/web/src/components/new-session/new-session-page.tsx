@@ -193,7 +193,7 @@ function NoLoginNotice({ touch = false }: { readonly touch?: boolean }) {
       )}
     >
       <KeyRoundIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-      <span className="min-w-0 flex-1">Add a Claude Code or Codex login to start a session.</span>
+      <span className="min-w-0 flex-1">Add an agent login to start a session.</span>
       <Link {...AGENT_LOGINS} className="shrink-0 font-medium text-primary hover:underline">
         Add agent login
       </Link>

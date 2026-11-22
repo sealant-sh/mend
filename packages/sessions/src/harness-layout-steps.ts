@@ -902,7 +902,7 @@ export const ownerMapRefusalOf = (error: SealantPlatformError): string | null =>
 /** What a POST names for the launcher's create-time logins, put elsewhere (decision 1's fallback). */
 const homeLoginsOf = (credentials: WorkspaceCredentialsOptions | undefined): HomeLogins => {
   const logins: HomeLogins = {};
-  for (const provider of ["claude", "codex", "github"] as const) {
+  for (const provider of ["claude", "codex", "antigravity", "github"] as const) {
     const choice = credentials?.[provider];
     if (choice === true || typeof choice === "string") logins[provider] = choice;
   }
