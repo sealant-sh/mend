@@ -668,21 +668,18 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   `join-line`
 - **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box) with a live `mend run`
   session in it
-- **Do:** Run `project-setup.json` without its `01-codex-login` step, and drive the recipe
-  `project`: a project's page with its header, facts and tabs; the Sessions tab's search, Filter,
-  Mine or Everyone and Open or Stopped, kept in the address across a reload; a row's "…" starts a
-  shell and another session in its worktree; Open shell starts one in a new worktree; the "…" opens
-  Set up this project, which starts a setup session; an empty project; a clone's page while it runs;
-  the old setup page's address; a project that fails to load.
+- **Do:** Run `project-setup.json` step by step without its `01-codex-login` step, with each
+  `--name` suffixed `-<sha8>` (`project-ended-<sha8>`, `project-stopped-<sha8>`,
+  `project-running-<sha8>`), then drive the recipe with `PROJECT_PAGE_SUFFIX=-<sha8>`. The data
+  holds worktrees of the plain names whose captures it lacks, and Mend refuses a name it has seen,
+  even after the worktree is removed (SLNT-1267). The recipe `project`: a project's page with its
+  header, facts and tabs; the Sessions tab's search, Filter, Mine or Everyone and Open or Stopped,
+  kept in the address across a reload; a row's "…" starts a shell and another session in its
+  worktree; Open shell starts one in a new worktree; the "…" opens Set up this project, which starts
+  a setup session; an empty project; a clone's page while it runs; the old setup page's address; a
+  project that fails to load. Then `M stop` the batch's `project-running-<sha8>` session.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; every session the recipe
   started is stopped, and every project it made is purged, at its end.
-- **Waiting on:** SLNT-1206 · the batch and the recipe name their worktrees `project-ended`,
-  `project-stopped` and `project-running`. The run's data holds three worktrees of those names whose
-  captures are not in its blob store, so each launch in them fails at readiness (sealantd's
-  `capture plan.get` HTTP 500); and removing them does not free the names, since Mend keeps a
-  removed worktree's branch (`branch "mend/project-ended" already exists in this project`, tried on
-  a copy on 22 Nov). Until the recipe and batch take names of the run's own, the flow fails at its
-  `project-running` row and is known (SLNT-1267).
 - **Mode:** `scripted` (recipes/project.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/`,
@@ -3341,9 +3338,9 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | t3-gateway              | all                                                                                                                                                                                                                     | its recipe needs a local stack's gateway                                                                                                                          |
 
 Flows: 141 total (22 Nov) · 74 scripted · 67 agent · 26 box-only · 2 with a `Not on the box:` line
-(`shared-control.ask-and-grant`, `shared-control.new-web-ask-and-grant`) · 5 with a `Waiting on:`
+(`shared-control.ask-and-grant`, `shared-control.new-web-ask-and-grant`) · 4 with a `Waiting on:`
 line (`project-settings.read`, `models.list-picker`, `review-change.web-comments`,
-`shared-control.refuse-script`, and `adopt-project.new-web-project-page` on SLNT-1206). Features: 42
-with a flow, 12 only in Not on the box (doppler, workspace-replace, observed-agents,
-terminal-agent-waits, uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack,
-t3-gateway): 54 of the map's 54 mapped features placed, none left over.
+`shared-control.refuse-script`). Features: 42 with a flow, 12 only in Not on the box (doppler,
+workspace-replace, observed-agents, terminal-agent-waits, uninstall, pi-profile, mend-toml,
+desktop-app, mobile-app, vscode, slack, t3-gateway): 54 of the map's 54 mapped features placed, none
+left over.

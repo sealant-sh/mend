@@ -16,6 +16,14 @@
 // survive a reload; Set up this project, its no-agent state and its start; an empty project; a
 // clone's page while it runs and its move to the project; the old setup page's address; a project
 // that fails to load and one that doesn't exist; the phone width.
+//
+// On a server whose data already holds the batch's worktrees (a check VM copy of the daily run's
+// data), run the batch with every `--name` suffixed and pass the suffix:
+// PROJECT_PAGE_SUFFIX=-<sha8>. Mend refuses a worktree name it has seen, even after that worktree
+// is removed, and the saved ones' captures are not in the copy's blob store (SLNT-1267).
+const SUFFIX = process.env.PROJECT_PAGE_SUFFIX ?? "";
+const RUNNING = `project-running${SUFFIX}`;
+const STOPPED = `project-stopped${SUFFIX}`;
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 // Big enough (about 40 seconds) to watch a clone's page.
@@ -96,11 +104,15 @@ export default async ({ page, web, capture, note }) => {
       return route.fulfill({ response, json: body });
     });
   const started = [];
-  /** The session page a start opened, as its id. */
+  /** The session page a start opened, as its id. An instant start (SLNT-1239) opens the page at a
+   * `starting-…` draft id first, which nothing can stop: wait for the session's own id. */
   const landedOnSession = async (what) => {
     const id = await waitFor(
       `${what} opening its session`,
-      () => /^\/sessions\/([^/]+)$/.exec(path())?.[1],
+      () => {
+        const opened = /^\/sessions\/([^/]+)$/.exec(path())?.[1];
+        return opened?.startsWith("starting-") ? undefined : opened;
+      },
       60,
     );
     started.push(id);
@@ -150,10 +162,13 @@ export default async ({ page, web, capture, note }) => {
   const runningRow = table
     .getByRole("row")
     // By its worktree's cell: an unnamed `mend run` session reads New session since SLNT-1230.
-    .filter({ has: page.getByRole("cell", { name: "project-running", exact: true }) })
+    .filter({ has: page.getByRole("cell", { name: RUNNING, exact: true }) })
     .filter({ has: page.getByRole("cell", { name: "Running", exact: true }) })
     .first();
   await runningRow.waitFor();
+  // The phone's rows name no worktree (an unnamed `mend run` session reads New session), so the
+  // running row is found there by its session's link.
+  const runningHref = await runningRow.getByRole("link").first().getAttribute("href");
   note(
     `project-page: /projects/${fixture.id} shows verify-fixture, the tabs ${(await nav.innerText()).replace(/\s+/g, " ")}, and the facts ${facts.replace(/\s+/g, " ")}`,
   );
@@ -163,14 +178,14 @@ export default async ({ page, web, capture, note }) => {
 
   // The filters live in the address, and survive a reload.
   const search = visible(page.getByRole("searchbox", { name: "Search sessions" }));
-  await search.fill("project-running");
-  await page.waitForURL(/[?&]q=project-running/);
+  await search.fill(RUNNING);
+  await page.waitForURL((url) => url.searchParams.get("q") === RUNNING);
   await text(/of \d+ open sessions? match/).waitFor();
   await both("filtered-desktop");
   await page.reload();
   await hydrated();
   await text(/of \d+ open sessions? match/).waitFor();
-  if ((await search.inputValue()) !== "project-running")
+  if ((await search.inputValue()) !== RUNNING)
     throw new Error("the search didn't survive a reload");
   note(`filters in the address: ${page.url()} keeps the search across a reload`);
   await button("Clear filters").click();
@@ -180,38 +195,38 @@ export default async ({ page, web, capture, note }) => {
   await page.getByRole("tab", { name: "Stopped" }).click();
   await page.waitForURL(/show=stopped/);
   // project-ended changed a file, so it waits under Open, for review; project-stopped changed none.
-  await table.getByRole("row").filter({ hasText: "project-stopped" }).waitFor();
+  await table.getByRole("row").filter({ hasText: STOPPED }).waitFor();
   await both("stopped-mine-desktop");
   await button("Filter sessions").click();
   await page.getByRole("menuitemradio", { name: "Any agent" }).waitFor();
   await capture("filter-menu-desktop-light");
   await page.keyboard.press("Escape");
-  note(`Mine and Stopped: ${page.url()} lists project-stopped, which ended with no change`);
+  note(`Mine and Stopped: ${page.url()} lists ${STOPPED}, which ended with no change`);
   await page.getByRole("tab", { name: "Everyone" }).click();
   await page.getByRole("tab", { name: "Open" }).click();
   await page.waitForURL((url) => url.search === "");
 
   // start-in-worktree and shell-session-web from a row's "…".
   await runningRow.getByRole("button", { name: /^Actions for / }).click();
-  await menuitem(/^New session in project-running/).hover();
+  await menuitem(new RegExp(`^New session in ${RUNNING}`)).hover();
   await menuitem("Codex").waitFor();
   await capture("row-menu-desktop-light");
   const join = await page.getByText(/session is running in this worktree/).count();
   note(
-    `join-line: ${join === 0 ? "absent, as it should be: only this account's sessions run in project-running" : "shown"}`,
+    `join-line: ${join === 0 ? `absent, as it should be: only this account's sessions run in ${RUNNING}` : "shown"}`,
   );
   await menuitem("Codex").click();
-  const inWorktree = await landedOnSession("New session in project-running");
+  const inWorktree = await landedOnSession(`New session in ${RUNNING}`);
   const inWorktreeRead = await call("sessions.detail", { id: inWorktree }).catch(() => null);
   note(
-    `start-in-worktree: New session in project-running → Codex opened /sessions/${inWorktree}${inWorktreeRead === null ? "" : ` (harness ${inWorktreeRead.session?.harness ?? "?"}, worktree ${inWorktreeRead.session?.branch ?? "?"})`}`,
+    `start-in-worktree: New session in ${RUNNING} → Codex opened /sessions/${inWorktree}${inWorktreeRead === null ? "" : ` (harness ${inWorktreeRead.session?.harness ?? "?"}, worktree ${inWorktreeRead.session?.branch ?? "?"})`}`,
   );
   await go(`/projects/${fixture.id}`);
   await runningRow.waitFor();
   await runningRow.getByRole("button", { name: /^Actions for / }).click();
-  await menuitem(/^Open shell in project-running/).click();
-  const shellIn = await landedOnSession("Open shell in project-running");
-  note(`shell-session-web: Open shell in project-running opened /sessions/${shellIn}`);
+  await menuitem(new RegExp(`^Open shell in ${RUNNING}`)).click();
+  const shellIn = await landedOnSession(`Open shell in ${RUNNING}`);
+  note(`shell-session-web: Open shell in ${RUNNING} opened /sessions/${shellIn}`);
 
   // Open shell in the header, in a new worktree; then the project's "…".
   await go(`/projects/${fixture.id}`);
@@ -255,7 +270,8 @@ export default async ({ page, web, capture, note }) => {
     }),
   );
   note("fixture, no agent connected: the dialog links to Agent logins and Start stays off");
-  // The old setup page's address opens the dialog; the start is held a moment to see Starting….
+  // The old setup page's address opens the dialog. Since instant start (SLNT-1239) the dialog may
+  // close and open the session at once, with no Starting… to see: either shows the start.
   await go(`/projects/${fixture.id}/setup-session`);
   await page.waitForURL(/[?&]setup=/);
   if (path() !== `/projects/${fixture.id}`) throw new Error(`setup-session went to ${page.url()}`);
@@ -266,8 +282,15 @@ export default async ({ page, web, capture, note }) => {
     await route.continue();
   });
   await dialog().getByRole("button", { name: "Start setup session" }).click();
-  await dialog().getByRole("button", { name: "Starting…" }).waitFor();
-  await capture("setup-starting-desktop-light");
+  const startingShown = await dialog()
+    .getByRole("button", { name: "Starting…" })
+    .waitFor({ timeout: 10_000 })
+    .then(() => true)
+    .catch(() => false);
+  if (startingShown) await capture("setup-starting-desktop-light");
+  note(
+    `Start setup session: ${startingShown ? "the dialog read Starting…" : "the session opened at once (instant start)"}`,
+  );
   const setupSession = await landedOnSession("Start setup session");
   await page.unroute(starts);
   const setupRead = await call("sessions.detail", { id: setupSession }).catch(() => null);
@@ -300,7 +323,7 @@ export default async ({ page, web, capture, note }) => {
     page
       .getByRole("list", { name: "Sessions" })
       .getByRole("listitem")
-      .filter({ hasText: "project-running" }),
+      .filter({ has: page.locator(`a[href="${runningHref}"]`) }),
   );
   await phoneRow.getByRole("button", { name: /^Actions for / }).click();
   await visible(page.getByRole("menuitem", { name: /^Open shell in/ })).waitFor();
