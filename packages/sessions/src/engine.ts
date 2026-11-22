@@ -410,7 +410,7 @@ import type {
   WorkspaceExecResult,
   WorkspacePhase,
 } from "@sealant/sdk";
-import { claudeCode, codex, opencode } from "@sealant/sdk";
+import { antigravity, claudeCode, codex, opencode } from "@sealant/sdk";
 import {
   Cause,
   Clock,
@@ -1061,6 +1061,13 @@ const promptArgv = (
         return [...launch.argv, ...model, "--prompt"];
       case "pi":
         return [...launch.argv, ...model, ...(effort === null ? [] : ["--thinking", effort])];
+      case "antigravity":
+        return [
+          ...launch.argv,
+          ...model,
+          ...(effort === null ? [] : ["--effort", effort]),
+          "--prompt-interactive",
+        ];
       default:
         return null;
     }
@@ -1125,6 +1132,25 @@ const platformShape = (
         credentialAttempts: selectedOnly
           ? withGitHubCredentialFallback({ claude: true })
           : withOtherAgentLogin("claude", "codex"),
+        starts: harness,
+      };
+    case "antigravity":
+      return {
+        harness: antigravity(),
+        credentialAttempts: selectedOnly
+          ? withGitHubCredentialFallback({ antigravity: true })
+          : [
+              { antigravity: true, claude: true, codex: true, github: true },
+              { antigravity: true, codex: true, github: true },
+              { antigravity: true, claude: true, github: true },
+              { antigravity: true, github: true },
+              { antigravity: true, claude: true, codex: true },
+              { antigravity: true, codex: true },
+              { antigravity: true, claude: true },
+              { antigravity: true },
+              { github: true },
+              undefined,
+            ],
         starts: harness,
       };
     case "shell":

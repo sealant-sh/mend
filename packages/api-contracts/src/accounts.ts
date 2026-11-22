@@ -10,7 +10,12 @@ import { AccountRejected, SealantUnavailable } from "./system.ts";
 // ─── Connected-account wire shapes (served by the API, spoken by @mend/sealant) ──
 
 /** The providers Sealant can hold credentials for. GitHub is a credential, not a model provider. */
-export const ConnectedAccountProvider = Schema.Literals(["claude", "codex", "github"]);
+export const ConnectedAccountProvider = Schema.Literals([
+  "claude",
+  "codex",
+  "github",
+  "antigravity",
+]);
 export type ConnectedAccountProvider = typeof ConnectedAccountProvider.Type;
 
 export const ConnectedAccountStatus = Schema.Literals(["active", "invalid", "archived"]);
@@ -75,6 +80,8 @@ export class ConnectAccountInput extends Schema.Class<ConnectAccountInput>("Conn
       if (input.login !== "api-key") return undefined;
       if (input.provider === "github")
         return { path: ["login"], issue: "GitHub takes a token, not an API key." };
+      if (input.provider === "antigravity")
+        return { path: ["login"], issue: "Antigravity takes a Google login, not an API key." };
       return /\s/.test(input.secret)
         ? { path: ["secret"], issue: "An API key has no spaces or line breaks." }
         : undefined;

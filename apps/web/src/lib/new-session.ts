@@ -22,6 +22,7 @@ import { createCookieStore } from "./cookie-store.ts";
 export const AGENTS = [
   { id: "claude", label: "Claude Code", login: "claude" },
   { id: "codex", label: "Codex", login: "codex" },
+  { id: "antigravity", label: "Antigravity", login: "antigravity" },
   // opencode and pi run on the ChatGPT login Mend writes for Codex.
   { id: "opencode", label: "opencode", login: "codex" },
   { id: "pi", label: "pi", login: "codex" },
@@ -33,6 +34,7 @@ type LoginProvider = (typeof AGENTS)[number]["login"];
 const LOGIN_LABELS: Readonly<Record<LoginProvider, string>> = {
   claude: "Claude Code",
   codex: "Codex",
+  antigravity: "Antigravity",
 };
 
 const isAgent = (value: string | null): value is Agent =>

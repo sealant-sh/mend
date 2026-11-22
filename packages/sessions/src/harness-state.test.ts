@@ -59,6 +59,13 @@ const SEALANTD_HARNESS_CREDENTIALS = [
   ".pi/agent/crashes.json",
   ".pi/agent/mend/profile/root/mcp.json",
   ".mend/pi-profile-kept/",
+  ".gemini/antigravity-cli/antigravity-oauth-token",
+  ".gemini/antigravity-acp/antigravity-oauth-token",
+  ".gemini/config/mcp_config.json",
+  ".gemini/antigravity-cli/log/",
+  ".gemini/antigravity-cli/crashes/",
+  ".gemini/antigravity-acp/log/",
+  ".gemini/antigravity-acp/crashes/",
 ];
 
 /** sealantd's `HARNESS_MACHINE_STATE`, the same way: never saved, and not credentials. */
@@ -66,6 +73,12 @@ const SEALANTD_HARNESS_MACHINE_STATE = [
   ".codex/packages/",
   ".codex/app-server-daemon/",
   ".codex/app-server-control/",
+  ".gemini/antigravity-cli/builtin/",
+  ".gemini/antigravity-cli/updater/",
+  ".gemini/antigravity-cli/presence/",
+  ".gemini/antigravity-cli/installation_id",
+  ".gemini/antigravity-cli/last_check.timestamp",
+  ".gemini/antigravity-cli/cli.log",
 ];
 
 const machineStateEntries = Object.entries(HARNESS_MACHINE_STATE).flatMap(([harness, entries]) =>
@@ -729,6 +742,7 @@ describe("the co-located harvest keeps no login", () => {
       put(".claude/projects/-workspace-repo/s.jsonl", "{}\n");
       put(".codex/sessions/2026/10/13/rollout-session.jsonl", '{"type":"session_meta"}\n');
       put(".pi/agent/settings.json", "{}");
+      put(".gemini/antigravity-cli/conversations/s.db", "conversation");
       for (const [harness, shape] of Object.entries(HARNESS_STATE)) {
         const packed = spawnSync(
           "sh",

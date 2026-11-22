@@ -24,6 +24,7 @@ import {
   type AgentLoginState,
   arrivedToast,
   connectCommand,
+  isKeyAgent,
   loginArrived,
   loginLine,
 } from "#/lib/agent-login";
@@ -134,6 +135,7 @@ export function AgentLoginsPage() {
 const PROVIDER_NAMES: Readonly<Record<ConnectedAccount["provider"], string>> = {
   claude: AGENT_FACTS.claude.name,
   codex: AGENT_FACTS.codex.name,
+  antigravity: AGENT_FACTS.antigravity.name,
   github: "GitHub",
 };
 
@@ -261,6 +263,7 @@ function LoginDialog({
   const formId = useId();
   const name = PROVIDER_NAMES[provider];
   const agent: Agent | null = provider === "github" ? null : provider;
+  const keyAgent = isKeyAgent(agent) ? agent : null;
   const announced = useRef(false);
   const announce = (words: string) => {
     if (announced.current) return;
@@ -268,11 +271,11 @@ function LoginDialog({
     toast.add({ description: words, priority: "low" });
     onClose();
   };
-  const save = useApiKeySave(agent ?? "claude", () =>
+  const save = useApiKeySave(keyAgent ?? "claude", () =>
     announce(
-      agent === null
+      keyAgent === null
         ? `${name} is connected.`
-        : `${AGENT_FACTS[agent].name} is connected with an ${AGENT_FACTS[agent].issuer} API key.`,
+        : `${AGENT_FACTS[keyAgent].name} is connected with an ${AGENT_FACTS[keyAgent].issuer} API key.`,
     ),
   );
   const arrived = login.kind === "connected" && loginArrived(login, opened) ? login.account : null;
@@ -307,7 +310,7 @@ function LoginDialog({
           <Button variant="outline" className={CONTROL} onClick={onClose}>
             Cancel
           </Button>
-          {mode === "key" && agent !== null ? (
+          {mode === "key" && keyAgent !== null ? (
             <Button
               type="submit"
               form={formId}
@@ -320,7 +323,7 @@ function LoginDialog({
         </>
       }
     >
-      {mode === "command" || agent === null ? (
+      {mode === "command" || keyAgent === null ? (
         <>
           <p className="text-prose text-pretty text-foreground">
             {provider === "github" ? (
@@ -340,7 +343,7 @@ function LoginDialog({
             <p role="status" className="text-row text-muted-foreground">
               Waiting for {name} to connect · {waitedFor(openedAt, now)}
             </p>
-            {agent !== null && apiKeys ? (
+            {keyAgent !== null && apiKeys ? (
               <p className="text-row text-muted-foreground">
                 {phone ? "No computer with you? " : null}
                 <Button
@@ -357,7 +360,7 @@ function LoginDialog({
       ) : (
         <>
           <ApiKeyField
-            agent={agent}
+            agent={keyAgent}
             save={save}
             phone={phone}
             now={now}
@@ -365,9 +368,9 @@ function LoginDialog({
             formId={formId}
             help={
               <>
-                Mend checks the key with {AGENT_FACTS[agent].issuer} before saving it. After that,
-                nobody can read it back, you included. Create a key in{" "}
-                <KeyConsoleLink agent={agent} />.
+                Mend checks the key with {AGENT_FACTS[keyAgent].issuer} before saving it. After
+                that, nobody can read it back, you included. Create a key in{" "}
+                <KeyConsoleLink agent={keyAgent} />.
               </>
             }
           />

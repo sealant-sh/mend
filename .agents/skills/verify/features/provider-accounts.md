@@ -29,9 +29,10 @@ marked as needing a reconnect, and Mend says so in the web app, `mend accounts` 
 ## How to get to it (user POV)
 
 - Web: Settings (`/settings#accounts`), the heading `Connected accounts`, one row each for `Claude`,
-  `Codex` and `GitHub`. While nothing is adopted, the Now page's first-run row
-  `Connect your accounts` reads `none connected` or `<n> connected` and links `Settings → Accounts`.
-- CLI: `mend connect <claude|codex|github> [--use-my-login] [--from-stdin] [--remove]`,
+  `Codex`, `Antigravity` and `GitHub` (Antigravity supports Google sign-in only, with no API-key
+  option). While nothing is adopted, the Now page's first-run row `Connect your accounts` reads
+  `none connected` or `<n> connected` and links `Settings → Accounts`.
+- CLI: `mend connect <claude|codex|antigravity|github> [--use-my-login] [--from-stdin] [--remove]`,
   `mend accounts`, `mend agent-logins [all|selected]`, and the provider lines of `mend doctor`.
 - Desktop: Settings (the title bar's `Settings` link) → `Connected accounts`, shown while signed in:
   the same three rows with `Connect`, `Replace` and `Disconnect`, taking a pasted credential.

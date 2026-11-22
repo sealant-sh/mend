@@ -391,6 +391,7 @@ const READS: Readonly<Record<string, Reads>> = {
   "clipboard.ts fromMac": CHILD,
   "clipboard.ts fromWayland": CHILD,
   "clipboard.ts fromX11": CHILD,
+  "antigravity-grant.ts runAntigravityLogin": CHILD,
   "codex-grant.ts runCodexDeviceLogin": CHILD,
   "connect-executor.ts connectExecutor": { pages: ["connect executor"] },
   "docker-shutdown.ts hostDockerDaemonFacts": CHILD,

@@ -178,6 +178,8 @@ export const conversationFilesOf = (
           /^\.pi\/agent\/sessions\/[^/]+\/[^/]+\.jsonl$/.test(relative) &&
           relative.endsWith(`_${id}.jsonl`)
         );
+      case "antigravity":
+        return relative === `.gemini/antigravity-cli/conversations/${id}.db`;
       default:
         return false;
     }

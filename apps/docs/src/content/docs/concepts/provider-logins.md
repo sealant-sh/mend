@@ -178,35 +178,42 @@ suffix (`auth.json.lock`, a write's temporary) are left out with it. The Sealant
 bundles (with sealantd#136) applies this list. An older runtime leaves out only
 `.claude/.credentials.json`, `.codex/auth.json`, and pi's and opencode's `auth.json`.
 
-| Path                                   | Agent       | Holds                                                                                       |
-| -------------------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
-| `.claude/.credentials.json`            | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets                |
-| `.claude/.device-keys.json`            | Claude Code | device private keys (Remote Control, trusted devices)                                       |
-| `.claude/backups/`                     | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env                   |
-| `.claude/shell-snapshots/`             | Claude Code | the shell's functions and aliases, any secret written in them included                      |
-| `.claude/session-env/`                 | Claude Code | what hooks export for the session                                                           |
-| `.claude/ide/`                         | Claude Code | IDE connection tokens                                                                       |
-| `.claude/sessions/`                    | Claude Code | each running process's local messaging token                                                |
-| `.claude/file-history/`                | Claude Code | a copy of every file Claude Code edits, a secret file included                              |
-| `.claude/remote-settings.json`         | Claude Code | an organization's managed settings, `env` included                                          |
-| `.codex/auth.json`                     | Codex       | the ChatGPT login or API key                                                                |
-| `.codex/.credentials.json`             | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)                 |
-| `.codex/secrets/`                      | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)                              |
-| `.codex/shell_snapshots/`              | Codex       | every exported environment variable with its value (a token, a dotfile's export)            |
-| `.local/share/opencode/auth.json`      | opencode    | provider logins and API keys                                                                |
-| `.local/share/opencode/mcp-auth.json`  | opencode    | MCP server OAuth tokens and client secrets                                                  |
-| `.local/share/opencode/repos/`         | opencode    | reference repositories, a clone URL's credentials in their git config                       |
-| `.local/share/opencode/log/`           | opencode    | logs, a failed clone's URL with its credentials included                                    |
-| `.pi/agent/auth.json`                  | pi          | provider logins and API keys                                                                |
-| `.pi/agent/mcp-auth.json`              | pi          | MCP server OAuth tokens and client secrets                                                  |
-| `.pi/agent/oauth.json`                 | pi          | provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy    |
-| `.pi/agent/mcp-oauth/`                 | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                                            |
-| `.pi/agent/mcp-oauth-encrypted/`       | pi          | the same, encrypted with a person's key                                                     |
-| `.pi/agent/mcp.json`                   | pi          | MCP servers, with the headers, env and client secrets typed into them                       |
-| `.pi/agent/tmp/`                       | pi          | packages a launch loads for itself from git, a source URL's credentials in their git config |
-| `.pi/agent/crashes.json`               | pi          | error messages and stacks as they were, a secret in one included                            |
-| `.pi/agent/mend/profile/root/mcp.json` | pi          | the same, as Mend delivered it from a person's pi profile                                   |
-| `.mend/pi-profile-kept/`               | pi          | pi profiles Mend set aside, their `mcp.json` included                                       |
+| Path                                              | Agent       | Holds                                                                                       |
+| ------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------- |
+| `.claude/.credentials.json`                       | Claude Code | the Claude login, MCP server OAuth tokens and client secrets, plugin secrets                |
+| `.claude/.device-keys.json`                       | Claude Code | device private keys (Remote Control, trusted devices)                                       |
+| `.claude/backups/`                                | Claude Code | copies of `~/.claude.json`: a Console API key, MCP server headers and env                   |
+| `.claude/shell-snapshots/`                        | Claude Code | the shell's functions and aliases, any secret written in them included                      |
+| `.claude/session-env/`                            | Claude Code | what hooks export for the session                                                           |
+| `.claude/ide/`                                    | Claude Code | IDE connection tokens                                                                       |
+| `.claude/sessions/`                               | Claude Code | each running process's local messaging token                                                |
+| `.claude/file-history/`                           | Claude Code | a copy of every file Claude Code edits, a secret file included                              |
+| `.claude/remote-settings.json`                    | Claude Code | an organization's managed settings, `env` included                                          |
+| `.codex/auth.json`                                | Codex       | the ChatGPT login or API key                                                                |
+| `.codex/.credentials.json`                        | Codex       | MCP server OAuth tokens, where no OS keyring is available (every workspace)                 |
+| `.codex/secrets/`                                 | Codex       | encrypted logins and MCP tokens (the key is in the OS keyring)                              |
+| `.codex/shell_snapshots/`                         | Codex       | every exported environment variable with its value (a token, a dotfile's export)            |
+| `.local/share/opencode/auth.json`                 | opencode    | provider logins and API keys                                                                |
+| `.local/share/opencode/mcp-auth.json`             | opencode    | MCP server OAuth tokens and client secrets                                                  |
+| `.local/share/opencode/repos/`                    | opencode    | reference repositories, a clone URL's credentials in their git config                       |
+| `.local/share/opencode/log/`                      | opencode    | logs, a failed clone's URL with its credentials included                                    |
+| `.pi/agent/auth.json`                             | pi          | provider logins and API keys                                                                |
+| `.pi/agent/mcp-auth.json`                         | pi          | MCP server OAuth tokens and client secrets                                                  |
+| `.pi/agent/oauth.json`                            | pi          | provider OAuth tokens from before pi moved them to `auth.json`, and its `.migrated` copy    |
+| `.pi/agent/mcp-oauth/`                            | pi          | MCP OAuth tokens of the pi-mcp-adapter extension                                            |
+| `.pi/agent/mcp-oauth-encrypted/`                  | pi          | the same, encrypted with a person's key                                                     |
+| `.pi/agent/mcp.json`                              | pi          | MCP servers, with the headers, env and client secrets typed into them                       |
+| `.pi/agent/tmp/`                                  | pi          | packages a launch loads for itself from git, a source URL's credentials in their git config |
+| `.pi/agent/crashes.json`                          | pi          | error messages and stacks as they were, a secret in one included                            |
+| `.pi/agent/mend/profile/root/mcp.json`            | pi          | the same, as Mend delivered it from a person's pi profile                                   |
+| `.mend/pi-profile-kept/`                          | pi          | pi profiles Mend set aside, their `mcp.json` included                                       |
+| `.gemini/antigravity-cli/antigravity-oauth-token` | Antigravity | Google OAuth access and refresh tokens and account email                                    |
+| `.gemini/antigravity-acp/antigravity-oauth-token` | Antigravity | the same when `agy acp` uses `--app-data-dir antigravity-acp`                               |
+| `.gemini/config/mcp_config.json`                  | Antigravity | MCP server definitions, headers, env and secrets                                            |
+| `.gemini/antigravity-cli/log/`                    | Antigravity | CLI and ACP server logs, which can carry request URLs, headers or errors                    |
+| `.gemini/antigravity-cli/crashes/`                | Antigravity | crash dumps and stack traces                                                                |
+| `.gemini/antigravity-acp/log/`                    | Antigravity | ACP server logs under `--app-data-dir antigravity-acp`                                      |
+| `.gemini/antigravity-acp/crashes/`                | Antigravity | crash dumps under `--app-data-dir antigravity-acp`                                          |
 
 pi's `mcp.json` is on the list because it can carry the keys typed into its servers' headers and
 environment. The copy from your [pi profile](/guides/pi/) is written again at every launch, so yours
@@ -234,11 +241,17 @@ background server off (`-c features.daemon_auto_start=false`). A `codex` you typ
 terminal yourself unpacks its own copy of Codex and starts that server; Codex makes them again when
 it next needs them.
 
-| Path                         | Agent | Holds                                                       |
-| ---------------------------- | ----- | ----------------------------------------------------------- |
-| `.codex/packages/`           | Codex | the Codex runtime a hand-run `codex` unpacks (about 427 MB) |
-| `.codex/app-server-daemon/`  | Codex | the state of an app-server daemon running on that machine   |
-| `.codex/app-server-control/` | Codex | that daemon's control socket                                |
+| Path                                           | Agent       | Holds                                                                    |
+| ---------------------------------------------- | ----------- | ------------------------------------------------------------------------ |
+| `.codex/packages/`                             | Codex       | the Codex runtime a hand-run `codex` unpacks (about 427 MB)              |
+| `.codex/app-server-daemon/`                    | Codex       | the state of an app-server daemon running on that machine                |
+| `.codex/app-server-control/`                   | Codex       | that daemon's control socket                                             |
+| `.gemini/antigravity-cli/builtin/`             | Antigravity | builtin skills and plugins unpacked from the `agy` binary on first run   |
+| `.gemini/antigravity-cli/updater/`             | Antigravity | self-updater lock and status files (`update.lock`, `update_status.json`) |
+| `.gemini/antigravity-cli/presence/`            | Antigravity | per-process lock files for live conversations                            |
+| `.gemini/antigravity-cli/installation_id`      | Antigravity | machine-local installation UUID                                          |
+| `.gemini/antigravity-cli/last_check.timestamp` | Antigravity | updater last-check timestamp                                             |
+| `.gemini/antigravity-cli/cli.log`              | Antigravity | symlink to the latest log on that machine                                |
 
 ## When a login stops working
 

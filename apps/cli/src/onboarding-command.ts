@@ -144,7 +144,7 @@ export const connectStatusJson = async (api: ApiCall): Promise<CommandResult<unk
 export const connectJson = async (
   api: ApiCall,
   args: ReadonlyArray<string>,
-  readCredential: (provider: "claude" | "codex" | "github") => string | null,
+  readCredential: (provider: "claude" | "codex" | "github" | "antigravity") => string | null,
 ): Promise<CommandResult<unknown>> => {
   const [provider, ...flags] = args;
   if (provider === "status") return connectStatusJson(api);
@@ -170,16 +170,26 @@ export const connectJson = async (
       data: { provider, revision: saved.profile.revision, changed: saved.changed },
     };
   }
-  if (provider !== "claude" && provider !== "codex" && provider !== "github")
+  if (
+    provider !== "claude" &&
+    provider !== "codex" &&
+    provider !== "github" &&
+    provider !== "antigravity"
+  )
     return usage(
       "Choose a provider.",
-      "Run mend connect <claude|codex|github|pi> --json or mend connect status --json.",
+      "Run mend connect <claude|codex|antigravity|github|pi> --json or mend connect status --json.",
     );
   const apiKey = flags.includes("--api-key");
   if (apiKey && provider === "github")
     return usage(
       "GitHub takes a token, not an API key.",
       "Pipe gh auth token into mend connect github --from-stdin --json.",
+    );
+  if (apiKey && provider === "antigravity")
+    return usage(
+      "Antigravity takes a Google login, not an API key.",
+      "Run mend connect antigravity --use-my-login --json or pipe antigravity-oauth-token with --from-stdin.",
     );
   const endpoint = endpointOption(flags);
   if (endpoint.kind === "refused")

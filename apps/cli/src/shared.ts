@@ -15,6 +15,7 @@ export const HARNESS_COMMANDS: Record<string, ReadonlyArray<string>> = {
   claude: ["claude"],
   opencode: ["opencode"],
   pi: ["pi"],
+  antigravity: ["agy"],
   // Not a coding agent: a plain bash session in its own recorded worktree.
   shell: ["bash"],
 };

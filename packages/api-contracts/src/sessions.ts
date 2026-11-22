@@ -256,7 +256,7 @@ export class SessionNotSteerable extends Schema.TaggedError<SessionNotSteerable>
      */
     login: Schema.optionalKey(
       Schema.Struct({
-        provider: Schema.Literals(["claude", "codex"]),
+        provider: Schema.Literals(["claude", "codex", "antigravity"]),
         state: Schema.Literals(["missing", "invalid", "unchosen"]),
       }),
     ),

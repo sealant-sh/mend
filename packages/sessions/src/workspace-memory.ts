@@ -58,6 +58,8 @@ export const agentNameOf = (harness: string | null): string => {
       return "OpenCode";
     case "pi":
       return "pi";
+    case "antigravity":
+      return "Antigravity";
     default:
       return "the agent";
   }

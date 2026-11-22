@@ -1666,10 +1666,11 @@ lane changed.
 - **Needs:** no session; no turn; CLI and web; none
 - **Do:** `M accounts`; Settings → Connected accounts read only; `M agent-logins`, then
   `M agent-logins selected` and `M agent-logins all` to restore it in the same flow.
-- **See:** `codex   connected · …`; `github` `connected` or `not connected`, and `claude`
-  `connected`, `not connected` or `reconnect needed · the provider refused the login · …` (the
-  checker's Claude login is refused, left so by the owner: SLNT-1219), each recorded as found; the
-  web rows agree; `selected · …` after the change and `all · …` after the restore.
+- **See:** `codex   connected · …`; `github` and `antigravity` `connected` or `not connected`, and
+  `claude` `connected`, `not connected` or `reconnect needed · the provider refused the login · …`
+  (the checker's Claude login is refused, left so by the owner: SLNT-1219), each recorded as found;
+  the web rows agree (including Antigravity without an API-key option); `selected · …` after the
+  change and `all · …` after the restore.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/agent-logins.ts`, `apps/api/src/connections.ts`, `apps/web/src/`
@@ -1707,10 +1708,12 @@ lane changed.
 - **Needs:** no session; no turn; CLI and web; `<p>`
 - **Do:** `M models` and `M models --json`; on `/` pick `<p>` in the composer and open the agent
   menu, pick `codex`, read the `Model` and `Thinking` groups, `Escape`, and start nothing.
-- **See:** one block per harness; codex's block with `default` on one model, claude's and opencode's
-  with no `default` (neither names one, by design); JSON `"version": 1` with the same ids,
-  `defaultModel` set for codex and `null` for claude and opencode; codex's `Model` group with its
-  default row (`<label> default`) `aria-checked="true"`.
+- **See:** one block per harness (including `antigravity`); codex's and antigravity's blocks with
+  `default` on one model, claude's and opencode's with no `default` (neither names one, by design);
+  JSON `"version": 1` with the same ids, `defaultModel` set for codex and antigravity and `null` for
+  claude and opencode; codex's `Model` group with its default row (`<label> default`)
+  `aria-checked="true"`, and Antigravity selectable in the `Agent` menu with its seeded models and
+  thinking options.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/web/src/`, `apps/api/src/`

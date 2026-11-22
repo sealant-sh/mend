@@ -109,6 +109,7 @@ describe("mend accounts", spawning, () => {
         "platform user su-me",
         "  claude   connected · me@example.com · since 2026-09-18",
         "  codex    not connected",
+        "  antigravity not connected",
         "  github   connected · me · since 2026-09-18",
         "",
       ].join("\n"),

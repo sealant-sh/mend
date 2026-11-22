@@ -5987,4 +5987,21 @@ export const migrations = {
     yield* sql`ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS turn_id text`;
     yield* sql`ALTER TABLE checkpoints ADD COLUMN IF NOT EXISTS unconfirmed text`;
   }),
+  // Antigravity's models in the catalog (`HARNESS_MODEL_SEED.antigravity`, agy 1.5.14): Gemini 4
+  // Neon as default, plus the remaining models advertised by `agy acp` / `agy models`.
+  "0242_antigravity_models": Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`
+      INSERT INTO harness_models (harness, id, label, is_default, efforts, position) VALUES
+        ('antigravity', 'gemini-4-neon', 'Gemini 4 Neon', true, NULL, 0),
+        ('antigravity', 'gemini-4-argon', 'Gemini 4 Argon', false, '["low","medium","high"]'::jsonb, 1),
+        ('antigravity', 'gemini-4-hydrogen', 'Gemini 4 Hydrogen', false, NULL, 2),
+        ('antigravity', 'gemini-pro-orchestrator-neon', 'Orchestrator (Neon)', false, NULL, 3),
+        ('antigravity', 'gemini-pro-orchestrator-g1-pro', 'Orchestrator (Argon)', false, NULL, 4),
+        ('antigravity', 'gemini-3.8-flash', 'Gemini 3.8 Flash', false, '["low","medium","high"]'::jsonb, 5),
+        ('antigravity', 'claude-opus-5-5', 'Claude Opus 5.5', false, '["low","medium","high"]'::jsonb, 6),
+        ('antigravity', 'claude-sonnet-5-5', 'Claude Sonnet 5.5', false, '["low","medium","high"]'::jsonb, 7),
+        ('antigravity', 'gpt-oss-120b-medium', 'GPT-OSS 120B (Medium)', false, NULL, 8)
+      ON CONFLICT (harness, id) DO NOTHING`;
+  }),
 };

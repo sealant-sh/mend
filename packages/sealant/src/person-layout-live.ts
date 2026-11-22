@@ -121,6 +121,7 @@ const ACCOUNT_PROVIDER_OF: Readonly<Record<LoginProvider, string>> = {
   claude: "claude",
   codex: "codex",
   github: "github",
+  antigravity: "antigravity",
   pi: "codex",
   opencode: "codex",
 };

@@ -77,6 +77,7 @@ import {
   commentSend,
   landJson,
 } from "./agent-review-command.ts";
+import { antigravityCli, antigravityGrant, antigravityTokenPath } from "./antigravity-grant.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
   ownerNameOf,
@@ -2133,7 +2134,9 @@ const resolveLiveSession = async (
     project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
   const only = candidates[0];
   if (only === undefined) {
-    return fail("no live or retained session — start one with mend codex|claude|opencode|pi");
+    return fail(
+      "no live or retained session — start one with mend codex|claude|opencode|pi|antigravity",
+    );
   }
   if (candidates.length === 1) return only;
   if (!process.stdin.isTTY) {
@@ -3531,7 +3534,7 @@ const secretsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
 
 // ─── connect / accounts: the user's own provider credentials ────────────────
 
-type ConnectedAccountProvider = "claude" | "codex" | "github";
+type ConnectedAccountProvider = "claude" | "codex" | "github" | "antigravity";
 
 interface ConnectedAccountWire {
   readonly id: string;
@@ -3566,7 +3569,7 @@ const sealantIdentityOf = (wire: SealantIdentityWire): SealantIdentityDto => ({
 });
 
 const isProvider = (value: string | undefined): value is ConnectedAccountProvider =>
-  value === "claude" || value === "codex" || value === "github";
+  value === "claude" || value === "codex" || value === "github" || value === "antigravity";
 
 const readIfExists = (file: string) => (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null);
 
@@ -3585,6 +3588,8 @@ const localCredential = (provider: ConnectedAccountProvider): string | null => {
           ".credentials.json",
         ),
       );
+    case "antigravity":
+      return readIfExists(antigravityTokenPath(home));
     case "github": {
       const result = spawnSync("gh", ["auth", "token"], { encoding: "utf8" });
       const token = result.status === 0 ? result.stdout.trim() : "";
@@ -3609,7 +3614,7 @@ const accountFacts = (account: ConnectedAccountWire, classes = isKeyAccount(acco
     account.status === "active"
       ? "connected"
       : account.status === "invalid"
-        ? key && account.provider !== "github"
+        ? key && (account.provider === "claude" || account.provider === "codex")
           ? `reconnect needed · ${keyRefusedWords(account.provider)}`
           : "reconnect needed · the provider refused the login"
         : account.status,
@@ -3635,7 +3640,12 @@ const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> 
   const identity = sealantIdentityOf(
     await request<SealantIdentityWire>(config, "GET", "/me/sealant"),
   );
-  const providers: ReadonlyArray<ConnectedAccountProvider> = ["claude", "codex", "github"];
+  const providers: ReadonlyArray<ConnectedAccountProvider> = [
+    "claude",
+    "codex",
+    "antigravity",
+    "github",
+  ];
   return [
     `platform user ${identity.sealantUserId}`,
     ...providers.flatMap((provider) => {
@@ -3972,13 +3982,16 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
         );
     await api<ConnectedAccountWire>(config, "DELETE", `/me/sealant/accounts/${account.id}`);
     process.stdout.write(
-      isKeyAccount(account) && provider !== "github"
+      isKeyAccount(account) && (provider === "claude" || provider === "codex")
         ? `${provider}: disconnected · ${keyDisconnectWords(provider)}\n`
         : `${provider}: disconnected\n`,
     );
     return;
   }
   let secret: string | null;
+  if (apiKey && provider === "antigravity") {
+    return fail("antigravity: Antigravity takes a Google login, not an API key");
+  }
   if (apiKey && process.stdin.isTTY) {
     return fail(
       `${provider}: --api-key reads the key from stdin, so it never shows on screen → pipe it in from a password manager or the clipboard`,
@@ -4003,6 +4016,15 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     // Claude is holding (ADR 0005), made fresh and not kept (ADR 0008).
     secret = await claudeGrant();
     if (secret === null) return;
+  } else if (provider === "antigravity" && !flags.includes("--use-my-login")) {
+    const grant = antigravityGrant({
+      cli: antigravityCli(),
+      personalTokenJson: readIfExists(antigravityTokenPath()),
+      say,
+      parent: mendCliHome(),
+    });
+    if (grant.kind === "failed") return fail(grant.reason);
+    secret = grant.secret;
   } else {
     secret = localCredential(provider);
     if (secret === null) {
@@ -4011,10 +4033,12 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
           ? "`gh auth login` first, or pipe a token: gh auth token | mend connect github --from-stdin"
           : provider === "codex"
             ? "`codex login` first, or: mend connect codex --from-stdin < auth.json"
-            : "`claude auth login` first, or: mend connect claude --from-stdin";
+            : provider === "antigravity"
+              ? "`agy` first, or: mend connect antigravity --from-stdin < ~/.gemini/antigravity-cli/antigravity-oauth-token"
+              : "`claude auth login` first, or: mend connect claude --from-stdin";
       return fail(`${provider}: no credential on this machine — ${where}`);
     }
-    if (provider === "claude" || provider === "codex") {
+    if (provider === "claude" || provider === "codex" || provider === "antigravity") {
       say(
         dim(
           "  --use-my-login: Mend and this machine will share one login, and whichever refreshes second is signed out",
@@ -4039,7 +4063,8 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
     }),
   );
   process.stdout.write(`${redactCredentials(accountLine(account))}\n`);
-  if (apiKey && provider !== "github") say(dim(`  ${keySpendWords(provider)}`));
+  if (apiKey && (provider === "claude" || provider === "codex"))
+    say(dim(`  ${keySpendWords(provider)}`));
   const facts = claudeGrantFacts(narrowed.secret);
   if (facts !== null) {
     say(
@@ -4942,7 +4967,7 @@ _mend() {
   commands=(
     'adopt:adopt a repository into the store'
     'setup-session:set up this project with your agent'
-    'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode' 'pi:new session + pi'
+    'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode' 'pi:new session + pi' 'antigravity:new session + antigravity' 'agy:new session + antigravity'
     'run:new session + arbitrary command'
     'logs:recorded terminal output of a session' 'wait:wait for the command of a session to end'
     'message:send words to a session'
@@ -4958,7 +4983,7 @@ _mend() {
     'memory:what the agents remember about a project — list, show, rm, import'
     'accounts:your connected accounts on the platform'
     'pair:pair a phone or a second machine' 'doctor:read-only checklist of this setup'
-    'connect:send this machine'"'"'s claude/codex/github credential, or your pi setup'
+    'connect:send this machine'"'"'s claude/codex/antigravity/github credential, or your pi setup'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'land:push a session change to origin and open its pull request'
@@ -5010,7 +5035,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt setup-session codex claude opencode pi run logs wait message settings attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt setup-session codex claude opencode pi antigravity agy run logs wait message settings attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull handoff refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -6898,11 +6923,18 @@ const main = async () => {
   if (command === "stop" && agentJsonRequested())
     return finishAgentResult(await stopAgentJson(conversation, rest));
   if (
-    (command === "claude" || command === "codex" || command === "pi" || command === "opencode") &&
+    (command === "claude" ||
+      command === "codex" ||
+      command === "pi" ||
+      command === "opencode" ||
+      command === "antigravity" ||
+      command === "agy") &&
     (rest.includes("--conversation") || agentJsonRequested())
   )
     return finishAgentResult(
-      await withAgentShare(config, () => launchConversation(conversation, command, rest)),
+      await withAgentShare(config, () =>
+        launchConversation(conversation, command === "agy" ? "antigravity" : command, rest),
+      ),
     );
   switch (command) {
     case "adopt":
@@ -6918,8 +6950,11 @@ const main = async () => {
     case "claude":
     case "opencode":
     case "pi":
+    case "antigravity":
     case "run":
       return withAgentShare(config, () => launch(config, command, rest));
+    case "agy":
+      return withAgentShare(config, () => launch(config, "antigravity", rest));
     case "logs":
       return logsCommand(config, rest);
     case "wait":

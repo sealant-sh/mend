@@ -403,6 +403,43 @@ export const HARNESS_CREDENTIALS: Readonly<Record<string, ReadonlyArray<HarnessC
       holds: "pi profiles Mend set aside, their `mcp.json` included",
     },
   ],
+  antigravity: [
+    {
+      path: ".gemini/antigravity-cli/antigravity-oauth-token",
+      kind: "file",
+      holds: "Google OAuth access and refresh tokens and account email",
+    },
+    {
+      path: ".gemini/antigravity-acp/antigravity-oauth-token",
+      kind: "file",
+      holds: "the same when `agy acp` uses `--app-data-dir antigravity-acp`",
+    },
+    {
+      path: ".gemini/config/mcp_config.json",
+      kind: "file",
+      holds: "MCP server definitions, headers, env and secrets",
+    },
+    {
+      path: ".gemini/antigravity-cli/log",
+      kind: "directory",
+      holds: "CLI and ACP server logs, which can carry request URLs, headers or errors",
+    },
+    {
+      path: ".gemini/antigravity-cli/crashes",
+      kind: "directory",
+      holds: "crash dumps and stack traces",
+    },
+    {
+      path: ".gemini/antigravity-acp/log",
+      kind: "directory",
+      holds: "ACP server logs under `--app-data-dir antigravity-acp`",
+    },
+    {
+      path: ".gemini/antigravity-acp/crashes",
+      kind: "directory",
+      holds: "crash dumps under `--app-data-dir antigravity-acp`",
+    },
+  ],
 };
 
 /**
@@ -431,6 +468,38 @@ export const HARNESS_MACHINE_STATE: Readonly<Record<string, ReadonlyArray<Harnes
       path: ".codex/app-server-control",
       kind: "directory",
       holds: "that daemon's control socket",
+    },
+  ],
+  antigravity: [
+    {
+      path: ".gemini/antigravity-cli/builtin",
+      kind: "directory",
+      holds: "builtin skills and plugins unpacked from the `agy` binary on first run",
+    },
+    {
+      path: ".gemini/antigravity-cli/updater",
+      kind: "directory",
+      holds: "self-updater lock and status files (`update.lock`, `update_status.json`)",
+    },
+    {
+      path: ".gemini/antigravity-cli/presence",
+      kind: "directory",
+      holds: "per-process lock files for live conversations",
+    },
+    {
+      path: ".gemini/antigravity-cli/installation_id",
+      kind: "file",
+      holds: "machine-local installation UUID",
+    },
+    {
+      path: ".gemini/antigravity-cli/last_check.timestamp",
+      kind: "file",
+      holds: "updater last-check timestamp",
+    },
+    {
+      path: ".gemini/antigravity-cli/cli.log",
+      kind: "file",
+      holds: "symlink to the latest log on that machine",
     },
   ],
 };
@@ -496,6 +565,21 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     liveTranscript: /^\.pi\/agent\/sessions\/[^/]+\/[^/]+\.jsonl$/,
     liveTranscriptDir: ".pi/agent/sessions",
     providerSessionId: (file) => PI_SESSION.exec(file)?.[1] ?? null,
+  },
+  antigravity: {
+    paths: [
+      ".gemini/antigravity-cli/conversations",
+      ".gemini/antigravity-cli/brain",
+      ".gemini/antigravity-cli/annotations",
+      ".gemini/antigravity-cli/conversation_summaries.db",
+      ".gemini/antigravity-cli/jetbox_summaries_proto.pb",
+      ".gemini/antigravity-cli/jetski_state.pbtxt",
+    ],
+    homeDirs: [".gemini"],
+    latestTranscript: "true",
+    liveTranscript: null,
+    liveTranscriptDir: null,
+    providerSessionId: () => null,
   },
 };
 
@@ -1041,6 +1125,16 @@ export const nativeResumeArgv = (
       }
       const [, ...tail] = argv;
       return ["pi", "--session", providerSessionId, ...tail];
+    }
+    case "antigravity": {
+      if (
+        argv[0] !== "agy" ||
+        ["--conversation", "--continue", "-c"].some((flag) => argv.includes(flag))
+      ) {
+        return argv;
+      }
+      const [, ...tail] = argv;
+      return ["agy", "--conversation", providerSessionId, ...tail];
     }
     default:
       return argv;

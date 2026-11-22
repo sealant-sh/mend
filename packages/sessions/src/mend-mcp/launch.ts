@@ -80,6 +80,29 @@ const OPENCODE_MCP_LAUNCH =
   `{ echo "mend: OpenCode's inline config could not be read; not starting OpenCode" >&2; exit 1; }; ` +
   `export OPENCODE_CONFIG_CONTENT="$config"; exec "$@"`;
 
+// Antigravity reads global MCP servers from `~/.gemini/config/mcp_config.json` (which sealantd
+// leaves out of captures). Merge the `mend` entry into that file before exec, preserving any
+// user-configured servers and refusing to overwrite an unreadable or malformed file.
+const ANTIGRAVITY_MCP_PROGRAM = `
+const fs=require("fs"),os=require("os"),path=require("path");
+const file=path.join(os.homedir(),".gemini","config","mcp_config.json");
+let config={};
+try{
+  const raw=fs.readFileSync(file,"utf8");
+  const parsed=JSON.parse(raw);
+  if(!parsed||typeof parsed!=="object"||Array.isArray(parsed))process.exit(0);
+  config=parsed;
+}catch(e){if(e.code!=="ENOENT")process.exit(0);}
+const servers=config.mcpServers&&typeof config.mcpServers==="object"&&!Array.isArray(config.mcpServers)?config.mcpServers:{};
+const next={...config,mcpServers:{...servers,${JSON.stringify(MEND_MCP_SERVER)}:{command:${JSON.stringify(MEND_HELPER_PATH)},args:["mcp"]}}};
+fs.mkdirSync(path.dirname(file),{recursive:true,mode:0o700});
+const tmp=file+".mend-"+process.pid;
+fs.writeFileSync(tmp,JSON.stringify(next,null,2)+"\\n",{mode:0o600});
+fs.renameSync(tmp,file);
+`;
+
+const ANTIGRAVITY_MCP_LAUNCH = `node -e '${ANTIGRAVITY_MCP_PROGRAM}' 2>/dev/null || true; exec "$@"`;
+
 /** Each group is added whole unless the command line already has it. */
 const mendMcpGroups = (harness: string): ReadonlyArray<ReadonlyArray<string>> =>
   harness === "claude"
@@ -112,6 +135,7 @@ export const withMendMcp = (
     const [head, ...rest] = command;
     if (head === undefined) return command;
     if (head === "opencode") return ["sh", "-c", OPENCODE_MCP_LAUNCH, "mend-opencode", ...command];
+    if (head === "agy") return ["sh", "-c", ANTIGRAVITY_MCP_LAUNCH, "mend-antigravity", ...command];
     const personalGroups =
       personal._tag === "Delivered" && personal.harness === head && personal.flags.length > 0
         ? [personal.flags]

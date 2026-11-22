@@ -393,6 +393,15 @@ export const PERSON_SAVED_STATE: ReadonlyArray<{
   // opencode: its data directory (its database) and its state directory.
   { path: ".local/share/opencode", kind: "directory" },
   { path: ".local/state/opencode", kind: "directory" },
+  // Antigravity: conversations, brain, annotations, summaries and skills; OAuth token and MCP
+  // config stay in the person's home (`R`), never linked into saved state (`P`).
+  { path: ".gemini/antigravity-cli/conversations", kind: "directory" },
+  { path: ".gemini/antigravity-cli/brain", kind: "directory" },
+  { path: ".gemini/antigravity-cli/annotations", kind: "directory" },
+  { path: ".gemini/antigravity-cli/conversation_summaries.db", kind: "file" },
+  { path: ".gemini/antigravity-cli/jetbox_summaries_proto.pb", kind: "file" },
+  { path: ".gemini/antigravity-cli/jetski_state.pbtxt", kind: "file" },
+  { path: ".gemini/config/skills", kind: "directory" },
 ];
 
 /**

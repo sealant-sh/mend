@@ -34,12 +34,13 @@ export const isChosenDefault = (account: {
 }): boolean => account.isDefault ?? account.name === "default";
 
 export const isCredentialProvider = (value: string): value is CredentialProvider =>
-  value === "claude" || value === "codex" || value === "github";
+  value === "claude" || value === "codex" || value === "github" || value === "antigravity";
 
 export const CREDENTIAL_PROVIDER_LABELS: Readonly<Record<CredentialProvider, string>> = {
   claude: "Claude",
   codex: "Codex",
   github: "GitHub",
+  antigravity: "Antigravity",
 };
 
 export interface UnchosenLoginSummary {
