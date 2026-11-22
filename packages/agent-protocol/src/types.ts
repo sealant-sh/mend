@@ -5,11 +5,15 @@ import { type Effect, Schema, type Scope, type Stream } from "effect";
 
 import type { AgentMcpApps } from "./mcp-apps.ts";
 
+/** Which protocol adapter speaks for a harness. */
+export const AgentAdapterName = Schema.Literals(["codex", "claude", "antigravity"]);
+export type AgentAdapterName = typeof AgentAdapterName.Type;
+
 /** A protocol adapter could not parse, send, or correlate a provider message. */
 export class AgentProtocolError extends Schema.TaggedError<AgentProtocolError>()(
   "AgentProtocolError",
   {
-    adapter: Schema.Literals(["codex", "claude"]),
+    adapter: AgentAdapterName,
     operation: Schema.String,
     message: Schema.String,
     cause: Schema.Defect(),
@@ -29,7 +33,7 @@ export class AgentTurnBusyError extends Schema.TaggedError<AgentTurnBusyError>()
 export class AgentTurnDeliveryError extends Schema.TaggedError<AgentTurnDeliveryError>()(
   "AgentTurnDeliveryError",
   {
-    adapter: Schema.Literals(["codex", "claude"]),
+    adapter: AgentAdapterName,
     certainty: Schema.Literals(["not-written", "uncertain"]),
     message: Schema.String,
     cause: Schema.Defect(),
@@ -61,7 +65,7 @@ export type AgentSteerAcceptance =
 export class AgentSteerRefusedError extends Schema.TaggedError<AgentSteerRefusedError>()(
   "AgentSteerRefusedError",
   {
-    adapter: Schema.Literals(["codex", "claude"]),
+    adapter: AgentAdapterName,
     reason: Schema.Literals([
       "no-active-turn",
       "target-changed",
@@ -83,7 +87,7 @@ export class AgentSteerRefusedError extends Schema.TaggedError<AgentSteerRefused
 export class AgentSteerDeliveryError extends Schema.TaggedError<AgentSteerDeliveryError>()(
   "AgentSteerDeliveryError",
   {
-    adapter: Schema.Literals(["codex", "claude"]),
+    adapter: AgentAdapterName,
     certainty: Schema.Literals(["not-written", "uncertain"]),
     message: Schema.String,
     cause: Schema.Defect(),

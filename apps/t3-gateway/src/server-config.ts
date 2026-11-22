@@ -32,8 +32,8 @@ import { NATIVE_SLASH_COMMANDS, workspaceSnapshotOf, type WorkspaceSkills } from
  * t3code's server config for one paired person, built from Mend's model catalog
  * (`GET /api/harnesses/models`, read with the person's device token). The ADR's provider-instance
  * row: a Mend harness is a t3code provider instance, `codex` → driver `codex`, `claude` → driver
- * `claudeAgent`. Other harnesses (opencode, pi, shell) are not protocol-mode sessions the gateway
- * can show, so they are left out.
+ * `claudeAgent`, `antigravity` → driver `antigravity`. Other harnesses (opencode, pi, shell) are
+ * not protocol-mode sessions the gateway can show, so they are left out.
  *
  * Every capability flag says what Mend can do through the gateway. Model, effort and Plan choices
  * apply to new native turns. Rollback and provider setup remain unavailable through t3code.
@@ -44,6 +44,8 @@ interface HarnessDriver {
   readonly displayName: string;
   /** The option id t3code's own driver uses for the effort select. */
   readonly effortOptionId: string;
+  /** Whether words sent during a turn reach it; otherwise they wait for the next turn. */
+  readonly supportsActiveSteering: boolean;
   readonly activeSteeringInterruptsTools: boolean;
   readonly exposesNativeTurnId: boolean;
 }
@@ -53,6 +55,7 @@ const HARNESS_DRIVERS: Readonly<Record<string, HarnessDriver>> = {
     driver: ProviderDriverKind.make("codex"),
     displayName: "Codex",
     effortOptionId: "reasoningEffort",
+    supportsActiveSteering: true,
     activeSteeringInterruptsTools: false,
     exposesNativeTurnId: true,
   },
@@ -60,9 +63,20 @@ const HARNESS_DRIVERS: Readonly<Record<string, HarnessDriver>> = {
     driver: ProviderDriverKind.make("claudeAgent"),
     displayName: "Claude",
     effortOptionId: "effort",
+    supportsActiveSteering: true,
     // Matches t3code's own Claude adapter, which sets this true, though on Claude 2.1.292 a steer
     // sent during a Bash tool landed only after the tool finished (observed 2026-10-30).
     activeSteeringInterruptsTools: true,
+    exposesNativeTurnId: false,
+  },
+  antigravity: {
+    driver: ProviderDriverKind.make("antigravity"),
+    displayName: "Antigravity",
+    // t3code's own Antigravity driver names its effort select after ACP's config option.
+    effortOptionId: "thought_level",
+    // ACP has no way into a running prompt: Mend's adapter refuses a steer.
+    supportsActiveSteering: false,
+    activeSteeringInterruptsTools: false,
     exposesNativeTurnId: false,
   },
 };
@@ -114,7 +128,7 @@ export const harnessSteeringOf = (
 } => {
   const driver = HARNESS_DRIVERS[harness];
   return {
-    supportsActiveSteering: driver !== undefined,
+    supportsActiveSteering: driver?.supportsActiveSteering ?? false,
     activeSteeringInterruptsTools: driver?.activeSteeringInterruptsTools ?? false,
     exposesNativeTurnId: driver?.exposesNativeTurnId ?? false,
   };

@@ -36,6 +36,9 @@ a checkout beside a Mend server.
   `POST /api/auth/websocket-ticket`, after Mend confirms the device.
 - `t3-ws` upgrades `/ws?…&orchestrationProtocol=2` to t3code's RPC, each call checked against the
   bearer's scopes; without the protocol parameter answers 426.
+- `t3-antigravity` lists Antigravity (driver `antigravity`, effort option `thought_level`) beside
+  Codex and Claude; its threads run as Antigravity conversations and take no steer, so a message
+  sent during a turn waits for the next one.
 - `t3-refusals` refuses browser sessions, pairing links and client sessions with t3code's own error
   bodies.
 - `t3-config` answers `server.getConfig` and `subscribeServerConfig` with one provider per Mend

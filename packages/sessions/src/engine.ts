@@ -328,6 +328,7 @@ import {
   ConversationWait,
   type ConversationWaitWork,
   conversationWaitLine,
+  ANTIGRAVITY_NOT_STEERABLE,
   OPENCODE_NOT_STEERABLE,
   PreReleaseMemory,
   WorkspaceRetirement,
@@ -23031,6 +23032,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (session.ownerUserId === null || sender === session.ownerUserId) return null;
         if (session.harness === "opencode") return { words: OPENCODE_NOT_STEERABLE };
         if (capture === null || !layoutSteps.personPossible()) return null;
+        // No hand-over to a process on the sender's own login exists for Antigravity yet: their
+        // turn would run on the owner's.
+        if (
+          session.harness === "antigravity" &&
+          (yield* layoutSteps.mayRunPerson(session.worktreeId))
+        )
+          return { words: ANTIGRAVITY_NOT_STEERABLE };
         if (!isConversationHarness(session.harness)) return null;
         if (!(yield* layoutSteps.mayRunPerson(session.worktreeId))) return null;
         const provider = session.harness === "claude" ? "claude" : "codex";

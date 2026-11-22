@@ -86,6 +86,7 @@ model check.sh
 path packages/sessions/src/protocol-host.ts
 path packages/db/src/repos/agent-conversation.ts
 path packages/agent-protocol/src/codex.ts
+path packages/agent-protocol/src/antigravity.ts
 
 # How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
 # naming this model (SLNT-1065, SLNT-1081). With tlx the full bounds took 2.3 minutes on CI (run

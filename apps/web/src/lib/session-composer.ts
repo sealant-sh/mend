@@ -1,6 +1,7 @@
 import { type AgentTurnSteerDto, isOpenTurn } from "@mend/agent-conversation";
 import {
   CONVERSATION_HARNESSES,
+  isSelectableHarness,
   type PermissionMode,
   runsInTerminal,
   type SessionMode,
@@ -123,7 +124,7 @@ export const othersOpenTurn = (turns: ReadonlyArray<TurnView>, viewerId: string)
 /**
  * The model, thinking, speed and permission the session's next turn runs with unless the person
  * picks others: what its newest turn was sent with, else what its agent was launched with. Null
- * for an agent with no choice per turn (only Claude Code and Codex take one).
+ * for an agent with no choice per turn (Claude Code, Codex and Antigravity take one).
  */
 export const currentSelection = (
   turns: ReadonlyArray<TurnView>,
@@ -139,7 +140,7 @@ export const currentSelection = (
   } | null,
 ): TurnSelection | null => {
   const { harness } = session;
-  if (harness !== "claude" && harness !== "codex") return null;
+  if (!isSelectableHarness(harness)) return null;
   const newest = turns.findLast((turn) => turn.selection != null)?.selection;
   if (newest != null && newest.harness === harness) return newest;
   return {

@@ -1083,6 +1083,27 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   `apps/web/src/lib/session-composer.ts`, `apps/web/src/lib/conversation-rows.ts`,
   `apps/web/src/components/session/conversation-tile.tsx`
 
+### start-session.antigravity-conversation
+
+- **Map:** start-session.md `start-antigravity-conversation`
+- **Needs:** Boat; real turn (antigravity); web; the owner's Antigravity login;
+  `start-session.boat-run` (its worktree)
+- **Do:** On `/`, in the form `New session`: project `<p>`, worktree `main-run-run-<sha8>`, harness
+  Antigravity, the prompt `Run the shell command echo hi, then reply with the single word done.`,
+  then `Start`. Wait for the turn with `M wait <id> --turn --timeout 8m`. In the session's composer
+  (the field `Message Antigravity`), open the model menu, pick another model and
+  `Ask before acting`, and send
+  `Run the shell command echo again, then reply with the single word twice.`
+- **See:** the browser lands on `/sessions/<id>` for an antigravity session in conversation mode;
+  the first turn shows the `echo hi` command with its output and the reply `done`, and asks nothing;
+  the second turn shows an approval for `echo again` before it runs it; once approved it completes
+  with `twice`, and the model menu reads the model picked for it.
+- **Waiting on:** SLNT-1276 · the box's data holds no Antigravity login, so the session does not
+  start. Nothing else of this flow can be seen without one.
+- **Mode:** `agent`
+- **Box-only:** `boat`, `real-agent-turn`
+- **Areas:** `packages/agent-protocol/src/antigravity.ts`, `apps/t3-gateway/src/server-config.ts`
+
 ### start-session.new-web-steer-taken
 
 - **Map:** start-session.md `session-page`

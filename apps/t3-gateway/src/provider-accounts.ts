@@ -9,8 +9,16 @@ import * as Effect from "effect/Effect";
 
 import type { MendClient, MendConnectedAccount } from "./mend-client.ts";
 
-const harnessOf = (instanceId: string): "codex" | "claude" | null =>
-  instanceId === "codex" ? "codex" : instanceId === "claudeAgent" ? "claude" : null;
+const HARNESSES = ["codex", "claude", "antigravity"] as const;
+
+const harnessOf = (instanceId: string): (typeof HARNESSES)[number] | null =>
+  instanceId === "codex"
+    ? "codex"
+    : instanceId === "claudeAgent"
+      ? "claude"
+      : instanceId === "antigravity"
+        ? "antigravity"
+        : null;
 
 const refusal = (instanceId: ProviderInstanceId, detail: string) =>
   new ProviderSetupError({ instanceId, operation: "providerAuthLogout", detail });
@@ -55,7 +63,7 @@ export const makeProviderAccountControls = (
 } => {
   const displayed = new Map<string, string>();
   const observe = (accounts: ReadonlyArray<MendConnectedAccount>): void => {
-    for (const harness of ["codex", "claude"] as const) {
+    for (const harness of HARNESSES) {
       const choice = loginChoiceOf(accounts, harness);
       const id = choice._tag === "chosen" ? choice.account.id : undefined;
       if (id === undefined || id === "") displayed.delete(harness);
@@ -67,7 +75,7 @@ export const makeProviderAccountControls = (
     if (harness === null)
       return yield* refusal(
         instanceId,
-        "Only your chosen Codex or Claude login can be disconnected here.",
+        "Only your chosen Codex, Claude or Antigravity login can be disconnected here.",
       );
     const expected = displayed.get(harness);
     if (expected === undefined)

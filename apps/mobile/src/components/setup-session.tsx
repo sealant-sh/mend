@@ -5,7 +5,7 @@ import { View } from "react-native";
 import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
 import { BodyText, UiText } from "@/components/typography";
-import { PROTOCOL_HARNESSES, useSessionActions } from "@/data/live";
+import { SETUP_HARNESSES, useSessionActions } from "@/data/live";
 
 /** A setup session starts only after the person picks their agent and consents. */
 export function SetupSessionPanel({
@@ -17,7 +17,7 @@ export function SetupSessionPanel({
 }) {
   const router = useRouter();
   const { start } = useSessionActions();
-  const [agent, setAgent] = useState<(typeof PROTOCOL_HARNESSES)[number]>("codex");
+  const [agent, setAgent] = useState<(typeof SETUP_HARNESSES)[number]>("codex");
   return (
     <Panel>
       <View style={{ padding: 16, gap: 16 }}>
@@ -27,7 +27,7 @@ export function SetupSessionPanel({
           uses your own agent login. Writing these files starts no commands, Services or resources.
         </BodyText>
         <View style={{ flexDirection: "row", gap: 8 }}>
-          {PROTOCOL_HARNESSES.map((candidate) => (
+          {SETUP_HARNESSES.map((candidate) => (
             <EvButton
               key={candidate}
               label={candidate}

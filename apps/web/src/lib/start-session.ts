@@ -1,4 +1,4 @@
-import type { TurnSelection } from "@mend/domain/workbench";
+import { isSelectableHarness, type TurnSelection } from "@mend/domain/workbench";
 
 import type { SessionDto, SessionStartReadDto, StartTarget } from "./api.ts";
 import { launchFields, type StartSpec, type WorktreeTarget } from "./new-session.ts";
@@ -83,7 +83,7 @@ export interface InstantStart {
  * (`currentSelection`); null for an agent with no choice per turn.
  */
 export const selectionOf = (spec: StartSpec): TurnSelection | null =>
-  spec.agent === "claude" || spec.agent === "codex"
+  isSelectableHarness(spec.agent)
     ? {
         harness: spec.agent,
         model: spec.model,

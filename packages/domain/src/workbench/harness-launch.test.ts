@@ -217,6 +217,18 @@ describe("composeProtocolArgv", () => {
   it("rejects harnesses without a protocol shape", () => {
     expect(composeProtocolArgv("opencode", {})).toBeInstanceOf(ProtocolHarnessUnsupportedError);
   });
+
+  it("starts agy's ACP server, whose permission is per turn and never the bypass flag", () => {
+    const argv = composeProtocolArgv(
+      "antigravity",
+      { model: "gemini-4-neon", effort: "high", permissionMode: "bypass" },
+      "conversation-1",
+    );
+    expect(argv).toEqual(["agy", "acp", "--stdio"]);
+    if (argv instanceof ProtocolHarnessUnsupportedError) throw argv;
+    // A skip-permissions agy would never ask in a later ask turn.
+    expect(withPermissionDefaults("antigravity", argv)).toEqual(argv);
+  });
 });
 
 describe("the seed and the composer's own clamp", () => {

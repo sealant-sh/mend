@@ -172,6 +172,13 @@ export const conversationWaitLine = (input: {
   ].join(" ");
 };
 
+/**
+ * Why another person's turn is not sent to an Antigravity conversation where turns run as their
+ * sender (docs/adr/0013): Mend cannot yet hand one to a process on the sender's own Google login.
+ */
+export const ANTIGRAVITY_NOT_STEERABLE =
+  "Antigravity conversations run on their owner's Google login, so only the owner can send messages to one. Start your own session in this worktree.";
+
 /** Why another person's turn is not sent to an opencode session (decision 6). */
 export const OPENCODE_NOT_STEERABLE =
   "opencode sessions are one person's. Shared control is not available for them; start your own session in this worktree.";
