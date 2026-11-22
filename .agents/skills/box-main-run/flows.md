@@ -1,8 +1,15 @@
 # Flows of the daily run
 
-Runs: every flow below, once a day (the owner's choice on SLNT-1050, 17 Nov). To run fewer, name the
+Runs: every flow below, once a day (the owner's choice on SLNT-1050, 17 Nov), but those with a
+`Not on the box:` line, which a run reports as `not run · not on the box`. To run fewer, name the
 set on this line, for example "the flows marked `Sample: yes`"; a run reports each flow outside it
 as `not run · not in this run's set`.
+
+A flow with a `Waiting on:` line still runs. That line names a ticket and the part of the See line
+that cannot show until the ticket is settled (the shipped app lacks it, or a recipe cannot reach
+it): a flow that falls short on exactly that part, with the rest of its See line seen, is
+`failed · <ticket> (known)`, needs no second look and files nothing (SKILL.md, step 5). Remove the
+line once the ticket is settled, rewriting the See line if the app changed.
 
 Every flow one run of [SKILL.md](SKILL.md) can use on the box, as its signed-in owner, after the
 preview of `main` is deployed. **The box**, in this file, is the check VM copy of the run's own data
@@ -31,12 +38,12 @@ the address the lane's copy serves (`$WEB`, read each run). On a Boat copy (lane
 `BOAT_COPIES` at 2) sessions run on Boat by default, and Docker is offered beside it; on a copy
 without Boat they run on Docker. The runtime is chosen per organization and a worktree keeps the
 runtime it was made on, so a worktree the data made on Boat starts no session on a copy without it.
-One organization (Default), single tenancy. Provider logins on 16 Nov: codex and claude connected,
-GitHub not. Flows use codex only: the box's Claude login stays unused until SLNT-905 is decided. Six
-flows run a real agent turn, each with one-line prompts: `start-session.boat-turn`,
-`start-session.composer`, `start-session.web-write`, `start-session.web-answer`,
-`send-review-back.deliver` and `start-session.go-back`. They use codex: the owner has far more Codex
-capacity than Claude (17 Nov).
+Multi tenancy, the default since #1916, with one organization in the data (Default). Provider logins
+on 16 Nov: codex and claude connected, GitHub not. Flows use codex only: the box's Claude login
+stays unused until SLNT-905 is decided. Six flows run a real agent turn, each with one-line prompts:
+`start-session.boat-turn`, `start-session.composer`, `start-session.web-write`,
+`start-session.web-answer`, `send-review-back.deliver` and `start-session.go-back`. They use codex:
+the owner has far more Codex capacity than Claude (17 Nov).
 
 For the flows that use the fixtures `fixtures.sh` makes: `<git>` is `git://<git host>`, the box's
 git service; `<land>` is the project `main-run-land` (from `<git>/land.git`, branch `main`);
@@ -94,7 +101,9 @@ goes with their copies.
 - **The second account** `main-run-second@example.test`, a member of Default, with its CLI config
   (`M2`, in `~/.local/share/mend-boat-check-2/cli`) and its password file beside it, joined and
   signed in by `fixtures.sh` through its own browser. `M members` lists it as `member`. It has no
-  agent login.
+  agent login, and the run gives it none: Mend keeps each account's agent logins its own (nobody
+  else's work spends them), and a copy of the checker's Codex login would share one refresh token,
+  which the first refresh spends for the other (SLNT-1267).
 - **The serve command** `<serve-cmd>`: `python3 -m http.server 8000`. Python is one of Mend's
   default workspace packages (`DEFAULT_WORKSPACE_PACKAGES`, `packages/domain/src/settings.ts`), so
   the Ubuntu image has it; nothing needs making.
@@ -109,9 +118,10 @@ removes what SKILL.md's ledger says to remove.
 
 Flows are grouped below as the map's README groups features; within a lane they run in this order,
 because later flows reuse what earlier ones made. SKILL.md's Lanes says which lane runs each group:
-A runs 1, 3, 4, 6 and 7; B runs 2, 5 and 8; C runs 9, and when C has no Boat, group 9's Boat flows
-run on A after its own. Each copy has its own data, so a group on one lane never sees what another
-lane changed.
+A runs 1, 2, 3, 4, 6, 7 and 8; B runs 5 and 11; C runs 9 and 10, and when C has no Boat, the Boat
+flows of 9 and 10 run on A after its own. Each copy has its own data, so a group on one lane never
+sees what another lane changed. On every lane, a verify CLI batch runs without its `mend connect`
+steps (SKILL.md, Lanes, "Agent logins on a lane").
 
 1. `server.data-intact` (before half), `server.upgrade`, `server.data-intact` (after half),
    `server.status-logs`
@@ -119,18 +129,23 @@ lane changed.
    `provider-accounts.read`, `models.list-picker`
 3. `start-session.boat-turn`, `review-change.web-review`, `now-and-sessions.web-now`,
    `attach-resume.boat-stop-resume`, `send-review-back.deliver`, `start-session.go-back`
-4. `start-session.boat-run`, `start-session.composer`, `start-session.web-write`,
+4. `start-session.boat-run`, `tui.dashboard`, `start-session.composer`, `start-session.web-write`,
    `start-session.web-answer`, `review-change.web-comments`, `land-change.panel-read`,
-   `pull-change.boat-run`, `attach-resume.rename-web`, `tui.dashboard`
+   `pull-change.boat-run`, `attach-resume.rename-web`
 5. `start-session.docker-run`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `attach-resume.terminal-and-web`,
    `session-shell.live-shell`, `shared-control.refuse-script`, `services.cli-run`,
    `capture-and-save.live-stop`
 7. `worktrees.web-create-remove`, `handoff.held`, `now-and-sessions.inbox-settle`,
    `now-and-sessions.cli-lists`
-8. The rest, in any order: `adopt-project.*`, `sign-in.fresh-browser`, `pairing-devices.mint-read`,
-   `git-access.read`, `workspace-ssh.status`, the Personal setup and Project setup flows, then
-   `doctor.bundle-web` last.
+8. Reads of a person's and a project's setup, in any order: `sign-in.fresh-browser`,
+   `pairing-devices.mint-read`, `git-access.read`, `workspace-ssh.status`, `dotfiles.read`,
+   `secret-files.cli-roundtrip`, `git-author.roundtrip`, `skills.read`,
+   `skills.adopt-project-skills`, `agent-memory.read`, `appearance.web-theme`,
+   `project-environment.read`, `cluster-bindings.read`, `workspace-images.read`,
+   `automatic-install.read`, `hot-sessions.read`, `project-settings.read`,
+   `references-folders.folder-cli`. Each restores what it changes, so lane A's saved data keeps none
+   of it.
 9. `land-change.web-push`, `land-change.cli-again`, `land-change.refused`,
    `organization.visibility-who-sees`, `repositories-in-session.add-second`,
    `references-folders.select-link`, `organization.roles-roundtrip`, `organization.join-refused`,
@@ -138,6 +153,30 @@ lane changed.
    `shared-control.new-web-ask-and-grant`, `per-person-homes.two-people`, in that order and one at a
    time within a lane: several change `<land>`, `<second>` or a role, and each runs only after the
    one before it in its lane has put that back.
+10. The new web's sessions, most with a real Codex turn, in any order:
+    `start-session.new-web-instant-start` (Boat), `adopt-project.new-web-project-page`,
+    `session-page.new-web-checks`, `session-page.new-web-record`, `session-page.new-web-screen`,
+    `start-session.new-web-steer-taken`, `start-session.new-web-streaming`,
+    `start-session.new-web-impatient-start`, `start-session.new-web-cut-short-start`,
+    `review-change.new-web-second-look`, `now-and-sessions.new-web-session-states`,
+    `session-page.new-web-tiles`, `session-page.new-web-layouts`, `session-page.new-web-terminal`,
+    `session-page.new-web-details`.
+11. The rest of the new web, on a copy without Boat: `start-session.memory-limit` first (a real
+    turn, which needs the copy's own login); then, in any order, every flow no other group names:
+    `adopt-project.*` but `adopt-project.new-web-project-page`, `settings.new-web-*` but
+    `settings.new-web-agent-logins`, `organization.new-web-*`, `sign-in.new-web-*` but the two that
+    run a real `mend login`, `session-page.new-web-shared-workspace`,
+    `session-page.new-web-preview`, `session-page.new-web-checkpoint-lines`, `session-stop.*`,
+    `start-session.new-web-code-colours`, the `review-change.new-web-*` reads but the second look,
+    `land-change.new-web-land`, `skills.new-web-*`, `search.new-web-search`,
+    `agent-memory.new-web-only-you`, the `project-settings.new-web-*`,
+    `workspace-images.new-web-project` and `references-folders.new-web-project` flows, the other
+    `now-and-sessions.new-web-*`, `worktrees.new-web-*` and `resources.new-web-resources`; then
+    yours, `sign-in.new-web-setup-revisit` and `sign-in.new-web-authorize-account` (SKILL.md, step
+    5), after every flow that counts the organization's members: `setup-revisit` leaves the person
+    it joins a member of Default (a trial on 22 Nov then read `Default · 3 members`); then
+    `settings.new-web-agent-logins`, which replaces and disconnects the copy's logins on purpose, so
+    nothing after it needs one; then `doctor.bundle-web` last.
 
 ## The core loop
 
@@ -600,7 +639,8 @@ lane changed.
 - **See:** each step's note in the recipe's `steps.log`; only past steps are links, never Account,
   the current step or one not reached; no Continue sends the person back. The organization's name is
   put back and the computer's device revoked at the end.
-- **Mode:** `scripted` (recipes/setup-revisit.mjs)
+- **Mode:** `scripted` (recipes/setup-revisit.mjs), driven by Opus with the stack file of SKILL.md,
+  step 5: the recipe runs a real `mend login`, which subagents may not
 - **Box-only:** no
 - **Areas:** `apps/web/src/lib/setup.ts`, `apps/web/src/routes/welcome.git-access.tsx`,
   `apps/web/src/routes/welcome.index.tsx`, `apps/web/src/lib/git-access-step.ts`,
@@ -616,7 +656,8 @@ lane changed.
 - **See:** the "Approving as" row reads the name, the email under it, and "Not you? Sign out", with
   no "·" in it; an account with no name shows only its email, and "signed in as <email>" once
   authorized.
-- **Mode:** `scripted` (recipes/authorize-account.mjs)
+- **Mode:** `scripted` (recipes/authorize-account.mjs), driven by Opus with the stack file of
+  SKILL.md, step 5: the recipe runs a real `mend login`, which subagents may not
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/authorize.tsx`
 
@@ -627,14 +668,21 @@ lane changed.
   `join-line`
 - **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box) with a live `mend run`
   session in it
-- **Do:** Drive the recipe `project` (after its CLI batch `project-setup.json`): a project's page
-  with its header, facts and tabs; the Sessions tab's search, Filter, Mine or Everyone and Open or
-  Stopped, kept in the address across a reload; a row's "…" starts a shell and another session in
-  its worktree; Open shell starts one in a new worktree; the "…" opens Set up this project, which
-  starts a setup session; an empty project; a clone's page while it runs; the old setup page's
-  address; a project that fails to load.
+- **Do:** Run `project-setup.json` without its `01-codex-login` step, and drive the recipe
+  `project`: a project's page with its header, facts and tabs; the Sessions tab's search, Filter,
+  Mine or Everyone and Open or Stopped, kept in the address across a reload; a row's "…" starts a
+  shell and another session in its worktree; Open shell starts one in a new worktree; the "…" opens
+  Set up this project, which starts a setup session; an empty project; a clone's page while it runs;
+  the old setup page's address; a project that fails to load.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; every session the recipe
   started is stopped, and every project it made is purged, at its end.
+- **Waiting on:** SLNT-1206 · the batch and the recipe name their worktrees `project-ended`,
+  `project-stopped` and `project-running`. The run's data holds three worktrees of those names whose
+  captures are not in its blob store, so each launch in them fails at readiness (sealantd's
+  `capture plan.get` HTTP 500); and removing them does not free the names, since Mend keeps a
+  removed worktree's branch (`branch "mend/project-ended" already exists in this project`, tried on
+  a copy on 22 Nov). Until the recipe and batch take names of the run's own, the flow fails at its
+  `project-running` row and is known (SLNT-1267).
 - **Mode:** `scripted` (recipes/project.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/`,
@@ -1018,8 +1066,8 @@ lane changed.
   `Reply with the single word pong and change nothing.` and wait for the turn. Send
   `Run the shell command sleep 45, then reply with the single word slept.`; while that turn runs,
   send `Add the word steered after slept.` and wait for the turn. Send
-  `Run the shell command sleep 600, then reply with the word done.`, and once `Stop turn` shows,
-  choose it.
+  `Run the shell command sleep 600, then reply with the word done.`, and once the turn shows its
+  first step (the `sleep 600` command), choose `Stop turn` once.
 - **See:** each message shows in the conversation as soon as it is sent, and the field empties; the
   first is answered `pong`; the one sent while the turn ran is dashed and reads
   `Sent into this turn. Codex reads it when its current step finishes.` until Codex takes it into
@@ -1027,9 +1075,11 @@ lane changed.
   it in its next request); from then, while the turn still runs, it reads as any sent message
   (solid, nothing under it but who and when), sits below the step Codex had started when it was sent
   and above what Codex did after taking it, and starts no turn of its own
-  (`start-session.new-web-steer-taken` drives this part with a recipe); after `Stop turn` that turn
-  reads `Stopped after …`, the line `This turn was stopped at …` follows it, and the session's tab
-  reads `Replied`.
+  (`start-session.new-web-steer-taken` drives this part with a recipe); after `Stop turn` that
+  turn's steps read `Stopped after <duration> <n> steps`, followed by
+  `This turn was stopped at <hh:mm>. What Codex changed before then is kept, and the workspace is still running.`,
+  and the session's tab is named `<session name>, Replied` (the visible text is the name; `Replied`
+  is in its accessible name).
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
 - **Areas:** `apps/web/src/components/session/composer.tsx`, `apps/web/src/lib/outbox.ts`,
@@ -1437,15 +1487,21 @@ lane changed.
 - **Map:** review-change.md `review-change-comment`, `review-comment-state`,
   `review-checkpoint-mark`, `review-pinned`, `review-files`
 - **Needs:** either; no turn; web and CLI; `start-session.boat-run`
-- **Do:** On the run session's review, add a change-level comment; choose `Dismiss` on its row under
-  `Comments 1 not sent`, then `Reopen` on the card it becomes; choose
-  `More session actions → Mark a checkpoint`; reload the review. Leave the comment open for the next
-  flow.
-- **See:** under `Comments 1 not sent` the row `whole change` over the comment, with
-  `Mark addressed` and `Dismiss`; after `Dismiss`, `Comments 0 not sent` and a card
-  `<name> · dismissed` with `Reopen`; after `Reopen`, the row back under `Comments 1 not sent` and
-  no card; a new `#<n> user-mark` checkpoint line; the `<sha A> → <sha B>` line unchanged on reload;
+- **Do:** On `/sessions/<id>/change` for the run session (`Open a view → Change`), choose
+  `Comment on the whole change`, type a comment and choose `Add comment`. On its card under
+  `On the whole change` choose `Dismiss`; then `Show it` and `Reopen` on the card. Look in the
+  session tab's and the workspace's menus, and on its Record view, for `Mark a checkpoint`. Reload
+  the change. Leave the comment open for the next flow.
+- **See:** under `Comments 1 not sent`, the row `Whole change · <name>` over the comment, and under
+  `On the whole change` its card `<name> Not sent` with `Reply`, `Resolve` and `Dismiss`; after
+  `Dismiss`, `Comments 0 open`, `You dismissed 1 comment.` with `Show it`, which shows the card
+  reading `Dismissed` with `Reopen`; after `Reopen`, the row back under `Comments 1 not sent` with
+  no `Dismissed` and no `You dismissed`; `Mark a checkpoint`, and after it a new checkpoint line
+  marked by hand; the `<sha A> → <sha B> · observed at capture <n>` line unchanged on reload;
   `M sessions --project <p> --all --json` shows the session's `review.openComments` as `1`.
+- **Waiting on:** SLNT-1270 · `Mark a checkpoint` on a finished session: the shipped app offers it
+  only on the Record view of a session whose agent is live, and the run session has ended. The rest
+  of the See line is checked; the missing mark is known.
 - **Mode:** `agent` · a recipe would make it cheaper
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/_inbox.changes.$changeId.tsx`,
@@ -1473,11 +1529,16 @@ lane changed.
 
 - **Map:** land-change.md `land-session-line`, `land-web` (the panel read; nothing pushed)
 - **Needs:** either; no turn; web; `start-session.boat-run`
-- **Do:** On the run session's page read the landing line, choose `Land →`, read the `Land` region,
-  and push nothing.
-- **See:** `not landed` with `Land →`; the region `Land` reads
-  `not landed · nothing pushed from Mend yet` and either the pull request row or
-  `pull request unavailable · origin is on <host>, not GitHub` (record which).
+- **Do:** On the run session's page choose `Open a view → Details` and read the `Pull request` row
+  in `Workspace`. Choose its `Land…`, which opens `/sessions/<id>/change#land`, read the dialog
+  `Land change`, and choose `Cancel` without pushing.
+- **See:** `Pull request` reads `None yet` with the link `Land…` and no landing line under it; the
+  dialog `Land change` in one of two forms (record which): for a GitHub origin,
+  `Mend pushes the branch to origin and opens a pull request on GitHub. It doesn't merge the pull request.`,
+  `Pull request base` `<base>`, `Observed` `nothing pushed from Mend yet` with `Check GitHub`, the
+  field `Pull request title` and the button `Push and open pull request`; for another origin,
+  `Pull request` `No pull request: origin is on <host>, not GitHub.` and the button
+  `Push to origin`; nothing pushed (`None yet` still there after `Cancel`).
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/`, `apps/api/src/landing-state.ts`, `packages/landing/`
@@ -1490,18 +1551,26 @@ lane changed.
   `MEND_VERIFY_BOX_SSH`; `<land>`
 - **Do:**
   `M run --project <land> --name main-run-land-<sha8> -- sh -c 'printf "landed\n" > LAND.md'`;
-  record its session id as this run's `land session`. On its page read the landing line, choose
-  `Land →`, read the `Land` region, choose `Push to origin`, then `Check origin`; go back to the
-  session page. On the box, `git --git-dir <git dir>/land.git log --oneline -1 <remote branch>` and
+  record its session id as this run's `land session`. On `/sessions/<id>` choose
+  `Open a view → Details` and read the `Pull request` row in `Workspace`. On `/sessions/<id>/change`
+  choose `Land…` in the toolbar, read the dialog `Land change`, then choose `Push to origin`. Choose
+  the toolbar's `What landed`, and in its dialog choose `Check origin`. Go back to `/sessions/<id>`
+  and read the conversation and `Details` again. On the box,
+  `git --git-dir <git dir>/land.git log --oneline -1 <remote branch>` and
   `git --git-dir <git dir>/land.git show <remote branch>:LAND.md`. Nothing to restore: the pushed
   branch stays for `land-change.cli-again`.
-- **See:** `not landed` with `Land →`; the region reads `push <branch> to origin`,
-  `not landed · nothing pushed from Mend yet` and
-  `pull request unavailable · origin is on <git host>, not GitHub`, with the button `Push to origin`
-  and neither `Pull request title` nor `Preview description`; after the push a status line
-  `pushed · <remote branch> · <sha>` with no pull request part; `Check origin` adds when origin was
-  last checked; the session line now states that fact instead of `not landed`; the box's `log` names
-  the same `<sha>` and `show` prints `landed`.
+- **See:** before the push, Details' `Pull request` reads `None yet` with `Land…` and no line under
+  it, and the Change toolbar has `Land…` and no `is on origin` line; the dialog `Land change` reads
+  `Mend pushes the branch to origin.`, `Push` `<branch> to <git host>:<port>/land`, `Pull request`
+  `No pull request: origin is on <git host>, not GitHub.` and `Change`
+  `The whole change from main to checkpoint <n>, …`, with the button `Push to origin` and neither
+  `Pull request title` nor `Preview`; after the push the toolbar reads
+  `Checkpoint <m> is on origin as <remote branch>.` with `What landed` where `Land…` was;
+  `What landed` reads `pushed · <remote branch> · <sha> · observed`, and `Check origin` adds
+  `origin <remote branch> at <sha> · holds the landed commit · checked …`; the conversation shows
+  `Checkpoint <m> pushed to origin as <remote branch> · <sha>`; Details' `Pull request` now has
+  `pushed · <remote branch> · <sha> · observed` under `None yet`; the box's `log` names the same
+  `<sha>` and `show` prints `landed`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/change/land-dialog.tsx`, `apps/api/src/landing-state.ts`,
@@ -1610,19 +1679,20 @@ lane changed.
 - **Do:** On the live session, as services.md's CLI steps:
   `M service run <id8> --port 8000 --name web --http --no-connect -- python3 -m http.server 8000`,
   `service list`, `service connect web --port 18000` with one curl, `service logs`,
-  `service restart`. While `web` runs, read its card in the owner's browser: on
-  `<web>/sessions/<id>` the `Preview` section shows a link `web :8000 · open the Preview tab`;
-  choose it (or go to `<web>/sessions/<id>/preview`), and on the Preview tab wait up to 20 s for the
-  `Services` card's `web` row to read `reachable`. The session page itself has no `Services` card.
-  Start a second session in the worktree to keep the workspace running:
+  `service restart`. While `web` runs, open `<web>/sessions/<id>/preview` in the owner's browser
+  (the session's tab `Preview :8000`), select `web :8000` in `This workspace's services`, and wait
+  up to 20 s for its preview line to read `reachable`. Start a second session in the worktree to
+  keep the workspace running:
   `M run --project <p> --name main-run-live-<sha8> --detach --json -- sleep 1800`; record `<k8>`. In
   the owner's browser open `<web>/api/sessions/<id>/stop-preview`. Then `M stop <id8>` and
   `M stop --services <id8>`.
-- **See:** the Preview tab's `Services` card lists `web` ending at `reachable`; curl prints `200`;
-  the preview reads `"workspace":"keeps-running"` naming `<k8>`'s session and listing `web`;
-  `mend stop` prints `the workspace keeps running for …` and names what keeps the workspace up
-  ending `· mend stop --services <id8>`; then `✓ stopped 1 service · …` and `no live services — …`
-  from `service list`. `<k8>` stays running for `capture-and-save.live-stop`.
+- **See:** the Preview tab's `This workspace's services` lists `web :8000` reading
+  `Running · python3 -m http.server 8000`, and beside it
+  `preview · web · reachable · observed <age>` (`42 s ago`, `2 min ago`; never `unreachable`); curl
+  prints `200`; the preview reads `"workspace":"keeps-running"` naming `<k8>`'s session and listing
+  `web`; `mend stop` prints `the workspace keeps running for …` and names what keeps the workspace
+  up ending `· mend stop --services <id8>`; then `✓ stopped 1 service · …` and
+  `no live services — …` from `service list`. `<k8>` stays running for `capture-and-save.live-stop`.
 - **Mode:** `agent` · a recipe would make it cheaper (the card half)
 - **Box-only:** `boat`
 - **Areas:** `packages/sessions/`, `apps/api/src/`, `apps/cli/src/`, `packages/network/`
@@ -1649,13 +1719,16 @@ lane changed.
 
 - **Map:** pairing-devices.md `pair-web`, `pair-cli`, `device-list`, `qr-render`
 - **Needs:** no session; no turn; web and CLI; none
-- **Do:** On Settings → Devices choose `Pair a phone`, read the panel, `Done`; run `M pair`,
-  `M pair --url http://not-configured.invalid`, `M qr hello`, `M qr`. Claim no code.
-- **See:** the dialog `Pair a phone` with a code `XXXX-XXXX`, its QR, and
-  `Scan with the Mend app, or type the code. Expires in m:ss.` where `m:ss` falls between two reads;
-  `✓ pairing code …` and `  expires in 10 min · one device, once`; the `--url` refusal and
-  `mend: usage: mend qr <text>`, each exit `1`; the `Devices` table's row for this CLI's device
-  reading `<device> cli`, its paired day (`Nov 5, 2026`) and its last use.
+- **Do:** On Settings → Devices and access keys (`/settings/devices`) choose `Show a code` under
+  `Pair a phone` and read the section; read it again at least 60 seconds later, then reload. Run
+  `M pair`, `M pair --url http://not-configured.invalid`, `M qr hello`, `M qr`. Claim no code.
+- **See:** under `Pair a phone`, a code `XXXX-XXXX`, the image `QR code for XXXX-XXXX`, and
+  `It works once and expires at <hh:mm>, in <n> minutes. The phone reaches this server at <web>.`;
+  on the second read the same `<hh:mm>` and a smaller `<n>`; after the reload, `No pairing code yet`
+  and `Show a code`; `✓ pairing code …` and `  expires in 10 min · one device, once`; the `--url`
+  refusal `mend: --url must exactly match one of the server's configured pairing URLs` and
+  `mend: usage: mend qr <text>`, each exit `1`; under `Signed-in devices`, this CLI's device row
+  reading `<device>`, `mend CLI`, its last use and its paired day.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/_inbox.settings.devices.tsx`, `apps/cli/src/`, `apps/api/src/`
@@ -1714,6 +1787,9 @@ lane changed.
   claude and opencode; codex's `Model` group with its default row (`<label> default`)
   `aria-checked="true"`, and Antigravity selectable in the `Agent` menu with its seeded models and
   thinking options.
+- **Waiting on:** SLNT-1270 · the web picker's codex `Model` group marks no row `default`
+  (`<label> default`); the row the account will use is checked. The CLI half and the menu's groups
+  are still checked; the missing `default` is known.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/web/src/`, `apps/api/src/`
@@ -1724,12 +1800,12 @@ lane changed.
 
 - **Map:** dotfiles.md `dotfiles-show`
 - **Needs:** no session; no turn; CLI and web; none
-- **Do:** `M dotfiles`; read Settings → Workspace (`/settings/workspace`), its `Dotfiles` and
-  `Home files` sections.
-- **See:** `repo …` and `snapshot …` lines (`none` or the saved values); the `Repository` field
-  empty when `repo` is `none` (or holding the saved URL); `Home files 0 files` with the row
-  `nothing synced yet · run mend dotfiles sync, or add files here` when `snapshot` is `none` (or the
-  snapshot's file count and rows).
+- **Do:** `M dotfiles`; read Settings → Dotfiles (`/settings/dotfiles`), its `Dotfiles repository`
+  field and `Home files`.
+- **See:** `repo …` and `snapshot …` lines (`none` or the saved values); the textbox
+  `Dotfiles repository` empty when `repo` is `none` (or holding the saved URL); under `Home files`,
+  `No home files yet.` when `snapshot` is `none`, or one `~/<path>` row with its size per file the
+  snapshot holds.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/dotfiles.ts`, `apps/web/src/`, `apps/api/src/`
@@ -1755,12 +1831,13 @@ lane changed.
   `git-author-clear`
 - **Needs:** no session; no turn; CLI and web; none
 - **Do:** `M git-author`; when it reads `· your account's name and email`, set one with the CLI,
-  reload Settings → Git access (`/settings/git-access`), try the `not-an-email` refusal, then
-  `M git-author --clear`. When a setting is already saved, only show it and stop.
-- **See:** `✓ git author · Verify Cli <verify-cli@example.com> · your setting`; under `Git author`
-  the textboxes `Name` holding `Verify Cli` and `Email` holding `verify-cli@example.com`, and the
-  button `Use my account's name and email`; the refusal, exit `1`; after the clear,
-  `· your account's name and email`.
+  reload Settings → Agent logins and Git (`/settings/agent-logins`), try the `not-an-email` refusal,
+  then `M git-author --clear`. When a setting is already saved, only show it and stop.
+- **See:** `✓ git author · Verify Cli <verify-cli@example.com> · your setting`; under `Git` the
+  textboxes `Author name` holding `Verify Cli` and `Author email` holding `verify-cli@example.com`,
+  each described `You set this.`, and the button `Use my account's name and email`; the refusal
+  `mend: git author not saved · the email is not an address like you@example.com`, exit `1`; after
+  the clear, `✓ git author · <account name> <account email> · your account's name and email`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/git-author.ts`, `apps/api/src/`, `apps/web/src/`
@@ -1770,8 +1847,9 @@ lane changed.
 - **Map:** skills.md `skills-list`, `skills-push-project` (the listing)
 - **Needs:** no session; no turn; CLI and web; `<p>`
 - **Do:** `M skills`, `M skills --project <p>`; open `/skills`.
-- **See:** the library entries or `no skills in your library — …`; the same for `<p>`; the heading
-  `Your skill library`.
+- **See:** the library entries or `no skills in your library — …`; the same for `<p>`; on `/skills`
+  the heading `Skills` and the region `Your skills`, reading `No skills yet` when the CLI listed
+  none or the CLI's names as its rows.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/web/src/routes/_inbox.skills.index.tsx`, `apps/api/src/`
@@ -1898,10 +1976,14 @@ lane changed.
 
 - **Map:** project-environment.md `env-show-cli`, `env-routing` (the refusal; nothing saved)
 - **Needs:** no session; no turn; CLI and web; `<p>`
-- **Do:** `M env show --project <p>`; open `<p>`'s environment settings, type `MEND_X` as a key,
-  read the refusal, and leave without saving.
+- **Do:** `M env show --project <p>`. Open `<p>`'s Settings → Variables and secrets
+  (`/projects/<id>/settings/secrets`) and choose `Add variable…`. Type `MEND_X` under `Name`, press
+  the dialog's `Add variable`, read the refusal, `Cancel`, reload, and run
+  `M env show --project <p>` again.
 - **See:** the stored names per lane, never a value (or `  nothing stored — …`);
-  `The MEND_ prefix is reserved for Mend itself.` with `Save` disabled.
+  `The MEND_ prefix is reserved for Mend itself.` under `Name` with the dialog `Add variable` still
+  open; after `Cancel` and the reload, `Environment variables` unchanged (`No variables yet.` when
+  nothing was stored), and the second `env show` the same as the first.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/env.ts`, `apps/web/src/components/settings/`, `apps/api/src/`
@@ -1910,10 +1992,15 @@ lane changed.
 
 - **Map:** cluster-bindings.md `cluster-show`, `cluster-local-runner`
 - **Needs:** no session; no turn; CLI and web; `<p>`
-- **Do:** Read `<p>`'s `Cluster bindings` panel and the cluster lines of `M env show --project <p>`.
-  Bind nothing.
-- **See:** either the panel with `No cluster bindings.` and its form, or the degraded panel of a
-  non-Kubernetes install (record which); no `cluster binding` line in `env show`.
+- **Do:** `M env show --project <p>`, then open `<p>`'s Settings → Variables and secrets and wait
+  until `Environment variables` and `Secrets` have loaded. Bind nothing.
+- **See:** `<p> · configuration r<n> · secrets r<n> · cluster r<n>` with no `cluster binding` or
+  `service account` line; on the page no `Loading…` and no `This didn't load.`, then one of two
+  states (record which): on a server without Kubernetes, no `Cluster bindings` section (it is hidden
+  while nothing is bound); on Kubernetes, the section `Cluster bindings` reading `Nothing is bound.`
+  with the combobox `Kind` and the button `Bind`; never `These bindings can't resolve here.` while
+  `env show` lists no binding. (`project-settings.new-web-cluster-bindings` drives the bound and
+  stranded states.)
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/`, `apps/api/src/`
@@ -1923,16 +2010,19 @@ lane changed.
 - **Map:** workspace-images.md `image-project-override` (the panel read),
   `image-organization-default` (read)
 - **Needs:** no session; no turn; web; `<p>`
-- **Do:** Read the `Image` section of `<p>`'s Settings → Workspace sub-tab, and the organization
-  default on Settings → Organization → Environment. Choose nothing.
-- **See:** under `Image`, the groups `Base` (`OS family` pressed), `OS` (`Ubuntu` pressed),
-  `Login shell` (one shell pressed) and the textbox `Packages` listing the packages, each field
-  marked `set for <p> · reset` (a project's image is its own since SLNT-1155: never
-  `from your organization` or `from the instance default`); the section
-  `Workspace environment · Default` reading
-  `Set for Default. Each new project starts with a copy; existing projects keep their own.`, as the
-  editor for an owner or the line `<os> · <n> packages · set for Default` for a member, with no
-  `Follow the instance`.
+- **Do:** Read the `Image` section of `<p>`'s Settings → Workspace
+  (`/projects/<id>/settings/workspace`); choose `Edit image…`, read the dialog, `Cancel`. Read
+  Settings → Default → Workspace image (`/settings/organization/workspace-image`). Choose nothing.
+- **See:** under `Image`,
+  `<p> has its own image. Mend copied it from Default's starting image when the project was created on <day>. Changing Default's image doesn't change this one.`,
+  then `Current image` reading `<OS>, <shell> and <n> packages.`; the dialog `Edit <p>'s image` with
+  `Base`, `Operating system` and `Shell` each with one choice pressed and the list `Packages` with
+  `<n>` items, and `Cancel` leaving the summary as it was; on the organization page
+  `The starting image for Default's projects. Mend copies it into each new project when the project is created.`
+  and
+  `Changing it doesn't change existing projects. Each project edits its own copy on its Workspace page.`,
+  with the section `Starting image` as an editor for an owner (or
+  `Only an owner can change it: <names>.` for a member); no `Follow the instance` anywhere.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/`,
@@ -1944,13 +2034,16 @@ lane changed.
 - **Map:** automatic-install.md `install-detected`, `install-colocated`
 - **Needs:** no session; no turn; web; `<p>`
 - **Do:** Read the `Dependencies` section of `<p>`'s Settings → Workspace sub-tab. Change nothing.
-- **See:** `Installs dependencies in every new worktree before the agent starts.`; the switch
-  `Automatic install` checked (or unchecked, with
-  `No install runs, in sessions or for the shared cache`); while checked, the textbox
-  `Custom command` and one line under it:
-  `no lockfile recognised on origin/<default branch> · detected again at launch`,
-  `detected · <command> · from <lockfile> on origin/<default branch>` or `runs · <command> · custom`
-  (record which); or `Capture mode only. …`.
+- **See:** `Mend installs dependencies in each new worktree before the agent starts.`; the switch
+  `Automatic install` checked, with
+  `Mend runs your custom command. If you haven't set one, it runs the command it finds from the lockfile.`,
+  the textbox `Custom command` and one line under it (record which):
+  `Mend found no lockfile it knows on <default branch>, and looks again when a session starts. …`,
+  `Mend found <command> from <lockfile> on <default branch> and runs it. …`,
+  `Mend runs this instead of the command it found from the lockfile.` or
+  `Mend couldn't read <default branch>, …`; or unchecked, with
+  `No install runs, in sessions or for the shared cache.` and no `Custom command`; or, on a
+  colocated install, `Sessions here run beside the store, …`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/`, `apps/api/src/`
@@ -1961,9 +2054,10 @@ lane changed.
 - **Needs:** no session; no turn; web; `<p>`
 - **Do:** Read the `Ready workspaces` section of `<p>`'s Settings → Workspace sub-tab. Change no
   count.
-- **See:** `Ready workspaces` with the textbox `Ready workspaces` reading `0`, the status `off` and
-  `One fewer: Ready workspaces` disabled, or for a raised count its number with `<n> ready now`,
-  `<n> warming`, `<n> failed` or `none ready yet` (record which).
+- **See:** `Ready workspaces` with `Per person` and `You can set up to 8.`; in the group
+  `Ready workspaces per person`, the count `0` with the status `Off` and `One fewer ready workspace`
+  disabled, or for a raised count its number and `<n> ready for you`, `<n> starting`, `<n> failed`
+  or `None ready yet` (record which); never `Mend couldn't read them.`
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/`, `apps/api/src/preview-pools.ts`,
@@ -1982,6 +2076,11 @@ lane changed.
   `Inherit · on|off`, `On`, `Off` pressed, an `Inherit` tip reading `From your own settings`; your
   own pages show the same five as switches with no Inherit, each `Inherit · <value>` on `<p>`
   matching your switch; under `Defaults · Default`, only `Where new sessions run`.
+- **Waiting on:** SLNT-1270 · the project's automation groups (`Inherit · on|off`, `On`, `Off`, five
+  per project) and the organization's `Defaults` are not in the shipped app: the project's Landing
+  and Review addresses open your own `Your automation`, and the organization's runtime is on
+  Settings → Default → `Runtime`. Until that ticket settles it, this flow fails on those groups and
+  is known.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/`, `apps/web/src/components/settings/`,
@@ -2161,31 +2260,39 @@ lane changed.
 - **Needs:** Boat; no turn; CLI and web (the owner's browser); `<land>` and `<second>`; a
   `<scratch>/folder` holding `a.txt`
 - **Do:** `M folder create main-run-sel-<sha8>`,
-  `M folder push main-run-sel-<sha8> <scratch>/folder`. On `<land>`'s Settings: give
-  `main-run-sel-<sha8>` `read` access; add the reference `main-run-ref` with the URL
-  `<git>/second.git` and no ref; link `<second>` as `main-run-link`. Run
-  `M folder rm main-run-sel-<sha8>` (refused while selected). Then
+  `M folder push main-run-sel-<sha8> <scratch>/folder`. On `<land>`'s Settings · Folders and
+  references set `Access to main-run-sel-<sha8>` to `Read only`. On Default's Settings · Folders and
+  references choose `Add reference…` with Repository `<git>/second.git`, Name `main-run-ref` and no
+  ref, then `Add reference`. Back on `<land>`'s Folders and references turn on
+  `Use main-run-ref in sessions`, reload, and go on only when the switch reads checked. On
+  `<land>`'s Settings · General choose `Link project…`, Project `<second>`, Mounted as
+  `main-run-link`, then `Link project`. Run `M folder rm main-run-sel-<sha8>` (refused while
+  selected). Then
   `M run --project <land> --name main-run-extras-<sha8> -- sh -c 'ls -R /workspace/home /workspace/ref /workspace/repos > EXTRAS.txt 2>&1; true'`
   and record its session `<id>` from `✓ base … · session <id8>` and `M sessions --json`. Read
   `EXTRAS.txt` in its change: in the owner's browser go straight to `<web>/sessions/<id>/change` (do
   not click `Review change` and wait for the URL: it keeps a query string, so a wait for a URL
   ending `/change` never matches), wait up to 30 s for
   `page.getByRole("region", { name: "EXTRAS.txt", exact: true })`, and `note()` the text of its
-  `code` elements. Choose `refresh` (the button reads `Fetch`) on `main-run-ref`. Restore in the
-  same flow: set the folder's access back to `off`, `remove` the reference and the link,
-  `M folder rm main-run-sel-<sha8>`, and
+  `code` elements. On Default's Folders and references choose `Fetch again` on `main-run-ref`.
+  Restore in the same flow: set the folder's access back to `Off`; choose `Unlink <second>`; on
+  Default's page choose `Actions for main-run-ref`, `Remove reference…`, then `Remove reference`;
+  `M folder rm main-run-sel-<sha8>`; and
   `M worktrees rm main-run-extras-<sha8> --project <land> --force` (`EXTRAS.txt` is never landed, so
   removal without `--force` is refused).
-- **See:** the folder row with `read` pressed; the reference row with its short head sha and
-  `fetched <date>` (or the refusal of a `git://` URL in its own words: record which); the
-  `Linked projects` row reads `main-run-second`, its worktree (`main`), and
-  `/workspace/repos/main-run-link`, with the button `Unlink main-run-link`;
+- **See:** the folder's `Read only` pressed; on `<land>`'s page the `main-run-ref` row with its
+  short head sha and the switch checked after the reload, and on Default's page its `Fetched` cell
+  reading a time (`just now`, `<n> minutes ago`) before and after `Fetch again` (or the refusal of a
+  `git://` URL in its own words: record which); the `Linked projects` row `main-run-link` reads
+  `<second>`, `/workspace/repos/main-run-link` and `main`, with the button `Unlink <second>`;
   `mend: A project mounts this folder. Deselect it there first.`, exit `1`; `EXTRAS.txt` lists
-  `a.txt` under `main-run-sel-<sha8>`, the reference's top level, and `main-run-link` under
-  `/workspace/repos` or a missing directory (record which: the map says linked projects are not
-  delivered in capture mode); after the restore, `<land>`'s sections show none of the three,
-  `M folder list` has no `main-run-sel-<sha8>` and `M worktrees --project <land>` no
-  `main-run-extras-<sha8>`.
+  `a.txt` under `main-run-sel-<sha8>`, the reference's top level under
+  `/workspace/ref/main-run-ref`, and either `main-run-link` under `/workspace/repos` or
+  `/workspace/repos` missing (missing when `Linked projects` says
+  `Sessions here run in captured workspaces, which don't get linked projects, …`; record which);
+  after the restore, `<land>`'s pages read `Default has no folders yet.`,
+  `Default has no references yet.` and `No linked projects.`, `M folder list` has no
+  `main-run-sel-<sha8>`, and `M worktrees --project <land>` has no `main-run-extras-<sha8>`.
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/web/src/components/settings/project-links-section.tsx`,
@@ -2608,14 +2715,18 @@ lane changed.
 - **Map:** organization.md `members-cli`, `org-cli`, `members-web`, `invite-cli`, `invite-revoke`,
   `audit-log`
 - **Needs:** no session; no turn; CLI and web; none
-- **Do:** `M members`, `M org`; `M invite --email main-run@example.invalid --days 1`; on Settings →
-  Invitations choose `Revoke` on that link's row, which restores the list in the same flow; read the
-  audit log.
-- **See:** `<org> · 2 members` (the owner and `fixtures.sh`'s second account) with the `▸` row
-  `owner`; `M org` marks Default; the link, then the row gone from `Open invitations` and the fold
-  `Used and closed <n> links` one higher (it appears as `1 link` when absent before), its summary
-  naming `main-run@example.invalid · revoked`; the audit log's newest lines name the invite and the
-  revoke.
+- **Do:** `M members`, `M org`; `M invite --email main-run@example.invalid --days 1`; on Settings ·
+  Members, in `Invitations`, choose `Revoke the invitation for main-run@example.invalid`, which
+  restores the list in the same flow; open the fold of closed links; read Settings · Audit log.
+- **See:** `Default · 2 members` (the owner and `fixtures.sh`'s second account) with the `▸` row
+  `owner`; `M org` prints `Default · owner · joined <date>`; the link with
+  `works once · member · for main-run@example.invalid · expires <date>`; the `Open invitations` row
+  `main-run@example.invalid` · `Member`, then `No open invitations.` and the fold
+  `Show <n> used, expired or revoked links` one higher than before (record both;
+  `Show 1 used, expired or revoked link` when there was none), its first item
+  `main-run@example.invalid · Member Revoked on <day month>`; the audit log's two newest rows
+  `Revoked an invitation link` and
+  `Created an invitation link to join as a member, for one email address`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`,
@@ -2628,16 +2739,19 @@ lane changed.
 - **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time;
   `land-change.web-push` (something landed in `<land>`)
 - **Do:** `M2 members`; `M2 projects`; in the second browser, `/projects`. In the owner's browser,
-  set `<land>`'s `Visibility` to `shared`. `M2 projects` again; in the second browser, `/projects`,
-  then the land session's page, choose `Landing →` and read the `Land` region. In the owner's
-  browser set `<land>` back to `private`, which restores it in the same flow; `M2 projects` once
-  more.
+  on `<land>`'s Settings · General, choose `Everyone in Default` in `Visible to`. `M2 projects`
+  again; in the second browser, `/projects`, then go straight to
+  `<web>/sessions/<land session id>/change`, choose `What landed` and read its dialog. In the
+  owner's browser choose `Only you`, which restores it in the same flow; `M2 projects` once more.
 - **See:** `M2 members` has `Default · 2 members` with the `▸` row the second account's, `member`;
-  before, neither `M2 projects` nor the second browser's `main` lists `<land>` or `<second>`; after
-  `shared`, the owner's header line reads `… · shared with Default` and both list `<land>`; the
-  session page link reads `Landing →` (not `Land →`) and the region reads
-  `only the change's owner lands it` with no `Push to origin`; after `private`, `<land>` is gone
-  from `M2 projects`.
+  before, `M2 projects` prints `no adopted projects — …` and the second browser's `/projects` reads
+  `No projects yet`; after sharing, the owner's `Visible to` has `Everyone in Default` pressed with
+  `Everyone in Default can see its sessions and start their own. …`, `M2 projects` lists `<land>`
+  (not `<second>`), and the second browser's `Projects` table has the `<land>` row with
+  `Everyone in Default`; the member's change toolbar has no `Land…` or `Land again…`, and its
+  `What landed` dialog ends `Only the change's owner lands it.` with no `Push to origin`; after
+  `Only you` (pressed, `Only you can see it and its sessions.`), `<land>` is gone from
+  `M2 projects`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/project-general-page.tsx`, `apps/api/src/`,
@@ -2649,24 +2763,29 @@ lane changed.
   `audit-log`
 - **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time; the second
   account a `member`
-- **Do:** In the owner's browser on Settings · Members, choose `Make member` on the owner's row
-  (refused). Choose `Make owner` on the second account's row; `M members`; in the second browser,
-  read Settings · Members and look for `Invitations`. In the owner's browser, choose `Make member`
-  scoped to the second account's row by its email, which restores the role in the same flow. Then,
-  in this order:
+- **Do:** In the owner's browser on Settings · Members, open `Your membership` on the owner's row,
+  read its menu, then `Escape`. On the second account's row set the `Main Run Second's role` select
+  to `Owner`; `M members`; in the second browser, read Settings · Members and look for
+  `Invitations`. In the owner's browser set that select (the row scoped by its email) back to
+  `Member`, which restores the role in the same flow. Then, in this order:
   1. `M members`. Go on only when the second account's row reads `member`. When the restore's recipe
      failed (on 19 Nov a sign-in timeout) or the row still reads `owner`, run the restore again and
      read `M members` again.
   2. Only then `M2 invite`. Run as an owner it makes a real link, so never run it before step 1
      reads `member`. If it exits `0` anyway, revoke the link it printed at once on Settings ·
-     Invitations, and record the slip in `result.txt`.
+     Members, in `Invitations`, and record the slip in `result.txt`.
   3. Read the audit log.
-- **See:** `An organization needs an owner. Make someone else an owner before this one steps down.`;
-  the row then reads `owner`, and `M members` agrees; the second browser shows the owner controls
-  while it is an owner (record which); after the restore the row and `M members` read `member`, the
-  second browser shows `Members` without `Make owner`, `Remove…` or `Invitations`, and `M2 invite`
-  exits `1` with `mend: only an owner can invite; mend members shows who`; the audit log's newest
-  lines name `made <second> an owner` and the change back.
+- **See:** the owner's row reads `Owner` with `Locked: the only owner` and no role select, under the
+  alert
+  `You're Default's only owner. Make someone else an owner before you leave or change your own role. Default always needs at least one owner.`;
+  its menu has `Make yourself a member` (`Default needs at least one owner.`) and `Leave Default…`
+  (`Make someone else an owner first.`), both disabled, so no request reaches the server; the second
+  row then reads `Owner` and `M members` agrees; while it is an owner, the second browser shows a
+  role select on both rows and `Invitations` with `Create invitation…`; after the restore the row
+  and `M members` read `member`, and the second browser shows `Members` with plain `Member` and
+  `Owner` cells, no role select, no row menu and no `Invitations`; `M2 invite` exits `1` with
+  `mend: only an owner can invite; mend members shows who`; the audit log's newest rows are
+  `Made Main Run Second an owner` and `Made Main Run Second a member`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/_inbox.settings.organization.members.tsx`, `apps/api/src/`,
@@ -2683,11 +2802,12 @@ lane changed.
   1. `M invite --days 1 > ~/.local/state/mend-main-run/private/invite-a.out`; record the exit code.
      Line 1 is link A. Copy both lines into `cli.log` with the token cut from the first:
      `sed '1s/#.*/#<link A>/' ~/.local/state/mend-main-run/private/invite-a.out`.
-  2. In the owner's browser on Settings · Invitations, record `Used and closed <n> links`, then make
-     a `member` link bound to `main-run-other@example.invalid` (link B). In the same recipe, before
-     `Done`: wait for `page.getByRole("dialog")`, read its whole `innerText()` (the warning is the
-     end of a longer line, so waiting for it as an exact paragraph never matches), take the
-     `<web>/join#…` link out of it, `writeFileSync` it to
+  2. In the owner's browser on Settings · Members, in `Invitations`, record
+     `Show <n> used, expired or revoked links`, then choose `Create invitation…` with Role `Member`
+     and Email `main-run-other@example.invalid`, then `Create invitation link` (link B). In the same
+     recipe, before `Done`: wait for `page.getByRole("dialog")`, read its whole `innerText()` (the
+     warning is the end of a longer line, so waiting for it as an exact paragraph never matches),
+     take the `<web>/join#…` link out of it, `writeFileSync` it to
      `~/.local/state/mend-main-run/private/link-b.txt`, and `note()` the text with the link replaced
      by `<link B>`. Then `Done`. Once that recipe ends, link B is gone for good.
   3. In the second browser (`web2`), one recipe opens `<web>/join#not-a-token`, then link A (line 1
@@ -2695,16 +2815,18 @@ lane changed.
      notes each page's text. In `result.txt` call the first page "the not-a-token join page": the
      evidence scan reads `/join#` followed by text as an invitation link and deletes the file (19
      Nov).
-  4. In the owner's browser revoke links A and B (`Revoke the invitation for anyone with the link`,
-     `Revoke the invitation for main-run-other@example.invalid`), which restores the open list in
-     the same flow. In the signed-out context open link A.
-- **See:** link A's two lines (`works once · member · expires <day>`); for B, the dialog's
-  `Copy it now: Mend shows it only this once.` and the link's line
-  `works once · expires <day> · not shown again`; `This link is not an invitation`;
-  `You are already a member of Default.` with `Open Mend` for A; B refused with its reason (record
-  the words); both rows leave the open list, and `Used and closed <n> links` goes up by two (record
-  the count before and after); A in the signed-out context reads it cannot be used (record the
-  words).
+  4. In the owner's browser choose `Revoke the invitation for Anyone with the link` and
+     `Revoke the invitation for main-run-other@example.invalid`, which restores the open list in the
+     same flow. In the signed-out context open link A.
+- **See:** link A's two lines (`works once · member · expires <day>`); for B, the dialog
+  `Invitation link created` with `You won't see the link again after you close this.`,
+  `Who can use it` `Only someone signing up as main-run-other@example.invalid`, `Role` `Member`, and
+  its `Expires` line; `This link is not an invitation`; for A,
+  `You're already a member of Default. The invitation stays unused.` with `Open Mend`; B refused
+  with its reason (record the words: the join page checks membership first, so on 22 Nov it read the
+  same already-a-member line); both rows leave the open list (`No open invitations.`) and
+  `Show <n> used, expired or revoked links` goes up by two (record the count before and after); A in
+  the signed-out context reads `This invitation can't be used.` and `An owner revoked it.`
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/web/src/routes/join.$token.tsx`, `apps/web/src/routes/join.index.tsx`,
@@ -2873,6 +2995,11 @@ lane changed.
   `<second>` holds it; the control log and audit log name each step and the person.
 - **Mode:** `agent`
 - **Box-only:** no
+- **Not on the box:** the second account starts this session with `M2 codex`, which needs its own
+  Codex login, and it has none (Fixtures, the second account). Mend lets no account use another's
+  agent login, and connecting a copy of the checker's would share one refresh token between two
+  logins: the first refresh spends it for the other, the run's saved one included. No new login is
+  coming for it (SLNT-1267, 22 Nov).
 - **Areas:** `packages/db/src/repos/session-shared-control.ts`,
   `apps/web/src/server/routers/sessions.ts`, `apps/web/src/server/api/errors.ts`
 
@@ -2905,6 +3032,11 @@ lane changed.
   the message sends by itself once `mend connect codex` finishes.
 - **Mode:** `agent`
 - **Box-only:** `boat`, `real-agent-turn`
+- **Not on the box:** the second account starts this session with `M2 codex`, which needs its own
+  Codex login, and it has none (Fixtures, the second account). Mend lets no account use another's
+  agent login, and connecting a copy of the checker's would share one refresh token between two
+  logins: the first refresh spends it for the other, the run's saved one included. No new login is
+  coming for it (SLNT-1267, 22 Nov).
 - **Areas:** `apps/web/src/components/session/shared-control.tsx`,
   `apps/web/src/lib/shared-control.ts`
 
@@ -2914,22 +3046,28 @@ lane changed.
   person)
 - **Needs:** Boat; no turn; CLI (`M` and `M2`) in tmux and web, one browser at a time (the owner's);
   `<second>`
-- **Do:** In the owner's browser set `<second>`'s `Visibility` to `shared`. In tmux,
-  `M2 run --project <second> --name main-run-pp-<sha8> -- sleep 1800`; record `<b8>`. In the owner's
-  browser, on `<second>`'s Worktrees tab open `New session in main-run-pp-<sha8>`, read it,
-  `Escape`. In tmux, `M run --project <second> --worktree main-run-pp-<sha8> -- sleep 1800`; record
-  `<a8>`. `M sessions --project <second>`; open `<a8>`'s session page. `M2 shell <b8>` and
-  `M shell <a8>`, each running `id -un; id -u; echo $HOME`, then `exit`. Restore in the same flow:
-  `M stop <a8>`, `M2 stop <b8>`, wait until both settle, remove the worktree as its owner
-  (`M2 worktrees rm main-run-pp-<sha8> --project <second>`), and set `<second>` back to `private`.
-- **See:** the menu's line
-  `<second>'s session is running in this worktree. You share its workspace: …`; the owner's `run`
-  prints `✓ joins worktree main-run-pp-<sha8> · 1 session · …` and the join line (record whether it
-  prints: the map names it for harness launches); under the live row
-  `Shared workspace with <second> · …`, and the same line on the session page; two different `m`
-  plus 8 character logins, each uid in 40001–49999 with its own `/home/<name>` (or uid `0` and the
-  shared-home case, record which: the map says a first launch on an unchecked image can share one
-  home).
+- **Do:** In the owner's browser, on `<second>`'s Settings · General, choose `Everyone in Default`.
+  In tmux, `M2 run --project <second> --name main-run-pp-<sha8> -- sleep 1800`; record `<b8>`. Go on
+  only once `M2 sessions --project <second>` lists `<b8>` `running` (a session whose workspace image
+  is still building reads `starting`: about 5 min on 22 Nov, before step 6's warm-up). In the
+  owner's browser, on `<second>`'s Worktrees tab open `Actions for main-run-pp-<sha8>`, hover
+  `New session in this worktree`, read the paragraph at the top of its submenu, then `Escape`. In
+  tmux, `M run --project <second> --worktree main-run-pp-<sha8> -- sleep 1800`; record `<a8>`. Once
+  both read `running`, `M sessions --project <second>`, and open `<web>/sessions/<a8's id>/details`.
+  `M2 shell <b8>` and `M shell <a8>`, each running `id -un; id -u; echo $HOME`, then `exit`. Restore
+  in the same flow: `M stop <a8>`, `M2 stop <b8>`, wait until both settle, remove the worktree as
+  its owner (`M2 worktrees rm main-run-pp-<sha8> --project <second>`), and choose `Only you` on
+  `<second>`'s Settings · General.
+- **See:** the submenu's line
+  `Main Run Second's session is running in this worktree. You share its workspace: everything you run runs as you, on your own logins, but either of you can read the other's files, logins included.`;
+  the owner's `run` prints `✓ joins worktree main-run-pp-<sha8> · 1 session · …` and the join line
+  (record whether it prints: the map names it for harness launches); under both live rows of
+  `M sessions --project <second>`, and in the Details view's `Workspace` → `Worktree` row,
+  `Shared workspace with Main Run Second · each of you runs as yourself · either of you can read the other's files.`;
+  two different `m` plus 8 character logins, each uid in 40001–49999 with its own `/home/<name>` (or
+  uid `0` and the shared-home case, whose submenu line reads
+  `Another person's session is running in this worktree, in a workspace that shares one home: …`;
+  record which: the map says a first launch on an unchecked image can share one home).
 - **Mode:** `agent`
 - **Box-only:** `boat`
 - **Areas:** `apps/web/src/components/session/shared-control.tsx`,
@@ -2943,29 +3081,38 @@ lane changed.
   refusal)
 - **Needs:** no session; no turn; CLI (`M` and `M2`) and web, one browser at a time, plus a fresh
   signed-out browser context; the owner account is the operator
-- **Do:** `M2 operator org list`, `M2 operator gate`; `M operator org create main-run-x`;
-  `M operator org rename Default main-run-renamed`, `M members`, then
+- **Do:** `M2 operator org list`, `M2 operator gate`; `M operator org create Default` (refused: the
+  name is taken. Never create a new organization here: the copies run multi tenancy, a create
+  succeeds, and no command removes an organization; `organization.new-web-operator-create` shows a
+  create); `M operator org rename Default main-run-renamed`, `M members`, then
   `M operator org rename main-run-renamed Default`, which restores the name in the same flow;
   `M operator org rename no-such-org x`;
   `M operator org add-member Default main-run-second@example.test`;
   `M operator org invite-owner Default --email main-run-owner@example.invalid`, open it in the
-  signed-out context, then revoke it on Settings · Invitations;
-  `M operator grant-owner Default main-run-second@example.test`, `M members`, then `Make member` on
-  the second account's row (scoped by email), which restores the role;
+  signed-out context, then on Settings · Members, in `Invitations`, choose
+  `Revoke the invitation for main-run-owner@example.invalid`;
+  `M operator grant-owner Default main-run-second@example.test`, `M members`, then set
+  `Main Run Second's role` (the row scoped by its email) to `Member`, which restores the role;
   `M operator grant-owner Default nobody@example.invalid`;
-  `M operator reset-link nobody@example.invalid`. In the second browser look for
-  `instance · operator` on Settings; in the owner's, read the audit log.
+  `M operator reset-link nobody@example.invalid`; `M operator org list`. In the second browser read
+  Settings' sidebar and open `<web>/settings/server`; in the owner's, read the audit log.
 - **See:** both `M2` commands exit `1` with `mend: this account is not the operator of this Mend`;
-  the create refusal naming `MEND_TENANCY=single`; `✓ renamed Default to main-run-renamed`,
-  `M members` starting `main-run-renamed · 2 members`, and the rename back;
-  `mend: no organization named "no-such-org"`;
-  `mend: This Mend runs one organization (MEND_TENANCY=single). Invite people with a link instead.`;
-  the owner link's line `owner of Default · for main-run-owner@example.invalid · works once · …` and
-  `as owner · expires <day>` on the join page, then the row gone;
-  `✓ main-run-second@example.test is an owner of Default` and `owner` in `M members`, then `member`
-  again; the two `No … has that email` refusals, exit `1`; no `instance · operator` for the second
-  account; the audit log names the renames, the owner invitation and its revoke, and the grant, each
-  `as the operator` where the map says so.
+  `mend: An organization named "Default" exists.`, exit `1`;
+  `✓ renamed Default to main-run-renamed`, `M members` starting `main-run-renamed · 2 members`, and
+  the rename back; `mend: no organization named "no-such-org"`;
+  `mend: That account already belongs to Default.`, exit `1`; the owner link's line
+  `owner of Default · for main-run-owner@example.invalid · works once · expires <date>` and, on the
+  join page, `Join Default` with `You're invited to join Default on Mend as an owner. …`, then
+  `No open invitations.`; `✓ main-run-second@example.test is an owner of Default` and `owner` in
+  `M members`, then `member` again;
+  `mend: No member of Default has that email. Invite an owner instead.` and
+  `mend: No active account in an organization has that email.`, each exit `1`; the last
+  `M operator org list` is the one line `Default  2 members · 1 owner`; the second account's sidebar
+  has no `Server` group and `/settings/server` does not show it the `Server` page; the audit log has
+  `Renamed the organization to main-run-renamed`, `Renamed the organization to Default`,
+  `Created an invitation link to join as an owner, for one email address`,
+  `Revoked an invitation link`, `Made Main Run Second an owner, as this server's operator` and
+  `Made Main Run Second a member`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/`, `apps/cli/src/`,
@@ -2981,6 +3128,10 @@ lane changed.
   `Share` button, not pressed; its popover `Share this session` with the group `Shared control` and
   `Off` pressed. The owner never reads `Only <owner> steers this session. …`: that line is for a
   viewer who cannot steer.
+- **Waiting on:** SLNT-1270 · the header's `Share` button and its popover (`Share this session`,
+  `Shared control`, `Off`): the shipped app has no control that turns shared control on unprompted;
+  the owner only grants it when asked, and Details reads `Shared control is off.`. The CLI refusal
+  is still checked; the missing button is known.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/`, `apps/api/src/`
@@ -2989,9 +3140,13 @@ lane changed.
 
 - **Map:** operator.md `org-list`, `instance-defaults`
 - **Needs:** no session; no turn; CLI and web; the owner account is the box's operator
-- **Do:** `M operator org list`; look for `instance · operator` on Settings.
-- **See:** `Default  1 members · 1 owner` (count words as printed), exit `0`, and the operator
-  defaults shown; or `mend: this account is not the operator of this Mend`, which makes the flow
+- **Do:** `M operator org list`; in the owner's browser open Settings and choose `Server` in the
+  sidebar's `Server` group (`/settings` opens Profile).
+- **See:** `Default  2 members · 1 owner` (the owner and `fixtures.sh`'s second account; count words
+  as printed), exit `0`; the `Server` page with `Operators of this server` under its title and the
+  operator defaults: `Where sessions run` (each runtime `Offered` or `Not offered`),
+  `Starting workspace image`, and `Organizations` with its `Default` row `2 members, 1 owner`. When
+  the CLI prints `mend: this account is not the operator of this Mend`, the flow is
   `not run · not the operator`.
 - **Mode:** `agent`
 - **Box-only:** no
@@ -3003,12 +3158,14 @@ lane changed.
   `doctor-line`
 - **Needs:** no session; no turn; CLI, HTTP and web; operator for the two `mend operator` commands
 - **Do:** `curl -s $WEB/api/health`; `M operator exposure`; `M operator gate`; at 1280x800, open the
-  sidebar's account button (`<name>, account and machine`) and read its popover; the `exposure` line
-  of `doctor.checklist`'s output.
-- **See:** JSON with `"tenancy": "single"` and an `exposure` object naming no item; line 1
-  `exposure · declared <posture> · …`; the gate ending `<k> of 10 items open; …`; the popover
-  `Account and machine` with `machine` and the line `exposure · <posture> · <scheme>`, `<scheme>`
-  being `$WEB`'s (`http` on a check VM copy, `https` behind an edge).
+  sidebar's account button (`<name>, account`, its second line the server's `<host>:<port>`) and
+  read its menu; the `exposure` line of `doctor.checklist`'s output.
+- **See:** JSON with `"tenancy":"multi"`, `"tenancyGate":{"passed":true,"failing":[]}` and an
+  `exposure` object naming no item; line 1 `exposure · declared <posture> · …`; the gate's ten `✓`
+  items, ending `every item is in place; MEND_TENANCY=multi may start`; the account button reading
+  `<name>` over `$WEB`'s `<host>:<port>`, and its menu's first lines `<name> · <email>` and
+  `exposure · <posture> · <scheme>`, `<scheme>` being `$WEB`'s (`http` on a check VM copy, `https`
+  behind an edge).
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/api/src/exposure.ts`, `packages/network/`, `apps/cli/src/`
@@ -3051,10 +3208,10 @@ lane changed.
 - **Map:** server.md `server-status`, `server-logs`
 - **Needs:** no session; no turn; the box's host CLI over `MEND_VERIFY_BOX_SSH`
 - **Do:** On the box host, `mend server status` and `mend server logs --tail 20`. Change nothing.
-- **See:** `Pinned Mend <version> at …`, the `exposure · declared …` and
-  `tenancy · declared single …` lines (the run's data never declared tenancy, so the upgrade keeps
-  it single; a fresh install would read `declared multi`) and the containers up; at most 20 lines
-  per container, exit `0`.
+- **See:** `Pinned Mend <version> at …`, the `exposure · declared …` line,
+  `tenancy · declared multi` (multi tenancy is the default since #1916, and every master since 21
+  Nov declares it) and `tenancy · observed multi · multi mode gate · nothing open · …`, and the
+  containers up; at most 20 lines per container, exit `0`.
 - **Mode:** `agent`
 - **Box-only:** no
 - **Areas:** `apps/cli/src/` (server), `scripts/preview-deploy.sh`
@@ -3108,7 +3265,9 @@ lane changed.
 
 - **Map:** tui.md `tui-open`, `tui-navigate`, `tui-keys`, `tui-filter`, `tui-review`,
   `tui-open-web`, `tui-quit`; review-change.md `review-tui`
-- **Needs:** either; no turn; TUI (tmux 200x50, Node 26); `start-session.boat-run`
+- **Needs:** either; no turn; TUI (tmux 200x50, Node 26); `start-session.boat-run`, before any Codex
+  turn in its worktree (`start-session.web-answer`'s Deny keeps `refused-check.txt` there by design,
+  and on 22 Nov the review then read `2 files`)
 - **Do:** `M ui` in tmux; jump panes, open `?`, filter worktrees by `main-run-run`, select its
   session, `v` to review and `esc`, `o`, then `q`. No `w`, `n`, `K` or `D`.
 - **See:** ` mend  <n> projects · <m> live`; the overlay `keys · …`; the review header
@@ -3167,7 +3326,7 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | observed-agents         | all                                                                                                                                                                                                                     | runs `claude` by hand in the workspace; no claude login                                                                                                           |
 | terminal-agent-waits    | all                                                                                                                                                                                                                     | its recipe runs in the VS Code driver's own world                                                                                                                 |
 | organization            | `join`, `join-signed-in`, `password-reset`, `member-removal`, `org-switch-cli`, `org-switch-web`, `org-per-sign-in`, `org-isolation`, `org-leave`, `org-access-key`, `operator-add-member` (an actual add), `take-over` | each creates or removes an account, or mints a reset link nothing revokes; the rest need a second organization and multi tenancy                                  |
-| shared-control          | `share-refused` (opencode), a steered turn                                                                                                                                                                              | no opencode login; the second account has no agent login and the web sends no turn                                                                                |
+| shared-control          | `share-refused` (opencode), a steered turn, `ask`, `withdraw`, `grant`, `take-back`, `switch-ends-grants`, `sender-login` (their flows say why)                                                                         | no opencode login; the second account has no agent login and the web sends no turn                                                                                |
 | per-person-homes        | `layout-opt-out`, `no-way-back`, `layout-fallback`, `waiting-line`, `retirement` (in workspace-replace)                                                                                                                 | the first two restart the server with `MEND_HARNESS_LAYOUT=shared`; the fallback needs an image that cannot run per person; the waiting line needs a steered turn |
 | operator                | `org-create` (an actual create), `reset-link` (a real link)                                                                                                                                                             | multi tenancy; a reset link nothing revokes                                                                                                                       |
 | exposure                | `public-refusal`, `declared-items`, `budget-refusal`, `upgrade-tickets`, `url-bearers`                                                                                                                                  | each restarts the server with changed exposure variables                                                                                                          |
@@ -3181,8 +3340,10 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | slack                   | all                                                                                                                                                                                                                     | not drivable yet; no Slack workspace                                                                                                                              |
 | t3-gateway              | all                                                                                                                                                                                                                     | its recipe needs a local stack's gateway                                                                                                                          |
 
-Flows: 64 total · 6 scripted · 58 agent · 3 needing a real turn (`start-session.boat-turn`,
-`start-session.composer`, `send-review-back.deliver`) · 16 box-only. Features: 42 with a flow, 12
-only in Not on the box (doppler, workspace-replace, observed-agents, terminal-agent-waits,
-uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack, t3-gateway): 54 of the
-map's 54 mapped features placed, none left over.
+Flows: 141 total (22 Nov) · 74 scripted · 67 agent · 26 box-only · 2 with a `Not on the box:` line
+(`shared-control.ask-and-grant`, `shared-control.new-web-ask-and-grant`) · 5 with a `Waiting on:`
+line (`project-settings.read`, `models.list-picker`, `review-change.web-comments`,
+`shared-control.refuse-script`, and `adopt-project.new-web-project-page` on SLNT-1206). Features: 42
+with a flow, 12 only in Not on the box (doppler, workspace-replace, observed-agents,
+terminal-agent-waits, uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack,
+t3-gateway): 54 of the map's 54 mapped features placed, none left over.

@@ -38,6 +38,13 @@ worktree is `<worktree path>`; run every command from there.
 - A flow whose Mode is `scripted (recipes/cli-reads.sh <id>)` runs
   `E=<evidence dir> SHA8=<the commit's first 8 characters> LANE=<lane> .agents/skills/box-main-run/recipes/cli-reads.sh <id>`,
   which writes its own `cli.log` and `result.txt`.
+- A flow that names a CLI batch (`<name>.json`, in `.agents/skills/verify/recipes/`) runs its steps
+  one at a time with `~/.local/state/mend-main-run/lanes/<lane>/bin/M` in place of `mend`, and
+  **skips every step that runs `mend connect`** (named like `00-codex-login` or `02-claude-login`):
+  those put a fake login in place of your copy's real one, and every later real turn on your copy
+  then fails. Write `differs · skipped <step>: it replaces the copy's agent login` in `result.txt`.
+  The one exception is `settings.new-web-agent-logins`, whose flow replaces logins on purpose: run
+  its batch whole.
 - Your copy's web: `<web>`. Other lanes run other copies at the same time: use only lane `<lane>`'s
   names, and never another lane's. The project: `boat-check-ubuntu`, written `<p>`. Where flows.md
   writes `<sha8>`, use `<the commit's first 8 characters>`.

@@ -6,8 +6,13 @@ Executor (team SLNT); the home repo's `linear` skill says how to work there.
 ## 1. Scan the evidence
 
 ```sh
+rm -rf $E/start-session.new-web-streaming/samples
 node .agents/skills/verify/scripts/scan-evidence.mjs --dir $E --secrets $P --delete-hits
 ```
+
+The first line removes the streaming recipe's scroll frames once that flow is judged: no driver
+checks them, so the scan deleted each one as a hit (3 893 of 22 Nov's 3 915), and the hits that
+matter were lost among them.
 
 A screenshot that drive-web.mjs withheld, or the scan deleted, is named in the report, never posted.
 Only what the scan passed leaves this machine.
@@ -32,8 +37,9 @@ Check VMs:
 
 - Length: <h> h <m> min from the lock to the next master built (or to the save, with why it was not
   built). Wait for room: <m> min from the lock to lane A's copy. Flows: <m> min from the first
-  flow's start to the last flow's end (74 min on 20 Nov, every Boat flow on lane A), and each lane's
-  own: A <m>, B <m>, C <m>.
+  flow's start to the last flow's end (151 min on 22 Nov, the first run of every flow), and each
+  lane's own beside 22 Nov's: A <m> (125), B <m> (148), C <m> (47). Warm-up: <SKILL.md step 6's
+  line>.
 - Build: preview run <link>, version <version>, <n> min. Copies booted from the master
   <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>, Boat or no Boat), or the
   lanes left out.
@@ -53,6 +59,8 @@ Check VMs:
 
 - Who drove the flows: <n> by Sol subagents (<n> subagent runs), <n> of them re-done by Opus, each
   named with why; <n> by Opus.
+- Second looks: <n> failures seen again by Opus on their lane before its copy went; <n> needing
+  none, as `Waiting on` (<ids>) or a twin (<ids>); <n> without one because of the run cap (<ids>).
 - Not on the box by design: flows.md, "Not on the box".
 
 <screenshots, one per web flow, the state a person saw>
@@ -87,8 +95,10 @@ the full CI run (after linking the failed-tests watch's ticket when it has one):
 2. **Grade it** by Fix Now or File (the home repo's `AGENTS.md`): what a person does to hit it and
    how often. A core flow failing on `main` usually meets Fix Now; a fault only a check VM's set-up
    can produce is File.
-3. **Look for a twin.** Search SLNT's open tickets (any status but Done, Canceled or Duplicate) for
-   the flow's id: `list_issues` with the id as the query finds it in a title or a description, and a
+3. **Look for a twin.** A flow whose `Waiting on:` line (flows.md) names the part of the See line it
+   fell short on has its twin already: comment on that ticket only when the flow failed another way
+   too. Otherwise search SLNT's open tickets (any status but Done, Canceled or Duplicate) for the
+   flow's id: `list_issues` with the id as the query finds it in a title or a description, and a
    ticket this check filed ends its title `(main on the box: <flow>)` or names the flow in its list
    (tickets from before 21 Nov 2026 say `on the box`; later ones say `on check VMs`). When one
    describes the same failure (the same part of the See line, the same words seen), it is that
