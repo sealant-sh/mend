@@ -95,12 +95,15 @@ lane, groups run in the order below.
 - **Lane A**, Boat when `BOAT_COPIES` is 1 or more; the refresher, and its data is saved: groups 1,
   2, 3, 4, 6, 7 and 8, then step 6's warm-up of what the next master needs.
 - **Lane B**, never Boat: groups 5 and 11.
-- **Lane C**, Boat when `BOAT_COPIES` is 2 or more: group 9 in its order, its Boat flows
-  (`repositories-in-session.add-second`, `references-folders.select-link`,
-  `shared-control.two-people`, `per-person-homes.two-people`) among the others (the three
-  `land-change` flows, `organization.visibility-who-sees`, `organization.roles-roundtrip`,
-  `organization.join-refused`, `operator.owner-grant-restore`); then group 10, whose one Boat flow
-  is `start-session.new-web-instant-start`.
+- **Lane C**, Boat when `BOAT_COPIES` is 2 or more: first, before any flow, step 6's warm-up of the
+  second account's image, run with lane C's names (`lanes/c/bin/…`, evidence under `$E/warm-up-c/`),
+  so `shared-control.two-people` does not spend its ten minutes on a build (about five on 22 Nov;
+  under one once the saved data holds the image, unless tonight's preview changed it); then group 9
+  in its order, its Boat flows (`repositories-in-session.add-second`,
+  `references-folders.select-link`, `shared-control.two-people`, `per-person-homes.two-people`)
+  among the others (the three `land-change` flows, `organization.visibility-who-sees`,
+  `organization.roles-roundtrip`, `organization.join-refused`, `operator.owner-grant-restore`); then
+  group 10, whose one Boat flow is `start-session.new-web-instant-start`.
 - **Lane C without Boat** (`BOAT_COPIES` below 2, or every Boat slot held by other checks when it
   booted: its `copy.json` reads `"boat": false`): it runs groups 9 and 10 but their Boat flows, and
   those run on lane A after A's own groups, in their order.
