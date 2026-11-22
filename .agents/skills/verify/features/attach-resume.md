@@ -37,6 +37,15 @@ attached to a remote server, the session's browser Services are tunneled to this
   over from a conversation goes back to being one about 45 s after its last terminal closes, at a
   turn boundary, with the line "Continued as a conversation after the terminal closed". A session
   started in a terminal stays one. Driven by flows.md's `attach-resume.terminal-and-web`.
+- `antigravity-mode-switch` switches an Antigravity session between a terminal and a conversation
+  and keeps its conversation (SLNT-1277): `mend attach`, `mend resume` and the dashboard's `a` on an
+  Antigravity conversation reopen it as `agy --conversation <id>`, and the session menu's
+  `Continue as a conversation` resumes the same conversation over `agy acp`. agy has no hooks, so in
+  its terminal the web composer reads
+  `Antigravity runs in a terminal in this session. Type to it there.`, and the session stays a
+  terminal after its last terminal closes until it is switched by hand. Turns typed in the terminal
+  are in the agent's conversation but not shown in the web's. Driven by flows.md's
+  `attach-resume.antigravity-mode-switch`.
 
 ## How to get to it (user POV)
 
