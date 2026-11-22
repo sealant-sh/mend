@@ -386,16 +386,21 @@ const usePages = (sessionId: string): PagesById => {
 };
 
 /**
- * What a session whose agent runs in a terminal says while its conversation holds nothing yet
- * (SLNT-1235): each of its turns lands here, as turn rows, once it ends.
+ * What a session whose agent runs in a terminal says (SLNT-1235): while its conversation holds
+ * nothing yet, that each of its turns lands here, as turn rows, once it ends. An agent with no hooks
+ * (Antigravity) lands none, so its note stays under the conversation for as long as it is a
+ * terminal (SLNT-1277): the turns typed there are in the agent's conversation, not on this page.
  */
 function TerminalNote({ facts }: { readonly facts: SessionFacts }) {
   if (facts.session.mode !== "terminal" || facts.session.status === "starting") return null;
+  const lands = TERMINAL_HOOK_HARNESSES.has(facts.session.harness);
   return (
     <Note id="terminal-note">
-      {facts.agentLive
-        ? `${facts.agent} runs in a terminal. Each turn shows here once it ends.`
-        : "No conversation recorded. The session's terminal and change show what it did."}
+      {!facts.agentLive
+        ? "No conversation recorded. The session's terminal and change show what it did."
+        : lands
+          ? `${facts.agent} runs in a terminal. Each turn shows here once it ends.`
+          : `${facts.agent} runs in a terminal. Turns typed there stay in its conversation but don't show here.`}
     </Note>
   );
 }
@@ -653,6 +658,11 @@ export function ConversationTile({
               );
             })
           : null}
+        {body.list === "protocol" &&
+        body.rows.length > 0 &&
+        !TERMINAL_HOOK_HARNESSES.has(facts.session.harness) ? (
+          <TerminalNote facts={facts} />
+        ) : null}
         <StartingLine facts={facts} />
         {body.list === "protocol" ? <WaitingLine facts={facts} /> : null}
         {body.list === "protocol" && working && conversation.data !== undefined ? (
