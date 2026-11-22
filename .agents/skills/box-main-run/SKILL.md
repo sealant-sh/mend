@@ -33,13 +33,16 @@ the preview of `main` this run builds serves the web app (`apps/web`) that ships
 The run is an Opus 5.5 thread that hands most flows to GPT-6.1 Sol subagents (the owner's choice on
 SLNT-1050, 17 Nov). You are the Opus thread. You keep what needs judgement or happens once: steps 1
 to 4 (the skip, the dispatches, the copies and their holds, the deploys and identity), the flows
-`server.upgrade`, `server.data-intact`, `handoff.held`, `capture-and-save.live-stop`, and the four
-that run commands on a copy over ssh, which subagents never do (`server.status-logs`,
-`land-change.web-push`, `land-change.cli-again` and `land-change.refused`), reading every subagent's
-evidence, step 6's wind-down and save, and step 7's report and tickets. The subagents drive the
-other flows (step 5). Linear is reached through the Executor MCP server's `execute` tool, with the
-`linear_app.org.localLinearMcp` connection; when your harness has no such tool, write the report to
-`$E/report.md` and the tickets to `$E/tickets.md`, and say so in your last line.
+`server.upgrade`, `server.data-intact`, `handoff.held`, `capture-and-save.live-stop`, the four that
+run commands on a copy over ssh, which subagents never do (`server.status-logs`,
+`land-change.web-push`, `land-change.cli-again` and `land-change.refused`), the two whose recipe
+runs a real `mend login`, which subagents may not (`sign-in.new-web-setup-revisit` and
+`sign-in.new-web-authorize-account`, step 5), `skills.adopt-project-skills` (it makes a repository
+on the copy over ssh), reading every subagent's evidence, step 6's wind-down and save, and step 7's
+report and tickets. The subagents drive the other flows (step 5). Linear is reached through the
+Executor MCP server's `execute` tool, with the `linear_app.org.localLinearMcp` connection; when your
+harness has no such tool, write the report to `$E/report.md` and the tickets to `$E/tickets.md`, and
+say so in your last line.
 
 You are the only writer of what this skill keeps. Work in the task's worktree of Mend, detached at
 `origin/main`:
@@ -90,16 +93,34 @@ with the same data, and nothing one copy does reaches another, so lanes run side
 lane, groups run in the order below.
 
 - **Lane A**, Boat when `BOAT_COPIES` is 1 or more; the refresher, and its data is saved: groups 1,
-  3, 4, 6 and 7.
-- **Lane B**, never Boat: groups 2, 5 and 8.
+  2, 3, 4, 6, 7 and 8, then step 6's warm-up of what the next master needs.
+- **Lane B**, never Boat: groups 5 and 11.
 - **Lane C**, Boat when `BOAT_COPIES` is 2 or more: group 9 in its order, its Boat flows
   (`repositories-in-session.add-second`, `references-folders.select-link`,
   `shared-control.two-people`, `per-person-homes.two-people`) among the others (the three
   `land-change` flows, `organization.visibility-who-sees`, `organization.roles-roundtrip`,
-  `organization.join-refused`, `operator.owner-grant-restore`).
+  `organization.join-refused`, `operator.owner-grant-restore`); then group 10, whose one Boat flow
+  is `start-session.new-web-instant-start`.
 - **Lane C without Boat** (`BOAT_COPIES` below 2, or every Boat slot held by other checks when it
-  booted: its `copy.json` reads `"boat": false`): it runs group 9's other flows, and group 9's Boat
-  flows run on lane A after A's own groups, in group 9's order.
+  booted: its `copy.json` reads `"boat": false`): it runs groups 9 and 10 but their Boat flows, and
+  those run on lane A after A's own groups, in their order.
+
+Each lane carries about a third of the flows' minutes. On 22 Nov, with groups 8, 10 and 11 as one
+group on lane B, lanes A, B and C took 125, 148 and 47 minutes, and lane B set the run's length.
+Measured from that run's per-flow minutes, this split is about A 105 (with the warm-up), B 107 and C
+106 minutes of flows, before second looks. When a report shows one lane more than half again as long
+as another, move whole groups between lanes here and in flows.md's "Run order", keeping each Boat
+flow on a Boat lane and each flow that needs a copy without Boat on lane B.
+
+**Agent logins on a lane.** A lane's real Codex login is the run's: lane A's is saved, and every
+lane's real turns use their copy's. The verify skill's CLI batches are written for a local stack,
+which has no real login, so most begin with a step that pipes a fake credential into `mend connect`
+(`00-codex-login`, `01-codex-login`, `02-claude-login`, …). On a copy that step replaces the real
+login: on 22 Nov `composer-setup.json` did it on lane B and every later real turn there failed
+with 401. So on every lane, run a batch's other steps and **skip each step that runs
+`mend connect`**, and tell each subagent so. One flow is the exception, by its own Do line:
+`settings.new-web-agent-logins` replaces and disconnects logins on purpose, so it runs its batch
+whole, last on lane B but for `doctor.bundle-web`, after every flow there that needs a real login.
 
 - **Lane A is the run's own.** The flows whose effects the next run reads run there: group 1's
   `server.data-intact`, the turn session the ledger keeps, the worktrees wind-down removes. Its copy
@@ -108,8 +129,11 @@ lane, groups run in the order below.
   restore a B or C flow misses changes nothing for later runs; it is still reported.
 - **Fewer copies.** The run takes at most 3 copies, and this machine runs at most 5 counting other
   checks' (`copies.sh`). A lane with no room is left out and its groups run on lane A after A's own,
-  in run order: B's, then C's. `start-session.docker-run` needs a copy without Boat: with lane B
-  left out it runs on lane C when C has no Boat, and is `not run · no copy without Boat` otherwise.
+  in run order: B's, then C's. `start-session.docker-run` and `start-session.memory-limit` need a
+  copy without Boat: with lane B left out they run on lane C when C has no Boat, and are
+  `not run · no copy without Boat` otherwise. `settings.new-web-agent-logins` then runs last of all
+  on whichever lane takes it, after every real turn there, and never on lane A: with lane B left out
+  it runs last on lane C, or is `not run · would replace lane A's saved login`.
 - **Boat on lane C changes nothing else.** Lane C's copy never lifts the logins' claim, never
   refreshes a login and is never saved, Boat or not: what its Boat sessions change goes with the
   copy. Two Boat copies run under the same Boat deployment (preview-builds.md, "Check VMs"), and
@@ -273,8 +297,8 @@ Its last line says what happened:
   ledger's `copies` at once. A lane it left out runs on lane A (Lanes). A lane A with no Boat (its
   line reads `no Boat`, after 60 minutes of another check holding it) makes every Boat flow lane A
   would run `not run · no Boat copy`. Lane C does not wait for Boat: when every slot is held as it
-  boots, it prints `lane c · no Boat slot free · …` and boots without Boat, and group 9's Boat flows
-  run on lane A (Lanes, "Lane C without Boat").
+  boots, it prints `lane c · no Boat slot free · …` and boots without Boat, and the Boat flows of
+  groups 9 and 10 run on lane A (Lanes, "Lane C without Boat").
 - `failed <lane> <what failed>`: `vm up` failed for a reason other than room. Run it once more; a
   second failure is a Fix Now ticket (step 7), and the run ends after step 8 without moving
   `lastCommit`.
@@ -437,6 +461,26 @@ How a flow is driven, by you or a subagent:
   `M` and a recipe module of your own run with `web` (it keeps the redaction and the screenshots'
   checks). Judge only the flow's See line.
 
+- A verify CLI batch a flow names (`<name>.json` in `.agents/skills/verify/recipes/`) runs one step
+  at a time through the lane's `M`, each step's `run` with `mend` replaced by `M`, skipping every
+  step that runs `mend connect` (Lanes, "Agent logins on a lane").
+
+- The two `mend login` flows are yours, on lane B: `sign-in.new-web-setup-revisit` and
+  `sign-in.new-web-authorize-account`. Each recipe runs a real `mend login` with a CLI config of its
+  own, made under `$P`, so the checker's saved login is never touched; it reads the server's address
+  from `.verify/stack/current.json` in the worktree and runs the `mend` it finds first on the PATH.
+  The run's worktree holds no stack, so give it that file for the two flows and take it away after,
+  one plain command each. When the file is already there, a stack holds it: the two flows are
+  `not run · a stack's file is in the way`, and you never overwrite or remove it.
+
+  ```sh
+  mkdir -p .verify/stack
+  jq -n --arg web "$(cat ~/.local/state/mend-main-run/lanes/b/web)" '{ web: $web }' > .verify/stack/current.json
+  PATH=$HOME/.local/state/mend-main-run/cli/node_modules/.bin:$PATH ~/.local/state/mend-main-run/lanes/b/bin/web $E/sign-in.new-web-setup-revisit .agents/skills/verify/recipes/setup-revisit.mjs
+  PATH=$HOME/.local/state/mend-main-run/cli/node_modules/.bin:$PATH ~/.local/state/mend-main-run/lanes/b/bin/web $E/sign-in.new-web-authorize-account .agents/skills/verify/recipes/authorize-account.mjs
+  rm .verify/stack/current.json
+  ```
+
 A scripted flow that fails is not yet a failure: drive it again the agent way, and report it failed
 only when that sees the same.
 
@@ -444,15 +488,58 @@ Keep every CLI command's stdout, stderr and exit code in `$E/<flow>/cli.log`. Ea
 `seen`, `failed` or `not run · <reason>`, against the flow's own See line, never a looser one. A
 flow that needs an earlier flow's session and lacks it is `not run · <flow> failed`.
 
-When lane B's or C's flows are all judged, delete its copy at once (`pnpm verify vm down <slot>`,
-one plain command): it frees room for other checks, and nothing on it is kept.
+**A second look comes before the copy goes.** See each failed flow again on its own lane right after
+its group's subagent returns, before that lane's next group starts, so the state is the one the
+subagent left and no subagent works beside you. Two kinds of failure need no second look, and the
+report's table says which one each was:
 
-**Done when** every flow in this run's set has one of the three outcomes, checked by you, and lanes
-B and C are deleted.
+- `failed · SLNT-n (known)` from flows.md: the flow has a `Waiting on:` line, and its evidence falls
+  short on exactly the part that line names, the rest of its See line seen;
+- a twin (report.md, step 3): an open ticket describes the same failure, the same part of the See
+  line with the same words seen, and the evidence shows nothing else short.
+
+Every other failure is seen again by you before its lane's copy is deleted. A lane's copy is deleted
+(`pnpm verify vm down <slot>`, one plain command) only once each of its failed flows has had that
+second look or is one of the two kinds above: it frees room for other checks, and nothing on it is
+kept. When the run cap (Limits) comes first, report each failure that had no second look as
+`failed · no second look (run cap)`, and say so in its ticket.
+
+**Done when** every flow in this run's set has one of the three outcomes, checked by you, every
+failure had its second look or is named as one that needs none, and lanes B and C are deleted.
 
 ## 6. Wind down and save
 
 Everything here runs against lane A's copy, by lane A's names.
+
+First, once lane A's flows are judged, **warm up what the next master needs**. A copy boots from the
+data lane A saves, so what lane A builds tonight is there for every copy tomorrow, and what lanes B
+and C build goes with them. On a copy, Boat builds a workspace image once for each person who starts
+a session on it: the checker's sessions in `main-run-second` start at once, but the second account's
+first session on a copy builds for about five minutes (measured 22 Nov: 332 s, then 0 s for its next
+one). Lane A runs no second-account session, so on 22 Nov `shared-control.two-people`'s session on
+lane C spent about five of its ten minutes building (SLNT-1267). With lane A on Boat, start one
+session there as the second account, with `main-run-second` shared for those minutes and put back at
+once. Each is one plain command, `<id>` being `main-run-second`'s id from `M projects --json`:
+
+```sh
+MAIN_RUN_PROJECT=<id> MAIN_RUN_VISIBILITY=shared ~/.local/state/mend-main-run/lanes/a/bin/web $E/warm-up/shared .agents/skills/box-main-run/recipes/second-visibility.mjs
+~/.local/state/mend-main-run/lanes/a/bin/M2 run --project main-run-second --name main-run-image-<sha8> -- true
+~/.local/state/mend-main-run/lanes/a/bin/M2 worktrees rm main-run-image-<sha8> --project main-run-second --force
+MAIN_RUN_PROJECT=<id> MAIN_RUN_VISIBILITY=private ~/.local/state/mend-main-run/lanes/a/bin/web $E/warm-up/private .agents/skills/box-main-run/recipes/second-visibility.mjs
+```
+
+The `run` waits for its session, up to 15 minutes: it prints
+`starting · building the workspace image` while Boat builds, and ends `✓ exited · code 0`. Remove
+the worktree only once `M2 sessions --project main-run-second --all --json` reads that session
+`completed`: a removal while its workspace is still ending is refused (`executor not ended`). The
+image stays when the worktree goes (tried 22 Nov: the next session started without building). Put
+the project back even when an earlier command failed, and read the last recipe's `steps.log`:
+`main-run-second reads Only you`. A recipe that stops at the sign-in page (`page.waitForURL` timed
+out on `/login`) is run once more. `vm save` (item 4) keeps the build's journal, so tomorrow's
+copies start the second account's sessions without building, as long as tomorrow's preview builds
+the same image. Report `warm-up · second account's image built in <m> min`, `· ready already` (no
+`building` line), or what it read instead; with no Boat on lane A,
+`warm-up · not run · no Boat on lane A`. It never stops the wind-down.
 
 1. Stop every session this run started on lane A that is still live (`M stop <id8>`), and confirm
    `M sessions --project <project> --json` lists none of them.
