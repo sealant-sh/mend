@@ -117,7 +117,11 @@
 # sealTurnBoundary takes a Codex turn's checkpoint even when the capture did not catch up, marked.
 # None touches drainHotWorkspace, the hot pool, claimHotSession, a claimed standby's adoption or
 # HotWorkspacesRepo, so no action models it. --quick run at 42cd427e5706: every row as expected.
-sync 42cd427e570671042f8d1193b22183e3ed5d06b5
+# e5b0742ea0e0 adds the Antigravity (`agy`) terminal harness on main at 066364862 (whose covered
+# files since f918758ec contain only SLNT-1263's squash). engine.ts adds `case "antigravity"` to
+# `promptArgv` and `platformShape` only. None touches drainHotWorkspace, the hot pool,
+# claimHotSession, a claimed standby's adoption or HotWorkspacesRepo, so no action models it.
+sync e5b0742ea0e02321ae83e2b9215a63d756b802f8
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
