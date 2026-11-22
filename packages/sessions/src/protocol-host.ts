@@ -1,8 +1,11 @@
 import {
   AgentProtocolError,
   AgentSelectionRequiresReplacementError,
+  AntigravityAdapter,
   ClaudeAdapter,
   CodexAdapter,
+  type AgentAdapter,
+  type AgentAdapterName,
   type AgentBackgroundWork,
   type AgentControlCheckpoint,
   type AgentQuiescence,
@@ -521,8 +524,19 @@ export class ProtocolHost extends Context.Service<
   }
 >()("@mend/sessions/ProtocolHost") {}
 
-const adapterFor = (harness: string | null) =>
-  harness === "claude" ? ClaudeAdapter : CodexAdapter;
+const adapterNameOf = (harness: string | null): AgentAdapterName =>
+  harness === "claude" ? "claude" : harness === "antigravity" ? "antigravity" : "codex";
+
+const adapterFor = (harness: string | null): AgentAdapter => {
+  switch (adapterNameOf(harness)) {
+    case "claude":
+      return ClaudeAdapter;
+    case "antigravity":
+      return AntigravityAdapter;
+    case "codex":
+      return CodexAdapter;
+  }
+};
 
 /** The public SDK names the budget middleware's refusal before any stdin write. */
 const isInputBudgetRefusal = (cause: unknown): cause is SealantApiError =>
@@ -1545,7 +1559,7 @@ export const ProtocolHostLive: Layer.Layer<
             // Check after each sleep as well: Stop must prevent a delayed stdin write.
             if (abort.signal.aborted || activeEntry?.stopping === true) {
               return yield* new AgentProtocolError({
-                adapter: input.process.harness === "claude" ? "claude" : "codex",
+                adapter: adapterNameOf(input.process.harness),
                 operation: "transport.send",
                 message: "The agent process stopped before input could be written.",
                 cause: null,
@@ -1555,7 +1569,7 @@ export const ProtocolHostLive: Layer.Layer<
               try: () => input.pipe.send(bytes),
               catch: (cause) =>
                 new AgentProtocolError({
-                  adapter: input.process.harness === "claude" ? "claude" : "codex",
+                  adapter: adapterNameOf(input.process.harness),
                   operation: "transport.send",
                   message: cause instanceof Error ? cause.message : String(cause),
                   cause,
@@ -1584,7 +1598,7 @@ export const ProtocolHostLive: Layer.Layer<
           Stream.mapError(
             (cause) =>
               new AgentProtocolError({
-                adapter: input.process.harness === "claude" ? "claude" : "codex",
+                adapter: adapterNameOf(input.process.harness),
                 operation: "transport.output",
                 message: cause.message,
                 cause,

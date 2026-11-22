@@ -387,9 +387,11 @@ export const withPermissionDefaults = (
   ) {
     return [head, ...PERMISSION_ARGS[harness].bypass.flags, ...rest];
   }
+  // `agy acp` (a conversation) takes its permission per turn: Mend answers a bypass turn's asks.
   if (
     harness === "antigravity" &&
     head === "agy" &&
+    argv[1] !== "acp" &&
     permissionOptionsIn("antigravity", argv).length === 0
   ) {
     return [head, ...PERMISSION_ARGS.antigravity.bypass.flags, ...rest];
@@ -577,7 +579,18 @@ export const isHarnessSetupMessage = (text: string): boolean => {
  * start. A client whose sessions are conversations (the web, the phone) asks for one for these;
  * every other harness, and any start that names no mode, runs in a terminal.
  */
-export const CONVERSATION_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+export const CONVERSATION_HARNESSES: ReadonlySet<string> = new Set([
+  "claude",
+  "codex",
+  "antigravity",
+]);
+
+/**
+ * The harnesses whose terminal agent Mend types messages into, reads waits from through its hooks,
+ * and switches to a conversation and back (a mode switch). Antigravity runs as a conversation or in
+ * a terminal, but has no hooks and no mode switch yet.
+ */
+export const MODE_SWITCH_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
 
 /** Compose the long-lived protocol process argv. Model and effort stay on provider turns. */
 export const composeProtocolArgv = (
@@ -612,6 +625,10 @@ export const composeProtocolArgv = (
       }
       return argv;
     }
+    // agy's ACP server. Model, effort, Plan and permission are set per turn over the protocol
+    // (`AntigravityAdapter`), and a resume is `session/resume`, never a flag.
+    case "antigravity":
+      return ["agy", "acp", "--stdio"];
     default:
       return new ProtocolHarnessUnsupportedError(harness);
   }

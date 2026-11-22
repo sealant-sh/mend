@@ -1,5 +1,6 @@
 import {
   CONVERSATION_HARNESSES,
+  isSelectableHarness,
   modelPickerFor,
   terminalReadOnlyLine,
   type TurnSelection,
@@ -599,7 +600,9 @@ function MessageComposer({
   const placeholder = toTerminal
     ? `Message ${agent} in its terminal`
     : own !== null
-      ? `Message ${agent}. It reads this at its next step.`
+      ? session.harness === "antigravity"
+        ? `Message ${agent}. It reads this once this turn finishes.`
+        : `Message ${agent}. It reads this at its next step.`
       : other !== null
         ? `Message ${agent}. It waits for ${facts.nameOf(other.author ?? "") ?? "the other person"}'s turn to finish.`
         : stopped
@@ -616,9 +619,7 @@ function MessageComposer({
     blocked: scope === null || busyAttaching,
     ...(starting || toTerminal ? {} : { onAttach: () => files.current?.click() }),
     harness: agent,
-    ...(toTerminal ||
-    selection === null ||
-    (session.harness !== "claude" && session.harness !== "codex")
+    ...(toTerminal || selection === null || !isSelectableHarness(session.harness)
       ? {}
       : {
           model: (

@@ -904,7 +904,9 @@ export const makeGatewayRpcHandlers = ({
       Stream.fromEffect(
         authorize(session).pipe(
           Effect.andThen(
-            input.instanceId === "codex" || input.instanceId === "claudeAgent"
+            input.instanceId === "codex" ||
+              input.instanceId === "claudeAgent" ||
+              input.instanceId === "antigravity"
               ? Effect.succeed(accountAuthState(input.instanceId))
               : providerSetup(WS_METHODS.providerAuthSubscribe, input.instanceId),
           ),

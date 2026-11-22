@@ -1,3 +1,4 @@
+export * from "./antigravity.ts";
 export * from "./claude-items.ts";
 export * from "./claude-command.ts";
 export * from "./claude-wire.ts";

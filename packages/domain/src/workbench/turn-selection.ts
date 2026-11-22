@@ -6,9 +6,16 @@ import { EFFORT_LEVELS, HARNESS_EFFORTS, SPEED_MODES, type SpeedMode } from "./h
 export const InteractionMode = Schema.Literals(["default", "plan"]);
 export type InteractionMode = typeof InteractionMode.Type;
 
+/** The harnesses that take a choice of model, effort, Plan and permission for each turn. */
+export const SelectableHarness = Schema.Literals(["codex", "claude", "antigravity"]);
+export type SelectableHarness = typeof SelectableHarness.Type;
+
+export const isSelectableHarness = (harness: string): harness is SelectableHarness =>
+  harness === "codex" || harness === "claude" || harness === "antigravity";
+
 /** A complete choice for one new native turn. Inner nulls explicitly restore provider defaults. */
 export const TurnSelection = Schema.Struct({
-  harness: Schema.Literals(["codex", "claude"]),
+  harness: SelectableHarness,
   model: Schema.NullOr(Schema.String.check(Schema.isPattern(/\S/))),
   effort: Schema.NullOr(Schema.Literals(EFFORT_LEVELS)),
   interactionMode: InteractionMode.pipe(Schema.withDecodingDefaultKey(Effect.succeed("default"))),
@@ -19,7 +26,10 @@ export const TurnSelection = Schema.Struct({
 });
 export type TurnSelection = typeof TurnSelection.Type;
 
-/** Capture launch defaults once at admission; other harnesses have no live selection contract. */
+/**
+ * Capture launch defaults once at admission. Claude Code, Codex and Antigravity take a choice per
+ * turn; other harnesses have no live selection contract.
+ */
 export function turnSelectionOf(
   harness: string,
   model: string | null | undefined,
@@ -27,7 +37,7 @@ export function turnSelectionOf(
   interactionMode: InteractionMode = "default",
   speed?: SpeedMode,
 ): TurnSelection | null {
-  if (harness !== "codex" && harness !== "claude") return null;
+  if (!isSelectableHarness(harness)) return null;
   const level = EFFORT_LEVELS.find((value) => value === effort) ?? null;
   return {
     harness,

@@ -10,6 +10,11 @@ reads as an observation ("Running · recording", "Completed · observed").
 ## Sub-features
 
 - `start-composer` starts a session from the Now page composer: project, worktree, harness, prompt.
+- `start-antigravity-conversation` starts an Antigravity conversation (`agy acp`) from the Now page
+  composer or the phone. Each turn runs with the model, thinking level, Plan and permission picked
+  in the session's composer; an ask turn shows Antigravity's approvals, a bypass turn answers them
+  itself; a message sent while a turn runs waits for the next turn (Antigravity takes none
+  mid-turn).
 - `start-new-worktree` creates a worktree from the `New worktree` dialog, from the project page or
   from inside the composer's worktree picker.
 - `start-in-worktree` starts another session in an existing worktree from its `New session` menu.

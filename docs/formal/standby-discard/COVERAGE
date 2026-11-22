@@ -121,7 +121,13 @@
 # files since f918758ec contain only SLNT-1263's squash). engine.ts adds `case "antigravity"` to
 # `promptArgv` and `platformShape` only. None touches drainHotWorkspace, the hot pool,
 # claimHotSession, a claimed standby's adoption or HotWorkspacesRepo, so no action models it.
-sync e5b0742ea0e02321ae83e2b9215a63d756b802f8
+# 7137826575b5 is SLNT-1275 on main at 3123d61fb1 (whose covered files since e5b0742ea0e0 carry
+# only #1948's squash, which the line before accounted for). engine.ts changes only
+# `steeringRefusalOf`: another person's turn on an Antigravity conversation in a person-layout
+# executor is refused. None touches drainHotWorkspace, the hot pool, claimHotSession, a claimed
+# standby's adoption or HotWorkspacesRepo, so no action models it. Full tlx run at 7137826575b5:
+# every row as expected (`code` 129,386,795 states, 223 s on four workers).
+sync 7137826575b5fce8c0872ceeea46038f407a8dd0
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla

@@ -77,7 +77,20 @@
 # row as expected. d021f0b645e7 is the same change rebased on main at f918758ec, whose new commit
 # changed no covered file, with one more line in dispatchNext: it logs how long the wait for the
 # last turn's checkpoint took. Full run at d021f0b645e7: every row as expected.
-sync d021f0b645e7c0a79fead996c4423783f7b33b8f
+# 7137826575b5 is SLNT-1275 (Antigravity as a conversation harness) on main at 3123d61fb1, whose
+# covered files since d021f0b645e7 carry nothing new. protocol-host.ts picks the adapter by harness
+# (`adapterFor`: Claude, Antigravity, else Codex) and names it in its transport errors; nothing in
+# dispatch changes. antigravity.ts joins the covered files: `AntigravityAdapter.sendTurn` is the
+# `DWrite` of an Antigravity process (not-written once closed, with a turn open, or when a config
+# choice before the prompt fails; `uncertain` when the `session/prompt` write fails). Its prompt's
+# answer is the turn's end, so it has no `DTimeout`, and the host holds an end that arrives while
+# the send is out as it does for Codex. No action changes. Full run at 7137826575b5: every row as
+# expected.
+# ab840da8c1 is the same SLNT-1275 branch after its review: antigravity.ts restores agy's own
+# `default` mode for a turn that is not Plan, instead of the mode a resumed conversation reported.
+# A config choice before the prompt, not the prompt's write or its answer, so no action changes.
+# Full run at ab840da8c1: every row as expected.
+sync ab840da8c17f7fc47d12270005258d36d8ec7779
 
 model TurnDispatch.tla
 model MCTurnDispatch.tla
@@ -86,6 +99,7 @@ model check.sh
 path packages/sessions/src/protocol-host.ts
 path packages/db/src/repos/agent-conversation.ts
 path packages/agent-protocol/src/codex.ts
+path packages/agent-protocol/src/antigravity.ts
 
 # How long check.sh may run on CI's four-core runner before formal.mjs stops it and fails
 # naming this model (SLNT-1065, SLNT-1081). With tlx the full bounds took 2.3 minutes on CI (run

@@ -9,11 +9,11 @@ sidebar:
 
 [t3code](https://github.com/pingdotgg/t3code) is a client for coding agents. With the t3code gateway
 turned on, its desktop, mobile and web clients add your Mend server as a remote environment. Your
-projects are t3code projects and your Codex and Claude sessions are threads: you start a thread in a
-new or an existing worktree, send messages and images, answer the agent's approvals, read each
-turn's diff, and open a terminal, from t3code. Only sessions whose agent Mend runs over its protocol
-show as threads; PTY sessions (`mend codex`, `mend claude` in a terminal), shell sessions and other
-harnesses do not.
+projects are t3code projects and your Codex, Claude and Antigravity sessions are threads: you start
+a thread in a new or an existing worktree, send messages and images, answer the agent's approvals,
+read each turn's diff, and open a terminal, from t3code. Only sessions whose agent Mend runs over
+its protocol show as threads; PTY sessions (`mend codex`, `mend claude` in a terminal), shell
+sessions and other harnesses do not.
 
 The gateway supports t3code's core workflow. The remaining T3 Code controls are being built for Mend
 0.37. The
@@ -110,14 +110,15 @@ by an older gateway no longer reads files, which now need a permission of their 
 
 - Sessions you start from t3code are yours: Mend records you as their owner, and their agent runs as
   you, with your provider logins (see [Per-person workspaces](/operate/per-person-workspaces/)).
-- t3code shows Claude and Codex as signed in when Mend holds an active `default` login of yours for
-  them, the one your sessions use. It warns when Mend holds none, or one that is invalid, and says
-  when Mend observed it expired or failing to refresh: connect one with `mend connect claude` or
-  `mend connect codex`, and t3code shows the change without reconnecting.
-- You see the projects Mend shows you, and of their sessions the Codex and Claude ones that run over
-  Mend's protocol. You can send to a session only when Mend lets you steer it: your own, or one
-  whose owner turned on shared control. Any other thread is read-only, and t3code says you are not
-  authorized when you try.
+- t3code shows Claude, Codex and Antigravity as signed in when Mend holds an active `default` login
+  of yours for them, the one your sessions use. It warns when Mend holds none, or one that is
+  invalid, and says when Mend observed it expired or failing to refresh: connect one with
+  `mend connect claude`, `mend connect codex` or `mend connect antigravity`, and t3code shows the
+  change without reconnecting.
+- You see the projects Mend shows you, and of their sessions the Codex, Claude and Antigravity ones
+  that run over Mend's protocol. You can send to a session only when Mend lets you steer it: your
+  own, or one whose owner turned on shared control. Any other thread is read-only, and t3code says
+  you are not authorized when you try.
 - A message you send goes as you, with your device, under shared control too: in a per-person
   workspace your turn spends your own login, and in a workspace that shares one home, the owner's
   (see [Per-person workspaces](/operate/per-person-workspaces/)).
@@ -131,6 +132,9 @@ by an older gateway no longer reads files, which now need a permission of their 
   not arrive, the message shows as pending and the gateway asks Mend again with the same key, so
   Mend keeps one copy. If Mend still does not confirm it, the message stays in the turn, marked
   failed, with your words.
+- An Antigravity thread takes no message while a turn runs: what you send waits as the next turn. In
+  a per-person workspace only the session's owner can send to one, since its turns run on the
+  owner's Google login.
 - Threads show Mend's own lines about a shared workspace, as its web app does: who else runs in it
   ("Shared workspace with Anna · each of you runs as yourself · either of you can read the other's
   files."), a turn that waits for the previous sender's work, and a workspace that started before
@@ -199,12 +203,12 @@ t3code shows those controls inert with its own wording, or it refuses them with 
   pulling and switching branches. Push and create PR land the whole change through Mend, for the
   change's owner ([Land a change](/guides/land-a-change/)). Worktree creation is available through a
   new thread, but the separate create-worktree RPC is unavailable.
-- **The environment:** providers other than Codex and Claude, provider sign-in and setup, settings
-  and keybinding changes, usage and limits, scheduled tasks (the page lists none), the in-app
-  browser, devices (the device panel says Mend runs none), diagnostics and resource telemetry,
-  storage cleanup, MCP apps and connecting an agent over MCP, T3 Connect, and updating the server:
-  the gateway updates with Mend. Pairing and revoking are done in Mend, with `mend pair` and your
-  devices.
+- **The environment:** providers other than Codex, Claude and Antigravity, provider sign-in and
+  setup, settings and keybinding changes, usage and limits, scheduled tasks (the page lists none),
+  the in-app browser, devices (the device panel says Mend runs none), diagnostics and resource
+  telemetry, storage cleanup, MCP apps and connecting an agent over MCP, T3 Connect, and updating
+  the server: the gateway updates with Mend. Pairing and revoking are done in Mend, with `mend pair`
+  and your devices.
 
 ## Fork a response
 
@@ -346,11 +350,12 @@ receipt before a new send can be admitted.
 
 ## Plan, refine and implement
 
-Codex and Claude threads support Plan at launch and on a started thread. In the pinned T3 Code
-client, enable **Settings > General > Legacy features > Plan mode (legacy)** first. Use the toggle,
-`/plan`, `/default`, or Shift+Tab. Changing the preference sends no prompt and spends no login. A
-message already queued keeps its original mode. Steering a running turn adds your words to that
-turn; planning controls apply to the next new turn, including a steer that falls back to the queue.
+Codex, Claude and Antigravity threads support Plan at launch and on a started thread. In the pinned
+T3 Code client, enable **Settings > General > Legacy features > Plan mode (legacy)** first. Use the
+toggle, `/plan`, `/default`, or Shift+Tab. Changing the preference sends no prompt and spends no
+login. A message already queued keeps its original mode. Steering a running turn adds your words to
+that turn; planning controls apply to the next new turn, including a steer that falls back to the
+queue.
 
 The proposed-plan card contains the provider's markdown. Codex streams draft text; a completed,
 nonempty proposal becomes actionable. Claude's ExitPlanMode proposal is recorded and denied so

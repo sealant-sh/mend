@@ -82,7 +82,7 @@ export const planLaunch = (input: OrchestrationV2ThreadLaunchInput): LaunchPlan 
   const provider = harnessOfInstance(input.modelSelection.instanceId);
   if (provider === null) {
     return refusedPlan(
-      `Mend runs Codex and Claude sessions; it has no ${input.modelSelection.instanceId} provider.`,
+      `Mend runs Codex, Claude and Antigravity sessions; it has no ${input.modelSelection.instanceId} provider.`,
     );
   }
   const permissionMode =

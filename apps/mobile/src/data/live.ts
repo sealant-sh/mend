@@ -30,7 +30,11 @@ export interface ProjectDto {
   readonly adoptedSha: string | null;
 }
 
-export const PROTOCOL_HARNESSES = ["claude", "codex"] as const;
+/** The agents a phone starts as a conversation (`CONVERSATION_HARNESSES` in @mend/domain). */
+export const PROTOCOL_HARNESSES = ["claude", "codex", "antigravity"] as const;
+
+/** The agents a setup session runs on: the ones the web's setup dialog offers too. */
+export const SETUP_HARNESSES = ["claude", "codex"] as const;
 
 export interface WorktreeDto {
   readonly id: string;
