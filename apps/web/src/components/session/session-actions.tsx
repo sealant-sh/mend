@@ -1,4 +1,4 @@
-import { CONVERSATION_HARNESSES } from "@mend/domain/workbench";
+import { MODE_SWITCH_HARNESSES } from "@mend/domain/workbench";
 import { InlineAlert } from "@mend/ui/components/banner";
 import { Button, buttonVariants } from "@mend/ui/components/ui/button";
 import { ContextMenuContent } from "@mend/ui/components/ui/context-menu";
@@ -191,7 +191,7 @@ const useMenuFacts = (sessionId: string, context: SessionMenuContext) => {
       detail !== null &&
       detail.control.own &&
       detail.session.mode === "terminal" &&
-      CONVERSATION_HARNESSES.has(detail.session.harness) &&
+      MODE_SWITCH_HARNESSES.has(detail.session.harness) &&
       detail.session.status !== "starting" &&
       detail.session.status !== "stopping",
   };

@@ -328,6 +328,11 @@ interface Segment {
 const MODEL_OPTION = "model";
 const EFFORT_OPTION = "thought_level";
 const MODE_OPTION = "mode";
+/**
+ * agy's mode for a turn that is not Plan. Never the mode a resumed conversation reports, which can
+ * be a Plan turn's.
+ */
+const DEFAULT_MODE = "default";
 
 interface ConfigState {
   model: string | null;
@@ -360,7 +365,7 @@ export const AntigravityAdapter: AgentAdapter = {
       const segments = new Map<string, { open: Segment | null; count: number }>();
       /** What the session runs with now, and what it started with (a null choice restores it). */
       const applied: ConfigState = { model: null, effort: null, mode: null };
-      const defaults: ConfigState = { model: null, effort: null, mode: null };
+      const defaults: Omit<ConfigState, "mode"> = { model: null, effort: null };
       let context: { used: number; size: number } | null = null;
       let transportFailure: AgentProtocolError | null = null;
       const readTransportFailure = (): AgentProtocolError | null => transportFailure;
@@ -864,7 +869,6 @@ export const AntigravityAdapter: AgentAdapter = {
         readConfig(setup);
         defaults.model = applied.model;
         defaults.effort = applied.effort;
-        defaults.mode = applied.mode;
       } else {
         // agy never saw Mend go: its session is open. Replay rebuilds the turns from its output.
         if (options.providerSessionId === undefined) {
@@ -924,7 +928,7 @@ export const AntigravityAdapter: AgentAdapter = {
         yield* configure(EFFORT_OPTION, requested?.effort ?? defaults.effort, applied.effort);
         yield* configure(
           MODE_OPTION,
-          requested?.interactionMode === "plan" ? "plan" : (defaults.mode ?? "default"),
+          requested?.interactionMode === "plan" ? "plan" : DEFAULT_MODE,
           applied.mode,
         );
         const turnId = crypto.randomUUID();

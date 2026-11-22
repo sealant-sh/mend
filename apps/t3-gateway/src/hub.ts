@@ -206,6 +206,7 @@ import {
   type ReplayLog,
 } from "./replay.ts";
 import { readRepositorySkills } from "./repository-skills.ts";
+import { harnessProvider } from "./server-config.ts";
 import {
   byOrdinal,
   isProjectable,
@@ -5743,9 +5744,8 @@ export const makePersonHub = (input: {
         if (request.threadId !== null) {
           const id = ThreadId.make(request.threadId);
           const now = yield* DateTime.now;
-          const provider = ProviderInstanceId.make(
-            request.harness === "claude" ? "claudeAgent" : "codex",
-          );
+          const provider =
+            harnessProvider(request.harness)?.instanceId ?? ProviderInstanceId.make("codex");
           const runId = openingRunId === null ? null : RunId.make(openingRunId);
           yield* locked(
             Effect.gen(function* () {

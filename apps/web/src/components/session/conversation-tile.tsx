@@ -1,6 +1,6 @@
 import { conversationActivity, isOpenTurn } from "@mend/agent-conversation";
 import {
-  CONVERSATION_HARNESSES,
+  MODE_SWITCH_HARNESSES,
   AgentItemKind,
   agentActivity,
   launchPhaseOf,
@@ -501,7 +501,7 @@ export function ConversationTile({
     facts.agentLive &&
     facts.session.status !== "starting" &&
     (facts.session.mode === "terminal"
-      ? CONVERSATION_HARNESSES.has(facts.session.harness) &&
+      ? MODE_SWITCH_HARNESSES.has(facts.session.harness) &&
         facts.detail.currentAgent?.waiting == null
       : conversationActivity(conversation.data) === "working");
   const failedStart = startFailed(facts);

@@ -1,6 +1,6 @@
 import { type AgentTurnSteerDto, isOpenTurn } from "@mend/agent-conversation";
 import {
-  CONVERSATION_HARNESSES,
+  MODE_SWITCH_HARNESSES,
   isSelectableHarness,
   type PermissionMode,
   runsInTerminal,
@@ -67,7 +67,7 @@ export const composerMode = ({
   // The owner's composer types into a Claude Code or Codex terminal; anyone else's, and any other
   // agent's, says to type there.
   const inTerminal: ComposerMode =
-    terminalInput && CONVERSATION_HARNESSES.has(session.harness)
+    terminalInput && MODE_SWITCH_HARNESSES.has(session.harness)
       ? { _tag: "to-terminal" }
       : { _tag: "terminal" };
   if (session.status === "starting" && currentAgent === null)

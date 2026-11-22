@@ -585,6 +585,13 @@ export const CONVERSATION_HARNESSES: ReadonlySet<string> = new Set([
   "antigravity",
 ]);
 
+/**
+ * The harnesses whose terminal agent Mend types messages into, reads waits from through its hooks,
+ * and switches to a conversation and back (a mode switch). Antigravity runs as a conversation or in
+ * a terminal, but has no hooks and no mode switch yet.
+ */
+export const MODE_SWITCH_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+
 /** Compose the long-lived protocol process argv. Model and effort stay on provider turns. */
 export const composeProtocolArgv = (
   harness: string,
