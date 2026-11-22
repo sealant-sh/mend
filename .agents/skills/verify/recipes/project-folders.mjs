@@ -15,7 +15,9 @@
 // - Real: two projects the recipe creates (no repository); two organization folders it makes, one
 //   with two files; a reference cloned from GitHub; each folder's access and the reference's switch
 //   saved and read back from the server and after a reload; a server folder added and removed as
-//   the stack's first account (its operator); a project linked and unlinked on General.
+//   the stack's first account (its operator) or, on a server running several organizations, where
+//   no one is offered them, the section's absence and the server refusing one; a project linked and
+//   unlinked on General.
 // - Rewritten: a save the server refuses (the folder goes back, with the sentence), the page as
 //   someone who may only read it (`capabilities.manage` false: who can change it, no controls), an
 //   organization with no folders or references, and a read that fails (a 500), for the error screen
@@ -192,7 +194,10 @@ export default async ({ page, web, capture, note }) => {
       id: runbooks.id,
       merge: true,
       files: [
-        { path: "deploy.md", contentsBase64: base64("# Deploy\n\nRun the checks first.\n") },
+        {
+          path: "deploy.md",
+          contentsBase64: base64("# Deploy\n\nRun the checks first.\n"),
+        },
         { path: "rollback.md", contentsBase64: base64("# Roll back\n") },
       ],
     },
@@ -230,7 +235,9 @@ export default async ({ page, web, capture, note }) => {
     await visible(row(tokens.name).getByText("Empty", { exact: true })).waitFor();
     expect("every folder starts Off", await pressed(runbooks.name, "Off"), runbooks.name);
     const orgLink = visible(
-      page.getByRole("link", { name: `${organization}'s Folders and references page` }),
+      page.getByRole("link", {
+        name: `${organization}'s Folders and references page`,
+      }),
     );
     note(
       `${page56}: folders with their size, the reference with its version; the organization's page is linked (${await orgLink.getAttribute("href")})`,
@@ -286,7 +293,9 @@ export default async ({ page, web, capture, note }) => {
     await settled();
 
     // --- A save the server refuses -----------------------------------------------------------
-    stubs.set("projects.setFolders", { error: "A project mounts this folder. Try again later." });
+    stubs.set("projects.setFolders", {
+      error: "A project mounts this folder. Try again later.",
+    });
     await access(runbooks.name, "Off").click();
     await text(
       `Mend didn't change ${runbooks.name}. A project mounts this folder. Try again later. It's back as it was.`,
@@ -322,7 +331,42 @@ export default async ({ page, web, capture, note }) => {
       mountId = null;
       note("host-mounts: removed it again");
     } else {
-      note("host-mounts: this account is not an operator of a single install; section not offered");
+      // Host paths are a single-organization install's operator's to hand out (docs/adr/0003). On a
+      // multi-tenant server nobody is offered them, an operator included, and a write is refused.
+      const current = await call("organization.current");
+      if (current.tenancy === "single" && current.operator)
+        throw new Error("the operator of a single install is not offered server folders");
+      if ((await page.getByRole("heading", { name: "Server folders" }).count()) !== 0)
+        throw new Error("the page shows Server folders to someone the server doesn't offer them");
+      if (current.tenancy === "multi") {
+        const refusal = await call(
+          "projects.addMount",
+          {
+            id: project.id,
+            mount: {
+              name: `pf-${stamp}-tmp`,
+              hostPath: "/tmp",
+              readOnly: true,
+            },
+          },
+          "mutate",
+        ).then(
+          () => null,
+          (error) => String(error?.message ?? error),
+        );
+        const mounts = await call("projects.mounts", { id: project.id });
+        if (refusal === null || mounts.some((mount) => mount.name === `pf-${stamp}-tmp`)) {
+          mountId = mounts.find((mount) => mount.name === `pf-${stamp}-tmp`)?.id ?? mountId ?? null;
+          throw new Error("a multi-tenant server took a server folder");
+        }
+        note(
+          `host-mounts: this server runs several organizations (tenancy multi), so even its operator (operator ${current.operator}) is offered no Server folders section, and adding /tmp as pf-${stamp}-tmp is refused: ${refusal.slice(0, 160)}; the project has no server folder`,
+        );
+      } else {
+        note(
+          "host-mounts: this account is not the operator of this single install; section not offered",
+        );
+      }
     }
 
     // --- Someone who may only read it (rewritten) ---------------------------------------------
@@ -336,7 +380,11 @@ export default async ({ page, web, capture, note }) => {
             json: {
               ...data,
               project: { ...data.project, createdByUserId: null },
-              capabilities: { ...data.capabilities, manage: false, hostMounts: false },
+              capabilities: {
+                ...data.capabilities,
+                manage: false,
+                hostMounts: false,
+              },
             },
           },
         },
@@ -384,7 +432,9 @@ export default async ({ page, web, capture, note }) => {
     await navigate("/settings/profile");
     await heading("Profile");
     await navigate(page56);
-    await visible(page.getByRole("button", { name: "Try again" })).waitFor({ timeout: 30_000 });
+    await visible(page.getByRole("button", { name: "Try again" })).waitFor({
+      timeout: 30_000,
+    });
     note("a folders read that fails shows the error screen with Try again");
     await shot("project-folders-failed-desktop-light");
     stubs.delete("projects.folders");

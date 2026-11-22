@@ -20,6 +20,9 @@
 //   one fails (a stack has no session in the project this week, so it keeps none ready), the page
 //   as someone who may only read it, and a status read that fails.
 //
+// - Real, where you ran sessions in verify-fixture (the box): its ready workspaces raised, an image
+//   saved, and the server reporting them `starting`; its image and count put back exactly.
+//
 // - Real, at the end: once the project's automatic installs have ended, Remove project… on its
 //   General page removes it (SLNT-1243: an install that ended during a removal's check kept its
 //   workspace and held every later removal).
@@ -215,7 +218,9 @@ export default async ({ page, web, capture, note }) => {
     await settled();
     for (const anchor of ["environment", "install-command", "hot-sessions"]) {
       await page.goto(`${web}/projects/${project.id}/configuration#${anchor}`);
-      await page.waitForURL((url) => url.pathname === home, { timeout: 60_000 });
+      await page.waitForURL((url) => url.pathname === home, {
+        timeout: 60_000,
+      });
     }
     await hydrated();
     await heading("Workspace");
@@ -256,12 +261,16 @@ export default async ({ page, web, capture, note }) => {
     // --- image-project-override -----------------------------------------------------------------
     if (!(await editor.isVisible())) await button("Edit image…").click();
     await editor.waitFor();
-    const remove = editor.getByRole("button", { name: "Remove verify-no-such-package" });
+    const remove = editor.getByRole("button", {
+      name: "Remove verify-no-such-package",
+    });
     if (await remove.isVisible()) await remove.click();
     await visible(
       editor.getByRole("group", { name: "Shell" }).getByRole("button", { name: "bash" }),
     ).click();
-    const docker = editor.getByRole("switch", { name: "Docker inside workspaces" });
+    const docker = editor.getByRole("switch", {
+      name: "Docker inside workspaces",
+    });
     const dockerBefore = (await docker.getAttribute("aria-checked")) === "true";
     await docker.click();
     expect("the save is taken", !(await saveImage(editor)), "the editor stayed open");
@@ -285,7 +294,9 @@ export default async ({ page, web, capture, note }) => {
     await button("Edit image…").click();
     await editor.waitFor();
     await visible(
-      editor.getByRole("button", { name: `Start again from ${organization}'s image` }),
+      editor.getByRole("button", {
+        name: `Start again from ${organization}'s image`,
+      }),
     ).click();
     await visible(editor.getByText(/The fields now hold a copy of/)).waitFor();
     await shot("workspace-start-again-desktop-light");
@@ -399,6 +410,116 @@ export default async ({ page, web, capture, note }) => {
     await visible(page.getByRole("status").filter({ hasText: "Off" })).waitFor();
     expect("the count back to 0", (await detail(project.id)).project.hotSessions === 0, "");
     note("hot-count: lowered to 0, Off");
+
+    // --- hot-rewarm, real (the box) -------------------------------------------------------------
+    // The pool keeps standbys only for people with a recent session in the project, so the recipe's
+    // own project keeps none. On a server where you ran sessions in verify-fixture (the box), raise
+    // its count, save an image change, and read the real status say `starting` while the server
+    // rewarms; then put its image and count back exactly. A local stack usually has no such session.
+    const onBox =
+      process.env.MEND_VERIFY_OUTER_URL !== undefined &&
+      String(web).replace(/\/$/, "") === process.env.MEND_VERIFY_OUTER_URL.replace(/\/$/, "");
+    const real = (await call("projects.list")).find((entry) => entry.name === "verify-fixture");
+    if (real === undefined) {
+      if (onBox) throw new Error("hot-rewarm (real): the box has no verify-fixture project");
+      note("hot-rewarm (real): no verify-fixture project here; not driven");
+    } else {
+      const before = (await detail(real.id)).project;
+      const realHome = `/projects/${real.id}/settings/workspace`;
+      const status = () => call("projects.hotSessionsStatus", { id: real.id });
+      const poll = async (what, check, seconds, every = 2_000) => {
+        for (const until = Date.now() + seconds * 1_000; Date.now() < until; ) {
+          const read = await status();
+          if (check(read)) return read;
+          await page.waitForTimeout(every);
+        }
+        return null;
+      };
+      try {
+        await open(realHome);
+        await heading("Workspace");
+        if (before.hotSessions === 0) {
+          await button("One more ready workspace").click();
+          for (let tries = 0; (await detail(real.id)).project.hotSessions !== 1; tries += 1) {
+            if (tries > 20) throw new Error("verify-fixture's ready count did not save");
+            await page.waitForTimeout(500);
+          }
+        }
+        // The pool holds one of yours once the server starts it: wait for it to settle first, so
+        // the `starting` read after the save is the save's rewarm.
+        const first = await poll(
+          "a standby",
+          (read) => read.ready + read.warming + read.failed > 0,
+          90,
+        );
+        if (first === null) {
+          if (onBox)
+            throw new Error(
+              "hot-rewarm (real): verify-fixture kept no ready workspace for you in 90 s",
+            );
+          note(
+            "hot-rewarm (real): no recent session of yours in verify-fixture, so the pool keeps none; not seen",
+          );
+        } else {
+          const settledRead =
+            (await poll("the standby settles", (read) => read.warming === 0, 240, 3_000)) ?? first;
+          note(
+            `hot-rewarm (real): verify-fixture at ${Math.max(1, before.hotSessions)} keeps ${JSON.stringify({ ready: settledRead.ready, warming: settledRead.warming, failed: settledRead.failed })} before the save`,
+          );
+          await open(realHome);
+          await heading("Workspace");
+          await button("Edit image…").click();
+          const realEditor = dialog("Edit verify-fixture's image");
+          await realEditor.waitFor();
+          const shells = ["bash", "zsh", "fish"];
+          const other = shells.find((shell) => shell !== before.workspaceImage.shell) ?? "bash";
+          await visible(
+            realEditor.getByRole("group", { name: "Shell" }).getByRole("button", { name: other }),
+          ).click();
+          expect("the save is taken", !(await saveImage(realEditor)), "the editor stayed open");
+          expect(
+            "the server holds the new shell",
+            (await detail(real.id)).project.workspaceImage.shell === other,
+            (await detail(real.id)).project.workspaceImage,
+          );
+          const rewarm = await poll("the rewarm", (read) => read.warming > 0, 60, 500);
+          if (rewarm === null)
+            throw new Error(
+              "hot-rewarm (real): no ready workspace read starting within 60 s of the save",
+            );
+          const row = visible(page.getByRole("status").filter({ hasText: /starting/ }));
+          await row.waitFor({ timeout: 20_000 }).catch(() => undefined);
+          const words = (await row.isVisible()) ? (await row.innerText()).trim() : null;
+          note(
+            `hot-rewarm (real): after saving verify-fixture's image with ${other}, the server reports ${JSON.stringify({ ready: rewarm.ready, warming: rewarm.warming, failed: rewarm.failed })}${words === null ? " (the page's 5 s refresh missed it)" : `; the page reads "${words}"`}`,
+          );
+          await shot("workspace-real-rewarm-desktop-light");
+        }
+      } finally {
+        await call(
+          "projects.setWorkspaceImage",
+          { id: real.id, request: { workspaceImage: before.workspaceImage } },
+          "mutate",
+        );
+        await call(
+          "projects.setHotSessions",
+          { id: real.id, request: { hotSessions: before.hotSessions } },
+          "mutate",
+        );
+        const after = (await detail(real.id)).project;
+        expect(
+          "verify-fixture's image and count back as they were",
+          JSON.stringify(after.workspaceImage) === JSON.stringify(before.workspaceImage) &&
+            after.hotSessions === before.hotSessions,
+          { image: after.workspaceImage, hotSessions: after.hotSessions },
+        );
+        note(
+          `restored · verify-fixture's image and ready count (${before.hotSessions}) · read back: the same as before`,
+        );
+      }
+      await open(home);
+      await heading("Workspace");
+    }
 
     // --- Someone who may only read it (rewritten) -----------------------------------------------
     stubs.set("projects.detail", (answer) => {

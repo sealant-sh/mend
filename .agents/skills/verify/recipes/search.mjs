@@ -58,7 +58,10 @@ export default async ({ page, web, capture, note }) => {
   const go = (to, params) =>
     page.evaluate(
       ({ path, values }) =>
-        window["__TSR_ROUTER__"].navigate({ to: path, ...(values ? { params: values } : {}) }),
+        window["__TSR_ROUTER__"].navigate({
+          to: path,
+          ...(values ? { params: values } : {}),
+        }),
       { path: to, values: params },
     );
   const call = (path, input, kind = "query") =>
@@ -201,7 +204,23 @@ export default async ({ page, web, capture, note }) => {
   await option(names.landingSkill).waitFor();
   const bold = await option("Update landing page pricing").locator("b").innerText();
   if (bold.toLowerCase() !== "land") throw new Error(`the bold part reads "${bold}"`);
-  await footer().getByText("4 results").waitFor();
+  // The recipe's four, plus whatever this server's own projects and skills match (a check VM holds
+  // `main-run-land`): the footer counts what the list shows.
+  const shownNames = await palette()
+    .getByRole("option")
+    .evaluateAll((all) => all.map((each) => each.textContent ?? ""));
+  const ours = [
+    "Update landing page pricing",
+    "Mobile landing screen for gift cards",
+    names.landingProject,
+    names.landingSkill,
+  ];
+  const extra = shownNames.filter((shown) => !ours.some((name) => shown.startsWith(name)));
+  for (const name of ours)
+    if (shownNames.filter((shown) => shown.startsWith(name)).length !== 1)
+      throw new Error(`"land" lists ${name} other than once: ${JSON.stringify(shownNames)}`);
+  await footer().getByText(`${shownNames.length} results`).waitFor();
+  if (extra.length > 0) note(`"land" also finds this server's own: ${extra.join(" · ")}`);
   const announced = await palette().getByRole("listbox").getAttribute("aria-label");
   const live = await footer().locator("[aria-live]").innerText();
   note(
@@ -303,7 +322,9 @@ export default async ({ page, web, capture, note }) => {
 
   // A list that fails to read: said in the palette, with Try again.
   await page.evaluate(() =>
-    window["__TSR_ROUTER__"].options.context.queryClient.removeQueries({ queryKey: [["skills"]] }),
+    window["__TSR_ROUTER__"].options.context.queryClient.removeQueries({
+      queryKey: [["skills"]],
+    }),
   );
   const failure = {
     error: {
@@ -416,6 +437,8 @@ const fixtureRows = (me) =>
       status,
       ownerUserId: me,
       sharedControlEnabledAt: null,
+      // Required on every row a server sends (the column is never null): the row menu reads it.
+      sharedControlUserIds: [],
       startedAt: ago(minutes + 30),
       settledAt: null,
       createdAt: ago(minutes + 30),

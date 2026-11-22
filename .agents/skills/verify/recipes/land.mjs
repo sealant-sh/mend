@@ -13,7 +13,9 @@
 // Real, against the stack: Land… opens the dialog over `/sessions/<id>/change#land`; the dialog
 // names the session still editing; the stack's git fixture serves fetches only, so Push to origin
 // is a real landing that origin refuses, in git's own words, and Check origin reads origin again;
-// the workspace "…" and `/changes/<id>#land` open the same dialog.
+// the workspace "…" and `/changes/<id>#land` open the same dialog. On a check VM the project comes
+// from GitHub: the real dialog is GitHub's (pull request base, title, Push and open pull request)
+// and Check GitHub asks for real; nothing is pushed, and the fixtures below show the rest.
 //
 // Fixtures, laid over the real reads in the browser (a stack has no GitHub origin, and nothing here
 // pushes to GitHub or opens a pull request): a push that goes through, with its toast and lines; a
@@ -26,7 +28,10 @@ import { history, item, patchDetail, superjson, turn } from "./session-fixtures.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
-const TITLES = { owner: "Fix flaky checkout retry", editing: "Write tests for retry" };
+const TITLES = {
+  owner: "Fix flaky checkout retry",
+  editing: "Write tests for retry",
+};
 const PR_TITLE = "Fix duplicate charge when checkout retries";
 const PR_URL = "https://github.com/northwind/checkout-api/pull/412";
 const DESCRIPTION = "Fixes the duplicate charges that support reported on 12 November.";
@@ -54,7 +59,9 @@ export default async ({ page, web, capture, note }) => {
   const clip = () =>
     // The sidebar's wrapper is 2px taller than the window: clip it, or a capture resizes the
     // window and the driver withholds every later picture.
-    page.addStyleTag({ content: "[data-slot=sidebar-wrapper]{max-height:100dvh;overflow:hidden}" });
+    page.addStyleTag({
+      content: "[data-slot=sidebar-wrapper]{max-height:100dvh;overflow:hidden}",
+    });
   const shoot = async (name, themes = ["light"]) => {
     await clip();
     await page.evaluate(() => document.querySelector("vite-error-overlay")?.remove());
@@ -170,43 +177,79 @@ export default async ({ page, web, capture, note }) => {
   note("the Change view's toolbar has Land… before anything landed");
   await both("toolbar-desktop");
 
-  // The real dialog: the stack's origin is not GitHub, and another session is still editing.
+  // The real dialog, another session still editing. A local stack's origin is its fetch-only git
+  // fixture; a check VM's project comes from GitHub, where the dialog opens a pull request.
   await button("Land…").click();
   await dialog().getByRole("heading", { name: "Land change" }).waitFor();
   if (hash() !== "#land") throw new Error(`Land… opened ${page.url()}, not #land`);
   await dialog().getByText(`${TITLES.editing} is still editing`).waitFor();
-  await dialog()
-    .getByText(/^No pull request: /)
-    .waitFor();
-  await pushButton().waitFor();
-  if ((await dialog().getByRole("textbox", { name: "Pull request title" }).count()) !== 0)
-    throw new Error("a non-GitHub origin's dialog offers a pull request title");
-  note(
-    `the dialog on the stack: ${await dialog()
-      .getByText(/^No pull request: /)
-      .innerText()} · names "${TITLES.editing} is still editing" · ${await pushButton().innerText()}`,
-  );
-  await both("dialog-origin-desktop");
+  const noPullRequest = dialog().getByText(/^No pull request: /);
+  const openPullRequest = dialog().getByRole("button", {
+    name: "Push and open pull request",
+  });
+  await noPullRequest.or(openPullRequest).first().waitFor({ timeout: 30_000 });
+  const realGitHub = (await openPullRequest.count()) > 0;
+  if (!realGitHub) {
+    await pushButton().waitFor();
+    if ((await dialog().getByRole("textbox", { name: "Pull request title" }).count()) !== 0)
+      throw new Error("a non-GitHub origin's dialog offers a pull request title");
+    note(
+      `the dialog on the stack: ${await noPullRequest.innerText()} · names "${TITLES.editing} is still editing" · ${await pushButton().innerText()}`,
+    );
+    await both("dialog-origin-desktop");
 
-  // Land: the stack's git fixture serves fetches only, so origin refuses the push.
-  await pushButton().click();
-  const refused = dialog().getByRole("heading", { name: /refused the push|didn't finish/ });
-  await refused.waitFor({ timeout: 180_000 });
-  await dialog().getByRole("button", { name: "Try again" }).waitFor();
-  note(
-    `a real landing on the stack: "${await refused.innerText()}" · ${(await dialog().locator("pre").innerText()).slice(0, 160)}`,
-  );
-  await both("refused-origin-desktop");
-  // Check origin reads origin's branch again, with this account's git access.
-  await dialog().getByRole("button", { name: "Check origin" }).click();
-  await dialog()
-    .getByText(/^origin (could not be checked|not compared|has no |.* at )/)
-    .waitFor({ timeout: 60_000 });
-  note(
-    `Check origin: ${await dialog()
+    // Land: the stack's git fixture serves fetches only, so origin refuses the push.
+    await pushButton().click();
+    const refused = dialog().getByRole("heading", {
+      name: /refused the push|didn't finish/,
+    });
+    await refused.waitFor({ timeout: 180_000 });
+    await dialog().getByRole("button", { name: "Try again" }).waitFor();
+    note(
+      `a real landing on the stack: "${await refused.innerText()}" · ${(await dialog().locator("pre").innerText()).slice(0, 160)}`,
+    );
+    await both("refused-origin-desktop");
+    // Check origin reads origin's branch again, with this account's git access.
+    await dialog().getByRole("button", { name: "Check origin" }).click();
+    await dialog()
       .getByText(/^origin (could not be checked|not compared|has no |.* at )/)
-      .innerText()}`,
-  );
+      .waitFor({ timeout: 60_000 });
+    note(
+      `Check origin: ${await dialog()
+        .getByText(/^origin (could not be checked|not compared|has no |.* at )/)
+        .innerText()}`,
+    );
+  } else {
+    // A real GitHub origin: its own controls, read for real. Nothing is pushed: a push here would
+    // reach GitHub. The non-GitHub dialog and a push that goes through are laid as fixtures below.
+    await dialog()
+      .getByText(/opens a pull request on GitHub/)
+      .waitFor();
+    await dialog().getByRole("textbox", { name: "Pull request title" }).waitFor();
+    await dialog().getByText("Pull request base").waitFor();
+    if ((await noPullRequest.count()) !== 0)
+      throw new Error("a GitHub origin's dialog says there is no pull request");
+    const pushLine = (await dialog().getByRole("definition").first().innerText()).replace(
+      /\s+/g,
+      " ",
+    );
+    note(
+      `the dialog on a GitHub origin: Push ${pushLine} · Pull request base · Pull request title · names "${TITLES.editing} is still editing" · Push and open pull request`,
+    );
+    await both("dialog-github-origin-desktop");
+    // Check GitHub asks GitHub, as this account, for a pull request opened outside Mend: a read.
+    // Its answer is a status, or an alert when the server can't ask (no GitHub account connected).
+    await dialog().getByRole("button", { name: "Check GitHub" }).click();
+    const checked = dialog()
+      .getByRole("status")
+      .or(dialog().getByRole("alert"))
+      .filter({ hasText: /pull request|GitHub|github/ });
+    await checked.first().waitFor({ timeout: 60_000 });
+    note(`Check GitHub (real, a GitHub origin): ${await checked.first().innerText()}`);
+    note(
+      "differs · this origin is GitHub: the real push refused by a fetch-only origin and its Check origin are a local stack's; nothing was pushed",
+    );
+  }
   await closeDialog();
   if (hash() !== "") throw new Error("closing the dialog left #land in the address");
 
@@ -470,6 +513,14 @@ export default async ({ page, web, capture, note }) => {
   await fixture("origin");
   await open(`/sessions/${owner.id}/change#land`);
   await dialog().getByRole("button", { name: "Push to origin" }).waitFor({ timeout: 60_000 });
+  await dialog()
+    .getByText(/^No pull request: /)
+    .waitFor();
+  note(
+    `an origin that isn't GitHub (fixture): ${await dialog()
+      .getByText(/^No pull request: /)
+      .innerText()} · Push to origin`,
+  );
   landAnswer = "pushed";
   state = "pushed";
   await dialog().getByRole("button", { name: "Push to origin" }).click();
@@ -520,25 +571,27 @@ export default async ({ page, web, capture, note }) => {
   await dialog().getByRole("textbox", { name: "Pull request title" }).waitFor();
   if ((await dialog().getByRole("textbox", { name: "Description" }).inputValue()) !== DESCRIPTION)
     throw new Error("closing the dialog lost the description");
-  // Check GitHub is there before anything landed: it asks the server, which says why it can't look.
+  // Check GitHub is there before anything landed: it asks the server, which says why it can't look
+  // (a status, or an alert when no GitHub account is connected).
   await dialog().getByRole("button", { name: "Check GitHub" }).click();
-  await dialog()
+  const githubAnswer = dialog()
     .getByRole("status")
-    .filter({ hasText: /pull request|GitHub not checked/ })
-    .waitFor({ timeout: 60_000 });
-  note(
-    `Check GitHub (real, the stack's origin): ${await dialog()
-      .getByRole("status")
-      .filter({ hasText: /pull request|GitHub not checked/ })
-      .innerText()}`,
-  );
+    .or(dialog().getByRole("alert"))
+    .filter({
+      hasText: /pull request|GitHub not checked|GitHub account|github/,
+    })
+    .first();
+  await githubAnswer.waitFor({ timeout: 60_000 });
+  note(`Check GitHub (real, this server's origin): ${await githubAnswer.innerText()}`);
   note("closing and opening the dialog keeps the title and description");
 
   // Land: the recorded answer opens pull request #412, and the dialog closes with a toast.
   landAnswer = "opened";
   state = "landed";
   await dialog().getByRole("button", { name: "Push and open pull request" }).click();
-  await toast(`Pushed ${branch} and opened pull request #412.`).waitFor({ timeout: 30_000 });
+  await toast(`Pushed ${branch} and opened pull request #412.`).waitFor({
+    timeout: 30_000,
+  });
   await dialog().waitFor({ state: "hidden" });
   note(`Push and open pull request: the toast "Pushed ${branch} and opened pull request #412."`);
   landAnswer = null;
@@ -592,7 +645,9 @@ export default async ({ page, web, capture, note }) => {
   // More work since: the newer checkpoint isn't in the pull request, and Land again… updates it.
   await fixture("moved");
   await go(`/sessions/${owner.id}/change`);
-  await visible(page.getByText(/isn't in pull request #412 yet\./)).waitFor({ timeout: 30_000 });
+  await visible(page.getByText(/isn't in pull request #412 yet\./)).waitFor({
+    timeout: 30_000,
+  });
   await button("Land again…").waitFor();
   note(
     `more work: "${await visible(page.getByText(/isn't in pull request #412 yet\./)).innerText()}" with Land again…`,
@@ -640,7 +695,9 @@ export default async ({ page, web, capture, note }) => {
   await both("sheet-phone");
   await closeDialog();
   await fixture("moved");
-  await visible(page.getByRole("button", { name: "Land again…" })).waitFor({ timeout: 30_000 });
+  await visible(page.getByRole("button", { name: "Land again…" })).waitFor({
+    timeout: 30_000,
+  });
   await both("land-again-phone");
   await page.setViewportSize(DESKTOP);
 
@@ -656,7 +713,9 @@ export default async ({ page, web, capture, note }) => {
   await shoot("failed-desktop");
   failLandings = false;
   await dialog().getByRole("button", { name: "Try again" }).click();
-  await pushButton().waitFor({ timeout: 30_000 });
+  await (
+    realGitHub ? dialog().getByRole("button", { name: "Push and open pull request" }) : pushButton()
+  ).waitFor({ timeout: 30_000 });
   note("a landing read that fails says so in the dialog with Try again, which reads it again");
   await closeDialog();
   await page.unroute("**/trpc/**");

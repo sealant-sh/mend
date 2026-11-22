@@ -12,6 +12,20 @@
 // provider's agent, so the agent's own moves (asks, answered, replied, a snoozed one asking, a
 // done one resumed) are fixture rows the recipe answers the inbox read with, changed step by step
 // and read again so the sidebar moves them live; every capture taken that way is named `fixture-…`.
+//
+// A session the batch starts has no label and no message, so every list titles it "New session":
+// the recipe finds each by its worktree in the inbox read and its row by the session's link. On a
+// server whose data already holds the batch's worktrees (a check VM copy), run the batch with every
+// `--name` suffixed and pass the suffix: SESSION_STATES_SUFFIX=-<sha8> (the names are refused
+// otherwise). The real turn on the box is its own recipe, session-states-turn.mjs.
+const SUFFIX = process.env.SESSION_STATES_SUFFIX ?? "";
+const WORKTREES = [
+  "states-files",
+  "states-none",
+  "states-failed",
+  "states-live",
+  "states-live-files",
+];
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
@@ -41,10 +55,18 @@ export default async ({ page, web, capture, note }) => {
       .getByRole("button", { name: new RegExp(`^${label}`), expanded: open })
       .waitFor({ timeout: 5_000 });
   };
-  // A whole title: "states-live" must not match "states-live-files".
-  const rows = (label, title) =>
-    group(label).getByRole("link", { name: new RegExp(`^${title}(?!-)`) });
-  const row = (label, title) => rows(label, title).first();
+  // Each batch session's id by its worktree's name, read once the inbox is in (`findIds`).
+  const ids = {};
+  const href = (name) => {
+    if (ids[name] === undefined) throw new Error(`no session found for the worktree ${name}`);
+    return `a[href='/sessions/${ids[name]}']`;
+  };
+  // A batch session by its link; a fixture row by its whole title ("Explain…" must not match more).
+  const rows = (label, name) =>
+    WORKTREES.includes(name)
+      ? group(label).locator(href(name))
+      : group(label).getByRole("link", { name: new RegExp(`^${name}(?!-)`) });
+  const row = (label, name) => rows(label, name).first();
   const showAll = async (label) => {
     const more = group(label).getByRole("button", { name: /^Show \d+ more$/ });
     if ((await more.count()) > 0) await more.click();
@@ -76,11 +98,13 @@ export default async ({ page, web, capture, note }) => {
       }),
     );
   /** Opens a row's "…" menu and reads its items. */
-  const menuOf = async (label, title) => {
-    const target = row(label, title);
+  const menuOf = async (label, name) => {
+    const target = row(label, name);
     await target.hover();
     await group(label)
-      .getByRole("button", { name: `Actions for ${title}`, exact: true })
+      .getByRole("listitem")
+      .filter({ has: page.locator(href(name)) })
+      .getByRole("button", { name: /^Actions for / })
       .click();
     const menu = page.getByRole("menu").filter({ visible: true });
     await menu.waitFor();
@@ -111,6 +135,35 @@ export default async ({ page, web, capture, note }) => {
   });
   await open("/");
   await openAll();
+  await waitFor("the inbox read", async () =>
+    page.evaluate(
+      () =>
+        window["__TSR_ROUTER__"].options.context.queryClient
+          .getQueryCache()
+          .findAll({ queryKey: [["sessions", "inbox"]] })[0]?.state.data !== undefined,
+    ),
+  );
+  Object.assign(
+    ids,
+    await page.evaluate(
+      ([names, suffix]) => {
+        const listed =
+          window["__TSR_ROUTER__"].options.context.queryClient
+            .getQueryCache()
+            .findAll({ queryKey: [["sessions", "inbox"]] })[0]?.state.data ?? [];
+        const newest = (name) =>
+          listed
+            .filter((each) => each.worktreeName === `${name}${suffix}`)
+            .toSorted((a, b) => new Date(b.session.createdAt) - new Date(a.session.createdAt))[0]
+            ?.session.id;
+        return Object.fromEntries(names.map((name) => [name, newest(name)]));
+      },
+      [WORKTREES, SUFFIX],
+    ),
+  );
+  note(
+    `the batch's sessions by worktree${SUFFIX ? ` (suffix ${SUFFIX})` : ""}: ${JSON.stringify(ids)}`,
+  );
 
   // Real sessions where their life puts them.
   await row("Running", "states-live").waitFor();
@@ -118,15 +171,15 @@ export default async ({ page, web, capture, note }) => {
   await row("To review", "states-files").waitFor();
   await row("To review", "states-failed").getByText("Failed", { exact: true }).waitFor();
   await row("Done", "states-none").waitFor();
-  const facts = await page.evaluate(() => {
+  const facts = await page.evaluate((liveId) => {
     const listed = window["__TSR_ROUTER__"].options.context.queryClient
       .getQueryCache()
       .findAll({ queryKey: [["sessions", "inbox"]] })[0]?.state.data;
-    const live = listed?.find((each) => each.title === "states-live");
+    const live = listed?.find((each) => each.session.id === liveId);
     return live === undefined
       ? null
       : { status: live.session.status, turnOpen: live.turnOpen, lastNewAt: String(live.lastNewAt) };
-  });
+  }, ids["states-live"]);
   if (facts?.turnOpen !== true || facts.lastNewAt === "undefined" || facts.lastNewAt === "null")
     throw new Error(`the server didn't send states-live's new facts: ${JSON.stringify(facts)}`);
   note(`server: states-live reads ${JSON.stringify(facts)}`);
@@ -208,17 +261,21 @@ export default async ({ page, web, capture, note }) => {
   await page.setViewportSize(DESKTOP);
 
   // The project's Sessions tab says the same words with the same glyphs.
-  const projectId = await page.evaluate(() => {
+  const projectId = await page.evaluate((filesId) => {
     const listed = window["__TSR_ROUTER__"].options.context.queryClient
       .getQueryCache()
       .findAll({ queryKey: [["sessions", "inbox"]] })[0]?.state.data;
-    return listed?.find((each) => each.title === "states-files")?.session.projectId ?? null;
-  });
+    return listed?.find((each) => each.session.id === filesId)?.session.projectId ?? null;
+  }, ids["states-files"]);
   if (projectId === null) throw new Error("no project for states-files");
   await navigate(`/projects/${projectId}`);
   const table = page.getByRole("region", { name: /^Sessions in / });
   await table.waitFor();
-  const tableRow = (title) => table.getByRole("row").filter({ hasText: title }).first();
+  const tableRow = (name) =>
+    table
+      .getByRole("row")
+      .filter({ has: page.locator(href(name)) })
+      .first();
   await tableRow("states-files").getByText("Completed").waitFor();
   const sidebarWord = (await wordOf(row("To review", "states-files"))).split(" · ")[1];
   note(

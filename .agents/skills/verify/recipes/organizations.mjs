@@ -17,6 +17,15 @@
 //   the tab's storage.
 // Creating for real, and leaving for real, need a multi-tenant server: the PR shows that run.
 //
+// On a multi-tenant server (a check VM copy, since mend#1916) the recipe reads the real
+// `organization.current` first and says what it offers: an operator, or anyone where creation is
+// open, is offered "Create organization…". It then rewrites the read to `canCreateOrganizations:
+// false` (what a single-tenant server, or a person who may not create, reads) for the "neither"
+// state, and answers the dialog's last create with the single-tenant server's own refusal in the
+// page, so nothing is created. With other owners in the roster, the only-owner state rewrites
+// the roster so the account is its only owner. Leaving is the server's own refusal either way:
+// the account is in one organization.
+//
 // Every state is captured light and dark, on the desk at 1280px and on the phone at 390px. The
 // recipe changes nothing on the server: every create and leave it sends is refused.
 const DESKTOP = { width: 1280, height: 900 };
@@ -41,6 +50,9 @@ const nameRefusal = (name) =>
           "OrganizationNameTaken",
         )
       : null;
+/** The single-tenant server's refusal of a create, as the web server's tRPC answers it. */
+const SINGLE = "This Mend runs one organization (MEND_TENANCY=single).";
+const singleRefusal = () => tagged(SINGLE, -32022, 422, "OrganizationRejected");
 const inputOf = (request, index) => {
   const body = request.postDataJSON() ?? {};
   const entry = body[String(index)] ?? body;
@@ -102,7 +114,17 @@ export default async ({ page, web, capture, note }) => {
   const dialog = (name) => visible(page.getByRole("dialog", { name }));
 
   // --- What the rewritten answers say -------------------------------------------------------
-  const rewrite = { multi: false, member: false };
+  // `none`: the reads say nobody may create here. `singleCreate`: a create past the name checks
+  // gets the single-tenant refusal in the page (set on a multi-tenant server, where it would
+  // create). `onlyOwner`: other owners are made members, so the account is the only owner.
+  const rewrite = {
+    multi: false,
+    member: false,
+    none: false,
+    singleCreate: false,
+    onlyOwner: false,
+  };
+  let viewerId = null;
   await page.route("**/trpc/**", async (route) => {
     const request = route.request();
     const paths = decodeURIComponent(new URL(request.url()).pathname.replace(/^\/trpc\//, ""))
@@ -112,24 +134,27 @@ export default async ({ page, web, capture, note }) => {
     const create = paths.indexOf("organizations.create");
     if (create !== -1) {
       const refusal = nameRefusal(String(inputOf(request, create)?.name ?? ""));
-      if (refusal !== null) {
-        const status = refusal.error.json.data.httpStatus;
+      const refused = refusal ?? (rewrite.singleCreate ? singleRefusal() : null);
+      if (refused !== null) {
+        const status = refused.error.json.data.httpStatus;
         await route.fulfill({
           status,
           contentType: "application/json",
-          body: JSON.stringify([refusal]),
+          body: JSON.stringify([refused]),
         });
         return;
       }
     }
-    if (!rewrite.multi || !paths.some((path) => watched.includes(path))) return route.continue();
+    if (!(rewrite.multi || rewrite.none) || !paths.some((path) => watched.includes(path)))
+      return route.continue();
     const response = await route.fetch();
     const answers = await response.json();
     const changed = paths.map((path, index) => {
       const answer = Array.isArray(answers) ? answers[index] : answers;
       const json = answer?.result?.data?.json;
       if (json === undefined) return answer;
-      if (path === "organization.current") json.canCreateOrganizations = true;
+      if (path === "organization.current") json.canCreateOrganizations = !rewrite.none;
+      if (rewrite.none) return answer;
       if (path === "organizations.list" && !json.some((row) => row.organization.id === OTHER.id)) {
         const [first] = json;
         json.push({
@@ -141,6 +166,8 @@ export default async ({ page, web, capture, note }) => {
       }
       if (path === "organization.members" && rewrite.member)
         for (const member of json) member.role = "member";
+      else if (path === "organization.members" && rewrite.onlyOwner)
+        for (const member of json) member.role = member.userId === viewerId ? "owner" : "member";
       return answer;
     });
     await route.fulfill({
@@ -157,11 +184,48 @@ export default async ({ page, web, capture, note }) => {
   });
   await open("/");
 
-  // --- A single-tenant server offers neither ------------------------------------------------
+  // --- What this server offers, as it is ---------------------------------------------------
+  const readOf = async (path) =>
+    page.evaluate(async (procedure) => {
+      const response = await fetch(`/trpc/${procedure}`, { credentials: "include" });
+      return (await response.json())?.result?.data?.json;
+    }, path);
+  const current = await readOf("organization.current");
+  const memberships = await readOf("organizations.list");
+  const roster = await readOf("organization.members");
+  viewerId = current.userId;
   const organization = (await switcher().getAttribute("aria-label")).replace(
     /, switch organization$/,
     "",
   );
+  const multi = current.tenancy === "multi";
+  note(
+    `this server: tenancy ${current.tenancy}, operator ${current.operator}, creation ${current.organizationCreation}, canCreateOrganizations ${current.canCreateOrganizations}, ${memberships.length} organization(s) for this account`,
+  );
+  if (memberships.length !== 1)
+    throw new Error(`the account is in ${memberships.length} organizations; the recipe needs one`);
+  await switcher().click();
+  await menuItem(`${organization} settings`).waitFor();
+  const real = await menuNames();
+  const offersCreate = real.some((name) => name.startsWith("Create organization"));
+  if (offersCreate !== current.canCreateOrganizations)
+    throw new Error(
+      `canCreateOrganizations is ${current.canCreateOrganizations}, and the switcher reads ${real.join(" | ")}`,
+    );
+  if (real.some((name) => name.startsWith("Leave ")))
+    throw new Error("the switcher offers Leave with one organization");
+  note(`org-create: as this server answers, the switcher reads ${real.join(" | ")}`);
+  await page.keyboard.press("Escape");
+  if (multi) rewrite.singleCreate = true;
+  if (!current.canCreateOrganizations) {
+    // Already what a server that lets nobody create says.
+  } else {
+    rewrite.none = true;
+    await readCurrentAgain();
+    note("org-create: the read rewritten in the page to canCreateOrganizations false");
+  }
+
+  // --- A server that lets nobody create offers neither --------------------------------------
   await switcher().click();
   await menuItem(`${organization} settings`).waitFor();
   const single = await menuNames();
@@ -169,23 +233,34 @@ export default async ({ page, web, capture, note }) => {
     throw new Error("a single-tenant server offers Create organization…");
   if (single.some((name) => name.startsWith("Leave ")))
     throw new Error("the switcher offers Leave with one organization");
-  note(`org-create: single tenancy, the switcher reads ${single.join(" | ")}`);
+  note(`org-create: nobody may create, the switcher reads ${single.join(" | ")}`);
   await both("single-switcher-desktop");
   await page.keyboard.press("Escape");
 
   await page.setViewportSize(PHONE);
   await open("/settings");
+  if (rewrite.none) await readCurrentAgain();
   await switcher().click();
   await visible(page.getByRole("dialog")).first().waitFor();
   const phoneSingle = await visible(page.getByRole("menuitem")).allTextContents();
   if (phoneSingle.some((name) => name.includes("Create organization") || name.startsWith("Leave ")))
     throw new Error(`the phone sheet offers ${phoneSingle.join(" | ")}`);
-  note(`org-create: single tenancy, the phone sheet reads ${phoneSingle.join(" | ")}`);
+  note(`org-create: nobody may create, the phone sheet reads ${phoneSingle.join(" | ")}`);
   await both("single-switcher-phone");
   await page.keyboard.press("Escape");
 
   // --- As if multi-tenant, with a second organization ---------------------------------------
+  rewrite.none = false;
   rewrite.multi = true;
+  const otherOwners = roster.filter(
+    (member) => member.role === "owner" && member.userId !== viewerId,
+  );
+  if (otherOwners.length > 0) {
+    rewrite.onlyOwner = true;
+    note(
+      `the roster has ${otherOwners.length} other owner(s): rewritten in the page so the account is the only owner`,
+    );
+  }
   await page.setViewportSize(DESKTOP);
   await open("/");
   await readCurrentAgain();
@@ -213,6 +288,10 @@ export default async ({ page, web, capture, note }) => {
   await both("create-taken-desktop");
   await name.fill("Difference Engine");
   await submit.click();
+  if (rewrite.singleCreate)
+    note(
+      "org-create: this server is multi-tenant, so the single-tenant refusal is answered in the page; nothing is created",
+    );
   const alert = create.getByRole("alert").filter({ hasText: "The organization wasn't created." });
   await alert.waitFor();
   note(`org-create: the server's refusal is the dialog's alert: ${await alert.textContent()}`);
@@ -276,6 +355,7 @@ export default async ({ page, web, capture, note }) => {
 
   // --- What home says after the reload a create or a leave ends with ------------------------
   rewrite.multi = false;
+  rewrite.onlyOwner = false;
   const arrive = async (stored, words, captured) => {
     await page.evaluate(
       (value) => sessionStorage.setItem("mend-switched-organization", value),

@@ -59,6 +59,16 @@ export default async ({ page, web, capture, note }) => {
       .getByRole("main")
       .innerText()
       .catch(() => "");
+  // The turns as the conversation shows them. A session's tab, its "Actions for …" button and its
+  // sidebar row are titled with its first prompt, so a word is counted here, not in all of main.
+  const conversation = () =>
+    page
+      .getByRole("main")
+      .getByRole("region", { name: /^Conversation/ })
+      .filter({ visible: true })
+      .first()
+      .innerText()
+      .catch(() => "");
   const started = [];
 
   try {
@@ -112,15 +122,16 @@ export default async ({ page, web, capture, note }) => {
     const landed = Date.now();
     await until(
       "BRAVO's question and answer in the web",
-      async () => count(await main(), "BRAVO") >= 2,
+      async () => count(await conversation(), "BRAVO") >= 2,
       45_000,
     );
     note(
       `the web showed BRAVO ${Math.round((Date.now() - landed) / 1000)} s after the page opened`,
     );
     const shown = await main();
-    if (count(shown, "ALPHA") !== 2)
-      throw new Error(`ALPHA shows ${count(shown, "ALPHA")} times, not twice`);
+    const turns = await conversation();
+    if (count(turns, "ALPHA") !== 2)
+      throw new Error(`ALPHA shows ${count(turns, "ALPHA")} times, not twice`);
     if (shown.includes("AGENTS.md instructions"))
       throw new Error("a setup message shows as a message");
     if (shown.includes("runs in a terminal in this session"))
@@ -136,7 +147,7 @@ export default async ({ page, web, capture, note }) => {
     await field.press("Enter");
     await until(
       "CHARLIE answered in the web",
-      async () => count(await main(), "CHARLIE") >= 2,
+      async () => count(await conversation(), "CHARLIE") >= 2,
       180_000,
     );
     await until(
@@ -176,10 +187,10 @@ export default async ({ page, web, capture, note }) => {
     await again.press("Enter");
     await until(
       "DELTA answered in the web",
-      async () => count(await main(), "DELTA") >= 2,
+      async () => count(await conversation(), "DELTA") >= 2,
       180_000,
     );
-    const after = await main();
+    const after = await conversation();
     for (const word of ["ALPHA", "BRAVO", "CHARLIE"])
       if (count(after, word) !== 2)
         throw new Error(`${word} shows ${count(after, word)} times, not twice`);
@@ -208,7 +219,11 @@ export default async ({ page, web, capture, note }) => {
     if (bornId === undefined) throw new Error("the terminal session is not listed");
     started.push(bornId);
     await page.goto(`${web}/sessions/${bornId}`);
-    await until("FOXTROT in the web", async () => count(await main(), "FOXTROT") >= 2, 45_000);
+    await until(
+      "FOXTROT in the web",
+      async () => count(await conversation(), "FOXTROT") >= 2,
+      45_000,
+    );
     note("a session started in a terminal shows its turn in the web");
     await capture("terminal-born-session");
   } catch (failure) {

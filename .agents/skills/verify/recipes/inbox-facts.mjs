@@ -192,6 +192,7 @@ const fixtureRow = (
     status,
     ownerUserId: owner,
     sharedControlEnabledAt: null,
+    sharedControlUserIds: [],
     startedAt: ago(minutes + 30),
     settledAt: null,
     createdAt: ago(minutes + 30),

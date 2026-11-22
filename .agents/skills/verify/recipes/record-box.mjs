@@ -34,6 +34,45 @@ const visible = (locator) => locator.filter({ visible: true }).first();
 const textOf = async (locator) => (await locator.innerText()).replace(/\s+/g, " ").trim();
 
 /** A tRPC answer that failed on purpose, as the server words one. */
+/** The reads besides the history an empty record also empties (see the fixtures below). */
+const EMPTIED = new Set(["sessions.transcript", "screens.log", "sessions.detail"]);
+
+/**
+ * One of `EMPTIED`'s answers with nothing in it: no transcript events, no screen log rows, and the
+ * session's detail with no checkpoints (its superjson paths under `checkpoints` dropped with them).
+ */
+const emptied = (path, answer) => {
+  if (!("result" in answer)) return answer;
+  const data = answer.result.data;
+  if (path === "screens.log") return { result: { data: { json: [] } } };
+  if (path === "sessions.transcript") {
+    data.json.events = [];
+    dropMeta(data, "events");
+    return answer;
+  }
+  data.json.checkpoints = [];
+  dropMeta(data, "checkpoints");
+  return answer;
+};
+
+/**
+ * Drop superjson's notes under `field`: its type notes (`field.0.createdAt`) and its shared-value
+ * notes (`field.0.seq` equal to `field.1.seq`), which name paths that are gone once it is emptied.
+ */
+const dropMeta = (data, field) => {
+  const under = (path) => path === field || path.startsWith(`${field}.`);
+  const values = data.meta?.values;
+  if (values !== undefined && values !== null && !Array.isArray(values))
+    for (const key of Object.keys(values)) if (under(key)) delete values[key];
+  const equal = data.meta?.referentialEqualities;
+  if (equal !== undefined && equal !== null && !Array.isArray(equal))
+    for (const [key, paths] of Object.entries(equal)) {
+      const kept = paths.filter((path) => !under(path));
+      if (under(key) || kept.length === 0) delete equal[key];
+      else equal[key] = kept;
+    }
+};
+
 const failure = (procedure) => ({
   error: {
     json: {
@@ -208,11 +247,14 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     const url = new URL(route.request().url());
     const paths = decodeURIComponent(url.pathname.replace(/^\/trpc\//, "")).split(",");
     const inputs = JSON.parse(route.request().postData() ?? url.searchParams.get("input") ?? "{}");
+    // An empty record empties every read the page draws rows from: with no turns the page reads
+    // the session as a terminal one and falls back to its transcript, and the checkpoints come
+    // from the session's detail and the screen's rows from its log.
     const ours = paths.map((path, index) => {
       const input = inputs[String(index)]?.json ?? inputs.json;
-      return state !== null && input?.id === id && path.startsWith("sessions.history")
-        ? path
-        : null;
+      if (state === null || input?.id !== id) return null;
+      if (path.startsWith("sessions.history")) return path;
+      return state === "empty" && EMPTIED.has(path) ? path : null;
     });
     if (ours.every((path) => path === null)) return route.continue();
     if (state === "hold") await held;
@@ -223,7 +265,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     ours.forEach((path, index) => {
       if (path === null) return;
       if (state === "fail") answers[index] = failure(path);
-      else if (state === "empty") answers[index] = { result: { data: empty[path] } };
+      else if (state === "empty" && path in empty)
+        answers[index] = { result: { data: empty[path] } };
+      else if (state === "empty") answers[index] = emptied(path, answers[index]);
       else if (state === "earlier" && path === "sessions.historyItems")
         answers[index].result.data.json.next = "fixture-cursor";
     });
@@ -233,7 +277,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     page.evaluate(() => {
       const queryClient = window["__TSR_ROUTER__"].options.context.queryClient;
       queryClient.removeQueries({ queryKey: [["sessions", "historyItems"]] });
-      return queryClient.invalidateQueries({ queryKey: [["sessions"]] });
+      return Promise.all([
+        queryClient.invalidateQueries({ queryKey: [["sessions"]] }),
+        queryClient.invalidateQueries({ queryKey: [["screens", "log"]] }),
+      ]);
     });
 
   state = "earlier";
@@ -260,11 +307,21 @@ export default async ({ page, web, capture: captureOnce, note }) => {
 
   state = "empty";
   await visible(body.getByRole("button", { name: "Try again" })).click();
+  await page.evaluate(() => {
+    const queryClient = window["__TSR_ROUTER__"].options.context.queryClient;
+    return Promise.all([
+      queryClient.invalidateQueries({ queryKey: [["sessions", "detail"]] }),
+      queryClient.invalidateQueries({ queryKey: [["screens", "log"]] }),
+    ]);
+  });
   await visible(body.getByText(/^Nothing in the record yet/))
     .waitFor({ timeout: 30_000 })
-    .catch(async () =>
-      note(`empty didn't show; the view reads ${JSON.stringify(await textOf(body))}`),
-    );
+    .catch(async () => {
+      await capture("fixture-record-empty-light");
+      throw new Error(
+        `the empty record didn't show; the view reads ${JSON.stringify(await textOf(body))}`,
+      );
+    });
   note(`fixture, Try again into an empty record: ${JSON.stringify(await textOf(body))}`);
   await capture("fixture-record-empty-light");
   state = null;

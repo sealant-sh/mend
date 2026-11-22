@@ -23,7 +23,11 @@
 //   as `/join#<token>`, `/reset#<token>`), the server refusing a role change (its last-owner words),
 //   and a first read that fails.
 //
-// The recipe removes the person it adds and revokes every link it makes, so it can run again.
+// The recipe removes the person it adds and revokes every link it makes, so it can run again. The
+// link the person joined with is spent by their joining (a revoke of it answers 409
+// InvitationSpent), so the end reads every link this run made back as revoked or used. A server
+// with a longer history (a check VM copy) may list other people as New: the recipe looks for New
+// in the joined person's own row.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
@@ -191,6 +195,10 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const link = (await created.locator("[data-slot=copy-field]").innerText()).split("\n")[0].trim();
   const token = new URL(link).hash.replace(/^#/, "");
   registerSecret("invitation-token", token);
+  const bound = (await owner("GET", "/api/organization/invitations")).body?.find(
+    (invitation) => invitation.email === email,
+  );
+  if (bound !== undefined) made.push(bound.id);
   await created.getByText(`Only someone signing up as ${email}`).waitFor();
   note("the link is shown once, with Copy, and who can use it (real: recorded by ARIA only)");
   await capture("invite-created-real");
@@ -237,13 +245,15 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         "a-members-verify-password",
       );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    // A person without Git access lands on setup: `/welcome`, or one of its steps.
+    await memberPage.waitForURL((url) => url.pathname.startsWith("/welcome"));
     memberId = (await apiOf(memberPage)("GET", "/api/organization")).body?.userId ?? null;
     note(`${person} joined with the link (${email})`);
     await toastSays(`${person} joined ${organization} with your invitation.`);
     const roster = visible(page.getByRole("table", { name: `${organization}'s members` }));
-    await roster.getByText(person).waitFor();
-    await roster.getByText("New", { exact: true }).waitFor();
+    const joinedRow = roster.getByRole("row").filter({ hasText: person });
+    await joinedRow.getByText(person).first().waitFor();
+    await joinedRow.getByText("New", { exact: true }).waitFor();
     note("the owner's open page says who joined with their link, and lists them as New");
     await shot("member-joined-desktop-light");
 
@@ -313,13 +323,22 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     const spare = await owner("POST", "/api/organization/invitations", { role: "member" });
     expect("a spare link", spare.status === 200, spare.status);
     registerSecret("spare-token", spare.body.token);
+    made.push(spare.body.invitation.id);
     await open("/settings/organization/members");
     await visible(
       page.getByRole("button", { name: "Revoke the invitation for Anyone with the link" }),
     ).click();
     await toastSays("Revoked the invitation for anyone with the link.");
     note("Revoke ends a link at once and says so");
-    for (const id of made) await owner("DELETE", `/api/organization/invitations/${id}`);
+    const madeBefore = new Set(made);
+    const all = (await owner("GET", "/api/organization/invitations")).body ?? [];
+    for (const invitation of all)
+      if (
+        madeBefore.has(invitation.id) &&
+        invitation.acceptedAt === null &&
+        invitation.revokedAt === null
+      )
+        await owner("DELETE", `/api/organization/invitations/${invitation.id}`);
     await open("/settings/organization/members");
     await visible(
       page.getByRole("button", { name: /^Show \d+ used, expired or revoked links?$/ }),
@@ -370,6 +389,20 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     if (memberId !== null) await owner("DELETE", `/api/organization/members/${memberId}`);
     await second.close();
   }
+
+  // Every link this run made is closed: revoked, or spent by the person who joined with it.
+  const links = (await owner("GET", "/api/organization/invitations")).body ?? [];
+  const ours = links.filter((invitation) => made.includes(invitation.id));
+  const stillOpen = ours.filter((one) => one.acceptedAt === null && one.revokedAt === null);
+  for (const one of stillOpen) await owner("DELETE", `/api/organization/invitations/${one.id}`);
+  const used = ours.filter((one) => one.acceptedAt !== null).length;
+  expect("every link this run made is read back", ours.length === made.length, {
+    made: made.length,
+    read: ours.length,
+  });
+  note(
+    `links this run made: ${made.length}; revoked ${made.length - used}, used by the person who joined ${used} (a revoke of it answers 409 InvitationSpent)${stillOpen.length > 0 ? `; ${stillOpen.length} left open, now revoked` : ""}`,
+  );
 
   // --- A first read that fails ---------------------------------------------------------------------
   await rewrite("organization.members", () =>
