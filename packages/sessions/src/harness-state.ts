@@ -237,6 +237,9 @@ const CODEX_ROLLOUT =
   /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 /** pi: `<ISO time>_<session id>.jsonl` under `sessions/<encoded working directory>/`. */
 const PI_SESSION = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
+/** Antigravity: `<conversation uuid>.db` under `.gemini/antigravity-cli/conversations/`. */
+const ANTIGRAVITY_CONVERSATION =
+  /(?:^|\/)([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.db$/i;
 
 /** One path under the harness home where a harness keeps a credential. */
 export interface HarnessCredential {
@@ -576,10 +579,12 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
       ".gemini/antigravity-cli/jetski_state.pbtxt",
     ],
     homeDirs: [".gemini"],
-    latestTranscript: "true",
-    liveTranscript: null,
-    liveTranscriptDir: null,
-    providerSessionId: () => null,
+    latestTranscript:
+      'ls -t "$HOME"/.gemini/antigravity-cli/conversations/*.db 2>/dev/null | head -1',
+    liveTranscript:
+      /^\.gemini\/antigravity-cli\/conversations\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.db$/i,
+    liveTranscriptDir: ".gemini/antigravity-cli/conversations",
+    providerSessionId: (file) => ANTIGRAVITY_CONVERSATION.exec(file)?.[1] ?? null,
   },
 };
 
@@ -712,6 +717,8 @@ export const readLiveTranscriptScript = (input: {
   readonly home: string | null;
   readonly mountPath: string;
 }): string | null => {
+  // Antigravity stores conversations as binary SQLite `.db` files, not text transcripts.
+  if (input.harness === "antigravity") return null;
   const byId = TRANSCRIPT_BY_ID[input.harness];
   const id = input.providerSessionId;
   if (id !== null && !/^[A-Za-z0-9-]+$/.test(id)) return null;

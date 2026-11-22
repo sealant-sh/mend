@@ -293,6 +293,32 @@ describe("transcript adapters", () => {
     );
   });
 
+  it("reads antigravity's conversation id from its .db file, resumes with --conversation, and keeps its token private", () => {
+    const id = "01a02ed3-3598-7bda-85a7-382585b3712c";
+    expect(
+      HARNESS_STATE["antigravity"]?.providerSessionId(
+        `/root/.gemini/antigravity-cli/conversations/${id}.db`,
+      ),
+    ).toBe(id);
+    expect(
+      HARNESS_STATE["antigravity"]?.liveTranscript?.test(
+        `.gemini/antigravity-cli/conversations/${id}.db`,
+      ),
+    ).toBe(true);
+    expect(HARNESS_STATE["antigravity"]?.homeDirs).toEqual([".gemini"]);
+    expect(nativeResumeArgv("antigravity", id, ["agy", "--model", "gemini-4-neon"])).toEqual([
+      "agy",
+      "--conversation",
+      id,
+      "--model",
+      "gemini-4-neon",
+    ]);
+    expect(
+      nativeResumeArgv("antigravity", "saved", ["agy", "--conversation", "requested"]),
+    ).toEqual(["agy", "--conversation", "requested"]);
+    expect(HARNESS_HOME_CREDENTIALS).toContain(".gemini/antigravity-cli/antigravity-oauth-token");
+  });
+
   it("resumes a saved Codex session by provider id", () => {
     expect(nativeResumeArgv("codex", "codex-session-id", ["codex"])).toEqual([
       "codex",
