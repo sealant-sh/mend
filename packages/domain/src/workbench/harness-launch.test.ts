@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   CONVERSATION_HARNESSES,
+  MODE_SWITCH_HARNESSES,
+  TERMINAL_HOOK_HARNESSES,
   HARNESS_MODEL_SEED,
   isHarnessSetupMessage,
   OPENCODE_DEFAULT_MODEL,
@@ -466,6 +468,16 @@ describe("the permission a terminal argv names (SLNT-147 review)", () => {
       expect(terminalPermissionMode("codex", argv), argv.join(" ")).toBe("bypass");
       expect(withPermissionDefaults("codex", argv), argv.join(" ")).toEqual(argv);
     }
+  });
+});
+
+describe("the harnesses that switch modes, and the ones Mend types into", () => {
+  it("switches every conversation harness, Antigravity included, but types only into Claude Code and Codex", () => {
+    expect([...MODE_SWITCH_HARNESSES].toSorted()).toEqual(["antigravity", "claude", "codex"]);
+    expect(TERMINAL_HOOK_HARNESSES.has("antigravity")).toBe(false);
+    expect(
+      [...TERMINAL_HOOK_HARNESSES].every((harness) => MODE_SWITCH_HARNESSES.has(harness)),
+    ).toBe(true);
   });
 });
 

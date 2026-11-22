@@ -1141,25 +1141,41 @@ export const completedTurnOf = (conversation: SessionProcess, input = "say hi") 
     endedAt: now(),
   });
 
-export const transcriptIn = (harness: "claude" | "codex", providerSessionId: string) =>
+/** The harnesses a mode switch scenario runs on. */
+export type SwitchHarness = "claude" | "codex" | "antigravity";
+
+export const transcriptIn = (harness: SwitchHarness, providerSessionId: string) =>
   harness === "claude"
     ? `.claude/projects/-workspace-repo/${providerSessionId}.jsonl`
-    : `.codex/sessions/2026/10/24/rollout-2026-10-24T10-00-00-${providerSessionId}.jsonl`;
+    : harness === "codex"
+      ? `.codex/sessions/2026/10/24/rollout-2026-10-24T10-00-00-${providerSessionId}.jsonl`
+      : `.gemini/antigravity-cli/conversations/${providerSessionId}.db`;
 
-export const transcriptLine = (harness: "claude" | "codex", providerSessionId: string) =>
-  `${JSON.stringify(
-    harness === "claude"
-      ? { type: "user", sessionId: providerSessionId, message: { role: "user", content: "say hi" } }
-      : {
-          type: "response_item",
-          payload: { type: "message", role: "user", content: [{ type: "text", text: "say hi" }] },
-        },
-  )}\n`;
+/** What the transcript holds: a JSONL line, or for Antigravity the start of its SQLite file. */
+export const transcriptLine = (harness: SwitchHarness, providerSessionId: string) =>
+  harness === "antigravity"
+    ? "SQLite format 3\u0000"
+    : `${JSON.stringify(
+        harness === "claude"
+          ? {
+              type: "user",
+              sessionId: providerSessionId,
+              message: { role: "user", content: "say hi" },
+            }
+          : {
+              type: "response_item",
+              payload: {
+                type: "message",
+                role: "user",
+                content: [{ type: "text", text: "say hi" }],
+              },
+            },
+      )}\n`;
 
 export const writeHomeTranscript = (
   storePath: string,
   sessionId: string,
-  harness: "claude" | "codex",
+  harness: SwitchHarness,
   providerSessionId: string,
 ) => {
   const file = path.join(
@@ -1171,7 +1187,7 @@ export const writeHomeTranscript = (
 };
 
 export const harvestExecOf =
-  (harness: "claude" | "codex", providerSessionId: string) => (argv: ReadonlyArray<string>) => {
+  (harness: SwitchHarness, providerSessionId: string) => (argv: ReadonlyArray<string>) => {
     const shape = HARNESS_STATE[harness];
     if (shape === undefined) return undefined;
     if (argv[2] === harvestHarnessStateScript(shape.paths)) {

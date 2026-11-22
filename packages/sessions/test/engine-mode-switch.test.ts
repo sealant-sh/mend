@@ -19,6 +19,7 @@ import {
   sealantLaunchLayer,
   setup,
   withEngine,
+  type SwitchHarness,
   type World,
   writeHomeTranscript,
 } from "./engine/fixture.ts";
@@ -32,20 +33,37 @@ const BYPASS_FLAGS = [
 const ASK_FLAGS = {
   claude: ["--permission-mode", "auto"],
   codex: ["--sandbox", "danger-full-access", "--ask-for-approval", "on-request"],
+  antigravity: ["--mode", "auto"],
 } as const;
 
-const askFlags = (harness: "claude" | "codex") => ASK_FLAGS[harness];
+const askFlags = (harness: SwitchHarness) => ASK_FLAGS[harness];
+
+/** The command each harness runs as. */
+const COMMAND = { claude: "claude", codex: "codex", antigravity: "agy" } as const;
+
+/** What a terminal reopened from a conversation waits at: hooks report when it no longer does. */
+const WAITS_AT_PROMPT = { claude: "prompt", codex: "prompt", antigravity: null } as const;
+
+/** How each harness's terminal opens a saved conversation by its id. */
+const resumesIn = (harness: SwitchHarness, id: string) =>
+  ({
+    claude: ["--resume", id],
+    codex: ["resume", id],
+    antigravity: ["--conversation", id],
+  })[harness];
 
 const liveAgent = (processes: Iterable<SessionProcess>, kind: "agent-pty" | "agent-protocol") =>
   [...processes].find((process) => process.kind === kind && process.exitedAt === null);
 
-const ranFrom = (spawned: ReadonlyArray<ReadonlyArray<string>>, harness: string) => {
+const ranFrom = (spawned: ReadonlyArray<ReadonlyArray<string>>, harness: SwitchHarness) => {
   const argv = spawned.at(-1) ?? [];
-  return argv.slice(argv.indexOf(harness));
+  return argv.slice(argv.indexOf(COMMAND[harness]));
 };
 
-describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
-  it.each(["claude", "codex"] as const)(
+const TERMINAL_CONVERSATION = "3f35ab2b-ae05-44b1-8b3c-387fbb062bc7";
+
+describe("a mode switch keeps the session's permission mode and conversation (SLNT-147, SLNT-1277)", () => {
+  it.each(["claude", "codex", "antigravity"] as const)(
     "a %s conversation launched with ask still asks once switched to the terminal",
     async (harness) => {
       const created: CreateOptions[] = [];
@@ -90,14 +108,19 @@ describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
         },
       );
       expect(terminal, "a live terminal agent after the switch").toBeDefined();
+      // Only hooks clear the prompt it waits at: an Antigravity terminal is never marked so.
+      expect(terminal?.waiting?.kind ?? null).toBe(WAITS_AT_PROMPT[harness]);
       const ran = ranFrom(spawned, harness);
+      expect(ran.join(" "), "the terminal opens the same conversation").toContain(
+        resumesIn(harness, providerSessionId).join(" "),
+      );
       for (const flag of BYPASS_FLAGS) expect(ran).not.toContain(flag);
       expect(ran.join(" ")).toContain(askFlags(harness).join(" "));
     },
     30_000,
   );
 
-  it.each(["claude", "codex"] as const)(
+  it.each(["claude", "codex", "antigravity"] as const)(
     "a %s terminal launched with ask still asks once switched to a conversation",
     async (harness) => {
       const created: CreateOptions[] = [];
@@ -121,7 +144,12 @@ describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
               composeLaunchArgv(harness, { mode: "pty", permissionMode: "ask" }),
             );
             const pty = liveAgent(world.processes.values(), "agent-pty");
-            expect(pty?.argv.join(" ")).toContain(askFlags(harness).join(" "));
+            if (pty === undefined) return yield* Effect.die("no terminal agent");
+            expect(pty.argv.join(" ")).toContain(askFlags(harness).join(" "));
+            world.processes.set(
+              pty.id,
+              new SessionProcess({ ...pty, providerSessionId: TERMINAL_CONVERSATION }),
+            );
             yield* engine.switchMode(session.id, "protocol", { mode: "protocol" }, null);
             return liveAgent(world.processes.values(), "agent-protocol");
           }),
@@ -131,6 +159,9 @@ describe("a mode switch keeps the session's permission mode (SLNT-147)", () => {
         },
       );
       expect(conversation, "a live conversation after the switch").toBeDefined();
+      expect(conversation?.providerSessionId, "the conversation resumes the terminal's").toBe(
+        TERMINAL_CONVERSATION,
+      );
       expect(conversation?.protocolOptions?.permissionMode).toBe("ask");
       expect(permissionModes).toEqual(["ask"]);
     },
@@ -155,7 +186,7 @@ const resumingLayer = (created: CreateOptions[], spawned: Array<ReadonlyArray<st
 const savedConversationLayer = (
   created: CreateOptions[],
   spawned: Array<ReadonlyArray<string>>,
-  harness: "claude" | "codex",
+  harness: SwitchHarness,
   providerSessionId: string,
 ) =>
   sealantLaunchLayer(

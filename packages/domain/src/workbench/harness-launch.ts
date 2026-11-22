@@ -586,11 +586,17 @@ export const CONVERSATION_HARNESSES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * The harnesses whose terminal agent Mend types messages into, reads waits from through its hooks,
- * and switches to a conversation and back (a mode switch). Antigravity runs as a conversation or in
- * a terminal, but has no hooks and no mode switch yet.
+ * The harnesses a session switches between a terminal and a conversation on, keeping its
+ * conversation (a mode switch): every conversation harness, since each resumes one conversation id
+ * in both modes (Antigravity: `agy --conversation <id>` and ACP `session/resume`).
  */
-export const MODE_SWITCH_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
+export const MODE_SWITCH_HARNESSES: ReadonlySet<string> = CONVERSATION_HARNESSES;
+
+/**
+ * The harnesses whose terminal agent Mend types messages into and reads waits from through its
+ * hooks. Antigravity has no hooks, so its terminal takes the words directly.
+ */
+export const TERMINAL_HOOK_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex"]);
 
 /** Compose the long-lived protocol process argv. Model and effort stay on provider turns. */
 export const composeProtocolArgv = (

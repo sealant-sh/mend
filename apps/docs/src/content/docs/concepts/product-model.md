@@ -98,9 +98,9 @@ A session's agent runs in one of two modes. A terminal session runs the unmodifi
 recorded terminal; it is what `mend claude`, `mend codex` and the other CLI commands start, and any
 agent command works this way. A conversation session drives Claude Code, Codex or Antigravity
 through its structured protocol, so turns, approvals and questions arrive as separate items; Slack,
-the phone and the web composer start these, and the HTTP API does when asked. For Claude Code and
-Codex, a mode switch moves a session's agent from one mode to the other and keeps the same provider
-conversation.
+the phone and the web composer start these, and the HTTP API does when asked. For Claude Code, Codex
+and Antigravity, a mode switch moves a session's agent from one mode to the other and keeps the same
+provider conversation.
 
 A session's status follows its live processes, not any single one:
 
