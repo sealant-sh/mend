@@ -84,6 +84,7 @@ export const LOGIN_PROVIDERS: ReadonlyArray<LoginProvider> = [
   "claude",
   "codex",
   "github",
+  "antigravity",
   "pi",
   "opencode",
 ];

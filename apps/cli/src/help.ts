@@ -177,14 +177,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "start",
     summary: "send this machine's provider credential to the platform",
     synopsis: [
-      "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove [<name>]]",
+      "<claude|codex|antigravity|github> [--use-my-login] [--from-stdin] [--remove [<name>]]",
       "<claude|codex> --api-key [--endpoint <url>] [--default] [--remove]",
       "pi [--dir <path>] [--dry-run] [--remove]",
       "executor [--status | --remove] [--member] [--no-open]",
     ],
     description: [
       "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
-      "Claude and Codex get a login of Mend's own. Both rotate their refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend's server refreshes on a schedule. So this logs in through the provider's own flow and your own login stays as it is: Claude in the browser, Codex with a device code, both sent and not kept here. Run it again whenever Mend says a login needs reconnecting. GitHub sends gh's token.",
+      "Claude, Codex and Antigravity get a login of Mend's own. They rotate their refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend's server refreshes on a schedule. So this logs in through the provider's own flow and your own login stays as it is: Claude and Antigravity in the browser, Codex with a device code, all sent and not kept here. Run it again whenever Mend says a login needs reconnecting. GitHub sends gh's token.",
       "--api-key connects an Anthropic or OpenAI API key beside a subscription, read from stdin and never printed. A key is billed per token and has no plan limit, so set a spend limit on its Anthropic Console workspace or OpenAI project. Sessions spend your default login only and never move to another on their own; --default makes the key your default. Disconnecting a key leaves it valid at the provider until you revoke it there.",
       "--endpoint sends the key's requests to a compatible endpoint, such as a company gateway, instead of Anthropic's or OpenAI's API: an Anthropic-compatible one for Claude, an OpenAI-compatible one for Codex (its base URL, often ending in /v1). If the endpoint takes no key, pipe in any value. Reconnecting the key without --endpoint removes it. Your own logins name its host; nobody else sees it.",
       "In a per-person workspace each person's processes use their own GitHub login, in their own home: git over HTTPS to GitHub reads it through Mend's credential helper, and no GITHUB_TOKEN is set in the environment. A command that needs the token takes it for itself: GITHUB_TOKEN=$(/run/mend/bin/mend-git-credential token) <command>.",
@@ -206,7 +206,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--default", text: "make the login you connect your default for the provider" },
       {
         flag: "--use-my-login",
-        text: "claude, codex: send the login this machine already uses; both sides then share it",
+        text: "claude, codex, antigravity: send the login this machine already uses; both sides then share it",
       },
       { flag: "--from-stdin", text: "paste a credential instead of reading the provider's file" },
       {
@@ -358,15 +358,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "codex",
     agentContract: true,
-    aliases: ["claude", "opencode", "pi"],
+    aliases: ["claude", "opencode", "pi", "antigravity", "agy"],
     section: "start",
-    summary: "launch codex, claude, opencode or pi in a recorded worktree",
+    summary: "launch codex, claude, opencode, pi or agy in a worktree",
     synopsis: [
       '["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land] [--project <p>]',
     ],
     description: [
-      "With --detach --conversation --json, claude, codex and pi start a conversation without attaching or asking for a worktree name. The receipt includes the session id, worktree, branch and web link. Use mend wait --turn to observe the turn. opencode has no conversation mode.",
-      "mend codex, mend claude, mend opencode and mend pi are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
+      "With --detach --conversation --json, claude, codex and pi start a conversation without attaching or asking for a worktree name. The receipt includes the session id, worktree, branch and web link. Use mend wait --turn to observe the turn. opencode and antigravity have no conversation mode yet.",
+      "mend codex, mend claude, mend opencode, mend pi and mend antigravity (or mend agy) are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
       "When another person's session is running in the worktree you join, the launch says so before the session starts: you share its workspace, everything you run runs as you, on your own logins, and either of you can read the other's files, logins included.",
       "Detach with Ctrl+] and the session keeps running. Reattach from any terminal with mend attach, or from the phone.",
@@ -454,7 +454,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "start",
     summary: "check server readiness, or bundle diagnostics for a bug report",
     synopsis: [
-      "[--harness claude|codex|pi] [--project <p>] [--check-boat-key] [--json]",
+      "[--harness claude|codex|pi|antigravity] [--project <p>] [--check-boat-key] [--json]",
       "--bundle [--out <path>] [--tail <n>]",
     ],
     description: [
@@ -465,7 +465,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       {
         flag: "--harness <name>",
-        text: "require this server harness login, claude, codex or pi; pi uses Codex",
+        text: "require this server harness login, claude, codex, pi or antigravity; pi uses Codex",
       },
       project(),
       {
@@ -1157,7 +1157,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       {
         flag: "--with <harness>",
-        text: "the agent: claude, codex, opencode or pi. Default: claude",
+        text: "the agent: claude, codex, opencode, pi or antigravity. Default: claude",
       },
       {
         flag: "--project <p>",
@@ -2756,7 +2756,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "your connected accounts on the platform",
     synopsis: [],
     description: [
-      "claude, codex, and github: connected, invalid, or archived, and when each was last used.",
+      "claude, codex, antigravity, and github: connected, invalid, or archived, and when each was last used.",
     ],
     see: ["connect"],
   },
@@ -3021,7 +3021,7 @@ export const renderCommand = (doc: CommandDoc, width = terminalWidth()): string 
   const out: Array<string> = [`mend ${doc.name} · ${doc.summary}`, "", "usage"];
   for (const line of invocations(doc)) out.push(...wrap(line, width, 2, 4));
   const alias = aliasNote(doc);
-  if (alias !== null) out.push(`  ${alias}`);
+  if (alias !== null) out.push(...wrap(alias, width, 2));
   out.push("", "description");
   for (const paragraph of doc.description) {
     out.push(...wrap(paragraph, width, 2));

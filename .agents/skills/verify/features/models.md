@@ -30,7 +30,8 @@ resume on another harness clears it.
 
 ## How to get to it (user POV)
 
-- CLI: `mend models [--json]`; `mend claude|codex|opencode|pi … --model <id>`. Claude and Codex take
+- CLI: `mend models [--json]`; `mend claude|codex|opencode|pi|antigravity … --model <id>` (and
+  `mend agy` as an alias for `mend antigravity`). Claude, Codex and Antigravity take
   `--effort <level>`, and pi takes it as thinking; opencode's launch ignores effort. `--fast`
   requests priority processing for Codex only. `mend resume [session-id] --with <harness>`;
   `mend sessions` shows `· <model> · <effort>` when those facts were recorded.

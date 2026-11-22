@@ -20,6 +20,7 @@ describe("composeLaunchArgv", () => {
     expect(composeLaunchArgv("claude", {})).toEqual(["claude"]);
     expect(composeLaunchArgv("codex", {})).toEqual(["codex"]);
     expect(composeLaunchArgv("opencode", {})).toEqual(["opencode"]);
+    expect(composeLaunchArgv("antigravity", {})).toEqual(["agy"]);
     expect(composeLaunchArgv("shell", {})).toEqual(["bash"]);
   });
 
@@ -107,6 +108,41 @@ describe("composeLaunchArgv", () => {
       "--thinking",
       "max",
     ]);
+  });
+
+  it("composes antigravity with agy, model, effort, ask mode, and --prompt-interactive", () => {
+    expect(
+      composeLaunchArgv("antigravity", {
+        prompt: "fix the flaky test",
+        model: "gemini-4-neon",
+        effort: "high",
+        permissionMode: "ask",
+      }),
+    ).toEqual([
+      "agy",
+      "--model",
+      "gemini-4-neon",
+      "--effort",
+      "high",
+      "--mode",
+      "auto",
+      "--prompt-interactive",
+      "fix the flaky test",
+    ]);
+    // bypass emits no flag so withPermissionDefaults injects --dangerously-skip-permissions.
+    expect(composeLaunchArgv("antigravity", { permissionMode: "bypass", effort: "ultra" })).toEqual(
+      ["agy", "--effort", "xhigh"],
+    );
+    expect(withPermissionDefaults("antigravity", ["agy", "--model", "gemini-4-neon"])).toEqual([
+      "agy",
+      "--dangerously-skip-permissions",
+      "--model",
+      "gemini-4-neon",
+    ]);
+    expect(terminalPermissionMode("antigravity", ["agy", "--mode", "auto"])).toBe("ask");
+    expect(terminalPermissionMode("antigravity", ["agy", "--dangerously-skip-permissions"])).toBe(
+      "bypass",
+    );
   });
 
   it("maps fast speed to codex's priority service tier and ignores it on claude", () => {

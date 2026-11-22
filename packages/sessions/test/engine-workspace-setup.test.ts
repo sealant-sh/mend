@@ -724,7 +724,12 @@ describe("SessionEngine files into a captured workspace", () => {
           yield* engine.launch(session.id, ["codex"]);
           const written = writtenFiles(execCalls);
           const text = (file: string) => written.get(file)?.toString("utf8");
-          for (const target of [".claude/skills", ".codex/skills", ".pi/agent/skills"]) {
+          for (const target of [
+            ".claude/skills",
+            ".codex/skills",
+            ".pi/agent/skills",
+            ".gemini/config/skills",
+          ]) {
             expect(text(`/workspace/harness-home/${target}/global/SKILL.md`)).toBe("owner global");
             expect(text(`/workspace/harness-home/${target}/local/SKILL.md`)).toBe("project local");
           }
@@ -734,6 +739,7 @@ describe("SessionEngine files into a captured workspace", () => {
             ".claude/skills": ["global", "local"],
             ".codex/skills": ["global", "local"],
             ".pi/agent/skills": ["global", "local"],
+            ".gemini/config/skills": ["global", "local"],
           });
           expect(
             JSON.parse(text("/workspace/harness-home/.mend-managed-skills-digests.json") ?? "{}"),

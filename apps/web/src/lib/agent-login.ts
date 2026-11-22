@@ -9,9 +9,15 @@ import { loginChoiceOf } from "@mend/domain/workbench";
  */
 
 /** The agents a person connects a login for. GitHub is a credential, not an agent. */
-export type Agent = "claude" | "codex";
+export type Agent = "claude" | "codex" | "antigravity";
 
-export const AGENTS: ReadonlyArray<Agent> = ["claude", "codex"];
+/** The agents that also take a direct API key beside a subscription login. */
+export type KeyAgent = "claude" | "codex";
+
+export const isKeyAgent = (agent: Agent | null): agent is KeyAgent =>
+  agent === "claude" || agent === "codex";
+
+export const AGENTS: ReadonlyArray<Agent> = ["claude", "codex", "antigravity"];
 
 interface AgentFacts {
   /** The agent's name, as the composer and the setup steps say it. */
@@ -20,8 +26,11 @@ interface AgentFacts {
   readonly service: string;
   /** The account a subscription login belongs to. */
   readonly account: string;
-  /** Who issues and bills the agent's API keys. */
+  /** Who issues and bills the agent's API keys (or signs the login in). */
   readonly issuer: string;
+}
+
+interface KeyAgentFacts extends AgentFacts {
   /** Where a person creates a key, as a sentence names it, and its address. */
   readonly console: { readonly words: string; readonly link: string; readonly url: string };
   /** How the issuer's API keys start. */
@@ -29,7 +38,7 @@ interface AgentFacts {
   readonly keyPlaceholder: string;
 }
 
-export const AGENT_FACTS: Readonly<Record<Agent, AgentFacts>> = {
+export const KEY_AGENT_FACTS: Readonly<Record<KeyAgent, KeyAgentFacts>> = {
   claude: {
     name: "Claude Code",
     service: "Claude",
@@ -55,6 +64,16 @@ export const AGENT_FACTS: Readonly<Record<Agent, AgentFacts>> = {
     },
     keyPrefix: "sk-",
     keyPlaceholder: "sk-proj-…",
+  },
+};
+
+export const AGENT_FACTS: Readonly<Record<Agent, AgentFacts>> = {
+  ...KEY_AGENT_FACTS,
+  antigravity: {
+    name: "Antigravity",
+    service: "Google",
+    account: "Google account",
+    issuer: "Google",
   },
 };
 
@@ -144,10 +163,10 @@ export const refusedWords = (
  * refuses those), or the other issuer's key. The platform checks the rest.
  */
 export const keyProblem = (
-  agent: Agent,
+  agent: KeyAgent,
   key: string,
 ): { readonly title: string; readonly advice: string } | null => {
-  const facts = AGENT_FACTS[agent];
+  const facts = KEY_AGENT_FACTS[agent];
   if (key === "") return { title: "Paste a key.", advice: "The field is empty." };
   if (/\s/.test(key)) {
     return {
@@ -156,10 +175,10 @@ export const keyProblem = (
     };
   }
   // OpenAI's `sk-` prefix also starts every Anthropic key.
-  const otherIssuers = AGENTS.filter(
-    (other) => other !== agent && AGENT_FACTS[other].keyPrefix.startsWith(facts.keyPrefix),
+  const otherIssuers = (["claude", "codex"] as const).filter(
+    (other) => other !== agent && KEY_AGENT_FACTS[other].keyPrefix.startsWith(facts.keyPrefix),
   );
-  const theirs = otherIssuers.some((other) => key.startsWith(AGENT_FACTS[other].keyPrefix));
+  const theirs = otherIssuers.some((other) => key.startsWith(KEY_AGENT_FACTS[other].keyPrefix));
   if (!key.startsWith(facts.keyPrefix) || theirs) {
     return {
       title: `That isn't an ${facts.issuer} API key.`,
@@ -170,8 +189,8 @@ export const keyProblem = (
 };
 
 /** What a refused save says, after the platform's own words. */
-export const rejectedAdvice = (agent: Agent): string => {
-  const { console } = AGENT_FACTS[agent];
+export const rejectedAdvice = (agent: KeyAgent): string => {
+  const { console } = KEY_AGENT_FACTS[agent];
   return `Paste another key here, or create a new one in ${console.words} ${console.link}.`;
 };
 

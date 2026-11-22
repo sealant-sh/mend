@@ -664,6 +664,13 @@ describe("a secret file is never captured", () => {
       '{"ok":true}\n',
     );
     fs.writeFileSync(path.join(harnessHome, ".claude", "settings.json"), "{}\n");
+    fs.mkdirSync(path.join(harnessHome, ".gemini", "antigravity-cli", "conversations"), {
+      recursive: true,
+    });
+    fs.writeFileSync(
+      path.join(harnessHome, ".gemini", "antigravity-cli", "conversations", "s.db"),
+      "conversation\n",
+    );
     for (const dir of new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))) {
       fs.mkdirSync(path.join(harnessHome, dir), { recursive: true });
       fs.mkdirSync(path.dirname(path.join(home, dir)), { recursive: true });

@@ -16,7 +16,7 @@
 import { Predicate } from "effect";
 
 /** The providers a person can connect. */
-export type CredentialProvider = "claude" | "codex" | "github";
+export type CredentialProvider = "claude" | "codex" | "github" | "antigravity";
 
 /** What narrowing did, so a caller can say it plainly instead of guessing. */
 export type NarrowOutcome =

@@ -290,6 +290,7 @@ const HARNESS_NAMES: Readonly<Record<string, string>> = {
   codex: "Codex",
   pi: "pi",
   opencode: "opencode",
+  antigravity: "Antigravity",
 };
 
 /** The session line's words: `MCP servers · figma, github · not for Codex: slack (SSE)`. */

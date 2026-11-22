@@ -45,7 +45,7 @@ import { redactCredentials } from "./shared.ts";
 
 const TIMEOUT_MS = 3_000;
 
-export type Provider = "claude" | "codex" | "github";
+export type Provider = "claude" | "codex" | "github" | "antigravity";
 
 export interface DoctorConfig {
   readonly url: string;
@@ -515,12 +515,14 @@ export const userNamespacesCheck = (observed: NonNullable<MachineDto["userNamesp
 const LOGIN_COMMANDS: Record<Provider, string> = {
   claude: "claude setup-token",
   codex: "codex login",
+  antigravity: "agy acp --login",
   github: "gh auth login",
 };
 
 const HARNESS_CLIS: ReadonlyArray<{ readonly command: string; readonly provider: Provider }> = [
   { command: "claude", provider: "claude" },
   { command: "codex", provider: "codex" },
+  { command: "agy", provider: "antigravity" },
   { command: "gh", provider: "github" },
 ];
 
@@ -761,7 +763,7 @@ export const runChecks = async (
             detail:
               account.status !== "invalid"
                 ? account.status
-                : key && provider !== "github"
+                : key && (provider === "claude" || provider === "codex")
                   ? `reconnect needed · ${keyRefusedWords(provider)} · ${facts.join(" · ")}`
                   : "reconnect needed · the provider refused the login",
             fix: key ? `mend connect ${provider} --api-key` : `mend connect ${provider}`,
@@ -926,7 +928,7 @@ export const doctorCommand = async (
   if (
     options?.harness !== undefined &&
     options.harness !== null &&
-    !["claude", "codex", "pi"].includes(options.harness)
+    !["claude", "codex", "pi", "antigravity"].includes(options.harness)
   ) {
     process.exitCode = writeCommandResult(
       {
@@ -934,7 +936,7 @@ export const doctorCommand = async (
         error: {
           code: "unknown_harness",
           message: `Unknown harness "${options.harness}".`,
-          fix: "Pass --harness claude, codex or pi.",
+          fix: "Pass --harness claude, codex, pi or antigravity.",
         },
       },
       (text) => process.stdout.write(text),
@@ -954,7 +956,9 @@ export const doctorCommand = async (
   });
   const provider = options?.harness === "pi" ? "codex" : (options?.harness ?? null);
   const harnessReady = diagnostics.some(
-    (check) => (check.label === "claude" || check.label === "codex") && check.state === "ok",
+    (check) =>
+      (check.label === "claude" || check.label === "codex" || check.label === "antigravity") &&
+      check.state === "ok",
   );
   const required = new Set([
     "server",

@@ -4,7 +4,7 @@ import { Input } from "@mend/ui/components/ui/input";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { type ClipboardEvent, type ReactNode, useId, useState } from "react";
 
-import { AGENT_FACTS, type Agent, keyProblem, rejectedAdvice } from "#/lib/agent-login";
+import { KEY_AGENT_FACTS, type KeyAgent, keyProblem, rejectedAdvice } from "#/lib/agent-login";
 import { requestFailure, waitedFor } from "#/lib/git-access";
 import { useTRPC } from "#/lib/trpc";
 
@@ -43,7 +43,7 @@ type KeyWords = { readonly title: string; readonly advice: string };
  * button, and the field is emptied the moment it is sent, so no part of it stays on the page or in
  * the mutation cache. `onSaved` runs once the platform has accepted it.
  */
-export function useApiKeySave(agent: Agent, onSaved?: () => void) {
+export function useApiKeySave(agent: KeyAgent, onSaved?: () => void) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const [key, setKey] = useState("");
@@ -106,7 +106,7 @@ export function ApiKeyField({
   formId,
   className,
 }: {
-  readonly agent: Agent;
+  readonly agent: KeyAgent;
   readonly save: ApiKeySave;
   readonly phone: boolean;
   readonly now: Date;
@@ -116,7 +116,7 @@ export function ApiKeyField({
   readonly className?: string;
 }) {
   const id = useId();
-  const facts = AGENT_FACTS[agent];
+  const facts = KEY_AGENT_FACTS[agent];
   return (
     <form
       id={formId}
@@ -180,8 +180,8 @@ export function ApiKeyField({
 }
 
 /** Where to create a key, as a link inside a sentence. */
-export function KeyConsoleLink({ agent }: { readonly agent: Agent }) {
-  const { console } = AGENT_FACTS[agent];
+export function KeyConsoleLink({ agent }: { readonly agent: KeyAgent }) {
+  const { console } = KEY_AGENT_FACTS[agent];
   return (
     <>
       {console.words}{" "}

@@ -496,7 +496,7 @@ export const useLoginHold = (scope: MessageScope | null): LoginHold | null => {
 };
 
 const isAgent = (provider: string): provider is Agent =>
-  provider === "claude" || provider === "codex";
+  provider === "claude" || provider === "codex" || provider === "antigravity";
 
 /** The provider's agent as people call it: "Claude Code", "Codex". */
 export const providerName = (provider: string): string =>

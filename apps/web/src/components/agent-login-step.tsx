@@ -19,6 +19,8 @@ import {
   connectCommand,
   connectedLine,
   initialAgent,
+  isKeyAgent,
+  type KeyAgent,
   refusedWords,
 } from "#/lib/agent-login";
 import { waitedFor, whenSince } from "#/lib/git-access";
@@ -90,8 +92,9 @@ export function AgentLoginStep() {
       <Tabs
         value={agent}
         onValueChange={(value) => {
-          if (value === "claude" || value === "codex") {
+          if (value === "claude" || value === "codex" || value === "antigravity") {
             setAgent(value);
+            if (!isKeyAgent(value)) setMode("command");
             setFocusKey(false);
           }
         }}
@@ -115,16 +118,20 @@ export function AgentLoginStep() {
         </div>
         {AGENTS.map((choice) => (
           <TabsContent key={choice} value={choice} className="text-base">
-            {mode === "command" ? (
+            {mode === "command" || !isKeyAgent(choice) ? (
               <RunCommand
                 agent={choice}
                 login={agentLoginState(identity.accounts, choice)}
                 now={now}
                 phone={phone}
-                onUseKey={() => {
-                  setMode("key");
-                  setFocusKey(true);
-                }}
+                onUseKey={
+                  isKeyAgent(choice)
+                    ? () => {
+                        setMode("key");
+                        setFocusKey(true);
+                      }
+                    : null
+                }
               />
             ) : (
               <ApiKey
@@ -166,7 +173,7 @@ function RunCommand({
   readonly login: AgentLoginState;
   readonly now: Date;
   readonly phone: boolean;
-  readonly onUseKey: () => void;
+  readonly onUseKey: (() => void) | null;
 }) {
   const facts = AGENT_FACTS[agent];
   // How long the page has waited: from when this agent's commands appeared.
@@ -205,7 +212,7 @@ function RunCommand({
             Waiting for {facts.name} to connect · {waitedFor(waitingSince, now)}
           </p>
         )}
-        {login.kind === "connected" ? null : (
+        {login.kind === "connected" || onUseKey === null ? null : (
           <p className="text-row text-muted-foreground max-lg:text-sm">
             {phone ? "No computer with you? " : null}
             <Button variant="link" className="text-row max-lg:text-sm" onClick={onUseKey}>
@@ -231,7 +238,7 @@ function ApiKey({
   focus,
   onRunCommand,
 }: {
-  readonly agent: Agent;
+  readonly agent: KeyAgent;
   readonly login: AgentLoginState;
   readonly apiKeys: SealantIdentity["apiKeys"];
   readonly now: Date;

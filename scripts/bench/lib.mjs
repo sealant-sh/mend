@@ -2563,6 +2563,13 @@ export const PERSON_STATE_PATHS = [
   ".pi/agent/settings.json",
   ".local/share/opencode",
   ".local/state/opencode",
+  ".gemini/antigravity-cli/conversations",
+  ".gemini/antigravity-cli/brain",
+  ".gemini/antigravity-cli/annotations",
+  ".gemini/antigravity-cli/conversation_summaries.db",
+  ".gemini/antigravity-cli/jetbox_summaries_proto.pb",
+  ".gemini/antigravity-cli/jetski_state.pbtxt",
+  ".gemini/config/skills",
 ];
 const PERSON_STATE_EXTRA = ["codex-db", "conversations"];
 

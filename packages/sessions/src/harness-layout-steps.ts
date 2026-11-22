@@ -246,9 +246,9 @@ export interface LoginNeed {
   readonly optional: ReadonlyArray<LoginProvider>;
 }
 
-/** Whether a harness's sessions are narrowed by `selectedOnly`: Claude and Codex only. */
+/** Whether a harness's sessions are narrowed by `selectedOnly`: Claude, Codex, and Antigravity. */
 export const narrowsToOwnLogin = (harness: string): boolean =>
-  harness === "claude" || harness === "codex";
+  harness === "claude" || harness === "codex" || harness === "antigravity";
 
 export const loginNeedOf = (
   harness: string,
@@ -260,6 +260,11 @@ export const loginNeedOf = (
       return { required: ["claude"], optional: selectedOnly ? ["github"] : ["codex", "github"] };
     case "codex":
       return { required: ["codex"], optional: selectedOnly ? ["github"] : ["claude", "github"] };
+    case "antigravity":
+      return {
+        required: ["antigravity"],
+        optional: selectedOnly ? ["github"] : ["claude", "codex", "github"],
+      };
     case "pi":
       return { required: [], optional: ["claude", "codex", "github", "pi"] };
     case "opencode":
@@ -273,6 +278,7 @@ const PROVIDER_NAMES: Readonly<Record<LoginProvider, string>> = {
   claude: "Claude",
   codex: "Codex",
   github: "GitHub",
+  antigravity: "Antigravity",
   pi: "pi's ChatGPT",
   opencode: "opencode's ChatGPT",
 };
@@ -340,6 +346,7 @@ const loginProviderOf = (word: string | undefined): LoginProvider | null => {
     case "claude":
     case "codex":
     case "github":
+    case "antigravity":
     case "pi":
     case "opencode":
       return word;
@@ -380,7 +387,7 @@ export const refusedAccountOf = (
  */
 export const isAuthenticationFailure = (error: string | null): boolean =>
   error !== null &&
-  /\b401\b|unauthori[sz]ed|authentication[_ ]error|failed to authenticate|invalid (?:api key|x-api-key|bearer)|oauth token|please run \/login|not logged in|token (?:has )?(?:expired|been revoked)/i.test(
+  /\b401\b|unauthori[sz]ed|authentication[_ ](?:error|required)|failed to authenticate|invalid (?:api key|x-api-key|bearer|grant)|oauth token|please run \/login|please sign in|not logged in|token (?:has )?(?:expired|been revoked)/i.test(
     error,
   );
 
@@ -388,7 +395,7 @@ export const isAuthenticationFailure = (error: string | null): boolean =>
 export const loginsOfCreate = (
   credentials: WorkspaceCredentialsOptions | undefined,
 ): ReadonlyArray<LoginProvider> =>
-  (["claude", "codex", "github"] as const).filter(
+  (["claude", "codex", "antigravity", "github"] as const).filter(
     (provider) => credentials?.[provider] !== undefined && credentials[provider] !== false,
   );
 
@@ -473,7 +480,13 @@ export const withoutLaunchRefusedLogin = (
   const refused = refusedAccountOf(error);
   if (refused === null || refused.reason !== "connected-account-unsupported") return null;
   const { provider } = refused;
-  if (provider !== "claude" && provider !== "codex" && provider !== "github") return null;
+  if (
+    provider !== "claude" &&
+    provider !== "codex" &&
+    provider !== "antigravity" &&
+    provider !== "github"
+  )
+    return null;
   return {
     provider,
     attempts: attempts.map((credentials) => {
@@ -889,7 +902,7 @@ export const ownerMapRefusalOf = (error: SealantPlatformError): string | null =>
 /** What a POST names for the launcher's create-time logins, put elsewhere (decision 1's fallback). */
 const homeLoginsOf = (credentials: WorkspaceCredentialsOptions | undefined): HomeLogins => {
   const logins: HomeLogins = {};
-  for (const provider of ["claude", "codex", "github"] as const) {
+  for (const provider of ["claude", "codex", "antigravity", "github"] as const) {
     const choice = credentials?.[provider];
     if (choice === true || typeof choice === "string") logins[provider] = choice;
   }

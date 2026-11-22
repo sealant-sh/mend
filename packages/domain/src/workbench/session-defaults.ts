@@ -3,7 +3,14 @@ import { Schema } from "effect";
 import { EFFORT_LEVELS } from "./harness-launch.ts";
 
 /** The agents a person's new-session defaults may name. */
-export const DefaultHarness = Schema.Literals(["claude", "codex", "opencode", "pi", "shell"]);
+export const DefaultHarness = Schema.Literals([
+  "claude",
+  "codex",
+  "opencode",
+  "pi",
+  "antigravity",
+  "shell",
+]);
 export type DefaultHarness = typeof DefaultHarness.Type;
 
 /** What a new session on one agent starts with; null leaves it to the catalog or the agent. */
@@ -26,6 +33,7 @@ export class SessionDefaults extends Schema.Class<SessionDefaults>("SessionDefau
     codex: Schema.optionalKey(HarnessStart),
     opencode: Schema.optionalKey(HarnessStart),
     pi: Schema.optionalKey(HarnessStart),
+    antigravity: Schema.optionalKey(HarnessStart),
     shell: Schema.optionalKey(HarnessStart),
   }),
 }) {}

@@ -26,6 +26,8 @@ export const HARNESS_EFFORTS: Readonly<Record<string, ReadonlyArray<EffortLevel>
   pi: ["low", "medium", "high", "xhigh", "max"],
   // opencode's `--variant` is provider-specific: no shared scale to offer.
   opencode: [],
+  // Antigravity (`agy`) accepts low, medium, high, xhigh on both CLI (`--effort`) and ACP (`thought_level`).
+  antigravity: ["low", "medium", "high", "xhigh"],
 };
 
 /**
@@ -71,6 +73,7 @@ export interface HarnessModelSeed {
 
 const CODEX_UP_TO_MAX: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh", "max"];
 const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh"];
+const ANTIGRAVITY_UP_TO_HIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high"];
 
 /**
  * What the `harness_models` table was seeded with (migration 0102; opencode 0109), and the words Slack recognises
@@ -117,6 +120,38 @@ export const HARNESS_MODEL_SEED: Readonly<Record<string, ReadonlyArray<HarnessMo
     { id: "openai/gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false },
     { id: "openai/gpt-5.5", label: "GPT-5.5", isDefault: false },
   ],
+  // Antigravity (`agy` 1.5.14, migration 0242): models advertised by `agy acp` / `agy models`.
+  antigravity: [
+    { id: "gemini-4-neon", label: "Gemini 4 Neon", isDefault: true },
+    {
+      id: "gemini-4-argon",
+      label: "Gemini 4 Argon",
+      isDefault: false,
+      efforts: ANTIGRAVITY_UP_TO_HIGH,
+    },
+    { id: "gemini-4-hydrogen", label: "Gemini 4 Hydrogen", isDefault: false },
+    { id: "gemini-pro-orchestrator-neon", label: "Orchestrator (Neon)", isDefault: false },
+    { id: "gemini-pro-orchestrator-g1-pro", label: "Orchestrator (Argon)", isDefault: false },
+    {
+      id: "gemini-3.8-flash",
+      label: "Gemini 3.8 Flash",
+      isDefault: false,
+      efforts: ANTIGRAVITY_UP_TO_HIGH,
+    },
+    {
+      id: "claude-opus-5-5",
+      label: "Claude Opus 5.5",
+      isDefault: false,
+      efforts: ANTIGRAVITY_UP_TO_HIGH,
+    },
+    {
+      id: "claude-sonnet-5-5",
+      label: "Claude Sonnet 5.5",
+      isDefault: false,
+      efforts: ANTIGRAVITY_UP_TO_HIGH,
+    },
+    { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)", isDefault: false },
+  ],
 };
 
 /**
@@ -150,6 +185,7 @@ export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set([
   "codex",
   "opencode",
   "pi",
+  "antigravity",
 ]);
 
 /**
@@ -187,6 +223,7 @@ interface PermissionArgsOf {
   readonly claude: { readonly flags: ReadonlyArray<string> };
   readonly codex: { readonly flags: ReadonlyArray<string> };
   readonly opencode: { readonly env: string };
+  readonly antigravity: { readonly flags: ReadonlyArray<string> };
 }
 
 /**
@@ -210,6 +247,10 @@ const PERMISSION_ARGS: {
   opencode: {
     ask: { env: OPENCODE_PERMISSION_ASK },
     bypass: { env: OPENCODE_PERMISSION_ALLOW },
+  },
+  antigravity: {
+    ask: { flags: ["--mode", "auto"] },
+    bypass: { flags: ["--dangerously-skip-permissions"] },
   },
 };
 
@@ -236,13 +277,14 @@ const PERMISSION_OPTIONS = {
     "--yolo",
     "--dangerously-bypass-approvals-and-sandbox",
   ]),
+  antigravity: new Set(["--mode", "--dangerously-skip-permissions"]),
 } as const;
 
 /**
  * The options that take a value. Claude's `--resume`/`-r` take an optional one, so they are read
  * as flags here: an option after them is never their value.
  */
-const VALUE_OPTIONS: Readonly<Record<"claude" | "codex", ReadonlySet<string>>> = {
+const VALUE_OPTIONS: Readonly<Record<"claude" | "codex" | "antigravity", ReadonlySet<string>>> = {
   claude: new Set(["--model", "--effort", "--permission-mode", "--session-id"]),
   codex: new Set([
     "--model",
@@ -258,6 +300,18 @@ const VALUE_OPTIONS: Readonly<Record<"claude" | "codex", ReadonlySet<string>>> =
     "--cd",
     "-C",
   ]),
+  antigravity: new Set([
+    "--model",
+    "--effort",
+    "--mode",
+    "--conversation",
+    "--agent",
+    "--project",
+    "--settings",
+    "--add-dir",
+    "--prompt-interactive",
+    "-i",
+  ]),
 };
 
 interface ArgvOption {
@@ -267,7 +321,7 @@ interface ArgvOption {
 }
 
 /** The options of `argv` after its head, up to `--`: what follows that is a prompt. */
-const optionsIn = (harness: "claude" | "codex", argv: ReadonlyArray<string>) => {
+const optionsIn = (harness: "claude" | "codex" | "antigravity", argv: ReadonlyArray<string>) => {
   const options: ArgvOption[] = [];
   for (let index = 1; index < argv.length; index += 1) {
     const token = argv[index] ?? "";
@@ -303,15 +357,17 @@ const optionsIn = (harness: "claude" | "codex", argv: ReadonlyArray<string>) => 
   return options;
 };
 
-const permissionOptionsIn = (harness: "claude" | "codex", argv: ReadonlyArray<string>) =>
-  optionsIn(harness, argv).filter((option) => PERMISSION_OPTIONS[harness].has(option.name));
+const permissionOptionsIn = (
+  harness: "claude" | "codex" | "antigravity",
+  argv: ReadonlyArray<string>,
+) => optionsIn(harness, argv).filter((option) => PERMISSION_OPTIONS[harness].has(option.name));
 
 /**
  * The tokens by which `argv` names the harness's own permission, verbatim and in order: what a
  * Resume on the same harness carries over.
  */
 export const permissionFlagsIn = (
-  harness: "claude" | "codex",
+  harness: "claude" | "codex" | "antigravity",
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => permissionOptionsIn(harness, argv).flatMap((option) => option.tokens);
 
@@ -330,6 +386,13 @@ export const withPermissionDefaults = (
     permissionOptionsIn(harness, argv).length === 0
   ) {
     return [head, ...PERMISSION_ARGS[harness].bypass.flags, ...rest];
+  }
+  if (
+    harness === "antigravity" &&
+    head === "agy" &&
+    permissionOptionsIn("antigravity", argv).length === 0
+  ) {
+    return [head, ...PERMISSION_ARGS.antigravity.bypass.flags, ...rest];
   }
   // opencode reads its permissions from the environment; an argv that sets them itself (`env …`,
   // the composed `ask`) is left alone.
@@ -371,6 +434,14 @@ export const terminalPermissionMode = (
         return "bypass";
       }
       return (named.get("--ask-for-approval") ?? named.get("-a")) === "never" ? "bypass" : "ask";
+    }
+    case "antigravity": {
+      if (argv[0] !== "agy") return null;
+      const named = new Map(
+        permissionOptionsIn("antigravity", argv).map((option) => [option.name, option.value]),
+      );
+      if (named.size === 0 || named.has("--dangerously-skip-permissions")) return "bypass";
+      return "ask";
     }
     case "opencode": {
       if (argv[0] === "opencode") return "bypass";
@@ -448,6 +519,15 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       const effort = effortFor("pi", start.effort);
       if (effort !== undefined) argv.push("--thinking", effort);
       if (prompt !== null) argv.push(prompt);
+      return argv;
+    }
+    case "antigravity": {
+      const argv = ["agy"];
+      if (model !== null) argv.push("--model", model);
+      const effort = effortFor("antigravity", start.effort);
+      if (effort !== undefined) argv.push("--effort", effort);
+      if (start.permissionMode === "ask") argv.push(...permissionArgs("antigravity", "ask").flags);
+      if (prompt !== null) argv.push("--prompt-interactive", prompt);
       return argv;
     }
     case "shell":

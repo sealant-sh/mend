@@ -106,6 +106,7 @@ describe("withMendMcp", () => {
       ["opencode", "run", "fix it"],
       ["env", 'OPENCODE_PERMISSION={"*":"ask"}', "opencode", "--model", "mine/model"],
       ["pi", "--approve"],
+      ["agy", "--model", "gemini-4-neon"],
     ]) {
       expect(withMendMcp(withMendMcp(argv, NONE), NONE)).toEqual(withMendMcp(argv, NONE));
     }
@@ -222,7 +223,39 @@ describe("withMendMcp", () => {
     expect(refused.stdout).not.toContain("started");
     expect(refused.stderr).toContain("not starting OpenCode");
   });
+
+  it("merges Mend's stdio server into Antigravity's ~/.gemini/config/mcp_config.json while preserving existing servers", () => {
+    const [, , script] = withMendMcp(["agy", "--model", "gemini-4-neon"], NONE);
+    if (script === undefined) throw new Error("missing Antigravity launch");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-agy-mcp-"));
+    try {
+      const cfgDir = path.join(home, ".gemini", "config");
+      const cfgFile = path.join(cfgDir, "mcp_config.json");
+      fs.mkdirSync(cfgDir, { recursive: true });
+      fs.writeFileSync(
+        cfgFile,
+        JSON.stringify({ mcpServers: { theirs: { command: "npx", args: ["-y", "demo"] } } }),
+      );
+      const result = spawnSync("sh", ["-c", script, "mend-antigravity", "echo", "started"], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, HOME: home },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout.trim()).toBe("started");
+      expect(JSON.parse(fs.readFileSync(cfgFile, "utf8"))).toEqual({
+        mcpServers: {
+          theirs: { command: "npx", args: ["-y", "demo"] },
+          mend: { command: MEND_HELPER_PATH, args: ["mcp"] },
+        },
+      });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
 });
 import { spawnSync } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 
 import { PersonalMcp } from "./personal.ts";
