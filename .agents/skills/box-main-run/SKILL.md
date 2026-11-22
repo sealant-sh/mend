@@ -465,12 +465,15 @@ How a flow is driven, by you or a subagent:
   at a time through the lane's `M`, each step's `run` with `mend` replaced by `M`, skipping every
   step that runs `mend connect` (Lanes, "Agent logins on a lane").
 
-- The two `mend login` flows are yours, on lane B: `sign-in.new-web-setup-revisit` and
-  `sign-in.new-web-authorize-account`. Each recipe runs a real `mend login` with a CLI config of its
-  own, made under `$P`, so the checker's saved login is never touched; it reads the server's address
-  from `.verify/stack/current.json` in the worktree and runs the `mend` it finds first on the PATH.
-  The run's worktree holds no stack, so give it that file for the two flows and take it away after,
-  one plain command each. When the file is already there, a stack holds it: the two flows are
+- The two `mend login` flows are yours, on lane B in their place in group 11:
+  `sign-in.new-web-setup-revisit` and `sign-in.new-web-authorize-account`. `setup-revisit` leaves
+  the person it joins a member of Default, so neither ever runs on lane A, whose data is saved: with
+  lane B left out they run on lane C, or are `not run · would add a member to lane A's saved data`.
+  Each recipe runs a real `mend login` with a CLI config of its own, made under `$P`, so the
+  checker's saved login is never touched; it reads the server's address from
+  `.verify/stack/current.json` in the worktree and runs the `mend` it finds first on the PATH. The
+  run's worktree holds no stack, so give it that file for the two flows and take it away after, one
+  plain command each. When the file is already there, a stack holds it: the two flows are
   `not run · a stack's file is in the way`, and you never overwrite or remove it.
 
   ```sh

@@ -6,9 +6,10 @@ set on this line, for example "the flows marked `Sample: yes`"; a run reports ea
 as `not run · not in this run's set`.
 
 A flow with a `Waiting on:` line still runs. That line names a ticket and the part of the See line
-the shipped app does not show: a flow that falls short on exactly that part, with the rest of its
-See line seen, is `failed · <ticket> (known)`, needs no second look and files nothing (SKILL.md,
-step 5). Remove the line once the ticket is settled, rewriting the See line if the app changed.
+that cannot show until the ticket is settled (the shipped app lacks it, or a recipe cannot reach
+it): a flow that falls short on exactly that part, with the rest of its See line seen, is
+`failed · <ticket> (known)`, needs no second look and files nothing (SKILL.md, step 5). Remove the
+line once the ticket is settled, rewriting the See line if the app changed.
 
 Every flow one run of [SKILL.md](SKILL.md) can use on the box, as its signed-in owner, after the
 preview of `main` is deployed. **The box**, in this file, is the check VM copy of the run's own data
@@ -163,14 +164,17 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
 11. The rest of the new web, on a copy without Boat: `start-session.memory-limit` first (a real
     turn, which needs the copy's own login); then, in any order, every flow no other group names:
     `adopt-project.*` but `adopt-project.new-web-project-page`, `settings.new-web-*` but
-    `settings.new-web-agent-logins`, `organization.new-web-*`, `sign-in.new-web-*` (the two that run
-    a real `mend login` are yours: SKILL.md, step 5), `session-page.new-web-shared-workspace`,
+    `settings.new-web-agent-logins`, `organization.new-web-*`, `sign-in.new-web-*` but the two that
+    run a real `mend login`, `session-page.new-web-shared-workspace`,
     `session-page.new-web-preview`, `session-page.new-web-checkpoint-lines`, `session-stop.*`,
     `start-session.new-web-code-colours`, the `review-change.new-web-*` reads but the second look,
     `land-change.new-web-land`, `skills.new-web-*`, `search.new-web-search`,
     `agent-memory.new-web-only-you`, the `project-settings.new-web-*`,
     `workspace-images.new-web-project` and `references-folders.new-web-project` flows, the other
     `now-and-sessions.new-web-*`, `worktrees.new-web-*` and `resources.new-web-resources`; then
+    yours, `sign-in.new-web-setup-revisit` and `sign-in.new-web-authorize-account` (SKILL.md, step
+    5), after every flow that counts the organization's members: `setup-revisit` leaves the person
+    it joins a member of Default (a trial on 22 Nov then read `Default · 3 members`); then
     `settings.new-web-agent-logins`, which replaces and disconnects the copy's logins on purpose, so
     nothing after it needs one; then `doctor.bundle-web` last.
 
@@ -664,13 +668,7 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   `join-line`
 - **Needs:** no turn; web; CLI; `verify-fixture` (or `<p>` on the box) with a live `mend run`
   session in it
-- **Do:** On the box, first remove the batch's three worktrees the data may hold from an earlier
-  run, so the batch makes them anew: for each of `project-ended`, `project-stopped` and
-  `project-running` that `M worktrees --project verify-fixture` lists,
-  `M worktrees rm <name> --force --project verify-fixture`, one plain command each, then read the
-  listing again: none of the three. (The saved ones' captures are not in the run's blob store, so a
-  session started in them fails at readiness with sealantd's `capture plan.get` HTTP 500: 22 Nov,
-  SLNT-1267.) Then run `project-setup.json` without its `01-codex-login` step, and drive the recipe
+- **Do:** Run `project-setup.json` without its `01-codex-login` step, and drive the recipe
   `project`: a project's page with its header, facts and tabs; the Sessions tab's search, Filter,
   Mine or Everyone and Open or Stopped, kept in the address across a reload; a row's "…" starts a
   shell and another session in its worktree; Open shell starts one in a new worktree; the "…" opens
@@ -678,6 +676,13 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   the old setup page's address; a project that fails to load.
 - **See:** each step's note in the recipe's `steps.log`, and its captures; every session the recipe
   started is stopped, and every project it made is purged, at its end.
+- **Waiting on:** SLNT-1206 · the batch and the recipe name their worktrees `project-ended`,
+  `project-stopped` and `project-running`. The run's data holds three worktrees of those names whose
+  captures are not in its blob store, so each launch in them fails at readiness (sealantd's
+  `capture plan.get` HTTP 500); and removing them does not free the names, since Mend keeps a
+  removed worktree's branch (`branch "mend/project-ended" already exists in this project`, tried on
+  a copy on 22 Nov). Until the recipe and batch take names of the run's own, the flow fails at its
+  `project-running` row and is known (SLNT-1267).
 - **Mode:** `scripted` (recipes/project.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/project/`,
@@ -1683,11 +1688,11 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   `M stop --services <id8>`.
 - **See:** the Preview tab's `This workspace's services` lists `web :8000` reading
   `Running · python3 -m http.server 8000`, and beside it
-  `preview · web · reachable · observed <n> s ago` (never `unreachable`); curl prints `200`; the
-  preview reads `"workspace":"keeps-running"` naming `<k8>`'s session and listing `web`; `mend stop`
-  prints `the workspace keeps running for …` and names what keeps the workspace up ending
-  `· mend stop --services <id8>`; then `✓ stopped 1 service · …` and `no live services — …` from
-  `service list`. `<k8>` stays running for `capture-and-save.live-stop`.
+  `preview · web · reachable · observed <age>` (`42 s ago`, `2 min ago`; never `unreachable`); curl
+  prints `200`; the preview reads `"workspace":"keeps-running"` naming `<k8>`'s session and listing
+  `web`; `mend stop` prints `the workspace keeps running for …` and names what keeps the workspace
+  up ending `· mend stop --services <id8>`; then `✓ stopped 1 service · …` and
+  `no live services — …` from `service list`. `<k8>` stays running for `capture-and-save.live-stop`.
 - **Mode:** `agent` · a recipe would make it cheaper (the card half)
 - **Box-only:** `boat`
 - **Areas:** `packages/sessions/`, `apps/api/src/`, `apps/cli/src/`, `packages/network/`
@@ -3331,9 +3336,9 @@ No flow: every client needs a device, an app or a world the box run does not hav
 | t3-gateway              | all                                                                                                                                                                                                                     | its recipe needs a local stack's gateway                                                                                                                          |
 
 Flows: 141 total (22 Nov) · 74 scripted · 67 agent · 26 box-only · 2 with a `Not on the box:` line
-(`shared-control.ask-and-grant`, `shared-control.new-web-ask-and-grant`) · 4 with a `Waiting on:`
+(`shared-control.ask-and-grant`, `shared-control.new-web-ask-and-grant`) · 5 with a `Waiting on:`
 line (`project-settings.read`, `models.list-picker`, `review-change.web-comments`,
-`shared-control.refuse-script`). Features: 42 with a flow, 12 only in Not on the box (doppler,
-workspace-replace, observed-agents, terminal-agent-waits, uninstall, pi-profile, mend-toml,
-desktop-app, mobile-app, vscode, slack, t3-gateway): 54 of the map's 54 mapped features placed, none
-left over.
+`shared-control.refuse-script`, and `adopt-project.new-web-project-page` on SLNT-1206). Features: 42
+with a flow, 12 only in Not on the box (doppler, workspace-replace, observed-agents,
+terminal-agent-waits, uninstall, pi-profile, mend-toml, desktop-app, mobile-app, vscode, slack,
+t3-gateway): 54 of the map's 54 mapped features placed, none left over.
