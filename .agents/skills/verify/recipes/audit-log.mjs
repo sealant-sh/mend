@@ -21,8 +21,12 @@
 //   first page held back for a moment), a first page that fails (Try again), and an older page that
 //   fails (said under the button).
 //
-// The recipe leaves verify-fixture private, every link it made revoked, and removes the member
-// it adds to show that a member can't open the page.
+// The recipe leaves verify-fixture private, every link it made revoked (the member's link is
+// spent by their joining: the server answers a revoke of it 409 InvitationSpent, so it is read
+// back as accepted instead), and removes the member it adds to show that a member can't open the
+// page. A server with a long history (a check VM copy) already holds enough events for a second
+// page; the recipe still makes and revokes one link first, so "Revoked an invitation link" is
+// among the newest events.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 
@@ -165,10 +169,12 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     note("no session of the owner's on this stack: shared control is shown by the unit test only");
   }
   const before = await owner("GET", "/api/organization/audit?limit=200");
-  const needed = Math.max(0, 52 - (before.body ?? []).length);
+  const needed = Math.max(2, 52 - (before.body ?? []).length);
+  const linksMade = new Set();
   for (let made = 0; made < needed; made += 2) {
     const link = await owner("POST", "/api/organization/invitations", { role: "member" });
     expect("an invitation", link.status === 200, link.status);
+    linksMade.add(link.body.invitation.id);
     const revoked = await owner(
       "DELETE",
       `/api/organization/invitations/${link.body.invitation.id}`,
@@ -176,7 +182,9 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     expect("revoked", revoked.status === 200, revoked.status);
   }
   const after = await owner("GET", "/api/organization/audit?limit=200");
-  note(`the log holds ${(after.body ?? []).length} events (${needed} made by this run's links)`);
+  note(
+    `the log holds ${(after.body ?? []).length} events (${linksMade.size * 2} made by this run's links)`,
+  );
 
   // --- The page -------------------------------------------------------------------------------
   await open("/settings/organization/audit-log");
@@ -271,6 +279,7 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
   const invitation = await owner("POST", "/api/organization/invitations", { role: "member" });
   expect("an invitation for the member", invitation.status === 200, invitation.status);
   registerSecret("invitation-token", invitation.body.token);
+  linksMade.add(invitation.body.invitation.id);
   const second = await page.context().browser().newContext();
   const memberPage = await second.newPage();
   let memberId = null;
@@ -288,7 +297,8 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
         "an-audit-verify-password",
       );
     await memberPage.getByRole("button", { name: "Create account and join", exact: true }).click();
-    await memberPage.waitForURL((url) => url.pathname === "/welcome");
+    // A person without Git access lands on setup: `/welcome`, or one of its steps.
+    await memberPage.waitForURL((url) => url.pathname.startsWith("/welcome"));
     memberId = (await apiOf(memberPage)("GET", "/api/organization")).body?.userId ?? null;
     const ownerCookies = await page.context().cookies();
     await page.context().clearCookies();
@@ -315,6 +325,21 @@ export default async ({ page, web, capture, note, typeSecret, registerSecret }) 
     if (memberId !== null) await owner("DELETE", `/api/organization/members/${memberId}`);
     await second.close();
   }
+  // Every link this run made is closed: revoked, or spent by the member who joined with it.
+  const links = await owner("GET", "/api/organization/invitations");
+  const leftOpen = (links.body ?? []).filter(
+    (link) => linksMade.has(link.id) && link.revokedAt === null && link.acceptedAt === null,
+  );
+  for (const link of leftOpen) {
+    const revoked = await owner("DELETE", `/api/organization/invitations/${link.id}`);
+    expect("revoked a link left open", revoked.status === 200, revoked);
+  }
+  const spent = (links.body ?? []).filter(
+    (link) => linksMade.has(link.id) && link.acceptedAt !== null,
+  );
+  note(
+    `links this run made: ${linksMade.size}; revoked ${linksMade.size - spent.length}, spent by joining ${spent.length} (a revoke of it answers 409 InvitationSpent)${leftOpen.length > 0 ? `; ${leftOpen.length} left open, now revoked` : ""}`,
+  );
 
   // --- The phone ------------------------------------------------------------------------------
   await page.setViewportSize(PHONE);

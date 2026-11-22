@@ -2061,15 +2061,18 @@ lane changed.
 - **Do:** Drive the recipe `project-folders`: it makes two projects with no repository, two
   organization folders (one with two files) and a reference cloned from GitHub; on
   `/projects/<id>/settings/folders` it sets one folder Read only and the other Read and write, turns
-  the reference on and reloads; a refused save; as the operator it adds and removes a server folder;
-  the page as a reader, with no folders or references, and a read that fails with Try again; on
-  General it links the second project as `web` and unlinks it.
+  the reference on and reloads; a refused save; as the operator of a single-organization install it
+  adds and removes a server folder, and on a multi-tenancy server (check VMs) it tries the add; the
+  page as a reader, with no folders or references, and a read that fails with Try again; on General
+  it links the second project as `web` and unlinks it.
 - **See:** each step's note in the recipe's `steps.log`, and its captures: the folders with their
   size (`2 files · …`, `Empty`) and the access pressed after the reload; the reference's switch on;
-  the refusal under the section with the folder back to Read only; `Added pf-…-tmp.` and the server
-  folder's row, then gone; the reader's page naming who can change it, with each access as words;
-  the Linked projects row reading `/workspace/repos/web` and its worktree, then
-  `No linked projects.`. The recipe removes what it made.
+  the refusal under the section with the folder back to Read only; on a single-organization install,
+  `Added pf-…-tmp.` and the server folder's row, then gone; on a multi-tenancy server, no Server
+  folders section and the add refused with no folder made (docs/adr/0003); the reader's page naming
+  who can change it, with each access as words; the Linked projects row reading
+  `/workspace/repos/web` and its worktree, then `No linked projects.`. The recipe removes what it
+  made.
 - **Mode:** `scripted` (recipes/project-folders.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/project-folders-page.tsx`,
@@ -2312,16 +2315,18 @@ lane changed.
 - **Do:** Run the CLI batch `session-states.json`, then drive the recipe `session-states`: the
   batch's live and ended sessions in their groups, the row menu of a Running and a To review row,
   Stop session… from a Running row (one with no files, one with a file), the project's Sessions tab,
-  and the fixture's agent moves step by step. On the box, also start a codex session from the
-  composer with a one-line prompt and watch its row: working, the turn ending, then Stop session…
-  from its row.
+  and the fixture's agent moves step by step. The data already holds the batch's worktree names: run
+  the batch with each `--name` suffixed `-<sha8>` and pass `SESSION_STATES_SUFFIX=-<sha8>` to the
+  recipe. On the box, also drive the recipe `session-states-turn` (`MAIN_RUN_PROJECT=<p>`, never
+  after a batch that replaces the Codex login): a codex session from the composer with a one-line
+  prompt, its row watched while it works, the turn ending, then Stop session… from its row.
 - **See:** each step's note in the recipe's `steps.log`: a live session under Running with the
   kneading glyph, the server's `turnOpen` and `lastNewAt` on its row; ended ones under To review
   (files, or failed) and Done (none); Running rows offer Stop session… and no Mark done or Snooze; a
   stopped row changes in place, then moves and stays lit; the project table says each row's word
   with the same glyph. The real turn: Running with what the agent does, still Running saying
   `Replied` with the dome once the turn ends, and To review or Done after Stop session….
-- **Mode:** `scripted` (recipes/session-states.mjs) · the real turn by the run's agent
+- **Mode:** `scripted` (recipes/session-states.mjs, recipes/session-states-turn.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/lib/inbox.ts`, `apps/web/src/lib/sidebar-moves.ts`,
   `apps/web/src/lib/row-actions.ts`, `apps/web/src/lib/project-sessions.ts`,

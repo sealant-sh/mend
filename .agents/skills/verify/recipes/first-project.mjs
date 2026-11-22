@@ -20,7 +20,9 @@
 // server has no GitHub login, so the GitHub list's pictures answer `github.status` and
 // `github.repos` with fixtures; those captures are named `fixture-…`, as are the ones that answer
 // the agent logins with none (the agent login skipped) and the organization's members with two
-// (Skip for now).
+// (Skip for now). On a server whose organization has other members (a check VM copy), the real
+// step offers Skip for now; the recipe says so, then answers the members with the account alone
+// to show the only member isn't offered it.
 const DESKTOP = { width: 1280, height: 900 };
 const PHONE = { width: 390, height: 844 };
 // Small and public: clones in a few seconds.
@@ -281,11 +283,35 @@ export default async ({ page, web, capture, note }) => {
   );
   delete answers["organization.members"];
   delete answers["platform.sealantIdentity"];
+  const roster = await call("organization.members");
+  if (roster.length > 1) {
+    await refresh();
+    await go("/welcome/first-project");
+    await heading().waitFor();
+    await button("Skip for now").waitFor();
+    note(
+      `${organization} has ${roster.length} members: the real step offers Skip for now; the members are now answered with the account alone`,
+    );
+    answers = {
+      ...answers,
+      "organization.members": (members) =>
+        (members ?? []).filter((member) => member.userId === me.userId),
+    };
+  }
+  await page.evaluate(() =>
+    window["__TSR_ROUTER__"].options.context.queryClient.resetQueries({
+      predicate: (query) =>
+        ["platform", "organization"].includes(query.queryKey[0]?.[0]) &&
+        ["sealantIdentity", "members"].includes(query.queryKey[0]?.[1]),
+    }),
+  );
   await refresh();
   await go("/welcome/first-project");
   await heading().waitFor();
+  await page.waitForTimeout(1_000);
   if (await button("Skip for now").isVisible())
     throw new Error("the only member of the organization is offered Skip for now");
+  note("the organization's only member isn't offered Skip for now");
 
   // Fixture: GitHub lists no repositories.
   answers = { ...answers, "github.repos": () => [] };
@@ -487,10 +513,38 @@ export default async ({ page, web, capture, note }) => {
         ),
       300,
     );
+  // A purge waits while an upload the project started may still land (a clone's, for a few
+  // minutes): the server names until when, and the recipe purges again after then.
   for (const project of (await call("projects.removed")).filter((entry) => made(entry.name)))
-    await call("projects.purge", { id: project.id, confirm: project.name }, "mutate").catch(
-      () => undefined,
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const refusal = await call(
+        "projects.purge",
+        { id: project.id, confirm: project.name },
+        "mutate",
+      ).then(
+        () => null,
+        (error) => String(error?.message ?? error),
+      );
+      if (refusal === null) break;
+      const until = refusal.match(/may still land until (\S+?)\.? Purge again/)?.[1];
+      if (until === undefined || attempt === 3) {
+        note(`${project.name}: the purge was refused: ${refusal}`);
+        break;
+      }
+      const wait = Math.min(Math.max(new Date(until).getTime() - Date.now(), 0) + 5_000, 600_000);
+      note(
+        `${project.name}: the purge is held until ${until}; purging again in ${Math.round(wait / 1000)} s`,
+      );
+      await page.waitForTimeout(wait);
+    }
+  const left = (await call("projects.removed")).filter((entry) => made(entry.name));
+  const listed = (await call("projects.list")).filter((entry) => made(entry.name));
+  if (left.length > 0 || listed.length > 0)
+    throw new Error(
+      `projects this drive made are still there: ${[...listed, ...left].map((entry) => entry.name).join(", ")}`,
     );
   await call("platform.setSessionDefaults", defaults, "mutate");
-  note(`removed and purged the projects this drive made (suffix ${suffix}); defaults as before`);
+  note(
+    `removed and purged the projects this drive made (suffix ${suffix}), read back: none listed or under Removed projects; defaults as before`,
+  );
 };

@@ -549,13 +549,49 @@ export default async ({ page, web, capture, note }) => {
     if (project !== undefined)
       await call("projects.remove", { id: project.id }, "mutate").catch(() => undefined);
   }
-  const removed = await call("projects.removed");
-  for (const project of removed.filter((entry) => entry.name.includes(`-${suffix}`)))
-    await call("projects.purge", { id: project.id, confirm: project.name }, "mutate").catch(
-      () => undefined,
+  // A clone's purge is held while an upload its session started may still land (minutes on a real
+  // server, where the queued session uploads): wait out the time the refusal names, then again.
+  const ours = async () =>
+    (await call("projects.removed")).filter((entry) => entry.name.includes(`-${suffix}`));
+  const deadline = Date.now() + 15 * 60_000;
+  for (let left = await ours(); left.length > 0; left = await ours()) {
+    let holdUntil = 0;
+    for (const project of left) {
+      const refusal = await call(
+        "projects.purge",
+        { id: project.id, confirm: project.name },
+        "mutate",
+      ).then(
+        () => null,
+        (error) => String(error?.message ?? error),
+      );
+      const until =
+        refusal === null ? undefined : /may still land until (\S+?)\. /.exec(refusal)?.[1];
+      if (refusal !== null && until === undefined)
+        throw new Error(`the purge of ${project.name} was refused: ${refusal}`);
+      if (until !== undefined) {
+        holdUntil = Math.max(holdUntil, Date.parse(until));
+        note(`cleanup: the server holds the purge of ${project.name} until ${until}; waiting`);
+      }
+    }
+    if (holdUntil === 0) continue;
+    if (holdUntil + 5_000 > deadline)
+      throw new Error(`a purge is held until ${new Date(holdUntil).toISOString()}, past the wait`);
+    await page.waitForTimeout(Math.max(0, holdUntil - Date.now()) + 5_000);
+  }
+  // Read back from a fresh page: none of the drive's projects listed, removed or not.
+  await open("/projects");
+  const leftListed = (await call("projects.list")).filter((entry) =>
+    entry.name.includes(`-${suffix}`),
+  );
+  const leftRemoved = await ours();
+  if (leftListed.length + leftRemoved.length > 0)
+    throw new Error(
+      `left after cleanup: ${[...leftListed, ...leftRemoved].map((entry) => entry.name).join(", ")}`,
     );
   await call("platform.setSessionDefaults", defaults, "mutate");
+  await both("restored-project-list");
   note(
-    `removed and purged the projects this drive made (suffix ${suffix}); the session defaults are as before`,
+    `removed and purged the projects this drive made (suffix ${suffix}), read back: none listed or under Removed projects; the session defaults are as before`,
   );
 };
