@@ -1,5 +1,6 @@
 import { conversationActivity, isOpenTurn } from "@mend/agent-conversation";
 import {
+  MODE_SWITCH_HARNESSES,
   TERMINAL_HOOK_HARNESSES,
   AgentItemKind,
   agentActivity,
@@ -386,21 +387,43 @@ const usePages = (sessionId: string): PagesById => {
 };
 
 /**
- * What a session whose agent runs in a terminal says (SLNT-1235): while its conversation holds
- * nothing yet, that each of its turns lands here, as turn rows, once it ends. An agent with no hooks
- * (Antigravity) lands none, so its note stays under the conversation for as long as it is a
- * terminal (SLNT-1277): the turns typed there are in the agent's conversation, not on this page.
+ * Whether the session's agent keeps turns typed in its terminal that Mend can't read into the
+ * conversation (SLNT-1277): Antigravity switches modes, but has no hooks and no transcript Mend
+ * reads, unlike Claude Code and Codex (SLNT-1235).
+ */
+const terminalTurnsUnseen = (harness: string) =>
+  MODE_SWITCH_HARNESSES.has(harness) && !TERMINAL_HOOK_HARNESSES.has(harness);
+
+/**
+ * What a session whose agent runs in a terminal says while its conversation holds nothing yet
+ * (SLNT-1235): each of its turns lands here, as turn rows, once it ends, except Antigravity's.
  */
 function TerminalNote({ facts }: { readonly facts: SessionFacts }) {
   if (facts.session.mode !== "terminal" || facts.session.status === "starting") return null;
-  const lands = TERMINAL_HOOK_HARNESSES.has(facts.session.harness);
   return (
     <Note id="terminal-note">
       {!facts.agentLive
         ? "No conversation recorded. The session's terminal and change show what it did."
-        : lands
-          ? `${facts.agent} runs in a terminal. Each turn shows here once it ends.`
-          : `${facts.agent} runs in a terminal. Turns typed there stay in its conversation but don't show here.`}
+        : terminalTurnsUnseen(facts.session.harness)
+          ? `${facts.agent} runs in a terminal. It keeps the turns typed there; they don't show here.`
+          : `${facts.agent} runs in a terminal. Each turn shows here once it ends.`}
+    </Note>
+  );
+}
+
+/**
+ * Under a conversation that has turns, once an Antigravity agent has run in a terminal in this
+ * session (SLNT-1277): the turns typed there are missing from it, whether the terminal still runs,
+ * stopped, or the session continued as a conversation since.
+ */
+function TerminalGapNote({ facts }: { readonly facts: SessionFacts }) {
+  if (!terminalTurnsUnseen(facts.session.harness)) return null;
+  if (!facts.detail.processes.some((process) => process.kind === "agent-pty")) return null;
+  return (
+    <Note id="terminal-gap-note">
+      {facts.session.mode === "terminal" && facts.agentLive
+        ? `${facts.agent} runs in a terminal. It keeps the turns typed there; they don't show here.`
+        : `${facts.agent} keeps the turns typed in its terminal; they don't show here.`}
     </Note>
   );
 }
@@ -658,10 +681,8 @@ export function ConversationTile({
               );
             })
           : null}
-        {body.list === "protocol" &&
-        body.rows.length > 0 &&
-        !TERMINAL_HOOK_HARNESSES.has(facts.session.harness) ? (
-          <TerminalNote facts={facts} />
+        {body.list === "protocol" && body.rows.length > 0 ? (
+          <TerminalGapNote facts={facts} />
         ) : null}
         <StartingLine facts={facts} />
         {body.list === "protocol" ? <WaitingLine facts={facts} /> : null}
