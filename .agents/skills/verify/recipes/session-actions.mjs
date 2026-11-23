@@ -9,6 +9,12 @@
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/session-actions-sessions.json
 //   pnpm verify drive web --recipe session-actions
 //
+// On a server whose data already holds the batch's worktrees (a check VM copy of the daily run's
+// data), run the batch with every `--name` and `--worktree` suffixed and pass the suffix:
+// SESSION_ACTIONS_SUFFIX=-<sha8>. Mend refuses a worktree name it has seen, even after that
+// worktree is removed, and the saved ones are Boat worktrees, which start nothing on a copy without
+// Boat (SLNT-1300).
+//
 // A local stack runs no agent: the sessions are `mend run … -- sleep`, so the dialog has no turn to
 // stop and no Services to name. The failed preview is forced by answering its read with a 500, and
 // that capture is named `fixture-…`.
@@ -22,6 +28,9 @@ const TITLE_A = "Fix flaky checkout retry";
 const TITLE_B = "Write tests for retry";
 const TITLE_C = "Add idempotency keys to refunds";
 const RENAMED = "Fix the checkout retry";
+const SUFFIX = process.env.SESSION_ACTIONS_SUFFIX ?? "";
+const SHARED = `actions-ws${SUFFIX}`;
+const SOLO = `actions-solo${SUFFIX}`;
 
 export default async ({ page, web, capture: captureOnce, note }) => {
   // The driver withholds a picture when the page inserts a subtree while it looks: look again.
@@ -90,7 +99,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   await open("/no-such-page");
   await page.evaluate(() => localStorage.setItem("mend-theme", "light"));
 
-  // The batch's sessions: the two in actions-ws (older first) and the one in actions-solo.
+  // The batch's sessions: the two in SHARED (older first) and the one in SOLO.
   const readRows = async () => {
     const read = await page.evaluate(async () => {
       const queryClient = window["__TSR_ROUTER__"].options.context.queryClient;
@@ -103,8 +112,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   };
   // A drive that failed part way leaves sessions stopped: bring them back as shells first.
   const stopped = (await readRows()).filter(
-    (row) =>
-      ["actions-ws", "actions-solo"].includes(row.worktreeName) && row.session.status === "stopped",
+    (row) => [SHARED, SOLO].includes(row.worktreeName) && row.session.status === "stopped",
   );
   for (const row of stopped)
     await client(async (trpc, id) => {
@@ -125,10 +133,10 @@ export default async ({ page, web, capture: captureOnce, note }) => {
           !["completed", "stopped", "failed"].includes(row.session.status),
       )
       .toSorted((a, b) => String(a.session.createdAt).localeCompare(String(b.session.createdAt)));
-  const shared = live("actions-ws");
-  const alone = live("actions-solo");
+  const shared = live(SHARED);
+  const alone = live(SOLO);
   if (shared.length < 2 || alone.length < 1)
-    throw new Error("actions-ws needs two running sessions and actions-solo one: run the batch");
+    throw new Error(`${SHARED} needs two running sessions and ${SOLO} one: run the batch`);
   const [A, B, C] = [shared[0].session.id, shared[1].session.id, alone[0].session.id];
   const [tabA, tabB, tabC] = [`session:${A}`, `session:${B}`, `session:${C}`];
   await client(

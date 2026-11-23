@@ -92,28 +92,46 @@ A lane is one check VM copy and the groups of flows.md's "Run order" that run on
 with the same data, and nothing one copy does reaches another, so lanes run side by side. Within a
 lane, groups run in the order below.
 
-- **Lane A**, Boat when `BOAT_COPIES` is 1 or more; the refresher, and its data is saved: groups 1,
-  2, 3, 4, 6, 7 and 8, then step 6's warm-up of what the next master needs.
+- **Lane A**, Boat when `BOAT_COPIES` is 1 or more; the refresher, and its data is saved: groups 1
+  (with the three `land-change` flows Opus drives over ssh), 2, 3, 4, 6, 7 and 8, then step 6's
+  warm-up of what the next master needs.
 - **Lane B**, never Boat: groups 5 and 11.
 - **Lane C**, Boat when `BOAT_COPIES` is 2 or more: first, before any flow, step 6's warm-up of the
   second account's image, run with lane C's names (`lanes/c/bin/…`, evidence under `$E/warm-up-c/`),
-  so `shared-control.two-people` does not spend its ten minutes on a build (about five on 22 Nov;
-  under one once the saved data holds the image, unless tonight's preview changed it); then group 9
-  in its order, its Boat flows (`repositories-in-session.add-second`,
-  `references-folders.select-link`, `shared-control.two-people`, `per-person-homes.two-people`)
-  among the others (the three `land-change` flows, `organization.visibility-who-sees`,
-  `organization.roles-roundtrip`, `organization.join-refused`, `operator.owner-grant-restore`); then
-  group 10, whose one Boat flow is `start-session.new-web-instant-start`.
+  so `shared-control.two-people` does not spend its ten minutes on a build (7 min on 23 Nov; under
+  one once the saved data holds the image, which lane A's warm-up saves each night, unless tonight's
+  preview changed it); then group 9 in its order, its Boat flows
+  (`repositories-in-session.add-second`, `references-folders.select-link`,
+  `shared-control.two-people`, `per-person-homes.two-people`) among the others
+  (`organization.visibility-who-sees`, `organization.roles-roundtrip`, `organization.join-refused`,
+  `operator.owner-grant-restore`); then group 10, whose one Boat flow is
+  `start-session.new-web-instant-start`; then group 12, last.
 - **Lane C without Boat** (`BOAT_COPIES` below 2, or every Boat slot held by other checks when it
-  booted: its `copy.json` reads `"boat": false`): it runs groups 9 and 10 but their Boat flows, and
-  those run on lane A after A's own groups, in their order.
+  booted: its `copy.json` reads `"boat": false`): it runs groups 9, 10 and 12 but their Boat flows,
+  and those run on lane A after A's own groups, in their order.
 
-Each lane carries about a third of the flows' minutes. On 22 Nov, with groups 8, 10 and 11 as one
-group on lane B, lanes A, B and C took 125, 148 and 47 minutes, and lane B set the run's length.
-Measured from that run's per-flow minutes, this split is about A 105 (with the warm-up), B 107 and C
-106 minutes of flows, before second looks. When a report shows one lane more than half again as long
-as another, move whole groups between lanes here and in flows.md's "Run order", keeping each Boat
-flow on a Boat lane and each flow that needs a copy without Boat on lane B.
+Each lane carries about a third of the lane-minutes. On 23 Nov, the first night of three lanes of
+flows, lanes A, B and C took 115, 142 and 146 minutes against the 105, 107 and 106 planned from 22
+Nov's per-flow minutes. The plan had counted flows alone: the time between a lane's flows came to
+30, 19 and 18 minutes, lane C's warm-up to 8, and two of lane B's recipes slept 22 minutes on the
+server's purge hold (SLNT-1300). Measured from 23 Nov's own minutes, this split is about A 121, B
+124 and C 121. That is near the floor for three copies: the flows alone are about 330 lane-minutes,
+and each subagent run and second look adds to its lane, so no split brings every lane under about
+120 while those two recipes sleep. When a report shows one lane more than 15 minutes longer than
+another, move whole groups between lanes here and in flows.md's "Run order", keeping each Boat flow
+on a Boat lane, each flow that needs a copy without Boat on lane B, and group 12 off lane A.
+
+**Subagent runs on a lane.** A lane's time between flows is mostly waiting for Opus. Keep it short:
+
+- Hand a lane's groups to as few subagent runs as keep each under about 40 minutes: group 8 in one,
+  group 10 in at most two, group 11 in at most four (six on 23 Nov cost lane B 19 minutes between
+  them).
+- When a subagent returns and its reply names no failed flow that needs a second look (step 5),
+  start the lane's next run at once, and read the evidence of the one that returned while it works.
+  When that reading finds a flow whose evidence falls short, see it again on that lane as soon as
+  the run now working returns, before the next starts.
+- When two lanes' subagents return together, start the run of the lane that has no failure to look
+  at first.
 
 **Agent logins on a lane.** A lane's real Codex login is the run's: lane A's is saved, and every
 lane's real turns use their copy's. The verify skill's CLI batches are written for a local stack,
@@ -136,7 +154,9 @@ whole, last on lane B but for `doctor.bundle-web`, after every flow there that n
   copy without Boat: with lane B left out they run on lane C when C has no Boat, and are
   `not run · no copy without Boat` otherwise. `settings.new-web-agent-logins` then runs last of all
   on whichever lane takes it, after every real turn there, and never on lane A: with lane B left out
-  it runs last on lane C, or is `not run · would replace lane A's saved login`.
+  it runs last on lane C, or is `not run · would replace lane A's saved login`. Group 12 never runs
+  on lane A either: with lane C left out it runs on lane B before its two `mend login` flows, and
+  with both left out its flows are `not run · would change lane A's saved organization`.
 - **Boat on lane C changes nothing else.** Lane C's copy never lifts the logins' claim, never
   refreshes a login and is never saved, Boat or not: what its Boat sessions change goes with the
   copy. Two Boat copies run under the same Boat deployment (preview-builds.md, "Check VMs"), and
@@ -414,17 +434,19 @@ not is named with the reason.
 
 Run each lane's groups (Lanes) in flows.md's "Run order": later flows in a lane reuse what earlier
 ones made. Lanes run side by side. Do the flows Opus keeps (see "Who does what") yourself, in their
-place in their lane's order. Hand each other group to one subagent, one group after another within a
-lane; across lanes, up to one subagent each at once. Two groups of one lane run side by side only
-when both are plainly independent reads (no session made or stopped).
+place in their lane's order. Hand the other groups to subagents in as few runs as Lanes ("Subagent
+runs on a lane") says, one run after another within a lane; across lanes, up to one subagent each at
+once. Two groups of one lane run side by side only when both are plainly independent reads (no
+session made or stopped).
 
 Start a subagent with T3's `delegate_task`: `target`
 `{ providerInstanceId: "codex", model: "gpt-6.1-sol", options: { reasoningEffort: "high" } }`,
 `isolation: "shared"` (it works in this worktree), and as `task` the text of
 [sol-task.md](sol-task.md) with every `<…>` filled: the group's flow ids, the lane, this worktree's
 path, the lane's `web`, the commit's first 8 characters, `$E`, and the session ids earlier flows of
-that lane made (from their `result.txt` or your own notes). Wait for its completion, then read its
-evidence. Lanes' subagents share `$E` and its `timeline.txt`: each flow has its own directory.
+that lane made (from their `result.txt` or your own notes). Wait for its completion, start the
+lane's next run when its reply allows (Lanes), then read its evidence. Lanes' subagents share `$E`
+and its `timeline.txt`: each flow has its own directory.
 
 **Check, do not trust.** A flow counts as `seen` only when its `result.txt`, `cli.log`, the web
 driver's `steps.log` and its screenshots show every part of the flow's See line. Read each
@@ -495,9 +517,9 @@ Keep every CLI command's stdout, stderr and exit code in `$E/<flow>/cli.log`. Ea
 flow that needs an earlier flow's session and lacks it is `not run · <flow> failed`.
 
 **A second look comes before the copy goes.** See each failed flow again on its own lane right after
-its group's subagent returns, before that lane's next group starts, so the state is the one the
-subagent left and no subagent works beside you. Two kinds of failure need no second look, and the
-report's table says which one each was:
+its subagent run returns, before that lane's next run starts, so the state is the one the subagent
+left and no subagent works beside you. Two kinds of failure need no second look, and the report's
+table says which one each was:
 
 - `failed · SLNT-n (known)` from flows.md: the flow has a `Waiting on:` line, and its evidence falls
   short on exactly the part that line names, the rest of its See line seen;

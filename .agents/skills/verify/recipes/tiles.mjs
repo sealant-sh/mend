@@ -10,6 +10,11 @@
 //   pnpm verify drive cli --recipe .agents/skills/verify/recipes/tiles-sessions.json
 //   pnpm verify drive web --recipe tiles
 //
+// On a server whose data already holds the batch's worktree (a check VM copy of the daily run's
+// data), run the batch with its `--name` and `--worktree` suffixed and pass the suffix:
+// TILES_SUFFIX=-<sha8>. Mend refuses a worktree name it has seen, even after that worktree is
+// removed, and the saved one is an old Boat worktree whose launches fail (SLNT-1300).
+//
 // A local stack runs no agent: the line naming a session waiting on you is drawn from a fixture
 // answer to the inbox read, and that capture is named `fixture-…`.
 import { existsSync } from "node:fs";
@@ -18,6 +23,7 @@ import { join } from "node:path";
 const DESKTOP = { width: 1280, height: 900 };
 const NARROW = { width: 1000, height: 800 };
 const PHONE = { width: 390, height: 844 };
+const WORKTREE = `tiles-ws${process.env.TILES_SUFFIX ?? ""}`;
 
 /** Where an element is on screen; the recipe can't go on without it. */
 const boxOf = async (locator) => {
@@ -125,12 +131,12 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   const running = rows
     .filter(
       (row) =>
-        row.worktreeName === "tiles-ws" &&
+        row.worktreeName === WORKTREE &&
         !["completed", "stopped", "failed"].includes(row.session.status),
     )
     .toSorted((a, b) => String(a.session.createdAt).localeCompare(String(b.session.createdAt)));
   if (running.length < 2)
-    throw new Error("tiles-ws has fewer than two running sessions: run the CLI batch first");
+    throw new Error(`${WORKTREE} has fewer than two running sessions: run the CLI batch first`);
   const [A, B] = [running[0].session.id, running[1].session.id];
   // A session an earlier run of this recipe started and didn't get to stop goes first.
   for (const extra of running.slice(2))
@@ -142,7 +148,7 @@ export default async ({ page, web, capture: captureOnce, note }) => {
   // running ones. Rename them so the menu has one item of each name.
   const earlier = rows.filter(
     (row) =>
-      row.worktreeName === "tiles-ws" &&
+      row.worktreeName === WORKTREE &&
       ["completed", "stopped", "failed"].includes(row.session.status) &&
       [TITLE_A, TITLE_B].includes(row.session.label),
   );
@@ -433,7 +439,9 @@ export default async ({ page, web, capture: captureOnce, note }) => {
     .evaluateAll((tabs) => tabs.map((tab) => tab.dataset.tab));
   if (arrived[arrived.indexOf(tabA) + 1] !== `session:${started}`)
     throw new Error(`the started session's tab isn't beside A's: ${arrived.join(", ")}`);
-  note("a session started in tiles-ws from outside the page opened as a tab beside the active one");
+  note(
+    `a session started in ${WORKTREE} from outside the page opened as a tab beside the active one`,
+  );
   await both("session-arrives");
 
   // ?full=1 (T30): the session's tile maximised; Restore layout drops it from the address.
