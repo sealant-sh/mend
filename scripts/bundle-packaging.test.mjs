@@ -287,6 +287,17 @@ test("one pinned guard image reaches the Sealant worker and the label setup prel
   assert.match(dockerfile, /SEALANT_DOCKER_NETWORK_GUARD_IMAGE=\$\{MEND_NETWORK_GUARD_IMAGE\}/);
 });
 
+test("the bundle carries the worker's agy, which refreshes a connected Antigravity login", async () => {
+  const dockerfile = await readFile(path.join(root, "Dockerfile"), "utf8");
+  // From the pinned worker image, so the sweeper runs the agy sealant tested it with, and on PATH,
+  // where the sweeper looks for it (SLNT-1291).
+  assert.match(
+    dockerfile,
+    /^COPY --from=sealant-worker \/usr\/local\/bin\/agy \/usr\/local\/bin\/agy$/m,
+  );
+  assert.match(dockerfile, /^RUN agy --version$/m);
+});
+
 test("the t3code gateway is in the bundle, and runs only when the operator turned it on", async () => {
   const [dockerfile, supervisor, { t3GatewayEnvironment, t3GatewaySpecification }] =
     await Promise.all([
