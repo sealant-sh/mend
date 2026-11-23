@@ -118,20 +118,24 @@ removes what SKILL.md's ledger says to remove.
 
 Flows are grouped below as the map's README groups features; within a lane they run in this order,
 because later flows reuse what earlier ones made. SKILL.md's Lanes says which lane runs each group:
-A runs 1, 2, 3, 4, 6, 7 and 8; B runs 5 and 11; C runs 9 and 10, and when C has no Boat, the Boat
-flows of 9 and 10 run on A after its own. Each copy has its own data, so a group on one lane never
-sees what another lane changed. On every lane, a verify CLI batch runs without its `mend connect`
-steps (SKILL.md, Lanes, "Agent logins on a lane").
+A runs 1, 2, 3, 4, 6, 7 and 8; B runs 5 and 11; C runs 9, 10 and 12, and when C has no Boat, the
+Boat flows of 9 and 10 run on A after its own. Each copy has its own data, so a group on one lane
+never sees what another lane changed. On every lane, a verify CLI batch runs without its
+`mend connect` steps (SKILL.md, Lanes, "Agent logins on a lane").
 
 1. `server.data-intact` (before half), `server.upgrade`, `server.data-intact` (after half),
-   `server.status-logs`
+   `server.status-logs`; then `land-change.web-push`, `land-change.cli-again` and
+   `land-change.refused`, in that order. Opus drives every flow of this group. The landing flows'
+   worktree `main-run-land-<sha8>` stays in lane A's saved data, in the ledger's `worktrees`, until
+   a later wind-down removes it.
 2. `doctor.checklist`, `cli.version`, `exposure.read`, `operator.read`, `organization.read-invite`,
    `provider-accounts.read`, `models.list-picker`
 3. `start-session.boat-turn`, `review-change.web-review`, `now-and-sessions.web-now`,
    `attach-resume.boat-stop-resume`, `send-review-back.deliver`, `start-session.go-back`
 4. `start-session.boat-run`, `tui.dashboard`, `start-session.composer`, `start-session.web-write`,
    `start-session.web-answer`, `review-change.web-comments`, `land-change.panel-read`,
-   `pull-change.boat-run`, `attach-resume.rename-web`
+   `pull-change.boat-run`, `attach-resume.rename-web`, then `start-session.antigravity-conversation`
+   last: its turns run in boat-run's worktree, which the flows before it read as boat-run left it
 5. `start-session.docker-run`
 6. `start-session.boat-live`, `attach-resume.attach-detach`, `attach-resume.terminal-and-web`,
    `session-shell.live-shell`, `shared-control.refuse-script`, `services.cli-run`,
@@ -146,8 +150,7 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
    `automatic-install.read`, `hot-sessions.read`, `project-settings.read`,
    `references-folders.folder-cli`. Each restores what it changes, so lane A's saved data keeps none
    of it.
-9. `land-change.web-push`, `land-change.cli-again`, `land-change.refused`,
-   `organization.visibility-who-sees`, `repositories-in-session.add-second`,
+9. `organization.visibility-who-sees`, `repositories-in-session.add-second`,
    `references-folders.select-link`, `organization.roles-roundtrip`, `organization.join-refused`,
    `operator.owner-grant-restore`, `shared-control.two-people`, `shared-control.ask-and-grant`,
    `shared-control.new-web-ask-and-grant`, `per-person-homes.two-people`, in that order and one at a
@@ -164,8 +167,9 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
 11. The rest of the new web, on a copy without Boat: `start-session.memory-limit` first (a real
     turn, which needs the copy's own login); then, in any order, every flow no other group names:
     `adopt-project.*` but `adopt-project.new-web-project-page`, `settings.new-web-*` but
-    `settings.new-web-agent-logins`, `organization.new-web-*`, `sign-in.new-web-*` but the two that
-    run a real `mend login`, `session-page.new-web-shared-workspace`,
+    `settings.new-web-agent-logins`, `organization.new-web-*` but group 12's four,
+    `sign-in.new-web-*` but the two that run a real `mend login`,
+    `attach-resume.antigravity-mode-switch`, `session-page.new-web-shared-workspace`,
     `session-page.new-web-preview`, `session-page.new-web-checkpoint-lines`, `session-stop.*`,
     `start-session.new-web-code-colours`, the `review-change.new-web-*` reads but the second look,
     `land-change.new-web-land`, `skills.new-web-*`, `search.new-web-search`,
@@ -177,6 +181,12 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
     it joins a member of Default (a trial on 22 Nov then read `Default · 3 members`); then
     `settings.new-web-agent-logins`, which replaces and disconnects the copy's logins on purpose, so
     nothing after it needs one; then `doctor.bundle-web` last.
+12. The organization's own pages, with no session, in any order and last on their lane:
+    `organization.new-web-create-leave`, `organization.new-web-operator-create`,
+    `organization.new-web-general`, `organization.new-web-members`. `general` and `members` add a
+    person and remove them, and `operator-create` makes an organization that no command removes, so
+    nothing after them on the lane counts members or organizations. Never on lane A, whose data is
+    saved: with lane C left out they run on lane B, before its two `mend login` flows.
 
 ## The core loop
 
@@ -693,13 +703,16 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
 
 - **Map:** no feature file yet (ADR 0026, tabs and tiles); start-session.md `session-page`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `tiles-sessions.json` (two sessions in the worktree `tiles-ws`, each a
-  `sleep`), then drive the recipe `tiles`: drag a tab onto a tile's right edge and into another
-  tile's middle, move tabs with Alt+Shift and the arrows, resize by the divider, reload, maximise
-  and restore, close a tile's last tab, reopen it from "+", open a New session tab, start a session
-  in the worktree from outside the page, open `?full=1`, and look under 1024px and at 390px. Then
-  pick the other batch session's tab, press Back, and reload on a view's tab. Stop both batch
-  sessions at the end.
+- **Do:** Run the CLI batch `tiles-sessions.json` step by step without its `00-codex-login` step,
+  with its `--name` and `--worktree` suffixed `-<sha8>` (two sessions in the worktree
+  `tiles-ws-<sha8>`, each a `sleep`), then drive the recipe with `TILES_SUFFIX=-<sha8>`. The data
+  holds an old Boat worktree `tiles-ws` whose launches fail, and Mend refuses a name it has seen,
+  even after the worktree is removed (SLNT-1300). The recipe `tiles`: drag a tab onto a tile's right
+  edge and into another tile's middle, move tabs with Alt+Shift and the arrows, resize by the
+  divider, reload, maximise and restore, close a tile's last tab, reopen it from "+", open a New
+  session tab, start a session in the worktree from outside the page, open `?full=1`, and look under
+  1024px and at 390px. Then pick the other batch session's tab, press Back, and reload on a view's
+  tab. Stop both batch sessions at the end.
 - **See:** each step's note in the recipe's `steps.log`: the drop marks Split right and Add to this
   tile, two tiles after a split and one after a merge, the resized width kept over a reload, the
   same conversation element after its tab moved, Restore layout on a maximised tile, the started
@@ -826,12 +839,15 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
 - **Map:** start-session.md `session-stop`, `session-stop-shared`; attach-resume.md `resume-web`,
   `rename-web`
 - **Needs:** either; no turn; web and CLI; `<p>`
-- **Do:** Run the CLI batch `session-actions-sessions.json` (two sessions in the worktree
-  `actions-ws` and one in `actions-solo`, each a `sleep`), then drive the recipe `session-actions`:
-  right-click a session tab, open its tile's "…" and the workspace "…", Copy branch name, New
-  session in this workspace, rename by F2, open Stop session… on a session that shares its workspace
-  and on one alone in its own, stop each, resume the lone one, and open the phone's "…" sheet and
-  its Stop session sheet at 390px.
+- **Do:** Run the CLI batch `session-actions-sessions.json` step by step, with each `--name` and
+  `--worktree` suffixed `-<sha8>` (two sessions in the worktree `actions-ws-<sha8>` and one in
+  `actions-solo-<sha8>`, each a `sleep`), then drive the recipe with
+  `SESSION_ACTIONS_SUFFIX=-<sha8>`. The data holds Boat worktrees `actions-ws` and `actions-solo`,
+  which start nothing on a copy without Boat, and Mend refuses a name it has seen, even after the
+  worktree is removed (SLNT-1300). The recipe `session-actions`: right-click a session tab, open its
+  tile's "…" and the workspace "…", Copy branch name, New session in this workspace, rename by F2,
+  open Stop session… on a session that shares its workspace and on one alone in its own, stop each,
+  resume the lone one, and open the phone's "…" sheet and its Stop session sheet at 390px.
 - **See:** each step's note in the recipe's `steps.log`: the tab menu holds the session's actions
   and no workspace action, the workspace menu holds no session action; the dialog names the session
   that keeps the workspace running, and says the workspace stops too for the lone one; the stopped
@@ -1676,13 +1692,19 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
   session at the end.
 - **See:** each step's note in the recipe's `steps.log`: `Land…` in the Change view's toolbar; the
   dialog `Land change` naming `Write tests for retry is still editing`; on an origin that is not
-  GitHub, `No pull request: …` and `Push to origin`; the push refused in git's own words with
-  `Try again`; a line from `Check origin`; `#land` opened by the workspace's `Land…` and by
-  `/changes/<id>#land`; Preview showing your text, then Mend's section (`Summary` or no summary,
+  GitHub, `No pull request: …` and `Push to origin`; `#land` opened by the workspace's `Land…` and
+  by `/changes/<id>#land`; Preview showing your text, then Mend's section (`Summary` or no summary,
   changed files, `In Mend`); "Checkpoint N is in pull request #412." with no Land button;
   "Checkpoint N landed as pull request #412 · View pull request" in the conversation; "Checkpoint N
   isn't in pull request #412 yet." with `Land again…`; `Update pull request #412` keeping the title;
-  `GitHub refused the push` with GH006's words.
+  `GitHub refused the push` with GH006's words. Two parts of the recipe are a local stack's, not
+  this flow's: the push refused in git's own words with `Try again`, and a line from `Check origin`.
+  They need an origin that refuses pushes, as a local stack's git fixture does, and on a check VM
+  copy `verify-fixture`'s origin is GitHub: the recipe notes `differs · this origin is GitHub …`,
+  `Check GitHub` answers that no GitHub account is connected, and nothing is pushed (SLNT-1298). On
+  the box, `land-change.refused` sees a refused push in git's words and `Check origin` after it, and
+  `land-change.web-push` sees `Check origin` holding the landed commit, both against the copy's own
+  git service.
 - **Mode:** `scripted` (recipes/land.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/change/land-dialog.tsx`, `apps/web/src/lib/landing.ts`,
@@ -2940,7 +2962,9 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
 - **See:** each step's note in the recipe's `steps.log`, and its captures: "Revoked an invitation
   link", "Made verify-fixture private", the shared-control rows, `Owners of <organization>` under
   the title, more rows after Show older events, "Mend couldn't read older events." under the button.
-  verify-fixture ends private and every link the run made is revoked.
+  verify-fixture ends private, and every link the run made is revoked or used, with none left open:
+  the link the second person joined with is spent, and a revoke of it answers `409`
+  `InvitationSpent` (the recipe's `links this run made: …; revoked …, spent by joining …`).
 - **Mode:** `scripted` (recipes/audit-log.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/audit-log-page.tsx`,
@@ -2982,8 +3006,10 @@ steps (SKILL.md, Lanes, "Agent logins on a lane").
 - **See:** each step's note in the recipe's `steps.log`, and its captures: "<person> joined
   <organization> with your invitation.", "<person> is now an owner of <organization>." with Undo,
   "Revoked the invitation for anyone with the link.", "Removed <person> from <organization>", the
-  removed person's browser at `/login?reason=access`. The person is removed and every link the run
-  made is revoked.
+  removed person's browser at `/login?reason=access`. The person is removed, and every link the run
+  made is revoked or used, with none left open: the link the person joined with is spent, and a
+  revoke of it answers `409` `InvitationSpent` (the recipe's
+  `links this run made: …; revoked …, used by the person who joined …`).
 - **Mode:** `scripted` (recipes/org-members.mjs)
 - **Box-only:** no
 - **Areas:** `apps/web/src/components/settings/organization-members-page.tsx`,

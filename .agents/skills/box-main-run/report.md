@@ -6,13 +6,16 @@ Executor (team SLNT); the home repo's `linear` skill says how to work there.
 ## 1. Scan the evidence
 
 ```sh
-rm -rf $E/start-session.new-web-streaming/samples
+find $E/start-session.new-web-streaming -mindepth 1 -maxdepth 3 -type d \( -name local -o -name remote -o -name scroll \) -prune -exec rm -rf {} +
 node .agents/skills/verify/scripts/scan-evidence.mjs --dir $E --secrets $P --delete-hits
 ```
 
-The first line removes the streaming recipe's scroll frames once that flow is judged: no driver
-checks them, so the scan deleted each one as a hit (3 893 of 22 Nov's 3 915), and the hits that
-matter were lost among them.
+The first line removes the streaming recipe's screencast frames once that flow is judged: no driver
+checks them, so the scan deleted each one as a hit (3 893 of 22 Nov's 3 915, 2 692 of 23 Nov's 3
+927), and the hits that matter were lost among them. The recipe writes them into one directory per
+turn (`local`, `remote`, `scroll`) under `STREAM_OUT`, whatever a subagent named that (`samples` on
+22 Nov, `raw-stream` on 23 Nov, or `opus/…` for a second look), so the line finds them by those
+names and keeps the `<turn>.json` numbers beside them.
 
 A screenshot that drive-web.mjs withheld, or the scan deleted, is named in the report, never posted.
 Only what the scan passed leaves this machine.
@@ -37,9 +40,9 @@ Check VMs:
 
 - Length: <h> h <m> min from the lock to the next master built (or to the save, with why it was not
   built). Wait for room: <m> min from the lock to lane A's copy. Flows: <m> min from the first
-  flow's start to the last flow's end (151 min on 22 Nov, the first run of every flow), and each
-  lane's own beside 22 Nov's: A <m> (125), B <m> (148), C <m> (47). Warm-up: <SKILL.md step 6's
-  line>.
+  flow's start to the last flow's end (150 min on 23 Nov), and each lane's own beside 23 Nov's and
+  the split's estimate: A <m> (115; about 121), B <m> (142; about 124), C <m> (146; about 121), each
+  with its minutes between flows and its number of subagent runs. Warm-up: <SKILL.md step 6's line>.
 - Build: preview run <link>, version <version>, <n> min. Copies booted from the master
   <master version>; lanes A (copy <n>, Boat), B (copy <n>), C (copy <n>, Boat or no Boat), or the
   lanes left out.
