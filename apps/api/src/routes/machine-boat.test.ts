@@ -11,7 +11,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { createTenancyApi } from "../../test/support/tenancy-api.ts";
-import { askAddress, boatLaunchOf } from "../machine-boat.ts";
+import { askAddress, boatLaunchOf, gatewayDeclaredOf } from "../machine-boat.ts";
 
 const NOW = new Date("2026-11-13T14:02:00.000Z");
 
@@ -103,6 +103,15 @@ describe("whether Sealant lists Boat", () => {
       state: "unread",
       reason: "Sealant could not be reached",
     });
+  });
+});
+
+describe("the gateway setting the machine view states (SLNT-1297)", () => {
+  it("reads the setting setup writes on a local install, and says nothing on Kubernetes", () => {
+    expect(gatewayDeclaredOf("local", "3f1c2b9e-0d4a-4c8e-9b7f-1a2b3c4d5e6f")).toBe(true);
+    expect(gatewayDeclaredOf("local", "")).toBe(false);
+    expect(gatewayDeclaredOf("local", "  ")).toBe(false);
+    expect(gatewayDeclaredOf("kubernetes", "")).toBeUndefined();
   });
 });
 

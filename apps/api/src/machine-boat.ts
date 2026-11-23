@@ -9,8 +9,8 @@ import type {
 } from "@mend/domain/workbench";
 import { boatProblemText } from "@mend/domain/workbench";
 import { SealantClients, WorkspaceRuntimesReport } from "@mend/sealant";
-import { BlobStoreConfig, DeploymentConfig } from "@mend/store";
-import { Clock, Duration, Effect, Layer, Ref } from "effect";
+import { BlobStoreConfig, DeploymentConfig, type DeploymentMode } from "@mend/store";
+import { Clock, Config, Duration, Effect, Layer, Ref } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -83,6 +83,17 @@ export const boatLaunchOf = (reading: WorkspaceRuntimesReading): BoatLaunch => {
 
 const UNREACHED = "Sealant did not answer";
 
+/**
+ * Whether this server's settings turn Boat's resource gateway on (SLNT-1297). `mend server setup`
+ * writes `SEALANT_BOAT_GATEWAY_HOST_ID` into the container's environment while the gateway is on,
+ * and leaves it out under `--no-boat-resources`; a deployment run without setup sets it too. Only
+ * a local deployment's API shares that environment with the worker, so Kubernetes says nothing.
+ */
+export const gatewayDeclaredOf = (
+  mode: DeploymentMode,
+  gatewayHostId: string,
+): boolean | undefined => (mode === "local" ? gatewayHostId.trim() !== "" : undefined);
+
 export const MachineBoatReportLive: Layer.Layer<
   MachineBoatReport,
   never,
@@ -94,6 +105,13 @@ export const MachineBoatReportLive: Layer.Layer<
     const runtimes = yield* WorkspaceRuntimesReport;
     const deployment = yield* DeploymentConfig;
     const blobStore = yield* BlobStoreConfig;
+    const gatewayDeclared = gatewayDeclaredOf(
+      deployment.mode,
+      yield* Config.String("SEALANT_BOAT_GATEWAY_HOST_ID").pipe(
+        Config.withDefault(""),
+        Effect.orElseSucceed(() => ""),
+      ),
+    );
     const addresses: ReadonlyArray<readonly [BoatAddressPurpose, string]> = [
       ...(deployment.sessionEndpoint === undefined
         ? []
@@ -128,6 +146,11 @@ export const MachineBoatReportLive: Layer.Layer<
         launch: runtimes.read().pipe(Effect.map(boatLaunchOf)),
       },
       { concurrency: "unbounded" },
+    ).pipe(
+      Effect.map(
+        (facts): ServerBoatFacts =>
+          gatewayDeclared === undefined ? facts : { ...facts, gatewayDeclared },
+      ),
     );
     const kept = yield* Ref.make<{
       readonly until: number;

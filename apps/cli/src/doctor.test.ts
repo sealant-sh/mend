@@ -195,6 +195,64 @@ describe("mend doctor", { timeout: 30_000 }, () => {
     }
   });
 
+  /** greenServer, on a server that offers Boat and whose one worker runs no resource gateway. */
+  const noGatewayServer =
+    (gatewayDeclared: boolean): Handler =>
+    (request, response) => {
+      if (request.url !== "/api/machine") {
+        greenServer(request, response);
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          hostname: "fixture",
+          platform: "linux",
+          sessionRuntimes: { offered: ["docker", "boat"], default: "boat" },
+          boat: {
+            addresses: [],
+            serverKey: { state: "none" },
+            storedKeys: 1,
+            launch: {
+              state: "listed",
+              observedAt: "2026-11-23T02:09:00.000Z",
+              resourceGateway: false,
+            },
+            gatewayDeclared,
+          },
+        }),
+      );
+    };
+
+  it("reads a Boat gateway the server turned off as a setting, and exits 0 (SLNT-1297)", async () => {
+    const fake = await startFakeMend(noGatewayServer(false));
+    try {
+      const result = await runDoctor(fake.url, { token: "test-token", ready: true });
+      expect(result.stdout).toContain(
+        "· boat gateway off · declared · a Boat session in a project with resources (@db) is refused; sessions in other projects run → mend server setup --boat-resources turns it on",
+      );
+      expect(result.stdout).not.toContain("✗");
+      expect(result.stdout).not.toContain("mend server restart");
+      expect(result.code).toBe(0);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("fails a worker that should run a Boat gateway and reports none", async () => {
+    const fake = await startFakeMend(noGatewayServer(true));
+    try {
+      const result = await runDoctor(fake.url, { token: "test-token", ready: true });
+      expect(result.stdout).toContain(
+        "✗ boat gateway declared on · the worker that launches Boat reports no resource gateway",
+      );
+      expect(result.stdout).toContain("mend server restart starts it again");
+      expect(result.code).toBe(1);
+    } finally {
+      await fake.close();
+    }
+  });
+
   it("exits 1 on a rejected token and says which command fixes it", async () => {
     const fake = await startFakeMend((request, response) => {
       if (request.url === "/api/projects") {

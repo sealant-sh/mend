@@ -74,5 +74,12 @@ export const ServerBoatFacts = Schema.Struct({
    */
   storedKeys: Schema.NullOr(Schema.Int),
   launch: BoatLaunch,
+  /**
+   * Whether the server's own settings turn Boat's resource gateway on (`mend server setup
+   * --[no-]boat-resources`), so a reader can tell a gateway turned off on purpose from a worker
+   * that should run one and does not (SLNT-1297). Absent from an older server, and from one whose
+   * settings the API process cannot see (Kubernetes).
+   */
+  gatewayDeclared: Schema.optionalKey(Schema.Boolean),
 });
 export type ServerBoatFacts = typeof ServerBoatFacts.Type;
