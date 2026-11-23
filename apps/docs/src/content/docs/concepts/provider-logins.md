@@ -128,7 +128,8 @@ A session's machine and a review pass each need the login to run the CLI. A key 
 A subscription goes as a copy that **cannot refresh**:
 
 - a Claude copy has no refresh token;
-- a Codex copy has a placeholder refresh token that no provider accepts.
+- a Codex copy has a placeholder refresh token that no provider accepts;
+- an Antigravity copy has no refresh token.
 
 A copy works until its access token expires, and it cannot spend, rotate or revoke your login. The
 refresh token stays in one place: your Mend server's store.
@@ -139,14 +140,16 @@ Your Mend server refreshes each login on a schedule, well before it expires, by 
 CLI in a private directory:
 
 - **Claude** about an hour before its access token expires (it lives about eight hours);
-- **Codex** a day before (its token lives about ten days).
+- **Codex** a day before (its token lives about ten days);
+- **Antigravity** within twenty minutes of expiry (its Google token lives an hour), with
+  `agy models`.
 
 One refresh runs per login at a time. When it is done, the server writes the new copy into every
 session that is running on that login. Claude Code and Codex both pick up a replaced login file on
 their own, so a running session carries on without a restart.
 
 Keeping Claude fresh spends a trivial slice of your subscription: the CLI refreshes on use, so each
-refresh is one tiny exchange. Codex refreshes without a model request.
+refresh is one tiny exchange. Codex and Antigravity refresh without a model request.
 
 ## pi and opencode
 
@@ -263,9 +266,9 @@ password, or the login was revoked. The next refresh is then refused, and Mend s
 - a new session with it is refused before a machine starts;
 - a tour or suggestion says `reconnect Claude` or `reconnect Codex`.
 
-Run `mend connect claude` or `mend connect codex` again. A new login replaces the old one, and the
-next session uses it. For a refused key, create a new key at the provider and connect it with
-`--api-key`.
+Run `mend connect claude`, `mend connect codex` or `mend connect antigravity` again. A new login
+replaces the old one, and the next session uses it. For a refused key, create a new key at the
+provider and connect it with `--api-key`.
 
 ## Using your laptop's own login instead
 

@@ -65,6 +65,11 @@ RUN apt-get update \
 # The released worker carries the Docker 27 CLI and matching buildx plugin it was tested with.
 COPY --from=sealant-worker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
+# The Antigravity CLI the worker's keep-fresh sweeper runs (`agy models`) to refresh a connected
+# Antigravity login: workspaces get its access token only (ADR 0008), so without this every
+# Antigravity session stops starting about an hour after the login was connected (SLNT-1291).
+COPY --from=sealant-worker /usr/local/bin/agy /usr/local/bin/agy
+RUN agy --version
 
 WORKDIR /app
 COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
