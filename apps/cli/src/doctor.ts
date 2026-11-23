@@ -370,7 +370,15 @@ const boatChecks = async (
   if (!offer.offered.includes("boat")) return checks;
   const facts = machine.boat === undefined ? null : decodeServerBoat(machine.boat);
   if (facts !== null && facts._tag === "Some")
-    checks.push(...serverBoatLines({ facts: facts.value, now, from: "the server" }));
+    checks.push(
+      ...serverBoatLines({
+        facts: facts.value,
+        now,
+        from: "the server",
+        // A gateway turned off on purpose is a setting, not a worker to restart (SLNT-1297).
+        gatewayDeclared: facts.value.gatewayDeclared,
+      }),
+    );
   else {
     // A member reads no server facts, but whether sealant lists Boat for their organization's
     // runtime (SLNT-822); a server from before that route answers 404: nothing to say.
