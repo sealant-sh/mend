@@ -181,12 +181,15 @@ never sees what another lane changed. On every lane, a verify CLI batch runs wit
     it joins a member of Default (a trial on 22 Nov then read `Default · 3 members`); then
     `settings.new-web-agent-logins`, which replaces and disconnects the copy's logins on purpose, so
     nothing after it needs one; then `doctor.bundle-web` last.
-12. The organization's own pages, with no session, in any order and last on their lane:
-    `organization.new-web-create-leave`, `organization.new-web-operator-create`,
-    `organization.new-web-general`, `organization.new-web-members`. `general` and `members` add a
-    person and remove them, and `operator-create` makes an organization that no command removes, so
-    nothing after them on the lane counts members or organizations. Never on lane A, whose data is
-    saved: with lane C left out they run on lane B, before its two `mend login` flows.
+12. The organization's own pages, with no session, last on their lane and in this order:
+    `organization.new-web-create-leave`, `organization.new-web-general`,
+    `organization.new-web-members`, then `organization.new-web-operator-create`. `general` and
+    `members` add a person and remove them. `operator-create` makes an organization that no command
+    removes and moves the owner's browser into it, so it comes last: a flow after it reads the new
+    organization's pages, not Default's (`general` timed out that way in a trial on 23 Nov). Nothing
+    after the group on the lane counts members or organizations. Never on lane A, whose data is
+    saved: with lane C left out they run on lane B, before its two `mend login` flows, and the
+    owner's browser is switched back to Default (the organization switcher) before the next flow.
 
 ## The core loop
 
