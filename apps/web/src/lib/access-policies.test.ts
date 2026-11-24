@@ -210,8 +210,11 @@ describe("revocations", () => {
     expect(enforcementWords({ enforcement: "failed", message: "proxy unreachable" })).toBe(
       "Failed: proxy unreachable",
     );
-    expect(enforcementLead(0)).toMatch(/^No running workspace needed telling\./);
-    expect(enforcementLead(2)).toBe("2 running workspaces answered:");
+    expect(enforcementLead(0, "applied")).toMatch(/^No running workspace needed telling\./);
+    expect(enforcementLead(0, "revoked")).toBe(
+      "It reached no running workspace. Each workspace it reaches takes it when it next starts.",
+    );
+    expect(enforcementLead(2, "revoked")).toBe("2 running workspaces answered:");
   });
 });
 

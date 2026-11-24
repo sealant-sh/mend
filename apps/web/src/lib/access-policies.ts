@@ -375,10 +375,16 @@ export const enforcementWords = (view: {
   return view.message === null || view.message === "" ? words : `${words}: ${view.message}`;
 };
 
-/** The line over a list of workspace answers, or the sentence when no workspace was running. */
-export const enforcementLead = (count: number): string =>
+/**
+ * The line over a list of workspace answers, or the sentence when none answered. An applied policy
+ * whose changes only Mend enforces (Git, Executor tools) tells no workspace; a revocation that
+ * reached none was stored all the same, and each workspace takes it when it next starts.
+ */
+export const enforcementLead = (count: number, act: "applied" | "revoked"): string =>
   count === 0
-    ? "No running workspace needed telling. Mend holds to its own rules (Git, Executor tools) at once, and each workspace takes the rest when it next starts."
+    ? act === "applied"
+      ? "No running workspace needed telling. Mend holds to its own rules (Git, Executor tools) at once, and each workspace takes the rest when it next starts."
+      : "It reached no running workspace. Each workspace it reaches takes it when it next starts."
     : count === 1
       ? "The running workspace answered:"
       : `${count} running workspaces answered:`;

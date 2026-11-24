@@ -723,7 +723,7 @@ function PolicyGroupBody({
             <div role="status" className="grid gap-1.5">
               <p>
                 Applied {applied.pin.source.name}, revision {applied.pin.source.revision}.{" "}
-                {enforcementLead(applied.workspaces.length)}
+                {enforcementLead(applied.workspaces.length, "applied")}
               </p>
               {applied.workspaces.length === 0 ? null : (
                 <EnforcementList workspaces={applied.workspaces} />

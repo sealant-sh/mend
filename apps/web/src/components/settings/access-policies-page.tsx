@@ -687,7 +687,7 @@ function RevokeDialog({
           if (!next) onClose();
         }}
         title="Revoked"
-        description={`${revocationWhat(done.revocation)}. ${enforcementLead(done.workspaces.length)}`}
+        description={`${revocationWhat(done.revocation)}. ${enforcementLead(done.workspaces.length, "revoked")}`}
         size="md"
         footer={
           <Button size={size} onClick={onClose}>
