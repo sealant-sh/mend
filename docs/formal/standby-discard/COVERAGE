@@ -158,7 +158,14 @@
 # for a standby ends in the existing `hotWorkspaces.setFailed` (RProvFailed). No new hot-pool,
 # claim, retire, drain or discard call, so no action changes. tlx run at 007f727ba2: every row
 # as expected.
-sync 007f727ba223e4f4311de2ffc60ccac46e81eb5d
+# c5d5e3bcf8 is the same branch with each executor's sockets served (SLNT-1332). In the covered
+# functions: replanClaimedStandby binds the claimed standby's control scope before it asks the
+# re-plan (an idempotent bind of Mend's own sockets, no platform call that the model watches);
+# drainHotWorkspace closes a standby's scope beside its socket and tokens once its end is
+# confirmed (DEnded); the boot pass that binds running executors' scopes again runs before
+# `resume` and reads only. None is a hot-pool, claim, retire, drain or discard call, so no action
+# changes. tlx run at c5d5e3bcf8: every row as expected.
+sync c5d5e3bcf88a89d16ef93f729f308b3a22672634
 
 model StandbyDiscard.tla
 model MCStandbyDiscard.tla
